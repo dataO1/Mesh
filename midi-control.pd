@@ -1,0 +1,6 @@
+#N canvas 970 565 457 468 10;
+#X obj 117 44 ctlin \$1 1;
+#X obj 117 78 expr ($f1 / 127) * 20 - 10;
+#X obj 117 108 outlet;
+#X connect 0 0 1 0;
+#X connect 1 0 2 0;
