@@ -73,11 +73,11 @@
             echo "  • For ALSA (default): pd"
 
             # Create directories for neural models and externals
-            mkdir -p $PWD/pd-externals
-            mkdir -p $PWD/rave-models
+            mkdir -p $PWD/rave/pd-externals
+            mkdir -p $PWD/rave/rave-models
 
             # Build nn~ from source instead of using problematic prebuilt binary
-            if [ ! -f "$PWD/pd-externals/nn~.pd_linux" ]; then
+            if [ ! -f "$PWD/rave/pd-externals/nn~.pd_linux" ]; then
               echo "Building nn~ from source..."
               if [ ! -d "/tmp/nn_tilde_src" ]; then
                 git clone --depth 1 https://github.com/acids-ircam/nn_tilde.git /tmp/nn_tilde_src
@@ -86,9 +86,9 @@
               mkdir -p build && cd build
               cmake .. -DCMAKE_BUILD_TYPE=Release
               make -j$(nproc)
-              cp nn~.pd_linux $OLDPWD/pd-externals/
-              cp ../help/nn~-help.pd $OLDPWD/pd-externals/
-              echo "nn~ built and installed to $OLDPWD/pd-externals/"
+              cp nn~.pd_linux $OLDPWD/rave/pd-externals/
+              cp ../help/nn~-help.pd $OLDPWD/rave/pd-externals/
+              echo "nn~ built and installed to $OLDPWD/rave/pd-externals/"
               cd $OLDPWD
             fi
 
@@ -101,29 +101,29 @@
             fi
 
             # Set Pure Data externals path and library path
-            export PD_EXTRA_PATH="$PWD/pd-externals:${pkgs.cyclone}/cyclone"
+            export PD_EXTRA_PATH="$PWD/rave/pd-externals:${pkgs.cyclone}/cyclone"
             export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.curl.out}/lib:$LD_LIBRARY_PATH"
 
 
             # Create symlinks in pd-externals for easy model access
-            if [ -d "$PWD/rave-models" ]; then
-              for model in $PWD/rave-models/*; do
+            if [ -d "$PWD/rave/rave-models" ]; then
+              for model in $PWD/rave/rave-models/*; do
                 if [ -f "$model" ]; then
                   basename_model=$(basename "$model")
                   # Remove .ts extension if present for simpler names
                   simple_name=$(echo "$basename_model" | sed 's/\.ts$//')
                   # Create symlink in pd-externals for direct access
-                  ln -sf "$model" "$PWD/pd-externals/$simple_name.ts" 2>/dev/null
-                  ln -sf "$model" "$PWD/pd-externals/$basename_model" 2>/dev/null
+                  ln -sf "$model" "$PWD/rave/pd-externals/$simple_name.ts" 2>/dev/null
+                  ln -sf "$model" "$PWD/rave/pd-externals/$basename_model" 2>/dev/null
                 fi
               done
             fi
 
             echo ""
             echo "Setup complete:"
-            echo "  • Pure Data externals: $PWD/pd-externals"
+            echo "  • Pure Data externals: $PWD/rave/pd-externals"
             echo "  • Cyclone externals: ${pkgs.cyclone}/cyclone"
-            echo "  • RAVE models directory: $PWD/rave-models"
+            echo "  • RAVE models directory: $PWD/rave/rave-models"
             echo "  • nn~ and cyclone objects available in Pure Data"
             echo ""
             echo "Available RAVE models:"
@@ -135,20 +135,20 @@
             for i in "''${!models[@]}"; do
               model="''${models[$i]}"
               desc="''${descriptions[$i]}"
-              if [ -f "$PWD/rave-models/$model.ts" ] || [ -f "$PWD/rave-models/$model" ]; then
+              if [ -f "$PWD/rave/rave-models/$model.ts" ] || [ -f "$PWD/rave/rave-models/$model" ]; then
                 echo "  ✓ $model - $desc"
                 echo "    Load: [load $model.ts(  or  [load $model("
               else
                 echo "  ○ $model - $desc (not downloaded)"
-                echo "    Get:  wget -P rave-models/ 'https://play.forum.ircam.fr/rave-vst-api/get_model/$model'"
+                echo "    Get:  wget -P rave/rave-models/ 'https://play.forum.ircam.fr/rave-vst-api/get_model/$model'"
               fi
             done
 
             # Show any other .ts files in rave-models
-            if [ -d "$PWD/rave-models" ] && [ "$(ls -A $PWD/rave-models/*.ts 2>/dev/null)" ]; then
+            if [ -d "$PWD/rave/rave-models" ] && [ "$(ls -A $PWD/rave/rave-models/*.ts 2>/dev/null)" ]; then
               echo ""
               echo "Other downloaded models:"
-              for model in $PWD/rave-models/*.ts; do
+              for model in $PWD/rave/rave-models/*.ts; do
                 if [ -f "$model" ]; then
                   basename_model=$(basename "$model")
                   # Check if it's not in our known list
