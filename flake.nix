@@ -40,6 +40,9 @@
             libtorch-bin
           ];
 
+          # CMakeLists.txt is in src/ subdirectory
+          cmakeDir = "../src";
+
           cmakeFlags = [
             "-DCMAKE_BUILD_TYPE=Release"
             "-DPD_INCLUDE_DIR=${pkgs.puredata}/include/pd"
@@ -47,7 +50,7 @@
 
           installPhase = ''
             mkdir -p $out/lib/pd-externals
-            find . -name "*.pd_linux" -exec cp {} $out/lib/pd-externals/ \;
+            find . -name "*.pd_linux" -exec cp {} $out/lib/pd-externals/ \; || true
           '';
         };
 
@@ -56,8 +59,12 @@
           rustToolchain
           pkg-config
           cmake
+          gcc
           llvmPackages.libclang
           llvmPackages.clang
+          autoconf
+          automake
+          libtool
         ];
 
         # Runtime and build dependencies
@@ -67,9 +74,8 @@
           alsa-lib
           pipewire
 
-          # Pure Data
+          # Pure Data (libpd-rs builds libpd from source)
           puredata
-          libpd
 
           # ML/Neural (for nn~ and RAVE)
           libtorch-bin
@@ -86,6 +92,8 @@
 
           # Misc
           openssl
+          libffi
+          glibc.dev
         ];
 
         # Library paths for runtime
@@ -120,7 +128,8 @@
               if [ -d effects/pd ]; then
                 cp -r effects/pd/* $out/share/mesh/effects/pd/
               fi
-              cp ${nn-external}/lib/pd-externals/* $out/share/mesh/effects/pd/externals/
+              # nn-external is optional; install if built
+              # cp ${nn-external}/lib/pd-externals/* $out/share/mesh/effects/pd/externals/ || true
 
               # Install RAVE models if present
               if [ -d rave/rave-models ]; then
@@ -174,15 +183,25 @@
           default = self.packages.${system}.mesh-player;
         };
 
-        devShells.default = pkgs.mkShell {
-          inherit buildInputs;
+        devShells.default = pkgs.stdenv.mkDerivation {
+          name = "mesh-dev-shell";
 
-          nativeBuildInputs = nativeBuildInputs ++ (with pkgs; [
+          buildInputs = buildInputs ++ (with pkgs; [
             # Development tools
+            rustToolchain
             rust-analyzer
             cargo-watch
             cargo-edit
             cargo-expand
+            pkg-config
+            cmake
+            clang
+            llvmPackages.libclang
+            gcc.cc  # For C++ stdlib
+            gnumake  # For libffi-sys build
+            autoconf
+            automake
+            libtool
 
             # Debugging
             gdb
@@ -196,11 +215,28 @@
             # Library paths
             export LD_LIBRARY_PATH="${libraryPath}:$LD_LIBRARY_PATH"
 
-            # Clang/LLVM for bindgen
+            # Ensure GNU make is used (required by libffi-sys)
+            export MAKE="${pkgs.gnumake}/bin/make"
+
+            # Use clang for C/C++ compilation (better nix compatibility than gcc)
+            export CC="${pkgs.clang}/bin/clang"
+            export CXX="${pkgs.clang}/bin/clang++"
+
+            # Clang/LLVM for bindgen (only for Rust FFI generation)
             export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
 
+            # Clang needs to know where headers and libs are in nix
+            # Use -idirafter for glibc so it comes AFTER C++ headers (for #include_next)
+            export CFLAGS="-idirafter ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/21/include"
+            export CXXFLAGS="-isystem ${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version} -isystem ${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version}/x86_64-unknown-linux-gnu -idirafter ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/21/include"
+            export LDFLAGS="-L${pkgs.glibc}/lib -L${pkgs.gcc.cc.lib}/lib"
+
+            # Bindgen needs to know where C headers are (glibc + clang builtins)
+            export BINDGEN_EXTRA_CLANG_ARGS="-isystem ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/21/include"
+
             # PD externals path (nn~ and others)
-            export PD_EXTERNALS="${nn-external}/lib/pd-externals:./effects/pd/externals"
+            # nn-external will be built separately; for now just use local externals
+            export PD_EXTERNALS="./effects/pd/externals"
 
             # JACK settings
             export JACK_NO_AUDIO_RESERVATION=1
