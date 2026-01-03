@@ -202,7 +202,7 @@
 
             meta = with pkgs.lib; {
               description = "Mesh DJ Player - 4-deck stem-based mixing with neural effects";
-              license = licenses.mit;
+              license = licenses.agpl3Plus;
               platforms = platforms.linux;
             };
           };
@@ -252,7 +252,7 @@
 
             meta = with pkgs.lib; {
               description = "Mesh Cue Software - Track preparation and playlist management";
-              license = licenses.mit;
+              license = licenses.agpl3Plus;
               platforms = platforms.linux;
             };
           };

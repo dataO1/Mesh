@@ -10,7 +10,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 authors = ["Mesh Team"]
-license = "MIT"
+license = "AGPL-3.0-or-later"
 
 [workspace.dependencies]
 jack = "0.13.4"

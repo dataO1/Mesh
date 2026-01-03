@@ -278,7 +278,9 @@ Please open an issue to discuss major changes before submitting a PR.
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
+AGPL-3.0 — see [LICENSE](LICENSE) for details.
+
+This project uses [Essentia](https://essentia.upf.edu/) which is licensed under AGPL-3.0, requiring this project to use the same license.
 
 ---
 
