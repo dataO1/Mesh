@@ -5,7 +5,9 @@
 
 pub mod app;
 pub mod deck_view;
+pub mod file_browser;
 pub mod mixer_view;
 pub mod waveform;
 
 pub use app::MeshApp;
+pub use file_browser::{FileBrowserView, FileBrowserMessage};

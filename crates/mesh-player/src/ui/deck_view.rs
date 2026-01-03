@@ -8,28 +8,39 @@
 //! - Stem controls (mute/solo/volume per stem)
 
 use iced::widget::{button, column, container, row, slider, text, Row, Space};
-use iced::{Center, Element, Fill};
+use iced::{Center, Color, Element, Fill};
 
 use mesh_core::engine::Deck;
 use mesh_core::types::PlayState;
 
 use super::waveform::WaveformView;
 
+/// Width of waveform display in pixels
+const WAVEFORM_WIDTH: usize = 400;
+
+/// Stem names for display
+pub const STEM_NAMES: [&str; 4] = ["Vocals", "Drums", "Bass", "Other"];
+/// Short stem names for compact display
+pub const STEM_NAMES_SHORT: [&str; 4] = ["VOC", "DRM", "BAS", "OTH"];
+
 /// State for a deck view
 pub struct DeckView {
     /// Deck index (0-3)
     deck_idx: usize,
     /// Waveform view
-    #[allow(dead_code)]
     waveform: WaveformView,
     /// Current playback state
     state: PlayState,
     /// Current position (samples)
     position: u64,
+    /// Total track duration (samples)
+    duration_samples: u64,
     /// Track BPM
     track_bpm: f64,
     /// Track filename
     track_name: String,
+    /// Last loaded track name (to detect changes)
+    last_loaded_track: String,
     /// Stem mute states
     stem_muted: [bool; 4],
     /// Stem solo states
@@ -40,6 +51,16 @@ pub struct DeckView {
     pitch: f64,
     /// Loop active
     loop_active: bool,
+    /// Current loop length in beats
+    loop_length_beats: f32,
+    /// Currently selected stem for effect chain view (0-3)
+    selected_stem: usize,
+    /// Effect chain knob values per stem (8 knobs x 4 stems)
+    stem_knobs: [[f32; 8]; 4],
+    /// Effect names in each stem's chain (for display)
+    stem_effect_names: [Vec<String>; 4],
+    /// Effect bypass states per stem
+    stem_effect_bypassed: [Vec<bool>; 4],
 }
 
 /// Messages for deck interaction
@@ -67,6 +88,14 @@ pub enum DeckMessage {
     ToggleLoop,
     /// Set loop length (beats)
     SetLoopLength(u32),
+    /// Halve loop length
+    LoopHalve,
+    /// Double loop length
+    LoopDouble,
+    /// Beat jump backward (uses loop length)
+    BeatJumpBack,
+    /// Beat jump forward (uses loop length)
+    BeatJumpForward,
     /// Adjust pitch
     SetPitch(f64),
     /// Toggle stem mute
@@ -77,7 +106,16 @@ pub enum DeckMessage {
     SetStemVolume(usize, f32),
     /// Seek to position
     Seek(f64),
+    /// Select stem tab for effect chain view
+    SelectStem(usize),
+    /// Set effect chain knob value (stem_idx, knob_idx, value)
+    SetStemKnob(usize, usize, f32),
+    /// Toggle effect bypass in chain (stem_idx, effect_idx)
+    ToggleEffectBypass(usize, usize),
 }
+
+/// Loop length labels for display
+const LOOP_LENGTHS: [f32; 7] = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0];
 
 impl DeckView {
     /// Create a new deck view
@@ -87,13 +125,20 @@ impl DeckView {
             waveform: WaveformView::new(),
             state: PlayState::Stopped,
             position: 0,
+            duration_samples: 0,
             track_bpm: 0.0,
             track_name: String::new(),
+            last_loaded_track: String::new(),
             stem_muted: [false; 4],
             stem_soloed: [false; 4],
             stem_volumes: [1.0; 4],
             pitch: 0.0,
             loop_active: false,
+            loop_length_beats: 4.0, // Default 4 beats
+            selected_stem: 0,       // Start with Vocals selected
+            stem_knobs: [[0.0; 8]; 4],
+            stem_effect_names: Default::default(),
+            stem_effect_bypassed: Default::default(),
         }
     }
 
@@ -106,16 +151,110 @@ impl DeckView {
         if let Some(track) = deck.track() {
             self.track_bpm = track.bpm();
             self.track_name = track.filename().to_string();
+            self.duration_samples = track.duration_samples as u64;
+
+            // Only regenerate waveform when track changes
+            if self.track_name != self.last_loaded_track {
+                self.last_loaded_track = self.track_name.clone();
+                self.update_waveform_from_track(track);
+            }
+
+            // Update playhead position
+            if self.duration_samples > 0 {
+                let pos_normalized = self.position as f64 / self.duration_samples as f64;
+                self.waveform.set_position(pos_normalized);
+            }
+
+            // Update loop region
+            let loop_state = deck.loop_state();
+            if loop_state.active && self.duration_samples > 0 {
+                let start = loop_state.start as f64 / self.duration_samples as f64;
+                let end = loop_state.end as f64 / self.duration_samples as f64;
+                self.waveform.set_loop(Some(start), Some(end));
+            } else {
+                self.waveform.set_loop(None, None);
+            }
         } else {
             self.track_bpm = 0.0;
             self.track_name = String::new();
+            self.duration_samples = 0;
+            if !self.last_loaded_track.is_empty() {
+                self.last_loaded_track.clear();
+                self.waveform.clear();
+            }
         }
 
-        // Sync stem states
+        // Sync stem states and effect chains
         for i in 0..4 {
             if let Some(chain) = deck.stem_chain(i) {
                 self.stem_muted[i] = chain.is_muted();
                 self.stem_soloed[i] = chain.is_soloed();
+
+                // Sync effect chain info
+                let effect_count = chain.effect_count();
+                self.stem_effect_names[i].clear();
+                self.stem_effect_bypassed[i].clear();
+
+                for j in 0..effect_count {
+                    if let Some(effect) = chain.get_effect(j) {
+                        self.stem_effect_names[i].push(effect.info().name.clone());
+                        self.stem_effect_bypassed[i].push(effect.is_bypassed());
+                    }
+                }
+
+                // Sync knob values
+                for k in 0..8 {
+                    self.stem_knobs[i][k] = chain.get_knob(k);
+                }
+            }
+        }
+    }
+
+    /// Update waveform data from loaded track
+    fn update_waveform_from_track(&mut self, track: &mesh_core::audio_file::LoadedTrack) {
+        // Convert each stem to mono samples for waveform display
+        let stems = [
+            &track.stems.vocals,
+            &track.stems.drums,
+            &track.stems.bass,
+            &track.stems.other,
+        ];
+
+        for (idx, stem) in stems.iter().enumerate() {
+            // Convert stereo to mono by averaging left and right
+            let mono_samples: Vec<f32> = stem.iter()
+                .map(|sample| (sample.left + sample.right) / 2.0)
+                .collect();
+
+            self.waveform.set_stem_waveform(idx, &mono_samples, WAVEFORM_WIDTH);
+        }
+
+        // Set beat markers from track metadata
+        if track.duration_samples > 0 {
+            let beat_positions: Vec<f64> = track.metadata.beat_grid.beats
+                .iter()
+                .map(|&sample| sample as f64 / track.duration_samples as f64)
+                .collect();
+            self.waveform.set_beats(beat_positions);
+        }
+
+        // Set cue markers
+        self.waveform.clear_cues();
+        let cue_colors = [
+            Color::from_rgb(1.0, 0.3, 0.3),  // Red
+            Color::from_rgb(1.0, 0.6, 0.0),  // Orange
+            Color::from_rgb(1.0, 1.0, 0.0),  // Yellow
+            Color::from_rgb(0.3, 1.0, 0.3),  // Green
+            Color::from_rgb(0.0, 0.8, 0.8),  // Cyan
+            Color::from_rgb(0.3, 0.3, 1.0),  // Blue
+            Color::from_rgb(0.8, 0.3, 0.8),  // Purple
+            Color::from_rgb(1.0, 0.5, 0.8),  // Pink
+        ];
+        for (idx, cue) in track.metadata.cue_points.iter().enumerate() {
+            if track.duration_samples > 0 {
+                let pos = cue.sample_position as f64 / track.duration_samples as f64;
+                let color = cue_colors.get(idx).copied().unwrap_or(Color::WHITE);
+                self.waveform.add_cue(pos, color);
             }
         }
     }
@@ -137,16 +276,34 @@ impl DeckView {
                 // Sync is handled at engine level
             }
             DeckMessage::ToggleLoop => {
-                if deck.loop_state().active {
-                    deck.loop_off();
-                } else {
-                    deck.loop_in();
-                    // In a real implementation, we'd set loop out after N beats
-                }
+                deck.toggle_loop();
             }
             DeckMessage::SetLoopLength(beats) => {
-                // Set loop length in beats
-                let _ = beats; // TODO: implement beat-based loop length
+                // Find index for this beat length and set it
+                if let Some(idx) = LOOP_LENGTHS.iter().position(|&b| b == beats as f32) {
+                    for _ in 0..(idx as i32 - deck.loop_state().length_index as i32).abs() {
+                        if idx > deck.loop_state().length_index {
+                            deck.adjust_loop_length(1);
+                        } else {
+                            deck.adjust_loop_length(-1);
+                        }
+                    }
+                }
+                self.loop_length_beats = LOOP_LENGTHS[deck.loop_state().length_index];
+            }
+            DeckMessage::LoopHalve => {
+                deck.adjust_loop_length(-1);
+                self.loop_length_beats = LOOP_LENGTHS[deck.loop_state().length_index];
+            }
+            DeckMessage::LoopDouble => {
+                deck.adjust_loop_length(1);
+                self.loop_length_beats = LOOP_LENGTHS[deck.loop_state().length_index];
+            }
+            DeckMessage::BeatJumpBack => {
+                deck.beat_jump_backward();
+            }
+            DeckMessage::BeatJumpForward => {
+                deck.beat_jump_forward();
             }
             DeckMessage::SetPitch(pitch) => {
                 self.pitch = pitch;
@@ -168,6 +325,26 @@ impl DeckView {
             }
             DeckMessage::Seek(position) => {
                 let _ = position; // TODO: implement seeking
+            }
+            DeckMessage::SelectStem(stem_idx) => {
+                if stem_idx < 4 {
+                    self.selected_stem = stem_idx;
+                }
+            }
+            DeckMessage::SetStemKnob(stem_idx, knob_idx, value) => {
+                if stem_idx < 4 && knob_idx < 8 {
+                    self.stem_knobs[stem_idx][knob_idx] = value;
+                    if let Some(chain) = deck.stem_chain_mut(stem_idx) {
+                        chain.set_knob(knob_idx, value);
+                    }
+                }
+            }
+            DeckMessage::ToggleEffectBypass(stem_idx, effect_idx) => {
+                if let Some(chain) = deck.stem_chain_mut(stem_idx) {
+                    if let Some(effect) = chain.get_effect_mut(effect_idx) {
+                        effect.set_bypass(!effect.is_bypassed());
+                    }
+                }
             }
         }
     }
@@ -192,6 +369,9 @@ impl DeckView {
         };
         let state_display = text(state_text).size(14);
 
+        // Waveform display (map empty message to Play as a no-op for now)
+        let waveform_element: Element<DeckMessage> = self.waveform.view().map(|_| DeckMessage::Play);
+
         // Transport controls
         let transport = self.view_transport();
 
@@ -207,6 +387,7 @@ impl DeckView {
         let content = column![
             row![deck_label, Space::new().width(Fill), state_display].align_y(Center),
             track_info,
+            waveform_element,
             transport,
             hot_cues,
             stems,
@@ -222,31 +403,60 @@ impl DeckView {
 
     /// Transport controls view
     fn view_transport(&self) -> Element<DeckMessage> {
-        let play_btn = button(text("▶").size(20))
-            .on_press(DeckMessage::Play)
-            .padding(10);
+        // Beat jump buttons
+        let jump_back = button(text("◀◀").size(14))
+            .on_press(DeckMessage::BeatJumpBack)
+            .padding(6);
 
-        let pause_btn = button(text("⏸").size(20))
-            .on_press(DeckMessage::Pause)
-            .padding(10);
+        let jump_fwd = button(text("▶▶").size(14))
+            .on_press(DeckMessage::BeatJumpForward)
+            .padding(6);
 
+        // Main transport
         let cue_btn = button(text("CUE").size(14))
             .on_press(DeckMessage::CuePressed)
-            .padding(10);
+            .padding(8);
 
-        let sync_btn = button(text("SYNC").size(14))
-            .on_press(DeckMessage::Sync)
-            .padding(10);
+        let play_btn = button(text("▶").size(18))
+            .on_press(DeckMessage::Play)
+            .padding(8);
 
-        let loop_text = if self.loop_active { "LOOP ●" } else { "LOOP" };
-        let loop_btn = button(text(loop_text).size(14))
+        let pause_btn = button(text("⏸").size(18))
+            .on_press(DeckMessage::Pause)
+            .padding(8);
+
+        // Loop controls with length display
+        let loop_text = if self.loop_active { "●" } else { "○" };
+        let loop_btn = button(text(format!("LOOP {}", loop_text)).size(12))
             .on_press(DeckMessage::ToggleLoop)
-            .padding(10);
+            .padding(6);
 
-        row![play_btn, pause_btn, cue_btn, sync_btn, loop_btn]
-            .spacing(5)
-            .align_y(Center)
-            .into()
+        let loop_halve = button(text("÷2").size(10))
+            .on_press(DeckMessage::LoopHalve)
+            .padding(4);
+
+        let loop_length_text = format_loop_length(self.loop_length_beats);
+        let loop_length = text(loop_length_text).size(10);
+
+        let loop_double = button(text("×2").size(10))
+            .on_press(DeckMessage::LoopDouble)
+            .padding(4);
+
+        row![
+            jump_back,
+            cue_btn,
+            play_btn,
+            pause_btn,
+            jump_fwd,
+            Space::new().width(10),
+            loop_halve,
+            loop_length,
+            loop_double,
+            loop_btn,
+        ]
+        .spacing(3)
+        .align_y(Center)
+        .into()
     }
 
     /// Hot cue buttons view
@@ -265,40 +475,130 @@ impl DeckView {
             .into()
     }
 
-    /// Stem controls view
+    /// Stem effect chain view with tabs
     fn view_stems(&self) -> Element<DeckMessage> {
-        let stem_names = ["VOC", "DRM", "BAS", "OTH"];
-
-        let stems: Vec<Element<DeckMessage>> = (0..4)
+        // Tab buttons for selecting stem
+        let tabs: Vec<Element<DeckMessage>> = (0..4)
             .map(|i| {
-                let mute_label = if self.stem_muted[i] { "M●" } else { "M" };
-                let solo_label = if self.stem_soloed[i] { "S●" } else { "S" };
+                let is_selected = i == self.selected_stem;
+                let label = STEM_NAMES_SHORT[i];
+                let style = if is_selected { "●" } else { "" };
 
+                button(text(format!("{}{}", label, style)).size(11))
+                    .on_press(DeckMessage::SelectStem(i))
+                    .padding(5)
+                    .into()
+            })
+            .collect();
+
+        let tab_row = Row::with_children(tabs).spacing(2);
+
+        // Selected stem's mute/solo and volume
+        let stem_idx = self.selected_stem;
+        let mute_label = if self.stem_muted[stem_idx] { "M●" } else { "M" };
+        let solo_label = if self.stem_soloed[stem_idx] { "S●" } else { "S" };
+
+        let stem_controls = row![
+            text(STEM_NAMES[stem_idx]).size(12),
+            button(text(mute_label).size(10))
+                .on_press(DeckMessage::ToggleStemMute(stem_idx))
+                .padding(4),
+            button(text(solo_label).size(10))
+                .on_press(DeckMessage::ToggleStemSolo(stem_idx))
+                .padding(4),
+            slider(0.0..=1.0, self.stem_volumes[stem_idx], move |v| DeckMessage::SetStemVolume(stem_idx, v))
+                .width(60),
+        ]
+        .spacing(5)
+        .align_y(Center);
+
+        // Effect chain visualization
+        let effect_chain = self.view_effect_chain(stem_idx);
+
+        // 8 mappable knobs
+        let knobs = self.view_chain_knobs(stem_idx);
+
+        column![
+            row![text("STEM FX").size(10), Space::new().width(Fill), tab_row].align_y(Center),
+            stem_controls,
+            effect_chain,
+            knobs,
+        ]
+        .spacing(4)
+        .into()
+    }
+
+    /// View the effect chain for a stem
+    fn view_effect_chain(&self, stem_idx: usize) -> Element<DeckMessage> {
+        let effects = &self.stem_effect_names[stem_idx];
+        let bypassed = &self.stem_effect_bypassed[stem_idx];
+
+        if effects.is_empty() {
+            return row![
+                text("Chain: ").size(10),
+                text("(empty)").size(10),
+                button(text("+").size(10)).padding(3),
+            ]
+            .spacing(3)
+            .align_y(Center)
+            .into();
+        }
+
+        // Build effect chain display: [Effect1 ●]──[Effect2 ◯]──[+]
+        let mut chain_elements: Vec<Element<DeckMessage>> = Vec::new();
+        chain_elements.push(text("Chain: ").size(10).into());
+
+        for (i, name) in effects.iter().enumerate() {
+            let is_bypassed = bypassed.get(i).copied().unwrap_or(false);
+            let bypass_indicator = if is_bypassed { "◯" } else { "●" };
+
+            // Shorten effect name if needed
+            let short_name: String = name.chars().take(8).collect();
+            let label = format!("{} {}", short_name, bypass_indicator);
+
+            let effect_btn = button(text(label).size(9))
+                .on_press(DeckMessage::ToggleEffectBypass(stem_idx, i))
+                .padding(3);
+
+            chain_elements.push(effect_btn.into());
+
+            // Add connector if not last
+            if i < effects.len() - 1 {
+                chain_elements.push(text("─").size(10).into());
+            }
+        }
+
+        // Add button for adding new effects
+        chain_elements.push(text("─").size(10).into());
+        chain_elements.push(button(text("+").size(10)).padding(3).into());
+
+        Row::with_children(chain_elements)
+            .spacing(2)
+            .align_y(Center)
+            .into()
+    }
+
+    /// View the 8 mappable knobs for the stem's effect chain
+    fn view_chain_knobs(&self, stem_idx: usize) -> Element<DeckMessage> {
+        let knobs: Vec<Element<DeckMessage>> = (0..8)
+            .map(|k| {
+                let value = self.stem_knobs[stem_idx][k];
                 column![
-                    text(stem_names[i]).size(10),
-                    row![
-                        button(text(mute_label).size(10))
-                            .on_press(DeckMessage::ToggleStemMute(i))
-                            .padding(4),
-                        button(text(solo_label).size(10))
-                            .on_press(DeckMessage::ToggleStemSolo(i))
-                            .padding(4),
-                    ]
-                    .spacing(2),
-                    slider(0.0..=1.0, self.stem_volumes[i], move |v| DeckMessage::SetStemVolume(i, v))
-                        .width(40),
+                    text(format!("{}", k + 1)).size(8),
+                    slider(0.0..=1.0, value, move |v| DeckMessage::SetStemKnob(stem_idx, k, v))
+                        .width(30),
                 ]
-                .spacing(2)
+                .spacing(1)
                 .align_x(Center)
                 .into()
             })
             .collect();
 
         row![
-            text("STEMS").size(10),
-            Row::with_children(stems).spacing(10),
+            text("KNOBS").size(8),
+            Row::with_children(knobs).spacing(4),
         ]
-        .spacing(10)
+        .spacing(5)
         .align_y(Center)
         .into()
     }
@@ -315,5 +615,14 @@ impl DeckView {
         .spacing(10)
         .align_y(Center)
         .into()
+    }
+}
+
+/// Format loop length for display
+fn format_loop_length(beats: f32) -> String {
+    if beats < 1.0 {
+        format!("1/{:.0}", 1.0 / beats)
+    } else {
+        format!("{:.0}", beats)
     }
 }

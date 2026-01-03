@@ -215,7 +215,13 @@
             # Library paths
             export LD_LIBRARY_PATH="${libraryPath}:$LD_LIBRARY_PATH"
 
-            # Ensure GNU make is used (required by libffi-sys)
+            # Ensure GNU make is in PATH first and used everywhere (required by libffi-sys)
+            # Create a temp bin dir with make symlink to ensure GNU make is used
+            export MESH_MAKE_DIR=$(mktemp -d)
+            ln -sf ${pkgs.gnumake}/bin/make $MESH_MAKE_DIR/make
+            ln -sf ${pkgs.gnumake}/bin/make $MESH_MAKE_DIR/gmake
+            ln -sf ${pkgs.cmake}/bin/cmake $MESH_MAKE_DIR/cmake
+            export PATH="$MESH_MAKE_DIR:${pkgs.gnumake}/bin:${pkgs.cmake}/bin:$PATH"
             export MAKE="${pkgs.gnumake}/bin/make"
 
             # Use clang for C/C++ compilation (better nix compatibility than gcc)

@@ -1,18 +1,147 @@
 //! Mixer - Combines deck outputs with volume/filter/cue controls
+//!
+//! Features:
+//! - Per-channel trim, 3-band EQ, filter, volume, cue
+//! - Master volume and cue/master blend
 
 use crate::types::{StereoBuffer, StereoSample, NUM_DECKS, SAMPLE_RATE};
+
+/// Biquad filter state for EQ bands
+#[derive(Debug, Clone, Default)]
+struct BiquadState {
+    x1_l: f32, x2_l: f32, y1_l: f32, y2_l: f32,
+    x1_r: f32, x2_r: f32, y1_r: f32, y2_r: f32,
+}
+
+impl BiquadState {
+    fn process(&mut self, input_l: f32, input_r: f32, coeffs: &BiquadCoeffs) -> (f32, f32) {
+        // Left channel
+        let out_l = coeffs.b0 * input_l + coeffs.b1 * self.x1_l + coeffs.b2 * self.x2_l
+                  - coeffs.a1 * self.y1_l - coeffs.a2 * self.y2_l;
+        self.x2_l = self.x1_l;
+        self.x1_l = input_l;
+        self.y2_l = self.y1_l;
+        self.y1_l = out_l;
+
+        // Right channel
+        let out_r = coeffs.b0 * input_r + coeffs.b1 * self.x1_r + coeffs.b2 * self.x2_r
+                  - coeffs.a1 * self.y1_r - coeffs.a2 * self.y2_r;
+        self.x2_r = self.x1_r;
+        self.x1_r = input_r;
+        self.y2_r = self.y1_r;
+        self.y1_r = out_r;
+
+        (out_l, out_r)
+    }
+
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// Biquad filter coefficients
+#[derive(Debug, Clone)]
+struct BiquadCoeffs {
+    b0: f32, b1: f32, b2: f32,
+    a1: f32, a2: f32,
+}
+
+impl BiquadCoeffs {
+    /// Create low shelf filter coefficients
+    /// gain_db: boost/cut in dB, freq: shelf frequency
+    fn low_shelf(freq: f32, gain_db: f32, sample_rate: f32) -> Self {
+        let a = 10.0_f32.powf(gain_db / 40.0);
+        let w0 = 2.0 * std::f32::consts::PI * freq / sample_rate;
+        let cos_w0 = w0.cos();
+        let sin_w0 = w0.sin();
+        let alpha = sin_w0 / 2.0 * ((a + 1.0/a) * (1.0/0.9 - 1.0) + 2.0).sqrt();
+
+        let a0 = (a + 1.0) + (a - 1.0) * cos_w0 + 2.0 * a.sqrt() * alpha;
+        Self {
+            b0: (a * ((a + 1.0) - (a - 1.0) * cos_w0 + 2.0 * a.sqrt() * alpha)) / a0,
+            b1: (2.0 * a * ((a - 1.0) - (a + 1.0) * cos_w0)) / a0,
+            b2: (a * ((a + 1.0) - (a - 1.0) * cos_w0 - 2.0 * a.sqrt() * alpha)) / a0,
+            a1: (-2.0 * ((a - 1.0) + (a + 1.0) * cos_w0)) / a0,
+            a2: ((a + 1.0) + (a - 1.0) * cos_w0 - 2.0 * a.sqrt() * alpha) / a0,
+        }
+    }
+
+    /// Create peaking EQ filter coefficients
+    fn peaking(freq: f32, gain_db: f32, q: f32, sample_rate: f32) -> Self {
+        let a = 10.0_f32.powf(gain_db / 40.0);
+        let w0 = 2.0 * std::f32::consts::PI * freq / sample_rate;
+        let cos_w0 = w0.cos();
+        let sin_w0 = w0.sin();
+        let alpha = sin_w0 / (2.0 * q);
+
+        let a0 = 1.0 + alpha / a;
+        Self {
+            b0: (1.0 + alpha * a) / a0,
+            b1: (-2.0 * cos_w0) / a0,
+            b2: (1.0 - alpha * a) / a0,
+            a1: (-2.0 * cos_w0) / a0,
+            a2: (1.0 - alpha / a) / a0,
+        }
+    }
+
+    /// Create high shelf filter coefficients
+    fn high_shelf(freq: f32, gain_db: f32, sample_rate: f32) -> Self {
+        let a = 10.0_f32.powf(gain_db / 40.0);
+        let w0 = 2.0 * std::f32::consts::PI * freq / sample_rate;
+        let cos_w0 = w0.cos();
+        let sin_w0 = w0.sin();
+        let alpha = sin_w0 / 2.0 * ((a + 1.0/a) * (1.0/0.9 - 1.0) + 2.0).sqrt();
+
+        let a0 = (a + 1.0) - (a - 1.0) * cos_w0 + 2.0 * a.sqrt() * alpha;
+        Self {
+            b0: (a * ((a + 1.0) + (a - 1.0) * cos_w0 + 2.0 * a.sqrt() * alpha)) / a0,
+            b1: (-2.0 * a * ((a - 1.0) + (a + 1.0) * cos_w0)) / a0,
+            b2: (a * ((a + 1.0) + (a - 1.0) * cos_w0 - 2.0 * a.sqrt() * alpha)) / a0,
+            a1: (2.0 * ((a - 1.0) - (a + 1.0) * cos_w0)) / a0,
+            a2: ((a + 1.0) - (a - 1.0) * cos_w0 - 2.0 * a.sqrt() * alpha) / a0,
+        }
+    }
+
+    /// Passthrough (unity gain, no filtering)
+    fn passthrough() -> Self {
+        Self { b0: 1.0, b1: 0.0, b2: 0.0, a1: 0.0, a2: 0.0 }
+    }
+}
+
+/// EQ frequency centers
+const EQ_LO_FREQ: f32 = 100.0;   // Low shelf at 100 Hz
+const EQ_MID_FREQ: f32 = 1000.0; // Mid peak at 1 kHz
+const EQ_HI_FREQ: f32 = 10000.0; // High shelf at 10 kHz
+const EQ_MID_Q: f32 = 0.7;       // Q for mid band
 
 /// Channel strip state for a single deck
 #[derive(Debug, Clone)]
 pub struct ChannelStrip {
     /// Trim/gain control (-24 to +12 dB, stored as linear multiplier)
     pub trim: f32,
+    /// EQ Low band (0.0 = kill, 0.5 = flat, 1.0 = +6dB)
+    pub eq_lo: f32,
+    /// EQ Mid band (0.0 = kill, 0.5 = flat, 1.0 = +6dB)
+    pub eq_mid: f32,
+    /// EQ High band (0.0 = kill, 0.5 = flat, 1.0 = +6dB)
+    pub eq_hi: f32,
     /// Filter position (-1.0 = full LP, 0.0 = flat, 1.0 = full HP)
     pub filter: f32,
     /// Volume fader (0.0 to 1.0)
     pub volume: f32,
     /// Cue button state (routes to cue bus)
     pub cue_enabled: bool,
+
+    // EQ filter states
+    eq_lo_state: BiquadState,
+    eq_mid_state: BiquadState,
+    eq_hi_state: BiquadState,
+
+    // EQ coefficients (cached, recalculated when EQ changes)
+    eq_lo_coeffs: BiquadCoeffs,
+    eq_mid_coeffs: BiquadCoeffs,
+    eq_hi_coeffs: BiquadCoeffs,
+    eq_dirty: bool,
 
     // Filter state (simple one-pole for now)
     lp_state_l: f32,
@@ -25,9 +154,19 @@ impl Default for ChannelStrip {
     fn default() -> Self {
         Self {
             trim: 1.0,       // Unity gain
+            eq_lo: 0.5,      // Flat
+            eq_mid: 0.5,     // Flat
+            eq_hi: 0.5,      // Flat
             filter: 0.0,     // Flat
             volume: 1.0,     // Full volume
             cue_enabled: false,
+            eq_lo_state: BiquadState::default(),
+            eq_mid_state: BiquadState::default(),
+            eq_hi_state: BiquadState::default(),
+            eq_lo_coeffs: BiquadCoeffs::passthrough(),
+            eq_mid_coeffs: BiquadCoeffs::passthrough(),
+            eq_hi_coeffs: BiquadCoeffs::passthrough(),
+            eq_dirty: true,
             lp_state_l: 0.0,
             lp_state_r: 0.0,
             hp_state_l: 0.0,
@@ -53,11 +192,78 @@ impl ChannelStrip {
         20.0 * self.trim.log10()
     }
 
-    /// Process audio through the channel strip (trim + filter)
-    /// Returns the post-fader audio
+    /// Set EQ low band (0.0 = kill, 0.5 = flat, 1.0 = +6dB boost)
+    pub fn set_eq_lo(&mut self, value: f32) {
+        self.eq_lo = value.clamp(0.0, 1.0);
+        self.eq_dirty = true;
+    }
+
+    /// Set EQ mid band (0.0 = kill, 0.5 = flat, 1.0 = +6dB boost)
+    pub fn set_eq_mid(&mut self, value: f32) {
+        self.eq_mid = value.clamp(0.0, 1.0);
+        self.eq_dirty = true;
+    }
+
+    /// Set EQ high band (0.0 = kill, 0.5 = flat, 1.0 = +6dB boost)
+    pub fn set_eq_hi(&mut self, value: f32) {
+        self.eq_hi = value.clamp(0.0, 1.0);
+        self.eq_dirty = true;
+    }
+
+    /// Convert EQ knob position (0-1) to dB gain
+    /// 0.0 = -inf (kill), 0.5 = 0dB, 1.0 = +6dB
+    fn eq_to_db(value: f32) -> f32 {
+        if value < 0.01 {
+            -60.0  // Near-kill
+        } else if value < 0.5 {
+            // 0.01 to 0.5 -> -60dB to 0dB (logarithmic)
+            let t = (value - 0.01) / 0.49;
+            -60.0 * (1.0 - t)
+        } else {
+            // 0.5 to 1.0 -> 0dB to +6dB (linear)
+            (value - 0.5) * 12.0
+        }
+    }
+
+    /// Recalculate EQ coefficients if dirty
+    fn update_eq_coeffs(&mut self) {
+        if !self.eq_dirty {
+            return;
+        }
+
+        let sr = SAMPLE_RATE as f32;
+        let lo_db = Self::eq_to_db(self.eq_lo);
+        let mid_db = Self::eq_to_db(self.eq_mid);
+        let hi_db = Self::eq_to_db(self.eq_hi);
+
+        // Only update if significantly different from flat
+        if lo_db.abs() > 0.1 {
+            self.eq_lo_coeffs = BiquadCoeffs::low_shelf(EQ_LO_FREQ, lo_db, sr);
+        } else {
+            self.eq_lo_coeffs = BiquadCoeffs::passthrough();
+        }
+
+        if mid_db.abs() > 0.1 {
+            self.eq_mid_coeffs = BiquadCoeffs::peaking(EQ_MID_FREQ, mid_db, EQ_MID_Q, sr);
+        } else {
+            self.eq_mid_coeffs = BiquadCoeffs::passthrough();
+        }
+
+        if hi_db.abs() > 0.1 {
+            self.eq_hi_coeffs = BiquadCoeffs::high_shelf(EQ_HI_FREQ, hi_db, sr);
+        } else {
+            self.eq_hi_coeffs = BiquadCoeffs::passthrough();
+        }
+
+        self.eq_dirty = false;
+    }
+
+    /// Process audio through the channel strip (trim + EQ + filter)
     pub fn process(&mut self, buffer: &mut StereoBuffer) {
+        // Update EQ coefficients if needed
+        self.update_eq_coeffs();
+
         // Filter coefficient based on position
-        // Simple one-pole filter crossfade
         let filter_pos = self.filter.clamp(-1.0, 1.0);
 
         // Cutoff frequencies (in Hz)
@@ -84,6 +290,11 @@ impl ChannelStrip {
             let mut left = sample.left * self.trim;
             let mut right = sample.right * self.trim;
 
+            // Apply 3-band EQ
+            (left, right) = self.eq_lo_state.process(left, right, &self.eq_lo_coeffs);
+            (left, right) = self.eq_mid_state.process(left, right, &self.eq_mid_coeffs);
+            (left, right) = self.eq_hi_state.process(left, right, &self.eq_hi_coeffs);
+
             // Apply LP filter
             self.lp_state_l += lp_coeff * (left - self.lp_state_l);
             self.lp_state_r += lp_coeff * (right - self.lp_state_r);
@@ -107,8 +318,11 @@ impl ChannelStrip {
         dt / (rc + dt)
     }
 
-    /// Reset filter state
+    /// Reset all filter states
     pub fn reset(&mut self) {
+        self.eq_lo_state.reset();
+        self.eq_mid_state.reset();
+        self.eq_hi_state.reset();
         self.lp_state_l = 0.0;
         self.lp_state_r = 0.0;
         self.hp_state_l = 0.0;

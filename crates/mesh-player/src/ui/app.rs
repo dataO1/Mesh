@@ -8,11 +8,12 @@
 use std::sync::{Arc, Mutex};
 
 use iced::widget::{column, container, row, slider, text, Space};
-use iced::{Center, Element, Fill, Subscription, Task, Theme};
+use iced::{Center, Element, Fill, Length, Subscription, Task, Theme};
 use iced::time;
 
 use crate::audio::SharedState;
 use super::deck_view::{DeckView, DeckMessage};
+use super::file_browser::{FileBrowserView, FileBrowserMessage};
 use super::mixer_view::{MixerView, MixerMessage};
 
 /// Application state
@@ -23,6 +24,8 @@ pub struct MeshApp {
     deck_views: [DeckView; 4],
     /// Mixer view state
     mixer_view: MixerView,
+    /// File browser view
+    file_browser: FileBrowserView,
     /// Global BPM
     global_bpm: f64,
     /// Status message
@@ -40,6 +43,8 @@ pub enum Message {
     Deck(usize, DeckMessage),
     /// Mixer message
     Mixer(MixerMessage),
+    /// File browser message
+    FileBrowser(FileBrowserMessage),
     /// Set global BPM
     SetGlobalBpm(f64),
     /// Load track to deck
@@ -59,6 +64,7 @@ impl MeshApp {
                 DeckView::new(3),
             ],
             mixer_view: MixerView::new(),
+            file_browser: FileBrowserView::new(),
             global_bpm: 128.0,
             status: if audio_connected { "Audio connected".to_string() } else { "No audio".to_string() },
             audio_connected,
@@ -111,6 +117,16 @@ impl MeshApp {
                 Task::none()
             }
 
+            Message::FileBrowser(browser_msg) => {
+                // Handle file browser message and check if we need to load a track
+                if let Some((deck_idx, path)) = self.file_browser.handle_message(browser_msg) {
+                    // Convert to LoadTrack message
+                    let path_str = path.to_string_lossy().to_string();
+                    return self.update(Message::LoadTrack(deck_idx, path_str));
+                }
+                Task::none()
+            }
+
             Message::SetGlobalBpm(bpm) => {
                 self.global_bpm = bpm;
                 if let Some(ref state) = self.audio_state {
@@ -155,21 +171,44 @@ impl MeshApp {
         // Header with global controls
         let header = self.view_header();
 
-        // Main content: 4 decks in 2x2 grid
-        let top_decks = row![
-            self.deck_views[0].view().map(|m| Message::Deck(0, m)),
-            self.deck_views[1].view().map(|m| Message::Deck(1, m)),
-        ]
-        .spacing(10);
+        // 3-column layout:
+        // Left: Decks 1 & 3 | Center: File Browser + Mixer | Right: Decks 2 & 4
 
-        let bottom_decks = row![
+        // Left column: Decks 1 & 3 (stacked vertically)
+        let left_column = column![
+            self.deck_views[0].view().map(|m| Message::Deck(0, m)),
             self.deck_views[2].view().map(|m| Message::Deck(2, m)),
+        ]
+        .spacing(10)
+        .width(Length::FillPortion(2));
+
+        // Center column: File browser + Mixer (stacked)
+        let file_browser = self.file_browser.view().map(Message::FileBrowser);
+        let mixer = self.mixer_view.view().map(Message::Mixer);
+
+        let center_column = column![
+            file_browser,
+            mixer,
+        ]
+        .spacing(10)
+        .width(Length::FillPortion(1));
+
+        // Right column: Decks 2 & 4 (stacked vertically)
+        let right_column = column![
+            self.deck_views[1].view().map(|m| Message::Deck(1, m)),
             self.deck_views[3].view().map(|m| Message::Deck(3, m)),
         ]
-        .spacing(10);
+        .spacing(10)
+        .width(Length::FillPortion(2));
 
-        // Mixer at the bottom
-        let mixer = self.mixer_view.view().map(Message::Mixer);
+        // Main 3-column row
+        let main_content = row![
+            left_column,
+            center_column,
+            right_column,
+        ]
+        .spacing(10)
+        .height(Fill);
 
         // Status bar
         let status_bar = container(
@@ -179,9 +218,7 @@ impl MeshApp {
 
         let content = column![
             header,
-            top_decks,
-            bottom_decks,
-            mixer,
+            main_content,
             status_bar,
         ]
         .spacing(10)

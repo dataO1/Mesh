@@ -118,18 +118,23 @@ mesh/
 - CDJ-style cue behavior (hold to preview, release to return)
 - 8 hot cue points per deck
 - Loop controls with adjustable length (1/4 to 16 beats)
+- Beat jump forward/backward (uses loop length)
+- Loop halve/double buttons with visual display
 - Beat grid support from track metadata
 
 **Mixer**
 - 4-channel mixer with per-channel controls
+- 3-band EQ per channel (low shelf, mid peak, high shelf with DJ-style kill)
 - Trim, filter, and volume per channel
 - Cue/headphone routing per channel
 - Master and cue volume controls
 
 **Effects**
 - DJ Filter (combined high-pass/low-pass on single knob)
+- Stereo Delay (tempo-syncable, with feedback and ping-pong mode)
+- Reverb (Freeverb-style with room size, damping, and stereo width)
 - Gain effect for volume adjustment
-- Effect chain architecture with knob mapping
+- Effect chain architecture with 8 mappable knobs per stem
 - Bypass and parameter automation ready
 
 **Audio Output**
@@ -139,20 +144,21 @@ mesh/
 
 **User Interface**
 - Dark theme optimized for live performance
-- 4-deck grid layout
+- 4-deck grid layout with center file browser
 - Transport controls (play, pause, cue, sync, loop)
 - Hot cue buttons
-- Stem controls with mute/solo per stem
+- Stem tabs with per-stem mute/solo/volume controls
+- Effect chain visualization with click-to-bypass toggles
+- 8 mappable knobs per stem for real-time effect control
 - Mixer section with EQ, filter, volume faders
-- Global BPM control
+- Global BPM control with slider
 
 ### In Progress 🚧
 
-- Waveform display with beat markers
-- Track loading via file browser
+- Waveform display with beat markers and cue points
+- Track loading via file browser UI
 - Pitch/tempo fader connection
-- Crossfader implementation
-- 3-band EQ per channel
+- Adding effects to stem chains via UI
 
 ### Planned 📋
 

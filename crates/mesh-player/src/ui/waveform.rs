@@ -1,19 +1,33 @@
 //! Waveform canvas widget
 //!
 //! Displays the audio waveform for a track with:
-//! - Overview waveform (full track)
-//! - Scrolling waveform (current position)
+//! - 4 color-coded stem waveforms (Vocals, Drums, Bass, Other)
 //! - Beat grid markers
 //! - Cue point markers
 //! - Loop region highlighting
+//! - Playhead indicator
 
 use iced::widget::canvas::{Canvas, Frame, Geometry, Path, Program, Stroke};
 use iced::{Color, Element, Length, Point, Rectangle, Size, Theme, mouse};
 
+/// Stem indices
+pub const STEM_VOCALS: usize = 0;
+pub const STEM_DRUMS: usize = 1;
+pub const STEM_BASS: usize = 2;
+pub const STEM_OTHER: usize = 3;
+
+/// Stem colors per design document
+const STEM_COLORS: [Color; 4] = [
+    Color::from_rgb(0.0, 0.8, 0.8),   // Vocals - Cyan
+    Color::from_rgb(0.9, 0.3, 0.3),   // Drums - Red
+    Color::from_rgb(0.9, 0.8, 0.2),   // Bass - Yellow
+    Color::from_rgb(0.3, 0.8, 0.4),   // Other - Green
+];
+
 /// Waveform view state
 pub struct WaveformView {
-    /// Cached waveform data (min/max pairs per column)
-    waveform_data: Vec<(f32, f32)>,
+    /// Cached waveform data per stem (min/max pairs per column)
+    stem_waveforms: [Vec<(f32, f32)>; 4],
     /// Current playhead position (0.0 to 1.0)
     position: f64,
     /// Beat grid positions (normalized 0.0 to 1.0)
@@ -30,7 +44,7 @@ impl WaveformView {
     /// Create a new waveform view
     pub fn new() -> Self {
         Self {
-            waveform_data: Vec::new(),
+            stem_waveforms: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             position: 0.0,
             beat_markers: Vec::new(),
             cue_markers: Vec::new(),
@@ -39,18 +53,18 @@ impl WaveformView {
         }
     }
 
-    /// Set waveform data from audio samples
+    /// Set waveform data for a specific stem from audio samples
     /// Downsamples the audio to one min/max pair per pixel column
-    #[allow(dead_code)]
-    pub fn set_waveform(&mut self, samples: &[f32], width: usize) {
-        if samples.is_empty() || width == 0 {
-            self.waveform_data.clear();
-            self.has_track = false;
+    pub fn set_stem_waveform(&mut self, stem_idx: usize, samples: &[f32], width: usize) {
+        if stem_idx >= 4 || samples.is_empty() || width == 0 {
+            if stem_idx < 4 {
+                self.stem_waveforms[stem_idx].clear();
+            }
             return;
         }
 
         let samples_per_column = samples.len() / width;
-        self.waveform_data = (0..width)
+        self.stem_waveforms[stem_idx] = (0..width)
             .map(|col| {
                 let start = col * samples_per_column;
                 let end = (start + samples_per_column).min(samples.len());
@@ -63,35 +77,43 @@ impl WaveformView {
             })
             .collect();
 
-        self.has_track = true;
+        // Mark as having a track if any stem has data
+        self.has_track = self.stem_waveforms.iter().any(|w| !w.is_empty());
+    }
+
+    /// Clear all waveform data
+    pub fn clear(&mut self) {
+        for waveform in &mut self.stem_waveforms {
+            waveform.clear();
+        }
+        self.beat_markers.clear();
+        self.cue_markers.clear();
+        self.loop_region = None;
+        self.has_track = false;
+        self.position = 0.0;
     }
 
     /// Update playhead position
-    #[allow(dead_code)]
     pub fn set_position(&mut self, position: f64) {
         self.position = position.clamp(0.0, 1.0);
     }
 
     /// Set beat markers
-    #[allow(dead_code)]
     pub fn set_beats(&mut self, beats: Vec<f64>) {
         self.beat_markers = beats;
     }
 
     /// Add a cue marker
-    #[allow(dead_code)]
     pub fn add_cue(&mut self, position: f64, color: Color) {
         self.cue_markers.push((position, color));
     }
 
     /// Clear cue markers
-    #[allow(dead_code)]
     pub fn clear_cues(&mut self) {
         self.cue_markers.clear();
     }
 
     /// Set loop region
-    #[allow(dead_code)]
     pub fn set_loop(&mut self, start: Option<f64>, end: Option<f64>) {
         self.loop_region = match (start, end) {
             (Some(s), Some(e)) => Some((s, e)),
@@ -100,10 +122,9 @@ impl WaveformView {
     }
 
     /// Create the canvas element
-    #[allow(dead_code)]
     pub fn view(&self) -> Element<()> {
         Canvas::new(WaveformCanvas {
-            waveform_data: self.waveform_data.clone(),
+            stem_waveforms: self.stem_waveforms.clone(),
             position: self.position,
             beat_markers: self.beat_markers.clone(),
             cue_markers: self.cue_markers.clone(),
@@ -124,7 +145,7 @@ impl Default for WaveformView {
 
 /// Canvas program for waveform rendering
 struct WaveformCanvas {
-    waveform_data: Vec<(f32, f32)>,
+    stem_waveforms: [Vec<(f32, f32)>; 4],
     position: f64,
     beat_markers: Vec<f64>,
     cue_markers: Vec<(f64, Color)>,
@@ -182,23 +203,38 @@ impl Program<()> for WaveformCanvas {
             );
         }
 
-        // Draw waveform
-        let waveform_color = Color::from_rgb(0.3, 0.6, 0.9);
-
-        for (x, &(min, max)) in self.waveform_data.iter().enumerate() {
-            let x = x as f32;
-            if x >= width {
-                break;
+        // Draw all 4 stem waveforms overlapped
+        // Draw in reverse order so vocals (most prominent) render on top
+        for stem_idx in (0..4).rev() {
+            let waveform_data = &self.stem_waveforms[stem_idx];
+            if waveform_data.is_empty() {
+                continue;
             }
 
-            // Scale to fit in view (assuming samples are -1 to 1)
-            let y1 = center_y - (max * center_y * 0.9);
-            let y2 = center_y - (min * center_y * 0.9);
-
-            frame.stroke(
-                &Path::line(Point::new(x, y1), Point::new(x, y2)),
-                Stroke::default().with_color(waveform_color).with_width(1.0),
+            // Use semi-transparent colors for overlapping
+            let base_color = STEM_COLORS[stem_idx];
+            let waveform_color = Color::from_rgba(
+                base_color.r,
+                base_color.g,
+                base_color.b,
+                0.6,
             );
+
+            for (x, &(min, max)) in waveform_data.iter().enumerate() {
+                let x = x as f32;
+                if x >= width {
+                    break;
+                }
+
+                // Scale to fit in view (assuming samples are -1 to 1)
+                let y1 = center_y - (max * center_y * 0.9);
+                let y2 = center_y - (min * center_y * 0.9);
+
+                frame.stroke(
+                    &Path::line(Point::new(x, y1), Point::new(x, y2)),
+                    Stroke::default().with_color(waveform_color).with_width(1.0),
+                );
+            }
         }
 
         // Draw cue markers

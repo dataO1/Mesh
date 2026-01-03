@@ -4,9 +4,10 @@
 //! - Per-channel volume faders
 //! - Per-channel EQ (hi/mid/lo)
 //! - Per-channel filter
-//! - Crossfader
 //! - Master/cue volume
 //! - Cue select buttons
+//!
+//! Note: No crossfader - Mesh uses stem-based mixing with global BPM sync
 
 use iced::widget::{button, column, container, row, slider, text, Row};
 use iced::{Center, Element};
@@ -27,8 +28,6 @@ pub struct MixerView {
     channel_eq_lo: [f32; 4],
     /// Cue enabled per channel
     channel_cue: [bool; 4],
-    /// Crossfader position (0 = full left, 1 = full right)
-    crossfader: f32,
     /// Master volume
     master_volume: f32,
     /// Cue/headphone volume
@@ -52,8 +51,6 @@ pub enum MixerMessage {
     SetChannelEqLo(usize, f32),
     /// Toggle channel cue
     ToggleChannelCue(usize),
-    /// Set crossfader position
-    SetCrossfader(f32),
     /// Set master volume
     SetMasterVolume(f32),
     /// Set cue volume
@@ -72,7 +69,6 @@ impl MixerView {
             channel_eq_mid: [0.5; 4],
             channel_eq_lo: [0.5; 4],
             channel_cue: [false; 4],
-            crossfader: 0.5,
             master_volume: 0.8,
             cue_volume: 0.8,
             cue_mix: 0.5,
@@ -88,7 +84,6 @@ impl MixerView {
                 self.channel_cue[i] = ch.cue_enabled;
             }
         }
-        // Crossfader not implemented in mixer yet - use local state
         self.master_volume = mixer.master_volume();
         // cue_volume not separate in mixer yet - use cue_mix
         self.cue_mix = mixer.cue_mix();
@@ -111,23 +106,27 @@ impl MixerView {
             }
             MixerMessage::SetChannelEqHi(ch, val) => {
                 self.channel_eq_hi[ch] = val;
-                // TODO: implement EQ when added to mixer
+                if let Some(channel) = mixer.channel_mut(ch) {
+                    channel.set_eq_hi(val);
+                }
             }
             MixerMessage::SetChannelEqMid(ch, val) => {
                 self.channel_eq_mid[ch] = val;
+                if let Some(channel) = mixer.channel_mut(ch) {
+                    channel.set_eq_mid(val);
+                }
             }
             MixerMessage::SetChannelEqLo(ch, val) => {
                 self.channel_eq_lo[ch] = val;
+                if let Some(channel) = mixer.channel_mut(ch) {
+                    channel.set_eq_lo(val);
+                }
             }
             MixerMessage::ToggleChannelCue(ch) => {
                 self.channel_cue[ch] = !self.channel_cue[ch];
                 if let Some(channel) = mixer.channel_mut(ch) {
                     channel.cue_enabled = self.channel_cue[ch];
                 }
-            }
-            MixerMessage::SetCrossfader(pos) => {
-                self.crossfader = pos;
-                // Crossfader not implemented in mixer yet - keep local state
             }
             MixerMessage::SetMasterVolume(vol) => {
                 self.master_volume = vol;
@@ -150,16 +149,6 @@ impl MixerView {
         let channels: Vec<Element<MixerMessage>> = (0..4)
             .map(|i| self.view_channel(i))
             .collect();
-
-        // Crossfader
-        let crossfader = column![
-            text("XFADER").size(10),
-            slider(0.0..=1.0, self.crossfader, MixerMessage::SetCrossfader)
-                .step(0.01)
-                .width(200),
-        ]
-        .spacing(5)
-        .align_x(Center);
 
         // Master section
         let master = column![
@@ -187,7 +176,7 @@ impl MixerView {
 
         let content = row![
             Row::with_children(channels).spacing(20),
-            column![crossfader, row![master, cue].spacing(20)].spacing(10),
+            row![master, cue].spacing(20),
         ]
         .spacing(20)
         .align_y(Center);
