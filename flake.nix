@@ -56,6 +56,8 @@
           rustToolchain
           pkg-config
           cmake
+          llvmPackages.libclang
+          llvmPackages.clang
         ];
 
         # Runtime and build dependencies
@@ -193,6 +195,9 @@
 
             # Library paths
             export LD_LIBRARY_PATH="${libraryPath}:$LD_LIBRARY_PATH"
+
+            # Clang/LLVM for bindgen
+            export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
 
             # PD externals path (nn~ and others)
             export PD_EXTERNALS="${nn-external}/lib/pd-externals:./effects/pd/externals"

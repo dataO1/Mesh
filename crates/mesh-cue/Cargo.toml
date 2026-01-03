@@ -1,0 +1,11 @@
+[package]
+name = "mesh-cue"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "mesh_cue"
+path = "src/lib.rs"
+
+[dependencies]
+mesh-core.workspace = true

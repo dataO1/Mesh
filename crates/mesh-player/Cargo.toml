@@ -1,0 +1,14 @@
+[package]
+name = "mesh-player"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "mesh-player"
+path = "src/main.rs"
+
+[dependencies]
+mesh-core.workspace = true
+jack.workspace = true
+iced.workspace = true
+tokio.workspace = true

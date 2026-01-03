@@ -1,0 +1,9 @@
+[package]
+name = "mesh-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+riff.workspace = true
+signalsmith-stretch.workspace = true
+libpd-rs.workspace = true
