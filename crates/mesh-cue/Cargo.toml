@@ -2,10 +2,29 @@
 name = "mesh-cue"
 version.workspace = true
 edition.workspace = true
+description = "Track preparation tool for mesh DJ software"
 
 [lib]
 name = "mesh_cue"
 path = "src/lib.rs"
 
+[[bin]]
+name = "mesh-cue"
+path = "src/main.rs"
+
 [dependencies]
 mesh-core.workspace = true
+iced.workspace = true
+jack.workspace = true
+tokio.workspace = true
+riff.workspace = true
+rfd.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+log = "0.4"
+
+# Audio analysis - Essentia bindings
+essentia = "0.1.5"
+
+[features]
+default = []

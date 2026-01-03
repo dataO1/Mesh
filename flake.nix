@@ -54,6 +54,64 @@
           '';
         };
 
+        # Build Essentia library from source (nixpkgs only has binary extractor)
+        # Required for mesh-cue's essentia-rs bindings
+        # Using master branch for Python 3.12+ compatibility (WAF updates)
+        essentia = pkgs.stdenv.mkDerivation rec {
+          pname = "essentia";
+          version = "2.1_beta6-dev";
+
+          src = pkgs.fetchFromGitHub {
+            owner = "MTG";
+            repo = "essentia";
+            rev = "17484ff0256169f14a959d62aa89a1463fead13f";
+            hash = "sha256-q+TI03Y5Mw9W+ZNE8I1fEWvn3hjRyaxb7M6ZgntA8RA=";
+          };
+
+          nativeBuildInputs = with pkgs; [
+            python3
+            pkg-config
+          ];
+
+          buildInputs = with pkgs; [
+            eigen
+            fftwFloat
+            taglib
+            chromaprint
+            libsamplerate
+            libyaml
+            ffmpeg_4  # Essentia needs deprecated FFmpeg APIs (removed in FFmpeg 5+)
+            zlib      # Required for linking
+          ];
+
+          configurePhase = ''
+            runHook preConfigure
+            python3 waf configure \
+              --prefix=$out \
+              --mode=release
+            runHook postConfigure
+          '';
+
+          buildPhase = ''
+            runHook preBuild
+            python3 waf build -j $NIX_BUILD_CORES
+            runHook postBuild
+          '';
+
+          installPhase = ''
+            runHook preInstall
+            python3 waf install
+            runHook postInstall
+          '';
+
+          meta = with pkgs.lib; {
+            description = "Audio analysis and audio-based music information retrieval library";
+            homepage = "https://essentia.upf.edu/";
+            license = licenses.agpl3Plus;
+            platforms = platforms.linux;
+          };
+        };
+
         # Common native dependencies
         nativeBuildInputs = with pkgs; [
           rustToolchain
@@ -158,7 +216,26 @@
               lockFile = ./Cargo.lock;
             };
 
-            inherit nativeBuildInputs buildInputs;
+            inherit nativeBuildInputs;
+
+            # mesh-cue needs essentia library and its dependencies
+            buildInputs = buildInputs ++ [ essentia ] ++ (with pkgs; [
+              eigen
+              fftwFloat
+              taglib
+              chromaprint
+              libsamplerate
+              libyaml
+              ffmpeg_4  # Essentia needs deprecated FFmpeg APIs (removed in FFmpeg 5+)
+              zlib      # Required for linking
+            ]);
+
+            # Disable TensorFlow in essentia-sys
+            USE_TENSORFLOW = "0";
+
+            preBuild = ''
+              export PKG_CONFIG_PATH="${essentia}/lib/pkgconfig:$PKG_CONFIG_PATH"
+            '';
 
             buildPhase = ''
               cargo build --release -p mesh-cue
@@ -170,7 +247,7 @@
             '';
 
             postFixup = ''
-              patchelf --set-rpath "${libraryPath}" $out/bin/mesh-cue
+              patchelf --set-rpath "${pkgs.lib.makeLibraryPath (buildInputs ++ [ essentia ])}" $out/bin/mesh-cue
             '';
 
             meta = with pkgs.lib; {
@@ -186,7 +263,20 @@
         devShells.default = pkgs.stdenv.mkDerivation {
           name = "mesh-dev-shell";
 
-          buildInputs = buildInputs ++ (with pkgs; [
+          buildInputs = buildInputs ++ [
+            # Custom essentia library (built from source)
+            essentia
+          ] ++ (with pkgs; [
+            # Essentia dependencies (needed for essentia-sys pkg-config)
+            eigen
+            fftwFloat
+            taglib
+            chromaprint
+            libsamplerate
+            libyaml
+            ffmpeg_4  # Essentia needs deprecated FFmpeg APIs (removed in FFmpeg 5+)
+            zlib      # Required for linking
+
             # Development tools
             rustToolchain
             rust-analyzer
@@ -252,6 +342,14 @@
             export LIBTORCH_LIB="${pkgs.libtorch-bin}/lib"
             export LIBTORCH_INCLUDE="${pkgs.libtorch-bin}/include"
 
+            # Essentia library (built from source for mesh-cue)
+            export PKG_CONFIG_PATH="${essentia}/lib/pkgconfig:$PKG_CONFIG_PATH"
+            export LD_LIBRARY_PATH="${essentia}/lib:$LD_LIBRARY_PATH"
+            # Disable TensorFlow in essentia-sys (not needed for BPM/key detection)
+            export USE_TENSORFLOW=0
+            # Fix Eigen include path for essentia-sys (it incorrectly appends /eigen3)
+            export CPLUS_INCLUDE_PATH="${pkgs.eigen}/include/eigen3:$CPLUS_INCLUDE_PATH"
+
             # Vulkan for iced
             export VK_ICD_FILENAMES="${pkgs.vulkan-loader}/share/vulkan/icd.d/intel_icd.x86_64.json:${pkgs.vulkan-loader}/share/vulkan/icd.d/radeon_icd.x86_64.json"
 
@@ -259,13 +357,16 @@
             echo "╔══════════════════════════════════════════════════════════════╗"
             echo "║                  Mesh Development Shell                       ║"
             echo "╠══════════════════════════════════════════════════════════════╣"
-            echo "║  Build:     cargo build -p mesh-player                       ║"
-            echo "║  Run:       cargo run -p mesh-player                         ║"
-            echo "║  Test:      cargo test                                       ║"
-            echo "║  Watch:     cargo watch -x 'build -p mesh-player'            ║"
+            echo "║  mesh-player (DJ application):                               ║"
+            echo "║    cargo build -p mesh-player                                ║"
+            echo "║    cargo run -p mesh-player                                  ║"
             echo "╠══════════════════════════════════════════════════════════════╣"
-            echo "║  PD externals: $PD_EXTERNALS"
-            echo "║  Torch lib:    $LIBTORCH_LIB"
+            echo "║  mesh-cue (track preparation):                               ║"
+            echo "║    cargo build -p mesh-cue                                   ║"
+            echo "║    cargo run -p mesh-cue                                     ║"
+            echo "╠══════════════════════════════════════════════════════════════╣"
+            echo "║  cargo test          - run all tests                         ║"
+            echo "║  cargo watch -x ...  - auto-rebuild on changes               ║"
             echo "╚══════════════════════════════════════════════════════════════╝"
             echo ""
           '';

@@ -13,7 +13,7 @@ Mesh is an open-source DJ application designed for live performance with a focus
 Mesh is a professional DJ software suite consisting of two applications:
 
 - **mesh-player** — A 4-deck DJ player for live performance with stem-based mixing
-- **mesh-cue** — A track preparation tool for analyzing, tagging, and organizing your music library (coming soon)
+- **mesh-cue** — A track preparation tool for analyzing, tagging, and organizing your music library
 
 ### What makes it different?
 
@@ -47,6 +47,7 @@ Mesh also integrates **neural audio effects** powered by [RAVE](https://github.c
 | **Time Stretching** | signalsmith-stretch | High-quality tempo adjustment without pitch change |
 | **Effects** | Pure Data (libpd) | Visual patching for custom effects |
 | **Neural Audio** | RAVE + libtorch | Real-time neural audio transformation |
+| **Audio Analysis** | Essentia | BPM detection, key detection, beat tracking |
 
 ### Project Structure
 
@@ -61,7 +62,7 @@ mesh/
 │   ├── mesh-player/     # DJ player application
 │   │   ├── audio.rs     # JACK client
 │   │   └── ui/          # iced GUI components
-│   └── mesh-cue/        # Track preparation app (planned)
+│   └── mesh-cue/        # Track preparation app
 └── flake.nix            # Nix development environment
 ```
 
@@ -171,14 +172,18 @@ mesh/
 - Pure Data effect patches
 - RAVE neural effects integration
 
-**mesh-cue**
-- BPM and key detection
-- Beat grid editing
-- Cue point management
-- Stem separation (using Demucs or similar)
+**mesh-cue** (In Development)
+- Staging area for importing pre-separated stems (4 WAV files → 8-channel format)
+- Collection browser for managing converted tracks
+- Track editor with cue point management
+- BPM and key detection using Essentia
+- Beat grid generation and editing
+- Export to mesh-player format with embedded metadata
+
+*Planned:*
+- Waveform display with beat markers
+- JACK audio preview
 - Playlist and crate management
-- Track metadata editing
-- Export to mesh-player format
 
 ---
 
@@ -227,9 +232,14 @@ cargo build --release
    ```
    Or use a JACK control application like QjackCtl or Cadence.
 
-2. Run mesh-player:
+2. Run mesh-player (DJ application):
    ```bash
    cargo run -p mesh-player
+   ```
+
+3. Or run mesh-cue (track preparation):
+   ```bash
+   cargo run -p mesh-cue
    ```
 
 ---
@@ -248,7 +258,7 @@ Example metadata format:
 BPM:128.00|KEY:Am|GRID:0,22050,44100|ORIGINAL_BPM:125.00
 ```
 
-A stem preparation tool (mesh-cue) is planned to convert regular audio files to this format.
+The mesh-cue application converts pre-separated stems (from tools like Demucs or Ultimate Vocal Remover) into this format with automatic BPM/key analysis.
 
 ---
 
@@ -279,6 +289,7 @@ MIT License — see [LICENSE](LICENSE) for details.
 - [JACK](https://jackaudio.org/) for professional audio routing
 - [RAVE](https://github.com/acids-ircam/RAVE) for neural audio synthesis
 - [libpd](https://github.com/libpd/libpd) for Pure Data integration
+- [Essentia](https://essentia.upf.edu/) for audio analysis (BPM, key, beat detection)
 
 ---
 
