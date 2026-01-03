@@ -19,8 +19,14 @@ pub fn export_stem_file(
     metadata: &TrackMetadata,
     cue_points: &[CuePoint],
 ) -> Result<()> {
+    log::info!("export_stem_file: Starting export to {:?}", path);
+    log::info!("  Buffer length: {} samples", buffers.len());
+    log::info!("  Metadata: BPM={:?}, Key={:?}", metadata.bpm, metadata.key);
+    log::info!("  Cue points: {}", cue_points.len());
+
     let file = File::create(path)
         .with_context(|| format!("Failed to create output file: {:?}", path))?;
+    log::debug!("  File created successfully");
     let mut writer = BufWriter::new(file);
 
     // Calculate sizes
@@ -98,6 +104,7 @@ pub fn export_stem_file(
     }
 
     writer.flush()?;
+    log::info!("export_stem_file: Export complete, wrote {} samples to {:?}", num_samples, path);
     Ok(())
 }
 
@@ -123,7 +130,7 @@ fn format_metadata_string(metadata: &TrackMetadata) -> String {
 }
 
 /// Calculate bext chunk size (padded to even bytes)
-fn calculate_bext_size(metadata_str: &str) -> u32 {
+fn calculate_bext_size(_metadata_str: &str) -> u32 {
     // bext chunk: "bext" (4) + size (4) + description (256) + ...
     // We use a simplified version with just the description field
     let description_size = 256;

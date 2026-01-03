@@ -180,6 +180,9 @@ mesh/
 - Export to 8-channel WAV with embedded metadata (bext chunk)
 - Collection browser for managing converted tracks
 - Add to collection with automatic metadata embedding
+- **Global configuration service** with YAML persistence
+- **Settings modal** (gear icon) for configuring analysis parameters
+- **Configurable BPM range** for genre-specific detection (e.g., DnB: 160-190 BPM)
 
 *In Progress:*
 - Track editor with cue point management
@@ -188,6 +191,7 @@ mesh/
 *Planned:*
 - JACK audio preview
 - Playlist and crate management
+- Batch processing for multiple tracks
 
 ---
 
@@ -263,6 +267,42 @@ BPM:128.00|KEY:Am|GRID:0,22050,44100|ORIGINAL_BPM:125.00
 ```
 
 The mesh-cue application converts pre-separated stems (from tools like Demucs or Ultimate Vocal Remover) into this format with automatic BPM/key analysis.
+
+---
+
+## Configuration
+
+mesh-cue stores its configuration in YAML format alongside your collection:
+
+```
+~/Music/mesh-collection/config.yaml
+```
+
+### Settings
+
+Click the **⚙** gear icon in the header to open the settings modal.
+
+**Analysis → BPM Detection Range**
+
+Configure the expected tempo range for your music genre:
+
+| Genre | Min Tempo | Max Tempo |
+|-------|-----------|-----------|
+| House/Techno | 120 | 135 |
+| DnB/Jungle | 160 | 190 |
+| Dubstep | 70 | 75 (or 140-150 for double-time) |
+| Hip-Hop | 80 | 115 |
+| Default | 40 | 208 |
+
+Setting a narrower range prevents half-tempo or double-tempo detection errors (e.g., DnB at 172 BPM being detected as 86 BPM).
+
+Example `config.yaml`:
+```yaml
+analysis:
+  bpm:
+    min_tempo: 160
+    max_tempo: 190
+```
 
 ---
 

@@ -3,9 +3,10 @@
 use crate::analysis::AnalysisResult;
 use crate::audio::AudioState;
 use crate::collection::Collection;
+use crate::config::{self, Config};
 use crate::import::StemImporter;
-use iced::widget::{button, column, container, row, text, Space};
-use iced::{Element, Length, Task, Theme};
+use iced::widget::{button, center, column, container, mouse_area, opaque, row, stack, text, Space};
+use iced::{Color, Element, Length, Task, Theme};
 use mesh_core::audio_file::{BeatGrid, CuePoint, LoadedTrack, StemBuffers, TrackMetadata};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -75,6 +76,31 @@ pub struct LoadedTrackState {
     pub modified: bool,
 }
 
+/// State for the settings modal
+#[derive(Debug, Default)]
+pub struct SettingsState {
+    /// Whether the settings modal is open
+    pub is_open: bool,
+    /// Draft min tempo value (text input)
+    pub draft_min_tempo: String,
+    /// Draft max tempo value (text input)
+    pub draft_max_tempo: String,
+    /// Status message for save feedback
+    pub status: String,
+}
+
+impl SettingsState {
+    /// Initialize from current config
+    pub fn from_config(config: &Config) -> Self {
+        Self {
+            is_open: false,
+            draft_min_tempo: config.analysis.bpm.min_tempo.to_string(),
+            draft_max_tempo: config.analysis.bpm.max_tempo.to_string(),
+            status: String::new(),
+        }
+    }
+}
+
 /// Application messages
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -119,6 +145,14 @@ pub enum Message {
 
     // Misc
     Tick,
+
+    // Settings
+    OpenSettings,
+    CloseSettings,
+    UpdateSettingsMinTempo(String),
+    UpdateSettingsMaxTempo(String),
+    SaveSettings,
+    SaveSettingsComplete(Result<(), String>),
 }
 
 /// Main application
@@ -131,16 +165,36 @@ pub struct MeshCueApp {
     collection: CollectionState,
     /// Audio playback state
     audio: AudioState,
+    /// Global configuration
+    config: Arc<Config>,
+    /// Path to config file
+    config_path: PathBuf,
+    /// Settings modal state
+    settings: SettingsState,
 }
 
 impl MeshCueApp {
     /// Create a new application instance
     pub fn new() -> (Self, Task<Message>) {
+        // Load configuration
+        let config_path = config::default_config_path();
+        let config = config::load_config(&config_path);
+        log::info!(
+            "Loaded config: BPM range {}-{}",
+            config.analysis.bpm.min_tempo,
+            config.analysis.bpm.max_tempo
+        );
+
+        let settings = SettingsState::from_config(&config);
+
         let app = Self {
             current_view: View::Staging,
             staging: StagingState::default(),
             collection: CollectionState::default(),
             audio: AudioState::default(),
+            config: Arc::new(config),
+            config_path,
+            settings,
         };
 
         // Initial collection scan
@@ -205,8 +259,9 @@ impl MeshCueApp {
 
                 self.staging.status = String::from("Analyzing... (this may take a moment)");
 
-                // Clone importer for the async task
+                // Clone data for the async task
                 let importer = self.staging.importer.clone();
+                let bpm_config = self.config.analysis.bpm.clone();
 
                 // Spawn background task for analysis
                 return Task::perform(
@@ -214,8 +269,8 @@ impl MeshCueApp {
                         // Load stems and compute mono sum for analysis
                         let mono_samples = importer.get_mono_sum()?;
 
-                        // Run analysis (BPM detection, key detection, beat grid)
-                        let result = crate::analysis::analyze_audio(&mono_samples)?;
+                        // Run analysis with configured BPM range
+                        let result = crate::analysis::analyze_audio(&mono_samples, &bpm_config)?;
 
                         Ok::<_, anyhow::Error>(result)
                     },
@@ -240,20 +295,28 @@ impl MeshCueApp {
 
             // Staging: Export
             Message::AddToCollection => {
+                log::info!("=== AddToCollection triggered ===");
+
                 // Validate we have analysis result and track name
                 let analysis = match self.staging.analysis_result.clone() {
-                    Some(a) => a,
+                    Some(a) => {
+                        log::info!("Analysis result found: BPM={:.1}, Key={}", a.bpm, a.key);
+                        a
+                    }
                     None => {
+                        log::warn!("AddToCollection failed: no analysis result");
                         self.staging.status = String::from("Please analyze first");
                         return Task::none();
                     }
                 };
 
                 if self.staging.track_name.trim().is_empty() {
+                    log::warn!("AddToCollection failed: empty track name");
                     self.staging.status = String::from("Please enter a track name");
                     return Task::none();
                 }
 
+                log::info!("Track name: '{}'", self.staging.track_name);
                 self.staging.status = String::from("Exporting to collection...");
 
                 // Clone data for async task
@@ -261,13 +324,35 @@ impl MeshCueApp {
                 let track_name = self.staging.track_name.clone();
                 let collection_path = self.collection.collection.path().to_path_buf();
 
+                log::info!("Collection path: {:?}", collection_path);
+                log::info!(
+                    "Stem paths - Vocals: {:?}, Drums: {:?}, Bass: {:?}, Other: {:?}",
+                    importer.vocals_path,
+                    importer.drums_path,
+                    importer.bass_path,
+                    importer.other_path
+                );
+
                 // Spawn background task
                 return Task::perform(
                     async move {
+                        log::info!("=== Async export task started ===");
+
                         // Import stems
-                        let buffers = importer.import()?;
+                        log::info!("Step 1: Importing stems...");
+                        let buffers = match importer.import() {
+                            Ok(b) => {
+                                log::info!("Stems imported successfully: {} samples", b.len());
+                                b
+                            }
+                            Err(e) => {
+                                log::error!("Failed to import stems: {}", e);
+                                return Err(e);
+                            }
+                        };
 
                         // Create metadata from analysis result
+                        log::info!("Step 2: Creating metadata...");
                         let metadata = TrackMetadata {
                             bpm: Some(analysis.bpm),
                             original_bpm: Some(analysis.original_bpm),
@@ -275,29 +360,64 @@ impl MeshCueApp {
                             beat_grid: BeatGrid { beats: analysis.beat_grid.clone() },
                             cue_points: Vec::new(), // No cue points initially
                         };
+                        log::info!(
+                            "Metadata: BPM={:.1}, Key={}, {} beats in grid",
+                            analysis.bpm,
+                            analysis.key,
+                            analysis.beat_grid.len()
+                        );
 
                         // Create temp file for export
                         let temp_dir = std::env::temp_dir();
                         let temp_path = temp_dir.join(format!("{}.wav", &track_name));
+                        log::info!("Step 3: Exporting to temp file: {:?}", temp_path);
 
                         // Export to temp file
-                        crate::export::export_stem_file(&temp_path, &buffers, &metadata, &[])?;
+                        match crate::export::export_stem_file(&temp_path, &buffers, &metadata, &[]) {
+                            Ok(()) => log::info!("Export to temp file succeeded"),
+                            Err(e) => {
+                                log::error!("Failed to export to temp file: {}", e);
+                                return Err(e);
+                            }
+                        }
+
+                        // Verify temp file exists and get size
+                        match std::fs::metadata(&temp_path) {
+                            Ok(meta) => log::info!("Temp file size: {} bytes", meta.len()),
+                            Err(e) => log::error!("Temp file doesn't exist: {}", e),
+                        }
 
                         // Add to collection (copies file to collection folder)
+                        log::info!("Step 4: Adding to collection at {:?}", collection_path);
                         let mut collection = Collection::new(&collection_path);
-                        let dest_path = collection.add_track(&temp_path, &track_name)?;
+                        let dest_path = match collection.add_track(&temp_path, &track_name) {
+                            Ok(p) => {
+                                log::info!("Added to collection: {:?}", p);
+                                p
+                            }
+                            Err(e) => {
+                                log::error!("Failed to add to collection: {}", e);
+                                return Err(e);
+                            }
+                        };
 
                         // Clean up temp file
-                        let _ = std::fs::remove_file(&temp_path);
+                        log::info!("Step 5: Cleaning up temp file");
+                        if let Err(e) = std::fs::remove_file(&temp_path) {
+                            log::warn!("Failed to remove temp file: {}", e);
+                        }
 
+                        log::info!("=== Export complete: {:?} ===", dest_path);
                         Ok::<PathBuf, anyhow::Error>(dest_path)
                     },
                     |result| Message::AddToCollectionComplete(result.map_err(|e| e.to_string())),
                 );
             }
             Message::AddToCollectionComplete(result) => {
+                log::info!("AddToCollectionComplete received");
                 match result {
                     Ok(path) => {
+                        log::info!("AddToCollectionComplete: SUCCESS - {:?}", path);
                         self.staging.status = format!("Added: {}", path.display());
                         // Clear staging state for next import
                         self.staging.importer.clear();
@@ -305,6 +425,7 @@ impl MeshCueApp {
                         self.staging.track_name.clear();
                     }
                     Err(e) => {
+                        log::error!("AddToCollectionComplete: FAILED - {}", e);
                         self.staging.status = format!("Failed to add: {}", e);
                     }
                 }
@@ -432,6 +553,65 @@ impl MeshCueApp {
             Message::Tick => {
                 // Update UI from audio state
             }
+
+            // Settings
+            Message::OpenSettings => {
+                // Reset draft values from current config
+                self.settings = SettingsState::from_config(&self.config);
+                self.settings.is_open = true;
+            }
+            Message::CloseSettings => {
+                self.settings.is_open = false;
+                self.settings.status.clear();
+            }
+            Message::UpdateSettingsMinTempo(value) => {
+                self.settings.draft_min_tempo = value;
+            }
+            Message::UpdateSettingsMaxTempo(value) => {
+                self.settings.draft_max_tempo = value;
+            }
+            Message::SaveSettings => {
+                // Parse and validate values
+                let min = self.settings.draft_min_tempo.parse::<i32>().unwrap_or(40);
+                let max = self.settings.draft_max_tempo.parse::<i32>().unwrap_or(208);
+
+                let mut new_config = (*self.config).clone();
+                new_config.analysis.bpm.min_tempo = min;
+                new_config.analysis.bpm.max_tempo = max;
+                new_config.analysis.bpm.validate();
+
+                // Update drafts to show validated values
+                self.settings.draft_min_tempo = new_config.analysis.bpm.min_tempo.to_string();
+                self.settings.draft_max_tempo = new_config.analysis.bpm.max_tempo.to_string();
+
+                // Save to file
+                let config_path = self.config_path.clone();
+                let config_clone = new_config.clone();
+
+                self.config = Arc::new(new_config);
+
+                return Task::perform(
+                    async move {
+                        config::save_config(&config_clone, &config_path)
+                            .map_err(|e| e.to_string())
+                    },
+                    Message::SaveSettingsComplete,
+                );
+            }
+            Message::SaveSettingsComplete(result) => {
+                match result {
+                    Ok(()) => {
+                        log::info!("Settings saved successfully");
+                        self.settings.status = String::from("Settings saved!");
+                        // Close modal after brief delay would be nice, for now just close
+                        self.settings.is_open = false;
+                    }
+                    Err(e) => {
+                        log::error!("Failed to save settings: {}", e);
+                        self.settings.status = format!("Failed to save: {}", e);
+                    }
+                }
+            }
         }
 
         Task::none()
@@ -448,11 +628,33 @@ impl MeshCueApp {
 
         let main = column![header, content].spacing(10);
 
-        container(main)
+        let base: Element<Message> = container(main)
             .width(Length::Fill)
             .height(Length::Fill)
             .padding(20)
-            .into()
+            .into();
+
+        // Overlay settings modal if open
+        if self.settings.is_open {
+            let backdrop = mouse_area(
+                container(Space::new())
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .style(|_theme| container::Style {
+                        background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.6).into()),
+                        ..Default::default()
+                    }),
+            )
+            .on_press(Message::CloseSettings);
+
+            let modal = center(opaque(super::settings::view(&self.settings)))
+                .width(Length::Fill)
+                .height(Length::Fill);
+
+            stack![base, backdrop, modal].into()
+        } else {
+            base
+        }
     }
 
     /// Application theme
@@ -478,11 +680,17 @@ impl MeshCueApp {
                 button::secondary
             });
 
+        // Settings gear icon (⚙ U+2699)
+        let settings_btn = button(text("⚙").size(20))
+            .on_press(Message::OpenSettings)
+            .style(button::secondary);
+
         row![
             text("mesh-cue").size(24),
             Space::new().width(Length::Fill),
             staging_btn,
             collection_btn,
+            settings_btn,
         ]
         .spacing(10)
         .into()

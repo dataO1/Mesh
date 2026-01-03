@@ -53,10 +53,12 @@ impl Collection {
 
     /// Scan the collection folder for WAV files
     pub fn scan(&mut self) -> Result<()> {
+        log::info!("scan: Scanning collection at {:?}", self.path);
         self.tracks.clear();
 
         // Ensure directory exists
         if !self.path.exists() {
+            log::info!("scan: Directory doesn't exist, creating it");
             fs::create_dir_all(&self.path)
                 .with_context(|| format!("Failed to create collection directory: {:?}", self.path))?;
             return Ok(());
@@ -66,13 +68,20 @@ impl Collection {
         let entries = fs::read_dir(&self.path)
             .with_context(|| format!("Failed to read collection directory: {:?}", self.path))?;
 
+        let mut file_count = 0;
         for entry in entries.flatten() {
             let path = entry.path();
+            log::debug!("scan: Found entry: {:?}", path);
 
             // Check if it's a WAV file
             if path.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("wav")) {
+                file_count += 1;
+                log::info!("scan: Loading WAV file: {:?}", path);
                 match self.load_track_info(&path) {
-                    Ok(track) => self.tracks.push(track),
+                    Ok(track) => {
+                        log::info!("scan: Loaded track '{}' (BPM={:.1}, Key={})", track.name, track.bpm, track.key);
+                        self.tracks.push(track);
+                    }
                     Err(e) => {
                         log::warn!("Failed to load track info for {:?}: {}", path, e);
                     }
@@ -82,6 +91,7 @@ impl Collection {
 
         // Sort by name
         self.tracks.sort_by(|a, b| a.name.cmp(&b.name));
+        log::info!("scan: Complete, found {} WAV files, loaded {} tracks", file_count, self.tracks.len());
 
         Ok(())
     }
@@ -125,19 +135,45 @@ impl Collection {
 
     /// Add a track to the collection (copy file to collection folder)
     pub fn add_track(&mut self, source_path: &Path, name: &str) -> Result<PathBuf> {
+        log::info!("add_track: Adding '{}' to collection", name);
+        log::info!("  Source: {:?}", source_path);
+        log::info!("  Collection dir: {:?}", self.path);
+
+        // Verify source exists
+        match std::fs::metadata(source_path) {
+            Ok(meta) => log::info!("  Source file exists: {} bytes", meta.len()),
+            Err(e) => {
+                log::error!("  Source file doesn't exist: {}", e);
+                anyhow::bail!("Source file doesn't exist: {:?}", source_path);
+            }
+        }
+
         // Ensure collection directory exists
+        log::info!("  Creating collection directory if needed...");
         fs::create_dir_all(&self.path)?;
+        log::info!("  Collection directory ready: {:?}", self.path);
 
         // Create destination path
         let dest_name = format!("{}.wav", sanitize_filename(name));
         let dest_path = self.path.join(&dest_name);
+        log::info!("  Destination: {:?}", dest_path);
 
         // Copy file
-        fs::copy(source_path, &dest_path)
+        log::info!("  Copying file...");
+        let bytes_copied = fs::copy(source_path, &dest_path)
             .with_context(|| format!("Failed to copy track to collection: {:?}", dest_path))?;
+        log::info!("  Copied {} bytes", bytes_copied);
+
+        // Verify destination exists
+        match std::fs::metadata(&dest_path) {
+            Ok(meta) => log::info!("  Destination file verified: {} bytes", meta.len()),
+            Err(e) => log::error!("  Destination file check failed: {}", e),
+        }
 
         // Refresh the collection
+        log::info!("  Refreshing collection...");
         self.scan()?;
+        log::info!("add_track: Complete, {} tracks in collection", self.tracks.len());
 
         Ok(dest_path)
     }

@@ -11,6 +11,8 @@ pub use beatgrid::generate_beat_grid;
 pub use bpm::detect_bpm;
 pub use key::detect_key;
 
+use crate::config::BpmConfig;
+
 /// Result of audio analysis
 #[derive(Debug, Clone)]
 pub struct AnalysisResult {
@@ -42,12 +44,13 @@ impl Default for AnalysisResult {
 ///
 /// # Arguments
 /// * `samples` - Mono audio samples at 44.1kHz
+/// * `bpm_config` - BPM detection configuration (min/max tempo range)
 ///
 /// # Returns
 /// Complete analysis result with BPM, key, and beat grid
-pub fn analyze_audio(samples: &[f32]) -> anyhow::Result<AnalysisResult> {
-    // Detect BPM and beat positions
-    let (bpm, beat_ticks) = detect_bpm(samples)?;
+pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<AnalysisResult> {
+    // Detect BPM and beat positions using configured tempo range
+    let (bpm, beat_ticks) = detect_bpm(samples, bpm_config)?;
 
     // Detect musical key
     let key = detect_key(samples)?;

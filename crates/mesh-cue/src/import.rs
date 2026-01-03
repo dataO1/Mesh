@@ -5,7 +5,7 @@
 
 use anyhow::{bail, Context, Result};
 use mesh_core::audio_file::StemBuffers;
-use mesh_core::types::{StereoBuffer, StereoSample};
+use mesh_core::types::StereoSample;
 use std::path::Path;
 
 /// Stem file importer
@@ -93,7 +93,10 @@ impl StemImporter {
     /// (same length, same sample rate), and interleaves them into
     /// the 8-channel format used by mesh-player.
     pub fn import(&self) -> Result<StemBuffers> {
+        log::info!("import: Starting stem import");
+
         if !self.is_complete() {
+            log::error!("import: Not all stems are loaded");
             bail!("Not all stems are loaded");
         }
 
@@ -102,19 +105,36 @@ impl StemImporter {
         let bass_path = self.bass_path.as_ref().unwrap();
         let other_path = self.other_path.as_ref().unwrap();
 
-        // Load each stem file
+        log::info!("import: Loading vocals from {:?}", vocals_path);
         let vocals = load_stereo_wav(vocals_path)
             .with_context(|| format!("Failed to load vocals: {:?}", vocals_path))?;
+        log::info!("import: Vocals loaded: {} samples", vocals.len());
+
+        log::info!("import: Loading drums from {:?}", drums_path);
         let drums = load_stereo_wav(drums_path)
             .with_context(|| format!("Failed to load drums: {:?}", drums_path))?;
+        log::info!("import: Drums loaded: {} samples", drums.len());
+
+        log::info!("import: Loading bass from {:?}", bass_path);
         let bass = load_stereo_wav(bass_path)
             .with_context(|| format!("Failed to load bass: {:?}", bass_path))?;
+        log::info!("import: Bass loaded: {} samples", bass.len());
+
+        log::info!("import: Loading other from {:?}", other_path);
         let other = load_stereo_wav(other_path)
             .with_context(|| format!("Failed to load other: {:?}", other_path))?;
+        log::info!("import: Other loaded: {} samples", other.len());
 
         // Validate all stems have the same length
         let len = vocals.len();
         if drums.len() != len || bass.len() != len || other.len() != len {
+            log::error!(
+                "import: Stem files have different lengths: vocals={}, drums={}, bass={}, other={}",
+                vocals.len(),
+                drums.len(),
+                bass.len(),
+                other.len()
+            );
             bail!(
                 "Stem files have different lengths: vocals={}, drums={}, bass={}, other={}",
                 vocals.len(),
@@ -124,7 +144,10 @@ impl StemImporter {
             );
         }
 
+        log::info!("import: All stems validated, {} samples each", len);
+
         // Combine into StemBuffers
+        log::info!("import: Combining into StemBuffers...");
         let mut buffers = StemBuffers::with_length(len);
 
         for i in 0..len {
@@ -134,6 +157,7 @@ impl StemImporter {
             buffers.other.as_mut_slice()[i] = other[i];
         }
 
+        log::info!("import: Complete, created StemBuffers with {} samples", buffers.len());
         Ok(buffers)
     }
 
@@ -141,9 +165,11 @@ impl StemImporter {
     ///
     /// Combines all stems into a single mono channel for BPM/key analysis.
     pub fn get_mono_sum(&self) -> Result<Vec<f32>> {
+        log::info!("get_mono_sum: Creating mono mix for analysis");
         let buffers = self.import()?;
         let len = buffers.len();
 
+        log::info!("get_mono_sum: Summing {} samples to mono", len);
         let mono: Vec<f32> = (0..len)
             .map(|i| {
                 // Sum all stems and convert to mono
@@ -157,6 +183,7 @@ impl StemImporter {
             })
             .collect();
 
+        log::info!("get_mono_sum: Complete, {} mono samples", mono.len());
         Ok(mono)
     }
 }
