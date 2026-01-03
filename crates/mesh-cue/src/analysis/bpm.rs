@@ -4,6 +4,9 @@
 //! accurate tempo analysis for dance music.
 
 use anyhow::{Context, Result};
+use essentia::algorithm::rhythm::rhythm_extractor_2013::RhythmExtractor2013;
+use essentia::data::GetFromDataContainer;
+use essentia::essentia::Essentia;
 
 /// Detect BPM and beat positions from audio samples
 ///
@@ -16,31 +19,53 @@ use anyhow::{Context, Result};
 /// # Returns
 /// Tuple of (BPM value, beat positions in seconds)
 pub fn detect_bpm(samples: &[f32]) -> Result<(f64, Vec<f64>)> {
-    // TODO: Implement using essentia-rs
-    // For now, return placeholder values
-    //
-    // Expected Essentia usage:
-    // ```
-    // essentia::init();
-    // let rhythm = essentia::Algorithm::create("RhythmExtractor2013")?;
-    // rhythm.configure(&[("method", "multifeature")])?;
-    // rhythm.input("signal", samples)?;
-    // let pool = rhythm.compute()?;
-    // let bpm = pool.get_real("bpm")?;
-    // let beats = pool.get_vec_real("ticks")?;
-    // ```
+    log::info!("Starting BPM detection on {} samples", samples.len());
 
-    log::warn!("BPM detection not yet implemented, returning placeholder");
+    // Create Essentia instance
+    let essentia = Essentia::new();
 
-    // Placeholder: assume 128 BPM with beats every 0.46875 seconds
-    let bpm = 128.0;
-    let beat_duration = 60.0 / bpm;
-    let duration_seconds = samples.len() as f64 / 44100.0;
-    let num_beats = (duration_seconds / beat_duration) as usize;
+    // Create and configure RhythmExtractor2013
+    // - min_tempo: 40 BPM (default)
+    // - max_tempo: 208 BPM (default)
+    // - method: "multifeature" for best accuracy with confidence scores
+    let mut rhythm = essentia
+        .create::<RhythmExtractor2013>()
+        .min_tempo(40)
+        .context("Failed to set min_tempo")?
+        .max_tempo(208)
+        .context("Failed to set max_tempo")?
+        .method("multifeature")
+        .context("Failed to set method")?
+        .configure()
+        .context("Failed to configure RhythmExtractor2013")?;
 
-    let beats: Vec<f64> = (0..num_beats)
-        .map(|i| i as f64 * beat_duration)
-        .collect();
+    // Run the algorithm with input signal
+    let result = rhythm
+        .compute(samples)
+        .context("RhythmExtractor2013 computation failed")?;
+
+    // Extract outputs from result struct
+    // The result struct provides accessor methods that return Result<DataContainer, OutputError>
+    // We use the GetFromDataContainer trait's .get() method to extract the typed value
+    let bpm: f32 = result
+        .bpm()
+        .context("Failed to get BPM output")?
+        .get();
+
+    let ticks: Vec<f32> = result
+        .ticks()
+        .context("Failed to get ticks output")?
+        .get();
+
+    log::info!(
+        "BPM detection complete: {:.2} BPM, {} beats detected",
+        bpm,
+        ticks.len()
+    );
+
+    // Convert to f64 for downstream compatibility
+    let bpm = bpm as f64;
+    let beats: Vec<f64> = ticks.iter().map(|&t| t as f64).collect();
 
     Ok((bpm, beats))
 }

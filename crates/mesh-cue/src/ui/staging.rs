@@ -68,8 +68,9 @@ fn view_stem_selectors(state: &StagingState) -> Element<Message> {
 fn view_analysis_section(state: &StagingState) -> Element<Message> {
     let title = text("Analysis").size(18);
 
-    let can_analyze = state.importer.is_complete() && state.analysis_result.is_none();
-    let analyze_btn = button(text("Analyze"))
+    // Allow (re-)analysis when all stems are loaded
+    let can_analyze = state.importer.is_complete();
+    let analyze_btn = button(text(if state.analysis_result.is_some() { "Re-Analyze" } else { "Analyze" }))
         .on_press_maybe(can_analyze.then_some(Message::StartAnalysis));
 
     let progress: Element<Message> = if let Some(progress) = state.analysis_progress {

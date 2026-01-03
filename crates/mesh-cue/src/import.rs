@@ -9,7 +9,7 @@ use mesh_core::types::{StereoBuffer, StereoSample};
 use std::path::Path;
 
 /// Stem file importer
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StemImporter {
     /// Path to vocals stem (stereo WAV)
     pub vocals_path: Option<std::path::PathBuf>,
@@ -163,18 +163,230 @@ impl StemImporter {
 
 /// Load a stereo WAV file and return sample pairs
 fn load_stereo_wav(path: &Path) -> Result<Vec<StereoSample>> {
-    // Use riff crate to parse WAV file
+    use std::io::{Read, Seek, SeekFrom};
+
     let file = std::fs::File::open(path)?;
-    let reader = std::io::BufReader::new(file);
+    let mut reader = std::io::BufReader::new(file);
 
-    // TODO: Implement proper WAV loading using riff crate
-    // For now, return a placeholder
-    //
-    // The implementation should:
-    // 1. Parse RIFF header
-    // 2. Find 'fmt ' chunk and validate format (PCM, stereo, 44.1kHz or convert)
-    // 3. Find 'data' chunk and read samples
-    // 4. Convert to f32 StereoSample pairs
+    // Read RIFF header (12 bytes)
+    let mut header = [0u8; 12];
+    reader
+        .read_exact(&mut header)
+        .context("Failed to read WAV header")?;
 
-    bail!("WAV loading not yet implemented - this is a placeholder")
+    // Validate RIFF/WAVE header
+    let is_riff = &header[0..4] == b"RIFF" || &header[0..4] == b"RF64";
+    if !is_riff {
+        bail!("Not a RIFF/RF64 file");
+    }
+    if &header[8..12] != b"WAVE" {
+        bail!("Not a WAVE file");
+    }
+
+    // Parse chunks to find fmt and data
+    let mut format: Option<WavFormat> = None;
+    let mut data_offset: Option<u64> = None;
+    let mut data_size: Option<u64> = None;
+
+    loop {
+        // Read chunk header (8 bytes)
+        let mut chunk_header = [0u8; 8];
+        if reader.read_exact(&mut chunk_header).is_err() {
+            break; // End of file
+        }
+
+        let chunk_id = &chunk_header[0..4];
+        let chunk_size = u32::from_le_bytes([
+            chunk_header[4],
+            chunk_header[5],
+            chunk_header[6],
+            chunk_header[7],
+        ]);
+
+        match chunk_id {
+            b"fmt " => {
+                format = Some(read_fmt_chunk(&mut reader, chunk_size)?);
+            }
+            b"data" => {
+                data_offset = Some(reader.stream_position()?);
+                data_size = Some(chunk_size as u64);
+                // Don't skip data chunk - we'll read it after finding format
+                break;
+            }
+            _ => {
+                // Skip unknown chunks
+                reader.seek(SeekFrom::Current(chunk_size as i64))?;
+            }
+        }
+
+        // Word-align (chunks are padded to even boundaries)
+        if chunk_size % 2 != 0 {
+            reader.seek(SeekFrom::Current(1))?;
+        }
+    }
+
+    // Validate we found the required chunks
+    let format = format.context("Missing fmt chunk")?;
+    let data_offset = data_offset.context("Missing data chunk")?;
+    let data_size = data_size.context("Missing data chunk")?;
+
+    // Validate format: must be stereo
+    if format.channels != 2 {
+        bail!(
+            "Expected stereo (2 channels), found {} channels",
+            format.channels
+        );
+    }
+
+    // We accept any sample rate - Essentia will handle analysis at native rate
+    // and we only need relative analysis, not absolute timing
+    log::debug!(
+        "Loading WAV: {} channels, {} Hz, {} bits",
+        format.channels,
+        format.sample_rate,
+        format.bits_per_sample
+    );
+
+    // Seek to data start
+    reader.seek(SeekFrom::Start(data_offset))?;
+
+    // Calculate frame count
+    let bytes_per_frame = format.channels as u64 * (format.bits_per_sample as u64 / 8);
+    let frame_count = data_size / bytes_per_frame;
+
+    // Read samples based on bit depth
+    let samples = match (format.format_tag, format.bits_per_sample) {
+        (1, 16) => read_16bit_stereo(&mut reader, frame_count as usize)?,
+        (1, 24) => read_24bit_stereo(&mut reader, frame_count as usize)?,
+        (1, 32) => read_32bit_int_stereo(&mut reader, frame_count as usize)?,
+        (3, 32) => read_32bit_float_stereo(&mut reader, frame_count as usize)?,
+        _ => bail!(
+            "Unsupported format: tag={}, bits={}",
+            format.format_tag,
+            format.bits_per_sample
+        ),
+    };
+
+    Ok(samples)
+}
+
+/// WAV format information
+#[derive(Debug)]
+struct WavFormat {
+    format_tag: u16,      // 1 = PCM, 3 = IEEE float
+    channels: u16,        // Should be 2 for stereo
+    sample_rate: u32,     // e.g., 44100
+    bits_per_sample: u16, // 16, 24, or 32
+}
+
+/// Read and parse the fmt chunk
+fn read_fmt_chunk<R: std::io::Read>(reader: &mut R, size: u32) -> Result<WavFormat> {
+    if size < 16 {
+        bail!("fmt chunk too small");
+    }
+
+    let mut fmt_data = vec![0u8; size as usize];
+    reader.read_exact(&mut fmt_data)?;
+
+    Ok(WavFormat {
+        format_tag: u16::from_le_bytes([fmt_data[0], fmt_data[1]]),
+        channels: u16::from_le_bytes([fmt_data[2], fmt_data[3]]),
+        sample_rate: u32::from_le_bytes([fmt_data[4], fmt_data[5], fmt_data[6], fmt_data[7]]),
+        bits_per_sample: u16::from_le_bytes([fmt_data[14], fmt_data[15]]),
+    })
+}
+
+/// Read 16-bit PCM stereo samples
+fn read_16bit_stereo<R: std::io::Read>(reader: &mut R, frame_count: usize) -> Result<Vec<StereoSample>> {
+    const SCALE: f32 = 1.0 / 32768.0;
+    let mut samples = Vec::with_capacity(frame_count);
+    let mut frame_buffer = [0u8; 4]; // 2 channels * 2 bytes
+
+    for _ in 0..frame_count {
+        reader.read_exact(&mut frame_buffer)?;
+        let left = i16::from_le_bytes([frame_buffer[0], frame_buffer[1]]) as f32 * SCALE;
+        let right = i16::from_le_bytes([frame_buffer[2], frame_buffer[3]]) as f32 * SCALE;
+        samples.push(StereoSample::new(left, right));
+    }
+
+    Ok(samples)
+}
+
+/// Read 24-bit PCM stereo samples
+fn read_24bit_stereo<R: std::io::Read>(reader: &mut R, frame_count: usize) -> Result<Vec<StereoSample>> {
+    const SCALE: f32 = 1.0 / 8388608.0; // 2^23
+    let mut samples = Vec::with_capacity(frame_count);
+    let mut frame_buffer = [0u8; 6]; // 2 channels * 3 bytes
+
+    // Convert 24-bit to i32 with sign extension
+    let to_i32 = |b: &[u8]| -> i32 {
+        let val = (b[0] as i32) | ((b[1] as i32) << 8) | ((b[2] as i32) << 16);
+        if val & 0x800000 != 0 {
+            val | !0xFFFFFF // Sign extend
+        } else {
+            val
+        }
+    };
+
+    for _ in 0..frame_count {
+        reader.read_exact(&mut frame_buffer)?;
+        let left = to_i32(&frame_buffer[0..3]) as f32 * SCALE;
+        let right = to_i32(&frame_buffer[3..6]) as f32 * SCALE;
+        samples.push(StereoSample::new(left, right));
+    }
+
+    Ok(samples)
+}
+
+/// Read 32-bit integer stereo samples
+fn read_32bit_int_stereo<R: std::io::Read>(reader: &mut R, frame_count: usize) -> Result<Vec<StereoSample>> {
+    const SCALE: f32 = 1.0 / 2147483648.0; // 2^31
+    let mut samples = Vec::with_capacity(frame_count);
+    let mut frame_buffer = [0u8; 8]; // 2 channels * 4 bytes
+
+    for _ in 0..frame_count {
+        reader.read_exact(&mut frame_buffer)?;
+        let left = i32::from_le_bytes([
+            frame_buffer[0],
+            frame_buffer[1],
+            frame_buffer[2],
+            frame_buffer[3],
+        ]) as f32
+            * SCALE;
+        let right = i32::from_le_bytes([
+            frame_buffer[4],
+            frame_buffer[5],
+            frame_buffer[6],
+            frame_buffer[7],
+        ]) as f32
+            * SCALE;
+        samples.push(StereoSample::new(left, right));
+    }
+
+    Ok(samples)
+}
+
+/// Read 32-bit float stereo samples
+fn read_32bit_float_stereo<R: std::io::Read>(reader: &mut R, frame_count: usize) -> Result<Vec<StereoSample>> {
+    let mut samples = Vec::with_capacity(frame_count);
+    let mut frame_buffer = [0u8; 8]; // 2 channels * 4 bytes
+
+    for _ in 0..frame_count {
+        reader.read_exact(&mut frame_buffer)?;
+        let left = f32::from_le_bytes([
+            frame_buffer[0],
+            frame_buffer[1],
+            frame_buffer[2],
+            frame_buffer[3],
+        ]);
+        let right = f32::from_le_bytes([
+            frame_buffer[4],
+            frame_buffer[5],
+            frame_buffer[6],
+            frame_buffer[7],
+        ]);
+        samples.push(StereoSample::new(left, right));
+    }
+
+    Ok(samples)
 }

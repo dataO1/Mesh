@@ -2,11 +2,11 @@
 
 use crate::analysis::AnalysisResult;
 use crate::audio::AudioState;
-use crate::collection::{Collection, CollectionTrack};
+use crate::collection::Collection;
 use crate::import::StemImporter;
 use iced::widget::{button, column, container, row, text, Space};
 use iced::{Element, Length, Task, Theme};
-use mesh_core::audio_file::{CuePoint, LoadedTrack, StemBuffers};
+use mesh_core::audio_file::{BeatGrid, CuePoint, LoadedTrack, StemBuffers, TrackMetadata};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -98,7 +98,6 @@ pub enum Message {
 
     // Collection: Browser
     RefreshCollection,
-    CollectionRefreshed(Result<Vec<CollectionTrack>, String>),
     SelectTrack(usize),
     LoadTrack(usize),
     TrackLoaded(Result<Arc<LoadedTrack>, String>),
@@ -198,9 +197,33 @@ impl MeshCueApp {
 
             // Staging: Analysis
             Message::StartAnalysis => {
-                self.staging.status = String::from("Analyzing...");
-                self.staging.analysis_progress = Some(0.0);
-                // TODO: Run analysis in background
+                // Check that all stems are loaded before starting
+                if !self.staging.importer.is_complete() {
+                    self.staging.status = String::from("Please load all 4 stem files first");
+                    return Task::none();
+                }
+
+                self.staging.status = String::from("Analyzing... (this may take a moment)");
+
+                // Clone importer for the async task
+                let importer = self.staging.importer.clone();
+
+                // Spawn background task for analysis
+                return Task::perform(
+                    async move {
+                        // Load stems and compute mono sum for analysis
+                        let mono_samples = importer.get_mono_sum()?;
+
+                        // Run analysis (BPM detection, key detection, beat grid)
+                        let result = crate::analysis::analyze_audio(&mono_samples)?;
+
+                        Ok::<_, anyhow::Error>(result)
+                    },
+                    |result| match result {
+                        Ok(analysis) => Message::AnalysisComplete(analysis),
+                        Err(e) => Message::AnalysisError(e.to_string()),
+                    },
+                );
             }
             Message::AnalysisProgress(progress) => {
                 self.staging.analysis_progress = Some(progress);
@@ -217,8 +240,60 @@ impl MeshCueApp {
 
             // Staging: Export
             Message::AddToCollection => {
-                self.staging.status = String::from("Adding to collection...");
-                // TODO: Export to collection
+                // Validate we have analysis result and track name
+                let analysis = match self.staging.analysis_result.clone() {
+                    Some(a) => a,
+                    None => {
+                        self.staging.status = String::from("Please analyze first");
+                        return Task::none();
+                    }
+                };
+
+                if self.staging.track_name.trim().is_empty() {
+                    self.staging.status = String::from("Please enter a track name");
+                    return Task::none();
+                }
+
+                self.staging.status = String::from("Exporting to collection...");
+
+                // Clone data for async task
+                let importer = self.staging.importer.clone();
+                let track_name = self.staging.track_name.clone();
+                let collection_path = self.collection.collection.path().to_path_buf();
+
+                // Spawn background task
+                return Task::perform(
+                    async move {
+                        // Import stems
+                        let buffers = importer.import()?;
+
+                        // Create metadata from analysis result
+                        let metadata = TrackMetadata {
+                            bpm: Some(analysis.bpm),
+                            original_bpm: Some(analysis.original_bpm),
+                            key: Some(analysis.key.clone()),
+                            beat_grid: BeatGrid { beats: analysis.beat_grid.clone() },
+                            cue_points: Vec::new(), // No cue points initially
+                        };
+
+                        // Create temp file for export
+                        let temp_dir = std::env::temp_dir();
+                        let temp_path = temp_dir.join(format!("{}.wav", &track_name));
+
+                        // Export to temp file
+                        crate::export::export_stem_file(&temp_path, &buffers, &metadata, &[])?;
+
+                        // Add to collection (copies file to collection folder)
+                        let mut collection = Collection::new(&collection_path);
+                        let dest_path = collection.add_track(&temp_path, &track_name)?;
+
+                        // Clean up temp file
+                        let _ = std::fs::remove_file(&temp_path);
+
+                        Ok::<PathBuf, anyhow::Error>(dest_path)
+                    },
+                    |result| Message::AddToCollectionComplete(result.map_err(|e| e.to_string())),
+                );
             }
             Message::AddToCollectionComplete(result) => {
                 match result {
@@ -237,25 +312,9 @@ impl MeshCueApp {
 
             // Collection: Browser
             Message::RefreshCollection => {
-                let mut collection = Collection::new(self.collection.collection.path());
-                return Task::perform(
-                    async move {
-                        collection.scan().map_err(|e| e.to_string())?;
-                        Ok(collection.tracks().to_vec())
-                    },
-                    Message::CollectionRefreshed,
-                );
-            }
-            Message::CollectionRefreshed(result) => {
-                match result {
-                    Ok(tracks) => {
-                        // Re-scan succeeded - collection will update internally
-                        let _ = self.collection.collection.scan();
-                    }
-                    Err(e) => {
-                        // Log error
-                        eprintln!("Failed to refresh collection: {}", e);
-                    }
+                // Scan is fast (just reads directory), so do it synchronously
+                if let Err(e) = self.collection.collection.scan() {
+                    eprintln!("Failed to refresh collection: {}", e);
                 }
             }
             Message::SelectTrack(index) => {

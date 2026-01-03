@@ -172,16 +172,20 @@ mesh/
 - Pure Data effect patches
 - RAVE neural effects integration
 
-**mesh-cue** (In Development)
+**mesh-cue** (Working MVP)
 - Staging area for importing pre-separated stems (4 WAV files → 8-channel format)
+- BPM detection using Essentia's RhythmExtractor2013 algorithm
+- Key detection using Essentia's KeyExtractor with EDMA profile (optimized for EDM)
+- Beat grid generation from detected beat positions
+- Export to 8-channel WAV with embedded metadata (bext chunk)
 - Collection browser for managing converted tracks
+- Add to collection with automatic metadata embedding
+
+*In Progress:*
 - Track editor with cue point management
-- BPM and key detection using Essentia
-- Beat grid generation and editing
-- Export to mesh-player format with embedded metadata
+- Waveform display with beat markers
 
 *Planned:*
-- Waveform display with beat markers
 - JACK audio preview
 - Playlist and crate management
 
