@@ -1,81 +1,111 @@
-//! Transport controls component
+//! Player controls component (vertical layout)
 //!
-//! CDJ-style transport with:
-//! - Play/Pause toggle button
-//! - Cue button (snap to nearest beat grid)
-//! - Beat jump buttons (<< / >>)
+//! CDJ-style player controls positioned to the left of waveforms:
+//! - Beat jump size selector (1, 4, 8, 16, 32)
+//! - Beat jump buttons (◄◄ / ►►) side by side
+//! - Cue button (CDJ-style: set + preview while held)
+//! - Large Play/Pause toggle
 
 use super::app::{LoadedTrackState, Message};
-use iced::widget::{button, container, row, text};
+use iced::widget::{button, column, container, mouse_area, row, text};
 use iced::{Alignment, Element, Length};
-use mesh_core::types::SAMPLE_RATE;
 
-/// Render transport controls
+/// Render vertical player controls (left of waveform)
 pub fn view(state: &LoadedTrackState) -> Element<Message> {
-    let position = state.playhead_position();
-    let duration = state.duration_samples;
     let beat_jump_size = state.beat_jump_size();
     let is_playing = state.is_playing();
-
-    let position_str = format_time(position);
-    let duration_str = if state.loading_audio {
-        "Loading...".to_string()
-    } else {
-        format_time(duration)
-    };
 
     // Disable controls while loading
     let controls_enabled = !state.loading_audio && state.stems.is_some();
 
-    // Beat jump backward (<<)
-    let jump_back = if controls_enabled {
-        button(text("◄◄")).on_press(Message::BeatJump(-beat_jump_size))
+    // Beat jump size selector (row of buttons at top)
+    let jump_sizes = [1, 4, 8, 16, 32];
+    let jump_size_buttons: Vec<Element<Message>> = jump_sizes
+        .iter()
+        .map(|&size| {
+            let is_selected = beat_jump_size == size;
+            let btn = button(text(format!("{}", size)).size(11))
+                .on_press_maybe(controls_enabled.then_some(Message::SetBeatJumpSize(size)))
+                .style(if is_selected {
+                    iced::widget::button::primary
+                } else {
+                    iced::widget::button::secondary
+                })
+                .width(Length::Fixed(28.0))
+                .height(Length::Fixed(24.0));
+            btn.into()
+        })
+        .collect();
+
+    let beat_jump_selector = row(jump_size_buttons)
+        .spacing(2)
+        .align_y(Alignment::Center);
+
+    // Beat jump buttons (side by side)
+    let jump_back = button(text("◄◄").size(14))
+        .on_press_maybe(controls_enabled.then_some(Message::BeatJump(-beat_jump_size)))
+        .width(Length::Fixed(50.0))
+        .height(Length::Fixed(36.0));
+
+    let jump_forward = button(text("►►").size(14))
+        .on_press_maybe(controls_enabled.then_some(Message::BeatJump(beat_jump_size)))
+        .width(Length::Fixed(50.0))
+        .height(Length::Fixed(36.0));
+
+    let jump_buttons = row![jump_back, jump_forward]
+        .spacing(4)
+        .align_y(Alignment::Center);
+
+    // CDJ-style cue button
+    // Press only works when stopped, but release always works to stop preview
+    let cue_btn = button(text("[Cue]").size(14))
+        .width(Length::Fixed(104.0))
+        .height(Length::Fixed(36.0));
+
+    let cue: Element<Message> = if controls_enabled {
+        let mut area = mouse_area(cue_btn).on_release(Message::CueReleased);
+        // Only allow press when stopped (not playing)
+        if !is_playing {
+            area = area.on_press(Message::Cue);
+        }
+        area.into()
     } else {
-        button(text("◄◄"))
+        cue_btn.into()
     };
 
-    // CDJ-style cue button (●)
-    let cue = if controls_enabled {
-        button(text("●")).on_press(Message::Cue)
-    } else {
-        button(text("●"))
-    };
-
-    // Play/Pause toggle
+    // Large Play/Pause toggle button
     let play_pause = if controls_enabled {
         if is_playing {
-            button(text("▮▮")).on_press(Message::Pause)
+            button(text("▮▮").size(24))
+                .on_press(Message::Pause)
+                .width(Length::Fixed(104.0))
+                .height(Length::Fixed(60.0))
         } else {
-            button(text("▶")).on_press(Message::Play)
+            button(text("▶").size(28))
+                .on_press(Message::Play)
+                .width(Length::Fixed(104.0))
+                .height(Length::Fixed(60.0))
         }
     } else {
-        button(text("▶"))
+        button(text("▶").size(28))
+            .width(Length::Fixed(104.0))
+            .height(Length::Fixed(60.0))
     };
 
-    // Beat jump forward (>>)
-    let jump_forward = if controls_enabled {
-        button(text("►►")).on_press(Message::BeatJump(beat_jump_size))
-    } else {
-        button(text("►►"))
-    };
-
-    let time_display = text(format!("{} / {}", position_str, duration_str)).size(14);
-
+    // Vertical layout: beat jump selector → jump buttons → cue → play/pause
     container(
-        row![jump_back, cue, play_pause, jump_forward, time_display,]
-            .spacing(10)
-            .align_y(Alignment::Center),
+        column![
+            beat_jump_selector,
+            jump_buttons,
+            cue,
+            play_pause,
+        ]
+        .spacing(8)
+        .align_x(Alignment::Center),
     )
-    .padding(10)
-    .width(Length::Fill)
-    .center_x(Length::Fill)
+    .padding(8)
+    .width(Length::Fixed(120.0))
+    .height(Length::Fill)
+    .center_y(Length::Fill)
     .into()
-}
-
-/// Format sample position as time string (MM:SS.ms)
-fn format_time(samples: u64) -> String {
-    let seconds = samples as f64 / SAMPLE_RATE as f64;
-    let minutes = (seconds / 60.0).floor() as u64;
-    let secs = seconds % 60.0;
-    format!("{}:{:05.2}", minutes, secs)
 }

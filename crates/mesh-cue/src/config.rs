@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 pub struct Config {
     /// Analysis settings (BPM, key detection, etc.)
     pub analysis: AnalysisConfig,
+    /// Display settings (waveform, grid, etc.)
+    pub display: DisplayConfig,
     /// Track name format template
     ///
     /// Supports placeholders:
@@ -27,7 +29,24 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             analysis: AnalysisConfig::default(),
+            display: DisplayConfig::default(),
             track_name_format: String::from("{artist} - {name}"),
+        }
+    }
+}
+
+/// Display configuration section
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DisplayConfig {
+    /// Default beat grid density for overview waveform (4, 8, 16, or 32 bars)
+    pub grid_bars: u32,
+}
+
+impl Default for DisplayConfig {
+    fn default() -> Self {
+        Self {
+            grid_bars: 8, // Default to 8 bars between grid lines
         }
     }
 }

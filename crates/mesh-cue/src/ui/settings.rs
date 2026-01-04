@@ -20,6 +20,9 @@ pub fn view(state: &SettingsState) -> Element<Message> {
     // BPM Range section
     let bpm_section = view_bpm_section(state);
 
+    // Display settings section
+    let display_section = view_display_section(state);
+
     // Track name format section
     let format_section = view_track_name_format_section(state);
 
@@ -43,7 +46,7 @@ pub fn view(state: &SettingsState) -> Element<Message> {
         .spacing(10)
         .width(Length::Fill);
 
-    let content = column![header, bpm_section, format_section, status, actions]
+    let content = column![header, bpm_section, display_section, format_section, status, actions]
         .spacing(20)
         .width(Length::Fixed(450.0));
 
@@ -83,6 +86,48 @@ fn view_bpm_section(state: &SettingsState) -> Element<Message> {
 
     container(
         column![section_title, subsection_title, hint, min_row, max_row].spacing(10),
+    )
+    .padding(15)
+    .width(Length::Fill)
+    .into()
+}
+
+/// Display settings (waveform grid density)
+fn view_display_section(state: &SettingsState) -> Element<Message> {
+    let section_title = text("Display").size(18);
+
+    let subsection_title = text("Overview Grid Density").size(14);
+    let hint = text("Beat grid line spacing on the overview waveform (in bars)")
+        .size(12);
+
+    // Grid density buttons (4, 8, 16, 32 bars)
+    let grid_sizes: [u32; 4] = [4, 8, 16, 32];
+    let grid_buttons: Vec<Element<Message>> = grid_sizes
+        .iter()
+        .map(|&size| {
+            let is_selected = state.draft_grid_bars == size;
+            let btn = button(text(format!("{}", size)).size(12))
+                .on_press(Message::UpdateSettingsGridBars(size))
+                .style(if is_selected {
+                    iced::widget::button::primary
+                } else {
+                    iced::widget::button::secondary
+                })
+                .width(Length::Fixed(40.0));
+            btn.into()
+        })
+        .collect();
+
+    let grid_label = text("Grid (bars):").size(14);
+    let grid_row = row![
+        grid_label,
+        row(grid_buttons).spacing(4).align_y(Alignment::Center),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+
+    container(
+        column![section_title, subsection_title, hint, grid_row].spacing(10),
     )
     .padding(15)
     .width(Length::Fill)

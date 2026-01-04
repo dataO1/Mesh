@@ -6,7 +6,7 @@ use crate::collection::Collection;
 use crate::config::{self, Config};
 use crate::export;
 use crate::import::StemImporter;
-use super::waveform::{WaveformView, ZoomedWaveformView};
+use super::waveform::{CombinedWaveformView, WaveformView, ZoomedWaveformView};
 use iced::widget::{button, center, column, container, mouse_area, opaque, row, stack, text, Space};
 use iced::{Color, Element, Length, Task, Theme};
 use mesh_core::audio_file::{BeatGrid, CuePoint, LoadedTrack, StemBuffers, TrackMetadata};
@@ -86,10 +86,9 @@ pub struct LoadedTrackState {
     pub duration_samples: u64,
     /// Whether there are unsaved changes
     pub modified: bool,
-    /// Waveform display state (cached peak data)
-    pub waveform: WaveformView,
-    /// Zoomed waveform display state (detail view centered on playhead)
-    pub zoomed_waveform: ZoomedWaveformView,
+    /// Combined waveform display (both zoomed detail and full overview in one canvas)
+    /// This works around iced bug #3040 where multiple Canvas widgets don't render properly
+    pub combined_waveform: CombinedWaveformView,
     /// Whether audio is currently loading in the background
     pub loading_audio: bool,
     /// Player deck for transport and hot cue state (created when stems load)
@@ -122,9 +121,9 @@ impl LoadedTrackState {
     /// (Seek, Stop, BeatJump, JumpToCue, etc.) to ensure the zoomed
     /// waveform displays correctly.
     pub fn update_zoomed_waveform_cache(&mut self, playhead: u64) {
-        if self.zoomed_waveform.needs_recompute(playhead) {
+        if self.combined_waveform.zoomed.needs_recompute(playhead) {
             if let Some(ref stems) = self.stems {
-                self.zoomed_waveform.compute_peaks(stems, playhead, 800);
+                self.combined_waveform.zoomed.compute_peaks(stems, playhead, 800);
             }
         }
     }
@@ -156,6 +155,8 @@ pub struct SettingsState {
     pub draft_max_tempo: String,
     /// Draft track name format template
     pub draft_track_name_format: String,
+    /// Draft grid bars value (4, 8, 16, 32)
+    pub draft_grid_bars: u32,
     /// Status message for save feedback
     pub status: String,
 }
@@ -168,6 +169,7 @@ impl SettingsState {
             draft_min_tempo: config.analysis.bpm.min_tempo.to_string(),
             draft_max_tempo: config.analysis.bpm.max_tempo.to_string(),
             draft_track_name_format: config.track_name_format.clone(),
+            draft_grid_bars: config.display.grid_bars,
             status: String::new(),
         }
     }
@@ -219,12 +221,16 @@ pub enum Message {
     Pause,
     Stop,
     Seek(f64),
-    /// CDJ-style cue button (snap to nearest beat grid)
+    /// CDJ-style cue button pressed (set cue point, start preview)
     Cue,
+    /// CDJ-style cue button released (stop preview, return to cue point)
+    CueReleased,
     /// Beat jump by N beats (positive = forward, negative = backward)
     BeatJump(i32),
     /// Set beat jump size (1, 4, 8, 16, 32)
     SetBeatJumpSize(i32),
+    /// Set overview waveform grid density (4, 8, 16, 32 bars)
+    SetOverviewGridBars(u32),
 
     // Hot Cues (8 action buttons)
     /// Jump to hot cue at index (0-7)
@@ -251,6 +257,7 @@ pub enum Message {
     UpdateSettingsMinTempo(String),
     UpdateSettingsMaxTempo(String),
     UpdateSettingsTrackNameFormat(String),
+    UpdateSettingsGridBars(u32),
     SaveSettings,
     SaveSettingsComplete(Result<(), String>),
 }
@@ -593,11 +600,14 @@ impl MeshCueApp {
                         let cue_points = metadata.cue_points.clone();
                         let beat_grid = metadata.beat_grid.beats.clone();
 
-                        // Create placeholder waveform with beat markers from metadata
-                        let waveform = WaveformView::from_metadata(&metadata);
-
-                        // Create zoomed waveform (will get peaks when stems load)
-                        let zoomed_waveform = ZoomedWaveformView::from_metadata(
+                        // Create combined waveform view (both zoomed + overview in single canvas)
+                        let mut combined_waveform = CombinedWaveformView::new();
+                        // Initialize overview with beat markers from metadata
+                        combined_waveform.overview = WaveformView::from_metadata(&metadata);
+                        // Apply grid density from config
+                        combined_waveform.overview.set_grid_bars(self.config.display.grid_bars);
+                        // Initialize zoomed view (peaks will be computed when stems load)
+                        combined_waveform.zoomed = ZoomedWaveformView::from_metadata(
                             bpm,
                             beat_grid.clone(),
                             Vec::new(), // Cue markers will be added after duration is known
@@ -613,8 +623,7 @@ impl MeshCueApp {
                             beat_grid,
                             duration_samples: 0, // Will be set when audio loads
                             modified: false,
-                            waveform,
-                            zoomed_waveform,
+                            combined_waveform,
                             loading_audio: true,
                             deck: None, // Created when stems load
                         });
@@ -642,19 +651,13 @@ impl MeshCueApp {
                             let duration_samples = stems.len() as u64;
                             state.duration_samples = duration_samples;
                             state.loading_audio = false;
-                            log::debug!("[ZOOM-DBG] TrackStemsLoaded: stems.len()={}, duration_samples={}", stems.len(), duration_samples);
-
-                            // Generate waveform from loaded stems
-                            state.waveform.set_stems(&stems, &state.cue_points, &state.beat_grid);
+                            // Generate waveform from loaded stems (overview)
+                            state.combined_waveform.overview.set_stems(&stems, &state.cue_points, &state.beat_grid);
 
                             // Initialize zoomed waveform with stem data
-                            log::debug!("[ZOOM-DBG] TrackStemsLoaded: calling set_duration({})", duration_samples);
-                            state.zoomed_waveform.set_duration(duration_samples);
-                            log::debug!("[ZOOM-DBG] TrackStemsLoaded: calling update_cue_markers (count={})", state.cue_points.len());
-                            state.zoomed_waveform.update_cue_markers(&state.cue_points);
-                            log::debug!("[ZOOM-DBG] TrackStemsLoaded: calling compute_peaks(playhead=0, width=800)");
-                            state.zoomed_waveform.compute_peaks(&stems, 0, 800);
-                            log::debug!("[ZOOM-DBG] TrackStemsLoaded: zoomed waveform initialized");
+                            state.combined_waveform.zoomed.set_duration(duration_samples);
+                            state.combined_waveform.zoomed.update_cue_markers(&state.cue_points);
+                            state.combined_waveform.zoomed.compute_peaks(&stems, 0, 800);
 
                             state.stems = Some(stems.clone());
 
@@ -706,21 +709,22 @@ impl MeshCueApp {
                         let beat_grid = track.metadata.beat_grid.beats.clone();
                         let duration_samples = track.duration_samples as u64;
 
-                        // Initialize waveform with peak data from loaded track
-                        let waveform = WaveformView::from_track(&track, &cue_points);
-
                         // Set up audio playback with the track stems
                         let stems = Arc::new(track.stems.clone());
                         self.audio.set_track(stems.clone(), duration_samples);
 
-                        // Create zoomed waveform with full track data
-                        let mut zoomed_waveform = ZoomedWaveformView::from_metadata(
+                        // Create combined waveform with full track data
+                        let mut combined_waveform = CombinedWaveformView::new();
+                        combined_waveform.overview = WaveformView::from_track(&track, &cue_points);
+                        // Apply grid density from config
+                        combined_waveform.overview.set_grid_bars(self.config.display.grid_bars);
+                        combined_waveform.zoomed = ZoomedWaveformView::from_metadata(
                             bpm,
                             beat_grid.clone(),
                             Vec::new(),
                         );
-                        zoomed_waveform.set_duration(duration_samples);
-                        zoomed_waveform.compute_peaks(&stems, 0, 800);
+                        combined_waveform.zoomed.set_duration(duration_samples);
+                        combined_waveform.zoomed.compute_peaks(&stems, 0, 800);
 
                         // Create Deck and load track (construct a new LoadedTrack)
                         let mut deck = Deck::new(DeckId::new(0));
@@ -743,8 +747,7 @@ impl MeshCueApp {
                             beat_grid,
                             duration_samples,
                             modified: false,
-                            waveform,
-                            zoomed_waveform,
+                            combined_waveform,
                             loading_audio: false,
                             deck: Some(deck),
                         });
@@ -881,25 +884,58 @@ impl MeshCueApp {
                         deck.seek(seek_pos as usize);
                     }
                     self.audio.seek(seek_pos);
-                    state.waveform.set_position(position);
+                    state.combined_waveform.overview.set_position(position);
                     state.update_zoomed_waveform_cache(seek_pos);
                 }
             }
             Message::Cue => {
-                // CDJ-style cue: snap to nearest beat (delegated to Deck)
+                // CDJ-style cue (only works when stopped):
+                // - Set cue point at current position (snapped to beat)
+                // - Start preview playback
                 if let Some(ref mut state) = self.collection.loaded_track {
+                    // Only act when stopped (not playing)
+                    if state.is_playing() {
+                        return Task::none();
+                    }
+
                     let mut update_pos = None;
                     if let Some(ref mut deck) = state.deck {
                         deck.set_cue_point(); // Snaps to nearest beat
                         let cue_pos = deck.cue_point();
                         deck.seek(cue_pos);
+                        deck.play(); // Start preview
+                        self.audio.seek(cue_pos as u64);
+                        self.audio.play();
+                        update_pos = Some(cue_pos as u64);
+
+                        // Update waveform and cue marker
+                        if self.audio.length > 0 {
+                            let normalized = cue_pos as f64 / self.audio.length as f64;
+                            state.combined_waveform.overview.set_position(normalized);
+                            state.combined_waveform.overview.set_cue_position(Some(normalized));
+                        }
+                    }
+                    if let Some(pos) = update_pos {
+                        state.update_zoomed_waveform_cache(pos);
+                    }
+                }
+            }
+            Message::CueReleased => {
+                // CDJ-style cue release: stop preview, return to cue point
+                if let Some(ref mut state) = self.collection.loaded_track {
+                    let mut update_pos = None;
+                    if let Some(ref mut deck) = state.deck {
+                        let cue_pos = deck.cue_point();
+                        deck.pause();
+                        deck.seek(cue_pos);
+                        self.audio.pause();
                         self.audio.seek(cue_pos as u64);
                         update_pos = Some(cue_pos as u64);
 
                         // Update waveform
                         if self.audio.length > 0 {
                             let normalized = cue_pos as f64 / self.audio.length as f64;
-                            state.waveform.set_position(normalized);
+                            state.combined_waveform.overview.set_position(normalized);
                         }
                     }
                     if let Some(pos) = update_pos {
@@ -924,7 +960,7 @@ impl MeshCueApp {
                         // Update waveform
                         if self.audio.length > 0 {
                             let normalized = pos as f64 / self.audio.length as f64;
-                            state.waveform.set_position(normalized);
+                            state.combined_waveform.overview.set_position(normalized);
                         }
                     }
                     if let Some(pos) = update_pos {
@@ -939,6 +975,11 @@ impl MeshCueApp {
                     }
                 }
             }
+            Message::SetOverviewGridBars(bars) => {
+                if let Some(ref mut state) = self.collection.loaded_track {
+                    state.combined_waveform.overview.set_grid_bars(bars);
+                }
+            }
             Message::JumpToCue(index) => {
                 if let Some(ref mut state) = self.collection.loaded_track {
                     if let Some(cue) = state.cue_points.iter().find(|c| c.index == index as u8) {
@@ -951,7 +992,7 @@ impl MeshCueApp {
                         // Update waveform
                         if self.audio.length > 0 {
                             let normalized = pos as f64 / self.audio.length as f64;
-                            state.waveform.set_position(normalized);
+                            state.combined_waveform.overview.set_position(normalized);
                         }
                         state.update_zoomed_waveform_cache(pos);
                     }
@@ -978,8 +1019,8 @@ impl MeshCueApp {
                     }
 
                     // Update waveform markers (both overview and zoomed)
-                    state.waveform.update_cue_markers(&state.cue_points);
-                    state.zoomed_waveform.update_cue_markers(&state.cue_points);
+                    state.combined_waveform.overview.update_cue_markers(&state.cue_points);
+                    state.combined_waveform.zoomed.update_cue_markers(&state.cue_points);
                     state.modified = true;
                 }
             }
@@ -989,28 +1030,33 @@ impl MeshCueApp {
                         deck.clear_hot_cue(index);
                     }
                     state.cue_points.retain(|c| c.index != index as u8);
-                    state.waveform.update_cue_markers(&state.cue_points);
-                    state.zoomed_waveform.update_cue_markers(&state.cue_points);
+                    state.combined_waveform.overview.update_cue_markers(&state.cue_points);
+                    state.combined_waveform.zoomed.update_cue_markers(&state.cue_points);
                     state.modified = true;
                 }
             }
             Message::HotCuePressed(index) => {
-                // Use Deck's hot_cue_press for CDJ-style preview
+                // CDJ-style hot cue press (cue point handling done by Deck internally)
                 if let Some(ref mut state) = self.collection.loaded_track {
                     let mut update_pos = None;
+
                     if let Some(ref mut deck) = state.deck {
                         deck.hot_cue_press(index);
                         let pos = deck.position();
+                        let cue_pos = deck.cue_point(); // Deck sets this internally
+
                         self.audio.seek(pos);
                         if deck.state() == PlayState::Playing {
                             self.audio.play();
                         }
                         update_pos = Some(pos);
 
-                        // Update waveform positions
+                        // Update waveform positions and cue marker
                         if self.audio.length > 0 {
                             let normalized = pos as f64 / self.audio.length as f64;
-                            state.waveform.set_position(normalized);
+                            let cue_normalized = cue_pos as f64 / self.audio.length as f64;
+                            state.combined_waveform.overview.set_position(normalized);
+                            state.combined_waveform.overview.set_cue_position(Some(cue_normalized));
                         }
                     }
                     if let Some(pos) = update_pos {
@@ -1034,7 +1080,7 @@ impl MeshCueApp {
                         // Update waveform positions
                         if self.audio.length > 0 {
                             let normalized = pos as f64 / self.audio.length as f64;
-                            state.waveform.set_position(normalized);
+                            state.combined_waveform.overview.set_position(normalized);
                         }
                     }
                     if let Some(pos) = update_pos {
@@ -1053,13 +1099,13 @@ impl MeshCueApp {
                     }
                     if self.audio.length > 0 {
                         let normalized = pos as f64 / self.audio.length as f64;
-                        state.waveform.set_position(normalized);
+                        state.combined_waveform.overview.set_position(normalized);
                     }
 
                     // Update zoomed waveform peaks if playhead moved outside cache
-                    if state.zoomed_waveform.needs_recompute(pos) {
+                    if state.combined_waveform.zoomed.needs_recompute(pos) {
                         if let Some(ref stems) = state.stems {
-                            state.zoomed_waveform.compute_peaks(stems, pos, 800);
+                            state.combined_waveform.zoomed.compute_peaks(stems, pos, 800);
                         }
                     }
                 }
@@ -1068,10 +1114,10 @@ impl MeshCueApp {
             // Zoomed Waveform
             Message::SetZoomBars(bars) => {
                 if let Some(ref mut state) = self.collection.loaded_track {
-                    state.zoomed_waveform.set_zoom(bars);
+                    state.combined_waveform.zoomed.set_zoom(bars);
                     // Recompute peaks at new zoom level
                     if let Some(ref stems) = state.stems {
-                        state.zoomed_waveform.compute_peaks(stems, state.playhead_position(), 800);
+                        state.combined_waveform.zoomed.compute_peaks(stems, state.playhead_position(), 800);
                     }
                 }
             }
@@ -1095,6 +1141,9 @@ impl MeshCueApp {
             Message::UpdateSettingsTrackNameFormat(value) => {
                 self.settings.draft_track_name_format = value;
             }
+            Message::UpdateSettingsGridBars(value) => {
+                self.settings.draft_grid_bars = value;
+            }
             Message::SaveSettings => {
                 // Parse and validate values
                 let min = self.settings.draft_min_tempo.parse::<i32>().unwrap_or(40);
@@ -1107,6 +1156,9 @@ impl MeshCueApp {
 
                 // Update track name format
                 new_config.track_name_format = self.settings.draft_track_name_format.clone();
+
+                // Update display settings (grid bars)
+                new_config.display.grid_bars = self.settings.draft_grid_bars;
 
                 // Update drafts to show validated values
                 self.settings.draft_min_tempo = new_config.analysis.bpm.min_tempo.to_string();

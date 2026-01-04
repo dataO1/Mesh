@@ -1,12 +1,12 @@
 //! Hot cue buttons component
 //!
-//! CDJ-style 8 hot cue action buttons:
+//! CDJ-style 8 hot cue buttons in a single row:
 //! - Click on set cue → Jump to that cue position
 //! - Click on empty slot → Set cue at current playhead position
 //! - Shift+Click on set cue → Clear/delete that cue point
 
 use super::app::{LoadedTrackState, Message};
-use iced::widget::{button, column, container, mouse_area, row, text};
+use iced::widget::{button, container, mouse_area, row, text};
 use iced::{Alignment, Color, Element, Length, Theme};
 use mesh_core::types::SAMPLE_RATE;
 
@@ -22,64 +22,23 @@ const CUE_COLORS: [Color; 8] = [
     Color::from_rgb(1.0, 0.5, 0.8), // Pink
 ];
 
-/// Render the hot cue buttons (8 action buttons)
+/// Render the hot cue buttons (single row of 8 action buttons)
 pub fn view(state: &LoadedTrackState) -> Element<Message> {
-    let title = text("Hot Cues").size(16);
-
-    // Create top row buttons (1-4)
-    let top_buttons: Vec<Element<Message>> = (0..4)
+    // Create all 8 hot cue buttons in a single row
+    let buttons: Vec<Element<Message>> = (0..8)
         .map(|i| {
             let cue = state.cue_points.iter().find(|c| c.index == i as u8);
             create_hot_cue_button(i, cue)
         })
         .collect();
 
-    // Create bottom row buttons (5-8)
-    let bottom_buttons: Vec<Element<Message>> = (4..8)
-        .map(|i| {
-            let cue = state.cue_points.iter().find(|c| c.index == i as u8);
-            create_hot_cue_button(i, cue)
-        })
-        .collect();
+    let hot_cue_row = row(buttons).spacing(8).align_y(Alignment::Center);
 
-    // Display in two rows of 4
-    let top_row = row(top_buttons).spacing(8).align_y(Alignment::Center);
-    let bottom_row = row(bottom_buttons).spacing(8).align_y(Alignment::Center);
-
-    // Beat jump size selector
-    let jump_sizes = [1, 4, 8, 16, 32];
-    let jump_buttons: Vec<Element<Message>> = jump_sizes
-        .iter()
-        .map(|&size| {
-            let is_selected = state.beat_jump_size() == size;
-            let btn = button(text(format!("{}", size)).size(12))
-                .on_press(Message::SetBeatJumpSize(size))
-                .style(if is_selected {
-                    iced::widget::button::primary
-                } else {
-                    iced::widget::button::secondary
-                });
-            btn.into()
-        })
-        .collect();
-
-    let jump_label = text("Beat Jump:").size(12);
-    let jump_row = row![
-        jump_label,
-        row(jump_buttons).spacing(4).align_y(Alignment::Center),
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center);
-
-    // Shift+click hint
-    let hint = text("Click to jump/set • Shift+click to clear").size(10);
-
-    container(
-        column![title, top_row, bottom_row, jump_row, hint,].spacing(8),
-    )
-    .padding(10)
-    .width(Length::Fill)
-    .into()
+    container(hot_cue_row)
+        .padding(10)
+        .width(Length::Fill)
+        .center_x(Length::Fill)
+        .into()
 }
 
 /// Create a single hot cue button
@@ -97,8 +56,8 @@ fn create_hot_cue_button(
     };
 
     let btn = button(text(label_text).size(11).center())
-        .width(Length::Fixed(55.0))
-        .height(Length::Fixed(40.0));
+        .width(Length::Fixed(60.0))
+        .height(Length::Fixed(44.0));
 
     // If cue exists, use CDJ-style preview (hold to play, release to return)
     // Otherwise, click sets a new cue point

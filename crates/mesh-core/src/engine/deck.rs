@@ -385,8 +385,10 @@ impl Deck {
                     self.position = pos;
                 }
                 PlayState::Stopped | PlayState::Cueing => {
-                    // Preview mode - remember position, play from cue
-                    self.hot_cue_preview_return = Some(self.position);
+                    // Preview mode - set main cue point to hot cue, play from cue
+                    // On release, returns to the hot cue position (not the original position)
+                    self.cue_point = pos;
+                    self.hot_cue_preview_return = Some(pos);
                     self.position = pos;
                     self.state = PlayState::Playing;
                 }

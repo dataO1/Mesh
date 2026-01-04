@@ -9,23 +9,29 @@ use iced::{Alignment, Element, Length};
 pub fn view(state: &LoadedTrackState) -> Element<Message> {
     let header = view_header(state);
 
-    // Zoomed waveform (detail view centered on playhead) above overview
-    let zoomed_waveform = state.zoomed_waveform.view(state.playhead_position());
+    // Player controls (vertical, left of waveforms)
+    let player_controls = transport::view(state);
 
-    // Overview waveform (full track)
-    let waveform = state.waveform.view();
+    // Combined waveform canvas (zoomed detail view above overview)
+    // Uses single canvas to work around iced bug #3040 where multiple Canvas widgets
+    // don't render properly - only the first one shows.
+    let waveforms = state.combined_waveform.view(state.playhead_position());
 
+    // Layout: player controls on left, waveforms take remaining width
+    let main_row = row![player_controls, waveforms]
+        .spacing(10)
+        .align_y(Alignment::Center);
+
+    // Hot cue buttons (single row of 8)
     let cue_panel = cue_editor::view(state);
-    let transport_controls = transport::view(state);
+
     let save_section = view_save_section(state);
 
     container(
         column![
             header,
-            zoomed_waveform,
-            waveform,
+            main_row,
             cue_panel,
-            transport_controls,
             save_section,
         ]
         .spacing(15),
