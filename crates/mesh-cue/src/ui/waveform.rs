@@ -66,6 +66,8 @@ pub struct WaveformView {
     duration_samples: u64,
     /// Track loaded
     has_track: bool,
+    /// Audio is loading (show placeholder)
+    loading: bool,
 }
 
 impl WaveformView {
@@ -78,6 +80,76 @@ impl WaveformView {
             cue_markers: Vec::new(),
             duration_samples: 0,
             has_track: false,
+            loading: false,
+        }
+    }
+
+    /// Create a placeholder waveform from metadata only (no audio data yet)
+    ///
+    /// Shows beat grid and cue markers while audio loads in background.
+    pub fn from_metadata(metadata: &mesh_core::audio_file::TrackMetadata) -> Self {
+        // We don't know duration yet, so beat markers will be set when stems load
+        // For now, just mark as loading
+        let cue_markers: Vec<CueMarker> = metadata
+            .cue_points
+            .iter()
+            .map(|cue| {
+                let color = CUE_COLORS[(cue.index as usize) % 8];
+                CueMarker {
+                    position: 0.0, // Will be normalized when duration is known
+                    label: cue.label.clone(),
+                    color,
+                    index: cue.index,
+                }
+            })
+            .collect();
+
+        Self {
+            stem_waveforms: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            position: 0.0,
+            beat_markers: Vec::new(), // Will be set when stems load
+            cue_markers,
+            duration_samples: 0,
+            has_track: true,
+            loading: true,
+        }
+    }
+
+    /// Set stems and generate waveform data (called when audio finishes loading)
+    pub fn set_stems(
+        &mut self,
+        stems: &mesh_core::audio_file::StemBuffers,
+        cue_points: &[CuePoint],
+        beat_grid: &[u64],
+    ) {
+        let duration_samples = stems.len() as u64;
+        self.duration_samples = duration_samples;
+        self.loading = false;
+
+        // Generate peak data for each stem
+        self.stem_waveforms = generate_peaks(stems, DEFAULT_WIDTH);
+
+        // Convert beat grid to normalized positions
+        if duration_samples > 0 {
+            self.beat_markers = beat_grid
+                .iter()
+                .map(|&pos| pos as f64 / duration_samples as f64)
+                .collect();
+
+            // Update cue markers with correct normalized positions
+            self.cue_markers = cue_points
+                .iter()
+                .map(|cue| {
+                    let position = cue.sample_position as f64 / duration_samples as f64;
+                    let color = CUE_COLORS[(cue.index as usize) % 8];
+                    CueMarker {
+                        position,
+                        label: cue.label.clone(),
+                        color,
+                        index: cue.index,
+                    }
+                })
+                .collect();
         }
     }
 
@@ -119,6 +191,7 @@ impl WaveformView {
             cue_markers,
             duration_samples,
             has_track: true,
+            loading: false,
         }
     }
 
@@ -294,6 +367,21 @@ impl<'a> Program<Message> for WaveformCanvas<'a> {
         let width = bounds.width;
         let height = bounds.height;
         let center_y = height / 2.0;
+
+        // Show loading indicator if audio is still loading
+        if self.waveform.loading {
+            // Draw pulsing "Loading..." text in center
+            let loading_color = Color::from_rgba(0.6, 0.6, 0.6, 0.8);
+            // Draw a simple animated bar to indicate loading
+            frame.fill_rectangle(
+                Point::new(width * 0.3, center_y - 2.0),
+                iced::Size::new(width * 0.4, 4.0),
+                loading_color,
+            );
+            // Note: iced canvas doesn't support text directly, so we use a simple bar
+            // The UI text "Loading..." would need to be added via the view function
+            return vec![frame.into_geometry()];
+        }
 
         // Draw beat markers
         let beat_color = Color::from_rgba(0.4, 0.4, 0.4, 0.6);

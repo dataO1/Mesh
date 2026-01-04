@@ -22,7 +22,15 @@ use mesh_core::types::SAMPLE_RATE;
 /// # Returns
 /// Vector of beat positions as sample indices at 44.1kHz
 pub fn generate_beat_grid(bpm: f64, beat_ticks: &[f64], duration_samples: u64) -> Vec<u64> {
+    log::info!(
+        "generate_beat_grid: bpm={:.1}, beat_ticks={}, duration_samples={}",
+        bpm,
+        beat_ticks.len(),
+        duration_samples
+    );
+
     if beat_ticks.is_empty() || duration_samples == 0 {
+        log::warn!("generate_beat_grid: empty input, returning empty grid");
         return Vec::new();
     }
 
@@ -35,6 +43,14 @@ pub fn generate_beat_grid(bpm: f64, beat_ticks: &[f64], duration_samples: u64) -
     // Generate fixed grid using actual track duration
     let first_beat_sample = (first_beat * SAMPLE_RATE as f64) as u64;
     let num_beats = ((duration_samples - first_beat_sample) / samples_per_beat) as usize;
+
+    log::info!(
+        "generate_beat_grid: first_beat={:.3}s, first_beat_sample={}, samples_per_beat={}, num_beats={}",
+        first_beat,
+        first_beat_sample,
+        samples_per_beat,
+        num_beats
+    );
 
     (0..=num_beats)
         .map(|i| first_beat_sample + (i as u64 * samples_per_beat))

@@ -9,15 +9,38 @@ use mesh_core::types::SAMPLE_RATE;
 pub fn view(state: &LoadedTrackState) -> Element<Message> {
     // TODO: Get actual position from audio state
     let position = 0u64;
-    let duration = state.track.duration_samples as u64;
+    let duration = state.duration_samples;
 
     let position_str = format_time(position);
-    let duration_str = format_time(duration);
+    let duration_str = if state.loading_audio {
+        "Loading...".to_string()
+    } else {
+        format_time(duration)
+    };
 
-    let skip_back = button(text("◄◄")).on_press(Message::Seek(0.0));
-    let play = button(text("▶")).on_press(Message::Play);
-    let pause = button(text("▮▮")).on_press(Message::Pause);
-    let skip_forward = button(text("►►")).on_press(Message::Seek(1.0));
+    // Disable controls while loading
+    let controls_enabled = !state.loading_audio && state.stems.is_some();
+
+    let skip_back = if controls_enabled {
+        button(text("◄◄")).on_press(Message::Seek(0.0))
+    } else {
+        button(text("◄◄"))
+    };
+    let play = if controls_enabled {
+        button(text("▶")).on_press(Message::Play)
+    } else {
+        button(text("▶"))
+    };
+    let pause = if controls_enabled {
+        button(text("▮▮")).on_press(Message::Pause)
+    } else {
+        button(text("▮▮"))
+    };
+    let skip_forward = if controls_enabled {
+        button(text("►►")).on_press(Message::Seek(1.0))
+    } else {
+        button(text("►►"))
+    };
 
     let time_display = text(format!("{} / {}", position_str, duration_str)).size(14);
 

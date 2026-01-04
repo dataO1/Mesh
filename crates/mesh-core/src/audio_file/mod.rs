@@ -810,6 +810,21 @@ impl LoadedTrack {
         })
     }
 
+    /// Load only metadata from a file (fast, no audio data)
+    ///
+    /// Use this for quick UI display while audio loads in background.
+    pub fn load_metadata_only<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFileError> {
+        read_metadata(path.as_ref())
+    }
+
+    /// Load only audio stems from a file (slow, loads all audio data)
+    ///
+    /// Use this after metadata is loaded to get the actual audio.
+    pub fn load_stems<P: AsRef<Path>>(path: P) -> Result<StemBuffers, AudioFileError> {
+        let mut reader = AudioFileReader::open(path.as_ref())?;
+        reader.read_all_stems()
+    }
+
     /// Get the BPM of the track (or a default if not set)
     pub fn bpm(&self) -> f64 {
         self.metadata.bpm.unwrap_or(120.0)

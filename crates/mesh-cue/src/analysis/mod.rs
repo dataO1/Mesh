@@ -49,14 +49,34 @@ impl Default for AnalysisResult {
 /// # Returns
 /// Complete analysis result with BPM, key, and beat grid
 pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<AnalysisResult> {
+    log::info!(
+        "analyze_audio: received {} samples ({:.1}s at 44.1kHz)",
+        samples.len(),
+        samples.len() as f64 / 44100.0
+    );
+
     // Detect BPM and beat positions using configured tempo range
     let (bpm, beat_ticks) = detect_bpm(samples, bpm_config)?;
+
+    log::info!(
+        "analyze_audio: Essentia returned {} beat ticks (first: {:.3}s, last: {:.3}s)",
+        beat_ticks.len(),
+        beat_ticks.first().unwrap_or(&0.0),
+        beat_ticks.last().unwrap_or(&0.0)
+    );
 
     // Detect musical key
     let key = detect_key(samples)?;
 
     // Generate fixed beat grid from detected beats, using actual track duration
     let beat_grid = generate_beat_grid(bpm, &beat_ticks, samples.len() as u64);
+
+    log::info!(
+        "analyze_audio: Generated {} beats in grid (first: {}, last: {})",
+        beat_grid.len(),
+        beat_grid.first().unwrap_or(&0),
+        beat_grid.last().unwrap_or(&0)
+    );
 
     Ok(AnalysisResult {
         bpm,

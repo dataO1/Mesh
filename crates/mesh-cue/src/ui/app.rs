@@ -67,17 +67,26 @@ pub struct LoadedTrackState {
     /// Path to the track file
     pub path: PathBuf,
     /// Loaded audio data (wrapped in Arc for efficient cloning in messages)
-    pub track: Arc<LoadedTrack>,
+    /// None while audio is loading asynchronously
+    pub track: Option<Arc<LoadedTrack>>,
+    /// Loaded stems (available after async load completes)
+    pub stems: Option<Arc<StemBuffers>>,
     /// Current cue points (may be modified)
     pub cue_points: Vec<CuePoint>,
     /// Modified BPM (user override)
     pub bpm: f64,
     /// Modified key (user override)
     pub key: String,
+    /// Beat grid from metadata
+    pub beat_grid: Vec<u64>,
+    /// Duration in samples (from metadata or computed)
+    pub duration_samples: u64,
     /// Whether there are unsaved changes
     pub modified: bool,
     /// Waveform display state (cached peak data)
     pub waveform: WaveformView,
+    /// Whether audio is currently loading in the background
+    pub loading_audio: bool,
 }
 
 /// State for the settings modal
@@ -130,6 +139,11 @@ pub enum Message {
     RefreshCollection,
     SelectTrack(usize),
     LoadTrack(usize),
+    /// Phase 1: Metadata loaded (fast), now show UI
+    TrackMetadataLoaded(Result<(PathBuf, TrackMetadata), String>),
+    /// Phase 2: Audio stems loaded (slow), now enable playback
+    TrackStemsLoaded(Result<Arc<StemBuffers>, String>),
+    /// Legacy: full track loaded (kept for compatibility)
     TrackLoaded(Result<Arc<LoadedTrack>, String>),
 
     // Collection: Editor
@@ -463,18 +477,87 @@ impl MeshCueApp {
                 self.collection.selected_track = Some(index);
             }
             Message::LoadTrack(index) => {
+                // Phase 1: Load metadata first (fast, ~50ms)
                 if let Some(track) = self.collection.collection.tracks().get(index) {
                     let path = track.path.clone();
+                    log::info!("LoadTrack: Starting two-phase load for {:?}", path);
                     return Task::perform(
                         async move {
-                            LoadedTrack::load(&path)
-                                .map(Arc::new)
+                            LoadedTrack::load_metadata_only(&path)
+                                .map(|metadata| (path, metadata))
                                 .map_err(|e| e.to_string())
                         },
-                        Message::TrackLoaded,
+                        Message::TrackMetadataLoaded,
                     );
                 }
             }
+            Message::TrackMetadataLoaded(result) => {
+                match result {
+                    Ok((path, metadata)) => {
+                        log::info!("TrackMetadataLoaded: Showing UI, starting audio load");
+                        let bpm = metadata.bpm.unwrap_or(120.0);
+                        let key = metadata.key.clone().unwrap_or_else(|| "?".to_string());
+                        let cue_points = metadata.cue_points.clone();
+                        let beat_grid = metadata.beat_grid.beats.clone();
+
+                        // Create placeholder waveform with beat markers from metadata
+                        let waveform = WaveformView::from_metadata(&metadata);
+
+                        self.collection.loaded_track = Some(LoadedTrackState {
+                            path: path.clone(),
+                            track: None,
+                            stems: None,
+                            cue_points,
+                            bpm,
+                            key,
+                            beat_grid,
+                            duration_samples: 0, // Will be set when audio loads
+                            modified: false,
+                            waveform,
+                            loading_audio: true,
+                        });
+
+                        // Phase 2: Load audio stems in background (slow, ~3s)
+                        return Task::perform(
+                            async move {
+                                LoadedTrack::load_stems(&path)
+                                    .map(Arc::new)
+                                    .map_err(|e| e.to_string())
+                            },
+                            Message::TrackStemsLoaded,
+                        );
+                    }
+                    Err(e) => {
+                        log::error!("Failed to load track metadata: {}", e);
+                    }
+                }
+            }
+            Message::TrackStemsLoaded(result) => {
+                match result {
+                    Ok(stems) => {
+                        log::info!("TrackStemsLoaded: Audio ready, generating waveform");
+                        if let Some(ref mut state) = self.collection.loaded_track {
+                            let duration_samples = stems.len() as u64;
+                            state.duration_samples = duration_samples;
+                            state.loading_audio = false;
+
+                            // Generate waveform from loaded stems
+                            state.waveform.set_stems(&stems, &state.cue_points, &state.beat_grid);
+                            state.stems = Some(stems.clone());
+
+                            // Set up audio playback
+                            self.audio.set_track(stems, duration_samples);
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed to load track audio: {}", e);
+                        if let Some(ref mut state) = self.collection.loaded_track {
+                            state.loading_audio = false;
+                        }
+                    }
+                }
+            }
+            // Legacy handler (kept for compatibility)
             Message::TrackLoaded(result) => {
                 match result {
                     Ok(track) => {
@@ -482,6 +565,7 @@ impl MeshCueApp {
                         let bpm = track.bpm();
                         let key = track.key().to_string();
                         let cue_points = track.metadata.cue_points.clone();
+                        let beat_grid = track.metadata.beat_grid.beats.clone();
                         let duration_samples = track.duration_samples as u64;
 
                         // Initialize waveform with peak data from loaded track
@@ -489,16 +573,20 @@ impl MeshCueApp {
 
                         // Set up audio playback with the track stems
                         let stems = Arc::new(track.stems.clone());
-                        self.audio.set_track(stems, duration_samples);
+                        self.audio.set_track(stems.clone(), duration_samples);
 
                         self.collection.loaded_track = Some(LoadedTrackState {
                             path,
-                            track,
+                            track: Some(track),
+                            stems: Some(stems),
                             cue_points,
                             bpm,
                             key,
+                            beat_grid,
+                            duration_samples,
                             modified: false,
                             waveform,
+                            loading_audio: false,
                         });
                     }
                     Err(e) => {
@@ -550,16 +638,24 @@ impl MeshCueApp {
             }
             Message::SaveTrack => {
                 if let Some(ref state) = self.collection.loaded_track {
+                    // Can't save if stems aren't loaded yet
+                    let stems = match &state.stems {
+                        Some(s) => s.clone(),
+                        None => {
+                            log::warn!("Cannot save: audio not loaded yet");
+                            return Task::none();
+                        }
+                    };
+
                     let path = state.path.clone();
-                    let stems = state.track.stems.clone();
                     let cue_points = state.cue_points.clone();
 
                     // Build updated metadata from edited fields
                     let metadata = TrackMetadata {
                         bpm: Some(state.bpm),
-                        original_bpm: state.track.metadata.original_bpm,
+                        original_bpm: Some(state.bpm), // Use current BPM if no original
                         key: Some(state.key.clone()),
-                        beat_grid: state.track.metadata.beat_grid.clone(),
+                        beat_grid: BeatGrid { beats: state.beat_grid.clone() },
                         cue_points: cue_points.clone(),
                     };
 
