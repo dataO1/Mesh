@@ -2447,6 +2447,7 @@ dependencies = [
  "jack",
  "log",
  "mesh-core",
+ "mesh-widgets",
  "rfd",
  "riff",
  "serde",
@@ -2463,6 +2464,15 @@ dependencies = [
  "jack",
  "mesh-core",
  "tokio",
+]
+
+[[package]]
+name = "mesh-widgets"
+version = "0.1.0"
+dependencies = [
+ "iced",
+ "log",
+ "mesh-core",
 ]
 
 [[package]]

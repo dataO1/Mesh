@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/mesh-core",
+    "crates/mesh-widgets",
     "crates/mesh-player",
     "crates/mesh-cue",
 ]
@@ -20,6 +21,7 @@ riff = "2.0.0"
 iced = { version = "0.14.0", features = ["canvas", "tokio"] }
 tokio = { version = "1.0", features = ["sync", "rt-multi-thread"] }
 mesh-core = { path = "crates/mesh-core" }
+mesh-widgets = { path = "crates/mesh-widgets" }
 
 # mesh-cue dependencies
 essentia = "0.1.5"

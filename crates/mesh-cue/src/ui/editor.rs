@@ -1,6 +1,7 @@
 //! Track editor view
 
 use super::app::{LoadedTrackState, Message};
+use super::waveform::view_combined_waveform;
 use super::{cue_editor, transport};
 use iced::widget::{button, column, container, row, text, text_input, Space};
 use iced::{Alignment, Element, Length};
@@ -15,7 +16,7 @@ pub fn view(state: &LoadedTrackState) -> Element<Message> {
     // Combined waveform canvas (zoomed detail view above overview)
     // Uses single canvas to work around iced bug #3040 where multiple Canvas widgets
     // don't render properly - only the first one shows.
-    let waveforms = state.combined_waveform.view(state.playhead_position());
+    let waveforms = view_combined_waveform(&state.combined_waveform, state.playhead_position());
 
     // Layout: player controls on left, waveforms take remaining width
     let main_row = row![player_controls, waveforms]
