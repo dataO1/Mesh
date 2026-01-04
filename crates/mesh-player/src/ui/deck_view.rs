@@ -15,9 +15,6 @@ use mesh_core::types::PlayState;
 
 use super::waveform::WaveformView;
 
-/// Width of waveform display in pixels
-const WAVEFORM_WIDTH: usize = 400;
-
 /// Stem names for display
 pub const STEM_NAMES: [&str; 4] = ["Vocals", "Drums", "Bass", "Other"];
 /// Short stem names for compact display
@@ -215,22 +212,19 @@ impl DeckView {
     }
 
     /// Update waveform data from loaded track
+    ///
+    /// Uses cached waveform preview from metadata if available.
+    /// No fallback to computing from stems - if preview is missing, shows info message.
     fn update_waveform_from_track(&mut self, track: &mesh_core::audio_file::LoadedTrack) {
-        // Convert each stem to mono samples for waveform display
-        let stems = [
-            &track.stems.vocals,
-            &track.stems.drums,
-            &track.stems.bass,
-            &track.stems.other,
-        ];
-
-        for (idx, stem) in stems.iter().enumerate() {
-            // Convert stereo to mono by averaging left and right
-            let mono_samples: Vec<f32> = stem.iter()
-                .map(|sample| (sample.left + sample.right) / 2.0)
-                .collect();
-
-            self.waveform.set_stem_waveform(idx, &mono_samples, WAVEFORM_WIDTH);
+        // Check for cached waveform preview in metadata
+        if let Some(ref preview) = track.metadata.waveform_preview {
+            // Use the cached preview for instant display
+            self.waveform = WaveformView::from_preview(preview);
+        } else {
+            // No preview available - show info message (no fallback to computing)
+            self.waveform = WaveformView::empty_with_message(
+                "Waveform preview unavailable - re-analyze track"
+            );
         }
 
         // Set beat markers from track metadata

@@ -473,6 +473,7 @@ impl MeshCueApp {
                                 first_beat_sample: analysis.beat_grid.first().copied(),
                             },
                             cue_points: Vec::new(), // No cue points initially
+                            waveform_preview: None, // Generated during export
                         };
                         log::info!(
                             "Metadata: BPM={:.1}, Key={}, {} beats in grid",
@@ -653,6 +654,7 @@ impl MeshCueApp {
                                         first_beat_sample: state.beat_grid.first().copied(),
                                     },
                                     cue_points: state.cue_points.clone(),
+                                    waveform_preview: None, // Using live-generated waveform
                                 },
                                 duration_samples: duration_samples as usize,
                                 duration_seconds,
@@ -800,6 +802,7 @@ impl MeshCueApp {
                             first_beat_sample: state.beat_grid.first().copied(),
                         },
                         cue_points: cue_points.clone(),
+                        waveform_preview: None, // Will be regenerated during save
                     };
 
                     return Task::perform(

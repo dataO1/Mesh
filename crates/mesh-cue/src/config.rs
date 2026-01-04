@@ -208,6 +208,7 @@ mod tests {
                     max_tempo: 190,
                 },
             },
+            track_name_format: String::from("{artist} - {name}"),
         };
 
         let yaml = serde_yaml::to_string(&config).unwrap();
