@@ -43,14 +43,18 @@ pub use waveform::{
 
 // Waveform state structures
 pub use waveform::{
-    CombinedState, CueMarker, OverviewState, ZoomedState,
+    CombinedState, CueMarker, OverviewState, PlayerCanvasState, ZoomedState,
     // Constants
     COMBINED_WAVEFORM_GAP, DEFAULT_ZOOM_BARS, MAX_ZOOM_BARS, MIN_ZOOM_BARS,
     WAVEFORM_HEIGHT, ZOOMED_WAVEFORM_HEIGHT, ZOOM_PIXELS_PER_LEVEL,
 };
 
 // Waveform view functions (idiomatic iced 0.14 pattern)
-pub use waveform::{waveform_combined, waveform_overview, waveform_zoomed};
+pub use waveform::{waveform_combined, waveform_overview, waveform_player, waveform_zoomed};
 
 // Canvas interaction types for advanced usage
-pub use waveform::{CombinedInteraction, OverviewInteraction, ZoomedInteraction};
+pub use waveform::{
+    CombinedInteraction, OverviewInteraction, PlayerInteraction, ZoomedInteraction,
+    // Player canvas layout constants
+    OVERVIEW_STACK_GAP, PLAYER_SECTION_GAP, ZOOMED_GRID_GAP,
+};

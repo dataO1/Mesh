@@ -12,15 +12,21 @@ use iced::{Center, Element, Fill, Length, Subscription, Task, Theme};
 use iced::time;
 
 use crate::audio::SharedState;
+use mesh_core::audio_file::StemBuffers;
 use super::deck_view::{DeckView, DeckMessage};
 use super::file_browser::{FileBrowserView, FileBrowserMessage};
 use super::mixer_view::{MixerView, MixerMessage};
+use super::player_canvas::{view_player_canvas, PlayerCanvasState};
 
 /// Application state
 pub struct MeshApp {
     /// Shared state with audio thread
     audio_state: Option<Arc<Mutex<SharedState>>>,
-    /// Local deck view states
+    /// Unified waveform state for all 4 decks
+    player_canvas_state: PlayerCanvasState,
+    /// Stem buffers for waveform recomputation (one per deck)
+    deck_stems: [Option<Arc<StemBuffers>>; 4],
+    /// Local deck view states (controls only, waveform moved to player_canvas_state)
     deck_views: [DeckView; 4],
     /// Mixer view state
     mixer_view: MixerView,
@@ -49,6 +55,10 @@ pub enum Message {
     SetGlobalBpm(f64),
     /// Load track to deck
     LoadTrack(usize, String),
+    /// Seek on a deck (deck_idx, normalized position 0.0-1.0)
+    DeckSeek(usize, f64),
+    /// Set zoom level on a deck (deck_idx, zoom in bars)
+    DeckSetZoom(usize, u32),
 }
 
 impl MeshApp {
@@ -57,6 +67,8 @@ impl MeshApp {
         let audio_connected = audio_state.is_some();
         Self {
             audio_state,
+            player_canvas_state: PlayerCanvasState::new(),
+            deck_stems: [None, None, None, None],
             deck_views: [
                 DeckView::new(0),
                 DeckView::new(1),
@@ -75,22 +87,70 @@ impl MeshApp {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Tick => {
-                // Sync UI state from audio engine
+                // Collect deck positions while holding lock briefly
+                // This avoids blocking the audio thread during expensive compute_peaks()
+                let mut deck_positions: [Option<u64>; 4] = [None; 4];
+
                 if let Some(ref state) = self.audio_state {
                     if let Ok(s) = state.try_lock() {
                         self.global_bpm = s.engine.global_bpm();
 
-                        // Update deck views with engine state
+                        // Update deck views and waveform state (fast operations only)
                         for i in 0..4 {
                             if let Some(deck) = s.engine.deck(i) {
+                                // Sync deck view (controls)
                                 self.deck_views[i].sync_from_deck(deck);
+
+                                // Store position for later peak computation
+                                let position = deck.position();
+                                deck_positions[i] = Some(position);
+                                self.player_canvas_state.set_playhead(i, position);
+
+                                if let Some(track) = deck.track() {
+                                    let duration = track.duration_samples as u64;
+                                    if duration > 0 {
+                                        let pos_normalized = position as f64 / duration as f64;
+                                        self.player_canvas_state.decks[i]
+                                            .overview
+                                            .set_position(pos_normalized);
+                                    }
+
+                                    let loop_state = deck.loop_state();
+                                    if loop_state.active && duration > 0 {
+                                        let start = loop_state.start as f64 / duration as f64;
+                                        let end = loop_state.end as f64 / duration as f64;
+                                        self.player_canvas_state.decks[i]
+                                            .overview
+                                            .set_loop_region(Some((start, end)));
+                                    } else {
+                                        self.player_canvas_state.decks[i]
+                                            .overview
+                                            .set_loop_region(None);
+                                    }
+                                }
                             }
                         }
 
                         // Update mixer view
                         self.mixer_view.sync_from_mixer(s.engine.mixer());
                     }
+                    // Lock released here - audio thread can proceed
                 }
+
+                // Recompute zoomed waveform peaks OUTSIDE the lock
+                // This expensive operation (10-50ms) no longer blocks the audio thread
+                for i in 0..4 {
+                    if let Some(position) = deck_positions[i] {
+                        if self.player_canvas_state.decks[i].zoomed.needs_recompute(position) {
+                            if let Some(ref stems) = self.deck_stems[i] {
+                                self.player_canvas_state.decks[i]
+                                    .zoomed
+                                    .compute_peaks(stems, position, 800);
+                            }
+                        }
+                    }
+                }
+
                 Task::none()
             }
 
@@ -144,8 +204,73 @@ impl MeshApp {
                             if let Some(deck) = s.engine.deck_mut(deck_idx) {
                                 match mesh_core::audio_file::LoadedTrack::load(&path) {
                                     Ok(track) => {
+                                        // Populate waveform state BEFORE moving track to deck
+                                        let duration = track.duration_samples as u64;
+                                        let bpm = track.metadata.bpm.unwrap_or(120.0);
+
+                                        // Create cue markers for display
+                                        let cue_markers: Vec<mesh_widgets::CueMarker> = track
+                                            .metadata
+                                            .cue_points
+                                            .iter()
+                                            .map(|cue| {
+                                                let position = if duration > 0 {
+                                                    cue.sample_position as f64 / duration as f64
+                                                } else {
+                                                    0.0
+                                                };
+                                                mesh_widgets::CueMarker {
+                                                    position,
+                                                    label: cue.label.clone(),
+                                                    color: mesh_widgets::CUE_COLORS
+                                                        [(cue.index as usize) % 8],
+                                                    index: cue.index,
+                                                }
+                                            })
+                                            .collect();
+
+                                        // Populate overview from waveform preview (if available)
+                                        if let Some(ref preview) = track.metadata.waveform_preview {
+                                            self.player_canvas_state.decks[deck_idx].overview =
+                                                mesh_widgets::OverviewState::from_preview(
+                                                    preview,
+                                                    &track.metadata.beat_grid.beats,
+                                                    &track.metadata.cue_points,
+                                                    duration,
+                                                );
+                                        } else {
+                                            self.player_canvas_state.decks[deck_idx].overview =
+                                                mesh_widgets::OverviewState::empty_with_message(
+                                                    "No waveform preview",
+                                                    &track.metadata.cue_points,
+                                                    duration,
+                                                );
+                                        }
+
+                                        // Populate zoomed waveform state
+                                        self.player_canvas_state.decks[deck_idx].zoomed =
+                                            mesh_widgets::ZoomedState::from_metadata(
+                                                bpm,
+                                                track.metadata.beat_grid.beats.clone(),
+                                                cue_markers,
+                                            );
+                                        self.player_canvas_state.decks[deck_idx]
+                                            .zoomed
+                                            .set_duration(duration);
+
+                                        // Store stems for waveform recomputation
+                                        self.deck_stems[deck_idx] =
+                                            Some(Arc::new(track.stems.clone()));
+
+                                        // Compute initial zoomed peaks from stem data
+                                        self.player_canvas_state.decks[deck_idx]
+                                            .zoomed
+                                            .compute_peaks(&track.stems, 0, 800);
+
+                                        // Load track into engine (moves ownership)
                                         deck.load_track(track);
-                                        self.status = format!("Loaded track to deck {}", deck_idx + 1);
+                                        self.status =
+                                            format!("Loaded track to deck {}", deck_idx + 1);
                                     }
                                     Err(e) => {
                                         self.status = format!("Error loading track: {}", e);
@@ -154,6 +279,21 @@ impl MeshApp {
                             }
                         }
                     }
+                }
+                Task::none()
+            }
+
+            Message::DeckSeek(deck_idx, position) => {
+                if deck_idx < 4 {
+                    // TODO: Implement actual seeking via engine
+                    let _ = position;
+                }
+                Task::none()
+            }
+
+            Message::DeckSetZoom(deck_idx, bars) => {
+                if deck_idx < 4 {
+                    self.player_canvas_state.decks[deck_idx].zoomed.set_zoom(bars);
                 }
                 Task::none()
             }
@@ -171,44 +311,45 @@ impl MeshApp {
         // Header with global controls
         let header = self.view_header();
 
-        // 3-column layout:
-        // Left: Decks 1 & 3 | Center: File Browser + Mixer | Right: Decks 2 & 4
+        // File browser (top, full width)
+        let file_browser = self.file_browser.view().map(Message::FileBrowser);
 
-        // Left column: Decks 1 & 3 (stacked vertically)
-        let left_column = column![
+        // 3-column layout for controls + canvas + mixer:
+        // Left: Decks 1 & 3 controls | Center: Waveform canvas + Mixer | Right: Decks 2 & 4 controls
+
+        // Left column: Deck 1 (top) and Deck 3 (bottom) controls
+        let left_controls = column![
             self.deck_views[0].view().map(|m| Message::Deck(0, m)),
             self.deck_views[2].view().map(|m| Message::Deck(2, m)),
         ]
         .spacing(10)
-        .width(Length::FillPortion(2));
+        .width(Length::FillPortion(1));
 
-        // Center column: File browser + Mixer (stacked)
-        let file_browser = self.file_browser.view().map(Message::FileBrowser);
+        // Center column: Waveform canvas (top) + Mixer (bottom)
+        let center_canvas = view_player_canvas(&self.player_canvas_state);
         let mixer = self.mixer_view.view().map(Message::Mixer);
-
         let center_column = column![
-            file_browser,
+            center_canvas,
             mixer,
         ]
         .spacing(10)
-        .width(Length::FillPortion(1));
+        .width(Length::FillPortion(2));
 
-        // Right column: Decks 2 & 4 (stacked vertically)
-        let right_column = column![
+        // Right column: Deck 2 (top) and Deck 4 (bottom) controls
+        let right_controls = column![
             self.deck_views[1].view().map(|m| Message::Deck(1, m)),
             self.deck_views[3].view().map(|m| Message::Deck(3, m)),
         ]
         .spacing(10)
-        .width(Length::FillPortion(2));
+        .width(Length::FillPortion(1));
 
-        // Main 3-column row
-        let main_content = row![
-            left_column,
+        // Main content area: controls | canvas+mixer | controls
+        let main_row = row![
+            left_controls,
             center_column,
-            right_column,
+            right_controls,
         ]
-        .spacing(10)
-        .height(Fill);
+        .spacing(10);
 
         // Status bar
         let status_bar = container(
@@ -218,7 +359,8 @@ impl MeshApp {
 
         let content = column![
             header,
-            main_content,
+            file_browser,
+            main_row,
             status_bar,
         ]
         .spacing(10)

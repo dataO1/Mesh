@@ -17,13 +17,13 @@ use super::{generate_peaks, generate_peaks_for_range, smooth_peaks, DEFAULT_WIDT
 // =============================================================================
 
 /// Overview waveform height in pixels (compact)
-pub const WAVEFORM_HEIGHT: f32 = 75.0;
+pub const WAVEFORM_HEIGHT: f32 = 35.0;
 
 /// Zoomed waveform height in pixels (detailed, larger)
-pub const ZOOMED_WAVEFORM_HEIGHT: f32 = 240.0;
+pub const ZOOMED_WAVEFORM_HEIGHT: f32 = 100.0;
 
 /// Gap between zoomed and overview waveforms in combined view
-pub const COMBINED_WAVEFORM_GAP: f32 = 10.0;
+pub const COMBINED_WAVEFORM_GAP: f32 = 6.0;
 
 /// Minimum zoom level in bars
 pub const MIN_ZOOM_BARS: u32 = 1;
@@ -48,6 +48,7 @@ pub const ZOOM_PIXELS_PER_LEVEL: f32 = 20.0;
 /// - Beat grid markers
 /// - Cue point markers
 /// - Playhead position
+/// - Loop region (for DJ player loop display)
 ///
 /// This is pure data with builder methods - rendering is handled by view functions.
 #[derive(Debug, Clone)]
@@ -72,6 +73,8 @@ pub struct OverviewState {
     pub missing_preview_message: Option<String>,
     /// Grid density for overview (bars between major grid lines: 4, 8, 16, 32)
     pub grid_bars: u32,
+    /// Loop region (start, end) as normalized positions (0.0 to 1.0), None if no loop active
+    pub loop_region: Option<(f64, f64)>,
 }
 
 impl OverviewState {
@@ -88,6 +91,7 @@ impl OverviewState {
             loading: false,
             missing_preview_message: None,
             grid_bars: 8, // Default: show grid every 8 bars
+            loop_region: None,
         }
     }
 
@@ -99,6 +103,13 @@ impl OverviewState {
     /// Set the grid density (bars between major grid lines)
     pub fn set_grid_bars(&mut self, bars: u32) {
         self.grid_bars = bars.clamp(4, 32);
+    }
+
+    /// Set the loop region (normalized positions 0.0 to 1.0)
+    ///
+    /// Pass `None` to clear the loop region.
+    pub fn set_loop_region(&mut self, region: Option<(f64, f64)>) {
+        self.loop_region = region;
     }
 
     /// Create from a cached waveform preview
@@ -154,6 +165,7 @@ impl OverviewState {
             loading: false,
             missing_preview_message: None,
             grid_bars: 8,
+            loop_region: None,
         }
     }
 
@@ -174,6 +186,7 @@ impl OverviewState {
             loading: false,
             missing_preview_message: Some(message.to_string()),
             grid_bars: 8,
+            loop_region: None,
         }
     }
 
@@ -206,6 +219,7 @@ impl OverviewState {
             loading: true,
             missing_preview_message: None,
             grid_bars: 8,
+            loop_region: None,
         }
     }
 
@@ -264,6 +278,7 @@ impl OverviewState {
             loading: false,
             missing_preview_message: None,
             grid_bars: 8,
+            loop_region: None,
         }
     }
 
@@ -531,6 +546,69 @@ impl CombinedState {
 }
 
 impl Default for CombinedState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// =============================================================================
+// Player Canvas State (4-Deck Unified View)
+// =============================================================================
+
+/// State for 4-deck player canvas (all waveforms in one)
+///
+/// This holds waveform data for all 4 decks in a DJ player, allowing
+/// them to be rendered in a single Canvas widget (working around iced bug #3040).
+///
+/// ## Layout
+/// - **Zoomed grid** (2x2): Deck 1=top-left, 2=top-right, 3=bottom-left, 4=bottom-right
+/// - **Overview stack**: Decks 1-4 stacked vertically
+#[derive(Debug, Clone)]
+pub struct PlayerCanvasState {
+    /// Per-deck combined state (zoomed + overview)
+    pub decks: [CombinedState; 4],
+    /// Per-deck playhead positions in samples
+    pub playheads: [u64; 4],
+}
+
+impl PlayerCanvasState {
+    /// Create a new player canvas state with 4 empty decks
+    pub fn new() -> Self {
+        Self {
+            decks: [
+                CombinedState::new(),
+                CombinedState::new(),
+                CombinedState::new(),
+                CombinedState::new(),
+            ],
+            playheads: [0; 4],
+        }
+    }
+
+    /// Get a reference to a deck's state
+    pub fn deck(&self, idx: usize) -> &CombinedState {
+        &self.decks[idx]
+    }
+
+    /// Get a mutable reference to a deck's state
+    pub fn deck_mut(&mut self, idx: usize) -> &mut CombinedState {
+        &mut self.decks[idx]
+    }
+
+    /// Set the playhead position for a deck (in samples)
+    pub fn set_playhead(&mut self, idx: usize, position: u64) {
+        if idx < 4 {
+            self.playheads[idx] = position;
+        }
+    }
+
+    /// Get the playhead position for a deck (in samples)
+    pub fn playhead(&self, idx: usize) -> u64 {
+        self.playheads[idx]
+    }
+}
+
+impl Default for PlayerCanvasState {
     fn default() -> Self {
         Self::new()
     }

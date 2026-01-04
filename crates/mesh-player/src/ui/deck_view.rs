@@ -1,19 +1,19 @@
 //! Deck view component
 //!
-//! Displays a single DJ deck with:
-//! - Track info and waveform
+//! Displays a single DJ deck's controls:
+//! - Track info display
 //! - Transport controls (play/pause, cue, sync)
 //! - Hot cue buttons
 //! - Pitch/tempo fader
 //! - Stem controls (mute/solo/volume per stem)
+//!
+//! Note: Waveform display is handled separately in the unified PlayerCanvas
 
 use iced::widget::{button, column, container, mouse_area, row, slider, text, Row, Space};
-use iced::{Center, Color, Element, Fill};
+use iced::{Center, Element, Fill};
 
 use mesh_core::engine::Deck;
 use mesh_core::types::PlayState;
-
-use super::waveform::WaveformView;
 
 /// Stem names for display
 pub const STEM_NAMES: [&str; 4] = ["Vocals", "Drums", "Bass", "Other"];
@@ -24,8 +24,6 @@ pub const STEM_NAMES_SHORT: [&str; 4] = ["VOC", "DRM", "BAS", "OTH"];
 pub struct DeckView {
     /// Deck index (0-3)
     deck_idx: usize,
-    /// Waveform view
-    waveform: WaveformView,
     /// Current playback state
     state: PlayState,
     /// Current position (samples)
@@ -105,8 +103,6 @@ pub enum DeckMessage {
     ToggleStemSolo(usize),
     /// Set stem volume
     SetStemVolume(usize, f32),
-    /// Seek to position
-    Seek(f64),
     /// Select stem tab for effect chain view
     SelectStem(usize),
     /// Set effect chain knob value (stem_idx, knob_idx, value)
@@ -123,7 +119,6 @@ impl DeckView {
     pub fn new(deck_idx: usize) -> Self {
         Self {
             deck_idx,
-            waveform: WaveformView::new(),
             state: PlayState::Stopped,
             position: 0,
             duration_samples: 0,
@@ -153,36 +148,12 @@ impl DeckView {
             self.track_bpm = track.bpm();
             self.track_name = track.filename().to_string();
             self.duration_samples = track.duration_samples as u64;
-
-            // Only regenerate waveform when track changes
-            if self.track_name != self.last_loaded_track {
-                self.last_loaded_track = self.track_name.clone();
-                self.update_waveform_from_track(track);
-            }
-
-            // Update playhead position
-            if self.duration_samples > 0 {
-                let pos_normalized = self.position as f64 / self.duration_samples as f64;
-                self.waveform.set_position(pos_normalized);
-            }
-
-            // Update loop region
-            let loop_state = deck.loop_state();
-            if loop_state.active && self.duration_samples > 0 {
-                let start = loop_state.start as f64 / self.duration_samples as f64;
-                let end = loop_state.end as f64 / self.duration_samples as f64;
-                self.waveform.set_loop(Some(start), Some(end));
-            } else {
-                self.waveform.set_loop(None, None);
-            }
+            self.last_loaded_track = self.track_name.clone();
         } else {
             self.track_bpm = 0.0;
             self.track_name = String::new();
             self.duration_samples = 0;
-            if !self.last_loaded_track.is_empty() {
-                self.last_loaded_track.clear();
-                self.waveform.clear();
-            }
+            self.last_loaded_track.clear();
         }
 
         // Sync stem states and effect chains
@@ -207,52 +178,6 @@ impl DeckView {
                 for k in 0..8 {
                     self.stem_knobs[i][k] = chain.get_knob(k);
                 }
-            }
-        }
-    }
-
-    /// Update waveform data from loaded track
-    ///
-    /// Uses cached waveform preview from metadata if available.
-    /// No fallback to computing from stems - if preview is missing, shows info message.
-    fn update_waveform_from_track(&mut self, track: &mesh_core::audio_file::LoadedTrack) {
-        // Check for cached waveform preview in metadata
-        if let Some(ref preview) = track.metadata.waveform_preview {
-            // Use the cached preview for instant display
-            self.waveform = WaveformView::from_preview(preview);
-        } else {
-            // No preview available - show info message (no fallback to computing)
-            self.waveform = WaveformView::empty_with_message(
-                "Waveform preview unavailable - re-analyze track"
-            );
-        }
-
-        // Set beat markers from track metadata
-        if track.duration_samples > 0 {
-            let beat_positions: Vec<f64> = track.metadata.beat_grid.beats
-                .iter()
-                .map(|&sample| sample as f64 / track.duration_samples as f64)
-                .collect();
-            self.waveform.set_beats(beat_positions);
-        }
-
-        // Set cue markers
-        self.waveform.clear_cues();
-        let cue_colors = [
-            Color::from_rgb(1.0, 0.3, 0.3),  // Red
-            Color::from_rgb(1.0, 0.6, 0.0),  // Orange
-            Color::from_rgb(1.0, 1.0, 0.0),  // Yellow
-            Color::from_rgb(0.3, 1.0, 0.3),  // Green
-            Color::from_rgb(0.0, 0.8, 0.8),  // Cyan
-            Color::from_rgb(0.3, 0.3, 1.0),  // Blue
-            Color::from_rgb(0.8, 0.3, 0.8),  // Purple
-            Color::from_rgb(1.0, 0.5, 0.8),  // Pink
-        ];
-        for (idx, cue) in track.metadata.cue_points.iter().enumerate() {
-            if track.duration_samples > 0 {
-                let pos = cue.sample_position as f64 / track.duration_samples as f64;
-                let color = cue_colors.get(idx).copied().unwrap_or(Color::WHITE);
-                self.waveform.add_cue(pos, color);
             }
         }
     }
@@ -323,9 +248,6 @@ impl DeckView {
                 self.stem_volumes[stem_idx] = vol;
                 // TODO: implement stem volume control (need to add to effect chain)
             }
-            DeckMessage::Seek(position) => {
-                let _ = position; // TODO: implement seeking
-            }
             DeckMessage::SelectStem(stem_idx) => {
                 if stem_idx < 4 {
                     self.selected_stem = stem_idx;
@@ -369,9 +291,6 @@ impl DeckView {
         };
         let state_display = text(state_text).size(14);
 
-        // Waveform display (map empty message to Play as a no-op for now)
-        let waveform_element: Element<DeckMessage> = self.waveform.view().map(|_| DeckMessage::Play);
-
         // Transport controls
         let transport = self.view_transport();
 
@@ -387,7 +306,6 @@ impl DeckView {
         let content = column![
             row![deck_label, Space::new().width(Fill), state_display].align_y(Center),
             track_info,
-            waveform_element,
             transport,
             hot_cues,
             stems,

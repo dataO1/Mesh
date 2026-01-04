@@ -16,6 +16,13 @@ use ui::{MeshApp, app::Message};
 const CLIENT_NAME: &str = "mesh-player";
 
 fn main() -> iced::Result {
+    // Initialize logger - set RUST_LOG=debug for verbose output
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp_millis()
+        .init();
+
+    log::info!("mesh-player starting up");
+
     println!("╔══════════════════════════════════════════════════════════════╗");
     println!("║                     Mesh DJ Player                            ║");
     println!("║              4-deck stem-based mixing                         ║");

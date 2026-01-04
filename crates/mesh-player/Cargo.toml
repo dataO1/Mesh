@@ -9,6 +9,9 @@ path = "src/main.rs"
 
 [dependencies]
 mesh-core.workspace = true
+mesh-widgets.workspace = true
 jack.workspace = true
 iced.workspace = true
 tokio.workspace = true
+log = "0.4"
+env_logger = "0.11"

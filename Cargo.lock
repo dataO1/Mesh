@@ -2460,9 +2460,12 @@ dependencies = [
 name = "mesh-player"
 version = "0.1.0"
 dependencies = [
+ "env_logger",
  "iced",
  "jack",
+ "log",
  "mesh-core",
+ "mesh-widgets",
  "tokio",
 ]
 

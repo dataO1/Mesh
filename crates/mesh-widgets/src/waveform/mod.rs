@@ -42,16 +42,20 @@ pub use peaks::{
 };
 
 pub use state::{
-    CombinedState, OverviewState, ZoomedState,
+    CombinedState, OverviewState, PlayerCanvasState, ZoomedState,
     // Constants
     COMBINED_WAVEFORM_GAP, DEFAULT_ZOOM_BARS, MAX_ZOOM_BARS, MIN_ZOOM_BARS,
     WAVEFORM_HEIGHT, ZOOMED_WAVEFORM_HEIGHT, ZOOM_PIXELS_PER_LEVEL,
 };
 
-pub use view::{waveform_combined, waveform_overview, waveform_zoomed};
+pub use view::{waveform_combined, waveform_overview, waveform_player, waveform_zoomed};
 
 // Re-export canvas types for advanced usage (custom Program state)
-pub use canvas::{CombinedInteraction, OverviewInteraction, ZoomedInteraction};
+pub use canvas::{
+    CombinedInteraction, OverviewInteraction, PlayerInteraction, ZoomedInteraction,
+    // Player canvas layout constants
+    OVERVIEW_STACK_GAP, PLAYER_SECTION_GAP, ZOOMED_GRID_GAP,
+};
 
 use iced::Color;
 

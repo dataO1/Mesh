@@ -5,7 +5,7 @@
 //! idiomatic iced 0.14 patterns.
 
 use super::state::{
-    CombinedState, OverviewState, ZoomedState,
+    CombinedState, OverviewState, PlayerCanvasState, ZoomedState,
     COMBINED_WAVEFORM_GAP, MAX_ZOOM_BARS, MIN_ZOOM_BARS,
     WAVEFORM_HEIGHT, ZOOMED_WAVEFORM_HEIGHT, ZOOM_PIXELS_PER_LEVEL,
 };
@@ -43,6 +43,32 @@ pub struct CombinedInteraction {
     /// Whether dragging in overview region for seeking
     pub is_seeking: bool,
 }
+
+/// Canvas state for 4-deck player canvas
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PlayerInteraction {
+    /// Which deck is currently being interacted with (0-3), None if no interaction
+    pub active_deck: Option<usize>,
+    /// Zoom gesture state (drag Y position when started)
+    pub drag_start_y: Option<f32>,
+    /// Zoom level when drag started
+    pub drag_start_zoom: u32,
+    /// Whether dragging in overview region for seeking
+    pub is_seeking: bool,
+}
+
+// =============================================================================
+// Player Canvas Layout Constants
+// =============================================================================
+
+/// Gap between zoomed waveform cells in the 2x2 grid
+pub const ZOOMED_GRID_GAP: f32 = 4.0;
+
+/// Gap between overview waveform rows in the stack
+pub const OVERVIEW_STACK_GAP: f32 = 2.0;
+
+/// Gap between the zoomed grid and overview stack
+pub const PLAYER_SECTION_GAP: f32 = 8.0;
 
 // =============================================================================
 // Overview Canvas Program
@@ -765,6 +791,39 @@ fn draw_overview_section(
         return;
     }
 
+    // Draw loop region (semi-transparent green overlay)
+    if let Some((loop_start, loop_end)) = overview.loop_region {
+        let start_x = (loop_start * width as f64) as f32;
+        let end_x = (loop_end * width as f64) as f32;
+        let loop_width = end_x - start_x;
+        if loop_width > 0.0 {
+            frame.fill_rectangle(
+                Point::new(start_x, overview_y),
+                Size::new(loop_width, overview_height),
+                Color::from_rgba(0.2, 0.8, 0.2, 0.25), // Semi-transparent green
+            );
+            // Draw loop boundaries
+            frame.stroke(
+                &Path::line(
+                    Point::new(start_x, overview_y),
+                    Point::new(start_x, overview_y + overview_height),
+                ),
+                Stroke::default()
+                    .with_color(Color::from_rgba(0.2, 0.9, 0.2, 0.8))
+                    .with_width(2.0),
+            );
+            frame.stroke(
+                &Path::line(
+                    Point::new(end_x, overview_y),
+                    Point::new(end_x, overview_y + overview_height),
+                ),
+                Stroke::default()
+                    .with_color(Color::from_rgba(0.2, 0.9, 0.2, 0.8))
+                    .with_width(2.0),
+            );
+        }
+    }
+
     // Draw beat markers with configurable density
     let step = (overview.grid_bars * 4) as usize;
     for (i, &beat_pos) in overview.beat_markers.iter().enumerate() {
@@ -860,6 +919,532 @@ fn draw_overview_section(
                 Point::new(playhead_x, overview_y),
                 Point::new(playhead_x, overview_y + overview_height),
             ),
+            Stroke::default()
+                .with_color(Color::from_rgb(1.0, 1.0, 1.0))
+                .with_width(2.0),
+        );
+    }
+}
+
+// =============================================================================
+// Player Canvas Program (4-Deck Unified View)
+// =============================================================================
+
+/// Canvas program for 4-deck player waveform rendering
+///
+/// Displays all 4 decks in a single canvas:
+/// - **Zoomed grid** (2x2): Deck 1=top-left, 2=top-right, 3=bottom-left, 4=bottom-right
+/// - **Overview stack**: Decks 1-4 stacked vertically below the grid
+///
+/// Takes callback closures with deck index for both seek and zoom operations.
+pub struct PlayerCanvas<'a, Message, SeekFn, ZoomFn>
+where
+    SeekFn: Fn(usize, f64) -> Message,
+    ZoomFn: Fn(usize, u32) -> Message,
+{
+    pub state: &'a PlayerCanvasState,
+    pub on_seek: SeekFn,
+    pub on_zoom: ZoomFn,
+}
+
+impl<'a, Message, SeekFn, ZoomFn> PlayerCanvas<'a, Message, SeekFn, ZoomFn>
+where
+    SeekFn: Fn(usize, f64) -> Message,
+    ZoomFn: Fn(usize, u32) -> Message,
+{
+    /// Get deck index from zoomed grid position (row, col)
+    /// Layout: 1=top-left, 2=top-right, 3=bottom-left, 4=bottom-right
+    fn deck_from_grid(row: usize, col: usize) -> usize {
+        match (row, col) {
+            (0, 0) => 0, // Deck 1
+            (0, 1) => 1, // Deck 2
+            (1, 0) => 2, // Deck 3
+            (1, 1) => 3, // Deck 4
+            _ => 0,
+        }
+    }
+}
+
+impl<'a, Message, SeekFn, ZoomFn> Program<Message> for PlayerCanvas<'a, Message, SeekFn, ZoomFn>
+where
+    Message: Clone,
+    SeekFn: Fn(usize, f64) -> Message,
+    ZoomFn: Fn(usize, u32) -> Message,
+{
+    type State = PlayerInteraction;
+
+    fn update(
+        &self,
+        interaction: &mut Self::State,
+        event: &Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<Message>> {
+        let width = bounds.width;
+        let cell_width = (width - ZOOMED_GRID_GAP) / 2.0;
+        let cell_height = ZOOMED_WAVEFORM_HEIGHT;
+        let zoomed_grid_height = cell_height * 2.0 + ZOOMED_GRID_GAP;
+
+        // Check if cursor is in zoomed grid region
+        let zoomed_grid_bounds = Rectangle {
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width,
+            height: zoomed_grid_height,
+        };
+
+        if let Some(position) = cursor.position_in(zoomed_grid_bounds) {
+            // Determine which cell (deck) was clicked
+            let col = if position.x < cell_width { 0 } else { 1 };
+            let row = if position.y < cell_height { 0 } else { 1 };
+            let deck_idx = Self::deck_from_grid(row, col);
+
+            match event {
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                    interaction.active_deck = Some(deck_idx);
+                    interaction.drag_start_y = Some(position.y);
+                    interaction.drag_start_zoom = self.state.decks[deck_idx].zoomed.zoom_bars;
+                    interaction.is_seeking = false;
+                }
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                    interaction.drag_start_y = None;
+                    interaction.active_deck = None;
+                }
+                Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                    if let (Some(start_y), Some(active_deck)) = (interaction.drag_start_y, interaction.active_deck) {
+                        let delta = start_y - position.y;
+                        let zoom_change = (delta / ZOOM_PIXELS_PER_LEVEL) as i32;
+                        let new_zoom = (interaction.drag_start_zoom as i32 - zoom_change)
+                            .clamp(MIN_ZOOM_BARS as i32, MAX_ZOOM_BARS as i32)
+                            as u32;
+
+                        if new_zoom != self.state.decks[active_deck].zoomed.zoom_bars {
+                            return Some(canvas::Action::publish((self.on_zoom)(active_deck, new_zoom)));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        } else if matches!(event, Event::Mouse(mouse::Event::ButtonReleased(_))) {
+            interaction.drag_start_y = None;
+            interaction.active_deck = None;
+            interaction.is_seeking = false;
+        }
+
+        // Check if cursor is in overview stack region
+        let overview_start_y = zoomed_grid_height + PLAYER_SECTION_GAP;
+        let overview_row_height = WAVEFORM_HEIGHT + OVERVIEW_STACK_GAP;
+        let overview_stack_height = overview_row_height * 4.0 - OVERVIEW_STACK_GAP;
+
+        let overview_stack_bounds = Rectangle {
+            x: bounds.x,
+            y: bounds.y + overview_start_y,
+            width: bounds.width,
+            height: overview_stack_height,
+        };
+
+        if let Some(position) = cursor.position_in(overview_stack_bounds) {
+            // Determine which row (deck) was clicked
+            let row = (position.y / overview_row_height).floor() as usize;
+            let deck_idx = row.min(3);
+
+            match event {
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                    interaction.active_deck = Some(deck_idx);
+                    interaction.is_seeking = true;
+                    interaction.drag_start_y = None;
+
+                    let overview = &self.state.decks[deck_idx].overview;
+                    if overview.has_track && overview.duration_samples > 0 {
+                        let seek_ratio = (position.x / bounds.width).clamp(0.0, 1.0) as f64;
+                        return Some(canvas::Action::publish((self.on_seek)(deck_idx, seek_ratio)));
+                    }
+                }
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                    interaction.is_seeking = false;
+                    interaction.active_deck = None;
+                }
+                Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                    if interaction.is_seeking {
+                        if let Some(active_deck) = interaction.active_deck {
+                            let overview = &self.state.decks[active_deck].overview;
+                            if overview.has_track && overview.duration_samples > 0 {
+                                let seek_ratio = (position.x / bounds.width).clamp(0.0, 1.0) as f64;
+                                return Some(canvas::Action::publish((self.on_seek)(active_deck, seek_ratio)));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        None
+    }
+
+    fn mouse_interaction(
+        &self,
+        interaction: &Self::State,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        let cell_height = ZOOMED_WAVEFORM_HEIGHT;
+        let zoomed_grid_height = cell_height * 2.0 + ZOOMED_GRID_GAP;
+
+        let zoomed_grid_bounds = Rectangle {
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width,
+            height: zoomed_grid_height,
+        };
+
+        if cursor.is_over(zoomed_grid_bounds) {
+            if interaction.drag_start_y.is_some() {
+                mouse::Interaction::ResizingVertically
+            } else {
+                mouse::Interaction::Grab
+            }
+        } else {
+            let overview_start_y = zoomed_grid_height + PLAYER_SECTION_GAP;
+            let overview_stack_height = (WAVEFORM_HEIGHT + OVERVIEW_STACK_GAP) * 4.0 - OVERVIEW_STACK_GAP;
+
+            let overview_stack_bounds = Rectangle {
+                x: bounds.x,
+                y: bounds.y + overview_start_y,
+                width: bounds.width,
+                height: overview_stack_height,
+            };
+
+            if cursor.is_over(overview_stack_bounds) {
+                mouse::Interaction::Pointer
+            } else {
+                mouse::Interaction::default()
+            }
+        }
+    }
+
+    fn draw(
+        &self,
+        _interaction: &Self::State,
+        renderer: &iced::Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let width = bounds.width;
+        let cell_width = (width - ZOOMED_GRID_GAP) / 2.0;
+        let cell_height = ZOOMED_WAVEFORM_HEIGHT;
+
+        // =====================================================================
+        // ZOOMED WAVEFORMS (2x2 grid)
+        // =====================================================================
+        // Deck 1 = top-left, Deck 2 = top-right
+        // Deck 3 = bottom-left, Deck 4 = bottom-right
+        let grid_positions = [
+            (0.0, 0.0),                                      // Deck 1: top-left
+            (cell_width + ZOOMED_GRID_GAP, 0.0),            // Deck 2: top-right
+            (0.0, cell_height + ZOOMED_GRID_GAP),           // Deck 3: bottom-left
+            (cell_width + ZOOMED_GRID_GAP, cell_height + ZOOMED_GRID_GAP), // Deck 4: bottom-right
+        ];
+
+        for (deck_idx, (x, y)) in grid_positions.iter().enumerate() {
+            draw_zoomed_at(
+                &mut frame,
+                &self.state.decks[deck_idx].zoomed,
+                self.state.playheads[deck_idx],
+                *x,
+                *y,
+                cell_width,
+            );
+        }
+
+        // =====================================================================
+        // OVERVIEW WAVEFORMS (stacked, 1-4 from top to bottom)
+        // =====================================================================
+        let zoomed_grid_height = cell_height * 2.0 + ZOOMED_GRID_GAP;
+        let overview_start_y = zoomed_grid_height + PLAYER_SECTION_GAP;
+        let overview_row_height = WAVEFORM_HEIGHT + OVERVIEW_STACK_GAP;
+
+        for deck_idx in 0..4 {
+            let y = overview_start_y + (deck_idx as f32) * overview_row_height;
+            draw_overview_at(
+                &mut frame,
+                &self.state.decks[deck_idx].overview,
+                self.state.playheads[deck_idx],
+                0.0,
+                y,
+                width,
+            );
+        }
+
+        vec![frame.into_geometry()]
+    }
+}
+
+// =============================================================================
+// Offset-Aware Drawing Helpers (for PlayerCanvas)
+// =============================================================================
+
+/// Draw a zoomed waveform at a specific position
+fn draw_zoomed_at(
+    frame: &mut Frame,
+    zoomed: &ZoomedState,
+    playhead: u64,
+    x: f32,
+    y: f32,
+    width: f32,
+) {
+    let height = ZOOMED_WAVEFORM_HEIGHT;
+    let center_y = y + height / 2.0;
+
+    // Background
+    frame.fill_rectangle(
+        Point::new(x, y),
+        Size::new(width, height),
+        Color::from_rgb(0.08, 0.08, 0.1),
+    );
+
+    if !zoomed.has_track || zoomed.duration_samples == 0 {
+        return;
+    }
+
+    let (view_start, view_end) = zoomed.visible_range(playhead);
+    let view_samples = (view_end - view_start) as f64;
+
+    if view_samples > 0.0 {
+        // Draw beat markers
+        for &beat_sample in &zoomed.beat_grid {
+            if beat_sample >= view_start && beat_sample <= view_end {
+                let beat_x = x + ((beat_sample - view_start) as f64 / view_samples * width as f64) as f32;
+                let beat_idx = zoomed.beat_grid.iter().position(|&b| b == beat_sample).unwrap_or(0);
+                let (color, w) = if beat_idx % 4 == 0 {
+                    (Color::from_rgba(1.0, 0.3, 0.3, 0.6), 2.0)
+                } else {
+                    (Color::from_rgba(0.5, 0.5, 0.5, 0.4), 1.0)
+                };
+                frame.stroke(
+                    &Path::line(Point::new(beat_x, y), Point::new(beat_x, y + height)),
+                    Stroke::default().with_color(color).with_width(w),
+                );
+            }
+        }
+
+        // Draw cached peaks
+        if !zoomed.cached_peaks[0].is_empty() {
+            let cache_start = zoomed.cache_start;
+            let cache_end = zoomed.cache_end;
+            let cache_samples = (cache_end - cache_start) as f64;
+
+            for stem_idx in (0..4).rev() {
+                let peaks = &zoomed.cached_peaks[stem_idx];
+                if peaks.is_empty() {
+                    continue;
+                }
+                let peaks_len = peaks.len() as f64;
+                let base_color = STEM_COLORS[stem_idx];
+                let waveform_color = Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.7);
+
+                for px in 0..(width as usize) {
+                    let view_sample = view_start as f64 + (px as f64 / width as f64) * view_samples;
+                    if view_sample < cache_start as f64 || view_sample > cache_end as f64 {
+                        continue;
+                    }
+                    let cache_offset = view_sample - cache_start as f64;
+                    let cache_idx = (cache_offset / cache_samples * peaks_len) as usize;
+                    if cache_idx >= peaks.len() {
+                        continue;
+                    }
+
+                    let (min, max) = peaks[cache_idx];
+                    let y1 = center_y - (max * height / 2.0 * 0.85);
+                    let y2 = center_y - (min * height / 2.0 * 0.85);
+
+                    frame.stroke(
+                        &Path::line(Point::new(x + px as f32, y1), Point::new(x + px as f32, y2)),
+                        Stroke::default().with_color(waveform_color).with_width(1.0),
+                    );
+                }
+            }
+        }
+
+        // Draw cue markers
+        for marker in &zoomed.cue_markers {
+            let marker_sample = (marker.position * zoomed.duration_samples as f64) as u64;
+            if marker_sample >= view_start && marker_sample <= view_end {
+                let cue_x = x + ((marker_sample - view_start) as f64 / view_samples * width as f64) as f32;
+                frame.fill_rectangle(
+                    Point::new(cue_x - 1.0, y),
+                    Size::new(2.0, height),
+                    marker.color,
+                );
+                let triangle = Path::new(|builder| {
+                    builder.move_to(Point::new(cue_x, y));
+                    builder.line_to(Point::new(cue_x - 4.0, y + 8.0));
+                    builder.line_to(Point::new(cue_x + 4.0, y + 8.0));
+                    builder.close();
+                });
+                frame.fill(&triangle, marker.color);
+            }
+        }
+    }
+
+    // Draw playhead at center
+    let playhead_x = x + width / 2.0;
+    frame.stroke(
+        &Path::line(Point::new(playhead_x, y), Point::new(playhead_x, y + height)),
+        Stroke::default()
+            .with_color(Color::from_rgb(1.0, 1.0, 1.0))
+            .with_width(2.0),
+    );
+
+    // Draw zoom indicator
+    let indicator_width = (zoomed.zoom_bars as f32 / MAX_ZOOM_BARS as f32) * 40.0;
+    frame.fill_rectangle(
+        Point::new(x + width - 50.0, y + 5.0),
+        Size::new(indicator_width, 3.0),
+        Color::from_rgba(1.0, 1.0, 1.0, 0.5),
+    );
+}
+
+/// Draw an overview waveform at a specific position
+fn draw_overview_at(
+    frame: &mut Frame,
+    overview: &OverviewState,
+    playhead: u64,
+    x: f32,
+    y: f32,
+    width: f32,
+) {
+    let height = WAVEFORM_HEIGHT;
+    let center_y = y + height / 2.0;
+
+    // Background
+    frame.fill_rectangle(
+        Point::new(x, y),
+        Size::new(width, height),
+        Color::from_rgb(0.05, 0.05, 0.08),
+    );
+
+    if !overview.has_track || overview.duration_samples == 0 {
+        return;
+    }
+
+    // Draw loop region
+    if let Some((loop_start, loop_end)) = overview.loop_region {
+        let start_x = x + (loop_start * width as f64) as f32;
+        let end_x = x + (loop_end * width as f64) as f32;
+        let loop_width = end_x - start_x;
+        if loop_width > 0.0 {
+            frame.fill_rectangle(
+                Point::new(start_x, y),
+                Size::new(loop_width, height),
+                Color::from_rgba(0.2, 0.8, 0.2, 0.25),
+            );
+            frame.stroke(
+                &Path::line(Point::new(start_x, y), Point::new(start_x, y + height)),
+                Stroke::default()
+                    .with_color(Color::from_rgba(0.2, 0.9, 0.2, 0.8))
+                    .with_width(2.0),
+            );
+            frame.stroke(
+                &Path::line(Point::new(end_x, y), Point::new(end_x, y + height)),
+                Stroke::default()
+                    .with_color(Color::from_rgba(0.2, 0.9, 0.2, 0.8))
+                    .with_width(2.0),
+            );
+        }
+    }
+
+    // Draw beat markers with configurable density
+    let step = (overview.grid_bars * 4) as usize;
+    for (i, &beat_pos) in overview.beat_markers.iter().enumerate() {
+        if i % step != 0 {
+            continue;
+        }
+        let beat_x = x + (beat_pos * width as f64) as f32;
+        let (color, line_height) = if (i / step) % 4 == 0 {
+            (Color::from_rgba(1.0, 0.3, 0.3, 0.6), height)
+        } else {
+            (Color::from_rgba(0.5, 0.5, 0.5, 0.4), height * 0.5)
+        };
+        frame.stroke(
+            &Path::line(
+                Point::new(beat_x, y + (height - line_height) / 2.0),
+                Point::new(beat_x, y + (height + line_height) / 2.0),
+            ),
+            Stroke::default().with_color(color).with_width(1.0),
+        );
+    }
+
+    // Draw stem waveforms
+    for stem_idx in (0..4).rev() {
+        let stem_peaks = &overview.stem_waveforms[stem_idx];
+        if stem_peaks.is_empty() {
+            continue;
+        }
+
+        let base_color = STEM_COLORS[stem_idx];
+        let waveform_color = Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.6);
+        let peaks_len = stem_peaks.len() as f32;
+
+        for px in 0..(width as usize) {
+            let peak_idx = (px as f32 / width * peaks_len) as usize;
+            if peak_idx >= stem_peaks.len() {
+                continue;
+            }
+
+            let (min, max) = stem_peaks[peak_idx];
+            let y1 = center_y - (max * height / 2.0 * 0.85);
+            let y2 = center_y - (min * height / 2.0 * 0.85);
+
+            frame.stroke(
+                &Path::line(Point::new(x + px as f32, y1), Point::new(x + px as f32, y2)),
+                Stroke::default().with_color(waveform_color).with_width(1.0),
+            );
+        }
+    }
+
+    // Draw cue markers
+    for marker in &overview.cue_markers {
+        let cue_x = x + (marker.position * width as f64) as f32;
+        frame.fill_rectangle(
+            Point::new(cue_x - 1.0, y),
+            Size::new(2.0, height),
+            marker.color,
+        );
+        let triangle = Path::new(|builder| {
+            builder.move_to(Point::new(cue_x, y));
+            builder.line_to(Point::new(cue_x - 4.0, y + 8.0));
+            builder.line_to(Point::new(cue_x + 4.0, y + 8.0));
+            builder.close();
+        });
+        frame.fill(&triangle, marker.color);
+    }
+
+    // Draw main cue point marker (orange)
+    if let Some(cue_pos) = overview.cue_position {
+        let cue_x = x + (cue_pos * width as f64) as f32;
+        let cue_color = Color::from_rgb(1.0, 0.5, 0.0);
+        frame.stroke(
+            &Path::line(Point::new(cue_x, y), Point::new(cue_x, y + height)),
+            Stroke::default().with_color(cue_color).with_width(2.0),
+        );
+        let triangle = Path::new(|builder| {
+            builder.move_to(Point::new(cue_x, y));
+            builder.line_to(Point::new(cue_x - 4.0, y + 6.0));
+            builder.line_to(Point::new(cue_x + 4.0, y + 6.0));
+            builder.close();
+        });
+        frame.fill(&triangle, cue_color);
+    }
+
+    // Draw playhead
+    if overview.duration_samples > 0 {
+        let playhead_ratio = playhead as f64 / overview.duration_samples as f64;
+        let playhead_x = x + (playhead_ratio * width as f64) as f32;
+        frame.stroke(
+            &Path::line(Point::new(playhead_x, y), Point::new(playhead_x, y + height)),
             Stroke::default()
                 .with_color(Color::from_rgb(1.0, 1.0, 1.0))
                 .with_width(2.0),
