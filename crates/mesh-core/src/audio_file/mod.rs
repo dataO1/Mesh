@@ -178,10 +178,36 @@ impl TrackMetadata {
 
         metadata
     }
+
+    /// Serialize metadata to bext description string
+    ///
+    /// Format: `BPM:128.00|KEY:Am|GRID:0,22050,44100,...|ORIGINAL_BPM:125.00`
+    pub fn to_bext_description(&self) -> String {
+        let mut parts = Vec::new();
+
+        if let Some(bpm) = self.bpm {
+            parts.push(format!("BPM:{:.2}", bpm));
+        }
+        if let Some(ref key) = self.key {
+            parts.push(format!("KEY:{}", key));
+        }
+        if !self.beat_grid.beats.is_empty() {
+            let beats: Vec<String> = self.beat_grid.beats.iter()
+                .take(100) // Limit to first 100 beats to fit in 256 byte description
+                .map(|b| b.to_string())
+                .collect();
+            parts.push(format!("GRID:{}", beats.join(",")));
+        }
+        if let Some(original) = self.original_bpm {
+            parts.push(format!("ORIGINAL_BPM:{:.2}", original));
+        }
+
+        parts.join("|")
+    }
 }
 
 /// Stem audio buffers extracted from a file
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StemBuffers {
     /// Vocals stem (stereo)
     pub vocals: StereoBuffer,
@@ -883,6 +909,30 @@ mod tests {
         assert_eq!(metadata.original_bpm, Some(125.0));
         assert_eq!(metadata.key, Some("Am".to_string()));
         assert_eq!(metadata.beat_grid.beats, vec![0, 22050, 44100]);
+    }
+
+    #[test]
+    fn test_metadata_roundtrip() {
+        // Create metadata
+        let original = TrackMetadata {
+            bpm: Some(174.5),
+            original_bpm: Some(172.0),
+            key: Some("Dm".to_string()),
+            beat_grid: BeatGrid::from_csv("0,11025,22050"),
+            cue_points: Vec::new(),
+        };
+
+        // Serialize to bext description
+        let description = original.to_bext_description();
+
+        // Parse back
+        let parsed = TrackMetadata::parse_bext_description(&description);
+
+        // Verify roundtrip
+        assert_eq!(parsed.bpm, original.bpm);
+        assert_eq!(parsed.original_bpm, original.original_bpm);
+        assert_eq!(parsed.key, original.key);
+        assert_eq!(parsed.beat_grid.beats, original.beat_grid.beats);
     }
 
     #[test]

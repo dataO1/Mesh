@@ -4,6 +4,7 @@ use crate::analysis::AnalysisResult;
 use crate::audio::AudioState;
 use crate::collection::Collection;
 use crate::config::{self, Config};
+use crate::export;
 use crate::import::StemImporter;
 use super::waveform::WaveformView;
 use iced::widget::{button, center, column, container, mouse_area, opaque, row, stack, text, Space};
@@ -526,7 +527,28 @@ impl MeshCueApp {
                 }
             }
             Message::SaveTrack => {
-                // TODO: Save track with updated metadata
+                if let Some(ref state) = self.collection.loaded_track {
+                    let path = state.path.clone();
+                    let stems = state.track.stems.clone();
+                    let cue_points = state.cue_points.clone();
+
+                    // Build updated metadata from edited fields
+                    let metadata = TrackMetadata {
+                        bpm: Some(state.bpm),
+                        original_bpm: state.track.metadata.original_bpm,
+                        key: Some(state.key.clone()),
+                        beat_grid: state.track.metadata.beat_grid.clone(),
+                        cue_points: cue_points.clone(),
+                    };
+
+                    return Task::perform(
+                        async move {
+                            export::save_track_metadata(&path, &stems, &metadata, &cue_points)
+                                .map_err(|e| e.to_string())
+                        },
+                        Message::SaveComplete,
+                    );
+                }
             }
             Message::SaveComplete(result) => {
                 match result {
@@ -534,9 +556,10 @@ impl MeshCueApp {
                         if let Some(ref mut state) = self.collection.loaded_track {
                             state.modified = false;
                         }
+                        log::info!("Track saved successfully");
                     }
                     Err(e) => {
-                        eprintln!("Failed to save track: {}", e);
+                        log::error!("Failed to save track: {}", e);
                     }
                 }
             }

@@ -186,9 +186,7 @@ mesh/
 - **Interactive waveform display** with 4-stem color coding, beat grid overlay, and cue markers
 - **Click-to-seek** on waveform with drag scrubbing support
 - Track editor with cue point list (add, delete, edit labels)
-
-*In Progress:*
-- Save edited track metadata back to file
+- **Save edited track metadata** (BPM, key, cue points) back to file
 
 *Planned:*
 - JACK audio preview

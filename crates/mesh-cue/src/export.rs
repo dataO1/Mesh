@@ -252,6 +252,21 @@ fn write_sample_16bit<W: Write>(writer: &mut W, sample: f32) -> Result<()> {
     Ok(())
 }
 
+/// Save updated metadata to an existing track file
+///
+/// Re-exports the file with new metadata while preserving audio.
+/// This is used by the track editor to save user modifications.
+pub fn save_track_metadata(
+    path: &Path,
+    stems: &StemBuffers,
+    metadata: &TrackMetadata,
+    cue_points: &[CuePoint],
+) -> Result<()> {
+    log::info!("save_track_metadata: Saving to {:?}", path);
+    // Reuse the export function - it writes the complete file with updated metadata
+    export_stem_file(path, stems, metadata, cue_points)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
