@@ -55,8 +55,8 @@ pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<
     // Detect musical key
     let key = detect_key(samples)?;
 
-    // Generate fixed beat grid from detected beats
-    let beat_grid = generate_beat_grid(bpm, &beat_ticks);
+    // Generate fixed beat grid from detected beats, using actual track duration
+    let beat_grid = generate_beat_grid(bpm, &beat_ticks, samples.len() as u64);
 
     Ok(AnalysisResult {
         bpm,

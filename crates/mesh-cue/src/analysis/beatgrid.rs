@@ -17,11 +17,12 @@ use mesh_core::types::SAMPLE_RATE;
 /// # Arguments
 /// * `bpm` - Detected BPM value
 /// * `beat_ticks` - Raw beat positions in seconds from detection
+/// * `duration_samples` - Total track duration in samples
 ///
 /// # Returns
 /// Vector of beat positions as sample indices at 44.1kHz
-pub fn generate_beat_grid(bpm: f64, beat_ticks: &[f64]) -> Vec<u64> {
-    if beat_ticks.is_empty() {
+pub fn generate_beat_grid(bpm: f64, beat_ticks: &[f64], duration_samples: u64) -> Vec<u64> {
+    if beat_ticks.is_empty() || duration_samples == 0 {
         return Vec::new();
     }
 
@@ -31,13 +32,9 @@ pub fn generate_beat_grid(bpm: f64, beat_ticks: &[f64]) -> Vec<u64> {
     // Calculate samples per beat
     let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
 
-    // Estimate track duration from last beat + some margin
-    let last_beat = beat_ticks.last().copied().unwrap_or(first_beat);
-    let estimated_duration_samples = ((last_beat + 60.0 / bpm) * SAMPLE_RATE as f64) as u64;
-
-    // Generate fixed grid
+    // Generate fixed grid using actual track duration
     let first_beat_sample = (first_beat * SAMPLE_RATE as f64) as u64;
-    let num_beats = ((estimated_duration_samples - first_beat_sample) / samples_per_beat) as usize;
+    let num_beats = ((duration_samples - first_beat_sample) / samples_per_beat) as usize;
 
     (0..=num_beats)
         .map(|i| first_beat_sample + (i as u64 * samples_per_beat))
@@ -78,13 +75,17 @@ mod tests {
         // 120 BPM = 0.5 seconds per beat = 22050 samples per beat at 44100Hz
         let bpm = 120.0;
         let beat_ticks = vec![0.0, 0.5, 1.0, 1.5, 2.0];
+        // 10 seconds of audio at 44100 Hz
+        let duration_samples = 44100 * 10;
 
-        let grid = generate_beat_grid(bpm, &beat_ticks);
+        let grid = generate_beat_grid(bpm, &beat_ticks, duration_samples);
 
         assert!(!grid.is_empty());
         assert_eq!(grid[0], 0); // First beat at 0
         assert_eq!(grid[1], 22050); // Second beat at 0.5s
         assert_eq!(grid[2], 44100); // Third beat at 1.0s
+        // Should have beats for full 10 seconds (20 beats at 120 BPM)
+        assert_eq!(grid.len(), 21); // 0..=20 = 21 beats
     }
 
     #[test]
