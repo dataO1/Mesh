@@ -1,7 +1,7 @@
 //! Main application state and iced implementation
 
 use crate::analysis::AnalysisResult;
-use crate::audio::AudioState;
+use crate::audio::{AudioState, JackHandle, start_jack_client};
 use crate::collection::Collection;
 use crate::config::{self, Config};
 use crate::export;
@@ -169,6 +169,9 @@ pub struct MeshCueApp {
     collection: CollectionState,
     /// Audio playback state
     audio: AudioState,
+    /// JACK client handle (keeps audio running)
+    #[allow(dead_code)]
+    jack_client: Option<JackHandle>,
     /// Global configuration
     config: Arc<Config>,
     /// Path to config file
@@ -190,12 +193,26 @@ impl MeshCueApp {
         );
 
         let settings = SettingsState::from_config(&config);
+        let audio = AudioState::default();
+
+        // Start JACK client for audio preview
+        let jack_client = match start_jack_client(&audio) {
+            Ok(client) => {
+                log::info!("JACK audio preview enabled");
+                Some(client)
+            }
+            Err(e) => {
+                log::warn!("JACK not available: {} - audio preview disabled", e);
+                None
+            }
+        };
 
         let app = Self {
             current_view: View::Staging,
             staging: StagingState::default(),
             collection: CollectionState::default(),
-            audio: AudioState::default(),
+            audio,
+            jack_client,
             config: Arc::new(config),
             config_path,
             settings,
@@ -465,9 +482,14 @@ impl MeshCueApp {
                         let bpm = track.bpm();
                         let key = track.key().to_string();
                         let cue_points = track.metadata.cue_points.clone();
+                        let duration_samples = track.duration_samples as u64;
 
                         // Initialize waveform with peak data from loaded track
                         let waveform = WaveformView::from_track(&track, &cue_points);
+
+                        // Set up audio playback with the track stems
+                        let stems = Arc::new(track.stems.clone());
+                        self.audio.set_track(stems, duration_samples);
 
                         self.collection.loaded_track = Some(LoadedTrackState {
                             path,
@@ -480,7 +502,7 @@ impl MeshCueApp {
                         });
                     }
                     Err(e) => {
-                        eprintln!("Failed to load track: {}", e);
+                        log::error!("Failed to load track: {}", e);
                     }
                 }
             }
@@ -586,7 +608,14 @@ impl MeshCueApp {
 
             // Misc
             Message::Tick => {
-                // Update UI from audio state
+                // Sync waveform playhead with audio position
+                if let Some(ref mut state) = self.collection.loaded_track {
+                    let pos = self.audio.position();
+                    if self.audio.length > 0 {
+                        let normalized = pos as f64 / self.audio.length as f64;
+                        state.waveform.set_position(normalized);
+                    }
+                }
             }
 
             // Settings
@@ -695,6 +724,19 @@ impl MeshCueApp {
     /// Application theme
     pub fn theme(&self) -> Theme {
         Theme::Dark
+    }
+
+    /// Subscription for periodic UI updates during playback
+    pub fn subscription(&self) -> iced::Subscription<Message> {
+        use iced::time;
+        use std::time::Duration;
+
+        // Update waveform playhead 30 times per second when playing
+        if self.audio.is_playing() {
+            time::every(Duration::from_millis(33)).map(|_| Message::Tick)
+        } else {
+            iced::Subscription::none()
+        }
     }
 
     /// View header with navigation tabs

@@ -18,5 +18,6 @@ fn main() -> iced::Result {
         .title(title)
         .window_size(iced::Size::new(1200.0, 800.0))
         .theme(MeshCueApp::theme)
+        .subscription(MeshCueApp::subscription)
         .run()
 }

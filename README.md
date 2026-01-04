@@ -187,9 +187,9 @@ mesh/
 - **Click-to-seek** on waveform with drag scrubbing support
 - Track editor with cue point list (add, delete, edit labels)
 - **Save edited track metadata** (BPM, key, cue points) back to file
+- **JACK audio preview** with click-to-seek waveform synchronization
 
 *Planned:*
-- JACK audio preview
 - Playlist and crate management
 - Batch processing for multiple tracks
 
