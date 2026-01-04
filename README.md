@@ -188,6 +188,7 @@ mesh/
 - Track editor with cue point list (add, delete, edit labels)
 - **Save edited track metadata** (BPM, key, cue points) back to file
 - **JACK audio preview** with click-to-seek waveform synchronization
+- **Async track loading** — Instant UI response with background audio loading
 
 *Planned:*
 - Playlist and crate management
