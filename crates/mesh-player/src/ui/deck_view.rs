@@ -7,7 +7,7 @@
 //! - Pitch/tempo fader
 //! - Stem controls (mute/solo/volume per stem)
 
-use iced::widget::{button, column, container, row, slider, text, Row, Space};
+use iced::widget::{button, column, container, mouse_area, row, slider, text, Row, Space};
 use iced::{Center, Color, Element, Fill};
 
 use mesh_core::engine::Deck;
@@ -76,12 +76,16 @@ pub enum DeckMessage {
     CueReleased,
     /// Set cue point
     SetCue,
-    /// Trigger hot cue (0-7)
-    HotCue(usize),
+    /// Hot cue button pressed (0-7) - CDJ-style: jump and play, or preview when stopped
+    HotCuePressed(usize),
+    /// Hot cue button released - returns to original position if previewing
+    HotCueReleased(usize),
     /// Set hot cue at current position
     SetHotCue(usize),
     /// Clear hot cue
     ClearHotCue(usize),
+    /// Set beat jump size in beats (1, 4, 8, 16, 32)
+    SetBeatJumpSize(i32),
     /// Sync to master
     Sync,
     /// Toggle loop
@@ -269,9 +273,11 @@ impl DeckView {
             DeckMessage::CuePressed => deck.cue_press(),
             DeckMessage::CueReleased => deck.cue_release(),
             DeckMessage::SetCue => deck.set_cue_point(),
-            DeckMessage::HotCue(idx) => deck.trigger_hot_cue(idx),
+            DeckMessage::HotCuePressed(idx) => deck.hot_cue_press(idx),
+            DeckMessage::HotCueReleased(_idx) => deck.hot_cue_release(),
             DeckMessage::SetHotCue(idx) => deck.set_hot_cue(idx),
             DeckMessage::ClearHotCue(idx) => deck.clear_hot_cue(idx),
+            DeckMessage::SetBeatJumpSize(beats) => deck.set_beat_jump_size(beats),
             DeckMessage::Sync => {
                 // Sync is handled at engine level
             }
@@ -459,13 +465,15 @@ impl DeckView {
         .into()
     }
 
-    /// Hot cue buttons view
+    /// Hot cue buttons view (CDJ-style with press/release for preview)
     fn view_hot_cues(&self) -> Element<DeckMessage> {
         let buttons: Vec<Element<DeckMessage>> = (0..8)
             .map(|i| {
-                button(text(format!("{}", i + 1)).size(12))
-                    .on_press(DeckMessage::HotCue(i))
-                    .padding(8)
+                let btn = button(text(format!("{}", i + 1)).size(12)).padding(8);
+                // Wrap in mouse_area for press/release detection
+                mouse_area(btn)
+                    .on_press(DeckMessage::HotCuePressed(i))
+                    .on_release(DeckMessage::HotCueReleased(i))
                     .into()
             })
             .collect();

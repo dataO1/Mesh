@@ -12,8 +12,10 @@ use mesh_core::types::SAMPLE_RATE;
 
 /// Render transport controls
 pub fn view(state: &LoadedTrackState) -> Element<Message> {
-    let position = state.playhead_position;
+    let position = state.playhead_position();
     let duration = state.duration_samples;
+    let beat_jump_size = state.beat_jump_size();
+    let is_playing = state.is_playing();
 
     let position_str = format_time(position);
     let duration_str = if state.loading_audio {
@@ -27,7 +29,7 @@ pub fn view(state: &LoadedTrackState) -> Element<Message> {
 
     // Beat jump backward (<<)
     let jump_back = if controls_enabled {
-        button(text("◄◄")).on_press(Message::BeatJump(-state.beat_jump_size))
+        button(text("◄◄")).on_press(Message::BeatJump(-beat_jump_size))
     } else {
         button(text("◄◄"))
     };
@@ -41,7 +43,7 @@ pub fn view(state: &LoadedTrackState) -> Element<Message> {
 
     // Play/Pause toggle
     let play_pause = if controls_enabled {
-        if state.is_playing {
+        if is_playing {
             button(text("▮▮")).on_press(Message::Pause)
         } else {
             button(text("▶")).on_press(Message::Play)
@@ -52,7 +54,7 @@ pub fn view(state: &LoadedTrackState) -> Element<Message> {
 
     // Beat jump forward (>>)
     let jump_forward = if controls_enabled {
-        button(text("►►")).on_press(Message::BeatJump(state.beat_jump_size))
+        button(text("►►")).on_press(Message::BeatJump(beat_jump_size))
     } else {
         button(text("►►"))
     };

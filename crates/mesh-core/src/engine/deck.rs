@@ -116,6 +116,10 @@ pub struct Deck {
     scratch_offset: f64,
     /// Whether shift is held (for alternate button functions)
     shift_held: bool,
+    /// Beat jump size in beats (1, 4, 8, 16, 32)
+    beat_jump_size: i32,
+    /// Position to return to after hot cue preview (None = not previewing)
+    hot_cue_preview_return: Option<usize>,
 }
 
 impl Deck {
@@ -132,6 +136,8 @@ impl Deck {
             stems: std::array::from_fn(|_| StemState::new()),
             scratch_offset: 0.0,
             shift_held: false,
+            beat_jump_size: 4, // Default 4 beats
+            hot_cue_preview_return: None,
         }
     }
 
@@ -173,6 +179,7 @@ impl Deck {
         self.cue_point = 0;
         self.hot_cues = std::array::from_fn(|_| None);
         self.loop_state = LoopState::default();
+        self.hot_cue_preview_return = None;
     }
 
     /// Check if a track is loaded
@@ -215,6 +222,20 @@ impl Deck {
             .as_ref()
             .map(|t| t.samples_per_beat())
             .unwrap_or(SAMPLE_RATE as f64 * 60.0 / 120.0) // Default 120 BPM
+    }
+
+    /// Snap a sample position to the nearest beat in the grid
+    pub fn snap_to_beat(&self, position: usize) -> usize {
+        if let Some(track) = &self.track {
+            let beats = &track.metadata.beat_grid.beats;
+            beats
+                .iter()
+                .min_by_key(|&&b| (b as i64 - position as i64).unsigned_abs())
+                .map(|&b| b as usize)
+                .unwrap_or(position)
+        } else {
+            position
+        }
     }
 
     // --- Playback controls ---
@@ -279,9 +300,14 @@ impl Deck {
         }
     }
 
-    /// Set the cue point at the current position
+    /// Set the cue point at the current position (snapped to nearest beat)
     pub fn set_cue_point(&mut self) {
-        self.cue_point = self.position;
+        self.cue_point = self.snap_to_beat(self.position);
+    }
+
+    /// Get the current cue point position
+    pub fn cue_point(&self) -> usize {
+        self.cue_point
     }
 
     /// Jump to a specific sample position
@@ -291,27 +317,55 @@ impl Deck {
         }
     }
 
-    /// Beat jump forward by the current loop length
+    /// Set the beat jump size in beats
+    pub fn set_beat_jump_size(&mut self, beats: i32) {
+        self.beat_jump_size = beats.clamp(1, 32);
+    }
+
+    /// Get the current beat jump size in beats
+    pub fn beat_jump_size(&self) -> i32 {
+        self.beat_jump_size
+    }
+
+    /// Beat jump forward by beat_jump_size beats
     pub fn beat_jump_forward(&mut self) {
-        let jump = self.loop_state.length_samples(self.samples_per_beat());
         if let Some(track) = &self.track {
-            self.position = (self.position + jump).min(track.duration_samples.saturating_sub(1));
+            let beats = &track.metadata.beat_grid.beats;
+            let current_idx = beats
+                .iter()
+                .position(|&b| b as usize >= self.position)
+                .unwrap_or(0);
+            let target_idx =
+                (current_idx + self.beat_jump_size as usize).min(beats.len().saturating_sub(1));
+            if let Some(&target_pos) = beats.get(target_idx) {
+                self.position = target_pos as usize;
+            }
         }
     }
 
-    /// Beat jump backward by the current loop length
+    /// Beat jump backward by beat_jump_size beats
     pub fn beat_jump_backward(&mut self) {
-        let jump = self.loop_state.length_samples(self.samples_per_beat());
-        self.position = self.position.saturating_sub(jump);
+        if let Some(track) = &self.track {
+            let beats = &track.metadata.beat_grid.beats;
+            let current_idx = beats
+                .iter()
+                .position(|&b| b as usize >= self.position)
+                .unwrap_or(0);
+            let target_idx = current_idx.saturating_sub(self.beat_jump_size as usize);
+            if let Some(&target_pos) = beats.get(target_idx) {
+                self.position = target_pos as usize;
+            }
+        }
     }
 
     // --- Hot cues ---
 
-    /// Handle hot cue button press
+    /// Handle hot cue button press (CDJ-style with preview)
     ///
-    /// - Empty slot: set hot cue at current position
-    /// - Occupied slot: jump to hot cue
+    /// - Empty slot: set hot cue at current position (snapped to beat)
     /// - With shift: delete hot cue
+    /// - When playing: jump to hot cue and keep playing
+    /// - When stopped: preview mode (play from cue, release returns to original position)
     pub fn hot_cue_press(&mut self, slot: usize) {
         if slot >= HOT_CUE_SLOTS || self.track.is_none() {
             return;
@@ -320,19 +374,36 @@ impl Deck {
         if self.shift_held {
             // Delete hot cue
             self.hot_cues[slot] = None;
-        } else if let Some(cue) = &self.hot_cues[slot] {
-            // Jump to hot cue
-            self.position = cue.position;
-            if self.state == PlayState::Stopped {
-                self.play();
+            return;
+        }
+
+        if let Some(cue) = &self.hot_cues[slot] {
+            let pos = cue.position;
+            match self.state {
+                PlayState::Playing => {
+                    // Already playing - just jump
+                    self.position = pos;
+                }
+                PlayState::Stopped | PlayState::Cueing => {
+                    // Preview mode - remember position, play from cue
+                    self.hot_cue_preview_return = Some(self.position);
+                    self.position = pos;
+                    self.state = PlayState::Playing;
+                }
             }
         } else {
-            // Set hot cue
-            self.hot_cues[slot] = Some(HotCue {
-                position: self.position,
-                label: format!("Cue {}", slot + 1),
-                color: None,
-            });
+            // Empty slot - set cue (snapped to beat)
+            self.set_hot_cue(slot);
+        }
+    }
+
+    /// Handle hot cue button release
+    ///
+    /// If previewing, return to the original position and stop.
+    pub fn hot_cue_release(&mut self) {
+        if let Some(return_pos) = self.hot_cue_preview_return.take() {
+            self.position = return_pos;
+            self.state = PlayState::Stopped;
         }
     }
 
@@ -424,11 +495,12 @@ impl Deck {
         self.hot_cue_press(slot);
     }
 
-    /// Set hot cue at current position (for UI compatibility)
+    /// Set hot cue at current position (snapped to nearest beat)
     pub fn set_hot_cue(&mut self, slot: usize) {
         if slot < HOT_CUE_SLOTS && self.track.is_some() {
+            let snapped_pos = self.snap_to_beat(self.position);
             self.hot_cues[slot] = Some(HotCue {
-                position: self.position,
+                position: snapped_pos,
                 label: format!("Cue {}", slot + 1),
                 color: None,
             });

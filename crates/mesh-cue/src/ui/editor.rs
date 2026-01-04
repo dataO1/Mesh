@@ -8,13 +8,27 @@ use iced::{Alignment, Element, Length};
 /// Render the track editor
 pub fn view(state: &LoadedTrackState) -> Element<Message> {
     let header = view_header(state);
+
+    // Zoomed waveform (detail view centered on playhead) above overview
+    let zoomed_waveform = state.zoomed_waveform.view(state.playhead_position());
+
+    // Overview waveform (full track)
     let waveform = state.waveform.view();
+
     let cue_panel = cue_editor::view(state);
     let transport_controls = transport::view(state);
     let save_section = view_save_section(state);
 
     container(
-        column![header, waveform, cue_panel, transport_controls, save_section,].spacing(15),
+        column![
+            header,
+            zoomed_waveform,
+            waveform,
+            cue_panel,
+            transport_controls,
+            save_section,
+        ]
+        .spacing(15),
     )
     .padding(15)
     .width(Length::Fill)

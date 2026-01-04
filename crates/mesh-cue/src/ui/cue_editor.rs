@@ -6,7 +6,7 @@
 //! - Shift+Click on set cue → Clear/delete that cue point
 
 use super::app::{LoadedTrackState, Message};
-use iced::widget::{button, column, container, row, text};
+use iced::widget::{button, column, container, mouse_area, row, text};
 use iced::{Alignment, Color, Element, Length, Theme};
 use mesh_core::types::SAMPLE_RATE;
 
@@ -51,7 +51,7 @@ pub fn view(state: &LoadedTrackState) -> Element<Message> {
     let jump_buttons: Vec<Element<Message>> = jump_sizes
         .iter()
         .map(|&size| {
-            let is_selected = state.beat_jump_size == size;
+            let is_selected = state.beat_jump_size() == size;
             let btn = button(text(format!("{}", size)).size(12))
                 .on_press(Message::SetBeatJumpSize(size))
                 .style(if is_selected {
@@ -100,19 +100,25 @@ fn create_hot_cue_button(
         .width(Length::Fixed(55.0))
         .height(Length::Fixed(40.0));
 
-    // If cue exists, click jumps to it; otherwise, click sets it
-    let btn = if cue.is_some() {
-        btn.on_press(Message::JumpToCue(index))
-            .style(move |theme: &Theme, status| {
-                let color = CUE_COLORS[index];
-                colored_button_style(theme, status, color)
-            })
+    // If cue exists, use CDJ-style preview (hold to play, release to return)
+    // Otherwise, click sets a new cue point
+    if cue.is_some() {
+        // Wrap in mouse_area for press/release detection (CDJ-style preview)
+        let styled_btn = btn.style(move |theme: &Theme, status| {
+            let color = CUE_COLORS[index];
+            colored_button_style(theme, status, color)
+        });
+
+        mouse_area(styled_btn)
+            .on_press(Message::HotCuePressed(index))
+            .on_release(Message::HotCueReleased(index))
+            .into()
     } else {
+        // Empty slot - just set cue on click
         btn.on_press(Message::SetCuePoint(index))
             .style(iced::widget::button::secondary)
-    };
-
-    btn.into()
+            .into()
+    }
 }
 
 /// Create a colored button style

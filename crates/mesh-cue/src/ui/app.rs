@@ -6,10 +6,12 @@ use crate::collection::Collection;
 use crate::config::{self, Config};
 use crate::export;
 use crate::import::StemImporter;
-use super::waveform::WaveformView;
+use super::waveform::{WaveformView, ZoomedWaveformView};
 use iced::widget::{button, center, column, container, mouse_area, opaque, row, stack, text, Space};
 use iced::{Color, Element, Length, Task, Theme};
 use mesh_core::audio_file::{BeatGrid, CuePoint, LoadedTrack, StemBuffers, TrackMetadata};
+use mesh_core::engine::Deck;
+use mesh_core::types::{DeckId, PlayState};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -62,7 +64,8 @@ impl Default for CollectionState {
 }
 
 /// State for a loaded track being edited
-#[derive(Debug)]
+///
+/// Note: Manual Debug impl because Deck doesn't implement Debug
 pub struct LoadedTrackState {
     /// Path to the track file
     pub path: PathBuf,
@@ -85,16 +88,48 @@ pub struct LoadedTrackState {
     pub modified: bool,
     /// Waveform display state (cached peak data)
     pub waveform: WaveformView,
+    /// Zoomed waveform display state (detail view centered on playhead)
+    pub zoomed_waveform: ZoomedWaveformView,
     /// Whether audio is currently loading in the background
     pub loading_audio: bool,
-    /// Whether audio is currently playing (synced from AudioState)
-    pub is_playing: bool,
-    /// Beat jump size in beats (1, 4, 8, 16, 32)
-    pub beat_jump_size: i32,
-    /// Current playhead position in samples (synced from AudioState)
-    pub playhead_position: u64,
-    /// CDJ-style cue point position (snap to grid)
-    pub cue_point: Option<u64>,
+    /// Player deck for transport and hot cue state (created when stems load)
+    /// Uses Deck's state for: is_playing, position, beat_jump_size, cue_point, hot_cue_preview
+    pub deck: Option<Deck>,
+}
+
+impl LoadedTrackState {
+    /// Get current playhead position (from deck if loaded, otherwise 0)
+    pub fn playhead_position(&self) -> u64 {
+        self.deck.as_ref().map(|d| d.position()).unwrap_or(0)
+    }
+
+    /// Check if audio is currently playing
+    pub fn is_playing(&self) -> bool {
+        self.deck
+            .as_ref()
+            .map(|d| d.state() == PlayState::Playing)
+            .unwrap_or(false)
+    }
+
+    /// Get beat jump size (from deck if loaded, default 4)
+    pub fn beat_jump_size(&self) -> i32 {
+        self.deck.as_ref().map(|d| d.beat_jump_size()).unwrap_or(4)
+    }
+}
+
+impl std::fmt::Debug for LoadedTrackState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoadedTrackState")
+            .field("path", &self.path)
+            .field("cue_points", &self.cue_points)
+            .field("bpm", &self.bpm)
+            .field("key", &self.key)
+            .field("duration_samples", &self.duration_samples)
+            .field("modified", &self.modified)
+            .field("loading_audio", &self.loading_audio)
+            .field("has_deck", &self.deck.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 /// State for the settings modal
@@ -185,6 +220,14 @@ pub enum Message {
     SetCuePoint(usize),
     /// Clear hot cue at index (Shift+click)
     ClearCuePoint(usize),
+    /// Hot cue button pressed - start preview from this cue point (CDJ-style)
+    HotCuePressed(usize),
+    /// Hot cue button released - stop preview and return to cue point
+    HotCueReleased(usize),
+
+    // Zoomed Waveform
+    /// Set zoom level for zoomed waveform (1-64 bars)
+    SetZoomBars(u32),
 
     // Misc
     Tick,
@@ -539,6 +582,13 @@ impl MeshCueApp {
                         // Create placeholder waveform with beat markers from metadata
                         let waveform = WaveformView::from_metadata(&metadata);
 
+                        // Create zoomed waveform (will get peaks when stems load)
+                        let zoomed_waveform = ZoomedWaveformView::from_metadata(
+                            bpm,
+                            beat_grid.clone(),
+                            Vec::new(), // Cue markers will be added after duration is known
+                        );
+
                         self.collection.loaded_track = Some(LoadedTrackState {
                             path: path.clone(),
                             track: None,
@@ -550,11 +600,9 @@ impl MeshCueApp {
                             duration_samples: 0, // Will be set when audio loads
                             modified: false,
                             waveform,
+                            zoomed_waveform,
                             loading_audio: true,
-                            is_playing: false,
-                            beat_jump_size: 4,
-                            playhead_position: 0,
-                            cue_point: None,
+                            deck: None, // Created when stems load
                         });
 
                         // Phase 2: Load audio stems in background (slow, ~3s)
@@ -583,7 +631,37 @@ impl MeshCueApp {
 
                             // Generate waveform from loaded stems
                             state.waveform.set_stems(&stems, &state.cue_points, &state.beat_grid);
+
+                            // Initialize zoomed waveform with stem data
+                            state.zoomed_waveform.set_duration(duration_samples);
+                            state.zoomed_waveform.update_cue_markers(&state.cue_points);
+                            state.zoomed_waveform.compute_peaks(&stems, 0, 800);
+
                             state.stems = Some(stems.clone());
+
+                            // Create LoadedTrack from metadata + stems for Deck
+                            let duration_seconds = duration_samples as f64 / mesh_core::types::SAMPLE_RATE as f64;
+                            let loaded_track = LoadedTrack {
+                                path: state.path.clone(),
+                                stems: (*stems).clone(),
+                                metadata: TrackMetadata {
+                                    bpm: Some(state.bpm),
+                                    original_bpm: Some(state.bpm),
+                                    key: Some(state.key.clone()),
+                                    beat_grid: BeatGrid {
+                                        beats: state.beat_grid.clone(),
+                                        first_beat_sample: state.beat_grid.first().copied(),
+                                    },
+                                    cue_points: state.cue_points.clone(),
+                                },
+                                duration_samples: duration_samples as usize,
+                                duration_seconds,
+                            };
+
+                            // Create Deck and load track into it
+                            let mut deck = Deck::new(DeckId::new(0));
+                            deck.load_track(loaded_track);
+                            state.deck = Some(deck);
 
                             // Set up audio playback
                             self.audio.set_track(stems, duration_samples);
@@ -615,6 +693,26 @@ impl MeshCueApp {
                         let stems = Arc::new(track.stems.clone());
                         self.audio.set_track(stems.clone(), duration_samples);
 
+                        // Create zoomed waveform with full track data
+                        let mut zoomed_waveform = ZoomedWaveformView::from_metadata(
+                            bpm,
+                            beat_grid.clone(),
+                            Vec::new(),
+                        );
+                        zoomed_waveform.set_duration(duration_samples);
+                        zoomed_waveform.compute_peaks(&stems, 0, 800);
+
+                        // Create Deck and load track (construct a new LoadedTrack)
+                        let mut deck = Deck::new(DeckId::new(0));
+                        let track_for_deck = LoadedTrack {
+                            path: track.path.clone(),
+                            stems: track.stems.clone(),
+                            metadata: track.metadata.clone(),
+                            duration_samples: track.duration_samples,
+                            duration_seconds: track.duration_seconds,
+                        };
+                        deck.load_track(track_for_deck);
+
                         self.collection.loaded_track = Some(LoadedTrackState {
                             path,
                             track: Some(track),
@@ -626,11 +724,9 @@ impl MeshCueApp {
                             duration_samples,
                             modified: false,
                             waveform,
+                            zoomed_waveform,
                             loading_audio: false,
-                            is_playing: false,
-                            beat_jump_size: 4,
-                            playhead_position: 0,
-                            cue_point: None,
+                            deck: Some(deck),
                         });
                     }
                     Err(e) => {
@@ -731,80 +827,73 @@ impl MeshCueApp {
 
             // Transport
             Message::Play => {
-                self.audio.play();
                 if let Some(ref mut state) = self.collection.loaded_track {
-                    state.is_playing = true;
+                    if let Some(ref mut deck) = state.deck {
+                        deck.play();
+                        self.audio.play();
+                    }
                 }
             }
             Message::Pause => {
-                self.audio.pause();
                 if let Some(ref mut state) = self.collection.loaded_track {
-                    state.is_playing = false;
+                    if let Some(ref mut deck) = state.deck {
+                        deck.pause();
+                        self.audio.pause();
+                    }
                 }
             }
             Message::Stop => {
-                self.audio.pause();
-                self.audio.seek(0);
                 if let Some(ref mut state) = self.collection.loaded_track {
-                    state.is_playing = false;
-                    state.playhead_position = 0;
+                    if let Some(ref mut deck) = state.deck {
+                        deck.pause();
+                        deck.seek(0);
+                        self.audio.pause();
+                        self.audio.seek(0);
+                    }
                 }
             }
             Message::Seek(position) => {
-                self.audio.seek((position * self.audio.length as f64) as u64);
-
-                // Update waveform playhead position
+                let seek_pos = (position * self.audio.length as f64) as u64;
                 if let Some(ref mut state) = self.collection.loaded_track {
+                    if let Some(ref mut deck) = state.deck {
+                        deck.seek(seek_pos as usize);
+                    }
+                    self.audio.seek(seek_pos);
                     state.waveform.set_position(position);
                 }
             }
             Message::Cue => {
-                // CDJ-style cue: snap to nearest beat in grid
+                // CDJ-style cue: snap to nearest beat (delegated to Deck)
                 if let Some(ref mut state) = self.collection.loaded_track {
-                    let current_pos = state.playhead_position;
-                    let beat_grid = &state.beat_grid;
-
-                    // Find nearest beat
-                    if let Some(&nearest_beat) = beat_grid
-                        .iter()
-                        .min_by_key(|&&b| (b as i64 - current_pos as i64).unsigned_abs())
-                    {
-                        state.cue_point = Some(nearest_beat);
-                        self.audio.seek(nearest_beat);
-                        state.playhead_position = nearest_beat;
+                    if let Some(ref mut deck) = state.deck {
+                        deck.set_cue_point(); // Snaps to nearest beat
+                        let cue_pos = deck.cue_point();
+                        deck.seek(cue_pos);
+                        self.audio.seek(cue_pos as u64);
 
                         // Update waveform
                         if self.audio.length > 0 {
-                            let normalized = nearest_beat as f64 / self.audio.length as f64;
+                            let normalized = cue_pos as f64 / self.audio.length as f64;
                             state.waveform.set_position(normalized);
                         }
                     }
                 }
             }
             Message::BeatJump(beats) => {
+                // Use Deck's beat jump methods
                 if let Some(ref mut state) = self.collection.loaded_track {
-                    let current_pos = state.playhead_position;
-                    let beat_grid = &state.beat_grid;
-
-                    // Find current beat index
-                    let current_beat_idx = beat_grid
-                        .iter()
-                        .position(|&b| b >= current_pos)
-                        .unwrap_or(0) as i32;
-
-                    // Calculate target beat index
-                    let target_idx = (current_beat_idx + beats)
-                        .max(0)
-                        .min(beat_grid.len().saturating_sub(1) as i32)
-                        as usize;
-
-                    if let Some(&target_pos) = beat_grid.get(target_idx) {
-                        self.audio.seek(target_pos);
-                        state.playhead_position = target_pos;
+                    if let Some(ref mut deck) = state.deck {
+                        if beats > 0 {
+                            deck.beat_jump_forward();
+                        } else {
+                            deck.beat_jump_backward();
+                        }
+                        let pos = deck.position();
+                        self.audio.seek(pos);
 
                         // Update waveform
                         if self.audio.length > 0 {
-                            let normalized = target_pos as f64 / self.audio.length as f64;
+                            let normalized = pos as f64 / self.audio.length as f64;
                             state.waveform.set_position(normalized);
                         }
                     }
@@ -812,15 +901,19 @@ impl MeshCueApp {
             }
             Message::SetBeatJumpSize(size) => {
                 if let Some(ref mut state) = self.collection.loaded_track {
-                    state.beat_jump_size = size;
+                    if let Some(ref mut deck) = state.deck {
+                        deck.set_beat_jump_size(size);
+                    }
                 }
             }
             Message::JumpToCue(index) => {
                 if let Some(ref mut state) = self.collection.loaded_track {
                     if let Some(cue) = state.cue_points.iter().find(|c| c.index == index as u8) {
                         let pos = cue.sample_position;
+                        if let Some(ref mut deck) = state.deck {
+                            deck.seek(pos as usize);
+                        }
                         self.audio.seek(pos);
-                        state.playhead_position = pos;
 
                         // Update waveform
                         if self.audio.length > 0 {
@@ -831,44 +924,110 @@ impl MeshCueApp {
                 }
             }
             Message::SetCuePoint(index) => {
+                // Use Deck's set_hot_cue which snaps to beat
                 if let Some(ref mut state) = self.collection.loaded_track {
-                    let pos = state.playhead_position;
+                    if let Some(ref mut deck) = state.deck {
+                        deck.set_hot_cue(index);
+                        // Get the snapped position from deck's hot cue
+                        if let Some(hot_cue) = deck.hot_cue(index) {
+                            let snapped_pos = hot_cue.position as u64;
+                            // Sync to cue_points (metadata)
+                            state.cue_points.retain(|c| c.index != index as u8);
+                            state.cue_points.push(CuePoint {
+                                index: index as u8,
+                                sample_position: snapped_pos,
+                                label: format!("Cue {}", index + 1),
+                                color: None,
+                            });
+                            state.cue_points.sort_by_key(|c| c.index);
+                        }
+                    }
 
-                    // Remove existing cue at this index (if any)
-                    state.cue_points.retain(|c| c.index != index as u8);
-
-                    // Add new cue point
-                    state.cue_points.push(CuePoint {
-                        index: index as u8,
-                        sample_position: pos,
-                        label: format!("Cue {}", index + 1),
-                        color: None,
-                    });
-
-                    // Sort by index
-                    state.cue_points.sort_by_key(|c| c.index);
-
-                    // Update waveform markers
+                    // Update waveform markers (both overview and zoomed)
                     state.waveform.update_cue_markers(&state.cue_points);
+                    state.zoomed_waveform.update_cue_markers(&state.cue_points);
+                    state.modified = true;
                 }
             }
             Message::ClearCuePoint(index) => {
                 if let Some(ref mut state) = self.collection.loaded_track {
+                    if let Some(ref mut deck) = state.deck {
+                        deck.clear_hot_cue(index);
+                    }
                     state.cue_points.retain(|c| c.index != index as u8);
                     state.waveform.update_cue_markers(&state.cue_points);
+                    state.zoomed_waveform.update_cue_markers(&state.cue_points);
+                    state.modified = true;
+                }
+            }
+            Message::HotCuePressed(index) => {
+                // Use Deck's hot_cue_press for CDJ-style preview
+                if let Some(ref mut state) = self.collection.loaded_track {
+                    if let Some(ref mut deck) = state.deck {
+                        deck.hot_cue_press(index);
+                        let pos = deck.position();
+                        self.audio.seek(pos);
+                        if deck.state() == PlayState::Playing {
+                            self.audio.play();
+                        }
+
+                        // Update waveform positions
+                        if self.audio.length > 0 {
+                            let normalized = pos as f64 / self.audio.length as f64;
+                            state.waveform.set_position(normalized);
+                        }
+                    }
+                }
+            }
+            Message::HotCueReleased(_index) => {
+                // Use Deck's hot_cue_release for CDJ-style return
+                if let Some(ref mut state) = self.collection.loaded_track {
+                    if let Some(ref mut deck) = state.deck {
+                        deck.hot_cue_release();
+                        let pos = deck.position();
+                        self.audio.seek(pos);
+                        if deck.state() == PlayState::Stopped {
+                            self.audio.pause();
+                        }
+
+                        // Update waveform positions
+                        if self.audio.length > 0 {
+                            let normalized = pos as f64 / self.audio.length as f64;
+                            state.waveform.set_position(normalized);
+                        }
+                    }
                 }
             }
 
             // Misc
             Message::Tick => {
-                // Sync waveform playhead and state with audio position
+                // Sync deck position from audio (JACK drives the position)
                 if let Some(ref mut state) = self.collection.loaded_track {
                     let pos = self.audio.position();
-                    state.playhead_position = pos;
-                    state.is_playing = self.audio.is_playing();
+                    if let Some(ref mut deck) = state.deck {
+                        deck.seek(pos as usize);
+                    }
                     if self.audio.length > 0 {
                         let normalized = pos as f64 / self.audio.length as f64;
                         state.waveform.set_position(normalized);
+                    }
+
+                    // Update zoomed waveform peaks if playhead moved outside cache
+                    if state.zoomed_waveform.needs_recompute(pos) {
+                        if let Some(ref stems) = state.stems {
+                            state.zoomed_waveform.compute_peaks(stems, pos, 800);
+                        }
+                    }
+                }
+            }
+
+            // Zoomed Waveform
+            Message::SetZoomBars(bars) => {
+                if let Some(ref mut state) = self.collection.loaded_track {
+                    state.zoomed_waveform.set_zoom(bars);
+                    // Recompute peaks at new zoom level
+                    if let Some(ref stems) = state.stems {
+                        state.zoomed_waveform.compute_peaks(stems, state.playhead_position(), 800);
                     }
                 }
             }
@@ -993,7 +1152,13 @@ impl MeshCueApp {
         use std::time::Duration;
 
         // Update waveform playhead 30 times per second when playing
-        if self.audio.is_playing() {
+        let is_playing = self
+            .collection
+            .loaded_track
+            .as_ref()
+            .map(|t| t.is_playing())
+            .unwrap_or(false);
+        if is_playing || self.audio.is_playing() {
             time::every(Duration::from_millis(33)).map(|_| Message::Tick)
         } else {
             iced::Subscription::none()

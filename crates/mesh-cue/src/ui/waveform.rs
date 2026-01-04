@@ -9,7 +9,8 @@
 use super::app::Message;
 use iced::widget::canvas::{self, Canvas, Event, Frame, Geometry, Path, Program, Stroke};
 use iced::{mouse, Color, Element, Length, Point, Rectangle, Size, Theme};
-use mesh_core::audio_file::{CuePoint, LoadedTrack};
+use mesh_core::audio_file::{CuePoint, LoadedTrack, StemBuffers};
+use mesh_core::types::SAMPLE_RATE;
 use std::sync::Arc;
 
 /// Default display width for peak computation
@@ -17,6 +18,24 @@ const DEFAULT_WIDTH: usize = 800;
 
 /// Waveform height in pixels
 const WAVEFORM_HEIGHT: f32 = 150.0;
+
+/// Zoomed waveform height in pixels
+const ZOOMED_WAVEFORM_HEIGHT: f32 = 120.0;
+
+/// Minimum zoom level in bars
+const MIN_ZOOM_BARS: u32 = 1;
+
+/// Maximum zoom level in bars
+const MAX_ZOOM_BARS: u32 = 64;
+
+/// Default zoom level in bars
+const DEFAULT_ZOOM_BARS: u32 = 8;
+
+/// Pixels of drag movement per zoom level change
+const ZOOM_PIXELS_PER_LEVEL: f32 = 20.0;
+
+/// Smoothing window size for peaks (moving average)
+const PEAK_SMOOTHING_WINDOW: usize = 3;
 
 /// Stem colors (matching mesh-player)
 const STEM_COLORS: [Color; 4] = [
@@ -472,6 +491,503 @@ impl<'a> Program<Message> for WaveformCanvas<'a> {
             Stroke::default()
                 .with_color(Color::from_rgb(1.0, 1.0, 1.0))
                 .with_width(2.0),
+        );
+
+        vec![frame.into_geometry()]
+    }
+}
+
+// ============================================================================
+// Zoomed Waveform View (detail view centered on playhead)
+// ============================================================================
+
+/// Zoomed waveform view state
+///
+/// Shows a detailed view of the waveform centered on the playhead position.
+/// Supports zoom levels from 1 to 64 bars via click+drag gesture.
+#[derive(Debug, Clone)]
+pub struct ZoomedWaveformView {
+    /// Cached peak data for visible window [stem_idx] = Vec<(min, max)>
+    cached_peaks: [Vec<(f32, f32)>; 4],
+    /// Start sample of cached window
+    cache_start: u64,
+    /// End sample of cached window
+    cache_end: u64,
+    /// Current zoom level in bars (1-64)
+    zoom_bars: u32,
+    /// Beat grid positions in samples
+    beat_grid: Vec<u64>,
+    /// Cue markers with sample positions
+    cue_markers: Vec<CueMarker>,
+    /// Track duration in samples
+    duration_samples: u64,
+    /// Detected BPM (for bar calculation)
+    bpm: f64,
+    /// Whether the view has valid data
+    has_track: bool,
+}
+
+impl ZoomedWaveformView {
+    /// Create a new empty zoomed waveform view
+    pub fn new() -> Self {
+        Self {
+            cached_peaks: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            cache_start: 0,
+            cache_end: 0,
+            zoom_bars: DEFAULT_ZOOM_BARS,
+            beat_grid: Vec::new(),
+            cue_markers: Vec::new(),
+            duration_samples: 0,
+            bpm: 120.0,
+            has_track: false,
+        }
+    }
+
+    /// Create from track metadata
+    pub fn from_metadata(bpm: f64, beat_grid: Vec<u64>, cue_markers: Vec<CueMarker>) -> Self {
+        Self {
+            cached_peaks: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            cache_start: 0,
+            cache_end: 0,
+            zoom_bars: DEFAULT_ZOOM_BARS,
+            beat_grid,
+            cue_markers,
+            duration_samples: 0,
+            bpm: if bpm > 0.0 { bpm } else { 120.0 },
+            has_track: true,
+        }
+    }
+
+    /// Set track duration (called when stems are loaded)
+    pub fn set_duration(&mut self, duration_samples: u64) {
+        self.duration_samples = duration_samples;
+    }
+
+    /// Update BPM (called when track is loaded or BPM is changed)
+    pub fn set_bpm(&mut self, bpm: f64) {
+        self.bpm = if bpm > 0.0 { bpm } else { 120.0 };
+    }
+
+    /// Update beat grid
+    pub fn set_beat_grid(&mut self, beat_grid: Vec<u64>) {
+        self.beat_grid = beat_grid;
+    }
+
+    /// Update cue markers
+    pub fn update_cue_markers(&mut self, cue_points: &[CuePoint]) {
+        if self.duration_samples == 0 {
+            return;
+        }
+
+        self.cue_markers = cue_points
+            .iter()
+            .map(|cue| {
+                let position = cue.sample_position as f64 / self.duration_samples as f64;
+                let color = CUE_COLORS[(cue.index as usize) % 8];
+                CueMarker {
+                    position,
+                    label: cue.label.clone(),
+                    color,
+                    index: cue.index,
+                }
+            })
+            .collect();
+    }
+
+    /// Samples per bar at current BPM
+    fn samples_per_bar(&self) -> u64 {
+        let beats_per_bar = 4;
+        let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / self.bpm) as u64;
+        samples_per_beat * beats_per_bar
+    }
+
+    /// Calculate visible window centered on playhead
+    pub fn visible_range(&self, playhead: u64) -> (u64, u64) {
+        let window_samples = self.samples_per_bar() * self.zoom_bars as u64;
+        let half_window = window_samples / 2;
+
+        let start = playhead.saturating_sub(half_window);
+        let end = (playhead + half_window).min(self.duration_samples);
+
+        (start, end)
+    }
+
+    /// Set zoom level (clamped to valid range)
+    pub fn set_zoom(&mut self, bars: u32) {
+        self.zoom_bars = bars.clamp(MIN_ZOOM_BARS, MAX_ZOOM_BARS);
+        // Invalidate cache when zoom changes
+        self.cache_start = 0;
+        self.cache_end = 0;
+    }
+
+    /// Get current zoom level
+    pub fn zoom_bars(&self) -> u32 {
+        self.zoom_bars
+    }
+
+    /// Check if cache is valid for current playhead position
+    /// Returns true if cache needs recomputation
+    pub fn needs_recompute(&self, playhead: u64) -> bool {
+        if self.cached_peaks[0].is_empty() {
+            return true;
+        }
+
+        let (start, end) = self.visible_range(playhead);
+
+        // Recompute if visible range is outside cached range
+        // Add some margin to reduce frequent recomputation
+        let margin = (end - start) / 4;
+        start < self.cache_start.saturating_add(margin)
+            || end > self.cache_end.saturating_sub(margin)
+    }
+
+    /// Compute peaks for the visible window from stem data
+    pub fn compute_peaks(&mut self, stems: &StemBuffers, playhead: u64, width: usize) {
+        let (start, end) = self.visible_range(playhead);
+
+        // Cache a larger window to reduce recomputation frequency
+        let window_size = end - start;
+        let cache_start = start.saturating_sub(window_size / 2);
+        let cache_end = (end + window_size / 2).min(self.duration_samples);
+
+        self.cache_start = cache_start;
+        self.cache_end = cache_end;
+
+        let cache_len = (cache_end - cache_start) as usize;
+        if cache_len == 0 || width == 0 {
+            self.cached_peaks = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+            return;
+        }
+
+        // Compute peaks for the cached window
+        self.cached_peaks = generate_peaks_for_range(stems, cache_start, cache_end, width);
+
+        // Apply smoothing
+        for stem_idx in 0..4 {
+            if self.cached_peaks[stem_idx].len() >= PEAK_SMOOTHING_WINDOW {
+                self.cached_peaks[stem_idx] = smooth_peaks(&self.cached_peaks[stem_idx]);
+            }
+        }
+    }
+
+    /// Create the canvas element
+    pub fn view(&self, playhead: u64) -> Element<Message> {
+        Canvas::new(ZoomedWaveformCanvas {
+            waveform: self,
+            playhead,
+        })
+        .width(Length::Fill)
+        .height(Length::Fixed(ZOOMED_WAVEFORM_HEIGHT))
+        .into()
+    }
+}
+
+impl Default for ZoomedWaveformView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Generate peak data for a specific sample range
+fn generate_peaks_for_range(
+    stems: &StemBuffers,
+    start_sample: u64,
+    end_sample: u64,
+    width: usize,
+) -> [Vec<(f32, f32)>; 4] {
+    let len = stems.len();
+    let start = start_sample as usize;
+    let end = (end_sample as usize).min(len);
+
+    if start >= end || width == 0 {
+        return [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    }
+
+    let range_len = end - start;
+    let samples_per_column = range_len / width;
+    if samples_per_column == 0 {
+        return [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    }
+
+    let stem_refs = [&stems.vocals, &stems.drums, &stems.bass, &stems.other];
+    let mut result: [Vec<(f32, f32)>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+
+    for (stem_idx, stem_buffer) in stem_refs.iter().enumerate() {
+        result[stem_idx] = (0..width)
+            .map(|col| {
+                let col_start = start + col * samples_per_column;
+                let col_end = (start + (col + 1) * samples_per_column).min(end);
+
+                let mut min = f32::INFINITY;
+                let mut max = f32::NEG_INFINITY;
+
+                for i in col_start..col_end {
+                    if i < stem_buffer.len() {
+                        let sample = (stem_buffer[i].left + stem_buffer[i].right) / 2.0;
+                        min = min.min(sample);
+                        max = max.max(sample);
+                    }
+                }
+
+                if min == f32::INFINITY {
+                    (0.0, 0.0)
+                } else {
+                    (min, max)
+                }
+            })
+            .collect();
+    }
+
+    result
+}
+
+/// Apply moving average smoothing to peaks
+fn smooth_peaks(peaks: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    if peaks.len() < PEAK_SMOOTHING_WINDOW {
+        return peaks.to_vec();
+    }
+
+    peaks
+        .windows(PEAK_SMOOTHING_WINDOW)
+        .map(|w| {
+            let min_avg = w.iter().map(|(m, _)| m).sum::<f32>() / PEAK_SMOOTHING_WINDOW as f32;
+            let max_avg = w.iter().map(|(_, m)| m).sum::<f32>() / PEAK_SMOOTHING_WINDOW as f32;
+            (min_avg, max_avg)
+        })
+        .collect()
+}
+
+/// Canvas state for zoomed waveform (tracks zoom gesture)
+#[derive(Debug, Clone, Copy, Default)]
+struct ZoomedWaveformState {
+    /// Mouse Y position when drag started (for zoom gesture)
+    drag_start_y: Option<f32>,
+    /// Zoom level when drag started
+    drag_start_zoom: u32,
+}
+
+/// Canvas program for zoomed waveform rendering
+struct ZoomedWaveformCanvas<'a> {
+    waveform: &'a ZoomedWaveformView,
+    playhead: u64,
+}
+
+impl<'a> Program<Message> for ZoomedWaveformCanvas<'a> {
+    type State = ZoomedWaveformState;
+
+    fn update(
+        &self,
+        state: &mut Self::State,
+        event: &Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<Message>> {
+        if let Some(position) = cursor.position_in(bounds) {
+            match event {
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                    // Start zoom gesture
+                    state.drag_start_y = Some(position.y);
+                    state.drag_start_zoom = self.waveform.zoom_bars;
+                }
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                    state.drag_start_y = None;
+                }
+                Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                    if let Some(start_y) = state.drag_start_y {
+                        // Drag up = zoom in (fewer bars), drag down = zoom out (more bars)
+                        let delta = start_y - position.y;
+                        let zoom_change = (delta / ZOOM_PIXELS_PER_LEVEL) as i32;
+                        let new_zoom = (state.drag_start_zoom as i32 - zoom_change)
+                            .clamp(MIN_ZOOM_BARS as i32, MAX_ZOOM_BARS as i32)
+                            as u32;
+
+                        if new_zoom != self.waveform.zoom_bars {
+                            return Some(canvas::Action::publish(Message::SetZoomBars(new_zoom)));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        } else if matches!(event, Event::Mouse(mouse::Event::ButtonReleased(_))) {
+            state.drag_start_y = None;
+        }
+
+        None
+    }
+
+    fn mouse_interaction(
+        &self,
+        state: &Self::State,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        if cursor.is_over(bounds) {
+            if state.drag_start_y.is_some() {
+                mouse::Interaction::ResizingVertically
+            } else {
+                mouse::Interaction::Grab
+            }
+        } else {
+            mouse::Interaction::default()
+        }
+    }
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &iced::Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+
+        // Background (slightly different from overview)
+        frame.fill_rectangle(
+            Point::ORIGIN,
+            bounds.size(),
+            Color::from_rgb(0.08, 0.08, 0.1),
+        );
+
+        if !self.waveform.has_track {
+            return vec![frame.into_geometry()];
+        }
+
+        // If duration not yet known (stems still loading), can't compute visible range
+        // The canvas will be redrawn once TrackStemsLoaded sets the duration
+        if self.waveform.duration_samples == 0 {
+            return vec![frame.into_geometry()];
+        }
+
+        let width = bounds.width;
+        let height = bounds.height;
+        let center_y = height / 2.0;
+
+        let (view_start, view_end) = self.waveform.visible_range(self.playhead);
+        let view_samples = (view_end - view_start) as f64;
+
+        if view_samples <= 0.0 {
+            return vec![frame.into_geometry()];
+        }
+
+        // Draw beat markers (only those in visible range)
+        for (i, &beat_sample) in self.waveform.beat_grid.iter().enumerate() {
+            if beat_sample < view_start || beat_sample > view_end {
+                continue;
+            }
+
+            // Convert sample position to x coordinate
+            let x = ((beat_sample - view_start) as f64 / view_samples * width as f64) as f32;
+
+            let (color, line_width) = if i % 4 == 0 {
+                // Downbeat - red and thicker
+                (Color::from_rgba(1.0, 0.3, 0.3, 0.9), 2.0)
+            } else {
+                // Regular beat - gray
+                (Color::from_rgba(0.5, 0.5, 0.5, 0.7), 1.0)
+            };
+
+            frame.stroke(
+                &Path::line(Point::new(x, 0.0), Point::new(x, height)),
+                Stroke::default().with_color(color).with_width(line_width),
+            );
+        }
+
+        // Draw stem waveforms from cached peaks
+        // Map cached peaks to visible range
+        if self.waveform.cache_end > self.waveform.cache_start {
+            let cache_samples = (self.waveform.cache_end - self.waveform.cache_start) as f64;
+
+            for stem_idx in (0..4).rev() {
+                let peaks = &self.waveform.cached_peaks[stem_idx];
+                if peaks.is_empty() {
+                    continue;
+                }
+
+                let base_color = STEM_COLORS[stem_idx];
+                let waveform_color =
+                    Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.7);
+
+                let peaks_len = peaks.len() as f64;
+
+                for x in 0..(width as usize) {
+                    // Map x to sample position in view
+                    let view_sample =
+                        view_start as f64 + (x as f64 / width as f64) * view_samples;
+
+                    // Map sample position to cache index
+                    let cache_offset = view_sample - self.waveform.cache_start as f64;
+                    if cache_offset < 0.0 || cache_offset >= cache_samples {
+                        continue;
+                    }
+
+                    let cache_idx = (cache_offset / cache_samples * peaks_len) as usize;
+                    if cache_idx >= peaks.len() {
+                        continue;
+                    }
+
+                    let (min, max) = peaks[cache_idx];
+
+                    // Scale to fit in view
+                    let y1 = center_y - (max * center_y * 0.85);
+                    let y2 = center_y - (min * center_y * 0.85);
+
+                    frame.stroke(
+                        &Path::line(Point::new(x as f32, y1), Point::new(x as f32, y2)),
+                        Stroke::default()
+                            .with_color(waveform_color)
+                            .with_width(1.0),
+                    );
+                }
+            }
+        }
+
+        // Draw cue markers (only those in visible range)
+        for marker in &self.waveform.cue_markers {
+            let cue_sample = (marker.position * self.waveform.duration_samples as f64) as u64;
+
+            if cue_sample < view_start || cue_sample > view_end {
+                continue;
+            }
+
+            let x = ((cue_sample - view_start) as f64 / view_samples * width as f64) as f32;
+
+            // Draw vertical line
+            frame.fill_rectangle(
+                Point::new(x - 1.0, 0.0),
+                Size::new(2.0, height),
+                marker.color,
+            );
+
+            // Draw triangle at top
+            let triangle = Path::new(|builder| {
+                builder.move_to(Point::new(x, 0.0));
+                builder.line_to(Point::new(x - 6.0, 12.0));
+                builder.line_to(Point::new(x + 6.0, 12.0));
+                builder.close();
+            });
+            frame.fill(&triangle, marker.color);
+        }
+
+        // Draw playhead at center (always centered)
+        let playhead_x = width / 2.0;
+        frame.stroke(
+            &Path::line(
+                Point::new(playhead_x, 0.0),
+                Point::new(playhead_x, height),
+            ),
+            Stroke::default()
+                .with_color(Color::from_rgb(1.0, 1.0, 1.0))
+                .with_width(2.0),
+        );
+
+        // Draw zoom indicator bar in corner (width represents zoom level)
+        // Note: iced canvas doesn't support text, so we use a visual indicator
+        let indicator_width = (self.waveform.zoom_bars as f32 / MAX_ZOOM_BARS as f32) * 60.0;
+        frame.fill_rectangle(
+            Point::new(width - 70.0, 5.0),
+            Size::new(indicator_width, 4.0),
+            Color::from_rgba(1.0, 1.0, 1.0, 0.5),
         );
 
         vec![frame.into_geometry()]
