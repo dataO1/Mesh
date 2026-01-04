@@ -112,21 +112,58 @@ pub struct CuePoint {
 pub struct BeatGrid {
     /// Sample positions of beats
     pub beats: Vec<u64>,
+    /// First beat sample position (for regeneration from BPM)
+    pub first_beat_sample: Option<u64>,
 }
 
 impl BeatGrid {
     /// Create an empty beat grid
     pub fn new() -> Self {
-        Self { beats: Vec::new() }
+        Self {
+            beats: Vec::new(),
+            first_beat_sample: None,
+        }
     }
 
     /// Create a beat grid from a comma-separated list of sample positions
     pub fn from_csv(csv: &str) -> Self {
-        let beats = csv
+        let beats: Vec<u64> = csv
             .split(',')
             .filter_map(|s| s.trim().parse::<u64>().ok())
             .collect();
-        Self { beats }
+        let first_beat_sample = beats.first().copied();
+        Self {
+            beats,
+            first_beat_sample,
+        }
+    }
+
+    /// Regenerate beat grid from BPM, first beat position, and duration
+    ///
+    /// This creates a uniform beat grid based on tempo and first beat,
+    /// which is more efficient than storing all beat positions.
+    pub fn regenerate(first_beat_sample: u64, bpm: f64, duration_samples: u64) -> Self {
+        use crate::types::SAMPLE_RATE;
+
+        if bpm <= 0.0 || duration_samples == 0 {
+            return Self::new();
+        }
+
+        let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
+        if samples_per_beat == 0 {
+            return Self::new();
+        }
+
+        let num_beats = ((duration_samples.saturating_sub(first_beat_sample)) / samples_per_beat) as usize;
+
+        let beats: Vec<u64> = (0..=num_beats)
+            .map(|i| first_beat_sample + (i as u64 * samples_per_beat))
+            .collect();
+
+        Self {
+            beats,
+            first_beat_sample: Some(first_beat_sample),
+        }
     }
 
     /// Get the beat index for a sample position (which beat are we on/past)
@@ -160,9 +197,14 @@ pub struct TrackMetadata {
 impl TrackMetadata {
     /// Parse metadata from bext description string
     ///
-    /// Format: `BPM:128.00|KEY:Am|GRID:0,22050,44100,...|ORIGINAL_BPM:125.00`
+    /// Format: `BPM:128.00|KEY:Am|FIRST_BEAT:14335|ORIGINAL_BPM:125.00`
+    /// Legacy: `BPM:128.00|KEY:Am|GRID:0,22050,44100,...|ORIGINAL_BPM:125.00`
+    ///
+    /// Note: FIRST_BEAT is preferred over GRID as it stores only the first beat position,
+    /// allowing the full beat grid to be regenerated from BPM when the track is loaded.
     pub fn parse_bext_description(description: &str) -> Self {
         let mut metadata = Self::default();
+        let mut first_beat: Option<u64> = None;
 
         for part in description.split('|') {
             if let Some((key, value)) = part.split_once(':') {
@@ -170,9 +212,37 @@ impl TrackMetadata {
                     "BPM" => metadata.bpm = value.trim().parse().ok(),
                     "ORIGINAL_BPM" => metadata.original_bpm = value.trim().parse().ok(),
                     "KEY" => metadata.key = Some(value.trim().to_string()),
+                    "FIRST_BEAT" => first_beat = value.trim().parse().ok(),
                     "GRID" => metadata.beat_grid = BeatGrid::from_csv(value),
                     _ => {}
                 }
+            }
+        }
+
+        // If we have FIRST_BEAT but no/empty GRID, store it for later regeneration
+        if let Some(fb) = first_beat {
+            metadata.beat_grid.first_beat_sample = Some(fb);
+        }
+
+        metadata
+    }
+
+    /// Parse metadata from bext description and regenerate beat grid from duration
+    ///
+    /// This is the preferred method when loading a track - it regenerates the full
+    /// beat grid from BPM and first beat position using the known duration.
+    pub fn parse_bext_description_with_duration(description: &str, duration_samples: u64) -> Self {
+        let mut metadata = Self::parse_bext_description(description);
+
+        // If we have first_beat_sample and BPM but empty/truncated beats, regenerate
+        if let (Some(first_beat), Some(bpm)) = (metadata.beat_grid.first_beat_sample, metadata.bpm) {
+            // Only regenerate if we have very few beats (likely truncated) or none
+            if metadata.beat_grid.beats.len() < 50 {
+                log::debug!(
+                    "Regenerating beat grid: first_beat={}, bpm={:.1}, duration={}",
+                    first_beat, bpm, duration_samples
+                );
+                metadata.beat_grid = BeatGrid::regenerate(first_beat, bpm, duration_samples);
             }
         }
 
@@ -181,7 +251,10 @@ impl TrackMetadata {
 
     /// Serialize metadata to bext description string
     ///
-    /// Format: `BPM:128.00|KEY:Am|GRID:0,22050,44100,...|ORIGINAL_BPM:125.00`
+    /// Format: `BPM:128.00|KEY:Am|FIRST_BEAT:14335|ORIGINAL_BPM:125.00`
+    ///
+    /// Uses FIRST_BEAT instead of full GRID to fit in 256-byte bext description limit.
+    /// The full beat grid is regenerated from BPM + FIRST_BEAT when loading.
     pub fn to_bext_description(&self) -> String {
         let mut parts = Vec::new();
 
@@ -191,12 +264,11 @@ impl TrackMetadata {
         if let Some(ref key) = self.key {
             parts.push(format!("KEY:{}", key));
         }
-        if !self.beat_grid.beats.is_empty() {
-            let beats: Vec<String> = self.beat_grid.beats.iter()
-                .take(100) // Limit to first 100 beats to fit in 256 byte description
-                .map(|b| b.to_string())
-                .collect();
-            parts.push(format!("GRID:{}", beats.join(",")));
+        // Store only FIRST_BEAT (fits in 256 bytes, grid regenerated on load)
+        let first_beat = self.beat_grid.first_beat_sample
+            .or_else(|| self.beat_grid.beats.first().copied());
+        if let Some(fb) = first_beat {
+            parts.push(format!("FIRST_BEAT:{}", fb));
         }
         if let Some(original) = self.original_bpm {
             parts.push(format!("ORIGINAL_BPM:{:.2}", original));
@@ -599,6 +671,9 @@ impl AudioFileReader {
 }
 
 /// Read metadata from a WAV/RF64 file without loading audio data
+///
+/// Also calculates duration from the file header and regenerates the beat grid
+/// from BPM + FIRST_BEAT if available.
 pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFileError> {
     let file = File::open(path.as_ref())
         .map_err(|e| AudioFileError::IoError(e.to_string()))?;
@@ -619,6 +694,12 @@ pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFile
 
     let mut metadata = TrackMetadata::default();
     let mut cue_points: Vec<(u32, u64)> = Vec::new(); // id, position
+    let mut bext_description: Option<String> = None;
+
+    // Track format info for duration calculation
+    let mut channels: u16 = 8;
+    let mut bits_per_sample: u16 = 16;
+    let mut data_size: u64 = 0;
 
     // Parse chunks
     loop {
@@ -633,6 +714,24 @@ pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFile
         let chunk_size = u32::from_le_bytes(chunk_size_bytes);
 
         match &chunk_id {
+            b"fmt " => {
+                // Format chunk - extract channel count and bit depth for duration calculation
+                let mut fmt_data = vec![0u8; chunk_size as usize];
+                reader.read_exact(&mut fmt_data)
+                    .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+
+                if fmt_data.len() >= 16 {
+                    channels = u16::from_le_bytes([fmt_data[2], fmt_data[3]]);
+                    bits_per_sample = u16::from_le_bytes([fmt_data[14], fmt_data[15]]);
+                }
+            }
+            b"data" => {
+                // Data chunk - capture size for duration calculation
+                data_size = chunk_size as u64;
+                // Skip the audio data
+                reader.seek(SeekFrom::Current(chunk_size as i64))
+                    .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+            }
             b"bext" => {
                 // Broadcast Extension chunk
                 let mut bext_data = vec![0u8; chunk_size as usize];
@@ -640,12 +739,13 @@ pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFile
                     .map_err(|e| AudioFileError::IoError(e.to_string()))?;
 
                 // Description is first 256 bytes (null-terminated string)
+                // Store it for later parsing with duration info
                 if bext_data.len() >= 256 {
                     let description_end = bext_data[..256].iter()
                         .position(|&b| b == 0)
                         .unwrap_or(256);
                     if let Ok(description) = std::str::from_utf8(&bext_data[..description_end]) {
-                        metadata = TrackMetadata::parse_bext_description(description);
+                        bext_description = Some(description.to_string());
                     }
                 }
             }
@@ -743,6 +843,20 @@ pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFile
             reader.seek(SeekFrom::Current(1))
                 .map_err(|e| AudioFileError::IoError(e.to_string()))?;
         }
+    }
+
+    // Calculate duration in samples from format info
+    let bytes_per_sample = (bits_per_sample / 8) as u64;
+    let bytes_per_frame = channels as u64 * bytes_per_sample;
+    let duration_samples = if bytes_per_frame > 0 {
+        data_size / bytes_per_frame
+    } else {
+        0
+    };
+
+    // Parse bext description with duration to regenerate beat grid
+    if let Some(description) = bext_description {
+        metadata = TrackMetadata::parse_bext_description_with_duration(&description, duration_samples);
     }
 
     // Add any cue points without labels
@@ -928,7 +1042,7 @@ mod tests {
 
     #[test]
     fn test_metadata_roundtrip() {
-        // Create metadata
+        // Create metadata with first_beat_sample set
         let original = TrackMetadata {
             bpm: Some(174.5),
             original_bpm: Some(172.0),
@@ -937,17 +1051,48 @@ mod tests {
             cue_points: Vec::new(),
         };
 
-        // Serialize to bext description
+        // Serialize to bext description (now uses FIRST_BEAT format)
         let description = original.to_bext_description();
 
-        // Parse back
+        // Should contain FIRST_BEAT instead of full GRID
+        assert!(description.contains("FIRST_BEAT:0"));
+        assert!(!description.contains("GRID:"));
+
+        // Parse back - without duration, beats won't be regenerated
         let parsed = TrackMetadata::parse_bext_description(&description);
 
-        // Verify roundtrip
+        // Verify basic roundtrip
         assert_eq!(parsed.bpm, original.bpm);
         assert_eq!(parsed.original_bpm, original.original_bpm);
         assert_eq!(parsed.key, original.key);
-        assert_eq!(parsed.beat_grid.beats, original.beat_grid.beats);
+        // first_beat_sample is preserved
+        assert_eq!(parsed.beat_grid.first_beat_sample, Some(0));
+    }
+
+    #[test]
+    fn test_metadata_roundtrip_with_duration() {
+        // Create metadata
+        let original = TrackMetadata {
+            bpm: Some(120.0), // 120 BPM = 22050 samples per beat at 44100
+            original_bpm: Some(120.0),
+            key: Some("Am".to_string()),
+            beat_grid: BeatGrid::from_csv("0,22050,44100,66150"),
+            cue_points: Vec::new(),
+        };
+
+        // Serialize to bext description
+        let description = original.to_bext_description();
+
+        // Parse with duration to regenerate beat grid
+        let duration_samples = 100000; // About 2.3 seconds
+        let parsed = TrackMetadata::parse_bext_description_with_duration(&description, duration_samples);
+
+        // Beat grid should be regenerated
+        assert_eq!(parsed.bpm, Some(120.0));
+        assert_eq!(parsed.beat_grid.first_beat_sample, Some(0));
+        assert!(!parsed.beat_grid.beats.is_empty());
+        // Should have approximately 4-5 beats for 100000 samples at 120 BPM
+        assert!(parsed.beat_grid.beats.len() >= 4);
     }
 
     #[test]

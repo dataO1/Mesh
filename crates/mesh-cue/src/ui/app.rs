@@ -392,7 +392,10 @@ impl MeshCueApp {
                             bpm: Some(analysis.bpm),
                             original_bpm: Some(analysis.original_bpm),
                             key: Some(analysis.key.clone()),
-                            beat_grid: BeatGrid { beats: analysis.beat_grid.clone() },
+                            beat_grid: BeatGrid {
+                                beats: analysis.beat_grid.clone(),
+                                first_beat_sample: analysis.beat_grid.first().copied(),
+                            },
                             cue_points: Vec::new(), // No cue points initially
                         };
                         log::info!(
@@ -655,7 +658,10 @@ impl MeshCueApp {
                         bpm: Some(state.bpm),
                         original_bpm: Some(state.bpm), // Use current BPM if no original
                         key: Some(state.key.clone()),
-                        beat_grid: BeatGrid { beats: state.beat_grid.clone() },
+                        beat_grid: BeatGrid {
+                            beats: state.beat_grid.clone(),
+                            first_beat_sample: state.beat_grid.first().copied(),
+                        },
                         cue_points: cue_points.clone(),
                     };
 

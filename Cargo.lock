@@ -2430,6 +2430,7 @@ name = "mesh-core"
 version = "0.1.0"
 dependencies = [
  "libpd-rs",
+ "log",
  "riff",
  "signalsmith-stretch",
 ]

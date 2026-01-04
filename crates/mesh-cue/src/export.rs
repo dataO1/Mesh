@@ -109,23 +109,24 @@ pub fn export_stem_file(
 }
 
 /// Format metadata string for bext chunk description
+///
+/// Uses FIRST_BEAT instead of full GRID to fit within the 256-byte bext description limit.
+/// The full beat grid is regenerated from BPM + FIRST_BEAT when the file is loaded.
 fn format_metadata_string(metadata: &TrackMetadata) -> String {
     let bpm = metadata.bpm.unwrap_or(120.0);
     let original_bpm = metadata.original_bpm.unwrap_or(bpm);
     let key = metadata.key.as_deref().unwrap_or("?");
 
-    let grid_str: String = metadata
+    // Get first beat position (either from explicit field or first beat in grid)
+    let first_beat = metadata
         .beat_grid
-        .beats
-        .iter()
-        .take(100) // Limit to first 100 beats to avoid huge strings
-        .map(|&pos| pos.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
+        .first_beat_sample
+        .or_else(|| metadata.beat_grid.beats.first().copied())
+        .unwrap_or(0);
 
     format!(
-        "BPM:{:.2}|KEY:{}|GRID:{}|ORIGINAL_BPM:{:.2}",
-        bpm, key, grid_str, original_bpm
+        "BPM:{:.2}|KEY:{}|FIRST_BEAT:{}|ORIGINAL_BPM:{:.2}",
+        bpm, key, first_beat, original_bpm
     )
 }
 
@@ -285,7 +286,7 @@ mod tests {
         let result = format_metadata_string(&metadata);
         assert!(result.contains("BPM:128.00"));
         assert!(result.contains("KEY:Am"));
-        assert!(result.contains("GRID:0,22050,44100"));
+        assert!(result.contains("FIRST_BEAT:0")); // Now uses FIRST_BEAT instead of GRID
         assert!(result.contains("ORIGINAL_BPM:125.50"));
     }
 
