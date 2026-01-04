@@ -87,6 +87,14 @@ pub struct LoadedTrackState {
     pub waveform: WaveformView,
     /// Whether audio is currently loading in the background
     pub loading_audio: bool,
+    /// Whether audio is currently playing (synced from AudioState)
+    pub is_playing: bool,
+    /// Beat jump size in beats (1, 4, 8, 16, 32)
+    pub beat_jump_size: i32,
+    /// Current playhead position in samples (synced from AudioState)
+    pub playhead_position: u64,
+    /// CDJ-style cue point position (snap to grid)
+    pub cue_point: Option<u64>,
 }
 
 /// State for the settings modal
@@ -98,6 +106,8 @@ pub struct SettingsState {
     pub draft_min_tempo: String,
     /// Draft max tempo value (text input)
     pub draft_max_tempo: String,
+    /// Draft track name format template
+    pub draft_track_name_format: String,
     /// Status message for save feedback
     pub status: String,
 }
@@ -109,6 +119,7 @@ impl SettingsState {
             is_open: false,
             draft_min_tempo: config.analysis.bpm.min_tempo.to_string(),
             draft_max_tempo: config.analysis.bpm.max_tempo.to_string(),
+            draft_track_name_format: config.track_name_format.clone(),
             status: String::new(),
         }
     }
@@ -160,6 +171,20 @@ pub enum Message {
     Pause,
     Stop,
     Seek(f64),
+    /// CDJ-style cue button (snap to nearest beat grid)
+    Cue,
+    /// Beat jump by N beats (positive = forward, negative = backward)
+    BeatJump(i32),
+    /// Set beat jump size (1, 4, 8, 16, 32)
+    SetBeatJumpSize(i32),
+
+    // Hot Cues (8 action buttons)
+    /// Jump to hot cue at index (0-7)
+    JumpToCue(usize),
+    /// Set hot cue at index to current playhead position
+    SetCuePoint(usize),
+    /// Clear hot cue at index (Shift+click)
+    ClearCuePoint(usize),
 
     // Misc
     Tick,
@@ -169,6 +194,7 @@ pub enum Message {
     CloseSettings,
     UpdateSettingsMinTempo(String),
     UpdateSettingsMaxTempo(String),
+    UpdateSettingsTrackNameFormat(String),
     SaveSettings,
     SaveSettingsComplete(Result<(), String>),
 }
@@ -278,6 +304,13 @@ impl MeshCueApp {
                         _ => {}
                     }
                     self.staging.status = format!("Loaded stem {}", index + 1);
+
+                    // Auto-fill track name from first stem filename if empty
+                    if self.staging.track_name.is_empty() {
+                        if let Some(parsed_name) = parse_track_name_from_filename(&path) {
+                            self.staging.track_name = parsed_name;
+                        }
+                    }
                 }
             }
             Message::SetTrackName(name) => {
@@ -518,6 +551,10 @@ impl MeshCueApp {
                             modified: false,
                             waveform,
                             loading_audio: true,
+                            is_playing: false,
+                            beat_jump_size: 4,
+                            playhead_position: 0,
+                            cue_point: None,
                         });
 
                         // Phase 2: Load audio stems in background (slow, ~3s)
@@ -590,6 +627,10 @@ impl MeshCueApp {
                             modified: false,
                             waveform,
                             loading_audio: false,
+                            is_playing: false,
+                            beat_jump_size: 4,
+                            playhead_position: 0,
+                            cue_point: None,
                         });
                     }
                     Err(e) => {
@@ -691,13 +732,23 @@ impl MeshCueApp {
             // Transport
             Message::Play => {
                 self.audio.play();
+                if let Some(ref mut state) = self.collection.loaded_track {
+                    state.is_playing = true;
+                }
             }
             Message::Pause => {
                 self.audio.pause();
+                if let Some(ref mut state) = self.collection.loaded_track {
+                    state.is_playing = false;
+                }
             }
             Message::Stop => {
                 self.audio.pause();
                 self.audio.seek(0);
+                if let Some(ref mut state) = self.collection.loaded_track {
+                    state.is_playing = false;
+                    state.playhead_position = 0;
+                }
             }
             Message::Seek(position) => {
                 self.audio.seek((position * self.audio.length as f64) as u64);
@@ -707,12 +758,114 @@ impl MeshCueApp {
                     state.waveform.set_position(position);
                 }
             }
+            Message::Cue => {
+                // CDJ-style cue: snap to nearest beat in grid
+                if let Some(ref mut state) = self.collection.loaded_track {
+                    let current_pos = state.playhead_position;
+                    let beat_grid = &state.beat_grid;
+
+                    // Find nearest beat
+                    if let Some(&nearest_beat) = beat_grid
+                        .iter()
+                        .min_by_key(|&&b| (b as i64 - current_pos as i64).unsigned_abs())
+                    {
+                        state.cue_point = Some(nearest_beat);
+                        self.audio.seek(nearest_beat);
+                        state.playhead_position = nearest_beat;
+
+                        // Update waveform
+                        if self.audio.length > 0 {
+                            let normalized = nearest_beat as f64 / self.audio.length as f64;
+                            state.waveform.set_position(normalized);
+                        }
+                    }
+                }
+            }
+            Message::BeatJump(beats) => {
+                if let Some(ref mut state) = self.collection.loaded_track {
+                    let current_pos = state.playhead_position;
+                    let beat_grid = &state.beat_grid;
+
+                    // Find current beat index
+                    let current_beat_idx = beat_grid
+                        .iter()
+                        .position(|&b| b >= current_pos)
+                        .unwrap_or(0) as i32;
+
+                    // Calculate target beat index
+                    let target_idx = (current_beat_idx + beats)
+                        .max(0)
+                        .min(beat_grid.len().saturating_sub(1) as i32)
+                        as usize;
+
+                    if let Some(&target_pos) = beat_grid.get(target_idx) {
+                        self.audio.seek(target_pos);
+                        state.playhead_position = target_pos;
+
+                        // Update waveform
+                        if self.audio.length > 0 {
+                            let normalized = target_pos as f64 / self.audio.length as f64;
+                            state.waveform.set_position(normalized);
+                        }
+                    }
+                }
+            }
+            Message::SetBeatJumpSize(size) => {
+                if let Some(ref mut state) = self.collection.loaded_track {
+                    state.beat_jump_size = size;
+                }
+            }
+            Message::JumpToCue(index) => {
+                if let Some(ref mut state) = self.collection.loaded_track {
+                    if let Some(cue) = state.cue_points.iter().find(|c| c.index == index as u8) {
+                        let pos = cue.sample_position;
+                        self.audio.seek(pos);
+                        state.playhead_position = pos;
+
+                        // Update waveform
+                        if self.audio.length > 0 {
+                            let normalized = pos as f64 / self.audio.length as f64;
+                            state.waveform.set_position(normalized);
+                        }
+                    }
+                }
+            }
+            Message::SetCuePoint(index) => {
+                if let Some(ref mut state) = self.collection.loaded_track {
+                    let pos = state.playhead_position;
+
+                    // Remove existing cue at this index (if any)
+                    state.cue_points.retain(|c| c.index != index as u8);
+
+                    // Add new cue point
+                    state.cue_points.push(CuePoint {
+                        index: index as u8,
+                        sample_position: pos,
+                        label: format!("Cue {}", index + 1),
+                        color: None,
+                    });
+
+                    // Sort by index
+                    state.cue_points.sort_by_key(|c| c.index);
+
+                    // Update waveform markers
+                    state.waveform.update_cue_markers(&state.cue_points);
+                }
+            }
+            Message::ClearCuePoint(index) => {
+                if let Some(ref mut state) = self.collection.loaded_track {
+                    state.cue_points.retain(|c| c.index != index as u8);
+                    state.waveform.update_cue_markers(&state.cue_points);
+                }
+            }
 
             // Misc
             Message::Tick => {
-                // Sync waveform playhead with audio position
+                // Sync waveform playhead and state with audio position
                 if let Some(ref mut state) = self.collection.loaded_track {
                     let pos = self.audio.position();
+                    state.playhead_position = pos;
+                    state.is_playing = self.audio.is_playing();
                     if self.audio.length > 0 {
                         let normalized = pos as f64 / self.audio.length as f64;
                         state.waveform.set_position(normalized);
@@ -736,6 +889,9 @@ impl MeshCueApp {
             Message::UpdateSettingsMaxTempo(value) => {
                 self.settings.draft_max_tempo = value;
             }
+            Message::UpdateSettingsTrackNameFormat(value) => {
+                self.settings.draft_track_name_format = value;
+            }
             Message::SaveSettings => {
                 // Parse and validate values
                 let min = self.settings.draft_min_tempo.parse::<i32>().unwrap_or(40);
@@ -745,6 +901,9 @@ impl MeshCueApp {
                 new_config.analysis.bpm.min_tempo = min;
                 new_config.analysis.bpm.max_tempo = max;
                 new_config.analysis.bpm.validate();
+
+                // Update track name format
+                new_config.track_name_format = self.settings.draft_track_name_format.clone();
 
                 // Update drafts to show validated values
                 self.settings.draft_min_tempo = new_config.analysis.bpm.min_tempo.to_string();
@@ -883,5 +1042,48 @@ impl MeshCueApp {
     /// View for the collection browser and editor
     fn view_collection(&self) -> Element<Message> {
         super::collection_browser::view(&self.collection)
+    }
+}
+
+/// Parse track name from stem filename
+///
+/// Handles common patterns:
+/// - "Artist - Track Name (Vocals).wav" → "Artist - Track Name"
+/// - "Artist - Track Name_Vocals.wav" → "Artist - Track Name"
+/// - "Track Name - Vocals.wav" → "Track Name"
+fn parse_track_name_from_filename(path: &std::path::Path) -> Option<String> {
+    let filename = path.file_stem()?.to_string_lossy();
+
+    // Remove common stem suffixes (case insensitive)
+    let stem_patterns = [
+        "(Vocals)", "(vocals)", "(VOCALS)",
+        "(Drums)", "(drums)", "(DRUMS)",
+        "(Bass)", "(bass)", "(BASS)",
+        "(Other)", "(other)", "(OTHER)",
+        "_Vocals", "_vocals", "_VOCALS",
+        "_Drums", "_drums", "_DRUMS",
+        "_Bass", "_bass", "_BASS",
+        "_Other", "_other", "_OTHER",
+        " - Vocals", " - vocals",
+        " - Drums", " - drums",
+        " - Bass", " - bass",
+        " - Other", " - other",
+    ];
+
+    let mut name = filename.to_string();
+    for pattern in stem_patterns {
+        if let Some(idx) = name.find(pattern) {
+            name = name[..idx].to_string();
+            break;
+        }
+    }
+
+    // Clean up trailing whitespace, dashes, and underscores
+    let name = name.trim_end_matches(|c| c == ' ' || c == '-' || c == '_');
+
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
     }
 }

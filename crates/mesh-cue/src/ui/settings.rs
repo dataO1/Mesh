@@ -20,6 +20,9 @@ pub fn view(state: &SettingsState) -> Element<Message> {
     // BPM Range section
     let bpm_section = view_bpm_section(state);
 
+    // Track name format section
+    let format_section = view_track_name_format_section(state);
+
     // Status message (for save feedback)
     let status: Element<Message> = if !state.status.is_empty() {
         text(&state.status).size(14).into()
@@ -40,9 +43,9 @@ pub fn view(state: &SettingsState) -> Element<Message> {
         .spacing(10)
         .width(Length::Fill);
 
-    let content = column![header, bpm_section, status, actions]
+    let content = column![header, bpm_section, format_section, status, actions]
         .spacing(20)
-        .width(Length::Fixed(400.0));
+        .width(Length::Fixed(450.0));
 
     container(content)
         .padding(30)
@@ -80,6 +83,34 @@ fn view_bpm_section(state: &SettingsState) -> Element<Message> {
 
     container(
         column![section_title, subsection_title, hint, min_row, max_row].spacing(10),
+    )
+    .padding(15)
+    .width(Length::Fill)
+    .into()
+}
+
+/// Track name format template settings
+fn view_track_name_format_section(state: &SettingsState) -> Element<Message> {
+    let section_title = text("Import").size(18);
+
+    let subsection_title = text("Track Name Format").size(14);
+    let hint = text("Template for auto-filling track names from stem filenames")
+        .size(12);
+
+    let format_label = text("Format:").size(14);
+    let format_input = text_input("{artist} - {name}", &state.draft_track_name_format)
+        .on_input(Message::UpdateSettingsTrackNameFormat)
+        .width(Length::Fixed(200.0));
+
+    let format_row = row![format_label, format_input]
+        .spacing(10)
+        .align_y(Alignment::Center);
+
+    let tags_hint = text("Tags: {artist}, {name}")
+        .size(12);
+
+    container(
+        column![section_title, subsection_title, hint, format_row, tags_hint].spacing(10),
     )
     .padding(15)
     .width(Length::Fill)

@@ -1,4 +1,9 @@
 //! Transport controls component
+//!
+//! CDJ-style transport with:
+//! - Play/Pause toggle button
+//! - Cue button (snap to nearest beat grid)
+//! - Beat jump buttons (<< / >>)
 
 use super::app::{LoadedTrackState, Message};
 use iced::widget::{button, container, row, text};
@@ -7,8 +12,7 @@ use mesh_core::types::SAMPLE_RATE;
 
 /// Render transport controls
 pub fn view(state: &LoadedTrackState) -> Element<Message> {
-    // TODO: Get actual position from audio state
-    let position = 0u64;
+    let position = state.playhead_position;
     let duration = state.duration_samples;
 
     let position_str = format_time(position);
@@ -21,23 +25,34 @@ pub fn view(state: &LoadedTrackState) -> Element<Message> {
     // Disable controls while loading
     let controls_enabled = !state.loading_audio && state.stems.is_some();
 
-    let skip_back = if controls_enabled {
-        button(text("◄◄")).on_press(Message::Seek(0.0))
+    // Beat jump backward (<<)
+    let jump_back = if controls_enabled {
+        button(text("◄◄")).on_press(Message::BeatJump(-state.beat_jump_size))
     } else {
         button(text("◄◄"))
     };
-    let play = if controls_enabled {
-        button(text("▶")).on_press(Message::Play)
+
+    // CDJ-style cue button (●)
+    let cue = if controls_enabled {
+        button(text("●")).on_press(Message::Cue)
+    } else {
+        button(text("●"))
+    };
+
+    // Play/Pause toggle
+    let play_pause = if controls_enabled {
+        if state.is_playing {
+            button(text("▮▮")).on_press(Message::Pause)
+        } else {
+            button(text("▶")).on_press(Message::Play)
+        }
     } else {
         button(text("▶"))
     };
-    let pause = if controls_enabled {
-        button(text("▮▮")).on_press(Message::Pause)
-    } else {
-        button(text("▮▮"))
-    };
-    let skip_forward = if controls_enabled {
-        button(text("►►")).on_press(Message::Seek(1.0))
+
+    // Beat jump forward (>>)
+    let jump_forward = if controls_enabled {
+        button(text("►►")).on_press(Message::BeatJump(state.beat_jump_size))
     } else {
         button(text("►►"))
     };
@@ -45,7 +60,7 @@ pub fn view(state: &LoadedTrackState) -> Element<Message> {
     let time_display = text(format!("{} / {}", position_str, duration_str)).size(14);
 
     container(
-        row![skip_back, play, pause, skip_forward, time_display,]
+        row![jump_back, cue, play_pause, jump_forward, time_display,]
             .spacing(10)
             .align_y(Alignment::Center),
     )

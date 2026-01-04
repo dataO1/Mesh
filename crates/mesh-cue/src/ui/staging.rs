@@ -1,7 +1,7 @@
 //! Staging view UI - Import stems and analyze
 
 use super::app::{Message, StagingState};
-use iced::widget::{button, column, container, progress_bar, row, text, text_input, Space};
+use iced::widget::{button, column, container, row, text, text_input, Space};
 use iced::{Alignment, Element, Length};
 
 /// Render the staging view
@@ -68,18 +68,32 @@ fn view_stem_selectors(state: &StagingState) -> Element<Message> {
 fn view_analysis_section(state: &StagingState) -> Element<Message> {
     let title = text("Analysis").size(18);
 
-    // Allow (re-)analysis when all stems are loaded
-    let can_analyze = state.importer.is_complete();
-    let analyze_btn = button(text(if state.analysis_result.is_some() { "Re-Analyze" } else { "Analyze" }))
-        .on_press_maybe(can_analyze.then_some(Message::StartAnalysis));
+    // Show spinner button during analysis, normal button otherwise
+    let is_analyzing = state.analysis_progress.is_some();
+    let can_analyze = state.importer.is_complete() && !is_analyzing;
 
-    let progress: Element<Message> = if let Some(progress) = state.analysis_progress {
-        container(progress_bar(0.0..=1.0, progress))
-            .width(Length::Fill)
-            .height(20.0)
-            .into()
+    let analyze_btn: Element<Message> = if is_analyzing {
+        // Analyzing - show spinner button (disabled)
+        let progress_pct = state.analysis_progress.unwrap_or(0.0) * 100.0;
+        button(
+            row![
+                text("⟳").size(16),
+                text(format!(" Analysing... {:.0}%", progress_pct)),
+            ]
+            .spacing(5)
+            .align_y(Alignment::Center),
+        )
+        .into()
     } else {
-        Space::new().height(20.0).into()
+        // Not analyzing - show normal button
+        let label = if state.analysis_result.is_some() {
+            "Re-Analyze"
+        } else {
+            "Analyze"
+        };
+        button(text(label))
+            .on_press_maybe(can_analyze.then_some(Message::StartAnalysis))
+            .into()
     };
 
     let results: Element<Message> = if let Some(ref result) = state.analysis_result {
@@ -94,11 +108,13 @@ fn view_analysis_section(state: &StagingState) -> Element<Message> {
         ]
         .spacing(5)
         .into()
-    } else {
+    } else if !is_analyzing {
         text("No analysis yet").size(14).into()
+    } else {
+        Space::new().into()
     };
 
-    container(column![title, analyze_btn, progress, results,].spacing(10))
+    container(column![title, analyze_btn, results,].spacing(10))
         .padding(15)
         .width(Length::Fill)
         .into()

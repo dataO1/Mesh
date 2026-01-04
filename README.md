@@ -184,11 +184,17 @@ mesh/
 - **Settings modal** (gear icon) for configuring analysis parameters
 - **Configurable BPM range** for genre-specific detection (e.g., DnB: 160-190 BPM)
 - **Interactive waveform display** with 4-stem color coding, beat grid overlay, and cue markers
+- **Downbeat highlighting** — First beat of each bar displayed in red for visual bar counting
 - **Click-to-seek** on waveform with drag scrubbing support
-- Track editor with cue point list (add, delete, edit labels)
+- **CDJ-style transport controls** — Play/pause toggle, cue button with beat grid snap
+- **Beat jump navigation** — Skip forward/backward by configurable beat count (1, 4, 8, 16, 32)
+- **8 hot cue action buttons** — Click to jump, click empty slot to set, colored by index
+- Track editor with cue point management
 - **Save edited track metadata** (BPM, key, cue points) back to file
 - **JACK audio preview** with click-to-seek waveform synchronization
 - **Async track loading** — Instant UI response with background audio loading
+- **Track name auto-fill** — Parses artist/name from stem filenames (e.g., "Artist - Track (Vocals).wav")
+- **Configurable track name format** — Template with {artist} and {name} placeholders
 
 *Planned:*
 - Playlist and crate management
@@ -297,12 +303,24 @@ Configure the expected tempo range for your music genre:
 
 Setting a narrower range prevents half-tempo or double-tempo detection errors (e.g., DnB at 172 BPM being detected as 86 BPM).
 
+**Import → Track Name Format**
+
+Configure the template for auto-filling track names when importing stems:
+
+| Tag | Description |
+|-----|-------------|
+| `{artist}` | Artist name parsed from filename |
+| `{name}` | Track name parsed from filename |
+
+Example: `{artist} - {name}` → "Daft Punk - One More Time"
+
 Example `config.yaml`:
 ```yaml
 analysis:
   bpm:
     min_tempo: 160
     max_tempo: 190
+track_name_format: "{artist} - {name}"
 ```
 
 ---

@@ -13,12 +13,21 @@ use std::path::{Path, PathBuf};
 pub struct Config {
     /// Analysis settings (BPM, key detection, etc.)
     pub analysis: AnalysisConfig,
+    /// Track name format template
+    ///
+    /// Supports placeholders:
+    /// - {artist}: Artist name parsed from filename
+    /// - {name}: Track name parsed from filename
+    ///
+    /// Example: "{artist} - {name}" produces "Daft Punk - One More Time"
+    pub track_name_format: String,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             analysis: AnalysisConfig::default(),
+            track_name_format: String::from("{artist} - {name}"),
         }
     }
 }

@@ -383,13 +383,19 @@ impl<'a> Program<Message> for WaveformCanvas<'a> {
             return vec![frame.into_geometry()];
         }
 
-        // Draw beat markers
-        let beat_color = Color::from_rgba(0.4, 0.4, 0.4, 0.6);
-        for &beat in &self.waveform.beat_markers {
+        // Draw beat markers (first beat of each bar highlighted in red)
+        for (i, &beat) in self.waveform.beat_markers.iter().enumerate() {
             let x = (beat * width as f64) as f32;
+            let (color, line_width) = if i % 4 == 0 {
+                // First beat of bar (downbeat) - red and thicker
+                (Color::from_rgba(1.0, 0.3, 0.3, 0.8), 2.0)
+            } else {
+                // Regular beat - gray
+                (Color::from_rgba(0.4, 0.4, 0.4, 0.6), 1.0)
+            };
             frame.stroke(
                 &Path::line(Point::new(x, 0.0), Point::new(x, height)),
-                Stroke::default().with_color(beat_color).with_width(1.0),
+                Stroke::default().with_color(color).with_width(line_width),
             );
         }
 
