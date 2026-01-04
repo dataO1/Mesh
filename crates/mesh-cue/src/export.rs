@@ -7,10 +7,12 @@
 //! - Cue points in cue/adtl chunks
 
 use anyhow::{Context, Result};
-use mesh_core::audio_file::{CuePoint, StemBuffers, TrackMetadata};
+use mesh_core::audio_file::{serialize_wvfm_chunk, CuePoint, StemBuffers, TrackMetadata};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
+
+use crate::ui::waveform::generate_waveform_preview;
 
 /// Export stem buffers to an 8-channel WAV file with metadata
 pub fn export_stem_file(
@@ -47,12 +49,22 @@ pub fn export_stem_file(
     let cue_chunk_data = build_cue_chunk(cue_points);
     let adtl_chunk_data = build_adtl_chunk(cue_points);
 
+    // Generate waveform preview and build wvfm chunk
+    log::info!("  Generating waveform preview...");
+    let waveform_preview = generate_waveform_preview(buffers);
+    let wvfm_data = serialize_wvfm_chunk(&waveform_preview);
+    // WAV chunks must be word-aligned (2 bytes). Add padding if data length is odd.
+    let wvfm_padding = if wvfm_data.len() % 2 != 0 { 1u32 } else { 0u32 };
+    let wvfm_chunk_size = 8 + wvfm_data.len() as u32 + wvfm_padding;
+    log::info!("  Waveform preview: {} bytes (padding: {})", wvfm_data.len(), wvfm_padding);
+
     // Calculate total file size
-    // RIFF header (12) + fmt chunk (24) + bext chunk + cue chunk + adtl chunk + data chunk (8 + data)
+    // RIFF header (12) + fmt chunk (24) + bext chunk + cue chunk + adtl chunk + wvfm chunk + data chunk (8 + data)
     let chunks_size = 24 // fmt chunk
         + bext_size
         + cue_chunk_data.len() as u32
         + adtl_chunk_data.len() as u32
+        + wvfm_chunk_size
         + 8 + data_size; // data chunk header + data
 
     let file_size = 4 + chunks_size; // "WAVE" + chunks
@@ -83,6 +95,15 @@ pub fn export_stem_file(
     // Write adtl LIST chunk (if there are cue points)
     if !adtl_chunk_data.is_empty() {
         writer.write_all(&adtl_chunk_data)?;
+    }
+
+    // Write wvfm chunk (waveform preview for instant display)
+    writer.write_all(b"wvfm")?;
+    writer.write_all(&(wvfm_data.len() as u32).to_le_bytes())?;
+    writer.write_all(&wvfm_data)?;
+    // Pad to word boundary if chunk data is odd-length
+    if wvfm_data.len() % 2 != 0 {
+        writer.write_all(&[0u8])?;
     }
 
     // Write data chunk

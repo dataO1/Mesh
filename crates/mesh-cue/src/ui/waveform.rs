@@ -9,7 +9,9 @@
 use super::app::Message;
 use iced::widget::canvas::{self, Canvas, Event, Frame, Geometry, Path, Program, Stroke};
 use iced::{mouse, Color, Element, Length, Point, Rectangle, Size, Theme};
-use mesh_core::audio_file::{CuePoint, LoadedTrack, StemBuffers};
+use mesh_core::audio_file::{
+    dequantize_peak, quantize_peak, CuePoint, LoadedTrack, StemPeaks, StemBuffers, WaveformPreview,
+};
 use mesh_core::types::SAMPLE_RATE;
 use std::sync::Arc;
 
@@ -87,6 +89,8 @@ pub struct WaveformView {
     has_track: bool,
     /// Audio is loading (show placeholder)
     loading: bool,
+    /// Missing preview message (when no waveform data available)
+    missing_preview_message: Option<String>,
 }
 
 impl WaveformView {
@@ -100,6 +104,112 @@ impl WaveformView {
             duration_samples: 0,
             has_track: false,
             loading: false,
+            missing_preview_message: None,
+        }
+    }
+
+    /// Create a waveform view from a cached preview
+    ///
+    /// This provides instant waveform display without recomputing from stems.
+    pub fn from_preview(
+        preview: &WaveformPreview,
+        beat_grid: &[u64],
+        cue_points: &[CuePoint],
+        duration_samples: u64,
+    ) -> Self {
+        // Dequantize the preview data back to f32 peaks
+        let mut stem_waveforms: [Vec<(f32, f32)>; 4] =
+            [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+
+        for (stem_idx, stem_peaks) in preview.stems.iter().enumerate() {
+            let peaks: Vec<(f32, f32)> = stem_peaks
+                .min
+                .iter()
+                .zip(stem_peaks.max.iter())
+                .map(|(&min, &max)| (dequantize_peak(min), dequantize_peak(max)))
+                .collect();
+            stem_waveforms[stem_idx] = peaks;
+        }
+
+        // Convert beat grid to normalized positions
+        let beat_markers: Vec<f64> = if duration_samples > 0 {
+            beat_grid
+                .iter()
+                .map(|&pos| pos as f64 / duration_samples as f64)
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // Convert cue points to markers
+        let cue_markers: Vec<CueMarker> = cue_points
+            .iter()
+            .map(|cue| {
+                let position = if duration_samples > 0 {
+                    cue.sample_position as f64 / duration_samples as f64
+                } else {
+                    0.0
+                };
+                let color = CUE_COLORS[(cue.index as usize) % 8];
+                CueMarker {
+                    position,
+                    label: cue.label.clone(),
+                    color,
+                    index: cue.index,
+                }
+            })
+            .collect();
+
+        log::debug!(
+            "Created WaveformView from preview: {} peaks, {} cue markers",
+            stem_waveforms[0].len(),
+            cue_markers.len()
+        );
+
+        Self {
+            stem_waveforms,
+            position: 0.0,
+            beat_markers,
+            cue_markers,
+            duration_samples,
+            has_track: true,
+            loading: false,
+            missing_preview_message: None,
+        }
+    }
+
+    /// Create an empty waveform view with a message explaining why data is missing
+    ///
+    /// Used when a track doesn't have a cached waveform preview (needs re-analysis).
+    pub fn empty_with_message(message: &str, cue_points: &[CuePoint], duration_samples: u64) -> Self {
+        // Convert cue points to markers (we can still show these)
+        let cue_markers: Vec<CueMarker> = cue_points
+            .iter()
+            .map(|cue| {
+                let position = if duration_samples > 0 {
+                    cue.sample_position as f64 / duration_samples as f64
+                } else {
+                    0.0
+                };
+                let color = CUE_COLORS[(cue.index as usize) % 8];
+                CueMarker {
+                    position,
+                    label: cue.label.clone(),
+                    color,
+                    index: cue.index,
+                }
+            })
+            .collect();
+
+        Self {
+            stem_waveforms: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            position: 0.0,
+            beat_markers: Vec::new(),
+            cue_markers,
+            duration_samples,
+            has_track: true,
+            loading: false,
+            missing_preview_message: Some(message.to_string()),
         }
     }
 
@@ -131,6 +241,7 @@ impl WaveformView {
             duration_samples: 0,
             has_track: true,
             loading: true,
+            missing_preview_message: None,
         }
     }
 
@@ -211,6 +322,7 @@ impl WaveformView {
             duration_samples,
             has_track: true,
             loading: false,
+            missing_preview_message: None,
         }
     }
 
@@ -242,10 +354,35 @@ impl WaveformView {
 
     /// Create the canvas element
     pub fn view(&self) -> Element<Message> {
-        Canvas::new(WaveformCanvas { waveform: self })
+        use iced::widget::{container, text};
+
+        // If there's a missing preview message, show it as centered text
+        if let Some(ref message) = self.missing_preview_message {
+            // Overlay the message on top of the canvas
+            let message_text = text(message)
+                .size(14)
+                .color(Color::from_rgb(0.7, 0.6, 0.5));
+
+            // Use a stack/overlay - for simplicity, just return the message in a container
+            // with the canvas as background
+            container(
+                container(message_text)
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fixed(WAVEFORM_HEIGHT))
+            )
             .width(Length::Fill)
             .height(Length::Fixed(WAVEFORM_HEIGHT))
+            .style(|_theme: &iced::Theme| container::Style {
+                background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.1, 0.12))),
+                ..Default::default()
+            })
             .into()
+        } else {
+            Canvas::new(WaveformCanvas { waveform: self })
+                .width(Length::Fill)
+                .height(Length::Fixed(WAVEFORM_HEIGHT))
+                .into()
+        }
     }
 }
 
@@ -399,6 +536,22 @@ impl<'a> Program<Message> for WaveformCanvas<'a> {
             );
             // Note: iced canvas doesn't support text directly, so we use a simple bar
             // The UI text "Loading..." would need to be added via the view function
+            return vec![frame.into_geometry()];
+        }
+
+        // Show missing preview message if waveform data is unavailable
+        if self.waveform.missing_preview_message.is_some() {
+            // Draw a muted indicator showing preview is missing
+            // The actual text is shown via the view function using iced widgets
+            let missing_color = Color::from_rgba(0.5, 0.4, 0.3, 0.6);
+            // Draw dashed line pattern to indicate missing data
+            for x in (0..(width as usize)).step_by(20) {
+                frame.fill_rectangle(
+                    Point::new(x as f32, center_y - 1.0),
+                    iced::Size::new(10.0, 2.0),
+                    missing_color,
+                );
+            }
             return vec![frame.into_geometry()];
         }
 
@@ -755,6 +908,49 @@ fn smooth_peaks(peaks: &[(f32, f32)]) -> Vec<(f32, f32)> {
             (min_avg, max_avg)
         })
         .collect()
+}
+
+/// Generate a waveform preview for storage in WAV file
+///
+/// This creates a quantized preview at the standard width (800 pixels)
+/// that can be stored in the wvfm chunk for instant display on load.
+pub fn generate_waveform_preview(stems: &StemBuffers) -> WaveformPreview {
+    let width = WaveformPreview::STANDARD_WIDTH as usize;
+
+    // Generate peaks like the regular generate_peaks function
+    // Note: We skip smoothing here - at 800 pixels the resolution is already
+    // low enough, and smooth_peaks() reduces array length by (window_size - 1),
+    // causing a mismatch between the width field and actual data length.
+    let peaks = generate_peaks(stems, width);
+
+    // Convert to quantized StemPeaks
+    let mut preview = WaveformPreview {
+        width: width as u16,
+        stems: Default::default(),
+    };
+
+    for (stem_idx, stem_peaks) in peaks.iter().enumerate() {
+        let mut min_values = Vec::with_capacity(stem_peaks.len());
+        let mut max_values = Vec::with_capacity(stem_peaks.len());
+
+        for &(min, max) in stem_peaks {
+            min_values.push(quantize_peak(min));
+            max_values.push(quantize_peak(max));
+        }
+
+        preview.stems[stem_idx] = StemPeaks {
+            min: min_values,
+            max: max_values,
+        };
+    }
+
+    log::debug!(
+        "Generated waveform preview: {}px width, {} samples per stem",
+        preview.width,
+        preview.stems[0].min.len()
+    );
+
+    preview
 }
 
 /// Canvas state for zoomed waveform (tracks zoom gesture)

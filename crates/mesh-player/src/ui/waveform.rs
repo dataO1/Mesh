@@ -8,7 +8,9 @@
 //! - Playhead indicator
 
 use iced::widget::canvas::{Canvas, Frame, Geometry, Path, Program, Stroke};
+use iced::widget::{container, text};
 use iced::{Color, Element, Length, Point, Rectangle, Size, Theme, mouse};
+use mesh_core::audio_file::{dequantize_peak, WaveformPreview};
 
 /// Stem indices
 pub const STEM_VOCALS: usize = 0;
@@ -38,6 +40,8 @@ pub struct WaveformView {
     loop_region: Option<(f64, f64)>,
     /// Track loaded
     has_track: bool,
+    /// Missing preview message (when no waveform data available)
+    missing_preview_message: Option<String>,
 }
 
 impl WaveformView {
@@ -50,6 +54,51 @@ impl WaveformView {
             cue_markers: Vec::new(),
             loop_region: None,
             has_track: false,
+            missing_preview_message: None,
+        }
+    }
+
+    /// Create a waveform view from a cached preview
+    ///
+    /// This provides instant waveform display without recomputing from stems.
+    pub fn from_preview(preview: &WaveformPreview) -> Self {
+        // Dequantize the preview data back to f32 peaks
+        let mut stem_waveforms: [Vec<(f32, f32)>; 4] =
+            [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+
+        for (stem_idx, stem_peaks) in preview.stems.iter().enumerate() {
+            let peaks: Vec<(f32, f32)> = stem_peaks
+                .min
+                .iter()
+                .zip(stem_peaks.max.iter())
+                .map(|(&min, &max)| (dequantize_peak(min), dequantize_peak(max)))
+                .collect();
+            stem_waveforms[stem_idx] = peaks;
+        }
+
+        Self {
+            stem_waveforms,
+            position: 0.0,
+            beat_markers: Vec::new(),
+            cue_markers: Vec::new(),
+            loop_region: None,
+            has_track: true,
+            missing_preview_message: None,
+        }
+    }
+
+    /// Create an empty waveform view with a message explaining why data is missing
+    ///
+    /// Used when a track doesn't have a cached waveform preview (needs re-analysis).
+    pub fn empty_with_message(message: &str) -> Self {
+        Self {
+            stem_waveforms: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            position: 0.0,
+            beat_markers: Vec::new(),
+            cue_markers: Vec::new(),
+            loop_region: None,
+            has_track: true,
+            missing_preview_message: Some(message.to_string()),
         }
     }
 
@@ -123,17 +172,39 @@ impl WaveformView {
 
     /// Create the canvas element
     pub fn view(&self) -> Element<()> {
-        Canvas::new(WaveformCanvas {
-            stem_waveforms: self.stem_waveforms.clone(),
-            position: self.position,
-            beat_markers: self.beat_markers.clone(),
-            cue_markers: self.cue_markers.clone(),
-            loop_region: self.loop_region,
-            has_track: self.has_track,
-        })
-        .width(Length::Fill)
-        .height(80)
-        .into()
+        const WAVEFORM_HEIGHT: f32 = 80.0;
+
+        // If there's a missing preview message, show it as centered text
+        if let Some(ref message) = self.missing_preview_message {
+            let message_text = text(message)
+                .size(12)
+                .color(Color::from_rgb(0.7, 0.6, 0.5));
+
+            container(
+                container(message_text)
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fixed(WAVEFORM_HEIGHT))
+            )
+            .width(Length::Fill)
+            .height(Length::Fixed(WAVEFORM_HEIGHT))
+            .style(|_theme: &iced::Theme| container::Style {
+                background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.1, 0.12))),
+                ..Default::default()
+            })
+            .into()
+        } else {
+            Canvas::new(WaveformCanvas {
+                stem_waveforms: self.stem_waveforms.clone(),
+                position: self.position,
+                beat_markers: self.beat_markers.clone(),
+                cue_markers: self.cue_markers.clone(),
+                loop_region: self.loop_region,
+                has_track: self.has_track,
+            })
+            .width(Length::Fill)
+            .height(WAVEFORM_HEIGHT)
+            .into()
+        }
     }
 }
 

@@ -192,6 +192,171 @@ pub struct TrackMetadata {
     pub beat_grid: BeatGrid,
     /// Cue points (up to 8)
     pub cue_points: Vec<CuePoint>,
+    /// Pre-computed waveform preview (from wvfm chunk)
+    pub waveform_preview: Option<WaveformPreview>,
+}
+
+/// Quantized waveform peaks for a single stem
+///
+/// Values are quantized from f32 [-1.0, 1.0] to u8 [0, 255] for compact storage.
+/// Use `quantize_peak()` and `dequantize_peak()` for conversion.
+#[derive(Debug, Clone, Default)]
+pub struct StemPeaks {
+    /// Quantized minimum values (0-255, maps to -1.0 to 1.0)
+    pub min: Vec<u8>,
+    /// Quantized maximum values (0-255, maps to -1.0 to 1.0)
+    pub max: Vec<u8>,
+}
+
+impl StemPeaks {
+    /// Create empty stem peaks
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create stem peaks with given capacity
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            min: Vec::with_capacity(capacity),
+            max: Vec::with_capacity(capacity),
+        }
+    }
+}
+
+/// Pre-computed waveform preview stored in WAV file
+///
+/// This stores quantized min/max peaks for each stem at a fixed resolution (e.g., 800 pixels),
+/// allowing instant waveform display without recomputing from audio samples.
+///
+/// # Format
+/// Stored in a custom `wvfm` chunk in the WAV file:
+/// - Version: 1 byte
+/// - Width: 2 bytes (u16 LE)
+/// - Stems: 1 byte (always 4)
+/// - Reserved: 1 byte
+/// - Data: For each stem, width×2 bytes (min array then max array)
+#[derive(Debug, Clone)]
+pub struct WaveformPreview {
+    /// Width in pixels (number of peak pairs per stem)
+    pub width: u16,
+    /// Peaks for each stem [Vocals, Drums, Bass, Other]
+    pub stems: [StemPeaks; 4],
+}
+
+impl Default for WaveformPreview {
+    fn default() -> Self {
+        Self {
+            width: 0,
+            stems: Default::default(),
+        }
+    }
+}
+
+impl WaveformPreview {
+    /// Standard preview width (matches display resolution)
+    pub const STANDARD_WIDTH: u16 = 800;
+
+    /// Create an empty waveform preview
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Check if the preview has data
+    pub fn is_empty(&self) -> bool {
+        self.width == 0 || self.stems[0].min.is_empty()
+    }
+}
+
+/// Quantize a peak value from f32 [-1.0, 1.0] to u8 [0, 255]
+pub fn quantize_peak(value: f32) -> u8 {
+    ((value.clamp(-1.0, 1.0) + 1.0) * 127.5) as u8
+}
+
+/// Dequantize a peak value from u8 [0, 255] to f32 [-1.0, 1.0]
+pub fn dequantize_peak(byte: u8) -> f32 {
+    (byte as f32 / 127.5) - 1.0
+}
+
+/// Parse a wvfm chunk into a WaveformPreview
+///
+/// # Format
+/// - [0]     Version: u8 (1)
+/// - [1-2]   Width: u16 LE
+/// - [3]     Stems: u8 (4)
+/// - [4]     Reserved: u8
+/// - [5..]   Data: For each stem, width×2 bytes (min array then max array)
+pub fn parse_wvfm_chunk(data: &[u8]) -> Result<WaveformPreview, AudioFileError> {
+    const HEADER_SIZE: usize = 5;
+
+    if data.len() < HEADER_SIZE {
+        return Err(AudioFileError::Corrupted("wvfm chunk too small".into()));
+    }
+
+    let version = data[0];
+    if version != 1 {
+        return Err(AudioFileError::InvalidFormat(
+            format!("Unsupported wvfm version: {}", version)
+        ));
+    }
+
+    let width = u16::from_le_bytes([data[1], data[2]]);
+    let num_stems = data[3];
+
+    if num_stems != 4 {
+        return Err(AudioFileError::InvalidFormat(
+            format!("Expected 4 stems, found {}", num_stems)
+        ));
+    }
+
+    // Expected data size: 4 stems × width × 2 (min + max arrays)
+    let expected_data_size = HEADER_SIZE + (4 * width as usize * 2);
+    if data.len() < expected_data_size {
+        return Err(AudioFileError::Corrupted(
+            format!("wvfm chunk truncated: expected {} bytes, found {}", expected_data_size, data.len())
+        ));
+    }
+
+    let mut preview = WaveformPreview {
+        width,
+        stems: Default::default(),
+    };
+
+    // Parse each stem's data
+    let mut offset = HEADER_SIZE;
+    for stem in &mut preview.stems {
+        // Read min array
+        stem.min = data[offset..offset + width as usize].to_vec();
+        offset += width as usize;
+
+        // Read max array
+        stem.max = data[offset..offset + width as usize].to_vec();
+        offset += width as usize;
+    }
+
+    Ok(preview)
+}
+
+/// Serialize a WaveformPreview to bytes for storage in wvfm chunk
+///
+/// Returns the raw bytes (without chunk ID and size header - caller adds those)
+pub fn serialize_wvfm_chunk(preview: &WaveformPreview) -> Vec<u8> {
+    const HEADER_SIZE: usize = 5;
+    let data_size = 4 * preview.width as usize * 2;
+    let mut bytes = Vec::with_capacity(HEADER_SIZE + data_size);
+
+    // Header
+    bytes.push(1); // Version
+    bytes.extend_from_slice(&preview.width.to_le_bytes()); // Width
+    bytes.push(4); // Stems (always 4)
+    bytes.push(0); // Reserved
+
+    // Data: for each stem, write min array then max array
+    for stem in &preview.stems {
+        bytes.extend_from_slice(&stem.min);
+        bytes.extend_from_slice(&stem.max);
+    }
+
+    bytes
 }
 
 impl TrackMetadata {
@@ -523,14 +688,27 @@ impl AudioFileReader {
 
     /// Read all audio data into stem buffers
     pub fn read_all_stems(&mut self) -> Result<StemBuffers, AudioFileError> {
-        let frame_count = self.frame_count() as usize;
-        let mut stems = StemBuffers::with_length(frame_count);
+        use std::time::Instant;
 
-        // Seek to data start
+        let frame_count = self.frame_count() as usize;
+
+        // Allocation timing
+        let alloc_start = Instant::now();
+        let mut stems = StemBuffers::with_length(frame_count);
+        log::debug!(
+            "    [PERF] Buffer allocation: {:?} ({} frames)",
+            alloc_start.elapsed(),
+            frame_count
+        );
+
+        // Seek timing
+        let seek_start = Instant::now();
         self.reader.seek(SeekFrom::Start(self.data_offset))
             .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+        log::debug!("    [PERF] Seek to data: {:?}", seek_start.elapsed());
 
-        // Read samples based on bit depth
+        // Read timing
+        let read_start = Instant::now();
         match self.format.bits_per_sample {
             16 => self.read_16bit_samples(&mut stems, frame_count)?,
             24 => self.read_24bit_samples(&mut stems, frame_count)?,
@@ -543,127 +721,204 @@ impl AudioFileReader {
             }
             _ => return Err(AudioFileError::UnsupportedBitDepth(self.format.bits_per_sample)),
         }
+        let read_elapsed = read_start.elapsed();
+        let bytes_read = frame_count * 8 * (self.format.bits_per_sample as usize / 8);
+        let throughput_mb_s = if read_elapsed.as_secs_f64() > 0.0 {
+            (bytes_read as f64 / 1_000_000.0) / read_elapsed.as_secs_f64()
+        } else {
+            0.0
+        };
+        log::info!(
+            "    [PERF] Audio read: {:?} ({:.1} MB, {:.1} MB/s)",
+            read_elapsed,
+            bytes_read as f64 / 1_000_000.0,
+            throughput_mb_s
+        );
 
         Ok(stems)
     }
 
-    /// Read 16-bit samples
+    /// Read 16-bit samples using chunked I/O for better performance
+    ///
+    /// Reads data in 1MB chunks instead of per-frame to reduce syscall overhead.
     fn read_16bit_samples(&mut self, stems: &mut StemBuffers, frame_count: usize) -> Result<(), AudioFileError> {
-        let bytes_per_frame = 16; // 8 channels * 2 bytes
-        let mut frame_buffer = vec![0u8; bytes_per_frame];
+        const BYTES_PER_FRAME: usize = 16; // 8 channels * 2 bytes
+        const CHUNK_FRAMES: usize = 65536; // 64K frames = 1MB chunks
         const SCALE: f32 = 1.0 / 32768.0;
 
-        for i in 0..frame_count {
-            self.reader.read_exact(&mut frame_buffer)
+        let mut chunk_buffer = vec![0u8; CHUNK_FRAMES * BYTES_PER_FRAME];
+
+        let mut frames_read = 0;
+        while frames_read < frame_count {
+            let frames_this_chunk = CHUNK_FRAMES.min(frame_count - frames_read);
+            let bytes_to_read = frames_this_chunk * BYTES_PER_FRAME;
+
+            self.reader.read_exact(&mut chunk_buffer[..bytes_to_read])
                 .map_err(|e| AudioFileError::IoError(e.to_string()))?;
 
-            // Channel order: Vocals L/R, Drums L/R, Bass L/R, Other L/R
-            let vocals_l = i16::from_le_bytes([frame_buffer[0], frame_buffer[1]]) as f32 * SCALE;
-            let vocals_r = i16::from_le_bytes([frame_buffer[2], frame_buffer[3]]) as f32 * SCALE;
-            let drums_l = i16::from_le_bytes([frame_buffer[4], frame_buffer[5]]) as f32 * SCALE;
-            let drums_r = i16::from_le_bytes([frame_buffer[6], frame_buffer[7]]) as f32 * SCALE;
-            let bass_l = i16::from_le_bytes([frame_buffer[8], frame_buffer[9]]) as f32 * SCALE;
-            let bass_r = i16::from_le_bytes([frame_buffer[10], frame_buffer[11]]) as f32 * SCALE;
-            let other_l = i16::from_le_bytes([frame_buffer[12], frame_buffer[13]]) as f32 * SCALE;
-            let other_r = i16::from_le_bytes([frame_buffer[14], frame_buffer[15]]) as f32 * SCALE;
+            // Convert chunk with good cache locality
+            for j in 0..frames_this_chunk {
+                let offset = j * BYTES_PER_FRAME;
+                let i = frames_read + j;
 
-            stems.vocals.as_mut_slice()[i] = StereoSample::new(vocals_l, vocals_r);
-            stems.drums.as_mut_slice()[i] = StereoSample::new(drums_l, drums_r);
-            stems.bass.as_mut_slice()[i] = StereoSample::new(bass_l, bass_r);
-            stems.other.as_mut_slice()[i] = StereoSample::new(other_l, other_r);
+                // Channel order: Vocals L/R, Drums L/R, Bass L/R, Other L/R
+                let vocals_l = i16::from_le_bytes([chunk_buffer[offset], chunk_buffer[offset + 1]]) as f32 * SCALE;
+                let vocals_r = i16::from_le_bytes([chunk_buffer[offset + 2], chunk_buffer[offset + 3]]) as f32 * SCALE;
+                let drums_l = i16::from_le_bytes([chunk_buffer[offset + 4], chunk_buffer[offset + 5]]) as f32 * SCALE;
+                let drums_r = i16::from_le_bytes([chunk_buffer[offset + 6], chunk_buffer[offset + 7]]) as f32 * SCALE;
+                let bass_l = i16::from_le_bytes([chunk_buffer[offset + 8], chunk_buffer[offset + 9]]) as f32 * SCALE;
+                let bass_r = i16::from_le_bytes([chunk_buffer[offset + 10], chunk_buffer[offset + 11]]) as f32 * SCALE;
+                let other_l = i16::from_le_bytes([chunk_buffer[offset + 12], chunk_buffer[offset + 13]]) as f32 * SCALE;
+                let other_r = i16::from_le_bytes([chunk_buffer[offset + 14], chunk_buffer[offset + 15]]) as f32 * SCALE;
+
+                stems.vocals.as_mut_slice()[i] = StereoSample::new(vocals_l, vocals_r);
+                stems.drums.as_mut_slice()[i] = StereoSample::new(drums_l, drums_r);
+                stems.bass.as_mut_slice()[i] = StereoSample::new(bass_l, bass_r);
+                stems.other.as_mut_slice()[i] = StereoSample::new(other_l, other_r);
+            }
+
+            frames_read += frames_this_chunk;
         }
 
         Ok(())
     }
 
-    /// Read 24-bit samples
+    /// Read 24-bit samples using chunked I/O for better performance
+    ///
+    /// Reads data in ~1MB chunks instead of per-frame to reduce syscall overhead.
     fn read_24bit_samples(&mut self, stems: &mut StemBuffers, frame_count: usize) -> Result<(), AudioFileError> {
-        let bytes_per_frame = 24; // 8 channels * 3 bytes
-        let mut frame_buffer = vec![0u8; bytes_per_frame];
+        const BYTES_PER_FRAME: usize = 24; // 8 channels * 3 bytes
+        const CHUNK_FRAMES: usize = 43008; // ~1MB chunks (43008 * 24 = 1,032,192 bytes)
         const SCALE: f32 = 1.0 / 8388608.0; // 2^23
 
-        for i in 0..frame_count {
-            self.reader.read_exact(&mut frame_buffer)
+        let mut chunk_buffer = vec![0u8; CHUNK_FRAMES * BYTES_PER_FRAME];
+
+        // Convert 24-bit to i32 (sign-extend)
+        let to_i32 = |b: &[u8]| -> i32 {
+            let val = (b[0] as i32) | ((b[1] as i32) << 8) | ((b[2] as i32) << 16);
+            if val & 0x800000 != 0 {
+                val | !0xFFFFFF // Sign extend
+            } else {
+                val
+            }
+        };
+
+        let mut frames_read = 0;
+        while frames_read < frame_count {
+            let frames_this_chunk = CHUNK_FRAMES.min(frame_count - frames_read);
+            let bytes_to_read = frames_this_chunk * BYTES_PER_FRAME;
+
+            self.reader.read_exact(&mut chunk_buffer[..bytes_to_read])
                 .map_err(|e| AudioFileError::IoError(e.to_string()))?;
 
-            // Convert 24-bit to i32 (sign-extend)
-            let to_i32 = |b: &[u8]| -> i32 {
-                let val = (b[0] as i32) | ((b[1] as i32) << 8) | ((b[2] as i32) << 16);
-                if val & 0x800000 != 0 {
-                    val | !0xFFFFFF // Sign extend
-                } else {
-                    val
-                }
-            };
+            // Convert chunk with good cache locality
+            for j in 0..frames_this_chunk {
+                let offset = j * BYTES_PER_FRAME;
+                let i = frames_read + j;
 
-            let vocals_l = to_i32(&frame_buffer[0..3]) as f32 * SCALE;
-            let vocals_r = to_i32(&frame_buffer[3..6]) as f32 * SCALE;
-            let drums_l = to_i32(&frame_buffer[6..9]) as f32 * SCALE;
-            let drums_r = to_i32(&frame_buffer[9..12]) as f32 * SCALE;
-            let bass_l = to_i32(&frame_buffer[12..15]) as f32 * SCALE;
-            let bass_r = to_i32(&frame_buffer[15..18]) as f32 * SCALE;
-            let other_l = to_i32(&frame_buffer[18..21]) as f32 * SCALE;
-            let other_r = to_i32(&frame_buffer[21..24]) as f32 * SCALE;
+                let vocals_l = to_i32(&chunk_buffer[offset..offset + 3]) as f32 * SCALE;
+                let vocals_r = to_i32(&chunk_buffer[offset + 3..offset + 6]) as f32 * SCALE;
+                let drums_l = to_i32(&chunk_buffer[offset + 6..offset + 9]) as f32 * SCALE;
+                let drums_r = to_i32(&chunk_buffer[offset + 9..offset + 12]) as f32 * SCALE;
+                let bass_l = to_i32(&chunk_buffer[offset + 12..offset + 15]) as f32 * SCALE;
+                let bass_r = to_i32(&chunk_buffer[offset + 15..offset + 18]) as f32 * SCALE;
+                let other_l = to_i32(&chunk_buffer[offset + 18..offset + 21]) as f32 * SCALE;
+                let other_r = to_i32(&chunk_buffer[offset + 21..offset + 24]) as f32 * SCALE;
 
-            stems.vocals.as_mut_slice()[i] = StereoSample::new(vocals_l, vocals_r);
-            stems.drums.as_mut_slice()[i] = StereoSample::new(drums_l, drums_r);
-            stems.bass.as_mut_slice()[i] = StereoSample::new(bass_l, bass_r);
-            stems.other.as_mut_slice()[i] = StereoSample::new(other_l, other_r);
+                stems.vocals.as_mut_slice()[i] = StereoSample::new(vocals_l, vocals_r);
+                stems.drums.as_mut_slice()[i] = StereoSample::new(drums_l, drums_r);
+                stems.bass.as_mut_slice()[i] = StereoSample::new(bass_l, bass_r);
+                stems.other.as_mut_slice()[i] = StereoSample::new(other_l, other_r);
+            }
+
+            frames_read += frames_this_chunk;
         }
 
         Ok(())
     }
 
-    /// Read 32-bit float samples
+    /// Read 32-bit float samples using chunked I/O for better performance
+    ///
+    /// Reads data in 1MB chunks instead of per-frame to reduce syscall overhead.
     fn read_32bit_float_samples(&mut self, stems: &mut StemBuffers, frame_count: usize) -> Result<(), AudioFileError> {
-        let bytes_per_frame = 32; // 8 channels * 4 bytes
-        let mut frame_buffer = vec![0u8; bytes_per_frame];
+        const BYTES_PER_FRAME: usize = 32; // 8 channels * 4 bytes
+        const CHUNK_FRAMES: usize = 32768; // 1MB chunks (32768 * 32 = 1,048,576 bytes)
 
-        for i in 0..frame_count {
-            self.reader.read_exact(&mut frame_buffer)
+        let mut chunk_buffer = vec![0u8; CHUNK_FRAMES * BYTES_PER_FRAME];
+
+        let mut frames_read = 0;
+        while frames_read < frame_count {
+            let frames_this_chunk = CHUNK_FRAMES.min(frame_count - frames_read);
+            let bytes_to_read = frames_this_chunk * BYTES_PER_FRAME;
+
+            self.reader.read_exact(&mut chunk_buffer[..bytes_to_read])
                 .map_err(|e| AudioFileError::IoError(e.to_string()))?;
 
-            let vocals_l = f32::from_le_bytes([frame_buffer[0], frame_buffer[1], frame_buffer[2], frame_buffer[3]]);
-            let vocals_r = f32::from_le_bytes([frame_buffer[4], frame_buffer[5], frame_buffer[6], frame_buffer[7]]);
-            let drums_l = f32::from_le_bytes([frame_buffer[8], frame_buffer[9], frame_buffer[10], frame_buffer[11]]);
-            let drums_r = f32::from_le_bytes([frame_buffer[12], frame_buffer[13], frame_buffer[14], frame_buffer[15]]);
-            let bass_l = f32::from_le_bytes([frame_buffer[16], frame_buffer[17], frame_buffer[18], frame_buffer[19]]);
-            let bass_r = f32::from_le_bytes([frame_buffer[20], frame_buffer[21], frame_buffer[22], frame_buffer[23]]);
-            let other_l = f32::from_le_bytes([frame_buffer[24], frame_buffer[25], frame_buffer[26], frame_buffer[27]]);
-            let other_r = f32::from_le_bytes([frame_buffer[28], frame_buffer[29], frame_buffer[30], frame_buffer[31]]);
+            // Convert chunk with good cache locality
+            for j in 0..frames_this_chunk {
+                let offset = j * BYTES_PER_FRAME;
+                let i = frames_read + j;
 
-            stems.vocals.as_mut_slice()[i] = StereoSample::new(vocals_l, vocals_r);
-            stems.drums.as_mut_slice()[i] = StereoSample::new(drums_l, drums_r);
-            stems.bass.as_mut_slice()[i] = StereoSample::new(bass_l, bass_r);
-            stems.other.as_mut_slice()[i] = StereoSample::new(other_l, other_r);
+                let vocals_l = f32::from_le_bytes([chunk_buffer[offset], chunk_buffer[offset + 1], chunk_buffer[offset + 2], chunk_buffer[offset + 3]]);
+                let vocals_r = f32::from_le_bytes([chunk_buffer[offset + 4], chunk_buffer[offset + 5], chunk_buffer[offset + 6], chunk_buffer[offset + 7]]);
+                let drums_l = f32::from_le_bytes([chunk_buffer[offset + 8], chunk_buffer[offset + 9], chunk_buffer[offset + 10], chunk_buffer[offset + 11]]);
+                let drums_r = f32::from_le_bytes([chunk_buffer[offset + 12], chunk_buffer[offset + 13], chunk_buffer[offset + 14], chunk_buffer[offset + 15]]);
+                let bass_l = f32::from_le_bytes([chunk_buffer[offset + 16], chunk_buffer[offset + 17], chunk_buffer[offset + 18], chunk_buffer[offset + 19]]);
+                let bass_r = f32::from_le_bytes([chunk_buffer[offset + 20], chunk_buffer[offset + 21], chunk_buffer[offset + 22], chunk_buffer[offset + 23]]);
+                let other_l = f32::from_le_bytes([chunk_buffer[offset + 24], chunk_buffer[offset + 25], chunk_buffer[offset + 26], chunk_buffer[offset + 27]]);
+                let other_r = f32::from_le_bytes([chunk_buffer[offset + 28], chunk_buffer[offset + 29], chunk_buffer[offset + 30], chunk_buffer[offset + 31]]);
+
+                stems.vocals.as_mut_slice()[i] = StereoSample::new(vocals_l, vocals_r);
+                stems.drums.as_mut_slice()[i] = StereoSample::new(drums_l, drums_r);
+                stems.bass.as_mut_slice()[i] = StereoSample::new(bass_l, bass_r);
+                stems.other.as_mut_slice()[i] = StereoSample::new(other_l, other_r);
+            }
+
+            frames_read += frames_this_chunk;
         }
 
         Ok(())
     }
 
-    /// Read 32-bit integer samples
+    /// Read 32-bit integer samples using chunked I/O for better performance
+    ///
+    /// Reads data in 1MB chunks instead of per-frame to reduce syscall overhead.
     fn read_32bit_int_samples(&mut self, stems: &mut StemBuffers, frame_count: usize) -> Result<(), AudioFileError> {
-        let bytes_per_frame = 32; // 8 channels * 4 bytes
-        let mut frame_buffer = vec![0u8; bytes_per_frame];
+        const BYTES_PER_FRAME: usize = 32; // 8 channels * 4 bytes
+        const CHUNK_FRAMES: usize = 32768; // 1MB chunks (32768 * 32 = 1,048,576 bytes)
         const SCALE: f32 = 1.0 / 2147483648.0; // 2^31
 
-        for i in 0..frame_count {
-            self.reader.read_exact(&mut frame_buffer)
+        let mut chunk_buffer = vec![0u8; CHUNK_FRAMES * BYTES_PER_FRAME];
+
+        let mut frames_read = 0;
+        while frames_read < frame_count {
+            let frames_this_chunk = CHUNK_FRAMES.min(frame_count - frames_read);
+            let bytes_to_read = frames_this_chunk * BYTES_PER_FRAME;
+
+            self.reader.read_exact(&mut chunk_buffer[..bytes_to_read])
                 .map_err(|e| AudioFileError::IoError(e.to_string()))?;
 
-            let vocals_l = i32::from_le_bytes([frame_buffer[0], frame_buffer[1], frame_buffer[2], frame_buffer[3]]) as f32 * SCALE;
-            let vocals_r = i32::from_le_bytes([frame_buffer[4], frame_buffer[5], frame_buffer[6], frame_buffer[7]]) as f32 * SCALE;
-            let drums_l = i32::from_le_bytes([frame_buffer[8], frame_buffer[9], frame_buffer[10], frame_buffer[11]]) as f32 * SCALE;
-            let drums_r = i32::from_le_bytes([frame_buffer[12], frame_buffer[13], frame_buffer[14], frame_buffer[15]]) as f32 * SCALE;
-            let bass_l = i32::from_le_bytes([frame_buffer[16], frame_buffer[17], frame_buffer[18], frame_buffer[19]]) as f32 * SCALE;
-            let bass_r = i32::from_le_bytes([frame_buffer[20], frame_buffer[21], frame_buffer[22], frame_buffer[23]]) as f32 * SCALE;
-            let other_l = i32::from_le_bytes([frame_buffer[24], frame_buffer[25], frame_buffer[26], frame_buffer[27]]) as f32 * SCALE;
-            let other_r = i32::from_le_bytes([frame_buffer[28], frame_buffer[29], frame_buffer[30], frame_buffer[31]]) as f32 * SCALE;
+            // Convert chunk with good cache locality
+            for j in 0..frames_this_chunk {
+                let offset = j * BYTES_PER_FRAME;
+                let i = frames_read + j;
 
-            stems.vocals.as_mut_slice()[i] = StereoSample::new(vocals_l, vocals_r);
-            stems.drums.as_mut_slice()[i] = StereoSample::new(drums_l, drums_r);
-            stems.bass.as_mut_slice()[i] = StereoSample::new(bass_l, bass_r);
-            stems.other.as_mut_slice()[i] = StereoSample::new(other_l, other_r);
+                let vocals_l = i32::from_le_bytes([chunk_buffer[offset], chunk_buffer[offset + 1], chunk_buffer[offset + 2], chunk_buffer[offset + 3]]) as f32 * SCALE;
+                let vocals_r = i32::from_le_bytes([chunk_buffer[offset + 4], chunk_buffer[offset + 5], chunk_buffer[offset + 6], chunk_buffer[offset + 7]]) as f32 * SCALE;
+                let drums_l = i32::from_le_bytes([chunk_buffer[offset + 8], chunk_buffer[offset + 9], chunk_buffer[offset + 10], chunk_buffer[offset + 11]]) as f32 * SCALE;
+                let drums_r = i32::from_le_bytes([chunk_buffer[offset + 12], chunk_buffer[offset + 13], chunk_buffer[offset + 14], chunk_buffer[offset + 15]]) as f32 * SCALE;
+                let bass_l = i32::from_le_bytes([chunk_buffer[offset + 16], chunk_buffer[offset + 17], chunk_buffer[offset + 18], chunk_buffer[offset + 19]]) as f32 * SCALE;
+                let bass_r = i32::from_le_bytes([chunk_buffer[offset + 20], chunk_buffer[offset + 21], chunk_buffer[offset + 22], chunk_buffer[offset + 23]]) as f32 * SCALE;
+                let other_l = i32::from_le_bytes([chunk_buffer[offset + 24], chunk_buffer[offset + 25], chunk_buffer[offset + 26], chunk_buffer[offset + 27]]) as f32 * SCALE;
+                let other_r = i32::from_le_bytes([chunk_buffer[offset + 28], chunk_buffer[offset + 29], chunk_buffer[offset + 30], chunk_buffer[offset + 31]]) as f32 * SCALE;
+
+                stems.vocals.as_mut_slice()[i] = StereoSample::new(vocals_l, vocals_r);
+                stems.drums.as_mut_slice()[i] = StereoSample::new(drums_l, drums_r);
+                stems.bass.as_mut_slice()[i] = StereoSample::new(bass_l, bass_r);
+                stems.other.as_mut_slice()[i] = StereoSample::new(other_l, other_r);
+            }
+
+            frames_read += frames_this_chunk;
         }
 
         Ok(())
@@ -675,6 +930,9 @@ impl AudioFileReader {
 /// Also calculates duration from the file header and regenerates the beat grid
 /// from BPM + FIRST_BEAT if available.
 pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFileError> {
+    use std::time::Instant;
+    let start = Instant::now();
+
     let file = File::open(path.as_ref())
         .map_err(|e| AudioFileError::IoError(e.to_string()))?;
     let mut reader = BufReader::new(file);
@@ -700,6 +958,7 @@ pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFile
     let mut channels: u16 = 8;
     let mut bits_per_sample: u16 = 16;
     let mut data_size: u64 = 0;
+    let mut waveform_preview: Option<WaveformPreview> = None;
 
     // Parse chunks
     loop {
@@ -831,6 +1090,22 @@ pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFile
                     }
                 }
             }
+            b"wvfm" => {
+                // Waveform preview chunk
+                let mut wvfm_data = vec![0u8; chunk_size as usize];
+                reader.read_exact(&mut wvfm_data)
+                    .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+
+                match parse_wvfm_chunk(&wvfm_data) {
+                    Ok(preview) => {
+                        log::debug!("Loaded waveform preview: {}px width, 4 stems", preview.width);
+                        waveform_preview = Some(preview);
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to parse wvfm chunk: {}", e);
+                    }
+                }
+            }
             _ => {
                 // Skip unknown chunks
                 reader.seek(SeekFrom::Current(chunk_size as i64))
@@ -844,6 +1119,7 @@ pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFile
                 .map_err(|e| AudioFileError::IoError(e.to_string()))?;
         }
     }
+    log::debug!("    [PERF] Chunk parsing complete: {:?}", start.elapsed());
 
     // Calculate duration in samples from format info
     let bytes_per_sample = (bits_per_sample / 8) as u64;
@@ -858,6 +1134,7 @@ pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFile
     if let Some(description) = bext_description {
         metadata = TrackMetadata::parse_bext_description_with_duration(&description, duration_samples);
     }
+    log::debug!("    [PERF] Beat grid regenerated: {:?}", start.elapsed());
 
     // Add any cue points without labels
     for (id, pos) in cue_points {
@@ -878,6 +1155,9 @@ pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFile
     for (i, cue) in metadata.cue_points.iter_mut().enumerate() {
         cue.index = i as u8;
     }
+
+    // Attach waveform preview if present
+    metadata.waveform_preview = waveform_preview;
 
     Ok(metadata)
 }
@@ -903,17 +1183,35 @@ pub struct LoadedTrack {
 impl LoadedTrack {
     /// Load a track from a file path
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, AudioFileError> {
+        use std::time::Instant;
+
         let path_ref = path.as_ref();
+        let total_start = Instant::now();
+        log::info!("[PERF] Loading track: {:?}", path_ref);
 
         // Read metadata first (fast, doesn't load audio)
+        let meta_start = Instant::now();
         let metadata = read_metadata(path_ref)?;
+        log::info!("  [PERF] Metadata loaded in {:?}", meta_start.elapsed());
 
         // Then read the audio data
+        let open_start = Instant::now();
         let mut reader = AudioFileReader::open(path_ref)?;
+        log::info!("  [PERF] File opened in {:?}", open_start.elapsed());
+
+        let stems_start = Instant::now();
         let stems = reader.read_all_stems()?;
+        log::info!(
+            "  [PERF] Audio data read in {:?} ({} frames, {:.1} MB)",
+            stems_start.elapsed(),
+            stems.len(),
+            (stems.len() * 32) as f64 / 1_000_000.0 // 8 channels × 4 bytes per f32
+        );
 
         let duration_samples = stems.len();
         let duration_seconds = stems.duration_seconds();
+
+        log::info!("[PERF] Total track load: {:?}", total_start.elapsed());
 
         Ok(Self {
             path: path_ref.to_path_buf(),
@@ -1049,6 +1347,7 @@ mod tests {
             key: Some("Dm".to_string()),
             beat_grid: BeatGrid::from_csv("0,11025,22050"),
             cue_points: Vec::new(),
+            waveform_preview: None,
         };
 
         // Serialize to bext description (now uses FIRST_BEAT format)
@@ -1078,6 +1377,7 @@ mod tests {
             key: Some("Am".to_string()),
             beat_grid: BeatGrid::from_csv("0,22050,44100,66150"),
             cue_points: Vec::new(),
+            waveform_preview: None,
         };
 
         // Serialize to bext description

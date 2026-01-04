@@ -26,3 +26,8 @@ essentia = "0.1.5"
 rfd = "0.15"
 anyhow = "1.0"
 thiserror = "2.0"
+
+# Enable basic optimizations for mesh-core in debug builds
+# This speeds up audio loading from 6.8s to ~1s without affecting compile times much
+[profile.dev.package.mesh-core]
+opt-level = 1
