@@ -183,10 +183,12 @@ mesh/
 - **Global configuration service** with YAML persistence
 - **Settings modal** (gear icon) for configuring analysis parameters
 - **Configurable BPM range** for genre-specific detection (e.g., DnB: 160-190 BPM)
+- **Interactive waveform display** with 4-stem color coding, beat grid overlay, and cue markers
+- **Click-to-seek** on waveform with drag scrubbing support
+- Track editor with cue point list (add, delete, edit labels)
 
 *In Progress:*
-- Track editor with cue point management
-- Waveform display with beat markers
+- Save edited track metadata back to file
 
 *Planned:*
 - JACK audio preview

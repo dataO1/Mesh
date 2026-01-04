@@ -5,6 +5,7 @@ use crate::audio::AudioState;
 use crate::collection::Collection;
 use crate::config::{self, Config};
 use crate::import::StemImporter;
+use super::waveform::WaveformView;
 use iced::widget::{button, center, column, container, mouse_area, opaque, row, stack, text, Space};
 use iced::{Color, Element, Length, Task, Theme};
 use mesh_core::audio_file::{BeatGrid, CuePoint, LoadedTrack, StemBuffers, TrackMetadata};
@@ -74,6 +75,8 @@ pub struct LoadedTrackState {
     pub key: String,
     /// Whether there are unsaved changes
     pub modified: bool,
+    /// Waveform display state (cached peak data)
+    pub waveform: WaveformView,
 }
 
 /// State for the settings modal
@@ -462,6 +465,9 @@ impl MeshCueApp {
                         let key = track.key().to_string();
                         let cue_points = track.metadata.cue_points.clone();
 
+                        // Initialize waveform with peak data from loaded track
+                        let waveform = WaveformView::from_track(&track, &cue_points);
+
                         self.collection.loaded_track = Some(LoadedTrackState {
                             path,
                             track,
@@ -469,6 +475,7 @@ impl MeshCueApp {
                             bpm,
                             key,
                             modified: false,
+                            waveform,
                         });
                     }
                     Err(e) => {
@@ -547,6 +554,11 @@ impl MeshCueApp {
             }
             Message::Seek(position) => {
                 self.audio.seek((position * self.audio.length as f64) as u64);
+
+                // Update waveform playhead position
+                if let Some(ref mut state) = self.collection.loaded_track {
+                    state.waveform.set_position(position);
+                }
             }
 
             // Misc

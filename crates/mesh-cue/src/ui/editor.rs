@@ -1,14 +1,14 @@
 //! Track editor view
 
 use super::app::{LoadedTrackState, Message};
-use super::{cue_editor, transport, waveform};
+use super::{cue_editor, transport};
 use iced::widget::{button, column, container, row, text, text_input, Space};
 use iced::{Alignment, Element, Length};
 
 /// Render the track editor
 pub fn view(state: &LoadedTrackState) -> Element<Message> {
     let header = view_header(state);
-    let waveform = waveform::view(state);
+    let waveform = state.waveform.view();
     let cue_panel = cue_editor::view(state);
     let transport_controls = transport::view(state);
     let save_section = view_save_section(state);
