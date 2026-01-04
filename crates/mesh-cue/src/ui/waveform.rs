@@ -796,7 +796,13 @@ impl ZoomedWaveformView {
 
     /// Compute peaks for the visible window from stem data
     pub fn compute_peaks(&mut self, stems: &StemBuffers, playhead: u64, width: usize) {
+        log::debug!(
+            "[ZOOM-DBG] compute_peaks: playhead={}, width={}, duration_samples={}, stems.len()={}, has_track={}",
+            playhead, width, self.duration_samples, stems.len(), self.has_track
+        );
+
         let (start, end) = self.visible_range(playhead);
+        log::debug!("[ZOOM-DBG] visible_range: start={}, end={}", start, end);
 
         // Cache a larger window to reduce recomputation frequency
         let window_size = end - start;
@@ -808,12 +814,17 @@ impl ZoomedWaveformView {
 
         let cache_len = (cache_end - cache_start) as usize;
         if cache_len == 0 || width == 0 {
+            log::warn!("[ZOOM-DBG] compute_peaks: EARLY RETURN - cache_len={}, width={}", cache_len, width);
             self.cached_peaks = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
             return;
         }
 
         // Compute peaks for the cached window
         self.cached_peaks = generate_peaks_for_range(stems, cache_start, cache_end, width);
+        log::debug!(
+            "[ZOOM-DBG] compute_peaks: generated {} peaks per stem (cache {}..{})",
+            self.cached_peaks[0].len(), cache_start, cache_end
+        );
 
         // Apply smoothing
         for stem_idx in 0..4 {
@@ -1036,6 +1047,25 @@ impl<'a> Program<Message> for ZoomedWaveformCanvas<'a> {
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
+        // Debug logging for waveform state (only log occasionally to avoid spam)
+        static DEBUG_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let count = DEBUG_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count % 60 == 0 {
+            // Log every ~2 seconds at 30fps
+            log::debug!(
+                "[ZOOM-DBG] draw: has_track={}, duration={}, cache={}..{}, peaks_len=[{},{},{},{}], playhead={}",
+                self.waveform.has_track,
+                self.waveform.duration_samples,
+                self.waveform.cache_start,
+                self.waveform.cache_end,
+                self.waveform.cached_peaks[0].len(),
+                self.waveform.cached_peaks[1].len(),
+                self.waveform.cached_peaks[2].len(),
+                self.waveform.cached_peaks[3].len(),
+                self.playhead
+            );
+        }
+
         let mut frame = Frame::new(renderer, bounds.size());
 
         // Background (slightly different from overview)
@@ -1046,12 +1076,18 @@ impl<'a> Program<Message> for ZoomedWaveformCanvas<'a> {
         );
 
         if !self.waveform.has_track {
+            if count % 60 == 0 {
+                log::warn!("[ZOOM-DBG] draw: EARLY RETURN - no track");
+            }
             return vec![frame.into_geometry()];
         }
 
         // If duration not yet known (stems still loading), can't compute visible range
         // The canvas will be redrawn once TrackStemsLoaded sets the duration
         if self.waveform.duration_samples == 0 {
+            if count % 60 == 0 {
+                log::warn!("[ZOOM-DBG] draw: EARLY RETURN - duration_samples=0");
+            }
             return vec![frame.into_geometry()];
         }
 

@@ -115,6 +115,19 @@ impl LoadedTrackState {
     pub fn beat_jump_size(&self) -> i32 {
         self.deck.as_ref().map(|d| d.beat_jump_size()).unwrap_or(4)
     }
+
+    /// Update zoomed waveform cache if needed for new playhead position
+    ///
+    /// Call this after any operation that changes the playhead position
+    /// (Seek, Stop, BeatJump, JumpToCue, etc.) to ensure the zoomed
+    /// waveform displays correctly.
+    pub fn update_zoomed_waveform_cache(&mut self, playhead: u64) {
+        if self.zoomed_waveform.needs_recompute(playhead) {
+            if let Some(ref stems) = self.stems {
+                self.zoomed_waveform.compute_peaks(stems, playhead, 800);
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for LoadedTrackState {
@@ -629,14 +642,19 @@ impl MeshCueApp {
                             let duration_samples = stems.len() as u64;
                             state.duration_samples = duration_samples;
                             state.loading_audio = false;
+                            log::debug!("[ZOOM-DBG] TrackStemsLoaded: stems.len()={}, duration_samples={}", stems.len(), duration_samples);
 
                             // Generate waveform from loaded stems
                             state.waveform.set_stems(&stems, &state.cue_points, &state.beat_grid);
 
                             // Initialize zoomed waveform with stem data
+                            log::debug!("[ZOOM-DBG] TrackStemsLoaded: calling set_duration({})", duration_samples);
                             state.zoomed_waveform.set_duration(duration_samples);
+                            log::debug!("[ZOOM-DBG] TrackStemsLoaded: calling update_cue_markers (count={})", state.cue_points.len());
                             state.zoomed_waveform.update_cue_markers(&state.cue_points);
+                            log::debug!("[ZOOM-DBG] TrackStemsLoaded: calling compute_peaks(playhead=0, width=800)");
                             state.zoomed_waveform.compute_peaks(&stems, 0, 800);
+                            log::debug!("[ZOOM-DBG] TrackStemsLoaded: zoomed waveform initialized");
 
                             state.stems = Some(stems.clone());
 
@@ -853,6 +871,7 @@ impl MeshCueApp {
                         self.audio.pause();
                         self.audio.seek(0);
                     }
+                    state.update_zoomed_waveform_cache(0);
                 }
             }
             Message::Seek(position) => {
@@ -863,16 +882,19 @@ impl MeshCueApp {
                     }
                     self.audio.seek(seek_pos);
                     state.waveform.set_position(position);
+                    state.update_zoomed_waveform_cache(seek_pos);
                 }
             }
             Message::Cue => {
                 // CDJ-style cue: snap to nearest beat (delegated to Deck)
                 if let Some(ref mut state) = self.collection.loaded_track {
+                    let mut update_pos = None;
                     if let Some(ref mut deck) = state.deck {
                         deck.set_cue_point(); // Snaps to nearest beat
                         let cue_pos = deck.cue_point();
                         deck.seek(cue_pos);
                         self.audio.seek(cue_pos as u64);
+                        update_pos = Some(cue_pos as u64);
 
                         // Update waveform
                         if self.audio.length > 0 {
@@ -880,11 +902,15 @@ impl MeshCueApp {
                             state.waveform.set_position(normalized);
                         }
                     }
+                    if let Some(pos) = update_pos {
+                        state.update_zoomed_waveform_cache(pos);
+                    }
                 }
             }
             Message::BeatJump(beats) => {
                 // Use Deck's beat jump methods
                 if let Some(ref mut state) = self.collection.loaded_track {
+                    let mut update_pos = None;
                     if let Some(ref mut deck) = state.deck {
                         if beats > 0 {
                             deck.beat_jump_forward();
@@ -893,12 +919,16 @@ impl MeshCueApp {
                         }
                         let pos = deck.position();
                         self.audio.seek(pos);
+                        update_pos = Some(pos);
 
                         // Update waveform
                         if self.audio.length > 0 {
                             let normalized = pos as f64 / self.audio.length as f64;
                             state.waveform.set_position(normalized);
                         }
+                    }
+                    if let Some(pos) = update_pos {
+                        state.update_zoomed_waveform_cache(pos);
                     }
                 }
             }
@@ -923,6 +953,7 @@ impl MeshCueApp {
                             let normalized = pos as f64 / self.audio.length as f64;
                             state.waveform.set_position(normalized);
                         }
+                        state.update_zoomed_waveform_cache(pos);
                     }
                 }
             }
@@ -966,6 +997,7 @@ impl MeshCueApp {
             Message::HotCuePressed(index) => {
                 // Use Deck's hot_cue_press for CDJ-style preview
                 if let Some(ref mut state) = self.collection.loaded_track {
+                    let mut update_pos = None;
                     if let Some(ref mut deck) = state.deck {
                         deck.hot_cue_press(index);
                         let pos = deck.position();
@@ -973,6 +1005,7 @@ impl MeshCueApp {
                         if deck.state() == PlayState::Playing {
                             self.audio.play();
                         }
+                        update_pos = Some(pos);
 
                         // Update waveform positions
                         if self.audio.length > 0 {
@@ -980,11 +1013,15 @@ impl MeshCueApp {
                             state.waveform.set_position(normalized);
                         }
                     }
+                    if let Some(pos) = update_pos {
+                        state.update_zoomed_waveform_cache(pos);
+                    }
                 }
             }
             Message::HotCueReleased(_index) => {
                 // Use Deck's hot_cue_release for CDJ-style return
                 if let Some(ref mut state) = self.collection.loaded_track {
+                    let mut update_pos = None;
                     if let Some(ref mut deck) = state.deck {
                         deck.hot_cue_release();
                         let pos = deck.position();
@@ -992,12 +1029,16 @@ impl MeshCueApp {
                         if deck.state() == PlayState::Stopped {
                             self.audio.pause();
                         }
+                        update_pos = Some(pos);
 
                         // Update waveform positions
                         if self.audio.length > 0 {
                             let normalized = pos as f64 / self.audio.length as f64;
                             state.waveform.set_position(normalized);
                         }
+                    }
+                    if let Some(pos) = update_pos {
+                        state.update_zoomed_waveform_cache(pos);
                     }
                 }
             }

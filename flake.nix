@@ -303,7 +303,7 @@
             export RUST_BACKTRACE=1
 
             # Logging: only show mesh-* crate logs at info level, filter out noisy dependencies
-            export RUST_LOG="warn,mesh_core=info,mesh_cue=info,mesh_player=info"
+            export RUST_LOG="warn,mesh_core=debug,mesh_cue=debug,mesh_player=debug"
 
             # Library paths
             export LD_LIBRARY_PATH="${libraryPath}:$LD_LIBRARY_PATH"
