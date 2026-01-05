@@ -94,12 +94,41 @@ pub struct LoadedTrackState {
     /// Player deck for transport and hot cue state (created when stems load)
     /// Uses Deck's state for: is_playing, position, beat_jump_size, cue_point, hot_cue_preview
     pub deck: Option<Deck>,
+    /// Last time the playhead position was updated (for smooth interpolation)
+    pub last_playhead_update: std::time::Instant,
 }
 
 impl LoadedTrackState {
     /// Get current playhead position (from deck if loaded, otherwise 0)
     pub fn playhead_position(&self) -> u64 {
         self.deck.as_ref().map(|d| d.position()).unwrap_or(0)
+    }
+
+    /// Get interpolated playhead position for smooth waveform rendering
+    ///
+    /// When playing, this estimates the current position based on elapsed time
+    /// since the last update. This eliminates visible "chunking" in waveform
+    /// movement caused by the UI polling rate (16ms) being different from
+    /// the audio buffer rate (5.8ms).
+    pub fn interpolated_playhead_position(&self) -> u64 {
+        let base_position = self.playhead_position();
+
+        // Only interpolate when playing
+        if !self.is_playing() {
+            return base_position;
+        }
+
+        // Calculate samples elapsed since last update
+        let elapsed = self.last_playhead_update.elapsed();
+        let samples_elapsed = (elapsed.as_secs_f64() * mesh_core::types::SAMPLE_RATE as f64) as u64;
+
+        // Return interpolated position (clamped to duration)
+        base_position.saturating_add(samples_elapsed).min(self.duration_samples)
+    }
+
+    /// Update the playhead timestamp (call this when position is updated from audio thread)
+    pub fn touch_playhead(&mut self) {
+        self.last_playhead_update = std::time::Instant::now();
     }
 
     /// Check if audio is currently playing
@@ -123,7 +152,7 @@ impl LoadedTrackState {
     pub fn update_zoomed_waveform_cache(&mut self, playhead: u64) {
         if self.combined_waveform.zoomed.needs_recompute(playhead) {
             if let Some(ref stems) = self.stems {
-                self.combined_waveform.zoomed.compute_peaks(stems, playhead, 800);
+                self.combined_waveform.zoomed.compute_peaks(stems, playhead, 1600);
             }
         }
     }
@@ -626,6 +655,7 @@ impl MeshCueApp {
                             combined_waveform,
                             loading_audio: true,
                             deck: None, // Created when stems load
+                            last_playhead_update: std::time::Instant::now(),
                         });
 
                         // Phase 2: Load audio stems in background (slow, ~3s)
@@ -657,7 +687,7 @@ impl MeshCueApp {
                             // Initialize zoomed waveform with stem data
                             state.combined_waveform.zoomed.set_duration(duration_samples);
                             state.combined_waveform.zoomed.update_cue_markers(&state.cue_points);
-                            state.combined_waveform.zoomed.compute_peaks(&stems, 0, 800);
+                            state.combined_waveform.zoomed.compute_peaks(&stems, 0, 1600);
 
                             state.stems = Some(stems.clone());
 
@@ -724,7 +754,7 @@ impl MeshCueApp {
                             Vec::new(),
                         );
                         combined_waveform.zoomed.set_duration(duration_samples);
-                        combined_waveform.zoomed.compute_peaks(&stems, 0, 800);
+                        combined_waveform.zoomed.compute_peaks(&stems, 0, 1600);
 
                         // Create Deck and load track (construct a new LoadedTrack)
                         let mut deck = Deck::new(DeckId::new(0));
@@ -750,6 +780,7 @@ impl MeshCueApp {
                             combined_waveform,
                             loading_audio: false,
                             deck: Some(deck),
+                            last_playhead_update: std::time::Instant::now(),
                         });
                     }
                     Err(e) => {
@@ -1097,6 +1128,9 @@ impl MeshCueApp {
                     if let Some(ref mut deck) = state.deck {
                         deck.seek(pos as usize);
                     }
+                    // Update playhead timestamp for smooth interpolation
+                    state.touch_playhead();
+
                     if self.audio.length > 0 {
                         let normalized = pos as f64 / self.audio.length as f64;
                         state.combined_waveform.overview.set_position(normalized);
@@ -1105,7 +1139,7 @@ impl MeshCueApp {
                     // Update zoomed waveform peaks if playhead moved outside cache
                     if state.combined_waveform.zoomed.needs_recompute(pos) {
                         if let Some(ref stems) = state.stems {
-                            state.combined_waveform.zoomed.compute_peaks(stems, pos, 800);
+                            state.combined_waveform.zoomed.compute_peaks(stems, pos, 1600);
                         }
                     }
                 }
@@ -1117,7 +1151,7 @@ impl MeshCueApp {
                     state.combined_waveform.zoomed.set_zoom(bars);
                     // Recompute peaks at new zoom level
                     if let Some(ref stems) = state.stems {
-                        state.combined_waveform.zoomed.compute_peaks(stems, state.playhead_position(), 800);
+                        state.combined_waveform.zoomed.compute_peaks(stems, state.playhead_position(), 1600);
                     }
                 }
             }
@@ -1247,7 +1281,7 @@ impl MeshCueApp {
         use iced::time;
         use std::time::Duration;
 
-        // Update waveform playhead 30 times per second when playing
+        // Update waveform playhead 60 times per second when playing
         let is_playing = self
             .collection
             .loaded_track
@@ -1255,7 +1289,7 @@ impl MeshCueApp {
             .map(|t| t.is_playing())
             .unwrap_or(false);
         if is_playing || self.audio.is_playing() {
-            time::every(Duration::from_millis(33)).map(|_| Message::Tick)
+            time::every(Duration::from_millis(16)).map(|_| Message::Tick)
         } else {
             iced::Subscription::none()
         }

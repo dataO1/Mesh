@@ -5,7 +5,7 @@
 
 use signalsmith_stretch::Stretch;
 
-use crate::types::{StereoBuffer, StereoSample, SAMPLE_RATE};
+use crate::types::{StereoBuffer, SAMPLE_RATE};
 
 /// Number of channels (stereo)
 const CHANNELS: u32 = 2;
@@ -14,15 +14,14 @@ const CHANNELS: u32 = 2;
 ///
 /// Takes stereo audio at the track's original tempo and outputs audio
 /// stretched/compressed to match the global BPM.
+///
+/// Uses zero-copy format conversion - StereoBuffer is reinterpreted as
+/// interleaved f32 without any per-frame copying.
 pub struct TimeStretcher {
     /// The underlying signalsmith stretcher
     stretcher: Stretch,
     /// Current stretch ratio (output_bpm / input_bpm)
     ratio: f64,
-    /// Temporary input buffer (interleaved stereo)
-    input_buffer: Vec<f32>,
-    /// Temporary output buffer (interleaved stereo)
-    output_buffer: Vec<f32>,
 }
 
 impl TimeStretcher {
@@ -33,8 +32,6 @@ impl TimeStretcher {
         Self {
             stretcher,
             ratio: 1.0,
-            input_buffer: Vec::new(),
-            output_buffer: Vec::new(),
         }
     }
 
@@ -91,6 +88,9 @@ impl TimeStretcher {
     /// Takes input audio and produces output audio at the stretched tempo.
     /// For a ratio > 1.0 (speedup), output will have fewer samples than input.
     /// For a ratio < 1.0 (slowdown), output will have more samples than input.
+    ///
+    /// Uses zero-copy format conversion via bytemuck - the input/output buffers
+    /// are reinterpreted as interleaved f32 without any copying.
     pub fn process(&mut self, input: &StereoBuffer, output: &mut StereoBuffer) {
         if input.is_empty() {
             output.fill_silence();
@@ -99,23 +99,6 @@ impl TimeStretcher {
 
         let input_len = input.len();
         let output_len = output.len();
-
-        // Ensure buffers are large enough
-        if self.input_buffer.len() < input_len * 2 {
-            self.input_buffer.resize(input_len * 2, 0.0);
-        }
-        if self.output_buffer.len() < output_len * 2 {
-            self.output_buffer.resize(output_len * 2, 0.0);
-        }
-
-        // Convert input to interleaved
-        for (i, sample) in input.iter().enumerate() {
-            self.input_buffer[i * 2] = sample.left;
-            self.input_buffer[i * 2 + 1] = sample.right;
-        }
-
-        // Clear output buffer
-        self.output_buffer[..output_len * 2].fill(0.0);
 
         // Process through signalsmith-stretch
         // The ratio is controlled by providing different input/output sizes:
@@ -127,36 +110,29 @@ impl TimeStretcher {
         let input_samples = (output_len as f64 / self.ratio) as usize;
         let input_samples = input_samples.min(input_len);
 
-        self.stretcher.process(
-            &self.input_buffer[..input_samples * 2],
-            &mut self.output_buffer[..output_len * 2],
-        );
+        // Zero-copy format conversion: reinterpret StereoSample slices as interleaved f32
+        // Thanks to #[repr(C)] on StereoSample, [StereoSample] has the same layout as [f32]
+        let input_interleaved = input.as_interleaved();
+        let output_interleaved = output.as_interleaved_mut();
 
-        // Convert output from interleaved
-        for i in 0..output_len {
-            output.as_mut_slice()[i] = StereoSample::new(
-                self.output_buffer[i * 2],
-                self.output_buffer[i * 2 + 1],
-            );
-        }
+        // Clear output region we'll write to
+        output_interleaved[..output_len * 2].fill(0.0);
+
+        self.stretcher.process(
+            &input_interleaved[..input_samples * 2],
+            &mut output_interleaved[..output_len * 2],
+        );
     }
 
     /// Flush any remaining audio from the stretcher
+    ///
+    /// Uses zero-copy format conversion via bytemuck.
     pub fn flush(&mut self, output: &mut StereoBuffer) {
         let output_len = output.len();
-        if self.output_buffer.len() < output_len * 2 {
-            self.output_buffer.resize(output_len * 2, 0.0);
-        }
+        let output_interleaved = output.as_interleaved_mut();
 
-        self.output_buffer[..output_len * 2].fill(0.0);
-        self.stretcher.flush(&mut self.output_buffer[..output_len * 2]);
-
-        for i in 0..output_len {
-            output.as_mut_slice()[i] = StereoSample::new(
-                self.output_buffer[i * 2],
-                self.output_buffer[i * 2 + 1],
-            );
-        }
+        output_interleaved[..output_len * 2].fill(0.0);
+        self.stretcher.flush(&mut output_interleaved[..output_len * 2]);
     }
 }
 

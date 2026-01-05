@@ -16,7 +16,8 @@ pub fn view(state: &LoadedTrackState) -> Element<Message> {
     // Combined waveform canvas (zoomed detail view above overview)
     // Uses single canvas to work around iced bug #3040 where multiple Canvas widgets
     // don't render properly - only the first one shows.
-    let waveforms = view_combined_waveform(&state.combined_waveform, state.playhead_position());
+    // Use interpolated position for smooth waveform animation during playback
+    let waveforms = view_combined_waveform(&state.combined_waveform, state.interpolated_playhead_position());
 
     // Layout: player controls on left, waveforms take remaining width
     let main_row = row![player_controls, waveforms]

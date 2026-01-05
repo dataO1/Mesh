@@ -12,6 +12,7 @@ use super::state::{
 use crate::{STEM_COLORS, CueMarker};
 use iced::widget::canvas::{self, Event, Frame, Geometry, Path, Program, Stroke};
 use iced::{mouse, Color, Point, Rectangle, Size, Theme};
+use mesh_core::types::SAMPLE_RATE;
 
 // =============================================================================
 // Canvas Interaction States
@@ -533,7 +534,68 @@ where
 // Drawing Helper Functions
 // =============================================================================
 
-/// Draw stem waveforms from peak data
+/// Draw a single stem waveform as a filled path for smoother appearance
+///
+/// Instead of drawing hundreds of individual vertical lines, this builds a single
+/// filled path tracing the upper envelope (max values) left-to-right, then the
+/// lower envelope (min values) right-to-left, creating a smooth filled shape.
+///
+/// This approach:
+/// - Uses 1 GPU draw call instead of hundreds
+/// - Produces naturally anti-aliased edges from filled polygon rasterization
+/// - Renders faster and looks smoother
+fn draw_stem_waveform_filled(
+    frame: &mut Frame,
+    peaks: &[(f32, f32)],
+    x_offset: f32,
+    center_y: f32,
+    height_scale: f32,
+    color: Color,
+    width: f32,
+) {
+    if peaks.is_empty() || width < 2.0 {
+        return;
+    }
+
+    let peaks_len = peaks.len() as f32;
+
+    let path = Path::new(|builder| {
+        // Start at first point's max value (upper envelope)
+        let (_, first_max) = peaks[0];
+        let first_y = center_y - (first_max * height_scale);
+        builder.move_to(Point::new(x_offset, first_y));
+
+        // Draw upper envelope left to right
+        for px in 1..(width as usize) {
+            let peak_idx = ((px as f32 / width) * peaks_len) as usize;
+            if peak_idx >= peaks.len() {
+                break;
+            }
+            let (_, max) = peaks[peak_idx];
+            let x = x_offset + px as f32;
+            let y = center_y - (max * height_scale);
+            builder.line_to(Point::new(x, y));
+        }
+
+        // Draw lower envelope right to left (closing the shape)
+        for px in (0..(width as usize)).rev() {
+            let peak_idx = ((px as f32 / width) * peaks_len) as usize;
+            if peak_idx >= peaks.len() {
+                continue;
+            }
+            let (min, _) = peaks[peak_idx];
+            let x = x_offset + px as f32;
+            let y = center_y - (min * height_scale);
+            builder.line_to(Point::new(x, y));
+        }
+
+        builder.close();
+    });
+
+    frame.fill(&path, color);
+}
+
+/// Draw stem waveforms from peak data using filled paths
 fn draw_stem_waveforms(
     frame: &mut Frame,
     stem_waveforms: &[Vec<(f32, f32)>; 4],
@@ -542,6 +604,7 @@ fn draw_stem_waveforms(
     center_y: f32,
     alpha: f32,
 ) {
+    // Draw stems in reverse order for proper layering (Other behind, Vocals on top)
     for stem_idx in (0..4).rev() {
         let waveform_data = &stem_waveforms[stem_idx];
         if waveform_data.is_empty() {
@@ -550,25 +613,9 @@ fn draw_stem_waveforms(
 
         let base_color = STEM_COLORS[stem_idx];
         let waveform_color = Color::from_rgba(base_color.r, base_color.g, base_color.b, alpha);
+        let height_scale = center_y * 0.9;
 
-        let data_width = waveform_data.len();
-        let scale = data_width as f32 / width;
-
-        for x in 0..(width as usize) {
-            let data_idx = ((x as f32) * scale) as usize;
-            if data_idx >= data_width {
-                break;
-            }
-
-            let (min, max) = waveform_data[data_idx];
-            let y1 = center_y - (max * center_y * 0.9);
-            let y2 = center_y - (min * center_y * 0.9);
-
-            frame.stroke(
-                &Path::line(Point::new(x as f32, y1), Point::new(x as f32, y2)),
-                Stroke::default().with_color(waveform_color).with_width(1.0),
-            );
-        }
+        draw_stem_waveform_filled(frame, waveform_data, 0.0, center_y, height_scale, waveform_color, width);
     }
 }
 
@@ -631,7 +678,7 @@ fn draw_beat_markers_zoomed(
     }
 }
 
-/// Draw cached peaks for zoomed view
+/// Draw cached peaks for zoomed view using filled paths
 fn draw_cached_peaks(
     frame: &mut Frame,
     state: &ZoomedState,
@@ -645,6 +692,7 @@ fn draw_cached_peaks(
     }
 
     let cache_samples = (state.cache_end - state.cache_start) as f64;
+    let height_scale = center_y * 0.85;
 
     for stem_idx in (0..4).rev() {
         let peaks = &state.cached_peaks[stem_idx];
@@ -656,27 +704,55 @@ fn draw_cached_peaks(
         let waveform_color = Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.7);
         let peaks_len = peaks.len() as f64;
 
-        for x in 0..(width as usize) {
-            let view_sample = view_start as f64 + (x as f64 / width as f64) * view_samples;
-            let cache_offset = view_sample - state.cache_start as f64;
-            if cache_offset < 0.0 || cache_offset >= cache_samples {
-                continue;
+        // Build filled path for this stem
+        let path = Path::new(|builder| {
+            let mut first_point = true;
+            let mut upper_points: Vec<(f32, f32)> = Vec::with_capacity(width as usize);
+            let mut lower_points: Vec<(f32, f32)> = Vec::with_capacity(width as usize);
+
+            for x in 0..(width as usize) {
+                let view_sample = view_start as f64 + (x as f64 / width as f64) * view_samples;
+                let cache_offset = view_sample - state.cache_start as f64;
+                if cache_offset < 0.0 || cache_offset >= cache_samples {
+                    continue;
+                }
+
+                let cache_idx = (cache_offset / cache_samples * peaks_len) as usize;
+                if cache_idx >= peaks.len() {
+                    continue;
+                }
+
+                let (min, max) = peaks[cache_idx];
+                let y_max = center_y - (max * height_scale);
+                let y_min = center_y - (min * height_scale);
+
+                upper_points.push((x as f32, y_max));
+                lower_points.push((x as f32, y_min));
             }
 
-            let cache_idx = (cache_offset / cache_samples * peaks_len) as usize;
-            if cache_idx >= peaks.len() {
-                continue;
+            if upper_points.is_empty() {
+                return;
             }
 
-            let (min, max) = peaks[cache_idx];
-            let y1 = center_y - (max * center_y * 0.85);
-            let y2 = center_y - (min * center_y * 0.85);
+            // Draw upper envelope left to right
+            for &(x, y) in upper_points.iter() {
+                if first_point {
+                    builder.move_to(Point::new(x, y));
+                    first_point = false;
+                } else {
+                    builder.line_to(Point::new(x, y));
+                }
+            }
 
-            frame.stroke(
-                &Path::line(Point::new(x as f32, y1), Point::new(x as f32, y2)),
-                Stroke::default().with_color(waveform_color).with_width(1.0),
-            );
-        }
+            // Draw lower envelope right to left
+            for &(x, y) in lower_points.iter().rev() {
+                builder.line_to(Point::new(x, y));
+            }
+
+            builder.close();
+        });
+
+        frame.fill(&path, waveform_color);
     }
 }
 
@@ -845,7 +921,8 @@ fn draw_overview_section(
         );
     }
 
-    // Draw stem waveforms
+    // Draw stem waveforms using filled paths
+    let height_scale = overview_height / 2.0 * 0.85;
     for stem_idx in (0..4).rev() {
         let stem_peaks = &overview.stem_waveforms[stem_idx];
         if stem_peaks.is_empty() {
@@ -854,23 +931,8 @@ fn draw_overview_section(
 
         let base_color = STEM_COLORS[stem_idx];
         let waveform_color = Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.6);
-        let peaks_len = stem_peaks.len() as f32;
 
-        for x in 0..(width as usize) {
-            let peak_idx = (x as f32 / width * peaks_len) as usize;
-            if peak_idx >= stem_peaks.len() {
-                continue;
-            }
-
-            let (min, max) = stem_peaks[peak_idx];
-            let y1 = overview_center_y - (max * overview_height / 2.0 * 0.85);
-            let y2 = overview_center_y - (min * overview_height / 2.0 * 0.85);
-
-            frame.stroke(
-                &Path::line(Point::new(x as f32, y1), Point::new(x as f32, y2)),
-                Stroke::default().with_color(waveform_color).with_width(1.0),
-            );
-        }
+        draw_stem_waveform_filled(frame, stem_peaks, 0.0, overview_center_y, height_scale, waveform_color, width);
     }
 
     // Draw cue markers
@@ -1149,10 +1211,12 @@ where
         ];
 
         for (deck_idx, (x, y)) in grid_positions.iter().enumerate() {
+            // Use interpolated playhead for smooth animation
+            let playhead = self.state.interpolated_playhead(deck_idx, SAMPLE_RATE);
             draw_zoomed_at(
                 &mut frame,
                 &self.state.decks[deck_idx].zoomed,
-                self.state.playheads[deck_idx],
+                playhead,
                 *x,
                 *y,
                 cell_width,
@@ -1168,10 +1232,12 @@ where
 
         for deck_idx in 0..4 {
             let y = overview_start_y + (deck_idx as f32) * overview_row_height;
+            // Use interpolated playhead for smooth animation
+            let playhead = self.state.interpolated_playhead(deck_idx, SAMPLE_RATE);
             draw_overview_at(
                 &mut frame,
                 &self.state.decks[deck_idx].overview,
-                self.state.playheads[deck_idx],
+                playhead,
                 0.0,
                 y,
                 width,
@@ -1230,11 +1296,12 @@ fn draw_zoomed_at(
             }
         }
 
-        // Draw cached peaks
+        // Draw cached peaks using filled paths
         if !zoomed.cached_peaks[0].is_empty() {
             let cache_start = zoomed.cache_start;
             let cache_end = zoomed.cache_end;
             let cache_samples = (cache_end - cache_start) as f64;
+            let height_scale = height / 2.0 * 0.85;
 
             for stem_idx in (0..4).rev() {
                 let peaks = &zoomed.cached_peaks[stem_idx];
@@ -1245,26 +1312,54 @@ fn draw_zoomed_at(
                 let base_color = STEM_COLORS[stem_idx];
                 let waveform_color = Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.7);
 
-                for px in 0..(width as usize) {
-                    let view_sample = view_start as f64 + (px as f64 / width as f64) * view_samples;
-                    if view_sample < cache_start as f64 || view_sample > cache_end as f64 {
-                        continue;
-                    }
-                    let cache_offset = view_sample - cache_start as f64;
-                    let cache_idx = (cache_offset / cache_samples * peaks_len) as usize;
-                    if cache_idx >= peaks.len() {
-                        continue;
+                // Build filled path for this stem
+                let path = Path::new(|builder| {
+                    let mut first_point = true;
+                    let mut upper_points: Vec<(f32, f32)> = Vec::with_capacity(width as usize);
+                    let mut lower_points: Vec<(f32, f32)> = Vec::with_capacity(width as usize);
+
+                    for px in 0..(width as usize) {
+                        let view_sample = view_start as f64 + (px as f64 / width as f64) * view_samples;
+                        if view_sample < cache_start as f64 || view_sample > cache_end as f64 {
+                            continue;
+                        }
+                        let cache_offset = view_sample - cache_start as f64;
+                        let cache_idx = (cache_offset / cache_samples * peaks_len) as usize;
+                        if cache_idx >= peaks.len() {
+                            continue;
+                        }
+
+                        let (min, max) = peaks[cache_idx];
+                        let y_max = center_y - (max * height_scale);
+                        let y_min = center_y - (min * height_scale);
+
+                        upper_points.push((x + px as f32, y_max));
+                        lower_points.push((x + px as f32, y_min));
                     }
 
-                    let (min, max) = peaks[cache_idx];
-                    let y1 = center_y - (max * height / 2.0 * 0.85);
-                    let y2 = center_y - (min * height / 2.0 * 0.85);
+                    if upper_points.is_empty() {
+                        return;
+                    }
 
-                    frame.stroke(
-                        &Path::line(Point::new(x + px as f32, y1), Point::new(x + px as f32, y2)),
-                        Stroke::default().with_color(waveform_color).with_width(1.0),
-                    );
-                }
+                    // Draw upper envelope left to right
+                    for &(px, py) in upper_points.iter() {
+                        if first_point {
+                            builder.move_to(Point::new(px, py));
+                            first_point = false;
+                        } else {
+                            builder.line_to(Point::new(px, py));
+                        }
+                    }
+
+                    // Draw lower envelope right to left
+                    for &(px, py) in lower_points.iter().rev() {
+                        builder.line_to(Point::new(px, py));
+                    }
+
+                    builder.close();
+                });
+
+                frame.fill(&path, waveform_color);
             }
         }
 
@@ -1377,7 +1472,8 @@ fn draw_overview_at(
         );
     }
 
-    // Draw stem waveforms
+    // Draw stem waveforms using filled paths
+    let height_scale = height / 2.0 * 0.85;
     for stem_idx in (0..4).rev() {
         let stem_peaks = &overview.stem_waveforms[stem_idx];
         if stem_peaks.is_empty() {
@@ -1386,23 +1482,8 @@ fn draw_overview_at(
 
         let base_color = STEM_COLORS[stem_idx];
         let waveform_color = Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.6);
-        let peaks_len = stem_peaks.len() as f32;
 
-        for px in 0..(width as usize) {
-            let peak_idx = (px as f32 / width * peaks_len) as usize;
-            if peak_idx >= stem_peaks.len() {
-                continue;
-            }
-
-            let (min, max) = stem_peaks[peak_idx];
-            let y1 = center_y - (max * height / 2.0 * 0.85);
-            let y2 = center_y - (min * height / 2.0 * 0.85);
-
-            frame.stroke(
-                &Path::line(Point::new(x + px as f32, y1), Point::new(x + px as f32, y2)),
-                Stroke::default().with_color(waveform_color).with_width(1.0),
-            );
-        }
+        draw_stem_waveform_filled(frame, stem_peaks, x, center_y, height_scale, waveform_color, width);
     }
 
     // Draw cue markers

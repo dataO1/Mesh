@@ -189,6 +189,14 @@ impl DeckView {
         }
     }
 
+    /// Sync only play state from atomics (lock-free UI update)
+    ///
+    /// This is called every frame to update the play/pause button state
+    /// without acquiring the engine mutex.
+    pub fn sync_play_state(&mut self, state: PlayState) {
+        self.state = state;
+    }
+
     /// Handle a deck message
     pub fn handle_message(&mut self, msg: DeckMessage, deck: Option<&mut Deck>) {
         let Some(deck) = deck else { return };
