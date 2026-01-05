@@ -107,6 +107,10 @@ impl AudioEngine {
         // Fast track application - only assignments and atomic stores
         if let Some(d) = self.decks.get_mut(deck) {
             d.apply_prepared_track(prepared);
+
+            // Set stretch ratio for this deck based on track BPM vs global BPM
+            let ratio = self.global_bpm / track_bpm;
+            d.set_stretch_ratio(ratio);
         }
 
         // Update time stretcher for this deck's BPM
@@ -132,10 +136,13 @@ impl AudioEngine {
     pub fn set_global_bpm(&mut self, bpm: f64) {
         self.global_bpm = bpm.clamp(MIN_BPM, MAX_BPM);
 
-        // Update all stretchers
-        for (i, deck) in self.decks.iter().enumerate() {
+        // Update all deck stretch ratios and stretchers
+        for (i, deck) in self.decks.iter_mut().enumerate() {
             if let Some(track) = deck.track() {
-                self.stretchers[i].set_bpm(track.bpm(), self.global_bpm);
+                let track_bpm = track.bpm();
+                let ratio = self.global_bpm / track_bpm;
+                deck.set_stretch_ratio(ratio);
+                self.stretchers[i].set_bpm(track_bpm, self.global_bpm);
             }
         }
     }
@@ -354,31 +361,42 @@ impl AudioEngine {
     /// Process one buffer of audio
     ///
     /// Returns master and cue outputs.
+    ///
+    /// ## Time Stretching Flow
+    ///
+    /// 1. Deck reads `output_len * stretch_ratio` samples into stretch_input
+    /// 2. Time stretcher compresses/expands stretch_input to exactly output_len samples
+    /// 3. Result goes to mixer
+    ///
+    /// This enables each deck to play at its native BPM while outputting audio
+    /// synchronized to the global target BPM.
     pub fn process(&mut self, master_out: &mut StereoBuffer, cue_out: &mut StereoBuffer) {
-        let buffer_len = master_out.len();
+        let output_len = master_out.len();
 
-        // Set working length of pre-allocated buffers (real-time safe: no allocation)
+        // Set working length of deck output buffers (real-time safe: no allocation)
         // Capacity remains at MAX_BUFFER_SIZE, only the length field changes
         for buf in &mut self.deck_buffers {
-            buf.set_len_from_capacity(buffer_len);
+            buf.set_len_from_capacity(output_len);
         }
-        self.stretch_input.set_len_from_capacity(buffer_len);
 
-        // Process each deck with per-stem latency compensation
-        // We need to split the mutable borrow to access both decks and latency_compensator
+        // Process each deck with per-stem latency compensation and time stretching
         for deck_idx in 0..NUM_DECKS {
-            // Get deck output with per-stem latency compensation
-            // The compensator ensures all stems are sample-aligned before summing
+            // Deck fills stretch_input with variable samples based on stretch_ratio
+            // The deck reads output_len * stretch_ratio samples from the track
             self.decks[deck_idx].process(
-                &mut self.deck_buffers[deck_idx],
+                &mut self.stretch_input,
+                output_len,
                 Some(&mut self.latency_compensator),
                 deck_idx,
             );
 
-            // Time-stretch to global BPM
+            // Time-stretch: convert variable input to fixed output_len
+            // stretch_input may be larger (speedup) or smaller (slowdown) than output_len
             if self.decks[deck_idx].has_track() {
-                self.stretch_input.copy_from(&self.deck_buffers[deck_idx]);
                 self.stretchers[deck_idx].process(&self.stretch_input, &mut self.deck_buffers[deck_idx]);
+            } else {
+                // No track loaded - copy silence from stretch_input to deck_buffer
+                self.deck_buffers[deck_idx].copy_from(&self.stretch_input);
             }
         }
 

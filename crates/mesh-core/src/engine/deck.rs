@@ -273,6 +273,9 @@ pub struct Deck {
     shift_held: bool,
     /// Beat jump size in beats (1, 4, 8, 16, 32)
     beat_jump_size: i32,
+    /// Time stretch ratio (target_bpm / track_bpm)
+    /// > 1.0 = speedup (play faster), < 1.0 = slowdown, 1.0 = no stretch
+    stretch_ratio: f64,
     /// Position to return to after hot cue preview (None = not previewing)
     hot_cue_preview_return: Option<usize>,
     /// Lock-free state for UI access (position, play state, loop state)
@@ -299,6 +302,7 @@ impl Deck {
             scratch_offset: 0.0,
             shift_held: false,
             beat_jump_size: 4, // Default 4 beats
+            stretch_ratio: 1.0, // No stretching by default
             hot_cue_preview_return: None,
             atomics: Arc::new(DeckAtomics::new()),
             stem_buffers: std::array::from_fn(|_| StereoBuffer::silence(MAX_BUFFER_SIZE)),
@@ -559,6 +563,22 @@ impl Deck {
         self.beat_jump_size
     }
 
+    /// Get the current time stretch ratio
+    pub fn stretch_ratio(&self) -> f64 {
+        self.stretch_ratio
+    }
+
+    /// Set the time stretch ratio
+    ///
+    /// - ratio > 1.0: speedup (play faster to match higher target BPM)
+    /// - ratio < 1.0: slowdown (play slower to match lower target BPM)
+    /// - ratio = 1.0: no stretching (play at native tempo)
+    ///
+    /// Clamped to 0.5..2.0 range (half speed to double speed)
+    pub fn set_stretch_ratio(&mut self, ratio: f64) {
+        self.stretch_ratio = ratio.clamp(0.5, 2.0);
+    }
+
     /// Beat jump forward by beat_jump_size beats
     pub fn beat_jump_forward(&mut self) {
         if let Some(track) = &self.track {
@@ -788,50 +808,68 @@ impl Deck {
 
     // --- Audio processing ---
 
-    /// Advance the playhead and fill the output buffer with processed audio
+    /// Advance the playhead and fill the stretch_input buffer with processed audio
     ///
-    /// This is called from the audio thread to generate samples.
-    /// Returns the summed stereo output after stem processing.
+    /// This is called from the audio thread to generate samples for time stretching.
+    /// The deck reads `output_len * stretch_ratio` samples, processes them through
+    /// effect chains, and writes to `stretch_input`. The engine then passes
+    /// stretch_input through the time stretcher to produce exactly `output_len` samples.
     ///
     /// Uses Rayon for parallel stem processing - each stem is processed on a
     /// separate thread, then results are summed. This provides ~3-4x speedup
     /// on multi-core CPUs for effect-heavy workloads.
     ///
-    /// ## Latency Compensation
+    /// ## Parameters
     ///
-    /// If `compensator` is provided, per-stem latency compensation is applied
-    /// after effect processing but before summing. This ensures all stems are
-    /// sample-aligned regardless of different effect chain latencies.
+    /// - `stretch_input`: Buffer to fill with processed audio (will be resized to samples_to_read)
+    /// - `output_len`: Target output length (JACK buffer size) - used with stretch_ratio
+    /// - `compensator`: Optional per-stem latency compensation
+    /// - `deck_id`: Deck index for latency compensator
+    ///
+    /// ## Time Stretch Behavior
+    ///
+    /// - `stretch_ratio > 1.0` (speedup): reads MORE samples, stretcher compresses to output_len
+    /// - `stretch_ratio < 1.0` (slowdown): reads FEWER samples, stretcher expands to output_len
+    /// - `stretch_ratio = 1.0`: reads output_len samples (no stretching)
     pub fn process(
         &mut self,
-        output: &mut StereoBuffer,
+        stretch_input: &mut StereoBuffer,
+        output_len: usize,
         compensator: Option<&mut LatencyCompensator>,
         deck_id: usize,
     ) {
         let Some(track) = &self.track else {
-            output.fill_silence();
+            stretch_input.set_len_from_capacity(output_len);
+            stretch_input.fill_silence();
             return;
         };
 
         // If stopped, output silence (prevents repeating buffer buzz)
         if self.state == PlayState::Stopped {
-            output.fill_silence();
+            stretch_input.set_len_from_capacity(output_len);
+            stretch_input.fill_silence();
             return;
         }
 
-        // Fill output with silence (will add processed stems)
-        output.fill_silence();
+        // Calculate how many samples to read based on stretch ratio
+        // For speedup (ratio > 1): read MORE samples, stretcher will compress
+        // For slowdown (ratio < 1): read FEWER samples, stretcher will expand
+        let samples_to_read = ((output_len as f64) * self.stretch_ratio).round() as usize;
+        let samples_to_read = samples_to_read.clamp(1, MAX_BUFFER_SIZE);
+
+        // Set stretch_input length to samples we'll read
+        stretch_input.set_len_from_capacity(samples_to_read);
+        stretch_input.fill_silence();
 
         // Extract values needed for parallel processing (avoids borrow conflicts)
         let any_soloed = self.any_stem_soloed();
-        let buffer_len = output.len();
         let position = self.position;
         let duration_samples = track.duration_samples;
 
         // Set working length of all pre-allocated stem buffers (real-time safe: no allocation)
         // Capacity remains at MAX_BUFFER_SIZE, only the length field changes
         for buf in &mut self.stem_buffers {
-            buf.set_len_from_capacity(buffer_len);
+            buf.set_len_from_capacity(samples_to_read);
         }
 
         // Parallel stem processing with Rayon
@@ -852,9 +890,10 @@ impl Deck {
                 }
 
                 // Copy samples from track to stem buffer
+                // Note: reads samples_to_read samples (may differ from output_len)
                 let stem_data = track.stems.get(stem);
                 let buf_slice = stem_buffer.as_mut_slice();
-                for i in 0..buffer_len {
+                for i in 0..samples_to_read {
                     let read_pos = position + i;
                     if read_pos < duration_samples {
                         buf_slice[i] = stem_data[read_pos];
@@ -875,15 +914,16 @@ impl Deck {
             }
         }
 
-        // Sum all stem buffers to output (sequential - fast O(n) operation)
+        // Sum all stem buffers to stretch_input (sequential - fast O(n) operation)
         // This happens after parallel processing and compensation
         for stem_buffer in &self.stem_buffers {
-            output.add_buffer(stem_buffer);
+            stretch_input.add_buffer(stem_buffer);
         }
 
-        // Advance playhead (only if playing)
+        // Advance playhead by samples actually read (not output_len!)
+        // This ensures playback speed matches the stretch ratio
         if self.state == PlayState::Playing || self.state == PlayState::Cueing {
-            self.position += buffer_len;
+            self.position += samples_to_read;
 
             // Handle looping
             if self.loop_state.active && self.position >= self.loop_state.end {

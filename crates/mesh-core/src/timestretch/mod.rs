@@ -85,9 +85,14 @@ impl TimeStretcher {
 
     /// Process audio through the time stretcher
     ///
-    /// Takes input audio and produces output audio at the stretched tempo.
-    /// For a ratio > 1.0 (speedup), output will have fewer samples than input.
-    /// For a ratio < 1.0 (slowdown), output will have more samples than input.
+    /// Takes input audio (variable size from deck) and produces output audio
+    /// at the target size. The deck has already sized the input buffer based on
+    /// stretch_ratio, so we just pass through to signalsmith-stretch.
+    ///
+    /// The stretch ratio is: input_len / output_len
+    /// - input_len > output_len: speedup (compressing more samples into fewer)
+    /// - input_len < output_len: slowdown (expanding fewer samples into more)
+    /// - input_len = output_len: no stretching
     ///
     /// Uses zero-copy format conversion via bytemuck - the input/output buffers
     /// are reinterpreted as interleaved f32 without any copying.
@@ -100,16 +105,6 @@ impl TimeStretcher {
         let input_len = input.len();
         let output_len = output.len();
 
-        // Process through signalsmith-stretch
-        // The ratio is controlled by providing different input/output sizes:
-        // - To speed up (ratio > 1), we need fewer output samples per input sample
-        // - To slow down (ratio < 1), we need more output samples per input sample
-        //
-        // With signalsmith-stretch, the ratio is input_samples / output_samples
-        // So we calculate how many input samples to provide for the desired output
-        let input_samples = (output_len as f64 / self.ratio) as usize;
-        let input_samples = input_samples.min(input_len);
-
         // Zero-copy format conversion: reinterpret StereoSample slices as interleaved f32
         // Thanks to #[repr(C)] on StereoSample, [StereoSample] has the same layout as [f32]
         let input_interleaved = input.as_interleaved();
@@ -118,8 +113,10 @@ impl TimeStretcher {
         // Clear output region we'll write to
         output_interleaved[..output_len * 2].fill(0.0);
 
+        // Pass variable input through signalsmith-stretch to produce fixed output
+        // The actual stretch ratio is determined by the size difference
         self.stretcher.process(
-            &input_interleaved[..input_samples * 2],
+            &input_interleaved[..input_len * 2],
             &mut output_interleaved[..output_len * 2],
         );
     }
