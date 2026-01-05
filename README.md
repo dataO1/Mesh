@@ -43,6 +43,7 @@ Mesh also integrates **neural audio effects** powered by [RAVE](https://github.c
 |-------|------------|---------|
 | **Audio Engine** | Rust | Real-time audio processing with zero-copy buffers |
 | **Audio I/O** | JACK | Professional low-latency audio routing |
+| **Memory Management** | basedrop | RT-safe deferred deallocation for audio buffers |
 | **GUI** | iced | Native GPU-accelerated user interface |
 | **Time Stretching** | signalsmith-stretch | High-quality tempo adjustment without pitch change |
 | **Effects** | Pure Data (libpd) | Visual patching for custom effects |
@@ -101,6 +102,50 @@ mesh/
                  └─────────────────────────────────┘
 ```
 
+### Real-Time Safe Architecture
+
+Professional audio requires **deterministic timing**. JACK gives us ~21ms at 1024 samples @ 48kHz to process each audio buffer. Any operation that takes longer causes an **xrun** (audio dropout).
+
+Mesh implements a fully real-time safe architecture:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     Thread Architecture                             │
+│                                                                     │
+│   ┌─────────────┐     lock-free      ┌─────────────┐               │
+│   │  UI Thread  │────────────────────│ JACK Thread │               │
+│   │  (iced)     │    command queue   │  (RT audio) │               │
+│   │             │                    │             │               │
+│   │ • Load track│    LoadTrack ───►  │ • Process   │               │
+│   │ • Play/Pause│    Play/Pause ───► │   audio     │               │
+│   │ • Set BPM   │    SetPitch ────►  │ • No allocs │               │
+│   │ • Effects   │                    │ • No locks  │               │
+│   └─────────────┘                    └──────┬──────┘               │
+│                                             │ drop old track       │
+│                                             ▼                       │
+│                                      ┌─────────────┐               │
+│                                      │  GC Thread  │               │
+│                                      │  (audio-gc) │               │
+│                                      │             │               │
+│                                      │ • Deferred  │               │
+│                                      │   dealloc   │               │
+│                                      │ • 100ms     │               │
+│                                      │   cycle     │               │
+│                                      └─────────────┘               │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Key design decisions:**
+
+| Problem | Solution | Implementation |
+|---------|----------|----------------|
+| UI-to-audio communication | Lock-free SPSC queue | `mesh-core/src/engine/command.rs` |
+| Large buffer sharing | Zero-copy via `Shared<T>` | 452MB stem buffers shared, not cloned |
+| Memory deallocation | Deferred to GC thread | `basedrop::Shared` + `mesh-core/src/engine/gc.rs` |
+| Stem buffer allocation | Sequential with yields | Prevents page fault storms |
+
+**Result:** Track loading while playing another track causes **zero audio dropouts**.
+
 ---
 
 ## Features
@@ -114,6 +159,8 @@ mesh/
 - Global latency compensation across all stems and effects
 - High-quality time stretching with signalsmith-stretch
 - WAV/RF64 file support with embedded metadata
+- **Real-time safe architecture** — Lock-free command queue, zero-copy buffer sharing, deferred deallocation via basedrop
+- **Zero xruns during track loading** — Load new tracks while playing without audio dropouts
 
 **Deck Controls**
 - CDJ-style cue behavior (hold to preview, release to return)
@@ -352,6 +399,7 @@ This project uses [Essentia](https://essentia.upf.edu/) which is licensed under 
 - [signalsmith-stretch](https://signalsmith-audio.co.uk/code/stretch/) for high-quality time stretching
 - [iced](https://iced.rs/) for the GUI framework
 - [JACK](https://jackaudio.org/) for professional audio routing
+- [basedrop](https://github.com/glowcoil/basedrop) for RT-safe memory management
 - [RAVE](https://github.com/acids-ircam/RAVE) for neural audio synthesis
 - [libpd](https://github.com/libpd/libpd) for Pure Data integration
 - [Essentia](https://essentia.upf.edu/) for audio analysis (BPM, key, beat detection)

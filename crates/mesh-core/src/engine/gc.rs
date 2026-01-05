@@ -15,6 +15,77 @@
 //! - Drop on RT thread: ~50ns (just enqueues a pointer)
 //! - Actual deallocation: happens on GC thread where latency doesn't matter
 //!
+//! ## Architecture
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────────────┐
+//! │                        Application Startup                          │
+//! │                               │                                     │
+//! │                    ┌──────────▼──────────┐                          │
+//! │                    │   gc_handle()       │  First call initializes  │
+//! │                    │   OnceLock<Handle>  │  the GC system           │
+//! │                    └──────────┬──────────┘                          │
+//! │                               │                                     │
+//! │              ┌────────────────┴────────────────┐                    │
+//! │              │                                 │                    │
+//! │   ┌──────────▼──────────┐          ┌──────────▼──────────┐         │
+//! │   │   audio-gc thread   │          │    Handle (Clone)   │         │
+//! │   │   owns Collector    │◄─────────│  distributed to     │         │
+//! │   │   runs collect()    │  mpsc    │  all threads        │         │
+//! │   │   every 100ms       │          └─────────────────────┘         │
+//! │   └─────────────────────┘                                          │
+//! └─────────────────────────────────────────────────────────────────────┘
+//!
+//! ┌─────────────────────────────────────────────────────────────────────┐
+//! │                        Runtime Operation                            │
+//! │                                                                     │
+//! │   UI Thread                         JACK RT Thread                  │
+//! │   ┌────────────────┐                ┌────────────────┐              │
+//! │   │ Load new track │                │ Replace deck   │              │
+//! │   │                │                │ track with new │              │
+//! │   │ Shared::new()  │────────────────│                │              │
+//! │   │ ~1µs           │   command      │ Old Shared     │              │
+//! │   └────────────────┘   queue        │ dropped ~50ns  │              │
+//! │                                     └───────┬────────┘              │
+//! │                                             │ enqueue               │
+//! │                                             ▼                       │
+//! │                              ┌──────────────────────────┐           │
+//! │                              │    audio-gc thread       │           │
+//! │                              │    collector.collect()   │           │
+//! │                              │    actual dealloc ~100ms │           │
+//! │                              │    (doesn't block RT)    │           │
+//! │                              └──────────────────────────┘           │
+//! └─────────────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! ## When to Use `Shared<T>` vs `Arc<T>`
+//!
+//! | Type | Use Case | Drop Behavior |
+//! |------|----------|---------------|
+//! | `Shared<T>` | Large buffers (audio, images) that may be dropped on RT threads | Deferred to GC thread |
+//! | `Arc<T>` | Small data, config, metadata not dropped on RT threads | Immediate deallocation |
+//!
+//! **Rule of thumb**: Use `Shared<T>` for any data that:
+//! 1. Is large (>1MB)
+//! 2. Might be dropped on the JACK process callback thread
+//! 3. Would cause latency spikes if deallocated synchronously
+//!
+//! ## Performance Characteristics
+//!
+//! | Operation | Time | Notes |
+//! |-----------|------|-------|
+//! | `Shared::new()` | ~1µs | Same as `Arc::new()` + handle lookup |
+//! | `Shared::clone()` | ~10ns | Atomic increment, same as `Arc` |
+//! | `Shared::drop()` (not last ref) | ~10ns | Atomic decrement, same as `Arc` |
+//! | `Shared::drop()` (last ref) | ~50ns | Enqueues pointer, no syscalls |
+//! | `collector.collect()` | varies | Actual deallocation, 100ms+ for large buffers |
+//!
+//! ## Thread Safety
+//!
+//! - `Handle`: `Clone + Send + Sync` - can be shared across threads
+//! - `Shared<T>`: `Clone + Send + Sync` (if T is) - same semantics as `Arc<T>`
+//! - `Collector`: `!Sync` - must stay on one thread (the audio-gc thread)
+//!
 //! ## Usage
 //!
 //! ```ignore
@@ -31,6 +102,17 @@
 //! drop(data);
 //! drop(data2);  // Last reference - queued for GC, not freed immediately
 //! ```
+//!
+//! ## Caveats
+//!
+//! 1. **Memory is not freed immediately**: After dropping the last `Shared<T>`,
+//!    memory stays allocated until the next GC cycle (up to 100ms).
+//!
+//! 2. **Debug trait**: `Shared<T>` does not implement `Debug`. Use wrapper types
+//!    with manual `Debug` impls if needed (see `StemsLoadResult` in mesh-cue).
+//!
+//! 3. **GC thread runs forever**: The audio-gc thread is spawned once and never
+//!    terminates. This is intentional for audio applications that run until exit.
 
 use basedrop::{Collector, Handle};
 use std::sync::mpsc;
