@@ -12,7 +12,11 @@ use iced::{Center, Element, Fill, Length, Subscription, Task, Theme};
 use iced::time;
 
 use crate::audio::SharedState;
+use crate::loader::{TrackLoader, TrackLoadResult};
 use mesh_core::audio_file::StemBuffers;
+use mesh_core::engine::DeckAtomics;
+use mesh_core::types::NUM_DECKS;
+use mesh_widgets::{PeaksComputer, PeaksComputeRequest};
 use super::deck_view::{DeckView, DeckMessage};
 use super::file_browser::{FileBrowserView, FileBrowserMessage};
 use super::mixer_view::{MixerView, MixerMessage};
@@ -20,8 +24,18 @@ use super::player_canvas::{view_player_canvas, PlayerCanvasState};
 
 /// Application state
 pub struct MeshApp {
-    /// Shared state with audio thread
+    /// Shared state with audio thread (for control commands)
     audio_state: Option<Arc<Mutex<SharedState>>>,
+    /// Lock-free deck state for UI reads (position, play state, loop)
+    /// These can be read without acquiring the engine mutex
+    deck_atomics: Option<[Arc<DeckAtomics>; NUM_DECKS]>,
+    /// Background track loader (avoids blocking UI/audio during loads)
+    track_loader: TrackLoader,
+    /// Pending track loads that couldn't be handed off due to lock contention
+    /// These will be retried on the next tick (avoids blocking UI thread)
+    pending_track_loads: Vec<TrackLoadResult>,
+    /// Background peak computer (offloads expensive waveform peak computation)
+    peaks_computer: PeaksComputer,
     /// Unified waveform state for all 4 decks
     player_canvas_state: PlayerCanvasState,
     /// Stem buffers for waveform recomputation (one per deck)
@@ -63,10 +77,17 @@ pub enum Message {
 
 impl MeshApp {
     /// Create a new application instance
-    pub fn new(audio_state: Option<Arc<Mutex<SharedState>>>) -> Self {
+    pub fn new(
+        audio_state: Option<Arc<Mutex<SharedState>>>,
+        deck_atomics: Option<[Arc<DeckAtomics>; NUM_DECKS]>,
+    ) -> Self {
         let audio_connected = audio_state.is_some();
         Self {
             audio_state,
+            deck_atomics,
+            track_loader: TrackLoader::spawn(),
+            pending_track_loads: Vec::new(),
+            peaks_computer: PeaksComputer::spawn(),
             player_canvas_state: PlayerCanvasState::new(),
             deck_stems: [None, None, None, None],
             deck_views: [
@@ -87,65 +108,153 @@ impl MeshApp {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Tick => {
-                // Collect deck positions while holding lock briefly
-                // This avoids blocking the audio thread during expensive compute_peaks()
-                let mut deck_positions: [Option<u64>; 4] = [None; 4];
-
-                if let Some(ref state) = self.audio_state {
-                    if let Ok(s) = state.try_lock() {
-                        self.global_bpm = s.engine.global_bpm();
-
-                        // Update deck views and waveform state (fast operations only)
-                        for i in 0..4 {
-                            if let Some(deck) = s.engine.deck(i) {
-                                // Sync deck view (controls)
-                                self.deck_views[i].sync_from_deck(deck);
-
-                                // Store position for later peak computation
-                                let position = deck.position();
-                                deck_positions[i] = Some(position);
-                                self.player_canvas_state.set_playhead(i, position);
-
-                                if let Some(track) = deck.track() {
-                                    let duration = track.duration_samples as u64;
-                                    if duration > 0 {
-                                        let pos_normalized = position as f64 / duration as f64;
-                                        self.player_canvas_state.decks[i]
-                                            .overview
-                                            .set_position(pos_normalized);
+                // First, retry any pending track loads (from previous lock contention)
+                // This ensures tracks are handed off even if audio thread was busy
+                if !self.pending_track_loads.is_empty() {
+                    if let Some(ref state) = self.audio_state {
+                        if let Ok(mut s) = state.try_lock() {
+                            // Drain pending loads while we have the lock
+                            for load_result in self.pending_track_loads.drain(..) {
+                                if let Ok(track) = load_result.result {
+                                    if let Some(deck) = s.engine.deck_mut(load_result.deck_idx) {
+                                        deck.load_track(track);
                                     }
-
-                                    let loop_state = deck.loop_state();
-                                    if loop_state.active && duration > 0 {
-                                        let start = loop_state.start as f64 / duration as f64;
-                                        let end = loop_state.end as f64 / duration as f64;
-                                        self.player_canvas_state.decks[i]
-                                            .overview
-                                            .set_loop_region(Some((start, end)));
-                                    } else {
-                                        self.player_canvas_state.decks[i]
-                                            .overview
-                                            .set_loop_region(None);
-                                    }
+                                    self.status = format!("Loaded track to deck {}", load_result.deck_idx + 1);
                                 }
                             }
                         }
+                        // If try_lock fails, pending loads stay queued for next tick
+                    }
+                }
 
-                        // Update mixer view
+                // Poll for completed background track loads (non-blocking)
+                while let Some(load_result) = self.track_loader.try_recv() {
+                    let deck_idx = load_result.deck_idx;
+
+                    match load_result.result {
+                        Ok(track) => {
+                            // Update waveform state (UI-only, no lock needed)
+                            self.player_canvas_state.decks[deck_idx].overview =
+                                load_result.overview_state;
+                            self.player_canvas_state.decks[deck_idx].zoomed =
+                                load_result.zoomed_state;
+                            self.deck_stems[deck_idx] = Some(load_result.stems);
+
+                            // Try non-blocking lock to hand off track to engine
+                            if let Some(ref state) = self.audio_state {
+                                match state.try_lock() {
+                                    Ok(mut s) => {
+                                        if let Some(deck) = s.engine.deck_mut(deck_idx) {
+                                            deck.load_track(track);
+                                        }
+                                        self.status = format!("Loaded track to deck {}", deck_idx + 1);
+                                    }
+                                    Err(_) => {
+                                        // Lock contention - queue for retry on next tick
+                                        // Rebuild the load result with the track for retry
+                                        self.pending_track_loads.push(TrackLoadResult {
+                                            deck_idx,
+                                            result: Ok(track),
+                                            overview_state: self.player_canvas_state.decks[deck_idx].overview.clone(),
+                                            zoomed_state: self.player_canvas_state.decks[deck_idx].zoomed.clone(),
+                                            stems: self.deck_stems[deck_idx].clone().unwrap_or_else(|| {
+                                                Arc::new(mesh_core::audio_file::StemBuffers::with_length(0))
+                                            }),
+                                        });
+                                        self.status = "Track loaded, syncing...".to_string();
+                                    }
+                                }
+                            } else {
+                                self.status = format!("Loaded track to deck {} (no audio)", deck_idx + 1);
+                            }
+                        }
+                        Err(e) => {
+                            self.status = format!("Error loading track: {}", e);
+                        }
+                    }
+                }
+
+                // Poll for completed background peak computations (non-blocking)
+                // Results from peaks_computer are applied to ZoomedState
+                while let Some(result) = self.peaks_computer.try_recv() {
+                    if result.id < 4 {
+                        let zoomed = &mut self.player_canvas_state.decks[result.id].zoomed;
+                        zoomed.cached_peaks = result.cached_peaks;
+                        zoomed.cache_start = result.cache_start;
+                        zoomed.cache_end = result.cache_end;
+                        // zoom_bars is already set on the zoomed state before request
+                    }
+                }
+
+                // Read deck positions from atomics (LOCK-FREE - never blocks audio thread)
+                // This is the key optimization: position/state reads happen ~60Hz and
+                // no longer compete with the audio callback for the mutex
+                let mut deck_positions: [Option<u64>; 4] = [None; 4];
+
+                if let Some(ref atomics) = self.deck_atomics {
+                    for i in 0..4 {
+                        let position = atomics[i].position();
+                        let is_playing = atomics[i].is_playing();
+                        let loop_active = atomics[i].loop_active();
+                        let loop_start = atomics[i].loop_start();
+                        let loop_end = atomics[i].loop_end();
+
+                        deck_positions[i] = Some(position);
+
+                        // Update playhead state for smooth interpolation
+                        self.player_canvas_state.set_playhead(i, position, is_playing);
+
+                        // Update deck view play state from atomics
+                        self.deck_views[i].sync_play_state(atomics[i].play_state());
+
+                        // Update position and loop display in waveform
+                        let duration = self.player_canvas_state.decks[i].overview.duration_samples;
+                        if duration > 0 {
+                            let pos_normalized = position as f64 / duration as f64;
+                            self.player_canvas_state.decks[i]
+                                .overview
+                                .set_position(pos_normalized);
+
+                            if loop_active {
+                                let start = loop_start as f64 / duration as f64;
+                                let end = loop_end as f64 / duration as f64;
+                                self.player_canvas_state.decks[i]
+                                    .overview
+                                    .set_loop_region(Some((start, end)));
+                            } else {
+                                self.player_canvas_state.decks[i]
+                                    .overview
+                                    .set_loop_region(None);
+                            }
+                        }
+                    }
+                }
+
+                // Brief lock only for mixer sync and global BPM (less critical, can skip frame)
+                if let Some(ref state) = self.audio_state {
+                    if let Ok(s) = state.try_lock() {
+                        self.global_bpm = s.engine.global_bpm();
                         self.mixer_view.sync_from_mixer(s.engine.mixer());
                     }
                     // Lock released here - audio thread can proceed
                 }
 
-                // Recompute zoomed waveform peaks OUTSIDE the lock
-                // This expensive operation (10-50ms) no longer blocks the audio thread
+                // Request zoomed waveform peak recomputation in background thread
+                // This expensive operation (10-50ms) is now fully async - UI never blocks
                 for i in 0..4 {
                     if let Some(position) = deck_positions[i] {
-                        if self.player_canvas_state.decks[i].zoomed.needs_recompute(position) {
+                        let zoomed = &self.player_canvas_state.decks[i].zoomed;
+                        if zoomed.needs_recompute(position) && zoomed.has_track {
                             if let Some(ref stems) = self.deck_stems[i] {
-                                self.player_canvas_state.decks[i]
-                                    .zoomed
-                                    .compute_peaks(stems, position, 800);
+                                let _ = self.peaks_computer.compute(PeaksComputeRequest {
+                                    id: i,
+                                    playhead: position,
+                                    stems: stems.clone(),
+                                    width: 1600,
+                                    zoom_bars: zoomed.zoom_bars,
+                                    duration_samples: zoomed.duration_samples,
+                                    bpm: zoomed.bpm,
+                                });
                             }
                         }
                     }
@@ -157,11 +266,19 @@ impl MeshApp {
             Message::Deck(deck_idx, deck_msg) => {
                 if deck_idx < 4 {
                     if let Some(ref state) = self.audio_state {
-                        if let Ok(mut s) = state.lock() {
-                            self.deck_views[deck_idx].handle_message(
-                                deck_msg,
-                                s.engine.deck_mut(deck_idx),
-                            );
+                        // Use try_lock to avoid blocking audio thread
+                        // If lock fails, show feedback to user (they can retry)
+                        match state.try_lock() {
+                            Ok(mut s) => {
+                                self.deck_views[deck_idx].handle_message(
+                                    deck_msg,
+                                    s.engine.deck_mut(deck_idx),
+                                );
+                            }
+                            Err(_) => {
+                                // Lock contention - audio thread is busy
+                                self.status = "Audio busy - try again".to_string();
+                            }
                         }
                     }
                 }
@@ -170,8 +287,15 @@ impl MeshApp {
 
             Message::Mixer(mixer_msg) => {
                 if let Some(ref state) = self.audio_state {
-                    if let Ok(mut s) = state.lock() {
-                        self.mixer_view.handle_message(mixer_msg, s.engine.mixer_mut());
+                    // Use try_lock to avoid blocking audio thread
+                    match state.try_lock() {
+                        Ok(mut s) => {
+                            self.mixer_view.handle_message(mixer_msg, s.engine.mixer_mut());
+                        }
+                        Err(_) => {
+                            // Lock contention - audio thread is busy
+                            self.status = "Audio busy - try again".to_string();
+                        }
                     }
                 }
                 Task::none()
@@ -190,94 +314,26 @@ impl MeshApp {
             Message::SetGlobalBpm(bpm) => {
                 self.global_bpm = bpm;
                 if let Some(ref state) = self.audio_state {
-                    if let Ok(mut s) = state.lock() {
-                        s.engine.set_global_bpm(bpm);
+                    // Use try_lock to avoid blocking audio thread
+                    match state.try_lock() {
+                        Ok(mut s) => {
+                            s.engine.set_global_bpm(bpm);
+                        }
+                        Err(_) => {
+                            // Lock contention - will sync on next tick
+                        }
                     }
                 }
                 Task::none()
             }
 
             Message::LoadTrack(deck_idx, path) => {
+                // Send load request to background thread (non-blocking)
+                // Result will be picked up in Tick handler via track_loader.try_recv()
                 if deck_idx < 4 {
-                    if let Some(ref state) = self.audio_state {
-                        if let Ok(mut s) = state.lock() {
-                            if let Some(deck) = s.engine.deck_mut(deck_idx) {
-                                match mesh_core::audio_file::LoadedTrack::load(&path) {
-                                    Ok(track) => {
-                                        // Populate waveform state BEFORE moving track to deck
-                                        let duration = track.duration_samples as u64;
-                                        let bpm = track.metadata.bpm.unwrap_or(120.0);
-
-                                        // Create cue markers for display
-                                        let cue_markers: Vec<mesh_widgets::CueMarker> = track
-                                            .metadata
-                                            .cue_points
-                                            .iter()
-                                            .map(|cue| {
-                                                let position = if duration > 0 {
-                                                    cue.sample_position as f64 / duration as f64
-                                                } else {
-                                                    0.0
-                                                };
-                                                mesh_widgets::CueMarker {
-                                                    position,
-                                                    label: cue.label.clone(),
-                                                    color: mesh_widgets::CUE_COLORS
-                                                        [(cue.index as usize) % 8],
-                                                    index: cue.index,
-                                                }
-                                            })
-                                            .collect();
-
-                                        // Populate overview from waveform preview (if available)
-                                        if let Some(ref preview) = track.metadata.waveform_preview {
-                                            self.player_canvas_state.decks[deck_idx].overview =
-                                                mesh_widgets::OverviewState::from_preview(
-                                                    preview,
-                                                    &track.metadata.beat_grid.beats,
-                                                    &track.metadata.cue_points,
-                                                    duration,
-                                                );
-                                        } else {
-                                            self.player_canvas_state.decks[deck_idx].overview =
-                                                mesh_widgets::OverviewState::empty_with_message(
-                                                    "No waveform preview",
-                                                    &track.metadata.cue_points,
-                                                    duration,
-                                                );
-                                        }
-
-                                        // Populate zoomed waveform state
-                                        self.player_canvas_state.decks[deck_idx].zoomed =
-                                            mesh_widgets::ZoomedState::from_metadata(
-                                                bpm,
-                                                track.metadata.beat_grid.beats.clone(),
-                                                cue_markers,
-                                            );
-                                        self.player_canvas_state.decks[deck_idx]
-                                            .zoomed
-                                            .set_duration(duration);
-
-                                        // Store stems for waveform recomputation
-                                        self.deck_stems[deck_idx] =
-                                            Some(Arc::new(track.stems.clone()));
-
-                                        // Compute initial zoomed peaks from stem data
-                                        self.player_canvas_state.decks[deck_idx]
-                                            .zoomed
-                                            .compute_peaks(&track.stems, 0, 800);
-
-                                        // Load track into engine (moves ownership)
-                                        deck.load_track(track);
-                                        self.status =
-                                            format!("Loaded track to deck {}", deck_idx + 1);
-                                    }
-                                    Err(e) => {
-                                        self.status = format!("Error loading track: {}", e);
-                                    }
-                                }
-                            }
-                        }
+                    self.status = format!("Loading track to deck {}...", deck_idx + 1);
+                    if let Err(e) = self.track_loader.load(deck_idx, path.into()) {
+                        self.status = format!("Failed to start load: {}", e);
                     }
                 }
                 Task::none()
@@ -302,8 +358,8 @@ impl MeshApp {
 
     /// Subscribe to periodic updates
     pub fn subscription(&self) -> Subscription<Message> {
-        // Update UI at ~30fps
-        time::every(std::time::Duration::from_millis(33)).map(|_| Message::Tick)
+        // Update UI at ~60fps for smooth waveform animation
+        time::every(std::time::Duration::from_millis(16)).map(|_| Message::Tick)
     }
 
     /// Build the view
@@ -411,6 +467,6 @@ impl MeshApp {
 
 impl Default for MeshApp {
     fn default() -> Self {
-        Self::new(None)
+        Self::new(None, None)
     }
 }

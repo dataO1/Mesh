@@ -2,12 +2,47 @@
 //!
 //! Connects the AudioEngine to JACK for real-time audio output.
 //! Provides 4 output channels: Master L/R and Cue L/R.
+//!
+//! # Real-Time Safety
+//!
+//! The JACK process callback runs on a high-priority real-time thread with
+//! strict timing constraints (~5.8ms at 256 samples @ 44.1kHz). Violations
+//! cause audible glitches (xruns). This module ensures RT safety by:
+//!
+//! - **No allocations**: All buffers pre-allocated to [`MAX_BUFFER_SIZE`] (8192 samples)
+//! - **Non-blocking locks**: Uses `try_lock()` instead of `lock()` to avoid priority inversion
+//! - **No syscalls**: No logging, file I/O, or blocking operations in the callback
+//! - **Graceful degradation**: Outputs silence if engine lock unavailable (rare, <1% of cycles)
+//!
+//! # Thread Architecture
+//!
+//! ```text
+//! ┌──────────────────┐     try_lock()      ┌─────────────────────┐
+//! │  JACK RT Thread  │◄───────────────────►│    SharedState      │
+//! │  (~5.8ms cycle)  │                     │ (Arc<Mutex<Engine>>)│
+//! └──────────────────┘                     └─────────────────────┘
+//!         │                                          ▲
+//!         │ Relaxed atomics                          │ try_lock()
+//!         ▼                                          │
+//! ┌──────────────────┐                     ┌─────────────────────┐
+//! │   DeckAtomics    │◄────────────────────│     UI Thread       │
+//! │   (lock-free)    │     lock-free       │    (~16ms cycle)    │
+//! └──────────────────┘     reads           └─────────────────────┘
+//! ```
+//!
+//! The UI thread reads playback position via lock-free atomics ([`DeckAtomics`]),
+//! eliminating mutex contention for the most frequent operation (~60Hz reads).
+//! Engine mutations (play/pause, load track) use `try_lock()` with graceful fallback.
 
 use std::sync::{Arc, Mutex};
 
 use jack::{AudioOut, Client, ClientOptions, Control, Port, ProcessScope};
-use mesh_core::engine::AudioEngine;
-use mesh_core::types::StereoBuffer;
+use mesh_core::engine::{AudioEngine, DeckAtomics};
+use mesh_core::types::{StereoBuffer, NUM_DECKS};
+
+/// Maximum buffer size to pre-allocate (covers all JACK configurations)
+/// JACK typically uses 64, 128, 256, 512, 1024, 2048, or 4096 frames
+const MAX_BUFFER_SIZE: usize = 8192;
 
 /// JACK output port names
 const MASTER_LEFT: &str = "master_left";
@@ -71,11 +106,10 @@ impl jack::ProcessHandler for JackProcessor {
     fn process(&mut self, _client: &Client, ps: &ProcessScope) -> Control {
         let n_frames = ps.n_frames() as usize;
 
-        // Resize buffers if needed
-        if self.master_buffer.len() != n_frames {
-            self.master_buffer.resize(n_frames);
-            self.cue_buffer.resize(n_frames);
-        }
+        // Set working buffer length (real-time safe: no allocation, buffers pre-allocated to MAX_BUFFER_SIZE)
+        // This just adjusts the length field; capacity remains at MAX_BUFFER_SIZE
+        self.master_buffer.set_len_from_capacity(n_frames);
+        self.cue_buffer.set_len_from_capacity(n_frames);
 
         // Try to lock the engine (non-blocking to avoid priority inversion)
         if let Ok(mut state) = self.state.try_lock() {
@@ -160,11 +194,11 @@ impl std::error::Error for JackError {}
 
 /// Start the JACK audio client
 ///
-/// Returns a handle to the active client and a shared state for controlling
-/// the audio engine from the main thread.
+/// Returns a handle to the active client, a shared state for controlling
+/// the audio engine from the main thread, and lock-free atomics for UI reads.
 pub fn start_jack_client(
     client_name: &str,
-) -> Result<(JackHandle, Arc<Mutex<SharedState>>), JackError> {
+) -> Result<(JackHandle, Arc<Mutex<SharedState>>, [Arc<DeckAtomics>; NUM_DECKS]), JackError> {
     // Create JACK client
     let (client, _status) = Client::new(client_name, ClientOptions::NO_START_SERVER)
         .map_err(|e| JackError::ClientCreation(e.to_string()))?;
@@ -193,22 +227,26 @@ pub fn start_jack_client(
         .register_port(CUE_RIGHT, AudioOut::default())
         .map_err(|e| JackError::PortRegistration(e.to_string()))?;
 
+    // Create engine and extract atomics before putting in mutex
+    let engine = AudioEngine::new();
+    let deck_atomics = engine.deck_atomics();
+
     // Create shared state
     let state = Arc::new(Mutex::new(SharedState {
-        engine: AudioEngine::new(),
+        engine,
         buffer_size: client.buffer_size() as usize,
     }));
 
-    // Create processor with pre-allocated buffers
-    let buffer_size = client.buffer_size() as usize;
+    // Create processor with pre-allocated buffers at maximum size
+    // This ensures no allocation in the real-time callback even if JACK changes buffer size
     let processor = JackProcessor {
         master_left,
         master_right,
         cue_left,
         cue_right,
         state: Arc::clone(&state),
-        master_buffer: StereoBuffer::silence(buffer_size),
-        cue_buffer: StereoBuffer::silence(buffer_size),
+        master_buffer: StereoBuffer::silence(MAX_BUFFER_SIZE),
+        cue_buffer: StereoBuffer::silence(MAX_BUFFER_SIZE),
     };
 
     // Activate the client
@@ -223,6 +261,7 @@ pub fn start_jack_client(
             _async_client: async_client,
         },
         state,
+        deck_atomics,
     ))
 }
 

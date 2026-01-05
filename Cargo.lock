@@ -2448,6 +2448,7 @@ dependencies = [
 name = "mesh-core"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "libpd-rs",
  "log",
  "rayon",
@@ -2486,6 +2487,7 @@ dependencies = [
  "log",
  "mesh-core",
  "mesh-widgets",
+ "rayon",
  "tokio",
 ]
 

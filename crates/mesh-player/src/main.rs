@@ -6,6 +6,7 @@
 //! 3. Passes shared state between UI and audio
 
 mod audio;
+mod loader;
 mod ui;
 
 use iced::{Size, Task};
@@ -23,6 +24,16 @@ fn main() -> iced::Result {
 
     log::info!("mesh-player starting up");
 
+    // Initialize Rayon thread pool before audio starts
+    // This prevents lazy initialization from causing latency in the audio callback
+    // (Rayon's default lazy init would happen on first parallel call, which is in JACK callback)
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(4) // Match NUM_DECKS for optimal stem parallelism
+        .thread_name(|i| format!("rayon-audio-{}", i))
+        .build_global()
+        .expect("Failed to initialize Rayon thread pool");
+    log::info!("Rayon thread pool initialized with 4 threads");
+
     println!("╔══════════════════════════════════════════════════════════════╗");
     println!("║                     Mesh DJ Player                            ║");
     println!("║              4-deck stem-based mixing                         ║");
@@ -30,8 +41,8 @@ fn main() -> iced::Result {
     println!();
 
     // Try to start JACK client
-    let (jack_handle, audio_state) = match start_jack_client(CLIENT_NAME) {
-        Ok((handle, state)) => {
+    let (jack_handle, audio_state, deck_atomics) = match start_jack_client(CLIENT_NAME) {
+        Ok((handle, state, atomics)) => {
             println!("JACK client started successfully");
 
             // Try to auto-connect to system outputs
@@ -39,7 +50,7 @@ fn main() -> iced::Result {
                 eprintln!("Warning: Could not auto-connect ports: {}", e);
             }
 
-            (Some(handle), Some(state))
+            (Some(handle), Some(state), Some(atomics))
         }
         Err(e) => {
             eprintln!("Warning: Could not start JACK client: {}", e);
@@ -48,7 +59,7 @@ fn main() -> iced::Result {
             eprintln!("To enable audio, make sure JACK server is running:");
             eprintln!("  jackd -d alsa -r 44100");
             eprintln!("or use QjackCtl/Cadence to start it.");
-            (None, None)
+            (None, None, None)
         }
     };
 
@@ -59,7 +70,7 @@ fn main() -> iced::Result {
     let result = iced::application(
         move || {
             // Boot function: creates initial state
-            let app = MeshApp::new(audio_state.clone());
+            let app = MeshApp::new(audio_state.clone(), deck_atomics.clone());
             (app, Task::none())
         },
         update,

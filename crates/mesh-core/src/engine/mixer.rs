@@ -4,6 +4,8 @@
 //! - Per-channel trim, 3-band EQ, filter, volume, cue
 //! - Master volume and cue/master blend
 
+use rayon::prelude::*;
+
 use crate::types::{StereoBuffer, StereoSample, NUM_DECKS, SAMPLE_RATE};
 
 /// Biquad filter state for EQ bands
@@ -385,6 +387,9 @@ impl Mixer {
     /// deck_buffers: Array of processed deck outputs
     /// master_out: Output buffer for master mix
     /// cue_out: Output buffer for cue/headphone mix
+    ///
+    /// Uses Rayon for parallel channel strip processing - each deck's EQ/filter
+    /// chain runs on a separate thread, then results are summed to master/cue.
     pub fn process(
         &mut self,
         deck_buffers: &mut [StereoBuffer; NUM_DECKS],
@@ -395,11 +400,19 @@ impl Mixer {
         master_out.fill_silence();
         cue_out.fill_silence();
 
-        for (deck_idx, buffer) in deck_buffers.iter_mut().enumerate() {
-            let channel = &mut self.channels[deck_idx];
+        // Phase 1: Parallel channel strip processing (EQ, filters)
+        // Each channel processes its deck buffer independently
+        self.channels
+            .par_iter_mut()
+            .zip(deck_buffers.par_iter_mut())
+            .for_each(|(channel, buffer)| {
+                channel.process(buffer);
+            });
 
-            // Process through channel strip (trim + filter)
-            channel.process(buffer);
+        // Phase 2: Sequential summing to master/cue buses
+        // This is fast O(n) and must be sequential to avoid race conditions
+        for (deck_idx, buffer) in deck_buffers.iter().enumerate() {
+            let channel = &self.channels[deck_idx];
 
             // Add to master output (with volume fader)
             for i in 0..buffer_len.min(buffer.len()) {

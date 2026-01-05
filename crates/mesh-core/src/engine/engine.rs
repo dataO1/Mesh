@@ -4,7 +4,7 @@ use crate::audio_file::LoadedTrack;
 use crate::timestretch::TimeStretcher;
 use crate::types::{DeckId, Stem, StereoBuffer, NUM_DECKS};
 
-use super::{Deck, LatencyCompensator, Mixer};
+use super::{Deck, DeckAtomics, LatencyCompensator, Mixer};
 
 /// Global BPM range
 pub const MIN_BPM: f64 = 30.0;
@@ -13,6 +13,11 @@ pub const DEFAULT_BPM: f64 = 128.0;
 
 /// Audio buffer size for processing
 pub const BUFFER_SIZE: usize = 256;
+
+/// Maximum buffer size to pre-allocate for real-time safety
+/// Covers all common JACK configurations (64, 128, 256, 512, 1024, 2048, 4096)
+/// Pre-allocating to this size eliminates allocations in the audio callback
+pub const MAX_BUFFER_SIZE: usize = 8192;
 
 /// The main audio engine
 ///
@@ -44,8 +49,8 @@ impl AudioEngine {
             mixer: Mixer::new(),
             latency_compensator: LatencyCompensator::new(),
             stretchers: std::array::from_fn(|_| TimeStretcher::new()),
-            deck_buffers: std::array::from_fn(|_| StereoBuffer::silence(BUFFER_SIZE)),
-            stretch_input: StereoBuffer::silence(BUFFER_SIZE),
+            deck_buffers: std::array::from_fn(|_| StereoBuffer::silence(MAX_BUFFER_SIZE)),
+            stretch_input: StereoBuffer::silence(MAX_BUFFER_SIZE),
         }
     }
 
@@ -57,6 +62,15 @@ impl AudioEngine {
     /// Get a mutable reference to a deck
     pub fn deck_mut(&mut self, id: usize) -> Option<&mut Deck> {
         self.decks.get_mut(id)
+    }
+
+    /// Get lock-free atomics for all decks
+    ///
+    /// Returns Arc references to each deck's atomic state. The UI can clone
+    /// these and read position/state without acquiring the engine mutex.
+    /// Call this once during initialization and store the Arcs.
+    pub fn deck_atomics(&self) -> [std::sync::Arc<DeckAtomics>; NUM_DECKS] {
+        std::array::from_fn(|i| self.decks[i].atomics())
     }
 
     /// Get a reference to the mixer
@@ -122,11 +136,20 @@ impl AudioEngine {
     }
 
     /// Update latency compensation for a deck's stems
+    ///
+    /// Calculates total latency for each stem including:
+    /// - Effect chain latency (per-stem, varies by effects)
+    /// - Timestretch latency (per-deck, same for all stems)
     fn update_deck_latencies(&mut self, deck: usize) {
         if let Some(d) = self.decks.get(deck) {
+            // Get timestretch latency for this deck (applies to all stems)
+            let stretch_latency = self.stretchers[deck].total_latency() as u32;
+
             for (stem_idx, stem) in Stem::ALL.iter().enumerate() {
-                let latency = d.stem(*stem).chain.total_latency();
-                self.latency_compensator.set_stem_latency(deck, stem_idx, latency);
+                let effect_latency = d.stem(*stem).chain.total_latency();
+                // Total latency = effect chain + timestretch
+                let total_latency = effect_latency + stretch_latency;
+                self.latency_compensator.set_stem_latency(deck, stem_idx, total_latency);
             }
         }
     }
@@ -144,25 +167,26 @@ impl AudioEngine {
     pub fn process(&mut self, master_out: &mut StereoBuffer, cue_out: &mut StereoBuffer) {
         let buffer_len = master_out.len();
 
-        // Ensure internal buffers are the right size
+        // Set working length of pre-allocated buffers (real-time safe: no allocation)
+        // Capacity remains at MAX_BUFFER_SIZE, only the length field changes
         for buf in &mut self.deck_buffers {
-            buf.resize(buffer_len);
+            buf.set_len_from_capacity(buffer_len);
         }
-        self.stretch_input.resize(buffer_len);
+        self.stretch_input.set_len_from_capacity(buffer_len);
 
-        // Process each deck
-        for (deck_idx, deck) in self.decks.iter_mut().enumerate() {
-            // Get deck output (stems already summed)
-            deck.process(&mut self.deck_buffers[deck_idx]);
-
-            // Apply latency compensation to each stem
-            // Note: In a more sophisticated implementation, we'd apply latency comp
-            // to individual stems before summing. For now, we apply to the sum.
-            // This is a simplification that works because we're not doing per-stem
-            // latency compensation - we're compensating for the max across all stems.
+        // Process each deck with per-stem latency compensation
+        // We need to split the mutable borrow to access both decks and latency_compensator
+        for deck_idx in 0..NUM_DECKS {
+            // Get deck output with per-stem latency compensation
+            // The compensator ensures all stems are sample-aligned before summing
+            self.decks[deck_idx].process(
+                &mut self.deck_buffers[deck_idx],
+                Some(&mut self.latency_compensator),
+                deck_idx,
+            );
 
             // Time-stretch to global BPM
-            if deck.has_track() {
+            if self.decks[deck_idx].has_track() {
                 self.stretch_input.copy_from(&self.deck_buffers[deck_idx]);
                 self.stretchers[deck_idx].process(&self.stretch_input, &mut self.deck_buffers[deck_idx]);
             }

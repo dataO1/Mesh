@@ -130,6 +130,38 @@ pub fn smooth_peaks(peaks: &[(f32, f32)]) -> Vec<(f32, f32)> {
         .collect()
 }
 
+/// Gaussian smoothing weights for 5-sample window
+///
+/// Weights are designed to sum to 1.0 for normalized output.
+/// Center sample gets highest weight (0.40), with symmetric falloff.
+const GAUSSIAN_WEIGHTS: [f32; 5] = [0.06, 0.24, 0.40, 0.24, 0.06];
+
+/// Apply Gaussian-weighted smoothing to peaks
+///
+/// Produces smoother results than simple moving average by weighting
+/// the center sample more heavily. This preserves peaks better while
+/// still reducing noise in the waveform visualization.
+///
+/// Note: This reduces the array length by 4 (window_size - 1).
+pub fn smooth_peaks_gaussian(peaks: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    if peaks.len() < 5 {
+        return peaks.to_vec();
+    }
+
+    peaks
+        .windows(5)
+        .map(|w| {
+            let mut min_sum = 0.0f32;
+            let mut max_sum = 0.0f32;
+            for (i, (min, max)) in w.iter().enumerate() {
+                min_sum += min * GAUSSIAN_WEIGHTS[i];
+                max_sum += max * GAUSSIAN_WEIGHTS[i];
+            }
+            (min_sum, max_sum)
+        })
+        .collect()
+}
+
 /// Generate a waveform preview for storage in WAV file
 ///
 /// Creates a quantized preview at the standard width (800 pixels)

@@ -8,4 +8,5 @@ riff.workspace = true
 signalsmith-stretch.workspace = true
 libpd-rs.workspace = true
 rayon = "1.10"
+bytemuck = { version = "1.21", features = ["derive"] }
 log = "0.4"

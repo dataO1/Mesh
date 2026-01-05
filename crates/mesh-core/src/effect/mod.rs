@@ -385,8 +385,10 @@ impl EffectChain {
         self.knobs[knob_index].value = value;
 
         // Update all mapped parameters
-        let targets = self.knobs[knob_index].targets.clone();
-        for (effect_idx, param_idx) in targets {
+        // Iterate by index to avoid cloning the targets Vec
+        let num_targets = self.knobs[knob_index].targets.len();
+        for i in 0..num_targets {
+            let (effect_idx, param_idx) = self.knobs[knob_index].targets[i];
             if let Some(effect) = self.effects.get_mut(effect_idx) {
                 effect.set_param(param_idx, value);
             }

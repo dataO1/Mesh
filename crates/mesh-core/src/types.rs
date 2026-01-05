@@ -47,7 +47,12 @@ impl Stem {
 }
 
 /// A single stereo sample (left and right channels)
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+///
+/// Uses `#[repr(C)]` to ensure predictable memory layout: [left, right].
+/// This enables zero-copy conversion between `&[StereoSample]` and `&[f32]`
+/// (interleaved format) using bytemuck, avoiding per-frame format conversions.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct StereoSample {
     pub left: Sample,
     pub right: Sample,
@@ -205,6 +210,32 @@ impl StereoBuffer {
         self.samples.resize(new_len, StereoSample::silence());
     }
 
+    /// Truncate buffer to length without deallocating (for real-time safety)
+    ///
+    /// This is safe to call in audio callbacks - it never allocates.
+    /// Use this instead of resize() when you know the buffer has enough capacity.
+    #[inline]
+    pub fn truncate(&mut self, len: usize) {
+        self.samples.truncate(len);
+    }
+
+    /// Set the working length of a pre-allocated buffer (real-time safe)
+    ///
+    /// Panics if new_len > capacity. Use for pre-allocated buffers only.
+    /// Fills any newly exposed elements with silence.
+    #[inline]
+    pub fn set_len_from_capacity(&mut self, new_len: usize) {
+        let current_len = self.samples.len();
+        if new_len > current_len {
+            // Growing: fill new elements with silence (capacity already exists)
+            debug_assert!(new_len <= self.samples.capacity(), "set_len_from_capacity called with len > capacity");
+            self.samples.resize(new_len, StereoSample::silence());
+        } else {
+            // Shrinking: just truncate (no dealloc)
+            self.samples.truncate(new_len);
+        }
+    }
+
     /// Fill the buffer with silence
     pub fn fill_silence(&mut self) {
         self.samples.fill(StereoSample::silence());
@@ -220,6 +251,24 @@ impl StereoBuffer {
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [StereoSample] {
         &mut self.samples
+    }
+
+    /// Get a zero-copy view of samples as interleaved f32 [L, R, L, R, ...]
+    ///
+    /// This is a zero-cost operation thanks to `#[repr(C)]` on StereoSample.
+    /// Use for passing to C libraries that expect interleaved audio.
+    #[inline]
+    pub fn as_interleaved(&self) -> &[Sample] {
+        bytemuck::cast_slice(&self.samples)
+    }
+
+    /// Get a zero-copy mutable view of samples as interleaved f32 [L, R, L, R, ...]
+    ///
+    /// This is a zero-cost operation thanks to `#[repr(C)]` on StereoSample.
+    /// Use for receiving audio from C libraries that produce interleaved output.
+    #[inline]
+    pub fn as_interleaved_mut(&mut self) -> &mut [Sample] {
+        bytemuck::cast_slice_mut(&mut self.samples)
     }
 
     /// Copy samples to an interleaved output buffer [L, R, L, R, ...]
@@ -256,10 +305,27 @@ impl StereoBuffer {
         }
     }
 
-    /// Copy from another buffer
+    /// Copy from another buffer (real-time safe if pre-allocated)
+    ///
+    /// For RT safety, ensure `self` has sufficient capacity before calling.
+    /// This method will not allocate if `self.capacity() >= other.len()`.
     pub fn copy_from(&mut self, other: &StereoBuffer) {
-        self.samples.clear();
-        self.samples.extend_from_slice(&other.samples);
+        let len = other.samples.len();
+        debug_assert!(
+            len <= self.samples.capacity(),
+            "copy_from: insufficient capacity ({} < {})",
+            self.samples.capacity(),
+            len
+        );
+        // Set length to match source (truncate never deallocates, resize uses existing capacity)
+        if self.samples.len() > len {
+            self.samples.truncate(len);
+        } else if self.samples.len() < len {
+            // Fill new slots with silence (uses existing capacity, no allocation)
+            self.samples.resize(len, StereoSample::silence());
+        }
+        // Copy data
+        self.samples[..len].copy_from_slice(&other.samples[..len]);
     }
 
     /// Push a sample to the buffer

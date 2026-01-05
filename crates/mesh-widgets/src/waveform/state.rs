@@ -10,7 +10,7 @@ use mesh_core::audio_file::{dequantize_peak, CuePoint, LoadedTrack, StemBuffers,
 use mesh_core::types::SAMPLE_RATE;
 use std::sync::Arc;
 
-use super::{generate_peaks, generate_peaks_for_range, smooth_peaks, DEFAULT_WIDTH, PEAK_SMOOTHING_WINDOW};
+use super::{generate_peaks, generate_peaks_for_range, smooth_peaks_gaussian, DEFAULT_WIDTH};
 
 // =============================================================================
 // Configuration Constants
@@ -237,6 +237,13 @@ impl OverviewState {
         // Generate peak data for each stem
         self.stem_waveforms = generate_peaks(stems, DEFAULT_WIDTH);
 
+        // Apply Gaussian smoothing for smoother overview waveform
+        for stem_idx in 0..4 {
+            if self.stem_waveforms[stem_idx].len() >= 5 {
+                self.stem_waveforms[stem_idx] = smooth_peaks_gaussian(&self.stem_waveforms[stem_idx]);
+            }
+        }
+
         // Convert beat grid to normalized positions
         if duration_samples > 0 {
             self.beat_markers = beat_grid
@@ -254,7 +261,14 @@ impl OverviewState {
         let duration_samples = track.duration_samples as u64;
 
         // Generate peak data for each stem
-        let stem_waveforms = generate_peaks(&track.stems, DEFAULT_WIDTH);
+        let mut stem_waveforms = generate_peaks(&track.stems, DEFAULT_WIDTH);
+
+        // Apply Gaussian smoothing for smoother overview waveform
+        for stem_idx in 0..4 {
+            if stem_waveforms[stem_idx].len() >= 5 {
+                stem_waveforms[stem_idx] = smooth_peaks_gaussian(&stem_waveforms[stem_idx]);
+            }
+        }
 
         // Convert beat grid to normalized positions
         let beat_markers: Vec<f64> = track
@@ -503,10 +517,10 @@ impl ZoomedState {
             self.cached_peaks[0].len(), cache_start, cache_end
         );
 
-        // Apply smoothing
+        // Apply Gaussian smoothing for smoother waveform display
         for stem_idx in 0..4 {
-            if self.cached_peaks[stem_idx].len() >= PEAK_SMOOTHING_WINDOW {
-                self.cached_peaks[stem_idx] = smooth_peaks(&self.cached_peaks[stem_idx]);
+            if self.cached_peaks[stem_idx].len() >= 5 {
+                self.cached_peaks[stem_idx] = smooth_peaks_gaussian(&self.cached_peaks[stem_idx]);
             }
         }
     }
@@ -569,11 +583,16 @@ pub struct PlayerCanvasState {
     pub decks: [CombinedState; 4],
     /// Per-deck playhead positions in samples
     pub playheads: [u64; 4],
+    /// Last update timestamp for each deck (for smooth interpolation)
+    last_update_time: [std::time::Instant; 4],
+    /// Whether each deck is currently playing (for interpolation)
+    is_playing: [bool; 4],
 }
 
 impl PlayerCanvasState {
     /// Create a new player canvas state with 4 empty decks
     pub fn new() -> Self {
+        let now = std::time::Instant::now();
         Self {
             decks: [
                 CombinedState::new(),
@@ -582,6 +601,8 @@ impl PlayerCanvasState {
                 CombinedState::new(),
             ],
             playheads: [0; 4],
+            last_update_time: [now, now, now, now],
+            is_playing: [false, false, false, false],
         }
     }
 
@@ -596,15 +617,45 @@ impl PlayerCanvasState {
     }
 
     /// Set the playhead position for a deck (in samples)
-    pub fn set_playhead(&mut self, idx: usize, position: u64) {
+    ///
+    /// Also records timestamp and playing state for smooth interpolation.
+    pub fn set_playhead(&mut self, idx: usize, position: u64, is_playing: bool) {
         if idx < 4 {
             self.playheads[idx] = position;
+            self.last_update_time[idx] = std::time::Instant::now();
+            self.is_playing[idx] = is_playing;
         }
     }
 
     /// Get the playhead position for a deck (in samples)
     pub fn playhead(&self, idx: usize) -> u64 {
         self.playheads[idx]
+    }
+
+    /// Get interpolated playhead position for smooth rendering
+    ///
+    /// When the deck is playing, this estimates the current position based on
+    /// elapsed time since the last update. This eliminates visible "chunking"
+    /// in the waveform movement caused by the UI polling rate (16ms) being
+    /// different from the audio buffer rate (5.8ms).
+    ///
+    /// Formula: `position + elapsed_time * sample_rate`
+    pub fn interpolated_playhead(&self, idx: usize, sample_rate: u32) -> u64 {
+        if idx >= 4 {
+            return 0;
+        }
+
+        // If not playing, return the exact position (no interpolation needed)
+        if !self.is_playing[idx] {
+            return self.playheads[idx];
+        }
+
+        // Calculate how many samples have elapsed since last update
+        let elapsed = self.last_update_time[idx].elapsed();
+        let samples_elapsed = (elapsed.as_secs_f64() * sample_rate as f64) as u64;
+
+        // Return interpolated position, but don't exceed duration
+        self.playheads[idx].saturating_add(samples_elapsed)
     }
 }
 

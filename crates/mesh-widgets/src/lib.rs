@@ -41,6 +41,9 @@ pub use waveform::{
     DEFAULT_WIDTH, PEAK_SMOOTHING_WINDOW,
 };
 
+// Background peak computation
+pub use waveform::{PeaksComputer, PeaksComputeRequest, PeaksComputeResult};
+
 // Waveform state structures
 pub use waveform::{
     CombinedState, CueMarker, OverviewState, PlayerCanvasState, ZoomedState,

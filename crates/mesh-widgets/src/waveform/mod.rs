@@ -33,13 +33,17 @@
 
 mod canvas;
 mod peaks;
+mod peaks_computer;
 mod state;
 mod view;
 
 pub use peaks::{
-    generate_peaks, generate_peaks_for_range, generate_waveform_preview, smooth_peaks,
+    generate_peaks, generate_peaks_for_range, generate_waveform_preview,
+    smooth_peaks, smooth_peaks_gaussian,
     DEFAULT_WIDTH, PEAK_SMOOTHING_WINDOW,
 };
+
+pub use peaks_computer::{PeaksComputer, PeaksComputeRequest, PeaksComputeResult};
 
 pub use state::{
     CombinedState, OverviewState, PlayerCanvasState, ZoomedState,
