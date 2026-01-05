@@ -10,9 +10,10 @@
 //! Note: Waveform display is handled separately in the unified PlayerCanvas
 
 use iced::widget::{button, column, container, mouse_area, row, slider, text, Row, Space};
-use iced::{Center, Element, Fill};
+use iced::{Background, Center, Color, Element, Fill};
 
 use mesh_core::engine::Deck;
+use mesh_widgets::CUE_COLORS;
 use mesh_core::types::PlayState;
 
 /// Stem names for display
@@ -36,6 +37,8 @@ pub struct DeckView {
     track_name: String,
     /// Last loaded track name (to detect changes)
     last_loaded_track: String,
+    /// Hot cue positions (samples) for display - None if slot is empty
+    hot_cue_positions: [Option<u64>; 8],
     /// Stem mute states
     stem_muted: [bool; 4],
     /// Stem solo states
@@ -61,10 +64,8 @@ pub struct DeckView {
 /// Messages for deck interaction
 #[derive(Debug, Clone)]
 pub enum DeckMessage {
-    /// Play button pressed
-    Play,
-    /// Pause button pressed
-    Pause,
+    /// Toggle play/pause
+    TogglePlayPause,
     /// Cue button pressed
     CuePressed,
     /// Cue button released
@@ -125,6 +126,7 @@ impl DeckView {
             track_bpm: 0.0,
             track_name: String::new(),
             last_loaded_track: String::new(),
+            hot_cue_positions: [None; 8],
             stem_muted: [false; 4],
             stem_soloed: [false; 4],
             stem_volumes: [1.0; 4],
@@ -154,6 +156,11 @@ impl DeckView {
             self.track_name = String::new();
             self.duration_samples = 0;
             self.last_loaded_track.clear();
+        }
+
+        // Sync hot cue positions for display
+        for i in 0..8 {
+            self.hot_cue_positions[i] = deck.hot_cue(i).map(|hc| hc.position as u64);
         }
 
         // Sync stem states and effect chains
@@ -187,8 +194,13 @@ impl DeckView {
         let Some(deck) = deck else { return };
 
         match msg {
-            DeckMessage::Play => deck.play(),
-            DeckMessage::Pause => deck.pause(),
+            DeckMessage::TogglePlayPause => {
+                if deck.state() == PlayState::Playing {
+                    deck.pause();
+                } else {
+                    deck.play();
+                }
+            }
             DeckMessage::CuePressed => deck.cue_press(),
             DeckMessage::CueReleased => deck.cue_release(),
             DeckMessage::SetCue => deck.set_cue_point(),
@@ -272,43 +284,49 @@ impl DeckView {
     }
 
     /// Build the deck view
+    ///
+    /// Layout:
+    /// ┌────────────────────────────────────────────────┐
+    /// │ DECK 1 - Track name (BPM)                      │
+    /// ├─────────────────┬──────────────────────────────┤
+    /// │ STEM FX section │ 8 Hot Cue Buttons            │
+    /// │ (tabs, knobs)   │ [1][2][3][4][5][6][7][8]     │
+    /// ├─────────────────┴──────────────────────────────┤
+    /// │ Transport: [◀◀][CUE][▶][▶▶] [÷2][4][×2][LOOP] │
+    /// │ Pitch slider                                   │
+    /// └────────────────────────────────────────────────┘
     pub fn view(&self) -> Element<DeckMessage> {
+        // Top: Deck label + track info
         let deck_label = text(format!("DECK {}", self.deck_idx + 1))
             .size(16);
 
-        // Track info
         let track_info = if self.track_name.is_empty() {
             text("No track loaded").size(12)
         } else {
             text(format!("{} ({:.1} BPM)", self.track_name, self.track_bpm)).size(12)
         };
 
-        // Playback state
-        let state_text = match self.state {
-            PlayState::Playing => "▶ Playing",
-            PlayState::Stopped => "⏹ Stopped",
-            PlayState::Cueing => "● Cueing",
-        };
-        let state_display = text(state_text).size(14);
+        let header = row![deck_label, Space::new().width(10), track_info]
+            .align_y(Center);
 
-        // Transport controls
-        let transport = self.view_transport();
-
-        // Hot cues
+        // Middle row: FX section (left) | Hot cues (right)
+        let stems = self.view_stems();
         let hot_cues = self.view_hot_cues();
 
-        // Stem controls
-        let stems = self.view_stems();
+        let middle_row = row![
+            container(stems).width(Fill),
+            container(hot_cues).width(Fill),
+        ]
+        .spacing(10);
 
-        // Pitch slider
+        // Bottom: Transport + pitch
+        let transport = self.view_transport();
         let pitch_section = self.view_pitch();
 
         let content = column![
-            row![deck_label, Space::new().width(Fill), state_display].align_y(Center),
-            track_info,
+            header,
+            middle_row,
             transport,
-            hot_cues,
-            stems,
             pitch_section,
         ]
         .spacing(5)
@@ -330,18 +348,71 @@ impl DeckView {
             .on_press(DeckMessage::BeatJumpForward)
             .padding(6);
 
-        // Main transport
-        let cue_btn = button(text("CUE").size(14))
-            .on_press(DeckMessage::CuePressed)
-            .padding(8);
+        // Styled cue button - orange when cueing
+        let is_cueing = matches!(self.state, PlayState::Cueing);
+        let cue_style = if is_cueing {
+            button::Style {
+                background: Some(Background::Color(Color::from_rgb(1.0, 0.6, 0.0))),
+                text_color: Color::WHITE,
+                border: iced::Border {
+                    color: Color::WHITE,
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                ..Default::default()
+            }
+        } else {
+            button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.3, 0.3, 0.3))),
+                text_color: Color::WHITE,
+                border: iced::Border {
+                    color: Color::from_rgb(0.5, 0.5, 0.5),
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                ..Default::default()
+            }
+        };
 
-        let play_btn = button(text("▶").size(18))
-            .on_press(DeckMessage::Play)
-            .padding(8);
+        let cue_btn = mouse_area(
+            button(text("CUE").size(14))
+                .padding(8)
+                .style(move |_, _| cue_style)
+        )
+        .on_press(DeckMessage::CuePressed)
+        .on_release(DeckMessage::CueReleased);
 
-        let pause_btn = button(text("⏸").size(18))
-            .on_press(DeckMessage::Pause)
-            .padding(8);
+        // Styled play/pause toggle button - green when playing, shows pause icon
+        let is_playing = matches!(self.state, PlayState::Playing);
+        let play_icon = if is_playing { "⏸" } else { "▶" };
+        let play_style = if is_playing {
+            button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.2, 0.8, 0.2))),
+                text_color: Color::WHITE,
+                border: iced::Border {
+                    color: Color::WHITE,
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                ..Default::default()
+            }
+        } else {
+            button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.3, 0.3, 0.3))),
+                text_color: Color::WHITE,
+                border: iced::Border {
+                    color: Color::from_rgb(0.5, 0.5, 0.5),
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                ..Default::default()
+            }
+        };
+
+        let play_btn = button(text(play_icon).size(18))
+            .on_press(DeckMessage::TogglePlayPause)
+            .padding(8)
+            .style(move |_, _| play_style);
 
         // Loop controls with length display
         let loop_text = if self.loop_active { "●" } else { "○" };
@@ -364,7 +435,6 @@ impl DeckView {
             jump_back,
             cue_btn,
             play_btn,
-            pause_btn,
             jump_fwd,
             Space::new().width(10),
             loop_halve,
@@ -381,8 +451,42 @@ impl DeckView {
     fn view_hot_cues(&self) -> Element<DeckMessage> {
         let buttons: Vec<Element<DeckMessage>> = (0..8)
             .map(|i| {
-                let btn = button(text(format!("{}", i + 1)).size(12)).padding(8);
-                // Wrap in mouse_area for press/release detection
+                let is_set = self.hot_cue_positions[i].is_some();
+                let color = CUE_COLORS[i];
+
+                // Create styled button based on whether hot cue is set
+                let btn_style = if is_set {
+                    // Colored button for set cues
+                    button::Style {
+                        background: Some(Background::Color(color)),
+                        text_color: Color::WHITE,
+                        border: iced::Border {
+                            color: Color::WHITE,
+                            width: 1.0,
+                            radius: 4.0.into(),
+                        },
+                        ..Default::default()
+                    }
+                } else {
+                    // Gray button for empty slots
+                    button::Style {
+                        background: Some(Background::Color(Color::from_rgb(0.25, 0.25, 0.25))),
+                        text_color: Color::from_rgb(0.5, 0.5, 0.5),
+                        border: iced::Border {
+                            color: Color::from_rgb(0.4, 0.4, 0.4),
+                            width: 1.0,
+                            radius: 4.0.into(),
+                        },
+                        ..Default::default()
+                    }
+                };
+
+                let label = format!("{}", i + 1);
+                let btn = button(text(label).size(12))
+                    .padding(8)
+                    .style(move |_, _| btn_style);
+
+                // Wrap in mouse_area for press/release detection (CDJ-style preview)
                 mouse_area(btn)
                     .on_press(DeckMessage::HotCuePressed(i))
                     .on_release(DeckMessage::HotCueReleased(i))

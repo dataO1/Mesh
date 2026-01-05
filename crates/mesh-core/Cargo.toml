@@ -7,4 +7,5 @@ edition.workspace = true
 riff.workspace = true
 signalsmith-stretch.workspace = true
 libpd-rs.workspace = true
+rayon = "1.10"
 log = "0.4"

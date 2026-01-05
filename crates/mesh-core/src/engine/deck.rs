@@ -157,10 +157,18 @@ impl Deck {
             })
         });
 
+        // Set cue point to first beat if available, otherwise start of track
+        let first_beat = track
+            .metadata
+            .beat_grid
+            .first_beat_sample
+            .map(|b| b as usize)
+            .unwrap_or(0);
+
         self.track = Some(track);
-        self.position = 0;
+        self.position = first_beat;
         self.state = PlayState::Stopped;
-        self.cue_point = 0;
+        self.cue_point = first_beat;
         self.hot_cues = hot_cues;
         self.loop_state = LoopState::default();
         self.scratch_offset = 0.0;
@@ -262,9 +270,9 @@ impl Deck {
 
     /// CDJ-style cue button press
     ///
-    /// If stopped at cue point: start playing
-    /// If playing: set cue point at current position and stop
-    /// If stopped not at cue point: jump to cue point
+    /// If stopped: set cue point to current position and start previewing
+    /// If playing: jump to cue point and stop
+    /// If cueing: do nothing (release will handle it)
     pub fn cue_press(&mut self) {
         if self.track.is_none() {
             return;
@@ -272,18 +280,14 @@ impl Deck {
 
         match self.state {
             PlayState::Playing => {
-                // Set cue point and stop
-                self.cue_point = self.position;
+                // Jump to cue point and stop
+                self.position = self.cue_point;
                 self.state = PlayState::Stopped;
             }
             PlayState::Stopped => {
-                if self.position == self.cue_point {
-                    // At cue point, enter cueing mode (play while held)
-                    self.state = PlayState::Cueing;
-                } else {
-                    // Not at cue point, jump to it
-                    self.position = self.cue_point;
-                }
+                // Set cue to current position and start previewing
+                self.cue_point = self.position;
+                self.state = PlayState::Cueing;
             }
             PlayState::Cueing => {
                 // Already cueing, do nothing (release will stop)
@@ -390,7 +394,7 @@ impl Deck {
                     self.cue_point = pos;
                     self.hot_cue_preview_return = Some(pos);
                     self.position = pos;
-                    self.state = PlayState::Playing;
+                    self.state = PlayState::Cueing;
                 }
             }
         } else {
@@ -536,9 +540,9 @@ impl Deck {
         self.loop_state.active = false;
     }
 
-    /// Check if any stem is soloed
+    /// Check if any stem effect chain is soloed
     fn any_stem_soloed(&self) -> bool {
-        self.stems.iter().any(|s| s.soloed)
+        self.stems.iter().any(|s| s.chain.is_soloed())
     }
 
     // --- Audio processing ---
@@ -552,6 +556,12 @@ impl Deck {
             output.fill_silence();
             return;
         };
+
+        // If stopped, output silence (prevents repeating buffer buzz)
+        if self.state == PlayState::Stopped {
+            output.fill_silence();
+            return;
+        }
 
         // Fill output with processed stems
         output.fill_silence();
@@ -581,8 +591,8 @@ impl Deck {
                 }
             }
 
-            // Process through effect chain
-            stem_state.chain.process(&mut stem_buffer);
+            // Process through effect chain (pass any_soloed for solo logic)
+            stem_state.chain.process(&mut stem_buffer, any_soloed);
 
             // Add to output
             output.add_buffer(&stem_buffer);

@@ -7,6 +7,8 @@ use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
+use rayon::prelude::*;
+
 use crate::types::{StereoBuffer, StereoSample, Stem, SAMPLE_RATE};
 
 /// Maximum file size for standard WAV (4GB - 8 bytes for RIFF header)
@@ -458,13 +460,22 @@ pub struct StemBuffers {
 
 impl StemBuffers {
     /// Create new stem buffers with the given length
+    ///
+    /// Allocates all 4 stem buffers in parallel using rayon for faster loading.
     pub fn with_length(len: usize) -> Self {
-        Self {
-            vocals: StereoBuffer::silence(len),
-            drums: StereoBuffer::silence(len),
-            bass: StereoBuffer::silence(len),
-            other: StereoBuffer::silence(len),
-        }
+        // Allocate all 4 stems in parallel (each is ~107MB for a 5-min track)
+        let mut buffers: Vec<StereoBuffer> = (0..4)
+            .into_par_iter()
+            .map(|_| StereoBuffer::silence(len))
+            .collect();
+
+        // Extract buffers in order (vocals, drums, bass, other)
+        let other = buffers.pop().unwrap();
+        let bass = buffers.pop().unwrap();
+        let drums = buffers.pop().unwrap();
+        let vocals = buffers.pop().unwrap();
+
+        Self { vocals, drums, bass, other }
     }
 
     /// Get the number of samples (all stems have same length)
