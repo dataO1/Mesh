@@ -197,6 +197,13 @@ impl DeckView {
         self.state = state;
     }
 
+    /// Set the selected stem for effect chain view (UI-only state)
+    pub fn set_selected_stem(&mut self, stem_idx: usize) {
+        if stem_idx < 4 {
+            self.selected_stem = stem_idx;
+        }
+    }
+
     /// Handle a deck message
     pub fn handle_message(&mut self, msg: DeckMessage, deck: Option<&mut Deck>) {
         let Some(deck) = deck else { return };

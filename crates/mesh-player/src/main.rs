@@ -41,16 +41,17 @@ fn main() -> iced::Result {
     println!();
 
     // Try to start JACK client
-    let (jack_handle, audio_state, deck_atomics) = match start_jack_client(CLIENT_NAME) {
-        Ok((handle, state, atomics)) => {
-            println!("JACK client started successfully");
+    // Returns CommandSender (lock-free queue) instead of Arc<Mutex<SharedState>>
+    let (jack_handle, command_sender, deck_atomics) = match start_jack_client(CLIENT_NAME) {
+        Ok((handle, sender, atomics)) => {
+            println!("JACK client started successfully (lock-free command queue)");
 
             // Try to auto-connect to system outputs
             if let Err(e) = auto_connect_ports(CLIENT_NAME) {
                 eprintln!("Warning: Could not auto-connect ports: {}", e);
             }
 
-            (Some(handle), Some(state), Some(atomics))
+            (Some(handle), Some(sender), Some(atomics))
         }
         Err(e) => {
             eprintln!("Warning: Could not start JACK client: {}", e);
@@ -66,11 +67,19 @@ fn main() -> iced::Result {
     println!();
     println!("Starting Mesh DJ Player GUI...");
 
+    // Wrap command_sender in a cell so the boot closure can be Fn (required by iced)
+    // The boot function is only called once, but iced requires Fn for API consistency
+    let command_sender_cell = std::cell::RefCell::new(command_sender);
+    let deck_atomics_cell = std::cell::RefCell::new(deck_atomics);
+
     // Run the iced application using the functional API
     let result = iced::application(
         move || {
-            // Boot function: creates initial state
-            let app = MeshApp::new(audio_state.clone(), deck_atomics.clone());
+            // Boot function: creates initial state with lock-free command channel
+            // Take ownership from the cells (only called once)
+            let sender = command_sender_cell.borrow_mut().take();
+            let atomics = deck_atomics_cell.borrow_mut().take();
+            let app = MeshApp::new(sender, atomics);
             (app, Task::none())
         },
         update,

@@ -39,23 +39,22 @@
 //! ```
 
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
-use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
+use basedrop::Shared;
 use mesh_core::audio_file::StemBuffers;
 use mesh_core::types::SAMPLE_RATE;
 
 use super::peaks::{generate_peaks_for_range, smooth_peaks_gaussian};
 
 /// Request to compute peaks for a waveform view
-#[derive(Debug)]
 pub struct PeaksComputeRequest {
     /// Identifier for the request (deck_idx for player, 0 for cue editor)
     pub id: usize,
     /// Current playhead position in samples
     pub playhead: u64,
-    /// Stem audio data (shared via Arc for zero-copy)
-    pub stems: Arc<StemBuffers>,
+    /// Stem audio data (Shared for RT-safe deallocation)
+    pub stems: Shared<StemBuffers>,
     /// Width of the waveform display in pixels
     pub width: usize,
     /// Zoom level in bars (1-64)
@@ -64,6 +63,20 @@ pub struct PeaksComputeRequest {
     pub duration_samples: u64,
     /// Track BPM (for calculating samples per bar)
     pub bpm: f64,
+}
+
+impl std::fmt::Debug for PeaksComputeRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PeaksComputeRequest")
+            .field("id", &self.id)
+            .field("playhead", &self.playhead)
+            .field("stems", &format!("<Shared<StemBuffers> {} frames>", self.stems.len()))
+            .field("width", &self.width)
+            .field("zoom_bars", &self.zoom_bars)
+            .field("duration_samples", &self.duration_samples)
+            .field("bpm", &self.bpm)
+            .finish()
+    }
 }
 
 /// Result of peak computation

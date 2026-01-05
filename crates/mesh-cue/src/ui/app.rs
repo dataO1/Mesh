@@ -9,8 +9,9 @@ use crate::import::StemImporter;
 use super::waveform::{CombinedWaveformView, WaveformView, ZoomedWaveformView};
 use iced::widget::{button, center, column, container, mouse_area, opaque, row, stack, text, Space};
 use iced::{Color, Element, Length, Task, Theme};
+use basedrop::Shared;
 use mesh_core::audio_file::{BeatGrid, CuePoint, LoadedTrack, StemBuffers, TrackMetadata};
-use mesh_core::engine::Deck;
+use mesh_core::engine::{Deck, PreparedTrack};
 use mesh_core::types::{DeckId, PlayState};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -72,8 +73,8 @@ pub struct LoadedTrackState {
     /// Loaded audio data (wrapped in Arc for efficient cloning in messages)
     /// None while audio is loading asynchronously
     pub track: Option<Arc<LoadedTrack>>,
-    /// Loaded stems (available after async load completes)
-    pub stems: Option<Arc<StemBuffers>>,
+    /// Loaded stems (Shared for RT-safe deallocation)
+    pub stems: Option<Shared<StemBuffers>>,
     /// Current cue points (may be modified)
     pub cue_points: Vec<CuePoint>,
     /// Modified BPM (user override)
@@ -204,6 +205,22 @@ impl SettingsState {
     }
 }
 
+/// Wrapper for stems load result - provides Debug impl for Shared<StemBuffers>
+///
+/// basedrop::Shared doesn't implement Debug, so we need this wrapper
+/// for the Message enum to derive Debug.
+#[derive(Clone)]
+pub struct StemsLoadResult(pub Result<Shared<StemBuffers>, String>);
+
+impl std::fmt::Debug for StemsLoadResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Ok(stems) => write!(f, "StemsLoadResult(Ok(<{} frames>))", stems.len()),
+            Err(e) => write!(f, "StemsLoadResult(Err({}))", e),
+        }
+    }
+}
+
 /// Application messages
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -231,8 +248,8 @@ pub enum Message {
     LoadTrack(usize),
     /// Phase 1: Metadata loaded (fast), now show UI
     TrackMetadataLoaded(Result<(PathBuf, TrackMetadata), String>),
-    /// Phase 2: Audio stems loaded (slow), now enable playback
-    TrackStemsLoaded(Result<Arc<StemBuffers>, String>),
+    /// Phase 2: Audio stems loaded (slow), now enable playback (Shared for RT-safe drop)
+    TrackStemsLoaded(StemsLoadResult),
     /// Legacy: full track loaded (kept for compatibility)
     TrackLoaded(Result<Arc<LoadedTrack>, String>),
 
@@ -662,10 +679,10 @@ impl MeshCueApp {
                         return Task::perform(
                             async move {
                                 LoadedTrack::load_stems(&path)
-                                    .map(Arc::new)
+                                    .map(|stems| Shared::new(&mesh_core::engine::gc::gc_handle(), stems))
                                     .map_err(|e| e.to_string())
                             },
-                            Message::TrackStemsLoaded,
+                            |result| Message::TrackStemsLoaded(StemsLoadResult(result)),
                         );
                     }
                     Err(e) => {
@@ -673,7 +690,7 @@ impl MeshCueApp {
                     }
                 }
             }
-            Message::TrackStemsLoaded(result) => {
+            Message::TrackStemsLoaded(StemsLoadResult(result)) => {
                 match result {
                     Ok(stems) => {
                         log::info!("TrackStemsLoaded: Audio ready, generating waveform");
@@ -691,11 +708,11 @@ impl MeshCueApp {
 
                             state.stems = Some(stems.clone());
 
-                            // Create LoadedTrack from metadata + stems for Deck
+                            // Create LoadedTrack from metadata + stems for Deck (Shared for RT-safe drop)
                             let duration_seconds = duration_samples as f64 / mesh_core::types::SAMPLE_RATE as f64;
                             let loaded_track = LoadedTrack {
                                 path: state.path.clone(),
-                                stems: (*stems).clone(),
+                                stems: stems.clone(),
                                 metadata: TrackMetadata {
                                     bpm: Some(state.bpm),
                                     original_bpm: Some(state.bpm),
@@ -711,9 +728,10 @@ impl MeshCueApp {
                                 duration_seconds,
                             };
 
-                            // Create Deck and load track into it
+                            // Create Deck and load track into it using fast path
                             let mut deck = Deck::new(DeckId::new(0));
-                            deck.load_track(loaded_track);
+                            let prepared = PreparedTrack::prepare(loaded_track);
+                            deck.apply_prepared_track(prepared);
                             state.deck = Some(deck);
 
                             // Set up audio playback
@@ -739,8 +757,8 @@ impl MeshCueApp {
                         let beat_grid = track.metadata.beat_grid.beats.clone();
                         let duration_samples = track.duration_samples as u64;
 
-                        // Set up audio playback with the track stems
-                        let stems = Arc::new(track.stems.clone());
+                        // Set up audio playback with the track stems (zero-copy via Shared)
+                        let stems = track.stems.clone();
                         self.audio.set_track(stems.clone(), duration_samples);
 
                         // Create combined waveform with full track data
@@ -756,7 +774,7 @@ impl MeshCueApp {
                         combined_waveform.zoomed.set_duration(duration_samples);
                         combined_waveform.zoomed.compute_peaks(&stems, 0, 1600);
 
-                        // Create Deck and load track (construct a new LoadedTrack)
+                        // Create Deck and load track using fast path (Shared for RT-safe dealloc)
                         let mut deck = Deck::new(DeckId::new(0));
                         let track_for_deck = LoadedTrack {
                             path: track.path.clone(),
@@ -765,7 +783,8 @@ impl MeshCueApp {
                             duration_samples: track.duration_samples,
                             duration_seconds: track.duration_seconds,
                         };
-                        deck.load_track(track_for_deck);
+                        let prepared = PreparedTrack::prepare(track_for_deck);
+                        deck.apply_prepared_track(prepared);
 
                         self.collection.loaded_track = Some(LoadedTrackState {
                             path,

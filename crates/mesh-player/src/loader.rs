@@ -5,10 +5,11 @@
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
-use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
+use basedrop::Shared;
 use mesh_core::audio_file::{LoadedTrack, StemBuffers};
+use mesh_core::engine::PreparedTrack;
 use mesh_widgets::{CueMarker, OverviewState, ZoomedState, CUE_COLORS};
 
 /// Request to load a track in the background
@@ -21,17 +22,23 @@ pub struct TrackLoadRequest {
 }
 
 /// Result of a background track load
+///
+/// Contains a `PreparedTrack` instead of raw `LoadedTrack` so the UI thread
+/// can apply the track with minimal mutex hold time (~1ms vs 10-50ms).
 pub struct TrackLoadResult {
     /// Deck index (0-3)
     pub deck_idx: usize,
-    /// The loaded track (or error message)
-    pub result: Result<LoadedTrack, String>,
+    /// Pre-prepared track for fast application (or error message)
+    ///
+    /// The expensive work (cue label cloning, metadata parsing) is already done.
+    /// Use `engine.load_track_fast()` to apply with minimal lock time.
+    pub result: Result<PreparedTrack, String>,
     /// Pre-computed overview waveform state
     pub overview_state: OverviewState,
     /// Pre-computed zoomed waveform state
     pub zoomed_state: ZoomedState,
-    /// Stem buffers for waveform recomputation
-    pub stems: Arc<StemBuffers>,
+    /// Stem buffers for waveform recomputation (Shared for RT-safe deallocation)
+    pub stems: Shared<StemBuffers>,
 }
 
 /// Handle to the background loader thread
@@ -90,15 +97,17 @@ fn loader_thread(rx: Receiver<TrackLoadRequest>, tx: Sender<TrackLoadResult>) {
 
     while let Ok(request) = rx.recv() {
         log::info!(
-            "Loading track for deck {}: {:?}",
+            "[PERF] Loader: Starting track load for deck {}: {:?}",
             request.deck_idx,
             request.path
         );
 
-        let start = std::time::Instant::now();
+        let total_start = std::time::Instant::now();
 
         // Load the track (expensive file I/O)
+        let load_start = std::time::Instant::now();
         let result = LoadedTrack::load(&request.path);
+        log::info!("[PERF] Loader: LoadedTrack::load() took {:?}", load_start.elapsed());
 
         match result {
             Ok(track) => {
@@ -149,28 +158,38 @@ fn loader_thread(rx: Receiver<TrackLoadRequest>, tx: Sender<TrackLoadResult>) {
                 );
                 zoomed_state.set_duration(duration);
 
-                // Store stems for waveform recomputation
-                // NOTE: This clone duplicates ~107MB of audio data. A future optimization
-                // would use Arc<StemBuffers> in LoadedTrack itself so both UI and engine
-                // can share the same data. For now, the clone is acceptable because:
-                // 1. It happens in background thread (doesn't block UI or audio)
-                // 2. It's a one-time cost per track load
-                let stems = Arc::new(track.stems.clone());
+                // Share stems Shared between UI and engine (zero-copy!)
+                // LoadedTrack uses basedrop::Shared<StemBuffers> for RT-safe deallocation
+                // Clone is ~50ns, and when dropped on RT thread, deallocation is deferred to GC
+                let stems = track.stems.clone();
+                log::info!(
+                    "[PERF] Loader: stems.clone() (zero-copy, {} frames, {:.1} MB shared)",
+                    stems.len(),
+                    (stems.len() * 32) as f64 / 1_000_000.0
+                );
 
                 // Compute initial zoomed peaks (expensive but done in background)
+                let peaks_start = std::time::Instant::now();
                 zoomed_state.compute_peaks(&stems, 0, 1600);
+                log::info!("[PERF] Loader: compute_peaks() took {:?}", peaks_start.elapsed());
 
-                let elapsed = start.elapsed();
+                // Prepare track for fast application (string cloning happens here)
+                // This is the key optimization: all expensive work is done in this
+                // background thread, not while holding the engine mutex.
+                let prepare_start = std::time::Instant::now();
+                let prepared = PreparedTrack::prepare(track);
+                log::info!("[PERF] Loader: PreparedTrack::prepare() took {:?}", prepare_start.elapsed());
+
                 log::info!(
-                    "Track loaded in {:?} for deck {}",
-                    elapsed,
+                    "[PERF] Loader: Total load time: {:?} for deck {}",
+                    total_start.elapsed(),
                     request.deck_idx
                 );
 
                 // Send result back to UI thread
                 let _ = tx.send(TrackLoadResult {
                     deck_idx: request.deck_idx,
-                    result: Ok(track),
+                    result: Ok(prepared),
                     overview_state,
                     zoomed_state,
                     stems,
@@ -185,7 +204,7 @@ fn loader_thread(rx: Receiver<TrackLoadRequest>, tx: Sender<TrackLoadResult>) {
                     result: Err(e.to_string()),
                     overview_state: OverviewState::new(),
                     zoomed_state: ZoomedState::new(),
-                    stems: Arc::new(StemBuffers::with_length(0)),
+                    stems: Shared::new(&mesh_core::engine::gc::gc_handle(), StemBuffers::with_length(0)),
                 });
             }
         }

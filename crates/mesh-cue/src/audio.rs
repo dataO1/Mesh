@@ -6,6 +6,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use basedrop::Shared;
 use jack::{AudioOut, Client, ClientOptions, Control, Port, ProcessScope};
 use mesh_core::audio_file::StemBuffers;
 
@@ -17,8 +18,8 @@ pub struct AudioState {
     pub playing: Arc<AtomicBool>,
     /// Total track length in samples
     pub length: u64,
-    /// Current track stems for playback (shared with JACK thread)
-    pub stems: Arc<Mutex<Option<Arc<StemBuffers>>>>,
+    /// Current track stems for playback (Shared for RT-safe deallocation)
+    pub stems: Arc<Mutex<Option<Shared<StemBuffers>>>>,
 }
 
 impl Default for AudioState {
@@ -66,7 +67,7 @@ impl AudioState {
     }
 
     /// Set the current track for playback
-    pub fn set_track(&mut self, stems: Arc<StemBuffers>, length: u64) {
+    pub fn set_track(&mut self, stems: Shared<StemBuffers>, length: u64) {
         self.length = length;
         *self.stems.lock().unwrap() = Some(stems);
         self.seek(0);
@@ -91,8 +92,8 @@ pub struct JackProcessor {
     position: Arc<AtomicU64>,
     /// Playing flag (shared with UI)
     playing: Arc<AtomicBool>,
-    /// Track stems (shared with UI)
-    stems: Arc<Mutex<Option<Arc<StemBuffers>>>>,
+    /// Track stems (Shared for RT-safe deallocation)
+    stems: Arc<Mutex<Option<Shared<StemBuffers>>>>,
     /// Track length in samples
     length: Arc<AtomicU64>,
 }

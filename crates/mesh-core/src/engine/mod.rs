@@ -56,11 +56,14 @@
 //! | Pre-allocated memory | ~1.5MB | Buffers for 4 decks |
 //! | Max latency compensation | 4410 samples | 100ms @ 44.1kHz |
 
+mod command;
 mod deck;
 mod engine;
+pub mod gc;
 mod latency;
 mod mixer;
 
+pub use command::*;
 pub use deck::*;
 pub use engine::*;
 pub use latency::*;

@@ -35,6 +35,17 @@ impl Stem {
     /// Get all stems in order
     pub const ALL: [Stem; NUM_STEMS] = [Stem::Vocals, Stem::Drums, Stem::Bass, Stem::Other];
 
+    /// Convert from index (0-3) to Stem
+    pub fn from_index(idx: usize) -> Option<Self> {
+        match idx {
+            0 => Some(Stem::Vocals),
+            1 => Some(Stem::Drums),
+            2 => Some(Stem::Bass),
+            3 => Some(Stem::Other),
+            _ => None,
+        }
+    }
+
     /// Get the name of this stem
     pub fn name(&self) -> &'static str {
         match self {

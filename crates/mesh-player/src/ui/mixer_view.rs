@@ -89,7 +89,8 @@ impl MixerView {
         self.cue_mix = mixer.cue_mix();
     }
 
-    /// Handle a mixer message
+    /// Handle a mixer message (legacy method for direct mixer access)
+    #[allow(dead_code)]
     pub fn handle_message(&mut self, msg: MixerMessage, mixer: &mut Mixer) {
         match msg {
             MixerMessage::SetChannelVolume(ch, vol) => {
@@ -140,6 +141,51 @@ impl MixerView {
                 self.cue_mix = mix;
                 mixer.set_cue_mix(mix);
             }
+        }
+    }
+
+    /// Handle messages that only affect local UI state (no engine commands needed)
+    pub fn handle_local_message(&mut self, msg: MixerMessage) {
+        match msg {
+            MixerMessage::SetChannelVolume(ch, vol) => {
+                self.channel_volumes[ch] = vol;
+            }
+            MixerMessage::SetChannelFilter(ch, pos) => {
+                self.channel_filters[ch] = pos;
+            }
+            MixerMessage::SetChannelEqHi(ch, val) => {
+                self.channel_eq_hi[ch] = val;
+            }
+            MixerMessage::SetChannelEqMid(ch, val) => {
+                self.channel_eq_mid[ch] = val;
+            }
+            MixerMessage::SetChannelEqLo(ch, val) => {
+                self.channel_eq_lo[ch] = val;
+            }
+            MixerMessage::ToggleChannelCue(ch) => {
+                self.channel_cue[ch] = !self.channel_cue[ch];
+            }
+            MixerMessage::SetMasterVolume(vol) => {
+                self.master_volume = vol;
+            }
+            MixerMessage::SetCueVolume(vol) => {
+                self.cue_volume = vol;
+            }
+            MixerMessage::SetCueMix(mix) => {
+                self.cue_mix = mix;
+            }
+        }
+    }
+
+    /// Get cue enabled state for a channel
+    pub fn cue_enabled(&self, ch: usize) -> bool {
+        self.channel_cue.get(ch).copied().unwrap_or(false)
+    }
+
+    /// Set cue enabled state for a channel (local UI state only)
+    pub fn set_cue_enabled(&mut self, ch: usize, enabled: bool) {
+        if ch < 4 {
+            self.channel_cue[ch] = enabled;
         }
     }
 

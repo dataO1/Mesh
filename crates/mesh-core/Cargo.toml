@@ -4,9 +4,11 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+rtrb.workspace = true
 riff.workspace = true
 signalsmith-stretch.workspace = true
 libpd-rs.workspace = true
 rayon = "1.10"
+basedrop = "0.1"  # RT-safe deferred deallocation for audio
 bytemuck = { version = "1.21", features = ["derive"] }
 log = "0.4"
