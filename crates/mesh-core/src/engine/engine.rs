@@ -302,6 +302,11 @@ impl AudioEngine {
                         d.adjust_loop_length(direction);
                     }
                 }
+                EngineCommand::ToggleSlip { deck } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        d.toggle_slip();
+                    }
+                }
 
                 // Beat Jump
                 EngineCommand::BeatJumpForward { deck } => {

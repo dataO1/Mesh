@@ -20,11 +20,12 @@ pub fn view(state: &LoadedTrackState) -> Element<Message> {
     let waveforms = view_combined_waveform(&state.combined_waveform, state.interpolated_playhead_position());
 
     // Layout: player controls on left, waveforms take remaining width
+    // Align to top (Start) so content doesn't float in the middle
     let main_row = row![player_controls, waveforms]
         .spacing(10)
-        .align_y(Alignment::Center);
+        .align_y(Alignment::Start);
 
-    // Hot cue buttons (single row of 8)
+    // Hot cue buttons (single row of 8) - directly under waveforms
     let cue_panel = cue_editor::view(state);
 
     let save_section = view_save_section(state);
@@ -32,11 +33,14 @@ pub fn view(state: &LoadedTrackState) -> Element<Message> {
     container(
         column![
             header,
+            Space::new().height(8.0),  // Explicit spacing after header
             main_row,
-            cue_panel,
+            cue_panel,  // NO spacing - directly under waveforms
+            // Spacer pushes save section to bottom
+            Space::new().height(Length::Fill),
             save_section,
-        ]
-        .spacing(15),
+        ],
+        // No column spacing - use explicit Space widgets for control
     )
     .padding(15)
     .width(Length::Fill)
@@ -68,6 +72,15 @@ fn view_header(state: &LoadedTrackState) -> Element<Message> {
         .on_input(Message::SetKey)
         .width(Length::Fixed(60.0));
 
+    // Beat grid nudge controls
+    let grid_label = text("Grid:").size(14);
+    let nudge_left = button(text("<<").size(12))
+        .padding([4, 8])
+        .on_press(Message::NudgeBeatGridLeft);
+    let nudge_right = button(text(">>").size(12))
+        .padding([4, 8])
+        .on_press(Message::NudgeBeatGridRight);
+
     let modified_indicator = if state.modified {
         text("*").size(20)
     } else {
@@ -82,6 +95,9 @@ fn view_header(state: &LoadedTrackState) -> Element<Message> {
         bpm_input,
         key_label,
         key_input,
+        grid_label,
+        nudge_left,
+        nudge_right,
     ]
     .spacing(10)
     .align_y(Alignment::Center)

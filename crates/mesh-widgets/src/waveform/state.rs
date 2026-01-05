@@ -20,7 +20,8 @@ use super::{generate_peaks, generate_peaks_for_range, smooth_peaks_gaussian, DEF
 pub const WAVEFORM_HEIGHT: f32 = 35.0;
 
 /// Zoomed waveform height in pixels (detailed, larger)
-pub const ZOOMED_WAVEFORM_HEIGHT: f32 = 100.0;
+/// Set to 120px to better match transport control section height (~160px total with gap + overview)
+pub const ZOOMED_WAVEFORM_HEIGHT: f32 = 120.0;
 
 /// Gap between zoomed and overview waveforms in combined view
 pub const COMBINED_WAVEFORM_GAP: f32 = 6.0;
@@ -369,6 +370,8 @@ pub struct ZoomedState {
     pub bpm: f64,
     /// Whether the view has valid data
     pub has_track: bool,
+    /// Loop region (start, end) as normalized positions (0.0 to 1.0)
+    pub loop_region: Option<(f64, f64)>,
 }
 
 impl ZoomedState {
@@ -384,6 +387,7 @@ impl ZoomedState {
             duration_samples: 0,
             bpm: 120.0,
             has_track: false,
+            loop_region: None,
         }
     }
 
@@ -399,6 +403,7 @@ impl ZoomedState {
             duration_samples: 0,
             bpm: if bpm > 0.0 { bpm } else { 120.0 },
             has_track: true,
+            loop_region: None,
         }
     }
 
@@ -415,6 +420,13 @@ impl ZoomedState {
     /// Update beat grid
     pub fn set_beat_grid(&mut self, beat_grid: Vec<u64>) {
         self.beat_grid = beat_grid;
+    }
+
+    /// Set the loop region (normalized positions 0.0 to 1.0)
+    ///
+    /// Pass `None` to clear the loop region.
+    pub fn set_loop_region(&mut self, region: Option<(f64, f64)>) {
+        self.loop_region = region;
     }
 
     /// Update cue markers

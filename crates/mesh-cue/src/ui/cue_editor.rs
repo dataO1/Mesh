@@ -9,18 +9,7 @@ use super::app::{LoadedTrackState, Message};
 use iced::widget::{button, container, mouse_area, row, text};
 use iced::{Alignment, Color, Element, Length, Theme};
 use mesh_core::types::SAMPLE_RATE;
-
-/// Cue button colors (matching waveform.rs CUE_COLORS)
-const CUE_COLORS: [Color; 8] = [
-    Color::from_rgb(1.0, 0.3, 0.3), // Red
-    Color::from_rgb(1.0, 0.6, 0.0), // Orange
-    Color::from_rgb(1.0, 1.0, 0.0), // Yellow
-    Color::from_rgb(0.3, 1.0, 0.3), // Green
-    Color::from_rgb(0.0, 0.8, 0.8), // Cyan
-    Color::from_rgb(0.3, 0.3, 1.0), // Blue
-    Color::from_rgb(0.8, 0.3, 0.8), // Purple
-    Color::from_rgb(1.0, 0.5, 0.8), // Pink
-];
+use mesh_widgets::CUE_COLORS;
 
 /// Render the hot cue buttons (single row of 8 action buttons)
 pub fn view(state: &LoadedTrackState) -> Element<Message> {
@@ -34,8 +23,9 @@ pub fn view(state: &LoadedTrackState) -> Element<Message> {
 
     let hot_cue_row = row(buttons).spacing(8).align_y(Alignment::Center);
 
+    // No vertical padding - cue buttons should be directly under waveforms
     container(hot_cue_row)
-        .padding(10)
+        .padding([0, 10])  // [vertical, horizontal] - no top/bottom padding
         .width(Length::Fill)
         .center_x(Length::Fill)
         .into()
@@ -56,7 +46,7 @@ fn create_hot_cue_button(
     };
 
     let btn = button(text(label_text).size(11).center())
-        .width(Length::Fixed(60.0))
+        .width(Length::Fill)  // Dynamic width to match waveform
         .height(Length::Fixed(44.0));
 
     // If cue exists, use CDJ-style preview (hold to play, release to return)

@@ -278,6 +278,10 @@ pub struct Deck {
     stretch_ratio: f64,
     /// Position to return to after hot cue preview (None = not previewing)
     hot_cue_preview_return: Option<usize>,
+    /// Beat slip mode enabled (loop exit returns to where playhead would have been)
+    slip_enabled: bool,
+    /// Slip position: where the playhead would be if not looping (updated during loop)
+    slip_position: Option<usize>,
     /// Lock-free state for UI access (position, play state, loop state)
     /// The UI can read these atomics without acquiring the engine mutex
     atomics: Arc<DeckAtomics>,
@@ -304,6 +308,8 @@ impl Deck {
             beat_jump_size: 4, // Default 4 beats
             stretch_ratio: 1.0, // No stretching by default
             hot_cue_preview_return: None,
+            slip_enabled: false,
+            slip_position: None,
             atomics: Arc::new(DeckAtomics::new()),
             stem_buffers: std::array::from_fn(|_| StereoBuffer::silence(MAX_BUFFER_SIZE)),
         }
@@ -468,6 +474,17 @@ impl Deck {
         }
     }
 
+    /// Update the beat grid (call after UI nudge operations)
+    ///
+    /// This syncs the deck's internal beat grid with UI changes,
+    /// ensuring beat jump operations use the updated grid.
+    pub fn set_beat_grid(&mut self, beats: Vec<u64>) {
+        if let Some(ref mut track) = self.track {
+            track.metadata.beat_grid.first_beat_sample = beats.first().copied();
+            track.metadata.beat_grid.beats = beats;
+        }
+    }
+
     // --- Playback controls ---
 
     /// Start/resume playback
@@ -537,6 +554,15 @@ impl Deck {
     /// Set the cue point at the current position (snapped to nearest beat)
     pub fn set_cue_point(&mut self) {
         self.cue_point = self.snap_to_beat(self.position);
+        self.sync_cue_atomic();
+    }
+
+    /// Set cue point at specific position without snapping
+    ///
+    /// Used when the caller has already snapped to a beat grid
+    /// (e.g., when the UI has a more up-to-date beat grid than the Deck)
+    pub fn set_cue_point_position(&mut self, position: usize) {
+        self.cue_point = position;
         self.sync_cue_atomic();
     }
 
@@ -669,6 +695,14 @@ impl Deck {
         }
     }
 
+    /// Clear the hot cue preview return position
+    ///
+    /// Call this when transitioning to Play during a preview to prevent
+    /// the release handler from jumping back to the cue position.
+    pub fn clear_preview_return(&mut self) {
+        self.hot_cue_preview_return = None;
+    }
+
     /// Get a hot cue by slot index
     pub fn hot_cue(&self, slot: usize) -> Option<&HotCue> {
         self.hot_cues.get(slot).and_then(|c| c.as_ref())
@@ -679,17 +713,58 @@ impl Deck {
         self.shift_held = held;
     }
 
+    // --- Slip mode controls ---
+
+    /// Toggle slip mode on/off
+    pub fn toggle_slip(&mut self) {
+        self.slip_enabled = !self.slip_enabled;
+        // Clear slip position when disabling
+        if !self.slip_enabled {
+            self.slip_position = None;
+        }
+    }
+
+    /// Set slip mode enabled state
+    pub fn set_slip_enabled(&mut self, enabled: bool) {
+        self.slip_enabled = enabled;
+        if !enabled {
+            self.slip_position = None;
+        }
+    }
+
+    /// Check if slip mode is enabled
+    pub fn slip_enabled(&self) -> bool {
+        self.slip_enabled
+    }
+
     // --- Loop controls ---
 
     /// Toggle loop on/off
+    ///
+    /// When slip mode is enabled:
+    /// - Entering loop: captures current position as slip position
+    /// - Exiting loop: jumps to where playhead would have been (slip position)
     pub fn toggle_loop(&mut self) {
         if self.track.is_none() {
             return;
         }
 
         if self.loop_state.active {
+            // Exiting loop
             self.loop_state.active = false;
+            // If slip mode is enabled, return to slip position
+            if self.slip_enabled {
+                if let Some(slip_pos) = self.slip_position.take() {
+                    self.position = slip_pos;
+                    self.sync_position_atomic();
+                }
+            }
         } else {
+            // Entering loop
+            // If slip mode is enabled, capture current position
+            if self.slip_enabled {
+                self.slip_position = Some(self.position);
+            }
             // Set loop start at current position
             let length = self.loop_state.length_samples(self.samples_per_beat());
             self.loop_state.start = self.position;
@@ -765,6 +840,20 @@ impl Deck {
             let snapped_pos = self.snap_to_beat(self.position);
             self.hot_cues[slot] = Some(HotCue {
                 position: snapped_pos,
+                label: format!("Cue {}", slot + 1),
+                color: None,
+            });
+        }
+    }
+
+    /// Set hot cue at a specific position (no snapping)
+    ///
+    /// Used when the caller has already snapped to a beat grid
+    /// (e.g., when the UI has a more up-to-date beat grid than the Deck)
+    pub fn set_hot_cue_position(&mut self, slot: usize, position: usize) {
+        if slot < HOT_CUE_SLOTS {
+            self.hot_cues[slot] = Some(HotCue {
+                position,
                 label: format!("Cue {}", slot + 1),
                 color: None,
             });
@@ -924,6 +1013,14 @@ impl Deck {
         // This ensures playback speed matches the stretch ratio
         if self.state == PlayState::Playing || self.state == PlayState::Cueing {
             self.position += samples_to_read;
+
+            // Update slip position if slip mode is enabled and we're looping
+            // This tracks where the playhead WOULD be if we weren't looping
+            if self.slip_enabled && self.loop_state.active {
+                if let Some(ref mut slip_pos) = self.slip_position {
+                    *slip_pos += samples_to_read;
+                }
+            }
 
             // Handle looping
             if self.loop_state.active && self.position >= self.loop_state.end {

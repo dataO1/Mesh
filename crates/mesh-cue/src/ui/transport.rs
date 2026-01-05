@@ -58,9 +58,9 @@ pub fn view(state: &LoadedTrackState) -> Element<Message> {
 
     // CDJ-style cue button
     // Press only works when stopped, but release always works to stop preview
-    let cue_btn = button(text("[Cue]").size(14))
+    let cue_btn = button(text("[Cue]").size(18))
         .width(Length::Fixed(104.0))
-        .height(Length::Fixed(36.0));
+        .height(Length::Fixed(60.0));  // Match Play button height
 
     let cue: Element<Message> = if controls_enabled {
         let mut area = mouse_area(cue_btn).on_release(Message::CueReleased);
@@ -93,6 +93,7 @@ pub fn view(state: &LoadedTrackState) -> Element<Message> {
     };
 
     // Vertical layout: beat jump selector → jump buttons → cue → play/pause
+    // No center_y - align to top with parent row's align_y(Start)
     container(
         column![
             beat_jump_selector,
@@ -105,7 +106,5 @@ pub fn view(state: &LoadedTrackState) -> Element<Message> {
     )
     .padding(8)
     .width(Length::Fixed(120.0))
-    .height(Length::Fill)
-    .center_y(Length::Fill)
     .into()
 }

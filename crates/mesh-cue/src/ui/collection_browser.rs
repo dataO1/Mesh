@@ -34,7 +34,11 @@ fn view_browser(state: &CollectionState) -> Element<Message> {
             .iter()
             .enumerate()
             .map(|(i, track)| {
-                let is_selected = state.selected_track == Some(i);
+                // Highlight currently loaded track (not just selected)
+                let is_loaded = state.loaded_track
+                    .as_ref()
+                    .map(|lt| lt.path == track.path)
+                    .unwrap_or(false);
 
                 let info = format!(
                     "{} - {:.1} BPM - {}",
@@ -43,9 +47,10 @@ fn view_browser(state: &CollectionState) -> Element<Message> {
                     track.key
                 );
 
+                // Single click loads the track directly
                 button(text(info).size(14))
-                    .on_press(Message::SelectTrack(i))
-                    .style(if is_selected { button::primary } else { button::secondary })
+                    .on_press(Message::LoadTrack(i))
+                    .style(if is_loaded { button::primary } else { button::secondary })
                     .width(Length::Fill)
                     .into()
             })
@@ -56,11 +61,9 @@ fn view_browser(state: &CollectionState) -> Element<Message> {
             .into()
     };
 
-    let load_btn = button(text("Load Selected"))
-        .on_press_maybe(state.selected_track.map(Message::LoadTrack));
-
+    // Removed "Load Selected" button - single click loads directly
     container(
-        column![title, path_text, refresh_btn, track_list, load_btn,].spacing(10),
+        column![title, path_text, refresh_btn, track_list].spacing(10),
     )
     .padding(15)
     .width(Length::Fixed(300.0))
@@ -77,7 +80,7 @@ fn view_editor(state: &CollectionState) -> Element<Message> {
             column![
                 text("No track loaded").size(18),
                 Space::new().height(20.0),
-                text("Double-click a track in the collection to load it for editing.").size(14),
+                text("Click a track in the collection to load it for editing.").size(14),
             ]
             .spacing(10),
         )

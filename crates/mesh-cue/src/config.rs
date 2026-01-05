@@ -41,12 +41,15 @@ impl Default for Config {
 pub struct DisplayConfig {
     /// Default beat grid density for overview waveform (4, 8, 16, or 32 bars)
     pub grid_bars: u32,
+    /// Zoomed waveform zoom level (1-64 bars)
+    pub zoom_bars: u32,
 }
 
 impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
-            grid_bars: 8, // Default to 8 bars between grid lines
+            grid_bars: 8,  // Default to 8 bars between grid lines
+            zoom_bars: 8,  // Default zoomed waveform to 8 bars
         }
     }
 }

@@ -200,9 +200,15 @@ impl MeshApp {
                                 self.player_canvas_state.decks[i]
                                     .overview
                                     .set_loop_region(Some((start, end)));
+                                self.player_canvas_state.decks[i]
+                                    .zoomed
+                                    .set_loop_region(Some((start, end)));
                             } else {
                                 self.player_canvas_state.decks[i]
                                     .overview
+                                    .set_loop_region(None);
+                                self.player_canvas_state.decks[i]
+                                    .zoomed
                                     .set_loop_region(None);
                             }
                         }
@@ -272,6 +278,9 @@ impl MeshApp {
                             }
                             ToggleLoop => {
                                 let _ = sender.send(EngineCommand::ToggleLoop { deck: deck_idx });
+                            }
+                            ToggleSlip => {
+                                let _ = sender.send(EngineCommand::ToggleSlip { deck: deck_idx });
                             }
                             SetLoopLength(_beats) => {
                                 // Loop length is handled via adjust commands

@@ -107,6 +107,24 @@ pub struct CuePoint {
     pub color: Option<String>,
 }
 
+/// A saved loop in the audio file
+///
+/// Loops are stored separately from hot cues, allowing up to 8 loop slots.
+/// Each loop has a start and end position, with optional label and color.
+#[derive(Debug, Clone)]
+pub struct SavedLoop {
+    /// Loop slot index (0-7 for 8 loop buttons)
+    pub index: u8,
+    /// Loop start sample position
+    pub start_sample: u64,
+    /// Loop end sample position
+    pub end_sample: u64,
+    /// Label for the loop (e.g., "Verse", "Chorus")
+    pub label: String,
+    /// Color as hex string
+    pub color: Option<String>,
+}
+
 /// Beat grid information
 #[derive(Debug, Clone)]
 pub struct BeatGrid {
@@ -192,6 +210,8 @@ pub struct TrackMetadata {
     pub beat_grid: BeatGrid,
     /// Cue points (up to 8)
     pub cue_points: Vec<CuePoint>,
+    /// Saved loops (up to 8)
+    pub saved_loops: Vec<SavedLoop>,
     /// Pre-computed waveform preview (from wvfm chunk)
     pub waveform_preview: Option<WaveformPreview>,
 }
@@ -357,6 +377,97 @@ pub fn serialize_wvfm_chunk(preview: &WaveformPreview) -> Vec<u8> {
     }
 
     bytes
+}
+
+/// Parse a mlop (mesh loops) chunk into a Vec<SavedLoop>
+///
+/// Format:
+/// - num_loops (4 bytes, u32 LE)
+/// - For each loop:
+///   - index (1 byte)
+///   - start_sample (8 bytes, u64 LE)
+///   - end_sample (8 bytes, u64 LE)
+///   - label_len (2 bytes, u16 LE)
+///   - label (label_len bytes, UTF-8)
+///   - color_len (2 bytes, u16 LE)
+///   - color (color_len bytes, UTF-8, or empty if 0)
+pub fn parse_mlop_chunk(data: &[u8]) -> Result<Vec<SavedLoop>, AudioFileError> {
+    if data.len() < 4 {
+        return Err(AudioFileError::Corrupted("mlop chunk too small".into()));
+    }
+
+    let num_loops = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+    let mut loops = Vec::with_capacity(num_loops);
+    let mut pos = 4;
+
+    for _ in 0..num_loops {
+        // index (1 byte)
+        if pos >= data.len() {
+            break;
+        }
+        let index = data[pos];
+        pos += 1;
+
+        // start_sample (8 bytes)
+        if pos + 8 > data.len() {
+            break;
+        }
+        let start_sample = u64::from_le_bytes([
+            data[pos], data[pos + 1], data[pos + 2], data[pos + 3],
+            data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7],
+        ]);
+        pos += 8;
+
+        // end_sample (8 bytes)
+        if pos + 8 > data.len() {
+            break;
+        }
+        let end_sample = u64::from_le_bytes([
+            data[pos], data[pos + 1], data[pos + 2], data[pos + 3],
+            data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7],
+        ]);
+        pos += 8;
+
+        // label_len (2 bytes)
+        if pos + 2 > data.len() {
+            break;
+        }
+        let label_len = u16::from_le_bytes([data[pos], data[pos + 1]]) as usize;
+        pos += 2;
+
+        // label
+        if pos + label_len > data.len() {
+            break;
+        }
+        let label = String::from_utf8_lossy(&data[pos..pos + label_len]).to_string();
+        pos += label_len;
+
+        // color_len (2 bytes)
+        if pos + 2 > data.len() {
+            break;
+        }
+        let color_len = u16::from_le_bytes([data[pos], data[pos + 1]]) as usize;
+        pos += 2;
+
+        // color
+        let color = if color_len > 0 && pos + color_len <= data.len() {
+            let c = String::from_utf8_lossy(&data[pos..pos + color_len]).to_string();
+            pos += color_len;
+            Some(c)
+        } else {
+            None
+        };
+
+        loops.push(SavedLoop {
+            index,
+            start_sample,
+            end_sample,
+            label,
+            color,
+        });
+    }
+
+    Ok(loops)
 }
 
 impl TrackMetadata {
@@ -985,6 +1096,7 @@ pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFile
     let mut metadata = TrackMetadata::default();
     let mut cue_points: Vec<(u32, u64)> = Vec::new(); // id, position
     let mut bext_description: Option<String> = None;
+    let mut saved_loops: Vec<SavedLoop> = Vec::new();
 
     // Track format info for duration calculation
     let mut channels: u16 = 8;
@@ -1138,6 +1250,22 @@ pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFile
                     }
                 }
             }
+            b"mlop" => {
+                // Mesh saved loops chunk
+                let mut mlop_data = vec![0u8; chunk_size as usize];
+                reader.read_exact(&mut mlop_data)
+                    .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+
+                match parse_mlop_chunk(&mlop_data) {
+                    Ok(loops) => {
+                        log::debug!("Loaded {} saved loops", loops.len());
+                        saved_loops = loops;
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to parse mlop chunk: {}", e);
+                    }
+                }
+            }
             _ => {
                 // Skip unknown chunks
                 reader.seek(SeekFrom::Current(chunk_size as i64))
@@ -1190,6 +1318,9 @@ pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFile
 
     // Attach waveform preview if present
     metadata.waveform_preview = waveform_preview;
+
+    // Attach saved loops if present
+    metadata.saved_loops = saved_loops;
 
     Ok(metadata)
 }

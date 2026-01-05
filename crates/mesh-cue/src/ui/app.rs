@@ -6,6 +6,7 @@ use crate::collection::Collection;
 use crate::config::{self, Config};
 use crate::export;
 use crate::import::StemImporter;
+use crate::keybindings::{self, KeybindingsConfig};
 use super::waveform::{CombinedWaveformView, WaveformView, ZoomedWaveformView};
 use iced::widget::{button, center, column, container, mouse_area, opaque, row, stack, text, Space};
 use iced::{Color, Element, Length, Task, Theme};
@@ -77,6 +78,8 @@ pub struct LoadedTrackState {
     pub stems: Option<Shared<StemBuffers>>,
     /// Current cue points (may be modified)
     pub cue_points: Vec<CuePoint>,
+    /// Saved loops (up to 8 loop slots)
+    pub saved_loops: Vec<mesh_core::audio_file::SavedLoop>,
     /// Modified BPM (user override)
     pub bpm: f64,
     /// Modified key (user override)
@@ -297,6 +300,12 @@ pub enum Message {
     // Misc
     Tick,
 
+    // Beat Grid
+    /// Nudge beat grid left (earlier) by small increment
+    NudgeBeatGridLeft,
+    /// Nudge beat grid right (later) by small increment
+    NudgeBeatGridRight,
+
     // Settings
     OpenSettings,
     CloseSettings,
@@ -306,6 +315,13 @@ pub enum Message {
     UpdateSettingsGridBars(u32),
     SaveSettings,
     SaveSettingsComplete(Result<(), String>),
+
+    // Keyboard
+    /// Key pressed with modifiers (for keybindings and shift tracking)
+    /// The bool indicates if this is a repeat event (key held down)
+    KeyPressed(iced::keyboard::Key, iced::keyboard::Modifiers, bool),
+    /// Key released (for hot cue preview release)
+    KeyReleased(iced::keyboard::Key, iced::keyboard::Modifiers),
 }
 
 /// Main application
@@ -327,6 +343,14 @@ pub struct MeshCueApp {
     config_path: PathBuf,
     /// Settings modal state
     settings: SettingsState,
+    /// Whether shift key is currently held (for shift+click actions)
+    shift_held: bool,
+    /// Keybindings configuration
+    keybindings: KeybindingsConfig,
+    /// Hot cue keys currently pressed (for filtering key repeat)
+    pressed_hot_cue_keys: std::collections::HashSet<usize>,
+    /// Main cue key currently pressed
+    pressed_cue_key: bool,
 }
 
 impl MeshCueApp {
@@ -340,6 +364,11 @@ impl MeshCueApp {
             config.analysis.bpm.min_tempo,
             config.analysis.bpm.max_tempo
         );
+
+        // Load keybindings
+        let keybindings_path = keybindings::default_keybindings_path();
+        let keybindings = keybindings::load_keybindings(&keybindings_path);
+        log::info!("Loaded keybindings from {:?}", keybindings_path);
 
         let settings = SettingsState::from_config(&config);
         let audio = AudioState::default();
@@ -365,6 +394,10 @@ impl MeshCueApp {
             config: Arc::new(config),
             config_path,
             settings,
+            shift_held: false,
+            keybindings,
+            pressed_hot_cue_keys: std::collections::HashSet::new(),
+            pressed_cue_key: false,
         };
 
         // Initial collection scan
@@ -378,14 +411,73 @@ impl MeshCueApp {
         String::from("mesh-cue - Track Preparation")
     }
 
+    /// Save current track if it has been modified
+    ///
+    /// Returns a Task to perform the save asynchronously, or None if no save is needed.
+    fn save_current_track_if_modified(&mut self) -> Option<Task<Message>> {
+        if let Some(ref mut state) = self.collection.loaded_track {
+            if state.modified {
+                if let Some(ref stems) = state.stems {
+                    let path = state.path.clone();
+                    let stems = stems.clone();
+                    let cue_points = state.cue_points.clone();
+                    let saved_loops = state.saved_loops.clone();
+                    let metadata = TrackMetadata {
+                        bpm: Some(state.bpm),
+                        original_bpm: Some(state.bpm),
+                        key: Some(state.key.clone()),
+                        beat_grid: BeatGrid {
+                            beats: state.beat_grid.clone(),
+                            first_beat_sample: state.beat_grid.first().copied(),
+                        },
+                        cue_points: cue_points.clone(),
+                        saved_loops: saved_loops.clone(),
+                        waveform_preview: None,
+                    };
+
+                    // Mark as saved to prevent re-saving
+                    state.modified = false;
+
+                    log::info!("Auto-saving track: {:?}", path);
+                    return Some(Task::perform(
+                        async move {
+                            export::save_track_metadata(&path, &stems, &metadata, &cue_points, &saved_loops)
+                                .map_err(|e| e.to_string())
+                        },
+                        Message::SaveComplete,
+                    ));
+                }
+            }
+        }
+        None
+    }
+
     /// Update state based on message
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             // Navigation
             Message::SwitchView(view) => {
+                // Auto-save when switching away from Collection view
+                let save_task = if self.current_view == View::Collection && view != View::Collection {
+                    self.save_current_track_if_modified()
+                } else {
+                    None
+                };
+
                 self.current_view = view;
-                if view == View::Collection {
-                    return Task::perform(async {}, |_| Message::RefreshCollection);
+
+                let refresh_task = if view == View::Collection {
+                    Some(Task::perform(async {}, |_| Message::RefreshCollection))
+                } else {
+                    None
+                };
+
+                // Return combined tasks if any
+                match (save_task, refresh_task) {
+                    (Some(save), Some(refresh)) => return Task::batch([save, refresh]),
+                    (Some(save), None) => return save,
+                    (None, Some(refresh)) => return refresh,
+                    (None, None) => {}
                 }
             }
 
@@ -539,6 +631,7 @@ impl MeshCueApp {
                                 first_beat_sample: analysis.beat_grid.first().copied(),
                             },
                             cue_points: Vec::new(), // No cue points initially
+                            saved_loops: Vec::new(), // No saved loops initially
                             waveform_preview: None, // Generated during export
                         };
                         log::info!(
@@ -553,8 +646,8 @@ impl MeshCueApp {
                         let temp_path = temp_dir.join(format!("{}.wav", &track_name));
                         log::info!("Step 3: Exporting to temp file: {:?}", temp_path);
 
-                        // Export to temp file
-                        match crate::export::export_stem_file(&temp_path, &buffers, &metadata, &[]) {
+                        // Export to temp file (no saved loops for newly analyzed tracks)
+                        match crate::export::export_stem_file(&temp_path, &buffers, &metadata, &[], &[]) {
                             Ok(()) => log::info!("Export to temp file succeeded"),
                             Err(e) => {
                                 log::error!("Failed to export to temp file: {}", e);
@@ -623,11 +716,14 @@ impl MeshCueApp {
                 self.collection.selected_track = Some(index);
             }
             Message::LoadTrack(index) => {
+                // Auto-save current track if modified before loading new one
+                let save_task = self.save_current_track_if_modified();
+
                 // Phase 1: Load metadata first (fast, ~50ms)
                 if let Some(track) = self.collection.collection.tracks().get(index) {
                     let path = track.path.clone();
                     log::info!("LoadTrack: Starting two-phase load for {:?}", path);
-                    return Task::perform(
+                    let load_task = Task::perform(
                         async move {
                             LoadedTrack::load_metadata_only(&path)
                                 .map(|metadata| (path, metadata))
@@ -635,6 +731,12 @@ impl MeshCueApp {
                         },
                         Message::TrackMetadataLoaded,
                     );
+
+                    // Chain save and load tasks
+                    if let Some(save) = save_task {
+                        return Task::batch([save, load_task]);
+                    }
+                    return load_task;
                 }
             }
             Message::TrackMetadataLoaded(result) => {
@@ -664,6 +766,7 @@ impl MeshCueApp {
                             track: None,
                             stems: None,
                             cue_points,
+                            saved_loops: metadata.saved_loops.clone(),
                             bpm,
                             key,
                             beat_grid,
@@ -704,6 +807,8 @@ impl MeshCueApp {
                             // Initialize zoomed waveform with stem data
                             state.combined_waveform.zoomed.set_duration(duration_samples);
                             state.combined_waveform.zoomed.update_cue_markers(&state.cue_points);
+                            // Apply zoom level from config
+                            state.combined_waveform.zoomed.set_zoom(self.config.display.zoom_bars);
                             state.combined_waveform.zoomed.compute_peaks(&stems, 0, 1600);
 
                             state.stems = Some(stems.clone());
@@ -722,6 +827,7 @@ impl MeshCueApp {
                                         first_beat_sample: state.beat_grid.first().copied(),
                                     },
                                     cue_points: state.cue_points.clone(),
+                                    saved_loops: state.saved_loops.clone(),
                                     waveform_preview: None, // Using live-generated waveform
                                 },
                                 duration_samples: duration_samples as usize,
@@ -788,9 +894,10 @@ impl MeshCueApp {
 
                         self.collection.loaded_track = Some(LoadedTrackState {
                             path,
-                            track: Some(track),
+                            track: Some(track.clone()),
                             stems: Some(stems),
                             cue_points,
+                            saved_loops: track.metadata.saved_loops.clone(),
                             bpm,
                             key,
                             beat_grid,
@@ -812,6 +919,20 @@ impl MeshCueApp {
             Message::SetBpm(bpm) => {
                 if let Some(ref mut state) = self.collection.loaded_track {
                     state.bpm = bpm;
+
+                    // Regenerate beat grid keeping current first beat position
+                    // This allows: nudge grid to align → change BPM → grid recalculates
+                    if !state.beat_grid.is_empty() && state.duration_samples > 0 {
+                        let first_beat = state.beat_grid[0];
+                        state.beat_grid = regenerate_beat_grid(first_beat, bpm, state.duration_samples);
+                        update_waveform_beat_grid(state);
+
+                        // Sync beat grid to deck so beat jump uses updated grid
+                        if let Some(ref mut deck) = state.deck {
+                            deck.set_beat_grid(state.beat_grid.clone());
+                        }
+                    }
+
                     state.modified = true;
                 }
             }
@@ -862,6 +983,7 @@ impl MeshCueApp {
 
                     let path = state.path.clone();
                     let cue_points = state.cue_points.clone();
+                    let saved_loops = state.saved_loops.clone();
 
                     // Build updated metadata from edited fields
                     let metadata = TrackMetadata {
@@ -873,12 +995,13 @@ impl MeshCueApp {
                             first_beat_sample: state.beat_grid.first().copied(),
                         },
                         cue_points: cue_points.clone(),
+                        saved_loops: saved_loops.clone(),
                         waveform_preview: None, // Will be regenerated during save
                     };
 
                     return Task::perform(
                         async move {
-                            export::save_track_metadata(&path, &stems, &metadata, &cue_points)
+                            export::save_track_metadata(&path, &stems, &metadata, &cue_points, &saved_loops)
                                 .map_err(|e| e.to_string())
                         },
                         Message::SaveComplete,
@@ -903,10 +1026,14 @@ impl MeshCueApp {
             Message::Play => {
                 if let Some(ref mut state) = self.collection.loaded_track {
                     if let Some(ref mut deck) = state.deck {
+                        // Clear preview return so release doesn't jump back
+                        deck.clear_preview_return();
                         deck.play();
                         self.audio.play();
                     }
                 }
+                // Clear pressed hot cue keys to prevent spurious release events
+                self.pressed_hot_cue_keys.clear();
             }
             Message::Pause => {
                 if let Some(ref mut state) = self.collection.loaded_track {
@@ -940,7 +1067,7 @@ impl MeshCueApp {
             }
             Message::Cue => {
                 // CDJ-style cue (only works when stopped):
-                // - Set cue point at current position (snapped to beat)
+                // - Set cue point at current position (snapped to beat using UI's grid)
                 // - Start preview playback
                 if let Some(ref mut state) = self.collection.loaded_track {
                     // Only act when stopped (not playing)
@@ -950,17 +1077,21 @@ impl MeshCueApp {
 
                     let mut update_pos = None;
                     if let Some(ref mut deck) = state.deck {
-                        deck.set_cue_point(); // Snaps to nearest beat
-                        let cue_pos = deck.cue_point();
-                        deck.seek(cue_pos);
+                        // Snap to nearest beat using UI's current beat grid (not Deck's stale copy)
+                        let current_pos = deck.position();
+                        let snapped_pos = snap_to_nearest_beat(current_pos as u64, &state.beat_grid) as usize;
+
+                        // Seek to snapped position and set as cue point
+                        deck.seek(snapped_pos);
+                        deck.set_cue_point_position(snapped_pos);
                         deck.play(); // Start preview
-                        self.audio.seek(cue_pos as u64);
+                        self.audio.seek(snapped_pos as u64);
                         self.audio.play();
-                        update_pos = Some(cue_pos as u64);
+                        update_pos = Some(snapped_pos as u64);
 
                         // Update waveform and cue marker
                         if self.audio.length > 0 {
-                            let normalized = cue_pos as f64 / self.audio.length as f64;
+                            let normalized = snapped_pos as f64 / self.audio.length as f64;
                             state.combined_waveform.overview.set_position(normalized);
                             state.combined_waveform.overview.set_cue_position(Some(normalized));
                         }
@@ -1049,23 +1180,45 @@ impl MeshCueApp {
                 }
             }
             Message::SetCuePoint(index) => {
-                // Use Deck's set_hot_cue which snaps to beat
+                // Snap to beat using UI's current beat grid (not Deck's stale copy)
                 if let Some(ref mut state) = self.collection.loaded_track {
-                    if let Some(ref mut deck) = state.deck {
-                        deck.set_hot_cue(index);
-                        // Get the snapped position from deck's hot cue
-                        if let Some(hot_cue) = deck.hot_cue(index) {
-                            let snapped_pos = hot_cue.position as u64;
-                            // Sync to cue_points (metadata)
-                            state.cue_points.retain(|c| c.index != index as u8);
-                            state.cue_points.push(CuePoint {
-                                index: index as u8,
-                                sample_position: snapped_pos,
-                                label: format!("Cue {}", index + 1),
-                                color: None,
-                            });
-                            state.cue_points.sort_by_key(|c| c.index);
+                    let current_pos = state.playhead_position();
+                    let snapped_pos = snap_to_nearest_beat(current_pos, &state.beat_grid);
+
+                    // Check if a cue already exists near this position (within ~100ms tolerance)
+                    // This prevents duplicate cues at the same beat position
+                    const DUPLICATE_TOLERANCE: u64 = 4410; // ~100ms at 44.1kHz
+                    let duplicate_exists = state.cue_points.iter().any(|c| {
+                        // Skip checking the slot we're about to overwrite
+                        if c.index == index as u8 {
+                            return false;
                         }
+                        (c.sample_position as i64 - snapped_pos as i64).unsigned_abs()
+                            < DUPLICATE_TOLERANCE
+                    });
+
+                    if duplicate_exists {
+                        log::debug!(
+                            "Skipping hot cue {} at position {}: duplicate exists nearby",
+                            index + 1,
+                            snapped_pos
+                        );
+                        return Task::none();
+                    }
+
+                    // Store in cue_points (metadata)
+                    state.cue_points.retain(|c| c.index != index as u8);
+                    state.cue_points.push(CuePoint {
+                        index: index as u8,
+                        sample_position: snapped_pos,
+                        label: format!("Cue {}", index + 1),
+                        color: None,
+                    });
+                    state.cue_points.sort_by_key(|c| c.index);
+
+                    // Update deck's hot cue (without re-snapping)
+                    if let Some(ref mut deck) = state.deck {
+                        deck.set_hot_cue_position(index, snapped_pos as usize);
                     }
 
                     // Update waveform markers (both overview and zoomed)
@@ -1086,6 +1239,11 @@ impl MeshCueApp {
                 }
             }
             Message::HotCuePressed(index) => {
+                // Shift+click = delete cue point
+                if self.shift_held {
+                    return self.update(Message::ClearCuePoint(index));
+                }
+
                 // CDJ-style hot cue press (cue point handling done by Deck internally)
                 if let Some(ref mut state) = self.collection.loaded_track {
                     let mut update_pos = None;
@@ -1096,7 +1254,8 @@ impl MeshCueApp {
                         let cue_pos = deck.cue_point(); // Deck sets this internally
 
                         self.audio.seek(pos);
-                        if deck.state() == PlayState::Playing {
+                        // Start audio if playing OR if we just entered Cueing (preview) mode
+                        if deck.state() == PlayState::Playing || deck.state() == PlayState::Cueing {
                             self.audio.play();
                         }
                         update_pos = Some(pos);
@@ -1119,10 +1278,15 @@ impl MeshCueApp {
                 if let Some(ref mut state) = self.collection.loaded_track {
                     let mut update_pos = None;
                     if let Some(ref mut deck) = state.deck {
+                        // Check if we were in preview mode BEFORE releasing
+                        let was_previewing = deck.state() == PlayState::Cueing;
+
                         deck.hot_cue_release();
                         let pos = deck.position();
                         self.audio.seek(pos);
-                        if deck.state() == PlayState::Stopped {
+
+                        // Always pause audio when releasing from preview mode
+                        if was_previewing {
                             self.audio.pause();
                         }
                         update_pos = Some(pos);
@@ -1172,6 +1336,27 @@ impl MeshCueApp {
                     if let Some(ref stems) = state.stems {
                         state.combined_waveform.zoomed.compute_peaks(stems, state.playhead_position(), 1600);
                     }
+                }
+                // Persist zoom level to config (fire-and-forget save)
+                let mut new_config = (*self.config).clone();
+                new_config.display.zoom_bars = bars;
+                self.config = Arc::new(new_config.clone());
+                let config_path = self.config_path.clone();
+                return Task::perform(
+                    async move { config::save_config(&new_config, &config_path).ok() },
+                    |_| Message::Tick, // Ignore result
+                );
+            }
+
+            // Beat Grid Nudge
+            Message::NudgeBeatGridLeft => {
+                if let Some(ref mut state) = self.collection.loaded_track {
+                    nudge_beat_grid(state, -BEAT_GRID_NUDGE_SAMPLES);
+                }
+            }
+            Message::NudgeBeatGridRight => {
+                if let Some(ref mut state) = self.collection.loaded_track {
+                    nudge_beat_grid(state, BEAT_GRID_NUDGE_SAMPLES);
                 }
             }
 
@@ -1245,6 +1430,153 @@ impl MeshCueApp {
                     }
                 }
             }
+            Message::KeyPressed(key, modifiers, repeat) => {
+                // Track shift key state for shift+click actions
+                self.shift_held = modifiers.shift();
+
+                // Only handle keybindings in Collection view with a loaded track
+                if self.current_view != View::Collection {
+                    return Task::none();
+                }
+                if self.collection.loaded_track.is_none() {
+                    return Task::none();
+                }
+
+                // Convert key + modifiers to string for matching
+                let key_str = keybindings::key_to_string(&key, &modifiers);
+                if key_str.is_empty() {
+                    return Task::none();
+                }
+
+                let bindings = &self.keybindings.editing;
+
+                // Play/Pause (ignore repeat)
+                if !repeat && bindings.play_pause.iter().any(|b| b == &key_str) {
+                    let is_playing = self.collection.loaded_track.as_ref()
+                        .map(|s| s.is_playing()).unwrap_or(false);
+                    return self.update(if is_playing { Message::Pause } else { Message::Play });
+                }
+
+                // Beat jump forward/backward (allow repeat for continuous jumping)
+                if bindings.beat_jump_forward.iter().any(|b| b == &key_str) {
+                    let jump_size = self.collection.loaded_track.as_ref()
+                        .map(|s| s.beat_jump_size()).unwrap_or(4);
+                    return self.update(Message::BeatJump(jump_size));
+                }
+                if bindings.beat_jump_backward.iter().any(|b| b == &key_str) {
+                    let jump_size = self.collection.loaded_track.as_ref()
+                        .map(|s| s.beat_jump_size()).unwrap_or(4);
+                    return self.update(Message::BeatJump(-jump_size));
+                }
+
+                // Beat grid nudge (allow repeat)
+                if bindings.grid_nudge_forward.iter().any(|b| b == &key_str) {
+                    return self.update(Message::NudgeBeatGridRight);
+                }
+                if bindings.grid_nudge_backward.iter().any(|b| b == &key_str) {
+                    return self.update(Message::NudgeBeatGridLeft);
+                }
+
+                // Increase/decrease beat jump size (ignore repeat)
+                if !repeat && bindings.increase_jump_size.iter().any(|b| b == &key_str) {
+                    let current = self.collection.loaded_track.as_ref()
+                        .map(|s| s.beat_jump_size()).unwrap_or(4);
+                    let new_size = match current {
+                        1 => 4,
+                        4 => 8,
+                        8 => 16,
+                        16 => 32,
+                        _ => 32,
+                    };
+                    return self.update(Message::SetBeatJumpSize(new_size));
+                }
+                if !repeat && bindings.decrease_jump_size.iter().any(|b| b == &key_str) {
+                    let current = self.collection.loaded_track.as_ref()
+                        .map(|s| s.beat_jump_size()).unwrap_or(4);
+                    let new_size = match current {
+                        32 => 16,
+                        16 => 8,
+                        8 => 4,
+                        4 => 1,
+                        _ => 1,
+                    };
+                    return self.update(Message::SetBeatJumpSize(new_size));
+                }
+
+                // Delete hot cues (ignore repeat)
+                if !repeat {
+                    if let Some(index) = bindings.match_delete_hot_cue(&key_str) {
+                        return self.update(Message::ClearCuePoint(index));
+                    }
+                }
+
+                // Main cue button (filter repeat - only trigger on first press)
+                if bindings.match_cue_button(&key_str) {
+                    if !repeat && !self.pressed_cue_key {
+                        self.pressed_cue_key = true;
+                        return self.update(Message::Cue);
+                    }
+                    return Task::none();
+                }
+
+                // Hot cue trigger/set (filter repeat - only trigger on first press)
+                if let Some(index) = bindings.match_hot_cue(&key_str) {
+                    // Skip if repeat and key already pressed
+                    if repeat && self.pressed_hot_cue_keys.contains(&index) {
+                        return Task::none();
+                    }
+
+                    // Track this key as pressed
+                    self.pressed_hot_cue_keys.insert(index);
+
+                    // If cue exists, trigger it; otherwise set it
+                    let cue_exists = self.collection.loaded_track.as_ref()
+                        .map(|s| s.cue_points.iter().any(|c| c.index == index as u8))
+                        .unwrap_or(false);
+                    if cue_exists {
+                        return self.update(Message::HotCuePressed(index));
+                    } else {
+                        return self.update(Message::SetCuePoint(index));
+                    }
+                }
+            }
+            Message::KeyReleased(key, modifiers) => {
+                // Only handle in Collection view with a loaded track
+                if self.current_view != View::Collection {
+                    return Task::none();
+                }
+                if self.collection.loaded_track.is_none() {
+                    return Task::none();
+                }
+
+                // Convert key to string for matching
+                let key_str = keybindings::key_to_string(&key, &modifiers);
+                if key_str.is_empty() {
+                    return Task::none();
+                }
+
+                let bindings = &self.keybindings.editing;
+
+                // Main cue button release - stop preview, return to cue point
+                if bindings.match_cue_button(&key_str) && self.pressed_cue_key {
+                    self.pressed_cue_key = false;
+                    return self.update(Message::CueReleased);
+                }
+
+                // Hot cue release - dispatch HotCueReleased to stop preview
+                if let Some(index) = bindings.match_hot_cue(&key_str) {
+                    // Only release if this key was tracked as pressed
+                    if self.pressed_hot_cue_keys.remove(&index) {
+                        // Only send release if cue exists (preview was started)
+                        let cue_exists = self.collection.loaded_track.as_ref()
+                            .map(|s| s.cue_points.iter().any(|c| c.index == index as u8))
+                            .unwrap_or(false);
+                        if cue_exists {
+                            return self.update(Message::HotCueReleased(index));
+                        }
+                    }
+                }
+            }
         }
 
         Task::none()
@@ -1295,10 +1627,23 @@ impl MeshCueApp {
         Theme::Dark
     }
 
-    /// Subscription for periodic UI updates during playback
+    /// Subscription for periodic UI updates during playback and keyboard events
     pub fn subscription(&self) -> iced::Subscription<Message> {
-        use iced::time;
+        use iced::{keyboard, time};
         use std::time::Duration;
+
+        // Keyboard events for keybindings and modifier tracking
+        let keyboard_sub = keyboard::listen().map(|event| {
+            match event {
+                keyboard::Event::KeyPressed { key, modifiers, repeat, .. } => {
+                    Message::KeyPressed(key, modifiers, repeat)
+                }
+                keyboard::Event::KeyReleased { key, modifiers, .. } => {
+                    Message::KeyReleased(key, modifiers)
+                }
+                _ => Message::Tick, // Ignore ModifiersChanged
+            }
+        });
 
         // Update waveform playhead 60 times per second when playing
         let is_playing = self
@@ -1307,10 +1652,14 @@ impl MeshCueApp {
             .as_ref()
             .map(|t| t.is_playing())
             .unwrap_or(false);
+
         if is_playing || self.audio.is_playing() {
-            time::every(Duration::from_millis(16)).map(|_| Message::Tick)
+            iced::Subscription::batch([
+                keyboard_sub,
+                time::every(Duration::from_millis(16)).map(|_| Message::Tick),
+            ])
         } else {
-            iced::Subscription::none()
+            keyboard_sub
         }
     }
 
@@ -1400,4 +1749,97 @@ fn parse_track_name_from_filename(path: &std::path::Path) -> Option<String> {
     } else {
         Some(name.to_string())
     }
+}
+
+/// Nudge amount in samples (~10ms at 44.1kHz for fine-grained control)
+const BEAT_GRID_NUDGE_SAMPLES: i64 = 441;
+
+/// Sample rate constant (matches mesh_core::types::SAMPLE_RATE)
+const SAMPLE_RATE_F64: f64 = 44100.0;
+
+/// Nudge the beat grid by a delta amount of samples
+///
+/// The grid is shifted by moving the first beat position, then regenerating
+/// all subsequent beats. If the first beat would go negative or beyond one bar,
+/// it wraps around to stay within a single bar range.
+fn nudge_beat_grid(state: &mut LoadedTrackState, delta_samples: i64) {
+    if state.beat_grid.is_empty() || state.bpm <= 0.0 {
+        return;
+    }
+
+    // Calculate samples per bar (4 beats)
+    let samples_per_beat = (SAMPLE_RATE_F64 * 60.0 / state.bpm) as i64;
+    let samples_per_bar = samples_per_beat * 4;
+
+    // Get current first beat
+    let first_beat = state.beat_grid[0] as i64;
+
+    // Apply delta
+    let mut new_first_beat = first_beat + delta_samples;
+
+    // Wrap around one bar if out of bounds
+    if new_first_beat < 0 {
+        new_first_beat += samples_per_bar;
+    } else if new_first_beat >= samples_per_bar {
+        new_first_beat -= samples_per_bar;
+    }
+
+    // Regenerate beat grid from new first beat
+    let new_first_beat = new_first_beat as u64;
+    state.beat_grid = regenerate_beat_grid(new_first_beat, state.bpm, state.duration_samples);
+
+    // Update waveform displays
+    update_waveform_beat_grid(state);
+
+    // Sync beat grid to deck so beat jump uses updated grid
+    if let Some(ref mut deck) = state.deck {
+        deck.set_beat_grid(state.beat_grid.clone());
+    }
+
+    // Mark as modified for save
+    state.modified = true;
+}
+
+/// Regenerate beat grid from a first beat position, BPM, and track duration
+fn regenerate_beat_grid(first_beat: u64, bpm: f64, duration_samples: u64) -> Vec<u64> {
+    if bpm <= 0.0 || duration_samples == 0 {
+        return Vec::new();
+    }
+
+    let samples_per_beat = (SAMPLE_RATE_F64 * 60.0 / bpm) as u64;
+    let mut beats = Vec::new();
+    let mut pos = first_beat;
+
+    while pos < duration_samples {
+        beats.push(pos);
+        pos += samples_per_beat;
+    }
+
+    beats
+}
+
+/// Update waveform beat grid markers after grid modification
+fn update_waveform_beat_grid(state: &mut LoadedTrackState) {
+    // Update zoomed view (uses sample positions directly)
+    state.combined_waveform.zoomed.set_beat_grid(state.beat_grid.clone());
+
+    // Update overview (uses normalized positions 0.0-1.0)
+    if state.duration_samples > 0 {
+        state.combined_waveform.overview.beat_markers = state.beat_grid
+            .iter()
+            .map(|&pos| pos as f64 / state.duration_samples as f64)
+            .collect();
+    }
+}
+
+/// Snap a position to the nearest beat in the beat grid
+fn snap_to_nearest_beat(position: u64, beat_grid: &[u64]) -> u64 {
+    if beat_grid.is_empty() {
+        return position;
+    }
+    beat_grid
+        .iter()
+        .min_by_key(|&&b| (b as i64 - position as i64).unsigned_abs())
+        .copied()
+        .unwrap_or(position)
 }

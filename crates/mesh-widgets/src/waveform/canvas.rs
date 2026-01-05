@@ -817,6 +817,61 @@ fn draw_zoomed_section(
     let view_samples = (view_end - view_start) as f64;
 
     if view_samples > 0.0 {
+        // Draw loop region (behind everything else)
+        if let Some((loop_start_norm, loop_end_norm)) = zoomed.loop_region {
+            // Convert normalized positions to sample positions
+            let loop_start_sample = (loop_start_norm * zoomed.duration_samples as f64) as u64;
+            let loop_end_sample = (loop_end_norm * zoomed.duration_samples as f64) as u64;
+
+            // Only draw if loop overlaps the visible window
+            if loop_end_sample > view_start && loop_start_sample < view_end {
+                // Calculate x positions (clamp to visible window)
+                let start_x = if loop_start_sample <= view_start {
+                    0.0
+                } else {
+                    ((loop_start_sample - view_start) as f64 / view_samples * width as f64) as f32
+                };
+                let end_x = if loop_end_sample >= view_end {
+                    width
+                } else {
+                    ((loop_end_sample - view_start) as f64 / view_samples * width as f64) as f32
+                };
+
+                let loop_width = end_x - start_x;
+                if loop_width > 0.0 {
+                    // Semi-transparent green fill
+                    frame.fill_rectangle(
+                        Point::new(start_x, 0.0),
+                        Size::new(loop_width, zoomed_height),
+                        Color::from_rgba(0.2, 0.8, 0.2, 0.25),
+                    );
+                    // Draw loop boundaries (only if visible)
+                    if loop_start_sample > view_start && loop_start_sample < view_end {
+                        frame.stroke(
+                            &Path::line(
+                                Point::new(start_x, 0.0),
+                                Point::new(start_x, zoomed_height),
+                            ),
+                            Stroke::default()
+                                .with_color(Color::from_rgba(0.2, 0.9, 0.2, 0.8))
+                                .with_width(2.0),
+                        );
+                    }
+                    if loop_end_sample > view_start && loop_end_sample < view_end {
+                        frame.stroke(
+                            &Path::line(
+                                Point::new(end_x, 0.0),
+                                Point::new(end_x, zoomed_height),
+                            ),
+                            Stroke::default()
+                                .with_color(Color::from_rgba(0.2, 0.9, 0.2, 0.8))
+                                .with_width(2.0),
+                        );
+                    }
+                }
+            }
+        }
+
         // Draw beat markers
         draw_beat_markers_zoomed(frame, &zoomed.beat_grid, view_start, view_end, view_samples, width, zoomed_height);
 
@@ -1279,6 +1334,50 @@ fn draw_zoomed_at(
     let view_samples = (view_end - view_start) as f64;
 
     if view_samples > 0.0 {
+        // Draw loop region (behind everything else)
+        if let Some((loop_start_norm, loop_end_norm)) = zoomed.loop_region {
+            let loop_start_sample = (loop_start_norm * zoomed.duration_samples as f64) as u64;
+            let loop_end_sample = (loop_end_norm * zoomed.duration_samples as f64) as u64;
+
+            if loop_end_sample > view_start && loop_start_sample < view_end {
+                let start_x = if loop_start_sample <= view_start {
+                    x
+                } else {
+                    x + ((loop_start_sample - view_start) as f64 / view_samples * width as f64) as f32
+                };
+                let end_x = if loop_end_sample >= view_end {
+                    x + width
+                } else {
+                    x + ((loop_end_sample - view_start) as f64 / view_samples * width as f64) as f32
+                };
+
+                let loop_width = end_x - start_x;
+                if loop_width > 0.0 {
+                    frame.fill_rectangle(
+                        Point::new(start_x, y),
+                        Size::new(loop_width, height),
+                        Color::from_rgba(0.2, 0.8, 0.2, 0.25),
+                    );
+                    if loop_start_sample > view_start && loop_start_sample < view_end {
+                        frame.stroke(
+                            &Path::line(Point::new(start_x, y), Point::new(start_x, y + height)),
+                            Stroke::default()
+                                .with_color(Color::from_rgba(0.2, 0.9, 0.2, 0.8))
+                                .with_width(2.0),
+                        );
+                    }
+                    if loop_end_sample > view_start && loop_end_sample < view_end {
+                        frame.stroke(
+                            &Path::line(Point::new(end_x, y), Point::new(end_x, y + height)),
+                            Stroke::default()
+                                .with_color(Color::from_rgba(0.2, 0.9, 0.2, 0.8))
+                                .with_width(2.0),
+                        );
+                    }
+                }
+            }
+        }
+
         // Draw beat markers
         for &beat_sample in &zoomed.beat_grid {
             if beat_sample >= view_start && beat_sample <= view_end {

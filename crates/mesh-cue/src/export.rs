@@ -7,7 +7,7 @@
 //! - Cue points in cue/adtl chunks
 
 use anyhow::{Context, Result};
-use mesh_core::audio_file::{serialize_wvfm_chunk, CuePoint, StemBuffers, TrackMetadata};
+use mesh_core::audio_file::{serialize_wvfm_chunk, CuePoint, SavedLoop, StemBuffers, TrackMetadata};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -20,11 +20,13 @@ pub fn export_stem_file(
     buffers: &StemBuffers,
     metadata: &TrackMetadata,
     cue_points: &[CuePoint],
+    saved_loops: &[SavedLoop],
 ) -> Result<()> {
     log::info!("export_stem_file: Starting export to {:?}", path);
     log::info!("  Buffer length: {} samples", buffers.len());
     log::info!("  Metadata: BPM={:?}, Key={:?}", metadata.bpm, metadata.key);
     log::info!("  Cue points: {}", cue_points.len());
+    log::info!("  Saved loops: {}", saved_loops.len());
 
     let file = File::create(path)
         .with_context(|| format!("Failed to create output file: {:?}", path))?;
@@ -49,6 +51,9 @@ pub fn export_stem_file(
     let cue_chunk_data = build_cue_chunk(cue_points);
     let adtl_chunk_data = build_adtl_chunk(cue_points);
 
+    // Build saved loops chunk (custom "mlop" chunk)
+    let mlop_chunk_data = build_mlop_chunk(saved_loops);
+
     // Generate waveform preview and build wvfm chunk
     log::info!("  Generating waveform preview...");
     let waveform_preview = generate_waveform_preview(buffers);
@@ -59,11 +64,12 @@ pub fn export_stem_file(
     log::info!("  Waveform preview: {} bytes (padding: {})", wvfm_data.len(), wvfm_padding);
 
     // Calculate total file size
-    // RIFF header (12) + fmt chunk (24) + bext chunk + cue chunk + adtl chunk + wvfm chunk + data chunk (8 + data)
+    // RIFF header (12) + fmt chunk (24) + bext chunk + cue chunk + adtl chunk + mlop chunk + wvfm chunk + data chunk (8 + data)
     let chunks_size = 24 // fmt chunk
         + bext_size
         + cue_chunk_data.len() as u32
         + adtl_chunk_data.len() as u32
+        + mlop_chunk_data.len() as u32
         + wvfm_chunk_size
         + 8 + data_size; // data chunk header + data
 
@@ -95,6 +101,11 @@ pub fn export_stem_file(
     // Write adtl LIST chunk (if there are cue points)
     if !adtl_chunk_data.is_empty() {
         writer.write_all(&adtl_chunk_data)?;
+    }
+
+    // Write mlop chunk (saved loops - custom mesh chunk)
+    if !mlop_chunk_data.is_empty() {
+        writer.write_all(&mlop_chunk_data)?;
     }
 
     // Write wvfm chunk (waveform preview for instant display)
@@ -260,6 +271,66 @@ fn build_adtl_chunk(cue_points: &[CuePoint]) -> Vec<u8> {
     data
 }
 
+/// Build "mlop" (mesh loops) custom chunk for saved loops
+///
+/// Format:
+/// - "mlop" (4 bytes) - chunk ID
+/// - size (4 bytes) - chunk data size
+/// - num_loops (4 bytes) - number of loops
+/// - For each loop:
+///   - index (1 byte)
+///   - start_sample (8 bytes, u64 LE)
+///   - end_sample (8 bytes, u64 LE)
+///   - label_len (2 bytes, u16 LE)
+///   - label (label_len bytes, UTF-8)
+///   - color_len (2 bytes, u16 LE)
+///   - color (color_len bytes, UTF-8, or 0 if none)
+fn build_mlop_chunk(saved_loops: &[SavedLoop]) -> Vec<u8> {
+    if saved_loops.is_empty() {
+        return Vec::new();
+    }
+
+    let mut data = Vec::new();
+
+    // Build loop data first to calculate size
+    let mut loop_data = Vec::new();
+
+    // Number of loops
+    loop_data.extend_from_slice(&(saved_loops.len() as u32).to_le_bytes());
+
+    for loop_slot in saved_loops {
+        // Index
+        loop_data.push(loop_slot.index);
+        // Start/end samples
+        loop_data.extend_from_slice(&loop_slot.start_sample.to_le_bytes());
+        loop_data.extend_from_slice(&loop_slot.end_sample.to_le_bytes());
+        // Label
+        let label_bytes = loop_slot.label.as_bytes();
+        loop_data.extend_from_slice(&(label_bytes.len() as u16).to_le_bytes());
+        loop_data.extend_from_slice(label_bytes);
+        // Color
+        if let Some(ref color) = loop_slot.color {
+            let color_bytes = color.as_bytes();
+            loop_data.extend_from_slice(&(color_bytes.len() as u16).to_le_bytes());
+            loop_data.extend_from_slice(color_bytes);
+        } else {
+            loop_data.extend_from_slice(&0u16.to_le_bytes());
+        }
+    }
+
+    // Pad to word boundary if needed
+    if loop_data.len() % 2 != 0 {
+        loop_data.push(0);
+    }
+
+    // Write chunk header + data
+    data.extend_from_slice(b"mlop");
+    data.extend_from_slice(&(loop_data.len() as u32).to_le_bytes());
+    data.extend_from_slice(&loop_data);
+
+    data
+}
+
 /// Format color for output (use existing color or default)
 fn format_color(color: &Option<String>) -> &str {
     color.as_deref().unwrap_or("#FF5500")
@@ -283,10 +354,11 @@ pub fn save_track_metadata(
     stems: &StemBuffers,
     metadata: &TrackMetadata,
     cue_points: &[CuePoint],
+    saved_loops: &[SavedLoop],
 ) -> Result<()> {
     log::info!("save_track_metadata: Saving to {:?}", path);
     // Reuse the export function - it writes the complete file with updated metadata
-    export_stem_file(path, stems, metadata, cue_points)
+    export_stem_file(path, stems, metadata, cue_points, saved_loops)
 }
 
 #[cfg(test)]

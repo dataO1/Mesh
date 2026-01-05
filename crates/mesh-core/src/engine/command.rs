@@ -106,6 +106,8 @@ pub enum EngineCommand {
     LoopOff { deck: usize },
     /// Adjust loop length (positive = longer, negative = shorter)
     AdjustLoopLength { deck: usize, direction: i32 },
+    /// Toggle slip mode (loop exit returns to where playhead would have been)
+    ToggleSlip { deck: usize },
 
     // ─────────────────────────────────────────────────────────────
     // Beat Jump

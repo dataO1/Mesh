@@ -14,4 +14,5 @@ pub mod collection;
 pub mod config;
 pub mod export;
 pub mod import;
+pub mod keybindings;
 pub mod ui;

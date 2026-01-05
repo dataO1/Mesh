@@ -51,6 +51,8 @@ pub struct DeckView {
     loop_active: bool,
     /// Current loop length in beats
     loop_length_beats: f32,
+    /// Slip mode enabled
+    slip_enabled: bool,
     /// Currently selected stem for effect chain view (0-3)
     selected_stem: usize,
     /// Effect chain knob values per stem (8 knobs x 4 stems)
@@ -86,6 +88,8 @@ pub enum DeckMessage {
     Sync,
     /// Toggle loop
     ToggleLoop,
+    /// Toggle slip mode
+    ToggleSlip,
     /// Set loop length (beats)
     SetLoopLength(u32),
     /// Halve loop length
@@ -133,6 +137,7 @@ impl DeckView {
             pitch: 0.0,
             loop_active: false,
             loop_length_beats: 4.0, // Default 4 beats
+            slip_enabled: false,
             selected_stem: 0,       // Start with Vocals selected
             stem_knobs: [[0.0; 8]; 4],
             stem_effect_names: Default::default(),
@@ -145,6 +150,7 @@ impl DeckView {
         self.state = deck.state();
         self.position = deck.position();
         self.loop_active = deck.loop_state().active;
+        self.slip_enabled = deck.slip_enabled();
 
         if let Some(track) = deck.track() {
             self.track_bpm = track.bpm();
@@ -229,6 +235,9 @@ impl DeckView {
             }
             DeckMessage::ToggleLoop => {
                 deck.toggle_loop();
+            }
+            DeckMessage::ToggleSlip => {
+                deck.toggle_slip();
             }
             DeckMessage::SetLoopLength(beats) => {
                 // Find index for this beat length and set it
@@ -435,6 +444,12 @@ impl DeckView {
             .on_press(DeckMessage::ToggleLoop)
             .padding(6);
 
+        // Slip button (shows state)
+        let slip_text = if self.slip_enabled { "SLIP ●" } else { "SLIP" };
+        let slip_btn = button(text(slip_text).size(12))
+            .on_press(DeckMessage::ToggleSlip)
+            .padding(6);
+
         let loop_halve = button(text("÷2").size(10))
             .on_press(DeckMessage::LoopHalve)
             .padding(4);
@@ -456,6 +471,7 @@ impl DeckView {
             loop_length,
             loop_double,
             loop_btn,
+            slip_btn,
         ]
         .spacing(3)
         .align_y(Center)
