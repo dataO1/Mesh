@@ -18,3 +18,7 @@ rayon = "1.10"
 basedrop = "0.1"
 log = "0.4"
 env_logger = "0.11"
+anyhow.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+dirs.workspace = true

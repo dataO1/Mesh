@@ -1,47 +1,83 @@
 //! JACK audio playback for mesh-cue
 //!
-//! Provides audio preview functionality for the collection editor.
-//! Simpler than mesh-player: just plays back the loaded track with all stems summed.
+//! Lock-free architecture for RT-safe audio preview:
+//! - Commands sent via `rtrb` SPSC ringbuffer (UI → Audio)
+//! - State read via atomics (Audio → UI)
+//! - Audio thread owns the stems data exclusively
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use basedrop::Shared;
 use jack::{AudioOut, Client, ClientOptions, Control, Port, ProcessScope};
 use mesh_core::audio_file::StemBuffers;
 
-/// Audio playback state shared between UI and audio thread
-pub struct AudioState {
-    /// Current playback position in samples
-    pub position: Arc<AtomicU64>,
-    /// Whether audio is currently playing
-    pub playing: Arc<AtomicBool>,
-    /// Total track length in samples
-    pub length: u64,
-    /// Current track stems for playback (Shared for RT-safe deallocation)
-    pub stems: Arc<Mutex<Option<Shared<StemBuffers>>>>,
+/// Commands sent from UI to audio thread
+pub enum PreviewCommand {
+    /// Load new stems for playback
+    LoadStems(Box<Shared<StemBuffers>>, u64), // stems, length
+    /// Unload current stems
+    UnloadStems,
+    /// Start playback
+    Play,
+    /// Pause playback
+    Pause,
+    /// Seek to position (samples)
+    Seek(u64),
 }
 
-impl Default for AudioState {
-    fn default() -> Self {
-        Self {
-            position: Arc::new(AtomicU64::new(0)),
-            playing: Arc::new(AtomicBool::new(false)),
-            length: 0,
-            stems: Arc::new(Mutex::new(None)),
-        }
+/// Create a preview command channel
+///
+/// Returns (sender, receiver) pair with 64-command capacity
+pub fn preview_command_channel() -> (rtrb::Producer<PreviewCommand>, rtrb::Consumer<PreviewCommand>)
+{
+    rtrb::RingBuffer::new(64)
+}
+
+/// Command sender for UI thread
+pub struct CommandSender {
+    producer: rtrb::Producer<PreviewCommand>,
+}
+
+impl CommandSender {
+    /// Send a command to the audio thread
+    ///
+    /// Returns Err if the queue is full (command dropped)
+    pub fn send(&mut self, cmd: PreviewCommand) -> Result<(), PreviewCommand> {
+        self.producer.push(cmd).map_err(|e| match e {
+            rtrb::PushError::Full(value) => value,
+        })
+    }
+
+    /// Check if there's space in the queue
+    #[allow(dead_code)]
+    pub fn has_space(&self) -> bool {
+        self.producer.slots() > 0
     }
 }
 
-impl AudioState {
+/// Lock-free atomics for UI to read audio state
+pub struct PreviewAtomics {
+    /// Current playback position in samples
+    pub position: AtomicU64,
+    /// Whether audio is currently playing
+    pub playing: AtomicBool,
+    /// Total track length in samples
+    pub length: AtomicU64,
+}
+
+impl PreviewAtomics {
+    fn new() -> Self {
+        Self {
+            position: AtomicU64::new(0),
+            playing: AtomicBool::new(false),
+            length: AtomicU64::new(0),
+        }
+    }
+
     /// Get current playback position
     pub fn position(&self) -> u64 {
         self.position.load(Ordering::Relaxed)
-    }
-
-    /// Set playback position (seek)
-    pub fn seek(&self, position: u64) {
-        self.position.store(position.min(self.length), Ordering::Relaxed);
     }
 
     /// Check if playing
@@ -49,80 +85,188 @@ impl AudioState {
         self.playing.load(Ordering::Relaxed)
     }
 
+    /// Get track length
+    pub fn length(&self) -> u64 {
+        self.length.load(Ordering::Relaxed)
+    }
+}
+
+/// Audio playback state for UI interaction
+///
+/// Holds command sender and atomic state references
+pub struct AudioState {
+    /// Command sender for audio thread (None if disconnected)
+    command_sender: Option<CommandSender>,
+    /// Atomics for reading current state
+    atomics: Arc<PreviewAtomics>,
+}
+
+impl AudioState {
+    /// Create new audio state with command channel
+    fn new(
+        producer: rtrb::Producer<PreviewCommand>,
+        atomics: Arc<PreviewAtomics>,
+    ) -> Self {
+        Self {
+            command_sender: Some(CommandSender { producer }),
+            atomics,
+        }
+    }
+
+    /// Create a disconnected audio state (for when JACK is unavailable)
+    pub fn disconnected() -> Self {
+        Self {
+            command_sender: None,
+            atomics: Arc::new(PreviewAtomics::new()),
+        }
+    }
+
+    /// Get current playback position
+    pub fn position(&self) -> u64 {
+        self.atomics.position()
+    }
+
+    /// Check if playing
+    pub fn is_playing(&self) -> bool {
+        self.atomics.is_playing()
+    }
+
+    /// Get track length
+    #[allow(dead_code)]
+    pub fn length(&self) -> u64 {
+        self.atomics.length()
+    }
+
+    /// Seek to position
+    pub fn seek(&mut self, position: u64) {
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(PreviewCommand::Seek(position));
+        }
+    }
+
     /// Start playback
-    pub fn play(&self) {
-        self.playing.store(true, Ordering::Relaxed);
+    pub fn play(&mut self) {
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(PreviewCommand::Play);
+        }
     }
 
     /// Pause playback
-    pub fn pause(&self) {
-        self.playing.store(false, Ordering::Relaxed);
+    pub fn pause(&mut self) {
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(PreviewCommand::Pause);
+        }
     }
 
     /// Toggle play/pause
-    #[allow(dead_code)]
-    pub fn toggle(&self) {
-        let current = self.playing.load(Ordering::Relaxed);
-        self.playing.store(!current, Ordering::Relaxed);
+    pub fn toggle(&mut self) {
+        if self.is_playing() {
+            self.pause();
+        } else {
+            self.play();
+        }
     }
 
     /// Set the current track for playback
     pub fn set_track(&mut self, stems: Shared<StemBuffers>, length: u64) {
-        self.length = length;
-        *self.stems.lock().unwrap() = Some(stems);
-        self.seek(0);
-        log::info!("AudioState: Track set, {} samples", length);
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(PreviewCommand::LoadStems(Box::new(stems), length));
+            log::info!("AudioState: Track load command sent, {} samples", length);
+        }
     }
 
     /// Clear the current track
     #[allow(dead_code)]
     pub fn clear_track(&mut self) {
-        *self.stems.lock().unwrap() = None;
-        self.length = 0;
-        self.pause();
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(PreviewCommand::UnloadStems);
+        }
     }
 }
 
 /// JACK process handler for audio preview
+///
+/// Owns all audio data exclusively - no sharing with UI thread
 pub struct JackProcessor {
     /// Output ports
     left: Port<AudioOut>,
     right: Port<AudioOut>,
-    /// Playback position (shared with UI)
-    position: Arc<AtomicU64>,
-    /// Playing flag (shared with UI)
-    playing: Arc<AtomicBool>,
-    /// Track stems (Shared for RT-safe deallocation)
-    stems: Arc<Mutex<Option<Shared<StemBuffers>>>>,
-    /// Track length in samples
-    length: Arc<AtomicU64>,
+    /// Command receiver from UI
+    command_rx: rtrb::Consumer<PreviewCommand>,
+    /// Atomics for UI to read state
+    atomics: Arc<PreviewAtomics>,
+    /// Current stems (owned by audio thread)
+    stems: Option<Shared<StemBuffers>>,
+    /// Current playback position
+    position: usize,
+    /// Track length
+    length: usize,
+    /// Playing flag
+    playing: bool,
+}
+
+impl JackProcessor {
+    /// Process pending commands from UI
+    fn process_commands(&mut self) {
+        while let Ok(cmd) = self.command_rx.pop() {
+            match cmd {
+                PreviewCommand::LoadStems(stems, length) => {
+                    self.stems = Some(*stems);
+                    self.length = length as usize;
+                    self.position = 0;
+                    self.playing = false;
+                    // Update atomics
+                    self.atomics.length.store(length, Ordering::Relaxed);
+                    self.atomics.position.store(0, Ordering::Relaxed);
+                    self.atomics.playing.store(false, Ordering::Relaxed);
+                }
+                PreviewCommand::UnloadStems => {
+                    self.stems = None;
+                    self.length = 0;
+                    self.position = 0;
+                    self.playing = false;
+                    self.atomics.length.store(0, Ordering::Relaxed);
+                    self.atomics.position.store(0, Ordering::Relaxed);
+                    self.atomics.playing.store(false, Ordering::Relaxed);
+                }
+                PreviewCommand::Play => {
+                    if self.stems.is_some() && self.position < self.length {
+                        self.playing = true;
+                        self.atomics.playing.store(true, Ordering::Relaxed);
+                    }
+                }
+                PreviewCommand::Pause => {
+                    self.playing = false;
+                    self.atomics.playing.store(false, Ordering::Relaxed);
+                }
+                PreviewCommand::Seek(pos) => {
+                    self.position = (pos as usize).min(self.length);
+                    self.atomics
+                        .position
+                        .store(self.position as u64, Ordering::Relaxed);
+                }
+            }
+        }
+    }
 }
 
 impl jack::ProcessHandler for JackProcessor {
     fn process(&mut self, _client: &Client, ps: &ProcessScope) -> Control {
+        // Process commands first (lock-free)
+        self.process_commands();
+
         let n_frames = ps.n_frames() as usize;
         let out_left = self.left.as_mut_slice(ps);
         let out_right = self.right.as_mut_slice(ps);
 
-        // Check if playing
-        if !self.playing.load(Ordering::Relaxed) {
-            // Output silence when paused
+        // Check if playing and have stems
+        if !self.playing {
             out_left.fill(0.0);
             out_right.fill(0.0);
             return Control::Continue;
         }
 
-        // Non-blocking lock to avoid priority inversion
-        let stems_guard = match self.stems.try_lock() {
-            Ok(g) => g,
-            Err(_) => {
-                out_left.fill(0.0);
-                out_right.fill(0.0);
-                return Control::Continue;
-            }
-        };
-
-        let stems = match stems_guard.as_ref() {
+        let stems = match self.stems.as_ref() {
             Some(s) => s,
             None => {
                 out_left.fill(0.0);
@@ -131,12 +275,11 @@ impl jack::ProcessHandler for JackProcessor {
             }
         };
 
-        let pos = self.position.load(Ordering::Relaxed) as usize;
         let len = stems.len();
 
         // Sum all 4 stems and output
         for i in 0..n_frames {
-            let idx = pos + i;
+            let idx = self.position + i;
             if idx >= len {
                 out_left[i] = 0.0;
                 out_right[i] = 0.0;
@@ -152,12 +295,16 @@ impl jack::ProcessHandler for JackProcessor {
         }
 
         // Advance position
-        let new_pos = (pos + n_frames).min(len);
-        self.position.store(new_pos as u64, Ordering::Relaxed);
+        let new_pos = (self.position + n_frames).min(len);
+        self.position = new_pos;
+        self.atomics
+            .position
+            .store(new_pos as u64, Ordering::Relaxed);
 
         // Stop at end of track
         if new_pos >= len {
-            self.playing.store(false, Ordering::Relaxed);
+            self.playing = false;
+            self.atomics.playing.store(false, Ordering::Relaxed);
         }
 
         Control::Continue
@@ -214,9 +361,9 @@ pub struct JackHandle {
 
 /// Start the JACK audio client for preview playback
 ///
-/// Connects to JACK and creates stereo output ports.
-/// The audio state's position/playing/stems are shared with the process callback.
-pub fn start_jack_client(audio_state: &AudioState) -> Result<JackHandle, JackError> {
+/// Returns the audio state for UI interaction and JACK handle to keep client alive.
+/// Uses lock-free command queue - no Mutex in audio path.
+pub fn start_jack_client() -> Result<(AudioState, JackHandle), JackError> {
     // Create JACK client (don't start server if not running)
     let (client, _status) = Client::new("mesh-cue", ClientOptions::NO_START_SERVER)
         .map_err(|e| JackError::ClientCreation(e.to_string()))?;
@@ -236,31 +383,45 @@ pub fn start_jack_client(audio_state: &AudioState) -> Result<JackHandle, JackErr
         .register_port("out_right", AudioOut::default())
         .map_err(|e| JackError::PortRegistration(e.to_string()))?;
 
-    // Create processor with shared state
+    // Create lock-free command channel
+    let (producer, consumer) = preview_command_channel();
+
+    // Create shared atomics for state
+    let atomics = Arc::new(PreviewAtomics::new());
+
+    // Create processor with owned state
     let processor = JackProcessor {
         left,
         right,
-        position: audio_state.position.clone(),
-        playing: audio_state.playing.clone(),
-        stems: audio_state.stems.clone(),
-        length: Arc::new(AtomicU64::new(audio_state.length)),
+        command_rx: consumer,
+        atomics: atomics.clone(),
+        stems: None,
+        position: 0,
+        length: 0,
+        playing: false,
     };
+
+    // Create audio state for UI
+    let audio_state = AudioState::new(producer, atomics);
 
     // Activate the client
     let async_client = client
         .activate_async(JackNotifications, processor)
         .map_err(|e| JackError::Activation(e.to_string()))?;
 
-    log::info!("JACK client activated - audio preview ready");
+    log::info!("JACK client activated - lock-free audio preview ready");
 
     // Try to auto-connect to system playback
     if let Err(e) = auto_connect_ports() {
         log::warn!("Could not auto-connect to system playback: {}", e);
     }
 
-    Ok(JackHandle {
-        _async_client: async_client,
-    })
+    Ok((
+        audio_state,
+        JackHandle {
+            _async_client: async_client,
+        },
+    ))
 }
 
 /// Try to auto-connect mesh-cue outputs to system playback ports

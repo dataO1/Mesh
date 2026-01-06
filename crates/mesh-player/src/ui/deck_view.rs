@@ -45,8 +45,6 @@ pub struct DeckView {
     stem_soloed: [bool; 4],
     /// Per-stem volumes
     stem_volumes: [f32; 4],
-    /// Pitch adjustment (-8% to +8%)
-    pitch: f64,
     /// Loop active
     loop_active: bool,
     /// Current loop length in beats
@@ -82,8 +80,6 @@ pub enum DeckMessage {
     SetHotCue(usize),
     /// Clear hot cue
     ClearHotCue(usize),
-    /// Set beat jump size in beats (1, 4, 8, 16, 32)
-    SetBeatJumpSize(i32),
     /// Sync to master
     Sync,
     /// Toggle loop
@@ -100,8 +96,6 @@ pub enum DeckMessage {
     BeatJumpBack,
     /// Beat jump forward (uses loop length)
     BeatJumpForward,
-    /// Adjust pitch
-    SetPitch(f64),
     /// Toggle stem mute
     ToggleStemMute(usize),
     /// Toggle stem solo
@@ -134,7 +128,6 @@ impl DeckView {
             stem_muted: [false; 4],
             stem_soloed: [false; 4],
             stem_volumes: [1.0; 4],
-            pitch: 0.0,
             loop_active: false,
             loop_length_beats: 4.0, // Default 4 beats
             slip_enabled: false,
@@ -229,7 +222,6 @@ impl DeckView {
             DeckMessage::HotCueReleased(_idx) => deck.hot_cue_release(),
             DeckMessage::SetHotCue(idx) => deck.set_hot_cue(idx),
             DeckMessage::ClearHotCue(idx) => deck.clear_hot_cue(idx),
-            DeckMessage::SetBeatJumpSize(beats) => deck.set_beat_jump_size(beats),
             DeckMessage::Sync => {
                 // Sync is handled at engine level
             }
@@ -265,10 +257,6 @@ impl DeckView {
             }
             DeckMessage::BeatJumpForward => {
                 deck.beat_jump_forward();
-            }
-            DeckMessage::SetPitch(pitch) => {
-                self.pitch = pitch;
-                // TODO: implement pitch control
             }
             DeckMessage::ToggleStemMute(stem_idx) => {
                 if let Some(chain) = deck.stem_chain_mut(stem_idx) {
@@ -333,25 +321,29 @@ impl DeckView {
         let header = row![deck_label, Space::new().width(10), track_info]
             .align_y(Center);
 
-        // Middle row: FX section (left) | Hot cues (right)
+        // Left column: Stem FX section at top, transport controls stacked below
         let stems = self.view_stems();
-        let hot_cues = self.view_hot_cues();
+        let transport = self.view_transport_vertical();
 
-        let middle_row = row![
-            container(stems).width(Fill),
-            container(hot_cues).width(Fill),
+        let left_controls = column![
+            stems,
+            transport,
+        ]
+        .spacing(8);
+
+        // Right column: Hot cues in 2x4 grid
+        let hot_cues = self.view_hot_cues_grid();
+
+        // Main content row: controls on left, hot cues on right
+        let main_row = row![
+            container(left_controls).width(Fill),
+            container(hot_cues),
         ]
         .spacing(10);
 
-        // Bottom: Transport + pitch
-        let transport = self.view_transport();
-        let pitch_section = self.view_pitch();
-
         let content = column![
             header,
-            middle_row,
-            transport,
-            pitch_section,
+            main_row,
         ]
         .spacing(5)
         .padding(10);
@@ -658,17 +650,199 @@ impl DeckView {
         .into()
     }
 
-    /// Pitch slider view
-    fn view_pitch(&self) -> Element<DeckMessage> {
-        row![
-            text("PITCH").size(10),
-            slider(-8.0..=8.0, self.pitch, DeckMessage::SetPitch)
-                .step(0.01)
-                .width(150),
-            text(format!("{:+.1}%", self.pitch)).size(10),
+    /// Vertical transport controls (new layout: stacked from bottom up)
+    ///
+    /// Layout (top to bottom):
+    /// - Loop controls row: [÷2] [length] [×2] [LOOP] [SLIP]
+    /// - Beat jump row: [◀◀] [▶▶]
+    /// - Cue button
+    /// - Play button
+    fn view_transport_vertical(&self) -> Element<DeckMessage> {
+        // Play button (large, at bottom of stack but rendered last)
+        let is_playing = matches!(self.state, PlayState::Playing);
+        let play_icon = if is_playing { "⏸" } else { "▶" };
+        let play_style = if is_playing {
+            button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.2, 0.8, 0.2))),
+                text_color: Color::WHITE,
+                border: iced::Border {
+                    color: Color::WHITE,
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                ..Default::default()
+            }
+        } else {
+            button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.3, 0.3, 0.3))),
+                text_color: Color::WHITE,
+                border: iced::Border {
+                    color: Color::from_rgb(0.5, 0.5, 0.5),
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                ..Default::default()
+            }
+        };
+
+        let play_btn = button(text(play_icon).size(24))
+            .on_press(DeckMessage::TogglePlayPause)
+            .padding([12, 40])
+            .style(move |_, _| play_style);
+
+        // Cue button
+        let is_cueing = matches!(self.state, PlayState::Cueing);
+        let cue_style = if is_cueing {
+            button::Style {
+                background: Some(Background::Color(Color::from_rgb(1.0, 0.6, 0.0))),
+                text_color: Color::WHITE,
+                border: iced::Border {
+                    color: Color::WHITE,
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                ..Default::default()
+            }
+        } else {
+            button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.3, 0.3, 0.3))),
+                text_color: Color::WHITE,
+                border: iced::Border {
+                    color: Color::from_rgb(0.5, 0.5, 0.5),
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                ..Default::default()
+            }
+        };
+
+        let cue_btn = mouse_area(
+            button(text("CUE").size(16))
+                .padding([10, 36])
+                .style(move |_, _| cue_style)
+        )
+        .on_press(DeckMessage::CuePressed)
+        .on_release(DeckMessage::CueReleased);
+
+        // Beat jump buttons (side by side)
+        let jump_back = button(text("◀◀").size(16))
+            .on_press(DeckMessage::BeatJumpBack)
+            .padding([8, 20]);
+
+        let jump_fwd = button(text("▶▶").size(16))
+            .on_press(DeckMessage::BeatJumpForward)
+            .padding([8, 20]);
+
+        let beat_jump_row = row![jump_back, jump_fwd]
+            .spacing(8)
+            .align_y(Center);
+
+        // Loop controls row
+        let loop_halve = button(text("÷2").size(11))
+            .on_press(DeckMessage::LoopHalve)
+            .padding(5);
+
+        let loop_length_text = format_loop_length(self.loop_length_beats);
+        let loop_length = container(text(loop_length_text).size(11))
+            .padding([5, 8]);
+
+        let loop_double = button(text("×2").size(11))
+            .on_press(DeckMessage::LoopDouble)
+            .padding(5);
+
+        let loop_text = if self.loop_active { "LOOP ●" } else { "LOOP" };
+        let loop_btn = button(text(loop_text).size(11))
+            .on_press(DeckMessage::ToggleLoop)
+            .padding(5);
+
+        let slip_text = if self.slip_enabled { "SLIP ●" } else { "SLIP" };
+        let slip_btn = button(text(slip_text).size(11))
+            .on_press(DeckMessage::ToggleSlip)
+            .padding(5);
+
+        let loop_row = row![loop_halve, loop_length, loop_double, loop_btn, slip_btn]
+            .spacing(4)
+            .align_y(Center);
+
+        // Stack vertically: loop controls at top, then beat jump, cue, play at bottom
+        column![
+            loop_row,
+            beat_jump_row,
+            cue_btn,
+            play_btn,
         ]
-        .spacing(10)
-        .align_y(Center)
+        .spacing(6)
+        .align_x(Center)
+        .into()
+    }
+
+    /// Hot cue buttons in 2x4 grid layout
+    fn view_hot_cues_grid(&self) -> Element<DeckMessage> {
+        // Create 2 rows of 4 buttons each
+        let make_button = |i: usize| -> Element<DeckMessage> {
+            let is_set = self.hot_cue_positions[i].is_some();
+            let color = CUE_COLORS[i];
+
+            let btn_style = if is_set {
+                button::Style {
+                    background: Some(Background::Color(color)),
+                    text_color: Color::WHITE,
+                    border: iced::Border {
+                        color: Color::WHITE,
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                }
+            } else {
+                button::Style {
+                    background: Some(Background::Color(Color::from_rgb(0.25, 0.25, 0.25))),
+                    text_color: Color::from_rgb(0.5, 0.5, 0.5),
+                    border: iced::Border {
+                        color: Color::from_rgb(0.4, 0.4, 0.4),
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                }
+            };
+
+            let label = format!("{}", i + 1);
+            let btn = button(text(label).size(14))
+                .padding([10, 14])
+                .style(move |_, _| btn_style);
+
+            mouse_area(btn)
+                .on_press(DeckMessage::HotCuePressed(i))
+                .on_release(DeckMessage::HotCueReleased(i))
+                .into()
+        };
+
+        // Row 1: buttons 1-4
+        let row1 = row![
+            make_button(0),
+            make_button(1),
+            make_button(2),
+            make_button(3),
+        ]
+        .spacing(4);
+
+        // Row 2: buttons 5-8
+        let row2 = row![
+            make_button(4),
+            make_button(5),
+            make_button(6),
+            make_button(7),
+        ]
+        .spacing(4);
+
+        column![
+            text("HOT CUES").size(10),
+            row1,
+            row2,
+        ]
+        .spacing(4)
+        .align_x(Center)
         .into()
     }
 }

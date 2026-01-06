@@ -112,12 +112,10 @@ pub enum EngineCommand {
     // ─────────────────────────────────────────────────────────────
     // Beat Jump
     // ─────────────────────────────────────────────────────────────
-    /// Jump forward by beat_jump_size beats
+    /// Jump forward by beat_jump_size beats (equals loop length)
     BeatJumpForward { deck: usize },
-    /// Jump backward by beat_jump_size beats
+    /// Jump backward by beat_jump_size beats (equals loop length)
     BeatJumpBackward { deck: usize },
-    /// Set beat jump size in beats (1, 4, 8, 16, 32)
-    SetBeatJumpSize { deck: usize, beats: i32 },
 
     // ─────────────────────────────────────────────────────────────
     // Stem Control

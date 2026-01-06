@@ -11,14 +11,16 @@
 //! Instead of acquiring a mutex, UI actions send commands via an SPSC ringbuffer.
 //! This guarantees zero audio dropouts during track loading or any UI interaction.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use basedrop::Shared;
-use iced::widget::{column, container, row, slider, text, Space};
-use iced::{Center, Element, Fill, Length, Subscription, Task, Theme};
+use iced::widget::{button, center, column, container, mouse_area, opaque, row, slider, stack, text, Space};
+use iced::{Center as CenterAlign, Color, Element, Fill, Length, Subscription, Task, Theme};
 use iced::time;
 
 use crate::audio::CommandSender;
+use crate::config::{self, PlayerConfig};
 use crate::loader::TrackLoader;
 use mesh_core::audio_file::StemBuffers;
 use mesh_core::engine::{DeckAtomics, EngineCommand};
@@ -28,6 +30,7 @@ use super::deck_view::{DeckView, DeckMessage};
 use super::file_browser::{FileBrowserView, FileBrowserMessage};
 use super::mixer_view::{MixerView, MixerMessage};
 use super::player_canvas::{view_player_canvas, PlayerCanvasState};
+use super::settings::SettingsState;
 
 /// Application state
 pub struct MeshApp {
@@ -57,6 +60,12 @@ pub struct MeshApp {
     status: String,
     /// Whether audio is connected
     audio_connected: bool,
+    /// Configuration
+    config: Arc<PlayerConfig>,
+    /// Path to config file
+    config_path: PathBuf,
+    /// Settings modal state
+    settings: SettingsState,
 }
 
 /// Messages that can be sent to the application
@@ -78,6 +87,22 @@ pub enum Message {
     DeckSeek(usize, f64),
     /// Set zoom level on a deck (deck_idx, zoom in bars)
     DeckSetZoom(usize, u32),
+
+    // Settings
+    /// Open settings modal
+    OpenSettings,
+    /// Close settings modal
+    CloseSettings,
+    /// Update settings: loop length index
+    UpdateSettingsLoopLength(usize),
+    /// Update settings: zoom bars
+    UpdateSettingsZoomBars(u32),
+    /// Update settings: grid bars
+    UpdateSettingsGridBars(u32),
+    /// Save settings to disk
+    SaveSettings,
+    /// Settings save complete
+    SaveSettingsComplete(Result<(), String>),
 }
 
 impl MeshApp {
@@ -91,6 +116,11 @@ impl MeshApp {
         command_sender: Option<CommandSender>,
         deck_atomics: Option<[Arc<DeckAtomics>; NUM_DECKS]>,
     ) -> Self {
+        // Load configuration
+        let config_path = config::default_config_path();
+        let config = Arc::new(config::load_config(&config_path));
+        let settings = SettingsState::from_config(&config);
+
         let audio_connected = command_sender.is_some();
         Self {
             command_sender,
@@ -107,9 +137,12 @@ impl MeshApp {
             ],
             mixer_view: MixerView::new(),
             file_browser: FileBrowserView::new(),
-            global_bpm: 128.0,
+            global_bpm: config.audio.global_bpm,
             status: if audio_connected { "Audio connected (lock-free)".to_string() } else { "No audio".to_string() },
             audio_connected,
+            config,
+            config_path,
+            settings,
         }
     }
 
@@ -270,9 +303,6 @@ impl MeshApp {
                             ClearHotCue(slot) => {
                                 let _ = sender.send(EngineCommand::ClearHotCue { deck: deck_idx, slot });
                             }
-                            SetBeatJumpSize(beats) => {
-                                let _ = sender.send(EngineCommand::SetBeatJumpSize { deck: deck_idx, beats });
-                            }
                             Sync => {
                                 // TODO: Implement sync command
                             }
@@ -296,9 +326,6 @@ impl MeshApp {
                             }
                             BeatJumpForward => {
                                 let _ = sender.send(EngineCommand::BeatJumpForward { deck: deck_idx });
-                            }
-                            SetPitch(_pitch) => {
-                                // TODO: Implement pitch control via command
                             }
                             ToggleStemMute(stem_idx) => {
                                 if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
@@ -397,6 +424,66 @@ impl MeshApp {
                 }
                 Task::none()
             }
+
+            // Settings handlers
+            Message::OpenSettings => {
+                self.settings.is_open = true;
+                self.settings = SettingsState::from_config(&self.config);
+                self.settings.is_open = true;
+                Task::none()
+            }
+            Message::CloseSettings => {
+                self.settings.is_open = false;
+                self.settings.status.clear();
+                Task::none()
+            }
+            Message::UpdateSettingsLoopLength(index) => {
+                self.settings.draft_loop_length_index = index;
+                Task::none()
+            }
+            Message::UpdateSettingsZoomBars(bars) => {
+                self.settings.draft_zoom_bars = bars;
+                Task::none()
+            }
+            Message::UpdateSettingsGridBars(bars) => {
+                self.settings.draft_grid_bars = bars;
+                Task::none()
+            }
+            Message::SaveSettings => {
+                // Apply draft settings to config
+                let mut new_config = (*self.config).clone();
+                new_config.display.default_loop_length_index = self.settings.draft_loop_length_index;
+                new_config.display.default_zoom_bars = self.settings.draft_zoom_bars;
+                new_config.display.grid_bars = self.settings.draft_grid_bars;
+                // Save global BPM from current state
+                new_config.audio.global_bpm = self.global_bpm;
+
+                self.config = Arc::new(new_config.clone());
+
+                // Save to disk in background
+                let config_clone = new_config;
+                let config_path = self.config_path.clone();
+                Task::perform(
+                    async move {
+                        config::save_config(&config_clone, &config_path)
+                            .map_err(|e| e.to_string())
+                    },
+                    Message::SaveSettingsComplete,
+                )
+            }
+            Message::SaveSettingsComplete(result) => {
+                match result {
+                    Ok(()) => {
+                        self.settings.status = "Settings saved".to_string();
+                        self.status = "Settings saved".to_string();
+                    }
+                    Err(e) => {
+                        self.settings.status = format!("Save failed: {}", e);
+                        self.status = format!("Settings save failed: {}", e);
+                    }
+                }
+                Task::none()
+            }
         }
     }
 
@@ -466,10 +553,32 @@ impl MeshApp {
         .spacing(10)
         .padding(10);
 
-        container(content)
+        let base: Element<Message> = container(content)
             .width(Fill)
             .height(Fill)
-            .into()
+            .into();
+
+        // Overlay settings modal if open
+        if self.settings.is_open {
+            let backdrop = mouse_area(
+                container(Space::new())
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .style(|_theme| container::Style {
+                        background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.6).into()),
+                        ..Default::default()
+                    }),
+            )
+            .on_press(Message::CloseSettings);
+
+            let modal = center(opaque(super::settings::view(&self.settings)))
+                .width(Length::Fill)
+                .height(Length::Fill);
+
+            stack![base, backdrop, modal].into()
+        } else {
+            base
+        }
     }
 
     /// View for the header/global controls
@@ -489,6 +598,11 @@ impl MeshApp {
             text("○ JACK Disconnected").size(12)
         };
 
+        // Settings gear icon (⚙ U+2699)
+        let settings_btn = button(text("⚙").size(20))
+            .on_press(Message::OpenSettings)
+            .style(button::secondary);
+
         row![
             title,
             Space::new().width(Fill),
@@ -496,9 +610,10 @@ impl MeshApp {
             bpm_slider,
             Space::new().width(Fill),
             connection_status,
+            settings_btn,
         ]
         .spacing(20)
-        .align_y(Center)
+        .align_y(CenterAlign)
         .padding(10)
         .into()
     }

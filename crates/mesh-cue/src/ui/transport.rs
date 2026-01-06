@@ -1,7 +1,7 @@
 //! Player controls component (vertical layout)
 //!
 //! CDJ-style player controls positioned to the left of waveforms:
-//! - Beat jump size selector (1, 4, 8, 16, 32)
+//! - Beat jump label (shows current loop/jump length)
 //! - Beat jump buttons (◄◄ / ►►) side by side
 //! - Cue button (CDJ-style: set + preview while held)
 //! - Large Play/Pause toggle
@@ -18,28 +18,14 @@ pub fn view(state: &LoadedTrackState) -> Element<Message> {
     // Disable controls while loading
     let controls_enabled = !state.loading_audio && state.stems.is_some();
 
-    // Beat jump size selector (row of buttons at top)
-    let jump_sizes = [1, 4, 8, 16, 32];
-    let jump_size_buttons: Vec<Element<Message>> = jump_sizes
-        .iter()
-        .map(|&size| {
-            let is_selected = beat_jump_size == size;
-            let btn = button(text(format!("{}", size)).size(11))
-                .on_press_maybe(controls_enabled.then_some(Message::SetBeatJumpSize(size)))
-                .style(if is_selected {
-                    iced::widget::button::primary
-                } else {
-                    iced::widget::button::secondary
-                })
-                .width(Length::Fixed(28.0))
-                .height(Length::Fixed(24.0));
-            btn.into()
-        })
-        .collect();
-
-    let beat_jump_selector = row(jump_size_buttons)
-        .spacing(2)
-        .align_y(Alignment::Center);
+    // Beat jump size label (controlled by Up/Down keys to adjust loop length)
+    let loop_length_beats = state.loop_length_beats();
+    let beat_jump_label = container(
+        text(format!("{} beat{}", loop_length_beats, if loop_length_beats == 1.0 { "" } else { "s" }))
+            .size(12)
+    )
+    .width(Length::Fixed(104.0))
+    .center_x(Length::Fill);
 
     // Beat jump buttons (side by side)
     let jump_back = button(text("◄◄").size(14))
@@ -92,11 +78,11 @@ pub fn view(state: &LoadedTrackState) -> Element<Message> {
             .height(Length::Fixed(60.0))
     };
 
-    // Vertical layout: beat jump selector → jump buttons → cue → play/pause
+    // Vertical layout: beat jump label → jump buttons → cue → play/pause
     // No center_y - align to top with parent row's align_y(Start)
     container(
         column![
-            beat_jump_selector,
+            beat_jump_label,
             jump_buttons,
             cue,
             play_pause,

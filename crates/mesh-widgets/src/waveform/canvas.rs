@@ -349,11 +349,13 @@ where
                 .with_width(2.0),
         );
 
-        // Draw zoom indicator bar in corner
-        let indicator_width = (self.state.zoom_bars as f32 / MAX_ZOOM_BARS as f32) * 60.0;
+        // Draw zoom indicator - vertical bar on right edge
+        // Height represents zoom level (0-100% of waveform height)
+        let indicator_height = (self.state.zoom_bars as f32 / MAX_ZOOM_BARS as f32) * height;
+        let indicator_width = 4.0;
         frame.fill_rectangle(
-            Point::new(width - 70.0, 5.0),
-            Size::new(indicator_width, 4.0),
+            Point::new(width - indicator_width, height - indicator_height),
+            Size::new(indicator_width, indicator_height),
             Color::from_rgba(1.0, 1.0, 1.0, 0.5),
         );
 
@@ -891,11 +893,12 @@ fn draw_zoomed_section(
             .with_width(2.0),
     );
 
-    // Draw zoom indicator
-    let indicator_width = (zoomed.zoom_bars as f32 / MAX_ZOOM_BARS as f32) * 60.0;
+    // Draw zoom indicator - vertical bar on right edge
+    let indicator_height = (zoomed.zoom_bars as f32 / MAX_ZOOM_BARS as f32) * zoomed_height;
+    let indicator_width = 4.0;
     frame.fill_rectangle(
-        Point::new(width - 70.0, 5.0),
-        Size::new(indicator_width, 4.0),
+        Point::new(width - indicator_width, zoomed_height - indicator_height),
+        Size::new(indicator_width, indicator_height),
         Color::from_rgba(1.0, 1.0, 1.0, 0.5),
     );
 }
@@ -1010,7 +1013,7 @@ fn draw_overview_section(
     // Draw main cue point marker (orange)
     if let Some(cue_pos) = overview.cue_position {
         let cue_x = (cue_pos * width as f64) as f32;
-        let cue_color = Color::from_rgb(1.0, 0.5, 0.0);
+        let cue_color = Color::from_rgb(0.6, 0.6, 0.6);
         frame.stroke(
             &Path::line(
                 Point::new(cue_x, overview_y),
@@ -1492,11 +1495,12 @@ fn draw_zoomed_at(
             .with_width(2.0),
     );
 
-    // Draw zoom indicator
-    let indicator_width = (zoomed.zoom_bars as f32 / MAX_ZOOM_BARS as f32) * 40.0;
+    // Draw zoom indicator - vertical bar on right edge
+    let indicator_height = (zoomed.zoom_bars as f32 / MAX_ZOOM_BARS as f32) * height;
+    let indicator_width = 4.0;
     frame.fill_rectangle(
-        Point::new(x + width - 50.0, y + 5.0),
-        Size::new(indicator_width, 3.0),
+        Point::new(x + width - indicator_width, y + height - indicator_height),
+        Size::new(indicator_width, indicator_height),
         Color::from_rgba(1.0, 1.0, 1.0, 0.5),
     );
 }
@@ -1605,7 +1609,7 @@ fn draw_overview_at(
     // Draw main cue point marker (orange)
     if let Some(cue_pos) = overview.cue_position {
         let cue_x = x + (cue_pos * width as f64) as f32;
-        let cue_color = Color::from_rgb(1.0, 0.5, 0.0);
+        let cue_color = Color::from_rgb(0.6, 0.6, 0.6);
         frame.stroke(
             &Path::line(Point::new(cue_x, y), Point::new(cue_x, y + height)),
             Stroke::default().with_color(cue_color).with_width(2.0),

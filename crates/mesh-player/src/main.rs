@@ -6,6 +6,7 @@
 //! 3. Passes shared state between UI and audio
 
 mod audio;
+mod config;
 mod loader;
 mod ui;
 

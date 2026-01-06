@@ -13,7 +13,7 @@
 //! );
 //! ```
 
-use iced::widget::{button, column, row, scrollable, text, horizontal_space};
+use iced::widget::{button, column, mouse_area, row, scrollable, text, text_input, Space};
 use iced::{Background, Border, Color, Element, Length, Padding, Theme};
 use std::collections::HashSet;
 use std::hash::Hash;
@@ -58,6 +58,10 @@ pub struct TreeNode<Id: Clone> {
     pub icon: TreeIcon,
     /// Child nodes (empty for leaf nodes)
     pub children: Vec<TreeNode<Id>>,
+    /// Whether this node allows creating children (shows "+" button)
+    pub allow_create_child: bool,
+    /// Whether this node can be renamed
+    pub allow_rename: bool,
 }
 
 impl<Id: Clone> TreeNode<Id> {
@@ -68,6 +72,8 @@ impl<Id: Clone> TreeNode<Id> {
             label: label.into(),
             icon,
             children: Vec::new(),
+            allow_create_child: false,
+            allow_rename: false,
         }
     }
 
@@ -83,7 +89,21 @@ impl<Id: Clone> TreeNode<Id> {
             label: label.into(),
             icon,
             children,
+            allow_create_child: false,
+            allow_rename: false,
         }
+    }
+
+    /// Set whether this node allows creating children
+    pub fn with_create_child(mut self, allow: bool) -> Self {
+        self.allow_create_child = allow;
+        self
+    }
+
+    /// Set whether this node can be renamed
+    pub fn with_rename(mut self, allow: bool) -> Self {
+        self.allow_rename = allow;
+        self
     }
 
     /// Check if this node has children
@@ -99,6 +119,10 @@ pub struct TreeState<Id: Clone + Eq + Hash> {
     pub expanded: HashSet<Id>,
     /// Currently selected node ID
     pub selected: Option<Id>,
+    /// Node currently being edited (inline rename)
+    pub editing: Option<Id>,
+    /// Buffer for the edited name
+    pub edit_buffer: String,
 }
 
 impl<Id: Clone + Eq + Hash> Default for TreeState<Id> {
@@ -113,6 +137,8 @@ impl<Id: Clone + Eq + Hash> TreeState<Id> {
         Self {
             expanded: HashSet::new(),
             selected: None,
+            editing: None,
+            edit_buffer: String::new(),
         }
     }
 
@@ -154,6 +180,33 @@ impl<Id: Clone + Eq + Hash> TreeState<Id> {
     pub fn is_selected(&self, id: &Id) -> bool {
         self.selected.as_ref() == Some(id)
     }
+
+    /// Check if a node is being edited
+    pub fn is_editing(&self, id: &Id) -> bool {
+        self.editing.as_ref() == Some(id)
+    }
+
+    /// Start editing a node
+    pub fn start_edit(&mut self, id: Id, current_name: String) {
+        self.editing = Some(id);
+        self.edit_buffer = current_name;
+    }
+
+    /// Cancel editing
+    pub fn cancel_edit(&mut self) {
+        self.editing = None;
+        self.edit_buffer.clear();
+    }
+
+    /// Commit edit and return the new name (clears editing state)
+    pub fn commit_edit(&mut self) -> Option<(Id, String)> {
+        if let Some(id) = self.editing.take() {
+            let name = std::mem::take(&mut self.edit_buffer);
+            Some((id, name))
+        } else {
+            None
+        }
+    }
 }
 
 /// Messages emitted by the tree widget
@@ -163,6 +216,18 @@ pub enum TreeMessage<Id> {
     Toggle(Id),
     /// Select a node
     Select(Id),
+    /// Create a child node in this folder
+    CreateChild(Id),
+    /// Start inline editing of a node's name
+    StartEdit(Id),
+    /// Update the edit buffer
+    EditChanged(String),
+    /// Commit the edit (save)
+    CommitEdit,
+    /// Cancel the edit
+    CancelEdit,
+    /// Mouse released over node (for drop detection)
+    DropReceived(Id),
 }
 
 /// Build a tree view from nodes
@@ -192,7 +257,7 @@ pub fn tree_view<'a, Id, Message>(
 ) -> Element<'a, Message>
 where
     Id: Clone + Eq + Hash + 'a,
-    Message: 'a,
+    Message: Clone + 'a,
 {
     let content = build_tree_rows(nodes, state, &on_message, 0);
 
@@ -210,14 +275,15 @@ fn build_tree_rows<'a, Id, Message>(
 ) -> Vec<Element<'a, Message>>
 where
     Id: Clone + Eq + Hash + 'a,
-    Message: 'a,
+    Message: Clone + 'a,
 {
     let mut elements = Vec::new();
 
     for node in nodes {
-        let indent = horizontal_space().width(Length::Fixed((depth * 16) as f32));
+        let indent = Space::new().width(Length::Fixed((depth * 16) as f32));
         let is_expanded = state.is_expanded(&node.id);
         let is_selected = state.is_selected(&node.id);
+        let is_editing = state.is_editing(&node.id);
 
         // Expand/collapse arrow button
         let arrow: Element<'a, Message> = if node.has_children() {
@@ -227,7 +293,7 @@ where
 
             button(text(arrow_text).size(10))
                 .padding(Padding::from([2, 4]))
-                .style(|theme: &Theme, status| {
+                .style(|theme: &Theme, _status| {
                     let palette = theme.extended_palette();
                     button::Style {
                         background: Some(Background::Color(Color::TRANSPARENT)),
@@ -239,51 +305,127 @@ where
                 .on_press(on_msg(TreeMessage::Toggle(id_clone)))
                 .into()
         } else {
-            horizontal_space().width(Length::Fixed(22.0)).into()
+            Space::new().width(Length::Fixed(22.0)).into()
         };
 
         // Icon
         let icon = node.icon.as_char();
 
-        // Label button (clickable for selection)
-        let id_clone = node.id.clone();
-        let on_msg = on_message.clone();
+        // Label: either text input (editing) or button (normal)
+        let label_widget: Element<'a, Message> = if is_editing {
+            // Editing mode: show text input
+            let on_msg_input = on_message.clone();
+            let on_msg_submit = on_message.clone();
 
-        let label_content = row![text(icon).size(14), text(&node.label).size(12),].spacing(6);
+            row![
+                text(icon).size(14),
+                text_input("", &state.edit_buffer)
+                    .on_input(move |s| on_msg_input(TreeMessage::EditChanged(s)))
+                    .on_submit(on_msg_submit(TreeMessage::CommitEdit))
+                    .size(12)
+                    .width(Length::Fixed(120.0))
+                    .padding(2),
+            ]
+            .spacing(6)
+            .into()
+        } else {
+            // Normal mode: clickable label button
+            let id_clone = node.id.clone();
+            let on_msg = on_message.clone();
 
-        let label_btn = button(label_content)
-            .padding(Padding::from([3, 6]))
-            .style(move |theme: &Theme, status| {
-                let palette = theme.extended_palette();
-                let bg = if is_selected {
-                    palette.primary.weak.color
-                } else {
-                    match status {
-                        button::Status::Hovered => palette.background.weak.color,
-                        _ => Color::TRANSPARENT,
-                    }
-                };
-                let text_color = if is_selected {
-                    palette.primary.weak.text
-                } else {
-                    palette.background.base.text
-                };
+            let label_content = row![text(icon).size(14), text(&node.label).size(12),].spacing(6);
 
-                button::Style {
-                    background: Some(Background::Color(bg)),
-                    text_color,
-                    border: Border {
-                        radius: 4.0.into(),
+            let label_btn = button(label_content)
+                .padding(Padding::from([3, 6]))
+                .style(move |theme: &Theme, status| {
+                    let palette = theme.extended_palette();
+                    let bg = if is_selected {
+                        palette.primary.weak.color
+                    } else {
+                        match status {
+                            button::Status::Hovered => palette.background.weak.color,
+                            _ => Color::TRANSPARENT,
+                        }
+                    };
+                    let text_color = if is_selected {
+                        palette.primary.weak.text
+                    } else {
+                        palette.background.base.text
+                    };
+
+                    button::Style {
+                        background: Some(Background::Color(bg)),
+                        text_color,
+                        border: Border {
+                            radius: 4.0.into(),
+                            ..Default::default()
+                        },
                         ..Default::default()
-                    },
-                    ..Default::default()
-                }
-            })
-            .on_press(on_msg(TreeMessage::Select(id_clone)));
+                    }
+                })
+                .on_press(on_msg(TreeMessage::Select(id_clone)));
 
-        let row_content = row![indent, arrow, label_btn].spacing(2).align_y(iced::Alignment::Center);
+            // Wrap in mouse_area for double-click to edit (if allowed)
+            if node.allow_rename {
+                let id_edit = node.id.clone();
+                let on_msg_edit = on_message.clone();
+                mouse_area(label_btn)
+                    .on_double_click(on_msg_edit(TreeMessage::StartEdit(id_edit)))
+                    .into()
+            } else {
+                label_btn.into()
+            }
+        };
 
-        elements.push(row_content.into());
+        // Create child button ("+") if allowed
+        let create_btn: Option<Element<'a, Message>> = if node.allow_create_child {
+            let id_create = node.id.clone();
+            let on_msg_create = on_message.clone();
+
+            Some(
+                button(text("+").size(12))
+                    .padding(Padding::from([2, 6]))
+                    .style(|theme: &Theme, status| {
+                        let palette = theme.extended_palette();
+                        let bg = match status {
+                            button::Status::Hovered => palette.primary.weak.color,
+                            _ => Color::TRANSPARENT,
+                        };
+                        button::Style {
+                            background: Some(Background::Color(bg)),
+                            text_color: palette.background.base.text,
+                            border: Border {
+                                radius: 4.0.into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }
+                    })
+                    .on_press(on_msg_create(TreeMessage::CreateChild(id_create)))
+                    .into(),
+            )
+        } else {
+            None
+        };
+
+        // Build row with optional create button
+        let row_content = if let Some(create_btn) = create_btn {
+            row![indent, arrow, label_widget, create_btn]
+                .spacing(2)
+                .align_y(iced::Alignment::Center)
+        } else {
+            row![indent, arrow, label_widget]
+                .spacing(2)
+                .align_y(iced::Alignment::Center)
+        };
+
+        // Wrap row in mouse_area to detect drops (mouse release over this node)
+        let id_drop = node.id.clone();
+        let on_msg_drop = on_message.clone();
+        let row_with_drop = mouse_area(row_content)
+            .on_release(on_msg_drop(TreeMessage::DropReceived(id_drop)));
+
+        elements.push(row_with_drop.into());
 
         // Recursively add children if expanded
         if is_expanded && node.has_children() {

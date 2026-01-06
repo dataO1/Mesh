@@ -2,7 +2,7 @@
 
 use super::app::{LoadedTrackState, Message};
 use super::waveform::view_combined_waveform;
-use super::{cue_editor, transport};
+use super::{cue_editor, saved_loop_buttons, transport};
 use iced::widget::{button, column, container, row, text, text_input, Space};
 use iced::{Alignment, Element, Length};
 
@@ -28,6 +28,9 @@ pub fn view(state: &LoadedTrackState) -> Element<Message> {
     // Hot cue buttons (single row of 8) - directly under waveforms
     let cue_panel = cue_editor::view(state);
 
+    // Saved loop buttons (single row of 8) - below hot cues
+    let loop_panel = saved_loop_buttons::view(state);
+
     let save_section = view_save_section(state);
 
     container(
@@ -35,7 +38,8 @@ pub fn view(state: &LoadedTrackState) -> Element<Message> {
             header,
             Space::new().height(8.0),  // Explicit spacing after header
             main_row,
-            cue_panel,  // NO spacing - directly under waveforms
+            cue_panel,   // Hot cues - directly under waveforms
+            loop_panel,  // Saved loops - below hot cues
             // Spacer pushes save section to bottom
             Space::new().height(Length::Fill),
             save_section,

@@ -6,5 +6,6 @@ pub mod audio_file;
 pub mod timestretch;
 pub mod pd;
 pub mod engine;
+pub mod playlist;
 
 pub use types::*;

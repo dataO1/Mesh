@@ -12,3 +12,6 @@ rayon = "1.10"
 basedrop = "0.1"  # RT-safe deferred deallocation for audio
 bytemuck = { version = "1.21", features = ["derive"] }
 log = "0.4"
+
+[dev-dependencies]
+tempfile = "3.15"

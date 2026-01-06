@@ -271,8 +271,6 @@ pub struct Deck {
     scratch_offset: f64,
     /// Whether shift is held (for alternate button functions)
     shift_held: bool,
-    /// Beat jump size in beats (1, 4, 8, 16, 32)
-    beat_jump_size: i32,
     /// Time stretch ratio (target_bpm / track_bpm)
     /// > 1.0 = speedup (play faster), < 1.0 = slowdown, 1.0 = no stretch
     stretch_ratio: f64,
@@ -305,7 +303,6 @@ impl Deck {
             stems: std::array::from_fn(|_| StemState::new()),
             scratch_offset: 0.0,
             shift_held: false,
-            beat_jump_size: 4, // Default 4 beats
             stretch_ratio: 1.0, // No stretching by default
             hot_cue_preview_return: None,
             slip_enabled: false,
@@ -348,6 +345,22 @@ impl Deck {
         self.atomics.loop_end.store(self.loop_state.end as u64, Ordering::Relaxed);
     }
 
+    /// Set the default loop length index
+    ///
+    /// Call this after creating a new Deck to apply the user's preferred
+    /// default loop length from config.
+    ///
+    /// # Arguments
+    /// * `index` - Index into LOOP_LENGTHS (0-6, corresponding to 0.25, 0.5, 1, 2, 4, 8, 16 beats)
+    pub fn set_loop_length_index(&mut self, index: usize) {
+        self.loop_state.length_index = index.min(LOOP_LENGTHS.len() - 1);
+    }
+
+    /// Get the current loop length index
+    pub fn loop_length_index(&self) -> usize {
+        self.loop_state.length_index
+    }
+
     /// Write cue point to atomics (internal helper)
     #[inline]
     fn sync_cue_atomic(&self) {
@@ -374,13 +387,19 @@ impl Deck {
     /// Note: Effect chain reset is deferred - it will happen on the next audio
     /// frame. This is inaudible (<0.1ms of stale effects).
     pub fn apply_prepared_track(&mut self, prepared: PreparedTrack) {
+        // Preserve the user's loop length preference
+        let length_index = self.loop_state.length_index;
+
         // All these are moves/copies, no allocations
         self.track = Some(prepared.track);
         self.position = prepared.first_beat;
         self.state = PlayState::Stopped;
         self.cue_point = prepared.first_beat;
         self.hot_cues = prepared.hot_cues;
-        self.loop_state = LoopState::default();
+        self.loop_state = LoopState {
+            length_index,
+            ..LoopState::default()
+        };
         self.scratch_offset = 0.0;
         self.hot_cue_preview_return = None;
 
@@ -579,14 +598,13 @@ impl Deck {
         }
     }
 
-    /// Set the beat jump size in beats
-    pub fn set_beat_jump_size(&mut self, beats: i32) {
-        self.beat_jump_size = beats.clamp(1, 32);
-    }
-
-    /// Get the current beat jump size in beats
+    /// Get the current beat jump size in beats (equals loop length)
+    ///
+    /// Beat jump is now unified with loop length - they always match.
+    /// Minimum of 1 beat for fractional loop lengths.
     pub fn beat_jump_size(&self) -> i32 {
-        self.beat_jump_size
+        // Use loop length as beat jump size, minimum 1 beat
+        self.loop_state.length_beats().max(1.0) as i32
     }
 
     /// Get the current time stretch ratio
@@ -605,35 +623,54 @@ impl Deck {
         self.stretch_ratio = ratio.clamp(0.5, 2.0);
     }
 
-    /// Beat jump forward by beat_jump_size beats
+    /// Beat jump forward by beat_jump_size beats (equals loop length)
     pub fn beat_jump_forward(&mut self) {
         if let Some(track) = &self.track {
             let beats = &track.metadata.beat_grid.beats;
+            let jump_size = self.beat_jump_size() as usize;
             let current_idx = beats
                 .iter()
                 .position(|&b| b as usize >= self.position)
                 .unwrap_or(0);
-            let target_idx =
-                (current_idx + self.beat_jump_size as usize).min(beats.len().saturating_sub(1));
+            let target_idx = (current_idx + jump_size).min(beats.len().saturating_sub(1));
             if let Some(&target_pos) = beats.get(target_idx) {
+                let old_position = self.position;
                 self.position = target_pos as usize;
                 self.sync_position_atomic();
+
+                // If loop is active, move the loop by the same distance
+                if self.loop_state.active {
+                    let jump_distance = self.position.saturating_sub(old_position);
+                    self.loop_state.start = self.loop_state.start.saturating_add(jump_distance);
+                    self.loop_state.end = self.loop_state.end.saturating_add(jump_distance);
+                    self.sync_loop_atomic();
+                }
             }
         }
     }
 
-    /// Beat jump backward by beat_jump_size beats
+    /// Beat jump backward by beat_jump_size beats (equals loop length)
     pub fn beat_jump_backward(&mut self) {
         if let Some(track) = &self.track {
             let beats = &track.metadata.beat_grid.beats;
+            let jump_size = self.beat_jump_size() as usize;
             let current_idx = beats
                 .iter()
                 .position(|&b| b as usize >= self.position)
                 .unwrap_or(0);
-            let target_idx = current_idx.saturating_sub(self.beat_jump_size as usize);
+            let target_idx = current_idx.saturating_sub(jump_size);
             if let Some(&target_pos) = beats.get(target_idx) {
+                let old_position = self.position;
                 self.position = target_pos as usize;
                 self.sync_position_atomic();
+
+                // If loop is active, move the loop by the same distance (backward)
+                if self.loop_state.active {
+                    let jump_distance = old_position.saturating_sub(self.position);
+                    self.loop_state.start = self.loop_state.start.saturating_sub(jump_distance);
+                    self.loop_state.end = self.loop_state.end.saturating_sub(jump_distance);
+                    self.sync_loop_atomic();
+                }
             }
         }
     }
@@ -765,10 +802,15 @@ impl Deck {
             if self.slip_enabled {
                 self.slip_position = Some(self.position);
             }
-            // Set loop start at current position
+            // Snap loop start to nearest beat
+            let start = self.snap_to_beat(self.position);
+            // Calculate raw end and snap to nearest beat
             let length = self.loop_state.length_samples(self.samples_per_beat());
-            self.loop_state.start = self.position;
-            self.loop_state.end = self.position + length;
+            let raw_end = start + length;
+            let end = self.snap_to_beat(raw_end);
+
+            self.loop_state.start = start;
+            self.loop_state.end = end;
             self.loop_state.active = true;
         }
         self.sync_loop_atomic();
@@ -787,10 +829,12 @@ impl Deck {
             self.loop_state.decrease_length();
         }
 
-        // Update loop end if loop is active
+        // Update loop end if loop is active, snapping to beat grid
         if self.loop_state.active {
             let length = self.loop_state.length_samples(self.samples_per_beat());
-            self.loop_state.end = self.loop_state.start + length;
+            let raw_end = self.loop_state.start + length;
+            let end = self.snap_to_beat(raw_end);
+            self.loop_state.end = end;
             self.sync_loop_atomic();
         }
     }
@@ -887,6 +931,26 @@ impl Deck {
     /// Turn loop off
     pub fn loop_off(&mut self) {
         self.loop_state.active = false;
+        self.sync_loop_atomic();
+    }
+
+    /// Check if loop is currently active
+    pub fn is_loop_active(&self) -> bool {
+        self.loop_state.active
+    }
+
+    /// Get loop bounds (start, end) as sample positions
+    pub fn loop_bounds(&self) -> (usize, usize) {
+        (self.loop_state.start, self.loop_state.end)
+    }
+
+    /// Set loop bounds and activate the loop
+    ///
+    /// Used for recalling saved loops - sets exact positions without snapping.
+    pub fn set_loop(&mut self, start: usize, end: usize) {
+        self.loop_state.start = start;
+        self.loop_state.end = end;
+        self.loop_state.active = true;
         self.sync_loop_atomic();
     }
 

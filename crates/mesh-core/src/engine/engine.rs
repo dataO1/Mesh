@@ -319,12 +319,6 @@ impl AudioEngine {
                         d.beat_jump_backward();
                     }
                 }
-                EngineCommand::SetBeatJumpSize { deck, beats } => {
-                    if let Some(d) = self.decks.get_mut(deck) {
-                        d.set_beat_jump_size(beats);
-                    }
-                }
-
                 // Stem Control
                 EngineCommand::ToggleStemMute { deck, stem } => {
                     if let Some(d) = self.decks.get_mut(deck) {

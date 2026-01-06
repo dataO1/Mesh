@@ -290,17 +290,11 @@ impl EffectChain {
 
     /// Process audio through all effects in the chain
     ///
-    /// `any_soloed` indicates if any chain in the group has solo enabled.
-    /// If true and this chain isn't soloed, it will output silence.
-    pub fn process(&mut self, buffer: &mut StereoBuffer, any_soloed: bool) {
+    /// Note: Solo filtering is handled at the Deck level before calling this method.
+    /// The `_any_soloed` parameter is kept for API compatibility but not used here.
+    pub fn process(&mut self, buffer: &mut StereoBuffer, _any_soloed: bool) {
         // If muted, just zero the buffer
         if self.muted {
-            buffer.fill_silence();
-            return;
-        }
-
-        // If another chain is soloed and this one isn't, silence it
-        if any_soloed && !self.soloed {
             buffer.fill_silence();
             return;
         }

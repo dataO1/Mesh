@@ -64,9 +64,16 @@ impl Collection {
             return Ok(());
         }
 
-        // Scan for WAV files
-        let entries = fs::read_dir(&self.path)
-            .with_context(|| format!("Failed to read collection directory: {:?}", self.path))?;
+        // Scan the tracks/ subdirectory for WAV files
+        let tracks_dir = self.path.join("tracks");
+        if !tracks_dir.exists() {
+            log::info!("scan: Tracks directory doesn't exist, creating it");
+            fs::create_dir_all(&tracks_dir)?;
+            return Ok(());
+        }
+
+        let entries = fs::read_dir(&tracks_dir)
+            .with_context(|| format!("Failed to read tracks directory: {:?}", tracks_dir))?;
 
         let mut file_count = 0;
         for entry in entries.flatten() {
@@ -148,14 +155,15 @@ impl Collection {
             }
         }
 
-        // Ensure collection directory exists
+        // Ensure collection directory and tracks subdirectory exist
         log::info!("  Creating collection directory if needed...");
-        fs::create_dir_all(&self.path)?;
-        log::info!("  Collection directory ready: {:?}", self.path);
+        let tracks_dir = self.path.join("tracks");
+        fs::create_dir_all(&tracks_dir)?;
+        log::info!("  Tracks directory ready: {:?}", tracks_dir);
 
-        // Create destination path
+        // Create destination path in tracks/ subdirectory
         let dest_name = format!("{}.wav", sanitize_filename(name));
-        let dest_path = self.path.join(&dest_name);
+        let dest_path = tracks_dir.join(&dest_name);
         log::info!("  Destination: {:?}", dest_path);
 
         // Copy file

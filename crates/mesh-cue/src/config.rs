@@ -43,14 +43,32 @@ pub struct DisplayConfig {
     pub grid_bars: u32,
     /// Zoomed waveform zoom level (1-64 bars)
     pub zoom_bars: u32,
+    /// Global BPM for playback (saved/restored between sessions)
+    pub global_bpm: f64,
+    /// Default loop length index (0-6 maps to 0.25, 0.5, 1, 2, 4, 8, 16 beats)
+    pub default_loop_length_index: usize,
 }
+
+/// Loop length options in beats
+pub const LOOP_LENGTH_OPTIONS: [f32; 7] = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0];
 
 impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
-            grid_bars: 8,  // Default to 8 bars between grid lines
-            zoom_bars: 8,  // Default zoomed waveform to 8 bars
+            grid_bars: 8,       // Default to 8 bars between grid lines
+            zoom_bars: 8,       // Default zoomed waveform to 8 bars
+            global_bpm: 128.0,  // Standard house/techno BPM
+            default_loop_length_index: 4,  // Default to 4 beats (index 4 in LOOP_LENGTH_OPTIONS)
         }
+    }
+}
+
+impl DisplayConfig {
+    /// Get the default loop length in beats
+    pub fn default_loop_length_beats(&self) -> f32 {
+        LOOP_LENGTH_OPTIONS.get(self.default_loop_length_index)
+            .copied()
+            .unwrap_or(4.0)
     }
 }
 

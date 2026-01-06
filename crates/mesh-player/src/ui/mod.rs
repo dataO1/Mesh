@@ -8,5 +8,6 @@ pub mod deck_view;
 pub mod file_browser;
 pub mod mixer_view;
 pub mod player_canvas;
+pub mod settings;
 
 pub use app::MeshApp;

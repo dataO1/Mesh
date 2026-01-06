@@ -2462,6 +2462,7 @@ dependencies = [
  "riff",
  "rtrb",
  "signalsmith-stretch",
+ "tempfile",
 ]
 
 [[package]]
@@ -2480,6 +2481,7 @@ dependencies = [
  "mesh-widgets",
  "rfd",
  "riff",
+ "rtrb",
  "serde",
  "serde_yaml",
  "thiserror 2.0.17",
@@ -2490,7 +2492,9 @@ dependencies = [
 name = "mesh-player"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "basedrop",
+ "dirs",
  "env_logger",
  "iced",
  "jack",
@@ -2499,6 +2503,8 @@ dependencies = [
  "mesh-widgets",
  "rayon",
  "rtrb",
+ "serde",
+ "serde_yaml",
  "tokio",
 ]
 
