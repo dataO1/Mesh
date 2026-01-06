@@ -8,7 +8,11 @@ use mesh_widgets::playlist_browser;
 
 /// Render the collection view (editor + dual browsers below)
 /// Note: Progress bar moved to main app view (always visible at bottom of screen)
-pub fn view<'a>(state: &'a CollectionState, _import_state: &'a ImportState) -> Element<'a, Message> {
+/// Note: Modifier key handling (Shift/Ctrl) is done in app's update() handler
+pub fn view<'a>(
+    state: &'a CollectionState,
+    _import_state: &'a ImportState,
+) -> Element<'a, Message> {
     let editor = view_editor(state);
     let browser_header = view_browser_header();
     let browsers = view_browsers(state);
@@ -70,6 +74,7 @@ fn view_editor(state: &CollectionState) -> Element<Message> {
 /// Dual playlist browsers (bottom section)
 fn view_browsers(state: &CollectionState) -> Element<Message> {
     // Use cached tracks from state (updated when folder changes in message handlers)
+    // Note: Modifier key handling (Shift/Ctrl) is done in app's update() handler
     let left_browser = playlist_browser(
         &state.tree_nodes,
         &state.left_tracks,

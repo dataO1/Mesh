@@ -1,0 +1,260 @@
+//! Read-only collection browser for mesh-player
+//!
+//! A simplified playlist browser that allows:
+//! - Navigating the collection tree
+//! - Searching and sorting tracks
+//! - Loading tracks to one of 4 decks
+//!
+//! Unlike mesh-cue's browser, this is READ-ONLY:
+//! - No playlist creation/rename/delete
+//! - No drag-drop between playlists
+//! - No inline metadata editing
+
+use iced::widget::{button, column, container, row, text};
+use iced::{Element, Length};
+use mesh_core::playlist::{FilesystemStorage, NodeId, NodeKind, PlaylistNode, PlaylistStorage};
+use mesh_widgets::{
+    playlist_browser, PlaylistBrowserMessage, PlaylistBrowserState, TrackRow,
+    TrackTableMessage, TreeIcon, TreeMessage, TreeNode,
+};
+use std::path::PathBuf;
+
+/// State for the collection browser
+pub struct CollectionBrowserState {
+    /// Playlist storage backend (shared with mesh-cue)
+    pub storage: Option<Box<FilesystemStorage>>,
+    /// Browser widget state (single browser, not dual)
+    pub browser: PlaylistBrowserState<NodeId, NodeId>,
+    /// Cached tree nodes for display
+    pub tree_nodes: Vec<TreeNode<NodeId>>,
+    /// Cached tracks for current folder
+    pub tracks: Vec<TrackRow<NodeId>>,
+    /// Currently selected track path (for deck load buttons)
+    selected_track_path: Option<PathBuf>,
+}
+
+/// Messages from the collection browser
+#[derive(Debug, Clone)]
+pub enum CollectionBrowserMessage {
+    /// Internal browser message (filtered for read-only)
+    Browser(PlaylistBrowserMessage<NodeId, NodeId>),
+    /// Load selected track to a specific deck
+    LoadToDeck(usize),
+    /// Refresh collection from disk
+    Refresh,
+}
+
+impl CollectionBrowserState {
+    /// Create new state, initializing storage at collection path
+    pub fn new(collection_path: PathBuf) -> Self {
+        let storage = match FilesystemStorage::new(collection_path) {
+            Ok(s) => Some(Box::new(s)),
+            Err(e) => {
+                log::warn!("Failed to initialize collection storage: {}", e);
+                None
+            }
+        };
+
+        let tree_nodes = storage
+            .as_ref()
+            .map(|s| build_tree_nodes(s))
+            .unwrap_or_default();
+
+        Self {
+            storage,
+            browser: PlaylistBrowserState::new(),
+            tree_nodes,
+            tracks: Vec::new(),
+            selected_track_path: None,
+        }
+    }
+
+    /// Handle a browser message (filters out write operations)
+    /// Returns Some((deck_idx, path)) if a track should be loaded
+    pub fn handle_message(&mut self, msg: CollectionBrowserMessage) -> Option<(usize, PathBuf)> {
+        match msg {
+            CollectionBrowserMessage::Browser(browser_msg) => {
+                match browser_msg {
+                    PlaylistBrowserMessage::Tree(ref tree_msg) => {
+                        // Only handle read-only tree operations
+                        match tree_msg {
+                            TreeMessage::Toggle(_) | TreeMessage::Select(_) => {
+                                let folder_changed = self.browser.handle_tree_message(tree_msg);
+                                if folder_changed {
+                                    if let Some(ref folder) = self.browser.current_folder {
+                                        if let Some(ref storage) = self.storage {
+                                            self.tracks = get_tracks_for_folder(storage, folder);
+                                        }
+                                    }
+                                    // Clear track selection when folder changes
+                                    self.selected_track_path = None;
+                                }
+                            }
+                            // Ignore all write operations
+                            TreeMessage::CreateChild(_)
+                            | TreeMessage::StartEdit(_)
+                            | TreeMessage::EditChanged(_)
+                            | TreeMessage::CommitEdit
+                            | TreeMessage::CancelEdit
+                            | TreeMessage::DropReceived(_) => {
+                                // Silently ignore write operations
+                            }
+                        }
+                    }
+                    PlaylistBrowserMessage::Table(ref table_msg) => {
+                        // Only handle read-only table operations
+                        match table_msg {
+                            TrackTableMessage::SearchChanged(_) | TrackTableMessage::SortBy(_) => {
+                                let _ = self.browser.handle_table_message(table_msg);
+                            }
+                            TrackTableMessage::Select(track_id) => {
+                                // mesh-player uses simple single-selection (no Shift/Ctrl)
+                                self.browser.table_state.select(track_id.clone());
+                                // Update selected track path for load buttons
+                                self.selected_track_path = self.get_track_path(track_id);
+                            }
+                            TrackTableMessage::Activate(track_id) => {
+                                // Double-click loads to Deck 1
+                                if let Some(path) = self.get_track_path(track_id) {
+                                    return Some((0, path));
+                                }
+                            }
+                            // Ignore all edit and drop operations (mesh-player is read-only)
+                            TrackTableMessage::StartEdit(_, _, _)
+                            | TrackTableMessage::EditChanged(_)
+                            | TrackTableMessage::CommitEdit
+                            | TrackTableMessage::CancelEdit
+                            | TrackTableMessage::DropReceived(_) => {
+                                // Silently ignore edit and drop operations
+                            }
+                        }
+                    }
+                }
+                None
+            }
+            CollectionBrowserMessage::LoadToDeck(deck_idx) => {
+                self.selected_track_path
+                    .clone()
+                    .map(|path| (deck_idx, path))
+            }
+            CollectionBrowserMessage::Refresh => {
+                if let Some(ref mut storage) = self.storage {
+                    let _ = storage.refresh();
+                    self.tree_nodes = build_tree_nodes(storage);
+                    if let Some(ref folder) = self.browser.current_folder {
+                        self.tracks = get_tracks_for_folder(storage, folder);
+                    }
+                }
+                None
+            }
+        }
+    }
+
+    /// Get track path by ID from storage
+    fn get_track_path(&self, track_id: &NodeId) -> Option<PathBuf> {
+        self.storage
+            .as_ref()
+            .and_then(|s| s.get_node(track_id))
+            .and_then(|node| node.track_path)
+    }
+
+    /// Build the view with deck load buttons
+    pub fn view(&self) -> Element<CollectionBrowserMessage> {
+        // mesh-player uses simple single-selection (no Shift/Ctrl modifier tracking)
+        let browser_element = playlist_browser(
+            &self.tree_nodes,
+            &self.tracks,
+            &self.browser,
+            CollectionBrowserMessage::Browser,
+        );
+
+        // Show deck load buttons if a track is selected
+        let load_buttons: Element<CollectionBrowserMessage> = if self.selected_track_path.is_some()
+        {
+            row![
+                button(text("Load Deck 1").size(11))
+                    .on_press(CollectionBrowserMessage::LoadToDeck(0))
+                    .padding([4, 8]),
+                button(text("Load Deck 2").size(11))
+                    .on_press(CollectionBrowserMessage::LoadToDeck(1))
+                    .padding([4, 8]),
+                button(text("Load Deck 3").size(11))
+                    .on_press(CollectionBrowserMessage::LoadToDeck(2))
+                    .padding([4, 8]),
+                button(text("Load Deck 4").size(11))
+                    .on_press(CollectionBrowserMessage::LoadToDeck(3))
+                    .padding([4, 8]),
+            ]
+            .spacing(5)
+            .into()
+        } else {
+            row![text("Select a track to load").size(11),].into()
+        };
+
+        let load_bar = container(load_buttons).padding([5, 10]);
+
+        column![browser_element, load_bar]
+            .spacing(0)
+            .height(Length::Fill)
+            .into()
+    }
+
+}
+
+/// Build tree nodes from storage (read-only: no create/rename allowed)
+fn build_tree_nodes(storage: &FilesystemStorage) -> Vec<TreeNode<NodeId>> {
+    let root = storage.root();
+    build_node_children(storage, &root)
+}
+
+/// Recursively build tree node children (read-only version)
+fn build_node_children(storage: &FilesystemStorage, parent: &PlaylistNode) -> Vec<TreeNode<NodeId>> {
+    storage
+        .get_children(&parent.id)
+        .into_iter()
+        .filter(|node| node.kind != NodeKind::Track) // Only folders in tree
+        .map(|node| {
+            let icon = match node.kind {
+                NodeKind::Collection => TreeIcon::Collection,
+                NodeKind::CollectionFolder => TreeIcon::Folder,
+                NodeKind::PlaylistsRoot => TreeIcon::Folder,
+                NodeKind::Playlist => TreeIcon::Playlist,
+                _ => TreeIcon::Folder,
+            };
+
+            // READ-ONLY: Never allow create or rename
+            TreeNode::with_children(
+                node.id.clone(),
+                node.name.clone(),
+                icon,
+                build_node_children(storage, &node),
+            )
+            .with_create_child(false)
+            .with_rename(false)
+        })
+        .collect()
+}
+
+/// Get tracks for a folder as TrackRow items for display
+fn get_tracks_for_folder(storage: &FilesystemStorage, folder_id: &NodeId) -> Vec<TrackRow<NodeId>> {
+    storage
+        .get_tracks(folder_id)
+        .into_iter()
+        .map(|info| {
+            let mut row = TrackRow::new(info.id, info.name);
+            if let Some(artist) = info.artist {
+                row = row.with_artist(artist);
+            }
+            if let Some(bpm) = info.bpm {
+                row = row.with_bpm(bpm);
+            }
+            if let Some(key) = info.key {
+                row = row.with_key(key);
+            }
+            if let Some(duration) = info.duration {
+                row = row.with_duration(duration);
+            }
+            row
+        })
+        .collect()
+}

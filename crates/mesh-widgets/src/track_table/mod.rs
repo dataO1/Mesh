@@ -15,6 +15,17 @@
 
 use iced::widget::{button, column, container, mouse_area, row, scrollable, text, text_input};
 use iced::{Background, Border, Color, Element, Length, Padding, Theme};
+use std::collections::HashSet;
+use std::hash::Hash;
+
+/// Modifier keys held during a selection click
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SelectModifiers {
+    /// Shift key held (for range selection)
+    pub shift: bool,
+    /// Ctrl/Cmd key held (for toggle selection)
+    pub ctrl: bool,
+}
 
 /// Column types for the track table
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,11 +157,15 @@ impl<Id: Clone> TrackRow<Id> {
 
 /// State for the track table widget
 #[derive(Debug, Clone)]
-pub struct TrackTableState<Id: Clone> {
+pub struct TrackTableState<Id: Clone + Eq + Hash> {
     /// Current search query
     pub search_query: String,
-    /// Currently selected track ID
-    pub selected: Option<Id>,
+    /// Currently selected track IDs (supports multi-selection)
+    pub selected: HashSet<Id>,
+    /// Anchor point for Shift+click range selection
+    pub anchor: Option<Id>,
+    /// Most recently selected track (for keyboard navigation)
+    pub last_selected: Option<Id>,
     /// Column to sort by
     pub sort_column: TrackColumn,
     /// Sort direction (true = ascending)
@@ -161,18 +176,20 @@ pub struct TrackTableState<Id: Clone> {
     pub edit_buffer: String,
 }
 
-impl<Id: Clone> Default for TrackTableState<Id> {
+impl<Id: Clone + Eq + Hash> Default for TrackTableState<Id> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<Id: Clone> TrackTableState<Id> {
+impl<Id: Clone + Eq + Hash> TrackTableState<Id> {
     /// Create a new table state with default values
     pub fn new() -> Self {
         Self {
             search_query: String::new(),
-            selected: None,
+            selected: HashSet::new(),
+            anchor: None,
+            last_selected: None,
             sort_column: TrackColumn::Name,
             sort_ascending: true,
             editing: None,
@@ -185,14 +202,78 @@ impl<Id: Clone> TrackTableState<Id> {
         self.search_query = query;
     }
 
-    /// Select a track
+    /// Select a single track (clears other selections)
+    /// Used for normal clicks without modifiers
     pub fn select(&mut self, id: Id) {
-        self.selected = Some(id);
+        self.selected.clear();
+        self.selected.insert(id.clone());
+        self.anchor = Some(id.clone());
+        self.last_selected = Some(id);
     }
 
-    /// Clear selection
+    /// Toggle selection of a track (Ctrl+click)
+    /// Adds or removes from selection without affecting others
+    pub fn toggle_select(&mut self, id: Id) {
+        if self.selected.contains(&id) {
+            self.selected.remove(&id);
+        } else {
+            self.selected.insert(id.clone());
+        }
+        self.last_selected = Some(id);
+    }
+
+    /// Select a range of tracks (Shift+click)
+    /// Selects all tracks between anchor and target
+    pub fn select_range(&mut self, id: Id, all_ids: &[Id]) {
+        if let Some(ref anchor) = self.anchor {
+            let anchor_idx = all_ids.iter().position(|x| x == anchor);
+            let target_idx = all_ids.iter().position(|x| x == &id);
+
+            if let (Some(a), Some(t)) = (anchor_idx, target_idx) {
+                let (start, end) = if a <= t { (a, t) } else { (t, a) };
+                for i in start..=end {
+                    self.selected.insert(all_ids[i].clone());
+                }
+            }
+        } else {
+            // No anchor - just select this one
+            self.select(id.clone());
+        }
+        self.last_selected = Some(id);
+    }
+
+    /// Handle a selection with modifiers
+    /// Dispatches to appropriate selection method based on modifiers
+    pub fn handle_select(&mut self, id: Id, modifiers: SelectModifiers, all_ids: &[Id]) {
+        if modifiers.shift {
+            self.select_range(id, all_ids);
+        } else if modifiers.ctrl {
+            self.toggle_select(id);
+        } else {
+            self.select(id);
+        }
+    }
+
+    /// Clear all selections
     pub fn clear_selection(&mut self) {
-        self.selected = None;
+        self.selected.clear();
+        self.anchor = None;
+        self.last_selected = None;
+    }
+
+    /// Check if any tracks are selected
+    pub fn has_selection(&self) -> bool {
+        !self.selected.is_empty()
+    }
+
+    /// Get all selected track IDs
+    pub fn selected_ids(&self) -> &HashSet<Id> {
+        &self.selected
+    }
+
+    /// Get selected IDs as a Vec (useful for iteration with ordering)
+    pub fn selected_vec(&self) -> Vec<Id> {
+        self.selected.iter().cloned().collect()
     }
 
     /// Set sort column (toggles direction if same column)
@@ -206,11 +287,8 @@ impl<Id: Clone> TrackTableState<Id> {
     }
 
     /// Check if a track is selected
-    pub fn is_selected(&self, id: &Id) -> bool
-    where
-        Id: PartialEq,
-    {
-        self.selected.as_ref() == Some(id)
+    pub fn is_selected(&self, id: &Id) -> bool {
+        self.selected.contains(id)
     }
 
     /// Start editing a cell
@@ -220,10 +298,7 @@ impl<Id: Clone> TrackTableState<Id> {
     }
 
     /// Check if a specific cell is being edited
-    pub fn is_editing(&self, id: &Id, column: TrackColumn) -> bool
-    where
-        Id: PartialEq,
-    {
+    pub fn is_editing(&self, id: &Id, column: TrackColumn) -> bool {
         self.editing
             .as_ref()
             .map(|(edit_id, edit_col)| edit_id == id && *edit_col == column)
@@ -252,7 +327,9 @@ impl<Id: Clone> TrackTableState<Id> {
 pub enum TrackTableMessage<Id> {
     /// Search query changed
     SearchChanged(String),
-    /// Track selected (single click) - also triggers drag operation at app level
+    /// Track selected (single click)
+    /// Note: Modifier handling (Shift/Ctrl) is done in the app's update() handler
+    /// where current keyboard state is available, NOT in the widget's view().
     Select(Id),
     /// Track activated (double click)
     Activate(Id),
@@ -266,6 +343,9 @@ pub enum TrackTableMessage<Id> {
     CommitEdit,
     /// Cancel edit (Escape pressed)
     CancelEdit,
+    /// Mouse released over track row (for drop detection)
+    /// Used to detect when dragged tracks are dropped onto this track/folder
+    DropReceived(Id),
 }
 
 /// Build a track table view
@@ -275,13 +355,17 @@ pub enum TrackTableMessage<Id> {
 /// * `tracks` - Tracks to display
 /// * `state` - Current table state (search, selection, sort)
 /// * `on_message` - Callback to convert table messages to your message type
+///
+/// Note: Modifier key handling (Shift/Ctrl for multi-select) is NOT done here.
+/// The `Select` message should be handled in the app's `update()` where
+/// current keyboard state is available.
 pub fn track_table<'a, Id, Message>(
     tracks: &'a [TrackRow<Id>],
     state: &'a TrackTableState<Id>,
     on_message: impl Fn(TrackTableMessage<Id>) -> Message + 'a + Clone,
 ) -> Element<'a, Message>
 where
-    Id: Clone + PartialEq + 'a,
+    Id: Clone + PartialEq + Eq + Hash + 'a,
     Message: Clone + 'a,
 {
     let on_msg = on_message.clone();
@@ -356,7 +440,7 @@ fn build_headers<'a, Id, Message>(
     on_message: impl Fn(TrackTableMessage<Id>) -> Message + 'a + Clone,
 ) -> Element<'a, Message>
 where
-    Id: Clone + 'a,
+    Id: Clone + Eq + Hash + 'a,
     Message: Clone + 'a,
 {
     let headers: Vec<Element<'a, Message>> = TrackColumn::all()
@@ -377,7 +461,7 @@ fn build_header_cell<'a, Id, Message>(
     on_message: impl Fn(TrackTableMessage<Id>) -> Message + 'a,
 ) -> Element<'a, Message>
 where
-    Id: Clone + 'a,
+    Id: Clone + Eq + Hash + 'a,
     Message: Clone + 'a,
 {
     let is_sorted = state.sort_column == column;
@@ -417,7 +501,7 @@ fn build_cell<'a, Id, Message>(
     on_message: impl Fn(TrackTableMessage<Id>) -> Message + 'a + Clone,
 ) -> Element<'a, Message>
 where
-    Id: Clone + PartialEq + 'a,
+    Id: Clone + PartialEq + Eq + Hash + 'a,
     Message: Clone + 'a,
 {
     let is_editing = state.is_editing(&track.id, column);
@@ -477,7 +561,7 @@ fn build_track_row<'a, Id, Message>(
     on_message: impl Fn(TrackTableMessage<Id>) -> Message + 'a + Clone,
 ) -> Element<'a, Message>
 where
-    Id: Clone + PartialEq + 'a,
+    Id: Clone + PartialEq + Eq + Hash + 'a,
     Message: Clone + 'a,
 {
     let is_selected = state.is_selected(&track.id);
@@ -533,12 +617,18 @@ where
     if is_row_editing {
         row_button.into()
     } else {
+        // Clone id for drop detection
+        let id_drop = track.id.clone();
+        let on_msg_drop = on_message.clone();
+
         // mouse_area handles all mouse events:
-        // - on_press: Select track AND start potential drag
+        // - on_press: Select track (modifier handling is in app's update())
         // - on_double_click: Activate/load track
+        // - on_release: Drop detection (when drag ends over this row)
         mouse_area(row_button)
             .on_press(on_msg(TrackTableMessage::Select(id)))
             .on_double_click(on_msg_activate(TrackTableMessage::Activate(id_activate)))
+            .on_release(on_msg_drop(TrackTableMessage::DropReceived(id_drop)))
             .into()
     }
 }

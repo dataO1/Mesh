@@ -3,7 +3,7 @@
 use crate::audio::{AudioState, JackHandle, start_jack_client};
 use crate::batch_import::{self, ImportConfig, ImportProgress, StemGroup, TrackImportResult};
 use crate::collection::Collection;
-use crate::config::{self, Config};
+use crate::config::{self, BpmSource, Config};
 use crate::export;
 use crate::keybindings::{self, KeybindingsConfig};
 use super::waveform::{CombinedWaveformView, WaveformView, ZoomedWaveformView};
@@ -36,15 +36,44 @@ pub enum BrowserSide {
     Right,
 }
 
-/// State for an in-progress drag operation
+/// State for an in-progress drag operation (supports multi-track drag)
 #[derive(Debug, Clone)]
 pub struct DragState {
-    /// The track being dragged
-    pub track_id: NodeId,
-    /// Display name of the track
-    pub track_name: String,
+    /// The tracks being dragged (supports multi-selection)
+    pub track_ids: Vec<NodeId>,
+    /// Display names of the tracks (for status display)
+    pub track_names: Vec<String>,
     /// Which browser the drag started from
     pub source_browser: BrowserSide,
+}
+
+impl DragState {
+    /// Create a new drag state for a single track
+    pub fn single(track_id: NodeId, track_name: String, source_browser: BrowserSide) -> Self {
+        Self {
+            track_ids: vec![track_id],
+            track_names: vec![track_name],
+            source_browser,
+        }
+    }
+
+    /// Create a new drag state for multiple tracks
+    pub fn multiple(
+        track_ids: Vec<NodeId>,
+        track_names: Vec<String>,
+        source_browser: BrowserSide,
+    ) -> Self {
+        Self { track_ids, track_names, source_browser }
+    }
+
+    /// Get display text for the drag operation
+    pub fn display_text(&self) -> String {
+        match self.track_names.len() {
+            0 => String::new(),
+            1 => self.track_names[0].clone(),
+            n => format!("{} tracks", n),
+        }
+    }
 }
 
 /// State for the collection view
@@ -231,6 +260,8 @@ pub struct SettingsState {
     pub draft_track_name_format: String,
     /// Draft grid bars value (4, 8, 16, 32)
     pub draft_grid_bars: u32,
+    /// Draft BPM source for analysis (drums-only or full mix)
+    pub draft_bpm_source: BpmSource,
     /// Status message for save feedback
     pub status: String,
 }
@@ -245,6 +276,7 @@ impl SettingsState {
             draft_parallel_processes: config.analysis.parallel_processes.to_string(),
             draft_track_name_format: config.track_name_format.clone(),
             draft_grid_bars: config.display.grid_bars,
+            draft_bpm_source: config.analysis.bpm.source,
             status: String::new(),
         }
     }
@@ -406,6 +438,7 @@ pub enum Message {
     UpdateSettingsParallelProcesses(String),
     UpdateSettingsTrackNameFormat(String),
     UpdateSettingsGridBars(u32),
+    UpdateSettingsBpmSource(BpmSource),
     SaveSettings,
     SaveSettingsComplete(Result<(), String>),
 
@@ -415,6 +448,8 @@ pub enum Message {
     KeyPressed(iced::keyboard::Key, iced::keyboard::Modifiers, bool),
     /// Key released (for hot cue preview release)
     KeyReleased(iced::keyboard::Key, iced::keyboard::Modifiers),
+    /// Modifier keys changed (Shift/Ctrl pressed/released without another key)
+    ModifiersChanged(iced::keyboard::Modifiers),
 
     // Playlist Browsers
     /// Message from left playlist browser
@@ -427,17 +462,17 @@ pub enum Message {
     LoadTrackByPath(PathBuf),
 
     // Drag and Drop
-    /// Start dragging a track from a browser
+    /// Start dragging track(s) from a browser (supports multi-selection)
     DragTrackStart {
-        track_id: NodeId,
-        track_name: String,
+        track_ids: Vec<NodeId>,
+        track_names: Vec<String>,
         browser: BrowserSide,
     },
     /// Cancel/end drag operation (mouse released without valid drop)
     DragTrackEnd,
-    /// Drop track onto a playlist folder
-    DropTrackOnPlaylist {
-        track_id: NodeId,
+    /// Drop track(s) onto a playlist folder
+    DropTracksOnPlaylist {
+        track_ids: Vec<NodeId>,
         target_playlist: NodeId,
     },
 
@@ -458,6 +493,30 @@ pub enum Message {
     CancelImport,
     /// Dismiss the import results popup
     DismissImportResults,
+
+    // Delete confirmation
+    /// Request deletion (shows confirmation modal)
+    RequestDelete(BrowserSide),
+    /// Request deletion by track/playlist ID (from context menu)
+    RequestDeleteById(NodeId),
+    /// Request deletion of a playlist
+    RequestDeletePlaylist(NodeId),
+    /// Cancel the delete operation
+    CancelDelete,
+    /// Confirm and execute the delete
+    ConfirmDelete,
+
+    // Context menu
+    /// Show context menu at position
+    ShowContextMenu(super::context_menu::ContextMenuKind, iced::Point),
+    /// Close context menu
+    CloseContextMenu,
+
+    // Track operations
+    /// Re-analyze a track (recalculate BPM/key)
+    ReanalyzeTrack(NodeId),
+    /// Start renaming a playlist
+    StartRenamePlaylist(NodeId),
 }
 
 /// Main application
@@ -479,6 +538,8 @@ pub struct MeshCueApp {
     settings: SettingsState,
     /// Whether shift key is currently held (for shift+click actions)
     shift_held: bool,
+    /// Whether ctrl key is currently held (for ctrl+click toggle selection)
+    ctrl_held: bool,
     /// Keybindings configuration
     keybindings: KeybindingsConfig,
     /// Hot cue keys currently pressed (for filtering key repeat)
@@ -487,6 +548,10 @@ pub struct MeshCueApp {
     pressed_cue_key: bool,
     /// Batch import state
     import_state: ImportState,
+    /// Delete confirmation state
+    delete_state: super::delete_modal::DeleteState,
+    /// Context menu state
+    context_menu_state: super::context_menu::ContextMenuState,
 }
 
 impl MeshCueApp {
@@ -557,10 +622,13 @@ impl MeshCueApp {
             config_path,
             settings,
             shift_held: false,
+            ctrl_held: false,
             keybindings,
             pressed_hot_cue_keys: std::collections::HashSet::new(),
             pressed_cue_key: false,
             import_state: ImportState::default(),
+            delete_state: Default::default(),
+            context_menu_state: Default::default(),
         };
 
         // Initial collection scan and playlist refresh
@@ -1408,6 +1476,9 @@ impl MeshCueApp {
             Message::UpdateSettingsGridBars(value) => {
                 self.settings.draft_grid_bars = value;
             }
+            Message::UpdateSettingsBpmSource(source) => {
+                self.settings.draft_bpm_source = source;
+            }
             Message::SaveSettings => {
                 // Parse and validate values
                 let min = self.settings.draft_min_tempo.parse::<i32>().unwrap_or(40);
@@ -1417,6 +1488,7 @@ impl MeshCueApp {
                 let mut new_config = (*self.config).clone();
                 new_config.analysis.bpm.min_tempo = min;
                 new_config.analysis.bpm.max_tempo = max;
+                new_config.analysis.bpm.source = self.settings.draft_bpm_source;
                 new_config.analysis.parallel_processes = parallel;
                 new_config.analysis.validate(); // validates both bpm and parallel_processes
 
@@ -1460,8 +1532,9 @@ impl MeshCueApp {
                 }
             }
             Message::KeyPressed(key, modifiers, repeat) => {
-                // Track shift key state for shift+click actions
+                // Track modifier key states for selection actions
                 self.shift_held = modifiers.shift();
+                self.ctrl_held = modifiers.control();
 
                 // Only handle keybindings in Collection view
                 if self.current_view != View::Collection {
@@ -1469,15 +1542,22 @@ impl MeshCueApp {
                 }
 
                 // Enter key loads selected track (works even without a loaded track)
+                // With multi-selection, loads the most recently selected track
                 if !repeat {
                     if let iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter) = &key {
                         log::info!("Enter pressed - checking for selected track");
-                        // Check left browser selection first
-                        if let Some(ref track_id) = self.collection.browser_left.table_state.selected {
+                        // Check left browser's most recent selection first
+                        if let Some(ref track_id) =
+                            self.collection.browser_left.table_state.last_selected
+                        {
                             log::info!("  Found selection in left browser: {:?}", track_id);
                             if let Some(ref storage) = self.collection.playlist_storage {
                                 if let Some(node) = storage.get_node(track_id) {
-                                    log::info!("  Node found: kind={:?}, track_path={:?}", node.kind, node.track_path);
+                                    log::info!(
+                                        "  Node found: kind={:?}, track_path={:?}",
+                                        node.kind,
+                                        node.track_path
+                                    );
                                     if let Some(path) = node.track_path {
                                         return self.update(Message::LoadTrackByPath(path));
                                     }
@@ -1485,16 +1565,33 @@ impl MeshCueApp {
                             }
                         }
                         // Then check right browser
-                        if let Some(ref track_id) = self.collection.browser_right.table_state.selected {
+                        if let Some(ref track_id) =
+                            self.collection.browser_right.table_state.last_selected
+                        {
                             log::info!("  Found selection in right browser: {:?}", track_id);
                             if let Some(ref storage) = self.collection.playlist_storage {
                                 if let Some(node) = storage.get_node(track_id) {
-                                    log::info!("  Node found: kind={:?}, track_path={:?}", node.kind, node.track_path);
+                                    log::info!(
+                                        "  Node found: kind={:?}, track_path={:?}",
+                                        node.kind,
+                                        node.track_path
+                                    );
                                     if let Some(path) = node.track_path {
                                         return self.update(Message::LoadTrackByPath(path));
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    // Delete key opens delete confirmation modal
+                    if let iced::keyboard::Key::Named(iced::keyboard::key::Named::Delete) = &key {
+                        log::info!("Delete pressed - checking for selected tracks");
+                        // Check which browser has selection (prefer left)
+                        if self.collection.browser_left.table_state.has_selection() {
+                            return self.update(Message::RequestDelete(BrowserSide::Left));
+                        } else if self.collection.browser_right.table_state.has_selection() {
+                            return self.update(Message::RequestDelete(BrowserSide::Right));
                         }
                     }
                 }
@@ -1595,7 +1692,12 @@ impl MeshCueApp {
                 }
             }
             Message::KeyReleased(key, modifiers) => {
-                // Only handle in Collection view with a loaded track
+                // ALWAYS update modifier state, regardless of view
+                // This fixes Shift+Click not working after Shift is released
+                self.shift_held = modifiers.shift();
+                self.ctrl_held = modifiers.control();
+
+                // Only handle keybindings in Collection view with a loaded track
                 if self.current_view != View::Collection {
                     return Task::none();
                 }
@@ -1630,6 +1732,17 @@ impl MeshCueApp {
                         }
                     }
                 }
+            }
+            Message::ModifiersChanged(modifiers) => {
+                // Track modifier key states for Shift+Click and Ctrl+Click selection
+                // This fires when modifiers change without another key being pressed
+                self.shift_held = modifiers.shift();
+                self.ctrl_held = modifiers.control();
+                log::debug!(
+                    "[MODIFIERS] shift={}, ctrl={}",
+                    self.shift_held,
+                    self.ctrl_held
+                );
             }
 
             // Playlist Browsers
@@ -1681,17 +1794,23 @@ impl MeshCueApp {
                             }
                             TreeMessage::DropReceived(target_id) => {
                                 log::debug!("Left tree: DropReceived on {:?}", target_id);
-                                // Check if we're dragging a track and this is a valid drop target
+                                // Check if we're dragging track(s) and this is a valid drop target
                                 if let Some(ref drag) = self.collection.dragging_track {
-                                    log::debug!("  Currently dragging: {:?}", drag.track_name);
+                                    log::debug!("  Currently dragging: {}", drag.display_text());
                                     if let Some(ref storage) = self.collection.playlist_storage {
                                         if let Some(target_node) = storage.get_node(target_id) {
                                             log::debug!("  Target node kind: {:?}", target_node.kind);
                                             // Only allow dropping onto playlists
-                                            if target_node.kind == NodeKind::Playlist || target_node.kind == NodeKind::PlaylistsRoot {
-                                                log::info!("Drop on left tree: {:?} -> {:?}", drag.track_name, target_id);
-                                                return self.update(Message::DropTrackOnPlaylist {
-                                                    track_id: drag.track_id.clone(),
+                                            if target_node.kind == NodeKind::Playlist
+                                                || target_node.kind == NodeKind::PlaylistsRoot
+                                            {
+                                                log::info!(
+                                                    "Drop on left tree: {} -> {:?}",
+                                                    drag.display_text(),
+                                                    target_id
+                                                );
+                                                return self.update(Message::DropTracksOnPlaylist {
+                                                    track_ids: drag.track_ids.clone(),
                                                     target_playlist: target_id.clone(),
                                                 });
                                             } else {
@@ -1725,6 +1844,51 @@ impl MeshCueApp {
                         }
                     }
                     PlaylistBrowserMessage::Table(table_msg) => {
+                        // Handle selection with CURRENT modifier state (not render-time state)
+                        // This fixes Shift+Click and Ctrl+Click multi-selection
+                        if let TrackTableMessage::Select(track_id) = &table_msg {
+                            let modifiers = mesh_widgets::SelectModifiers {
+                                shift: self.shift_held,
+                                ctrl: self.ctrl_held,
+                            };
+                            let already_selected = self
+                                .collection
+                                .browser_left
+                                .table_state
+                                .is_selected(track_id);
+                            log::info!(
+                                "[LEFT SELECT] track_id={:?}, shift={}, ctrl={}, already_selected={}, current_selection={}",
+                                track_id,
+                                self.shift_held,
+                                self.ctrl_held,
+                                already_selected,
+                                self.collection.browser_left.table_state.selected.len()
+                            );
+
+                            // If clicking on already-selected track without modifiers,
+                            // preserve selection for multi-drag (don't reset to single)
+                            if already_selected && !modifiers.shift && !modifiers.ctrl {
+                                log::info!("[LEFT SELECT] preserving multi-selection for drag");
+                            } else {
+                                // Get all track IDs for range selection
+                                let all_ids: Vec<NodeId> = self
+                                    .collection
+                                    .left_tracks
+                                    .iter()
+                                    .map(|t| t.id.clone())
+                                    .collect();
+                                // Apply selection with current modifiers
+                                self.collection
+                                    .browser_left
+                                    .table_state
+                                    .handle_select(track_id.clone(), modifiers, &all_ids);
+                                log::info!(
+                                    "[LEFT SELECT] after handle_select: selected={}",
+                                    self.collection.browser_left.table_state.selected.len()
+                                );
+                            }
+                        }
+
                         // Handle table message and check for edit commits
                         if let Some((track_id, column, new_value)) =
                             self.collection.browser_left.handle_table_message(&table_msg)
@@ -1754,30 +1918,41 @@ impl MeshCueApp {
                             }
                         }
 
-                        // Handle selection - also starts potential drag operation
+                        // Handle drag initiation after selection is updated
                         // (drag is cancelled on mouse release if not dropped on valid target)
-                        if let TrackTableMessage::Select(track_id) = &table_msg {
-                            log::debug!("Left table: Select received for {:?}", track_id);
-                            if let Some(ref storage) = self.collection.playlist_storage {
-                                if let Some(node) = storage.get_node(track_id) {
-                                    log::debug!("  Node found: {:?}, initiating drag", node.name);
+                        if let TrackTableMessage::Select(_track_id) = &table_msg {
+                            // Collect all selected tracks for multi-drag
+                            let selected_ids: Vec<NodeId> = self
+                                .collection
+                                .browser_left
+                                .table_state
+                                .selected
+                                .iter()
+                                .cloned()
+                                .collect();
+                            if !selected_ids.is_empty() {
+                                if let Some(ref storage) = self.collection.playlist_storage {
+                                    let track_names: Vec<String> = selected_ids
+                                        .iter()
+                                        .filter_map(|id| storage.get_node(id).map(|n| n.name.clone()))
+                                        .collect();
+                                    log::debug!(
+                                        "Left table: initiating drag for {} track(s)",
+                                        selected_ids.len()
+                                    );
                                     return self.update(Message::DragTrackStart {
-                                        track_id: track_id.clone(),
-                                        track_name: node.name.clone(),
+                                        track_ids: selected_ids,
+                                        track_names,
                                         browser: BrowserSide::Left,
                                     });
-                                } else {
-                                    log::debug!("  Node not found for track_id");
                                 }
-                            } else {
-                                log::debug!("  No playlist storage");
                             }
                         }
                         // Handle double-click to load track
-                        if let TrackTableMessage::Activate(track_id) = table_msg {
+                        if let TrackTableMessage::Activate(ref track_id) = table_msg {
                             log::info!("Left browser: Track activated (double-click): {:?}", track_id);
                             if let Some(ref storage) = self.collection.playlist_storage {
-                                match storage.get_node(&track_id) {
+                                match storage.get_node(track_id) {
                                     Some(node) => {
                                         log::info!("  Node found: kind={:?}, name={}", node.kind, node.name);
                                         match &node.track_path {
@@ -1797,6 +1972,37 @@ impl MeshCueApp {
                             } else {
                                 log::warn!("  No playlist storage initialized!");
                             }
+                        }
+                        // Handle drop on table (adds to current folder)
+                        if let TrackTableMessage::DropReceived(_drop_track_id) = table_msg {
+                            log::debug!("Left table: DropReceived");
+                            if let Some(ref drag) = self.collection.dragging_track {
+                                // Get the currently selected folder as drop target
+                                if let Some(ref current_folder) = self.collection.browser_left.current_folder {
+                                    if let Some(ref storage) = self.collection.playlist_storage {
+                                        if let Some(folder_node) = storage.get_node(current_folder) {
+                                            // Allow dropping onto playlists (not collection folders)
+                                            if folder_node.kind == NodeKind::Playlist
+                                                || folder_node.kind == NodeKind::PlaylistsRoot
+                                            {
+                                                log::info!(
+                                                    "Drop on left table: {} -> {:?}",
+                                                    drag.display_text(),
+                                                    current_folder
+                                                );
+                                                return self.update(Message::DropTracksOnPlaylist {
+                                                    track_ids: drag.track_ids.clone(),
+                                                    target_playlist: current_folder.clone(),
+                                                });
+                                            } else {
+                                                log::debug!("  Current folder is not a playlist, ignoring drop");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // End drag on mouse release
+                            return self.update(Message::DragTrackEnd);
                         }
                     }
                 }
@@ -1849,17 +2055,23 @@ impl MeshCueApp {
                             }
                             TreeMessage::DropReceived(target_id) => {
                                 log::debug!("Right tree: DropReceived on {:?}", target_id);
-                                // Check if we're dragging a track and this is a valid drop target
+                                // Check if we're dragging track(s) and this is a valid drop target
                                 if let Some(ref drag) = self.collection.dragging_track {
-                                    log::debug!("  Currently dragging: {:?}", drag.track_name);
+                                    log::debug!("  Currently dragging: {}", drag.display_text());
                                     if let Some(ref storage) = self.collection.playlist_storage {
                                         if let Some(target_node) = storage.get_node(target_id) {
                                             log::debug!("  Target node kind: {:?}", target_node.kind);
                                             // Only allow dropping onto playlists
-                                            if target_node.kind == NodeKind::Playlist || target_node.kind == NodeKind::PlaylistsRoot {
-                                                log::info!("Drop on right tree: {:?} -> {:?}", drag.track_name, target_id);
-                                                return self.update(Message::DropTrackOnPlaylist {
-                                                    track_id: drag.track_id.clone(),
+                                            if target_node.kind == NodeKind::Playlist
+                                                || target_node.kind == NodeKind::PlaylistsRoot
+                                            {
+                                                log::info!(
+                                                    "Drop on right tree: {} -> {:?}",
+                                                    drag.display_text(),
+                                                    target_id
+                                                );
+                                                return self.update(Message::DropTracksOnPlaylist {
+                                                    track_ids: drag.track_ids.clone(),
                                                     target_playlist: target_id.clone(),
                                                 });
                                             } else {
@@ -1893,6 +2105,39 @@ impl MeshCueApp {
                         }
                     }
                     PlaylistBrowserMessage::Table(table_msg) => {
+                        // Handle selection with CURRENT modifier state (not render-time state)
+                        // This fixes Shift+Click and Ctrl+Click multi-selection
+                        if let TrackTableMessage::Select(track_id) = &table_msg {
+                            let modifiers = mesh_widgets::SelectModifiers {
+                                shift: self.shift_held,
+                                ctrl: self.ctrl_held,
+                            };
+                            let already_selected = self
+                                .collection
+                                .browser_right
+                                .table_state
+                                .is_selected(track_id);
+
+                            // If clicking on already-selected track without modifiers,
+                            // preserve selection for multi-drag (don't reset to single)
+                            if already_selected && !modifiers.shift && !modifiers.ctrl {
+                                log::info!("[RIGHT SELECT] preserving multi-selection for drag");
+                            } else {
+                                // Get all track IDs for range selection
+                                let all_ids: Vec<NodeId> = self
+                                    .collection
+                                    .right_tracks
+                                    .iter()
+                                    .map(|t| t.id.clone())
+                                    .collect();
+                                // Apply selection with current modifiers
+                                self.collection
+                                    .browser_right
+                                    .table_state
+                                    .handle_select(track_id.clone(), modifiers, &all_ids);
+                            }
+                        }
+
                         // Handle table message and check for edit commits
                         if let Some((track_id, column, new_value)) =
                             self.collection.browser_right.handle_table_message(&table_msg)
@@ -1922,30 +2167,41 @@ impl MeshCueApp {
                             }
                         }
 
-                        // Handle selection - also starts potential drag operation
+                        // Handle drag initiation after selection is updated
                         // (drag is cancelled on mouse release if not dropped on valid target)
-                        if let TrackTableMessage::Select(track_id) = &table_msg {
-                            log::debug!("Right table: Select received for {:?}", track_id);
-                            if let Some(ref storage) = self.collection.playlist_storage {
-                                if let Some(node) = storage.get_node(track_id) {
-                                    log::debug!("  Node found: {:?}, initiating drag", node.name);
+                        if let TrackTableMessage::Select(_track_id) = &table_msg {
+                            // Collect all selected tracks for multi-drag
+                            let selected_ids: Vec<NodeId> = self
+                                .collection
+                                .browser_right
+                                .table_state
+                                .selected
+                                .iter()
+                                .cloned()
+                                .collect();
+                            if !selected_ids.is_empty() {
+                                if let Some(ref storage) = self.collection.playlist_storage {
+                                    let track_names: Vec<String> = selected_ids
+                                        .iter()
+                                        .filter_map(|id| storage.get_node(id).map(|n| n.name.clone()))
+                                        .collect();
+                                    log::debug!(
+                                        "Right table: initiating drag for {} track(s)",
+                                        selected_ids.len()
+                                    );
                                     return self.update(Message::DragTrackStart {
-                                        track_id: track_id.clone(),
-                                        track_name: node.name.clone(),
+                                        track_ids: selected_ids,
+                                        track_names,
                                         browser: BrowserSide::Right,
                                     });
-                                } else {
-                                    log::debug!("  Node not found for track_id");
                                 }
-                            } else {
-                                log::debug!("  No playlist storage");
                             }
                         }
                         // Handle double-click to load track
-                        if let TrackTableMessage::Activate(track_id) = table_msg {
+                        if let TrackTableMessage::Activate(ref track_id) = table_msg {
                             log::info!("Right browser: Track activated (double-click): {:?}", track_id);
                             if let Some(ref storage) = self.collection.playlist_storage {
-                                match storage.get_node(&track_id) {
+                                match storage.get_node(track_id) {
                                     Some(node) => {
                                         log::info!("  Node found: kind={:?}, name={}", node.kind, node.name);
                                         match &node.track_path {
@@ -1965,6 +2221,37 @@ impl MeshCueApp {
                             } else {
                                 log::warn!("  No playlist storage initialized!");
                             }
+                        }
+                        // Handle drop on table (adds to current folder)
+                        if let TrackTableMessage::DropReceived(_drop_track_id) = table_msg {
+                            log::debug!("Right table: DropReceived");
+                            if let Some(ref drag) = self.collection.dragging_track {
+                                // Get the currently selected folder as drop target
+                                if let Some(ref current_folder) = self.collection.browser_right.current_folder {
+                                    if let Some(ref storage) = self.collection.playlist_storage {
+                                        if let Some(folder_node) = storage.get_node(current_folder) {
+                                            // Allow dropping onto playlists (not collection folders)
+                                            if folder_node.kind == NodeKind::Playlist
+                                                || folder_node.kind == NodeKind::PlaylistsRoot
+                                            {
+                                                log::info!(
+                                                    "Drop on right table: {} -> {:?}",
+                                                    drag.display_text(),
+                                                    current_folder
+                                                );
+                                                return self.update(Message::DropTracksOnPlaylist {
+                                                    track_ids: drag.track_ids.clone(),
+                                                    target_playlist: current_folder.clone(),
+                                                });
+                                            } else {
+                                                log::debug!("  Current folder is not a playlist, ignoring drop");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // End drag on mouse release
+                            return self.update(Message::DragTrackEnd);
                         }
                     }
                 }
@@ -1999,37 +2286,50 @@ impl MeshCueApp {
             }
 
             // Drag and Drop
-            Message::DragTrackStart { track_id, track_name, browser } => {
-                log::info!("Drag started: {:?} from {:?}", track_name, browser);
-                self.collection.dragging_track = Some(DragState {
-                    track_id,
-                    track_name,
-                    source_browser: browser,
-                });
+            Message::DragTrackStart { track_ids, track_names, browser } => {
+                let display = if track_names.len() == 1 {
+                    track_names[0].clone()
+                } else {
+                    format!("{} tracks", track_names.len())
+                };
+                log::info!("Drag started: {} from {:?}", display, browser);
+                self.collection.dragging_track =
+                    Some(DragState::multiple(track_ids, track_names, browser));
             }
             Message::DragTrackEnd => {
                 if let Some(ref drag) = self.collection.dragging_track {
-                    log::info!("Drag cancelled/ended: {:?}", drag.track_name);
+                    log::info!("Drag cancelled/ended: {}", drag.display_text());
                 }
                 self.collection.dragging_track = None;
             }
-            Message::DropTrackOnPlaylist { track_id, target_playlist } => {
-                log::info!("Drop track {:?} onto playlist {:?}", track_id, target_playlist);
+            Message::DropTracksOnPlaylist { track_ids, target_playlist } => {
+                log::info!(
+                    "Drop {} track(s) onto playlist {:?}",
+                    track_ids.len(),
+                    target_playlist
+                );
                 if let Some(ref mut storage) = self.collection.playlist_storage {
-                    match storage.move_track(&track_id, &target_playlist) {
-                        Ok(new_id) => {
-                            log::info!("Track moved successfully to {:?}", new_id);
-                            // Refresh tree and both browser track lists
-                            self.collection.tree_nodes = build_tree_nodes(storage);
-                            if let Some(ref folder) = self.collection.browser_left.current_folder {
-                                self.collection.left_tracks = get_tracks_for_folder(storage, folder);
+                    let mut success_count = 0;
+                    for track_id in &track_ids {
+                        match storage.move_track(track_id, &target_playlist) {
+                            Ok(new_id) => {
+                                log::info!("Track {:?} moved successfully to {:?}", track_id, new_id);
+                                success_count += 1;
                             }
-                            if let Some(ref folder) = self.collection.browser_right.current_folder {
-                                self.collection.right_tracks = get_tracks_for_folder(storage, folder);
+                            Err(e) => {
+                                log::error!("Failed to move track {:?}: {:?}", track_id, e);
                             }
                         }
-                        Err(e) => {
-                            log::error!("Failed to move track: {:?}", e);
+                    }
+                    if success_count > 0 {
+                        log::info!("Moved {}/{} tracks successfully", success_count, track_ids.len());
+                        // Refresh tree and both browser track lists
+                        self.collection.tree_nodes = build_tree_nodes(storage);
+                        if let Some(ref folder) = self.collection.browser_left.current_folder {
+                            self.collection.left_tracks = get_tracks_for_folder(storage, folder);
+                        }
+                        if let Some(ref folder) = self.collection.browser_right.current_folder {
+                            self.collection.right_tracks = get_tracks_for_folder(storage, folder);
                         }
                     }
                 }
@@ -2199,6 +2499,248 @@ impl MeshCueApp {
                 self.import_state.show_results = false;
                 self.import_state.is_open = false;
             }
+
+            // Delete confirmation
+            Message::RequestDelete(browser_side) => {
+                use super::delete_modal::DeleteTarget;
+
+                // Get selected tracks from the appropriate browser
+                let (selected_ids, current_folder) = match browser_side {
+                    BrowserSide::Left => (
+                        self.collection.browser_left.table_state.selected.iter().cloned().collect::<Vec<_>>(),
+                        self.collection.browser_left.current_folder.clone(),
+                    ),
+                    BrowserSide::Right => (
+                        self.collection.browser_right.table_state.selected.iter().cloned().collect::<Vec<_>>(),
+                        self.collection.browser_right.current_folder.clone(),
+                    ),
+                };
+
+                if selected_ids.is_empty() {
+                    log::debug!("Delete requested but no tracks selected");
+                    return Task::none();
+                }
+
+                // Get track names from storage
+                let track_names: Vec<String> = if let Some(ref storage) = self.collection.playlist_storage {
+                    selected_ids
+                        .iter()
+                        .filter_map(|id| storage.get_node(id).map(|n| n.name.clone()))
+                        .collect()
+                } else {
+                    return Task::none();
+                };
+
+                // Determine delete target based on current folder
+                // If in the collection root (tracks folder), it's a permanent delete
+                // If in a playlist, it's just removing from playlist
+                let target = if current_folder == Some(NodeId::tracks()) {
+                    // In collection - permanent deletion!
+                    DeleteTarget::CollectionTracks {
+                        track_names,
+                        track_ids: selected_ids,
+                    }
+                } else if let Some(folder_id) = current_folder {
+                    // In a playlist - just remove from playlist
+                    let playlist_name = self
+                        .collection
+                        .playlist_storage
+                        .as_ref()
+                        .and_then(|s| s.get_node(&folder_id))
+                        .map(|n| n.name.clone())
+                        .unwrap_or_else(|| folder_id.to_string());
+                    DeleteTarget::PlaylistTracks {
+                        playlist_name,
+                        track_ids: selected_ids,
+                        track_names,
+                    }
+                } else {
+                    log::debug!("Delete requested but no folder selected");
+                    return Task::none();
+                };
+
+                log::info!("Showing delete confirmation for {:?}", target);
+                self.delete_state.show(target);
+            }
+            Message::CancelDelete => {
+                self.delete_state.cancel();
+            }
+            Message::ConfirmDelete => {
+                use super::delete_modal::DeleteTarget;
+
+                if let Some(ref target) = self.delete_state.target {
+                    log::info!("Executing delete: {:?}", target);
+
+                    match target {
+                        DeleteTarget::PlaylistTracks { track_ids, .. } => {
+                            // Remove tracks from playlist (not from collection)
+                            if let Some(ref mut storage) = self.collection.playlist_storage {
+                                for track_id in track_ids {
+                                    if let Err(e) = storage.remove_track_from_playlist(track_id) {
+                                        log::error!("Failed to remove track from playlist: {:?}", e);
+                                    }
+                                }
+                                // Refresh displays
+                                self.collection.tree_nodes = build_tree_nodes(storage);
+                                if let Some(ref folder) = self.collection.browser_left.current_folder {
+                                    self.collection.left_tracks = get_tracks_for_folder(storage, folder);
+                                }
+                                if let Some(ref folder) = self.collection.browser_right.current_folder {
+                                    self.collection.right_tracks = get_tracks_for_folder(storage, folder);
+                                }
+                            }
+                        }
+                        DeleteTarget::CollectionTracks { track_ids, .. } => {
+                            // PERMANENT deletion - delete files from disk!
+                            if let Some(ref mut storage) = self.collection.playlist_storage {
+                                for track_id in track_ids {
+                                    if let Err(e) = storage.delete_track_permanently(track_id) {
+                                        log::error!("Failed to delete track permanently: {:?}", e);
+                                    }
+                                }
+                                // Refresh displays
+                                self.collection.tree_nodes = build_tree_nodes(storage);
+                                if let Some(ref folder) = self.collection.browser_left.current_folder {
+                                    self.collection.left_tracks = get_tracks_for_folder(storage, folder);
+                                }
+                                if let Some(ref folder) = self.collection.browser_right.current_folder {
+                                    self.collection.right_tracks = get_tracks_for_folder(storage, folder);
+                                }
+                            }
+                        }
+                        DeleteTarget::Playlist { playlist_id, .. } => {
+                            // Delete playlist (tracks stay in collection)
+                            if let Some(ref mut storage) = self.collection.playlist_storage {
+                                if let Err(e) = storage.delete_playlist(playlist_id) {
+                                    log::error!("Failed to delete playlist: {:?}", e);
+                                }
+                                self.collection.tree_nodes = build_tree_nodes(storage);
+                            }
+                        }
+                    }
+
+                    // Clear selection after delete
+                    self.collection.browser_left.table_state.clear_selection();
+                    self.collection.browser_right.table_state.clear_selection();
+                }
+
+                self.delete_state.complete();
+            }
+
+            // Context menu and track operations
+            Message::RequestDeleteById(track_id) => {
+                use super::delete_modal::DeleteTarget;
+
+                self.context_menu_state.close();
+
+                // Determine if track is in collection or playlist
+                if track_id.is_in_tracks() {
+                    // Collection track - permanent deletion
+                    let track_name = self
+                        .collection
+                        .playlist_storage
+                        .as_ref()
+                        .and_then(|s| s.get_node(&track_id))
+                        .map(|n| n.name.clone())
+                        .unwrap_or_else(|| track_id.name().to_string());
+                    self.delete_state.show(DeleteTarget::CollectionTracks {
+                        track_names: vec![track_name],
+                        track_ids: vec![track_id],
+                    });
+                } else {
+                    // Playlist track - just remove from playlist
+                    let track_name = self
+                        .collection
+                        .playlist_storage
+                        .as_ref()
+                        .and_then(|s| s.get_node(&track_id))
+                        .map(|n| n.name.clone())
+                        .unwrap_or_else(|| track_id.name().to_string());
+                    let playlist_name = track_id
+                        .parent()
+                        .and_then(|p| {
+                            self.collection
+                                .playlist_storage
+                                .as_ref()
+                                .and_then(|s| s.get_node(&p))
+                                .map(|n| n.name.clone())
+                        })
+                        .unwrap_or_default();
+                    self.delete_state.show(DeleteTarget::PlaylistTracks {
+                        playlist_name,
+                        track_names: vec![track_name],
+                        track_ids: vec![track_id],
+                    });
+                }
+            }
+            Message::RequestDeletePlaylist(playlist_id) => {
+                use super::delete_modal::DeleteTarget;
+
+                self.context_menu_state.close();
+
+                let playlist_name = self
+                    .collection
+                    .playlist_storage
+                    .as_ref()
+                    .and_then(|s| s.get_node(&playlist_id))
+                    .map(|n| n.name.clone())
+                    .unwrap_or_else(|| playlist_id.name().to_string());
+
+                self.delete_state.show(DeleteTarget::Playlist {
+                    playlist_name,
+                    playlist_id,
+                });
+            }
+            Message::ShowContextMenu(kind, position) => {
+                self.context_menu_state.show(kind, position);
+            }
+            Message::CloseContextMenu => {
+                self.context_menu_state.close();
+            }
+            Message::ReanalyzeTrack(track_id) => {
+                self.context_menu_state.close();
+
+                // Get track path
+                let track_path = self
+                    .collection
+                    .playlist_storage
+                    .as_ref()
+                    .and_then(|s| s.get_node(&track_id))
+                    .and_then(|n| n.track_path.clone());
+
+                if let Some(path) = track_path {
+                    log::info!("Re-analyzing track: {:?}", path);
+                    // TODO: Spawn async analysis task
+                    // For now, just log - full implementation would run BPM/key analysis
+                    // and update the file metadata
+                }
+            }
+            Message::StartRenamePlaylist(playlist_id) => {
+                self.context_menu_state.close();
+
+                // Start inline rename in the appropriate tree
+                if let Some(ref storage) = self.collection.playlist_storage {
+                    if let Some(node) = storage.get_node(&playlist_id) {
+                        // Try to find which browser has this playlist and start edit
+                        if self
+                            .collection
+                            .browser_left
+                            .tree_state
+                            .is_expanded(&playlist_id.parent().unwrap_or_else(NodeId::playlists))
+                        {
+                            self.collection
+                                .browser_left
+                                .tree_state
+                                .start_edit(playlist_id, node.name.clone());
+                        } else {
+                            self.collection
+                                .browser_right
+                                .tree_state
+                                .start_edit(playlist_id, node.name.clone());
+                        }
+                    }
+                }
+            }
         }
 
         Task::none()
@@ -2226,7 +2768,7 @@ impl MeshCueApp {
             .padding(20)
             .into();
 
-        // Overlay modals if open (import takes precedence)
+        // Overlay modals if open (import > delete > settings)
         if self.import_state.is_open {
             let backdrop = mouse_area(
                 container(Space::new())
@@ -2240,6 +2782,23 @@ impl MeshCueApp {
             .on_press(Message::CloseImport);
 
             let modal = center(opaque(super::import_modal::view(&self.import_state)))
+                .width(Length::Fill)
+                .height(Length::Fill);
+
+            stack![base, backdrop, modal].into()
+        } else if self.delete_state.is_open {
+            let backdrop = mouse_area(
+                container(Space::new())
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .style(|_theme| container::Style {
+                        background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.6).into()),
+                        ..Default::default()
+                    }),
+            )
+            .on_press(Message::CancelDelete);
+
+            let modal = center(opaque(super::delete_modal::view(&self.delete_state)))
                 .width(Length::Fill)
                 .height(Length::Fill);
 
@@ -2285,7 +2844,9 @@ impl MeshCueApp {
                 keyboard::Event::KeyReleased { key, modifiers, .. } => {
                     Message::KeyReleased(key, modifiers)
                 }
-                _ => Message::Tick, // Ignore ModifiersChanged
+                keyboard::Event::ModifiersChanged(modifiers) => {
+                    Message::ModifiersChanged(modifiers)
+                }
             }
         });
 
@@ -2328,6 +2889,7 @@ impl MeshCueApp {
 
     /// View for the collection browser and editor
     fn view_collection(&self) -> Element<Message> {
+        // Modifier key handling is done in update() where current keyboard state is available
         super::collection_browser::view(&self.collection, &self.import_state)
     }
 }

@@ -14,7 +14,9 @@
 //! );
 //! ```
 
-use crate::track_table::{track_table, TrackColumn, TrackRow, TrackTableMessage, TrackTableState};
+use crate::track_table::{
+    track_table, TrackColumn, TrackRow, TrackTableMessage, TrackTableState,
+};
 use crate::tree::{tree_view, TreeMessage, TreeNode, TreeState};
 use iced::widget::{container, row, rule};
 use iced::{Background, Element, Length, Theme};
@@ -25,7 +27,7 @@ use std::hash::Hash;
 pub struct PlaylistBrowserState<NodeId, TrackId>
 where
     NodeId: Clone + Eq + Hash,
-    TrackId: Clone,
+    TrackId: Clone + Eq + Hash,
 {
     /// State for the tree view
     pub tree_state: TreeState<NodeId>,
@@ -38,7 +40,7 @@ where
 impl<NodeId, TrackId> Default for PlaylistBrowserState<NodeId, TrackId>
 where
     NodeId: Clone + Eq + Hash,
-    TrackId: Clone,
+    TrackId: Clone + Eq + Hash,
 {
     fn default() -> Self {
         Self::new()
@@ -48,7 +50,7 @@ where
 impl<NodeId, TrackId> PlaylistBrowserState<NodeId, TrackId>
 where
     NodeId: Clone + Eq + Hash,
-    TrackId: Clone,
+    TrackId: Clone + Eq + Hash,
 {
     /// Create a new browser state
     pub fn new() -> Self {
@@ -100,22 +102,24 @@ where
     ///
     /// Returns `Some((track_id, column, new_value))` if an edit was committed,
     /// so the parent can save the metadata to the file.
+    ///
+    /// Note: `Select` messages do NOT perform selection here. The app's update()
+    /// handler should apply modifiers (Shift/Ctrl) with current keyboard state
+    /// and call `table_state.handle_select()` directly.
     pub fn handle_table_message(
         &mut self,
         msg: &TrackTableMessage<TrackId>,
-    ) -> Option<(TrackId, TrackColumn, String)>
-    where
-        TrackId: Clone,
-    {
+    ) -> Option<(TrackId, TrackColumn, String)> {
         match msg {
             TrackTableMessage::SearchChanged(query) => {
                 self.table_state.set_search(query.clone());
                 None
             }
-            TrackTableMessage::Select(id) => {
-                // Cancel any in-progress edit when selecting a different track
+            TrackTableMessage::Select(_id) => {
+                // Cancel any in-progress edit when selecting
                 self.table_state.cancel_edit();
-                self.table_state.select(id.clone());
+                // Selection with modifiers is handled by the app's update() handler
+                // where current keyboard state is available
                 None
             }
             TrackTableMessage::Activate(_) => {
@@ -143,6 +147,10 @@ where
                 self.table_state.cancel_edit();
                 None
             }
+            TrackTableMessage::DropReceived(_) => {
+                // Drop handling is done by the app layer (needs access to drag state)
+                None
+            }
         }
     }
 }
@@ -168,6 +176,9 @@ pub const TREE_PANEL_WIDTH: f32 = 200.0;
 /// * `state` - Current browser state
 /// * `on_message` - Callback to convert browser messages to your message type
 ///
+/// Note: Modifier key handling (Shift/Ctrl for multi-select) is NOT done here.
+/// The app's `update()` handler should apply modifiers when processing `Select` messages.
+///
 /// # Example
 ///
 /// ```ignore
@@ -186,7 +197,7 @@ pub fn playlist_browser<'a, NodeId, TrackId, Message>(
 ) -> Element<'a, Message>
 where
     NodeId: Clone + Eq + Hash + 'a,
-    TrackId: Clone + PartialEq + 'a,
+    TrackId: Clone + PartialEq + Eq + Hash + 'a,
     Message: Clone + 'a,
 {
     let on_msg_tree = on_message.clone();
@@ -254,7 +265,7 @@ pub fn table_browser<'a, TrackId, Message>(
     on_message: impl Fn(TrackTableMessage<TrackId>) -> Message + 'a + Clone,
 ) -> Element<'a, Message>
 where
-    TrackId: Clone + PartialEq + 'a,
+    TrackId: Clone + PartialEq + Eq + Hash + 'a,
     Message: Clone + 'a,
 {
     container(track_table(tracks, state, on_message))
