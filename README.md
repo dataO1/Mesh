@@ -252,8 +252,15 @@ Mesh implements a fully real-time safe architecture:
 - **Double-click to load** — Load tracks into editor for detailed editing
 - **Playlist management** — Create, rename, and delete playlists (symlink-based storage)
 
+**Batch Import System** (New!)
+- **Automated stem import** — Drop stems into import folder, batch process with one click
+- **Parallel processing** — 4-worker thread pool for fast analysis (BPM, key, beat grid)
+- **Progress tracking** — Real-time progress bar with ETA at bottom of collection view
+- **Stem grouping** — Automatically groups stems by track name (e.g., `Artist - Track_(Vocals).wav`)
+- **Source cleanup** — Optionally deletes source stems after successful import
+- **Results summary** — Shows success/failure count with detailed error messages
+
 *Planned:*
-- Batch processing for multiple tracks
 - Smart playlists with auto-filtering
 
 ---
@@ -436,6 +443,71 @@ You can edit track metadata directly in the browser without loading the track:
 5. Press **Escape** to cancel
 
 **Note:** Name and Duration columns are read-only. Duration is calculated from the audio file, and Name is derived from the filename.
+
+---
+
+## Batch Import
+
+The Batch Import system allows you to quickly import multiple tracks at once. Instead of manually loading stems one by one, you can drop all your pre-separated stems into a folder and import them in batch.
+
+### Import Folder Location
+
+```
+~/Music/mesh-collection/import/
+```
+
+Place your stem files here before importing. The folder is automatically created when you first run mesh-cue.
+
+### Stem File Naming
+
+Stems must follow this naming pattern:
+
+```
+BaseName_(StemType).wav
+```
+
+| Stem Type | Example Filename |
+|-----------|------------------|
+| Vocals | `Daft Punk - One More Time_(Vocals).wav` |
+| Drums | `Daft Punk - One More Time_(Drums).wav` |
+| Bass | `Daft Punk - One More Time_(Bass).wav` |
+| Other | `Daft Punk - One More Time_(Other).wav` |
+
+**Note:** `_(Instrumental).wav` is also accepted as an alias for `_(Other).wav`.
+
+The `BaseName` can be anything — typically `Artist - Track` format. Stems with the same base name are automatically grouped together.
+
+### Import Workflow
+
+1. **Prepare stems** — Use a stem separation tool (Demucs, Ultimate Vocal Remover, etc.) to split your tracks into 4 stems
+
+2. **Copy to import folder**:
+   ```bash
+   cp *_(Vocals).wav *_(Drums).wav *_(Bass).wav *_(Other).wav ~/Music/mesh-collection/import/
+   ```
+
+3. **Open mesh-cue** and click the **Import** button (above the playlist browsers)
+
+4. **Review detected tracks** — The modal shows all detected track groups with completion status:
+   - ✓ = All 4 stems present (ready to import)
+   - 2/4 = Missing stems (will be skipped)
+
+5. **Click "Start Import"** — Tracks are processed in parallel:
+   - Stems are loaded and combined
+   - BPM, key, and beat grid are analyzed
+   - 8-channel WAV is exported with embedded metadata
+   - Original stems are deleted on success
+
+6. **View results** — A summary popup shows successful and failed imports
+
+### Progress Bar
+
+During import, a progress bar appears at the bottom of the collection view showing:
+- Current track being processed
+- Progress (X/Y completed)
+- Estimated time remaining
+
+You can continue browsing your collection while the import runs in the background.
 
 ---
 

@@ -1,24 +1,56 @@
 //! Collection browser view with hierarchical playlist navigation
 
-use super::app::{CollectionState, Message};
+use super::app::{CollectionState, ImportState, Message};
 use super::editor;
-use iced::widget::{column, container, row, rule, text, Space};
-use iced::{Element, Length};
+use super::import_modal;
+use iced::widget::{button, column, container, row, rule, text, Space};
+use iced::{Alignment, Element, Length};
 use mesh_widgets::playlist_browser;
 
 /// Render the collection view (editor + dual browsers below)
-pub fn view(state: &CollectionState) -> Element<Message> {
+pub fn view<'a>(state: &'a CollectionState, import_state: &'a ImportState) -> Element<'a, Message> {
     let editor = view_editor(state);
+    let browser_header = view_browser_header();
     let browsers = view_browsers(state);
 
-    column![
+    // Progress bar at the bottom (only visible during import)
+    let progress_bar = import_modal::view_progress_bar(import_state);
+
+    let mut content = column![
         editor,
         rule::horizontal(2),
+        browser_header,
         browsers,
     ]
-    .spacing(10)
+    .spacing(5);
+
+    if let Some(bar) = progress_bar {
+        content = content.push(bar);
+    }
+
+    content
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+/// Header row above the browsers with Import button
+fn view_browser_header() -> Element<'static, Message> {
+    let import_btn = button(text("Import").size(14))
+        .on_press(Message::OpenImport)
+        .style(button::secondary)
+        .padding([4, 12]);
+
+    container(
+        row![
+            text("Playlists").size(16),
+            Space::new().width(Length::Fill),
+            import_btn,
+        ]
+        .align_y(Alignment::Center)
+        .padding([0, 8]),
+    )
     .width(Length::Fill)
-    .height(Length::Fill)
     .into()
 }
 

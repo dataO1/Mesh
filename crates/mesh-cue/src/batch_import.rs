@@ -1,0 +1,646 @@
+//! Batch import system for stem files
+//!
+//! Scans an import folder for stem files, groups them by track name,
+//! and processes them in parallel using a worker pool.
+//!
+//! # File Naming Convention
+//!
+//! Stems should follow the pattern: `BaseName_(StemType).wav`
+//! - `Artist - Track_(Vocals).wav`
+//! - `Artist - Track_(Drums).wav`
+//! - `Artist - Track_(Bass).wav`
+//! - `Artist - Track_(Other).wav`
+//!
+//! # Usage
+//!
+//! ```ignore
+//! let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+//! let (cancel_tx, cancel_rx) = std::sync::mpsc::channel();
+//!
+//! let config = ImportConfig {
+//!     import_folder: PathBuf::from("~/Music/mesh-collection/import"),
+//!     collection_path: PathBuf::from("~/Music/mesh-collection"),
+//!     bpm_config: BpmConfig::default(),
+//! };
+//!
+//! std::thread::spawn(move || {
+//!     run_batch_import(config, progress_tx, cancel_rx);
+//! });
+//!
+//! // Poll progress_rx for updates
+//! ```
+
+use crate::analysis::analyze_audio;
+use crate::config::BpmConfig;
+use crate::export::export_stem_file;
+use crate::import::StemImporter;
+use anyhow::{Context, Result};
+use mesh_core::audio_file::{BeatGrid, CuePoint, SavedLoop, TrackMetadata};
+use rayon::prelude::*;
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
+use std::sync::Arc;
+use std::time::Instant;
+
+/// Stem types supported by the import system
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StemType {
+    Vocals,
+    Drums,
+    Bass,
+    Other,
+}
+
+impl StemType {
+    /// Parse stem type from filename suffix (case-insensitive)
+    pub fn from_suffix(suffix: &str) -> Option<Self> {
+        match suffix.to_lowercase().as_str() {
+            "vocals" => Some(StemType::Vocals),
+            "drums" => Some(StemType::Drums),
+            "bass" => Some(StemType::Bass),
+            "other" | "instrumental" => Some(StemType::Other),
+            _ => None,
+        }
+    }
+}
+
+/// A group of stems forming a complete track
+#[derive(Debug, Clone)]
+pub struct StemGroup {
+    /// Base name of the track (e.g., "Artist - Track")
+    pub base_name: String,
+    /// Path to vocals stem
+    pub vocals: Option<PathBuf>,
+    /// Path to drums stem
+    pub drums: Option<PathBuf>,
+    /// Path to bass stem
+    pub bass: Option<PathBuf>,
+    /// Path to other/instrumental stem
+    pub other: Option<PathBuf>,
+}
+
+impl StemGroup {
+    /// Create a new empty stem group
+    pub fn new(base_name: String) -> Self {
+        Self {
+            base_name,
+            vocals: None,
+            drums: None,
+            bass: None,
+            other: None,
+        }
+    }
+
+    /// Check if all 4 stems are present
+    pub fn is_complete(&self) -> bool {
+        self.vocals.is_some()
+            && self.drums.is_some()
+            && self.bass.is_some()
+            && self.other.is_some()
+    }
+
+    /// Get count of loaded stems (0-4)
+    pub fn stem_count(&self) -> usize {
+        [
+            self.vocals.is_some(),
+            self.drums.is_some(),
+            self.bass.is_some(),
+            self.other.is_some(),
+        ]
+        .iter()
+        .filter(|&&b| b)
+        .count()
+    }
+
+    /// Set a stem path by type
+    pub fn set_stem(&mut self, stem_type: StemType, path: PathBuf) {
+        match stem_type {
+            StemType::Vocals => self.vocals = Some(path),
+            StemType::Drums => self.drums = Some(path),
+            StemType::Bass => self.bass = Some(path),
+            StemType::Other => self.other = Some(path),
+        }
+    }
+
+    /// Get all source stem paths (for deletion after import)
+    pub fn all_paths(&self) -> Vec<&Path> {
+        [&self.vocals, &self.drums, &self.bass, &self.other]
+            .iter()
+            .filter_map(|opt| opt.as_deref())
+            .collect()
+    }
+}
+
+/// Result from processing a single track
+#[derive(Debug, Clone)]
+pub struct TrackImportResult {
+    /// Base name of the track
+    pub base_name: String,
+    /// Whether the import succeeded
+    pub success: bool,
+    /// Error message if failed
+    pub error: Option<String>,
+    /// Output path in collection (if successful)
+    pub output_path: Option<PathBuf>,
+}
+
+/// Progress updates sent from import thread to UI
+#[derive(Debug, Clone)]
+pub enum ImportProgress {
+    /// Import started, groups detected
+    Started {
+        total: usize,
+    },
+    /// Starting to process a track
+    TrackStarted {
+        base_name: String,
+        index: usize,
+        total: usize,
+    },
+    /// Finished processing a track
+    TrackCompleted(TrackImportResult),
+    /// All imports complete
+    AllComplete {
+        results: Vec<TrackImportResult>,
+    },
+}
+
+/// Configuration for batch import
+#[derive(Debug, Clone)]
+pub struct ImportConfig {
+    /// Folder to scan for stems
+    pub import_folder: PathBuf,
+    /// Collection folder to export to
+    pub collection_path: PathBuf,
+    /// BPM detection configuration
+    pub bpm_config: BpmConfig,
+}
+
+/// Parse a stem filename to extract base name and stem type
+///
+/// Supported patterns:
+/// - `BaseName_(Vocals).wav` → Some(("BaseName", Vocals))
+/// - `BaseName_(Drums).wav` → Some(("BaseName", Drums))
+/// - `BaseName_(Bass).wav` → Some(("BaseName", Bass))
+/// - `BaseName_(Other).wav` → Some(("BaseName", Other))
+/// - `BaseName_(Instrumental).wav` → Some(("BaseName", Other))
+///
+/// Returns None if the filename doesn't match the expected pattern.
+pub fn parse_stem_filename(filename: &str) -> Option<(String, StemType)> {
+    // Remove .wav extension (case-insensitive)
+    let name = filename.strip_suffix(".wav").or_else(|| filename.strip_suffix(".WAV"))?;
+
+    // Find the stem type suffix: _(Type)
+    let suffix_start = name.rfind("_(")?;
+    let suffix_end = name.rfind(')')?;
+
+    if suffix_end <= suffix_start + 2 {
+        return None;
+    }
+
+    // Extract parts
+    let base_name = &name[..suffix_start];
+    let stem_suffix = &name[suffix_start + 2..suffix_end];
+
+    // Parse stem type
+    let stem_type = StemType::from_suffix(stem_suffix)?;
+
+    Some((base_name.to_string(), stem_type))
+}
+
+/// Scan import folder and group stems by track name
+///
+/// Returns a list of stem groups, each containing 0-4 stems.
+/// Only complete groups (all 4 stems) can be imported.
+pub fn scan_and_group_stems(import_folder: &Path) -> Result<Vec<StemGroup>> {
+    log::info!("scan_and_group_stems: Scanning {:?}", import_folder);
+
+    // Ensure directory exists
+    if !import_folder.exists() {
+        fs::create_dir_all(import_folder)
+            .with_context(|| format!("Failed to create import folder: {:?}", import_folder))?;
+        return Ok(Vec::new());
+    }
+
+    // Build a map of base_name -> StemGroup
+    let mut groups: HashMap<String, StemGroup> = HashMap::new();
+
+    let entries = fs::read_dir(import_folder)
+        .with_context(|| format!("Failed to read import folder: {:?}", import_folder))?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+
+        // Skip non-WAV files
+        if !path
+            .extension()
+            .map_or(false, |ext| ext.eq_ignore_ascii_case("wav"))
+        {
+            continue;
+        }
+
+        // Get filename
+        let filename = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name,
+            None => continue,
+        };
+
+        // Parse the filename
+        if let Some((base_name, stem_type)) = parse_stem_filename(filename) {
+            log::debug!(
+                "scan_and_group_stems: Found {:?} stem for '{}'",
+                stem_type,
+                base_name
+            );
+
+            // Get or create group
+            let group = groups
+                .entry(base_name.clone())
+                .or_insert_with(|| StemGroup::new(base_name));
+
+            // Add this stem
+            group.set_stem(stem_type, path);
+        } else {
+            log::warn!(
+                "scan_and_group_stems: Couldn't parse filename: {}",
+                filename
+            );
+        }
+    }
+
+    // Convert to sorted vec
+    let mut result: Vec<StemGroup> = groups.into_values().collect();
+    result.sort_by(|a, b| a.base_name.cmp(&b.base_name));
+
+    log::info!(
+        "scan_and_group_stems: Found {} track groups ({} complete)",
+        result.len(),
+        result.iter().filter(|g| g.is_complete()).count()
+    );
+
+    Ok(result)
+}
+
+/// Process a single track group: load stems, analyze, export
+///
+/// This is run by worker threads.
+fn process_single_track(group: &StemGroup, config: &ImportConfig) -> TrackImportResult {
+    let base_name = group.base_name.clone();
+    log::info!("process_single_track: Processing '{}'", base_name);
+
+    // Verify group is complete
+    if !group.is_complete() {
+        return TrackImportResult {
+            base_name,
+            success: false,
+            error: Some(format!(
+                "Incomplete stem group: only {}/4 stems found",
+                group.stem_count()
+            )),
+            output_path: None,
+        };
+    }
+
+    // Set up the importer
+    let mut importer = StemImporter::new();
+    importer.set_vocals(group.vocals.as_ref().unwrap());
+    importer.set_drums(group.drums.as_ref().unwrap());
+    importer.set_bass(group.bass.as_ref().unwrap());
+    importer.set_other(group.other.as_ref().unwrap());
+
+    // Load and combine stems
+    let buffers = match importer.import() {
+        Ok(b) => b,
+        Err(e) => {
+            return TrackImportResult {
+                base_name,
+                success: false,
+                error: Some(format!("Failed to load stems: {}", e)),
+                output_path: None,
+            };
+        }
+    };
+
+    // Get mono mix for analysis
+    let mono_samples = match importer.get_mono_sum() {
+        Ok(s) => s,
+        Err(e) => {
+            return TrackImportResult {
+                base_name,
+                success: false,
+                error: Some(format!("Failed to create mono mix: {}", e)),
+                output_path: None,
+            };
+        }
+    };
+
+    // Analyze audio (BPM, key, beat grid)
+    let analysis = match analyze_audio(&mono_samples, &config.bpm_config) {
+        Ok(a) => a,
+        Err(e) => {
+            return TrackImportResult {
+                base_name,
+                success: false,
+                error: Some(format!("Analysis failed: {}", e)),
+                output_path: None,
+            };
+        }
+    };
+
+    log::info!(
+        "process_single_track: '{}' analyzed: BPM={:.1}, Key={}",
+        base_name,
+        analysis.bpm,
+        analysis.key
+    );
+
+    // Extract artist from base_name if in "Artist - Track" format
+    let artist = base_name
+        .split(" - ")
+        .next()
+        .map(|s| s.to_string());
+
+    // Get duration in samples for beat grid generation
+    let duration_samples = buffers.len() as u64;
+
+    // Get first beat position from analysis
+    let first_beat = analysis.beat_grid.first().copied().unwrap_or(0);
+
+    // Build metadata
+    let metadata = TrackMetadata {
+        artist,
+        bpm: Some(analysis.bpm),
+        original_bpm: Some(analysis.original_bpm),
+        key: Some(analysis.key),
+        beat_grid: BeatGrid::regenerate(first_beat, analysis.bpm, duration_samples),
+        ..Default::default()
+    };
+
+    // Export to temp file first
+    let temp_dir = std::env::temp_dir();
+    let sanitized_name = sanitize_filename(&base_name);
+    let temp_path = temp_dir.join(format!("{}.wav", sanitized_name));
+
+    let empty_cues: Vec<CuePoint> = Vec::new();
+    let empty_loops: Vec<SavedLoop> = Vec::new();
+
+    if let Err(e) = export_stem_file(&temp_path, &buffers, &metadata, &empty_cues, &empty_loops) {
+        return TrackImportResult {
+            base_name,
+            success: false,
+            error: Some(format!("Export failed: {}", e)),
+            output_path: None,
+        };
+    }
+
+    // Move to collection
+    let tracks_dir = config.collection_path.join("tracks");
+    if let Err(e) = fs::create_dir_all(&tracks_dir) {
+        return TrackImportResult {
+            base_name,
+            success: false,
+            error: Some(format!("Failed to create tracks directory: {}", e)),
+            output_path: None,
+        };
+    }
+
+    let final_path = tracks_dir.join(format!("{}.wav", sanitized_name));
+
+    // Copy from temp to collection (fs::rename might fail across filesystems)
+    if let Err(e) = fs::copy(&temp_path, &final_path) {
+        // Clean up temp file
+        let _ = fs::remove_file(&temp_path);
+        return TrackImportResult {
+            base_name,
+            success: false,
+            error: Some(format!("Failed to copy to collection: {}", e)),
+            output_path: None,
+        };
+    }
+
+    // Remove temp file
+    let _ = fs::remove_file(&temp_path);
+
+    log::info!(
+        "process_single_track: '{}' exported to {:?}",
+        base_name,
+        final_path
+    );
+
+    TrackImportResult {
+        base_name,
+        success: true,
+        error: None,
+        output_path: Some(final_path),
+    }
+}
+
+/// Run the batch import process
+///
+/// This is meant to be called from a delegation thread.
+/// It uses rayon's thread pool for parallel processing.
+///
+/// # Arguments
+///
+/// * `groups` - Stem groups to import (only complete groups will be processed)
+/// * `config` - Import configuration
+/// * `progress_tx` - Channel to send progress updates
+/// * `cancel_flag` - Atomic flag to signal cancellation
+pub fn run_batch_import(
+    groups: Vec<StemGroup>,
+    config: ImportConfig,
+    progress_tx: Sender<ImportProgress>,
+    cancel_flag: Arc<AtomicBool>,
+) {
+    let start_time = Instant::now();
+
+    // Filter to complete groups only
+    let complete_groups: Vec<_> = groups.into_iter().filter(|g| g.is_complete()).collect();
+    let total = complete_groups.len();
+
+    log::info!(
+        "run_batch_import: Starting import of {} tracks",
+        total
+    );
+
+    // Send start notification
+    let _ = progress_tx.send(ImportProgress::Started { total });
+
+    // Check for early cancellation
+    if cancel_flag.load(Ordering::Relaxed) {
+        log::info!("run_batch_import: Cancelled before processing");
+        let _ = progress_tx.send(ImportProgress::AllComplete {
+            results: Vec::new(),
+        });
+        return;
+    }
+
+    // Configure rayon thread pool for 4 workers
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .expect("Failed to create thread pool");
+
+    // Process groups in parallel, collecting results
+    let results: Vec<TrackImportResult> = pool.install(|| {
+        complete_groups
+            .par_iter()
+            .enumerate()
+            .map(|(index, group)| {
+                // Check for cancellation
+                if cancel_flag.load(Ordering::Relaxed) {
+                    return TrackImportResult {
+                        base_name: group.base_name.clone(),
+                        success: false,
+                        error: Some("Cancelled".to_string()),
+                        output_path: None,
+                    };
+                }
+
+                // Send track started notification
+                let _ = progress_tx.send(ImportProgress::TrackStarted {
+                    base_name: group.base_name.clone(),
+                    index,
+                    total,
+                });
+
+                // Process the track
+                let result = process_single_track(group, &config);
+
+                // Delete source files on success
+                if result.success {
+                    for path in group.all_paths() {
+                        if let Err(e) = fs::remove_file(path) {
+                            log::warn!(
+                                "run_batch_import: Failed to delete source file {:?}: {}",
+                                path,
+                                e
+                            );
+                        } else {
+                            log::debug!("run_batch_import: Deleted source file {:?}", path);
+                        }
+                    }
+                }
+
+                // Send track completed notification
+                let _ = progress_tx.send(ImportProgress::TrackCompleted(result.clone()));
+
+                result
+            })
+            .collect()
+    });
+
+    let duration = start_time.elapsed();
+    let success_count = results.iter().filter(|r| r.success).count();
+    let fail_count = results.len() - success_count;
+
+    log::info!(
+        "run_batch_import: Complete in {:.1}s - {} succeeded, {} failed",
+        duration.as_secs_f64(),
+        success_count,
+        fail_count
+    );
+
+    // Send completion notification
+    let _ = progress_tx.send(ImportProgress::AllComplete { results });
+}
+
+/// Sanitize a filename by removing invalid characters
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c => c,
+        })
+        .collect()
+}
+
+/// Get the default import folder path
+pub fn default_import_folder() -> PathBuf {
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("Music")
+        .join("mesh-collection")
+        .join("import")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_stem_filename_vocals() {
+        let result = parse_stem_filename("Artist - Track_(Vocals).wav");
+        assert_eq!(result, Some(("Artist - Track".to_string(), StemType::Vocals)));
+    }
+
+    #[test]
+    fn test_parse_stem_filename_drums() {
+        let result = parse_stem_filename("1_01 Black Sun Empire - Feed the Machine_(Drums).wav");
+        assert_eq!(
+            result,
+            Some((
+                "1_01 Black Sun Empire - Feed the Machine".to_string(),
+                StemType::Drums
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_stem_filename_bass() {
+        let result = parse_stem_filename("Test_(Bass).wav");
+        assert_eq!(result, Some(("Test".to_string(), StemType::Bass)));
+    }
+
+    #[test]
+    fn test_parse_stem_filename_other() {
+        let result = parse_stem_filename("Test_(Other).wav");
+        assert_eq!(result, Some(("Test".to_string(), StemType::Other)));
+    }
+
+    #[test]
+    fn test_parse_stem_filename_instrumental() {
+        let result = parse_stem_filename("Test_(Instrumental).wav");
+        assert_eq!(result, Some(("Test".to_string(), StemType::Other)));
+    }
+
+    #[test]
+    fn test_parse_stem_filename_case_insensitive() {
+        let result = parse_stem_filename("Test_(VOCALS).wav");
+        assert_eq!(result, Some(("Test".to_string(), StemType::Vocals)));
+
+        let result = parse_stem_filename("Test_(vocals).WAV");
+        assert_eq!(result, Some(("Test".to_string(), StemType::Vocals)));
+    }
+
+    #[test]
+    fn test_parse_stem_filename_invalid() {
+        assert_eq!(parse_stem_filename("Test.wav"), None);
+        assert_eq!(parse_stem_filename("Test_(Unknown).wav"), None);
+        assert_eq!(parse_stem_filename("Test_Vocals.wav"), None);
+        assert_eq!(parse_stem_filename("Test.mp3"), None);
+    }
+
+    #[test]
+    fn test_stem_group_complete() {
+        let mut group = StemGroup::new("Test".to_string());
+        assert!(!group.is_complete());
+        assert_eq!(group.stem_count(), 0);
+
+        group.set_stem(StemType::Vocals, PathBuf::from("v.wav"));
+        assert_eq!(group.stem_count(), 1);
+
+        group.set_stem(StemType::Drums, PathBuf::from("d.wav"));
+        group.set_stem(StemType::Bass, PathBuf::from("b.wav"));
+        assert_eq!(group.stem_count(), 3);
+        assert!(!group.is_complete());
+
+        group.set_stem(StemType::Other, PathBuf::from("o.wav"));
+        assert_eq!(group.stem_count(), 4);
+        assert!(group.is_complete());
+    }
+}

@@ -2479,6 +2479,7 @@ dependencies = [
  "log",
  "mesh-core",
  "mesh-widgets",
+ "rayon",
  "rfd",
  "riff",
  "rtrb",

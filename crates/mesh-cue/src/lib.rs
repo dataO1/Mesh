@@ -10,6 +10,7 @@
 
 pub mod analysis;
 pub mod audio;
+pub mod batch_import;
 pub mod collection;
 pub mod config;
 pub mod export;

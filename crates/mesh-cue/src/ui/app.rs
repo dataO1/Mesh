@@ -2,6 +2,7 @@
 
 use crate::analysis::AnalysisResult;
 use crate::audio::{AudioState, JackHandle, start_jack_client};
+use crate::batch_import::{self, ImportConfig, ImportProgress, StemGroup, TrackImportResult};
 use crate::collection::Collection;
 use crate::config::{self, Config};
 use crate::export;
@@ -25,10 +26,10 @@ use std::sync::Arc;
 /// Current view in the application
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum View {
-    /// Staging area for importing and analyzing stems
-    #[default]
+    /// Staging area for importing and analyzing stems (legacy manual import)
     Staging,
-    /// Collection browser and track editor
+    /// Collection browser and track editor (with batch import)
+    #[default]
     Collection,
 }
 
@@ -267,6 +268,65 @@ impl SettingsState {
     }
 }
 
+/// Phase of the batch import process
+#[derive(Debug, Clone)]
+pub enum ImportPhase {
+    /// Scanning import folder for stems
+    Scanning,
+    /// Processing tracks in parallel
+    Processing {
+        /// Currently processing track name
+        current_track: String,
+        /// Number of completed tracks
+        completed: usize,
+        /// Total tracks to process
+        total: usize,
+        /// Time import started (for ETA calculation)
+        start_time: std::time::Instant,
+    },
+    /// Import complete
+    Complete {
+        /// How long the import took
+        duration: std::time::Duration,
+    },
+}
+
+/// State for the batch import modal and progress
+#[derive(Debug)]
+pub struct ImportState {
+    /// Whether the import modal is open
+    pub is_open: bool,
+    /// Path to the import folder
+    pub import_folder: std::path::PathBuf,
+    /// Detected stem groups from scan
+    pub detected_groups: Vec<StemGroup>,
+    /// Current import phase (None if not importing)
+    pub phase: Option<ImportPhase>,
+    /// Results from completed import (for final popup)
+    pub results: Vec<TrackImportResult>,
+    /// Show results popup after completion
+    pub show_results: bool,
+    /// Channel to receive progress updates from import thread
+    pub progress_rx: Option<std::sync::mpsc::Receiver<ImportProgress>>,
+    /// Atomic flag to signal cancellation to import thread
+    pub cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+}
+
+impl Default for ImportState {
+    fn default() -> Self {
+        Self {
+            is_open: false,
+            import_folder: batch_import::default_import_folder(),
+            detected_groups: Vec::new(),
+            phase: None,
+            results: Vec::new(),
+            show_results: false,
+            progress_rx: None,
+            cancel_flag: None,
+        }
+    }
+}
+
 /// Wrapper for stems load result - provides Debug impl for Shared<StemBuffers>
 ///
 /// basedrop::Shared doesn't implement Debug, so we need this wrapper
@@ -412,6 +472,24 @@ pub enum Message {
         track_id: NodeId,
         target_playlist: NodeId,
     },
+
+    // Batch Import
+    /// Open the import modal
+    OpenImport,
+    /// Close the import modal
+    CloseImport,
+    /// Scan the import folder for stem groups
+    ScanImportFolder,
+    /// Import folder scan complete
+    ImportFolderScanned(Vec<StemGroup>),
+    /// Start the batch import process
+    StartBatchImport,
+    /// Progress update from import thread
+    ImportProgressUpdate(ImportProgress),
+    /// Cancel the current import
+    CancelImport,
+    /// Dismiss the import results popup
+    DismissImportResults,
 }
 
 /// Main application
@@ -441,6 +519,8 @@ pub struct MeshCueApp {
     pressed_hot_cue_keys: std::collections::HashSet<usize>,
     /// Main cue key currently pressed
     pressed_cue_key: bool,
+    /// Batch import state
+    import_state: ImportState,
 }
 
 impl MeshCueApp {
@@ -503,7 +583,7 @@ impl MeshCueApp {
         }
 
         let app = Self {
-            current_view: View::Staging,
+            current_view: View::Collection,
             staging: StagingState::default(),
             collection: collection_state,
             audio,
@@ -515,6 +595,7 @@ impl MeshCueApp {
             keybindings,
             pressed_hot_cue_keys: std::collections::HashSet::new(),
             pressed_cue_key: false,
+            import_state: ImportState::default(),
         };
 
         // Initial collection scan and playlist refresh
@@ -1513,6 +1594,25 @@ impl MeshCueApp {
                         }
                     }
                 }
+
+                // Poll import progress channel - collect first to avoid borrow issues
+                let progress_messages: Vec<_> = self
+                    .import_state
+                    .progress_rx
+                    .as_ref()
+                    .map(|rx| {
+                        let mut msgs = Vec::new();
+                        while let Ok(progress) = rx.try_recv() {
+                            msgs.push(progress);
+                        }
+                        msgs
+                    })
+                    .unwrap_or_default();
+
+                // Process collected messages
+                for progress in progress_messages {
+                    let _ = self.update(Message::ImportProgressUpdate(progress));
+                }
             }
 
             // Zoomed Waveform
@@ -2193,6 +2293,154 @@ impl MeshCueApp {
                 }
                 self.collection.dragging_track = None;
             }
+
+            // Batch Import
+            Message::OpenImport => {
+                self.import_state = ImportState::default();
+                self.import_state.is_open = true;
+                // Trigger folder scan
+                return self.update(Message::ScanImportFolder);
+            }
+            Message::CloseImport => {
+                // Cancel any in-progress import
+                if let Some(ref flag) = self.import_state.cancel_flag {
+                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                self.import_state.is_open = false;
+                self.import_state.phase = None;
+            }
+            Message::ScanImportFolder => {
+                self.import_state.phase = Some(ImportPhase::Scanning);
+                let import_folder = self.import_state.import_folder.clone();
+                return Task::perform(
+                    async move {
+                        batch_import::scan_and_group_stems(&import_folder)
+                            .unwrap_or_else(|e| {
+                                log::error!("Failed to scan import folder: {}", e);
+                                Vec::new()
+                            })
+                    },
+                    Message::ImportFolderScanned,
+                );
+            }
+            Message::ImportFolderScanned(groups) => {
+                log::info!("Import folder scanned: {} groups found", groups.len());
+                self.import_state.detected_groups = groups;
+                self.import_state.phase = None;
+            }
+            Message::StartBatchImport => {
+                let complete_groups: Vec<_> = self
+                    .import_state
+                    .detected_groups
+                    .iter()
+                    .filter(|g| g.is_complete())
+                    .cloned()
+                    .collect();
+
+                if complete_groups.is_empty() {
+                    log::warn!("No complete stem groups to import");
+                    return Task::none();
+                }
+
+                log::info!("Starting batch import of {} tracks", complete_groups.len());
+
+                // Create channel for progress and atomic flag for cancellation
+                let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+                let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let cancel_flag_clone = cancel_flag.clone();
+
+                self.import_state.progress_rx = Some(progress_rx);
+                self.import_state.cancel_flag = Some(cancel_flag);
+                self.import_state.results.clear();
+
+                // Set initial phase
+                self.import_state.phase = Some(ImportPhase::Processing {
+                    current_track: String::new(),
+                    completed: 0,
+                    total: complete_groups.len(),
+                    start_time: std::time::Instant::now(),
+                });
+
+                // Create import config
+                let config = ImportConfig {
+                    import_folder: self.import_state.import_folder.clone(),
+                    collection_path: self.collection.collection.path().to_path_buf(),
+                    bpm_config: self.config.analysis.bpm.clone(),
+                };
+
+                // Spawn delegation thread
+                std::thread::spawn(move || {
+                    batch_import::run_batch_import(complete_groups, config, progress_tx, cancel_flag_clone);
+                });
+            }
+            Message::ImportProgressUpdate(progress) => {
+                match progress {
+                    ImportProgress::Started { total } => {
+                        log::info!("Import started: {} tracks", total);
+                        self.import_state.phase = Some(ImportPhase::Processing {
+                            current_track: String::new(),
+                            completed: 0,
+                            total,
+                            start_time: std::time::Instant::now(),
+                        });
+                    }
+                    ImportProgress::TrackStarted { base_name, index, total } => {
+                        log::info!("Processing track {}/{}: {}", index + 1, total, base_name);
+                        if let Some(ImportPhase::Processing { ref mut current_track, .. }) =
+                            self.import_state.phase
+                        {
+                            *current_track = base_name;
+                        }
+                    }
+                    ImportProgress::TrackCompleted(result) => {
+                        log::info!(
+                            "Track completed: {} (success={})",
+                            result.base_name,
+                            result.success
+                        );
+                        if let Some(ImportPhase::Processing { ref mut completed, .. }) =
+                            self.import_state.phase
+                        {
+                            *completed += 1;
+                        }
+                        self.import_state.results.push(result);
+                    }
+                    ImportProgress::AllComplete { results } => {
+                        log::info!("Import complete: {} tracks processed", results.len());
+                        // Calculate duration from start_time if available
+                        let duration = if let Some(ImportPhase::Processing { start_time, .. }) =
+                            self.import_state.phase
+                        {
+                            start_time.elapsed()
+                        } else {
+                            std::time::Duration::ZERO
+                        };
+
+                        self.import_state.phase = Some(ImportPhase::Complete { duration });
+                        self.import_state.results = results;
+                        self.import_state.show_results = true;
+                        self.import_state.progress_rx = None;
+                        self.import_state.cancel_flag = None;
+
+                        // Refresh collection to show newly imported tracks
+                        return self.update(Message::RefreshPlaylists);
+                    }
+                }
+            }
+            Message::CancelImport => {
+                log::info!("Cancelling import");
+                if let Some(ref flag) = self.import_state.cancel_flag {
+                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                self.import_state.phase = None;
+                self.import_state.progress_rx = None;
+                self.import_state.cancel_flag = None;
+            }
+            Message::DismissImportResults => {
+                self.import_state.phase = None;
+                self.import_state.show_results = false;
+                self.import_state.is_open = false;
+            }
         }
 
         Task::none()
@@ -2215,8 +2463,25 @@ impl MeshCueApp {
             .padding(20)
             .into();
 
-        // Overlay settings modal if open
-        if self.settings.is_open {
+        // Overlay modals if open (import takes precedence)
+        if self.import_state.is_open {
+            let backdrop = mouse_area(
+                container(Space::new())
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .style(|_theme| container::Style {
+                        background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.6).into()),
+                        ..Default::default()
+                    }),
+            )
+            .on_press(Message::CloseImport);
+
+            let modal = center(opaque(super::import_modal::view(&self.import_state)))
+                .width(Length::Fill)
+                .height(Length::Fill);
+
+            stack![base, backdrop, modal].into()
+        } else if self.settings.is_open {
             let backdrop = mouse_area(
                 container(Space::new())
                     .width(Length::Fill)
@@ -2320,7 +2585,7 @@ impl MeshCueApp {
 
     /// View for the collection browser and editor
     fn view_collection(&self) -> Element<Message> {
-        super::collection_browser::view(&self.collection)
+        super::collection_browser::view(&self.collection, &self.import_state)
     }
 }
 

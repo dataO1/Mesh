@@ -248,6 +248,7 @@ mod tests {
                     max_tempo: 190,
                 },
             },
+            display: DisplayConfig::default(),
             track_name_format: String::from("{artist} - {name}"),
         };
 
