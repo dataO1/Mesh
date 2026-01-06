@@ -225,7 +225,6 @@ Mesh implements a fully real-time safe architecture:
 - Key detection using Essentia's KeyExtractor with EDMA profile (optimized for EDM)
 - Beat grid generation from detected beat positions
 - Export to 8-channel WAV with embedded metadata (bext chunk)
-- Collection browser for managing converted tracks
 - Add to collection with automatic metadata embedding
 - **Global configuration service** with YAML persistence
 - **Settings modal** (gear icon) for configuring analysis parameters
@@ -243,9 +242,19 @@ Mesh implements a fully real-time safe architecture:
 - **Track name auto-fill** — Parses artist/name from stem filenames (e.g., "Artist - Track (Vocals).wav")
 - **Configurable track name format** — Template with {artist} and {name} placeholders
 
+**Collection Browser** (New!)
+- **Dual-panel browser** — Two side-by-side playlist browsers for efficient track organization
+- **Hierarchical tree navigation** — Collapsible folder tree with General Collection and Playlists sections
+- **Track table with metadata** — Displays Name, Artist, BPM, Key, and Duration columns
+- **Search and sort** — Filter tracks by name, click column headers to sort
+- **Inline metadata editing** — Double-click Artist, BPM, or Key cells to edit directly (changes saved to file)
+- **Drag and drop** — Drag tracks from table onto playlist folders in tree
+- **Double-click to load** — Load tracks into editor for detailed editing
+- **Playlist management** — Create, rename, and delete playlists (symlink-based storage)
+
 *Planned:*
-- Playlist and crate management
 - Batch processing for multiple tracks
+- Smart playlists with auto-filtering
 
 ---
 
@@ -313,12 +322,20 @@ Mesh uses a custom stem file format based on WAV/RF64:
 - **8 channels**: 4 stereo stems (L/R pairs for Vocals, Drums, Bass, Other)
 - **Sample rate**: 44100 Hz
 - **Bit depth**: 16-bit (24-bit and 32-bit float also supported)
-- **Metadata**: Embedded in `bext` chunk with BPM, key, beat grid, and cue points
+- **Metadata**: Embedded in `bext` chunk with artist, BPM, key, beat grid, and cue points
 
 Example metadata format:
 ```
-BPM:128.00|KEY:Am|GRID:0,22050,44100|ORIGINAL_BPM:125.00
+ARTIST:Daft Punk|BPM:128.00|KEY:Am|FIRST_BEAT:14335|ORIGINAL_BPM:125.00
 ```
+
+| Field | Description |
+|-------|-------------|
+| `ARTIST` | Artist name (optional) |
+| `BPM` | Current tempo in beats per minute |
+| `KEY` | Musical key (e.g., Am, C#m, Gb) |
+| `FIRST_BEAT` | Sample position of first beat (beat grid regenerated from BPM) |
+| `ORIGINAL_BPM` | Original detected tempo before any adjustments |
 
 The mesh-cue application converts pre-separated stems (from tools like Demucs or Ultimate Vocal Remover) into this format with automatic BPM/key analysis.
 
@@ -369,6 +386,56 @@ analysis:
     max_tempo: 190
 track_name_format: "{artist} - {name}"
 ```
+
+---
+
+## Using the Collection Browser
+
+The Collection Browser provides a dual-panel interface for organizing and editing your track library.
+
+### Layout
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      Track Editor (top)                          │
+├─────────────────────────────────┬───────────────────────────────┤
+│     Left Browser                │       Right Browser            │
+│  ┌──────────┬────────────────┐  │  ┌──────────┬────────────────┐ │
+│  │  Tree    │  Track Table   │  │  │  Tree    │  Track Table   │ │
+│  │ ▼ General│ Name  BPM Key  │  │  │ ▼ General│ Name  BPM Key  │ │
+│  │   tracks │ Song1 128 Am   │  │  │   tracks │ Song5 140 Cm   │ │
+│  │ ▼ Playlis│ Song2 140 Dm   │  │  │ ▼ Playlis│ Song6 128 Fm   │ │
+│  │   Set 1  │ Song3 174 Em   │  │  │   Set 2  │                │ │
+│  └──────────┴────────────────┘  │  └──────────┴────────────────┘ │
+└─────────────────────────────────┴───────────────────────────────┘
+```
+
+### Quick Actions
+
+| Action | How To |
+|--------|--------|
+| **Load track** | Double-click a track in the table |
+| **Navigate folders** | Click folder in tree to show contents |
+| **Expand/collapse** | Click ▶/▼ arrow next to folder |
+| **Edit metadata** | Double-click Artist, BPM, or Key cell |
+| **Save edit** | Press Enter |
+| **Cancel edit** | Press Escape or click away |
+| **Search tracks** | Type in search box above table |
+| **Sort by column** | Click column header (▲/▼ indicates direction) |
+| **Create playlist** | Right-click on Playlists folder |
+| **Add to playlist** | Drag track from table onto playlist in tree |
+
+### Inline Metadata Editing
+
+You can edit track metadata directly in the browser without loading the track:
+
+1. **Double-click** on an editable cell (Artist, BPM, or Key)
+2. The cell transforms into a text input
+3. **Type** the new value
+4. Press **Enter** to save (writes directly to the WAV file's bext chunk)
+5. Press **Escape** to cancel
+
+**Note:** Name and Duration columns are read-only. Duration is calculated from the audio file, and Name is derived from the filename.
 
 ---
 
