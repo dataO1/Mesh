@@ -486,6 +486,38 @@ impl PlaylistStorage for FilesystemStorage {
     fn refresh(&mut self) -> Result<(), PlaylistError> {
         self.scan_tree()
     }
+
+    fn delete_track_permanently(&mut self, track_id: &NodeId) -> Result<PathBuf, PlaylistError> {
+        // Only allow deleting from collection (real files), not from playlists (symlinks)
+        if track_id.is_in_playlists() {
+            return Err(PlaylistError::InvalidOperation(
+                "Use remove_track_from_playlist for playlist tracks".to_string(),
+            ));
+        }
+
+        let node = self.get_node(track_id).ok_or_else(|| {
+            PlaylistError::NotFound(track_id.to_string())
+        })?;
+
+        if node.kind != NodeKind::Track {
+            return Err(PlaylistError::InvalidOperation(
+                "Can only delete tracks".to_string(),
+            ));
+        }
+
+        let path = node.track_path.clone().ok_or_else(|| {
+            PlaylistError::InvalidOperation("Track has no associated file path".to_string())
+        })?;
+
+        // PERMANENTLY delete the file from disk
+        log::warn!("PERMANENTLY DELETING: {:?}", path);
+        fs::remove_file(&path)?;
+
+        // Refresh tree to reflect the deletion
+        self.scan_tree()?;
+
+        Ok(path)
+    }
 }
 
 /// Check if a path is an audio file based on extension
