@@ -53,22 +53,26 @@ fn create_loop_button(
     saved_loop: Option<&SavedLoop>,
     loop_active: bool,
 ) -> Element<'static, Message> {
+    // Loop icon (↻) matches CDJ loop button aesthetic
+    let loop_icon = "\u{21BB}";
+
     let label_text = if let Some(loop_) = saved_loop {
-        // Show loop number and length
+        // Show loop icon, number, and length
         let length_secs = (loop_.end_sample.saturating_sub(loop_.start_sample)) as f64 / SAMPLE_RATE as f64;
         if length_secs < 1.0 {
-            format!("L{}\n{:.0}ms", index + 1, length_secs * 1000.0)
+            format!("{}{}\n{:.0}ms", loop_icon, index + 1, length_secs * 1000.0)
         } else {
-            format!("L{}\n{:.1}s", index + 1, length_secs)
+            format!("{}{}\n{:.1}s", loop_icon, index + 1, length_secs)
         }
     } else {
-        // Empty slot
-        format!("L{}", index + 1)
+        // Empty slot - show icon and number
+        format!("{}{}", loop_icon, index + 1)
     };
 
-    let btn = button(text(label_text).size(10).center())
-        .width(Length::Fixed(48.0))
-        .height(Length::Fixed(36.0));
+    // Match hot cue button dimensions: dynamic width, 44px height
+    let btn = button(text(label_text).size(11).center())
+        .width(Length::Fill)
+        .height(Length::Fixed(44.0));
 
     if saved_loop.is_some() {
         // Has saved loop - click to jump to it
