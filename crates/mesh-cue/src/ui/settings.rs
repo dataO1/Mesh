@@ -3,6 +3,7 @@
 //! Provides a modal dialog for editing application configuration.
 
 use super::app::{Message, SettingsState};
+use crate::config::BpmSource;
 use iced::widget::{button, column, container, row, text, text_input, Space};
 use iced::{Alignment, Element, Length};
 
@@ -84,6 +85,37 @@ fn view_bpm_section(state: &SettingsState) -> Element<Message> {
         .spacing(10)
         .align_y(Alignment::Center);
 
+    // BPM Source subsection
+    let source_title = text("BPM Analysis Source").size(14);
+    let source_hint = text("Which audio to analyze for BPM detection (drums recommended)")
+        .size(12);
+
+    // Source selection buttons
+    let source_options = [BpmSource::Drums, BpmSource::FullMix];
+    let source_buttons: Vec<Element<Message>> = source_options
+        .iter()
+        .map(|&source| {
+            let is_selected = state.draft_bpm_source == source;
+            let btn = button(text(source.to_string()).size(12))
+                .on_press(Message::UpdateSettingsBpmSource(source))
+                .style(if is_selected {
+                    iced::widget::button::primary
+                } else {
+                    iced::widget::button::secondary
+                })
+                .width(Length::Fixed(90.0));
+            btn.into()
+        })
+        .collect();
+
+    let source_label = text("Source:").size(14);
+    let source_row = row![
+        source_label,
+        row(source_buttons).spacing(4).align_y(Alignment::Center),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+
     // Parallel processes subsection
     let parallel_title = text("Parallel Analysis").size(14);
     let parallel_hint = text("Number of tracks to analyze simultaneously during batch import")
@@ -106,6 +138,10 @@ fn view_bpm_section(state: &SettingsState) -> Element<Message> {
             hint,
             min_row,
             max_row,
+            Space::new().height(10),
+            source_title,
+            source_hint,
+            source_row,
             Space::new().height(10),
             parallel_title,
             parallel_hint,

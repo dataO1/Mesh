@@ -218,6 +218,28 @@ impl StemImporter {
         log::info!("get_mono_sum: Complete, {} mono samples", mono.len());
         Ok(mono)
     }
+
+    /// Get drums-only mono audio for BPM analysis
+    ///
+    /// Drums typically have the clearest beat for tempo detection,
+    /// providing more accurate BPM results than analyzing the full mix.
+    pub fn get_drums_mono(&self) -> Result<Vec<f32>> {
+        log::info!("get_drums_mono: Loading drums stem for BPM analysis");
+        let imported = self.import()?;
+        let buffers = &imported.buffers;
+        let len = buffers.len();
+
+        log::info!("get_drums_mono: Converting {} stereo samples to mono", len);
+        let mono: Vec<f32> = (0..len)
+            .map(|i| {
+                // Convert drums stereo to mono
+                (buffers.drums[i].left + buffers.drums[i].right) * 0.5
+            })
+            .collect();
+
+        log::info!("get_drums_mono: Complete, {} mono samples", mono.len());
+        Ok(mono)
+    }
 }
 
 /// Load a stereo WAV file and return sample pairs with the source sample rate

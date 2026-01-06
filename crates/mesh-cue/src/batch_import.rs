@@ -31,7 +31,7 @@
 //! ```
 
 use crate::analysis::{analyze_audio, AnalysisResult};
-use crate::config::BpmConfig;
+use crate::config::{BpmConfig, BpmSource};
 use crate::export::export_stem_file;
 use crate::import::StemImporter;
 use anyhow::{Context, Result};
@@ -404,14 +404,24 @@ fn process_single_track(group: &StemGroup, config: &ImportConfig) -> TrackImport
     let source_sample_rate = imported.source_sample_rate;
     let buffers = imported.buffers;
 
-    // Get mono mix for analysis
-    let mono_samples = match importer.get_mono_sum() {
+    // Get mono audio for BPM analysis based on configured source
+    let mono_samples = match config.bpm_config.source {
+        BpmSource::Drums => {
+            log::info!("process_single_track: Using drums-only for BPM analysis");
+            importer.get_drums_mono()
+        }
+        BpmSource::FullMix => {
+            log::info!("process_single_track: Using full mix for BPM analysis");
+            importer.get_mono_sum()
+        }
+    };
+    let mono_samples = match mono_samples {
         Ok(s) => s,
         Err(e) => {
             return TrackImportResult {
                 base_name,
                 success: false,
-                error: Some(format!("Failed to create mono mix: {}", e)),
+                error: Some(format!("Failed to create mono audio for analysis: {}", e)),
                 output_path: None,
             };
         }

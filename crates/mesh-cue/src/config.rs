@@ -103,6 +103,28 @@ impl AnalysisConfig {
     }
 }
 
+/// Source audio for BPM detection
+///
+/// Determines which audio is used for tempo analysis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BpmSource {
+    /// Use drums stem only (clearest beat, recommended for most music)
+    #[default]
+    Drums,
+    /// Use full mix (all stems combined)
+    FullMix,
+}
+
+impl std::fmt::Display for BpmSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BpmSource::Drums => write!(f, "Drums Only"),
+            BpmSource::FullMix => write!(f, "Full Mix"),
+        }
+    }
+}
+
 /// BPM detection configuration
 ///
 /// These values map directly to Essentia's RhythmExtractor2013 parameters:
@@ -117,6 +139,8 @@ pub struct BpmConfig {
     pub min_tempo: i32,
     /// Maximum expected tempo in BPM (Essentia range: 60-250)
     pub max_tempo: i32,
+    /// Which audio source to use for BPM detection
+    pub source: BpmSource,
 }
 
 impl Default for BpmConfig {
@@ -124,6 +148,7 @@ impl Default for BpmConfig {
         Self {
             min_tempo: 40,
             max_tempo: 208,
+            source: BpmSource::default(),
         }
     }
 }
@@ -146,6 +171,7 @@ impl BpmConfig {
         let mut config = Self {
             min_tempo: min,
             max_tempo: max,
+            source: BpmSource::default(),
         };
         config.validate();
         config
@@ -239,6 +265,7 @@ mod tests {
         let mut bpm = BpmConfig {
             min_tempo: 30, // Below minimum
             max_tempo: 300, // Above maximum
+            source: BpmSource::default(),
         };
         bpm.validate();
         assert_eq!(bpm.min_tempo, 40);
@@ -250,6 +277,7 @@ mod tests {
         let mut bpm = BpmConfig {
             min_tempo: 180,
             max_tempo: 100, // Less than min
+            source: BpmSource::default(),
         };
         bpm.validate();
         assert!(bpm.max_tempo > bpm.min_tempo);
@@ -262,6 +290,7 @@ mod tests {
                 bpm: BpmConfig {
                     min_tempo: 160,
                     max_tempo: 190,
+                    source: BpmSource::Drums,
                 },
                 parallel_processes: 4,
             },
