@@ -14,9 +14,9 @@
 //! );
 //! ```
 
-use crate::track_table::{track_table, TrackRow, TrackTableMessage, TrackTableState};
+use crate::track_table::{track_table, TrackColumn, TrackRow, TrackTableMessage, TrackTableState};
 use crate::tree::{tree_view, TreeMessage, TreeNode, TreeState};
-use iced::widget::{container, row, Rule};
+use iced::widget::{container, row, rule};
 use iced::{Background, Element, Length, Theme};
 use std::hash::Hash;
 
@@ -83,26 +83,65 @@ where
                 self.set_current_folder(id.clone());
                 folder_changed
             }
+            TreeMessage::EditChanged(text) => {
+                self.tree_state.edit_buffer = text.clone();
+                false
+            }
+            // These are passed through to app layer for storage operations
+            TreeMessage::CreateChild(_)
+            | TreeMessage::StartEdit(_)
+            | TreeMessage::CommitEdit
+            | TreeMessage::CancelEdit
+            | TreeMessage::DropReceived(_) => false,
         }
     }
 
     /// Handle a table message
-    pub fn handle_table_message(&mut self, msg: &TrackTableMessage<TrackId>)
+    ///
+    /// Returns `Some((track_id, column, new_value))` if an edit was committed,
+    /// so the parent can save the metadata to the file.
+    pub fn handle_table_message(
+        &mut self,
+        msg: &TrackTableMessage<TrackId>,
+    ) -> Option<(TrackId, TrackColumn, String)>
     where
         TrackId: Clone,
     {
         match msg {
             TrackTableMessage::SearchChanged(query) => {
                 self.table_state.set_search(query.clone());
+                None
             }
             TrackTableMessage::Select(id) => {
+                // Cancel any in-progress edit when selecting a different track
+                self.table_state.cancel_edit();
                 self.table_state.select(id.clone());
+                None
             }
             TrackTableMessage::Activate(_) => {
                 // Handled by parent (load track into editor)
+                None
             }
             TrackTableMessage::SortBy(column) => {
                 self.table_state.set_sort(*column);
+                None
+            }
+            TrackTableMessage::StartEdit(id, column, current_value) => {
+                self.table_state
+                    .start_edit(id.clone(), *column, current_value.clone());
+                None
+            }
+            TrackTableMessage::EditChanged(text) => {
+                self.table_state.edit_buffer = text.clone();
+                None
+            }
+            TrackTableMessage::CommitEdit => {
+                // Return the edit data so parent can save to file
+                self.table_state.commit_edit()
+            }
+            TrackTableMessage::CancelEdit => {
+                self.table_state.cancel_edit();
+                None
             }
         }
     }
@@ -148,7 +187,7 @@ pub fn playlist_browser<'a, NodeId, TrackId, Message>(
 where
     NodeId: Clone + Eq + Hash + 'a,
     TrackId: Clone + PartialEq + 'a,
-    Message: 'a,
+    Message: Clone + 'a,
 {
     let on_msg_tree = on_message.clone();
     let tree = tree_view(tree_nodes, &state.tree_state, move |msg| {
@@ -180,7 +219,7 @@ where
             ..Default::default()
         });
 
-    row![tree_container, Rule::vertical(1), table_container,]
+    row![tree_container, rule::vertical(1), table_container,]
         .spacing(0)
         .height(Length::Fill)
         .into()
@@ -194,7 +233,7 @@ pub fn tree_browser<'a, NodeId, Message>(
 ) -> Element<'a, Message>
 where
     NodeId: Clone + Eq + Hash + 'a,
-    Message: 'a,
+    Message: Clone + 'a,
 {
     container(tree_view(tree_nodes, state, on_message))
         .width(Length::Fill)
@@ -216,7 +255,7 @@ pub fn table_browser<'a, TrackId, Message>(
 ) -> Element<'a, Message>
 where
     TrackId: Clone + PartialEq + 'a,
-    Message: 'a,
+    Message: Clone + 'a,
 {
     container(track_table(tracks, state, on_message))
         .width(Length::Fill)

@@ -17,6 +17,7 @@
 //! - **Peak generation**: Utilities for downsampling audio to waveform peaks
 //! - **Waveform state**: Data structures for overview and zoomed waveform views
 //! - **CueMarker**: Data structure for cue point display
+//! - **Button styles**: Material 3D button styling with raised/pressed effects
 //!
 //! ## View Functions
 //!
@@ -24,12 +25,26 @@
 //! - `waveform_zoomed`: Zoomed detail view with drag-to-zoom
 //! - `waveform_combined`: Both views in a single canvas (iced bug #3040 workaround)
 
+pub mod button_styles;
+pub mod playlist_browser;
+pub mod rotary_knob;
 pub mod theme;
+pub mod track_table;
 pub mod traits;
+pub mod tree;
 pub mod waveform;
 
 // Re-export commonly used items
 pub use theme::{WaveformConfig, CUE_COLORS, STEM_COLORS, STEM_NAMES, STEM_NAMES_SHORT};
+
+// Button styling functions
+pub use button_styles::{
+    colored_style, colored_toggle_style, press_release_style, toggle_style,
+    ACTIVE_BG, DEFAULT_BG,
+};
+
+// Rotary knob widget
+pub use rotary_knob::{rotary_knob, RotaryKnobState};
 
 // Deprecated: Use callback closures with view functions instead
 #[allow(deprecated)]
@@ -60,4 +75,16 @@ pub use waveform::{
     CombinedInteraction, OverviewInteraction, PlayerInteraction, ZoomedInteraction,
     // Player canvas layout constants
     OVERVIEW_STACK_GAP, PLAYER_SECTION_GAP, ZOOMED_GRID_GAP,
+};
+
+// Tree widget for hierarchical navigation
+pub use tree::{tree_view, TreeIcon, TreeMessage, TreeNode, TreeState};
+
+// Track table widget for displaying tracks
+pub use track_table::{track_table, TrackColumn, TrackRow, TrackTableMessage, TrackTableState};
+
+// Combined playlist browser (tree + table)
+pub use playlist_browser::{
+    playlist_browser, table_browser, tree_browser, PlaylistBrowserMessage, PlaylistBrowserState,
+    TREE_PANEL_WIDTH,
 };

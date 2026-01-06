@@ -13,7 +13,7 @@
 //! );
 //! ```
 
-use iced::widget::{button, column, container, row, scrollable, text, text_input};
+use iced::widget::{button, column, container, mouse_area, row, scrollable, text, text_input};
 use iced::{Background, Border, Color, Element, Length, Padding, Theme};
 
 /// Column types for the track table
@@ -21,6 +21,8 @@ use iced::{Background, Border, Color, Element, Length, Padding, Theme};
 pub enum TrackColumn {
     /// Track name
     Name,
+    /// Artist name
+    Artist,
     /// BPM (beats per minute)
     Bpm,
     /// Musical key
@@ -34,16 +36,23 @@ impl TrackColumn {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Name => "Name",
+            Self::Artist => "Artist",
             Self::Bpm => "BPM",
             Self::Key => "Key",
             Self::Duration => "Duration",
         }
     }
 
+    /// Check if this column is editable
+    pub fn is_editable(&self) -> bool {
+        matches!(self, Self::Artist | Self::Bpm | Self::Key)
+    }
+
     /// Get the width for this column
     pub fn width(&self) -> Length {
         match self {
             Self::Name => Length::Fill,
+            Self::Artist => Length::Fixed(120.0),
             Self::Bpm => Length::Fixed(60.0),
             Self::Key => Length::Fixed(50.0),
             Self::Duration => Length::Fixed(70.0),
@@ -54,6 +63,7 @@ impl TrackColumn {
     pub fn all() -> &'static [TrackColumn] {
         &[
             TrackColumn::Name,
+            TrackColumn::Artist,
             TrackColumn::Bpm,
             TrackColumn::Key,
             TrackColumn::Duration,
@@ -68,6 +78,8 @@ pub struct TrackRow<Id: Clone> {
     pub id: Id,
     /// Track name (usually filename without extension)
     pub name: String,
+    /// Artist name if known
+    pub artist: Option<String>,
     /// BPM if known
     pub bpm: Option<f64>,
     /// Musical key if known
@@ -82,10 +94,17 @@ impl<Id: Clone> TrackRow<Id> {
         Self {
             id,
             name: name.into(),
+            artist: None,
             bpm: None,
             key: None,
             duration: None,
         }
+    }
+
+    /// Set the artist name
+    pub fn with_artist(mut self, artist: impl Into<String>) -> Self {
+        self.artist = Some(artist.into());
+        self
     }
 
     /// Set the BPM
@@ -136,6 +155,10 @@ pub struct TrackTableState<Id: Clone> {
     pub sort_column: TrackColumn,
     /// Sort direction (true = ascending)
     pub sort_ascending: bool,
+    /// Currently editing cell (track ID, column)
+    pub editing: Option<(Id, TrackColumn)>,
+    /// Buffer for the value being edited
+    pub edit_buffer: String,
 }
 
 impl<Id: Clone> Default for TrackTableState<Id> {
@@ -152,6 +175,8 @@ impl<Id: Clone> TrackTableState<Id> {
             selected: None,
             sort_column: TrackColumn::Name,
             sort_ascending: true,
+            editing: None,
+            edit_buffer: String::new(),
         }
     }
 
@@ -187,6 +212,39 @@ impl<Id: Clone> TrackTableState<Id> {
     {
         self.selected.as_ref() == Some(id)
     }
+
+    /// Start editing a cell
+    pub fn start_edit(&mut self, id: Id, column: TrackColumn, current_value: String) {
+        self.editing = Some((id, column));
+        self.edit_buffer = current_value;
+    }
+
+    /// Check if a specific cell is being edited
+    pub fn is_editing(&self, id: &Id, column: TrackColumn) -> bool
+    where
+        Id: PartialEq,
+    {
+        self.editing
+            .as_ref()
+            .map(|(edit_id, edit_col)| edit_id == id && *edit_col == column)
+            .unwrap_or(false)
+    }
+
+    /// Cancel editing
+    pub fn cancel_edit(&mut self) {
+        self.editing = None;
+        self.edit_buffer.clear();
+    }
+
+    /// Commit edit and return the edited data (clears editing state)
+    pub fn commit_edit(&mut self) -> Option<(Id, TrackColumn, String)> {
+        if let Some((id, column)) = self.editing.take() {
+            let value = std::mem::take(&mut self.edit_buffer);
+            Some((id, column, value))
+        } else {
+            None
+        }
+    }
 }
 
 /// Messages emitted by the track table widget
@@ -194,12 +252,20 @@ impl<Id: Clone> TrackTableState<Id> {
 pub enum TrackTableMessage<Id> {
     /// Search query changed
     SearchChanged(String),
-    /// Track selected (single click)
+    /// Track selected (single click) - also triggers drag operation at app level
     Select(Id),
     /// Track activated (double click)
     Activate(Id),
     /// Sort by column clicked
     SortBy(TrackColumn),
+    /// Start editing a cell (double-click on editable cell)
+    StartEdit(Id, TrackColumn, String),
+    /// Edit buffer changed
+    EditChanged(String),
+    /// Commit edit (Enter pressed or focus lost)
+    CommitEdit,
+    /// Cancel edit (Escape pressed)
+    CancelEdit,
 }
 
 /// Build a track table view
@@ -246,7 +312,7 @@ where
         .map(|track| build_track_row(track, state, on_message.clone()))
         .collect();
 
-    let track_list = if rows.is_empty() {
+    let track_list: Element<'a, Message> = if rows.is_empty() {
         let empty_msg = if state.search_query.is_empty() {
             "No tracks in this folder"
         } else {
@@ -343,6 +409,67 @@ where
         .into()
 }
 
+/// Build a cell for a track row (handles editing state)
+fn build_cell<'a, Id, Message>(
+    track: &'a TrackRow<Id>,
+    column: TrackColumn,
+    state: &'a TrackTableState<Id>,
+    on_message: impl Fn(TrackTableMessage<Id>) -> Message + 'a + Clone,
+) -> Element<'a, Message>
+where
+    Id: Clone + PartialEq + 'a,
+    Message: Clone + 'a,
+{
+    let is_editing = state.is_editing(&track.id, column);
+
+    // Get the display value for this cell
+    let display_value = match column {
+        TrackColumn::Name => track.name.clone(),
+        TrackColumn::Artist => track.artist.clone().unwrap_or_else(|| "-".to_string()),
+        TrackColumn::Bpm => track.format_bpm(),
+        TrackColumn::Key => track.key.clone().unwrap_or_else(|| "-".to_string()),
+        TrackColumn::Duration => track.format_duration(),
+    };
+
+    if is_editing {
+        // Show text input for editing
+        let on_msg_change = on_message.clone();
+        let on_msg_submit = on_message.clone();
+
+        text_input("", &state.edit_buffer)
+            .on_input(move |s| on_msg_change(TrackTableMessage::EditChanged(s)))
+            .on_submit(on_msg_submit(TrackTableMessage::CommitEdit))
+            .size(12)
+            .padding(2)
+            .width(column.width())
+            .into()
+    } else if column.is_editable() {
+        // Editable cell - wrap in mouse_area for double-click to edit
+        let id = track.id.clone();
+        let on_msg = on_message.clone();
+        let current_value = match column {
+            TrackColumn::Artist => track.artist.clone().unwrap_or_default(),
+            TrackColumn::Bpm => track.bpm.map(|b| format!("{:.1}", b)).unwrap_or_default(),
+            TrackColumn::Key => track.key.clone().unwrap_or_default(),
+            _ => String::new(),
+        };
+
+        mouse_area(
+            text(display_value)  // Move ownership to text widget
+                .size(12)
+                .width(column.width()),
+        )
+        .on_double_click(on_msg(TrackTableMessage::StartEdit(id, column, current_value)))
+        .into()
+    } else {
+        // Non-editable cell - just display text
+        text(display_value)
+            .size(12)
+            .width(column.width())
+            .into()
+    }
+}
+
 /// Build a single track row
 fn build_track_row<'a, Id, Message>(
     track: &'a TrackRow<Id>,
@@ -355,26 +482,26 @@ where
 {
     let is_selected = state.is_selected(&track.id);
     let id = track.id.clone();
+    let id_activate = track.id.clone();
     let on_msg = on_message.clone();
+    let on_msg_activate = on_message.clone();
 
-    let row_content = row![
-        text(&track.name)
-            .size(12)
-            .width(TrackColumn::Name.width()),
-        text(track.format_bpm())
-            .size(12)
-            .width(TrackColumn::Bpm.width()),
-        text(track.key.as_deref().unwrap_or("-"))
-            .size(12)
-            .width(TrackColumn::Key.width()),
-        text(track.format_duration())
-            .size(12)
-            .width(TrackColumn::Duration.width()),
-    ]
-    .spacing(1)
-    .padding(Padding::from([4, 8]));
+    // Check if any cell in this row is being edited
+    let is_row_editing = state.editing.as_ref().map(|(id, _)| id == &track.id).unwrap_or(false);
 
-    button(row_content)
+    // Build cells for each column
+    let cells: Vec<Element<'a, Message>> = TrackColumn::all()
+        .iter()
+        .map(|&col| build_cell(track, col, state, on_message.clone()))
+        .collect();
+
+    let row_content = row(cells)
+        .spacing(1)
+        .padding(Padding::from([4, 8]));
+
+    // Button is used for visual styling only - no .on_press()
+    // All mouse event handling goes through mouse_area to avoid event consumption
+    let row_button = button(row_content)
         .padding(0)
         .width(Length::Fill)
         .style(move |theme: &Theme, status| {
@@ -399,9 +526,21 @@ where
                 border: Border::default(),
                 ..Default::default()
             }
-        })
-        .on_press(on_msg(TrackTableMessage::Select(id)))
-        .into()
+        });
+
+    // If we're editing this row, don't add row-level mouse handlers
+    // (they would interfere with the text input)
+    if is_row_editing {
+        row_button.into()
+    } else {
+        // mouse_area handles all mouse events:
+        // - on_press: Select track AND start potential drag
+        // - on_double_click: Activate/load track
+        mouse_area(row_button)
+            .on_press(on_msg(TrackTableMessage::Select(id)))
+            .on_double_click(on_msg_activate(TrackTableMessage::Activate(id_activate)))
+            .into()
+    }
 }
 
 #[cfg(test)]

@@ -200,12 +200,16 @@ impl Default for BeatGrid {
 /// Metadata extracted from bext and cue chunks
 #[derive(Debug, Clone, Default)]
 pub struct TrackMetadata {
+    /// Artist name
+    pub artist: Option<String>,
     /// BPM of the track
     pub bpm: Option<f64>,
     /// Original BPM (before any adjustments)
     pub original_bpm: Option<f64>,
     /// Musical key (e.g., "Am", "C#m")
     pub key: Option<String>,
+    /// Duration in seconds (calculated from file header)
+    pub duration_seconds: Option<f64>,
     /// Beat grid
     pub beat_grid: BeatGrid,
     /// Cue points (up to 8)
@@ -485,6 +489,7 @@ impl TrackMetadata {
         for part in description.split('|') {
             if let Some((key, value)) = part.split_once(':') {
                 match key.trim() {
+                    "ARTIST" => metadata.artist = Some(value.trim().to_string()),
                     "BPM" => metadata.bpm = value.trim().parse().ok(),
                     "ORIGINAL_BPM" => metadata.original_bpm = value.trim().parse().ok(),
                     "KEY" => metadata.key = Some(value.trim().to_string()),
@@ -527,13 +532,16 @@ impl TrackMetadata {
 
     /// Serialize metadata to bext description string
     ///
-    /// Format: `BPM:128.00|KEY:Am|FIRST_BEAT:14335|ORIGINAL_BPM:125.00`
+    /// Format: `ARTIST:Name|BPM:128.00|KEY:Am|FIRST_BEAT:14335|ORIGINAL_BPM:125.00`
     ///
     /// Uses FIRST_BEAT instead of full GRID to fit in 256-byte bext description limit.
     /// The full beat grid is regenerated from BPM + FIRST_BEAT when loading.
     pub fn to_bext_description(&self) -> String {
         let mut parts = Vec::new();
 
+        if let Some(ref artist) = self.artist {
+            parts.push(format!("ARTIST:{}", artist));
+        }
         if let Some(bpm) = self.bpm {
             parts.push(format!("BPM:{:.2}", bpm));
         }
@@ -1322,6 +1330,137 @@ pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFile
     // Attach saved loops if present
     metadata.saved_loops = saved_loops;
 
+    // Calculate and store duration in seconds (assuming 44100 Hz sample rate)
+    if duration_samples > 0 {
+        metadata.duration_seconds = Some(duration_samples as f64 / SAMPLE_RATE as f64);
+    }
+
+    Ok(metadata)
+}
+
+/// Metadata field that can be updated
+#[derive(Debug, Clone, Copy)]
+pub enum MetadataField {
+    /// Artist name
+    Artist,
+    /// BPM value
+    Bpm,
+    /// Musical key
+    Key,
+}
+
+/// Update a single metadata field in a WAV file's bext chunk
+///
+/// Uses the `riff` crate to efficiently navigate chunks and updates only
+/// the 256-byte bext description in-place without loading audio data.
+///
+/// # Arguments
+///
+/// * `path` - Path to the WAV file
+/// * `field` - Which metadata field to update
+/// * `value` - New value as a string (BPM is parsed as f64)
+///
+/// # Returns
+///
+/// The updated metadata after the change
+pub fn update_metadata_in_file<P: AsRef<Path>>(
+    path: P,
+    field: MetadataField,
+    value: &str,
+) -> Result<TrackMetadata, AudioFileError> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let path = path.as_ref();
+
+    // Open file for reading to find bext chunk
+    let mut file = File::open(path).map_err(|e| AudioFileError::IoError(e.to_string()))?;
+
+    // Use riff crate to parse the chunk structure efficiently
+    let chunk = riff::Chunk::read(&mut file, 0)
+        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+
+    // Find bext chunk and its offset, plus read current description
+    let mut bext_offset: Option<u64> = None;
+    let mut current_description = String::new();
+
+    for child in chunk.iter(&mut file) {
+        let child = child.map_err(|e| AudioFileError::IoError(e.to_string()))?;
+        if child.id().as_str() == "bext" {
+            // Offset is: chunk start + 8 bytes (id + size header)
+            bext_offset = Some(child.offset() + 8);
+
+            // Read current description (first 256 bytes of bext data)
+            let content = child
+                .read_contents(&mut file)
+                .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+            if content.len() >= 256 {
+                current_description = String::from_utf8_lossy(&content[..256])
+                    .trim_end_matches('\0')
+                    .to_string();
+            }
+            break;
+        }
+    }
+
+    // Close the read handle
+    drop(file);
+
+    let bext_offset = bext_offset.ok_or_else(|| {
+        AudioFileError::InvalidFormat("No bext chunk found in file".to_string())
+    })?;
+
+    // Parse current metadata and update the field
+    let mut metadata = TrackMetadata::parse_bext_description(&current_description);
+
+    match field {
+        MetadataField::Artist => {
+            metadata.artist = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            };
+        }
+        MetadataField::Bpm => {
+            metadata.bpm = value.parse().ok();
+            if metadata.original_bpm.is_none() {
+                metadata.original_bpm = metadata.bpm;
+            }
+        }
+        MetadataField::Key => {
+            metadata.key = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            };
+        }
+    }
+
+    // Generate new bext description (256 bytes, null-padded)
+    let new_description = metadata.to_bext_description();
+    let mut description_bytes = [0u8; 256];
+    let desc_data = new_description.as_bytes();
+    let copy_len = desc_data.len().min(255);
+    description_bytes[..copy_len].copy_from_slice(&desc_data[..copy_len]);
+
+    // Write only the 256-byte description in-place
+    let mut file = OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+
+    file.seek(SeekFrom::Start(bext_offset))
+        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+    file.write_all(&description_bytes)
+        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+
+    log::info!(
+        "Updated metadata field {:?} = '{}' in {:?}",
+        field,
+        value,
+        path
+    );
+
     Ok(metadata)
 }
 
@@ -1521,9 +1660,10 @@ mod tests {
 
     #[test]
     fn test_metadata_parsing() {
-        let description = "BPM:128.00|KEY:Am|GRID:0,22050,44100|ORIGINAL_BPM:125.00";
+        let description = "ARTIST:Test Artist|BPM:128.00|KEY:Am|GRID:0,22050,44100|ORIGINAL_BPM:125.00";
         let metadata = TrackMetadata::parse_bext_description(description);
 
+        assert_eq!(metadata.artist, Some("Test Artist".to_string()));
         assert_eq!(metadata.bpm, Some(128.0));
         assert_eq!(metadata.original_bpm, Some(125.0));
         assert_eq!(metadata.key, Some("Am".to_string()));
@@ -1534,11 +1674,14 @@ mod tests {
     fn test_metadata_roundtrip() {
         // Create metadata with first_beat_sample set
         let original = TrackMetadata {
+            artist: Some("Test Artist".to_string()),
             bpm: Some(174.5),
             original_bpm: Some(172.0),
             key: Some("Dm".to_string()),
+            duration_seconds: None, // Not serialized to bext
             beat_grid: BeatGrid::from_csv("0,11025,22050"),
             cue_points: Vec::new(),
+            saved_loops: Vec::new(),
             waveform_preview: None,
         };
 
@@ -1546,6 +1689,7 @@ mod tests {
         let description = original.to_bext_description();
 
         // Should contain FIRST_BEAT instead of full GRID
+        assert!(description.contains("ARTIST:Test Artist"));
         assert!(description.contains("FIRST_BEAT:0"));
         assert!(!description.contains("GRID:"));
 
@@ -1553,6 +1697,7 @@ mod tests {
         let parsed = TrackMetadata::parse_bext_description(&description);
 
         // Verify basic roundtrip
+        assert_eq!(parsed.artist, original.artist);
         assert_eq!(parsed.bpm, original.bpm);
         assert_eq!(parsed.original_bpm, original.original_bpm);
         assert_eq!(parsed.key, original.key);
@@ -1564,11 +1709,14 @@ mod tests {
     fn test_metadata_roundtrip_with_duration() {
         // Create metadata
         let original = TrackMetadata {
+            artist: Some("Duration Artist".to_string()),
             bpm: Some(120.0), // 120 BPM = 22050 samples per beat at 44100
             original_bpm: Some(120.0),
             key: Some("Am".to_string()),
+            duration_seconds: None, // Not serialized to bext
             beat_grid: BeatGrid::from_csv("0,22050,44100,66150"),
             cue_points: Vec::new(),
+            saved_loops: Vec::new(),
             waveform_preview: None,
         };
 

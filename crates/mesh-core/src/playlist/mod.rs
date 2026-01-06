@@ -6,6 +6,7 @@
 //! - Tree-based navigation with folders and playlists
 
 pub mod filesystem;
+pub use filesystem::FilesystemStorage;
 
 use std::path::PathBuf;
 
@@ -145,6 +146,8 @@ pub struct TrackInfo {
     pub name: String,
     /// Path to the actual audio file
     pub path: PathBuf,
+    /// Artist name if set
+    pub artist: Option<String>,
     /// BPM if detected/set
     pub bpm: Option<f64>,
     /// Musical key if detected/set

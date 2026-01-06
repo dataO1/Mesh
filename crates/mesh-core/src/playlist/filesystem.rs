@@ -6,6 +6,7 @@
 //! without duplicating the audio data.
 
 use super::*;
+use crate::audio_file::read_metadata;
 use std::collections::HashMap;
 use std::fs;
 use std::os::unix::fs::symlink;
@@ -167,16 +168,30 @@ impl FilesystemStorage {
                     children.push(child_id);
                 } else if entry_path.is_symlink() && is_audio_file(&entry_path) {
                     // Resolve symlink to get actual track path
-                    let resolved = fs::read_link(&entry_path)
+                    log::debug!("scan_playlist_folder: Found symlink: {:?}", entry_path);
+
+                    let link_target = fs::read_link(&entry_path);
+                    log::debug!("  read_link result: {:?}", link_target);
+
+                    let resolved = link_target
                         .ok()
                         .and_then(|p| {
+                            log::debug!("  link target path: {:?}, is_relative: {}", p, p.is_relative());
                             if p.is_relative() {
-                                entry_path.parent().map(|parent| parent.join(&p))
+                                let joined = entry_path.parent().map(|parent| parent.join(&p));
+                                log::debug!("  joined path: {:?}", joined);
+                                joined
                             } else {
                                 Some(p)
                             }
                         })
-                        .and_then(|p| fs::canonicalize(p).ok());
+                        .and_then(|p| {
+                            let canonical = fs::canonicalize(&p);
+                            log::debug!("  canonicalize({:?}) = {:?}", p, canonical);
+                            canonical.ok()
+                        });
+
+                    log::debug!("  final resolved track_path: {:?}", resolved);
 
                     let track = PlaylistNode {
                         id: child_id.clone(),
@@ -187,6 +202,9 @@ impl FilesystemStorage {
                     };
                     self.nodes.insert(child_id.clone(), track);
                     children.push(child_id);
+                } else if is_audio_file(&entry_path) && !entry_path.is_symlink() {
+                    // Regular audio file (not a symlink) - also support this
+                    log::debug!("scan_playlist_folder: Found regular audio file (not symlink): {:?}", entry_path);
                 }
             }
         }
@@ -269,13 +287,32 @@ impl PlaylistStorage for FilesystemStorage {
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_else(|| node.name.clone());
 
+                // Load metadata from WAV file (fast path - no audio loading)
+                let (artist, bpm, key, duration) = if path.exists() {
+                    match read_metadata(&path) {
+                        Ok(meta) => (
+                            meta.artist,
+                            meta.bpm,
+                            meta.key,
+                            meta.duration_seconds,
+                        ),
+                        Err(e) => {
+                            log::debug!("Failed to read metadata from {:?}: {:?}", path, e);
+                            (None, None, None, None)
+                        }
+                    }
+                } else {
+                    (None, None, None, None)
+                };
+
                 TrackInfo {
                     id: node.id,
                     name,
                     path,
-                    bpm: None,  // TODO: Load from metadata file
-                    key: None,
-                    duration: None,
+                    artist,
+                    bpm,
+                    key,
+                    duration,
                 }
             })
             .collect()
@@ -501,7 +538,6 @@ fn diff_paths(path: &Path, base: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
 
     fn create_test_storage() -> (FilesystemStorage, tempfile::TempDir) {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -562,8 +598,10 @@ mod tests {
     #[test]
     fn test_diff_paths() {
         // Test relative path calculation
-        let base = PathBuf::from("/home/user/music/playlists/set1");
-        let target = PathBuf::from("/home/user/music/tracks/song.wav");
+        // Note: Using underscored variables as examples - actual path diffing
+        // requires canonicalized paths which aren't available in this test context
+        let _base = PathBuf::from("/home/user/music/playlists/set1");
+        let _target = PathBuf::from("/home/user/music/tracks/song.wav");
 
         // This would give: ../../tracks/song.wav
         // But we need to use actual paths for the test to work with canonicalize
