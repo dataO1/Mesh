@@ -2,11 +2,23 @@
 //!
 //! Imports 4 separate stereo WAV files (Vocals, Drums, Bass, Other)
 //! and combines them into a single StemBuffers structure.
+//!
+//! The importer tracks the source sample rate from the input files,
+//! allowing proper resampling during export.
 
 use anyhow::{bail, Context, Result};
 use mesh_core::audio_file::StemBuffers;
 use mesh_core::types::StereoSample;
 use std::path::Path;
+
+/// Result of stem import containing buffers and source sample rate
+#[derive(Debug)]
+pub struct ImportedStems {
+    /// The combined stem audio buffers
+    pub buffers: StemBuffers,
+    /// Source sample rate from the input WAV files (e.g., 44100 Hz from demucs)
+    pub source_sample_rate: u32,
+}
 
 /// Stem file importer
 #[derive(Debug, Clone)]
@@ -92,7 +104,10 @@ impl StemImporter {
     /// This loads all 4 stem files, validates they are compatible
     /// (same length, same sample rate), and interleaves them into
     /// the 8-channel format used by mesh-player.
-    pub fn import(&self) -> Result<StemBuffers> {
+    ///
+    /// Returns `ImportedStems` containing the buffers and the source sample rate,
+    /// which is needed for proper resampling during export.
+    pub fn import(&self) -> Result<ImportedStems> {
         log::info!("import: Starting stem import");
 
         if !self.is_complete() {
@@ -106,24 +121,37 @@ impl StemImporter {
         let other_path = self.other_path.as_ref().unwrap();
 
         log::info!("import: Loading vocals from {:?}", vocals_path);
-        let vocals = load_stereo_wav(vocals_path)
+        let (vocals, vocals_rate) = load_stereo_wav(vocals_path)
             .with_context(|| format!("Failed to load vocals: {:?}", vocals_path))?;
-        log::info!("import: Vocals loaded: {} samples", vocals.len());
+        log::info!("import: Vocals loaded: {} samples @ {} Hz", vocals.len(), vocals_rate);
 
         log::info!("import: Loading drums from {:?}", drums_path);
-        let drums = load_stereo_wav(drums_path)
+        let (drums, drums_rate) = load_stereo_wav(drums_path)
             .with_context(|| format!("Failed to load drums: {:?}", drums_path))?;
-        log::info!("import: Drums loaded: {} samples", drums.len());
+        log::info!("import: Drums loaded: {} samples @ {} Hz", drums.len(), drums_rate);
 
         log::info!("import: Loading bass from {:?}", bass_path);
-        let bass = load_stereo_wav(bass_path)
+        let (bass, bass_rate) = load_stereo_wav(bass_path)
             .with_context(|| format!("Failed to load bass: {:?}", bass_path))?;
-        log::info!("import: Bass loaded: {} samples", bass.len());
+        log::info!("import: Bass loaded: {} samples @ {} Hz", bass.len(), bass_rate);
 
         log::info!("import: Loading other from {:?}", other_path);
-        let other = load_stereo_wav(other_path)
+        let (other, other_rate) = load_stereo_wav(other_path)
             .with_context(|| format!("Failed to load other: {:?}", other_path))?;
-        log::info!("import: Other loaded: {} samples", other.len());
+        log::info!("import: Other loaded: {} samples @ {} Hz", other.len(), other_rate);
+
+        // Validate all stems have the same sample rate
+        let source_sample_rate = vocals_rate;
+        if drums_rate != source_sample_rate || bass_rate != source_sample_rate || other_rate != source_sample_rate {
+            log::error!(
+                "import: Stem files have different sample rates: vocals={}, drums={}, bass={}, other={}",
+                vocals_rate, drums_rate, bass_rate, other_rate
+            );
+            bail!(
+                "Stem files have different sample rates: vocals={}, drums={}, bass={}, other={}",
+                vocals_rate, drums_rate, bass_rate, other_rate
+            );
+        }
 
         // Validate all stems have the same length
         let len = vocals.len();
@@ -144,7 +172,7 @@ impl StemImporter {
             );
         }
 
-        log::info!("import: All stems validated, {} samples each", len);
+        log::info!("import: All stems validated, {} samples each @ {} Hz", len, source_sample_rate);
 
         // Combine into StemBuffers
         log::info!("import: Combining into StemBuffers...");
@@ -157,8 +185,11 @@ impl StemImporter {
             buffers.other.as_mut_slice()[i] = other[i];
         }
 
-        log::info!("import: Complete, created StemBuffers with {} samples", buffers.len());
-        Ok(buffers)
+        log::info!("import: Complete, created StemBuffers with {} samples @ {} Hz", buffers.len(), source_sample_rate);
+        Ok(ImportedStems {
+            buffers,
+            source_sample_rate,
+        })
     }
 
     /// Get mono-summed audio for analysis
@@ -166,7 +197,8 @@ impl StemImporter {
     /// Combines all stems into a single mono channel for BPM/key analysis.
     pub fn get_mono_sum(&self) -> Result<Vec<f32>> {
         log::info!("get_mono_sum: Creating mono mix for analysis");
-        let buffers = self.import()?;
+        let imported = self.import()?;
+        let buffers = &imported.buffers;
         let len = buffers.len();
 
         log::info!("get_mono_sum: Summing {} samples to mono", len);
@@ -188,8 +220,8 @@ impl StemImporter {
     }
 }
 
-/// Load a stereo WAV file and return sample pairs
-fn load_stereo_wav(path: &Path) -> Result<Vec<StereoSample>> {
+/// Load a stereo WAV file and return sample pairs with the source sample rate
+fn load_stereo_wav(path: &Path) -> Result<(Vec<StereoSample>, u32)> {
     use std::io::{Read, Seek, SeekFrom};
 
     let file = std::fs::File::open(path)?;
@@ -294,7 +326,8 @@ fn load_stereo_wav(path: &Path) -> Result<Vec<StereoSample>> {
         ),
     };
 
-    Ok(samples)
+    // Return samples with their source sample rate for proper resampling during export
+    Ok((samples, format.sample_rate))
 }
 
 /// WAV format information

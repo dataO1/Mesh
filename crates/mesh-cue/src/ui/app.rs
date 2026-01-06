@@ -225,6 +225,8 @@ pub struct SettingsState {
     pub draft_min_tempo: String,
     /// Draft max tempo value (text input)
     pub draft_max_tempo: String,
+    /// Draft parallel processes value (text input, 1-16)
+    pub draft_parallel_processes: String,
     /// Draft track name format template
     pub draft_track_name_format: String,
     /// Draft grid bars value (4, 8, 16, 32)
@@ -240,6 +242,7 @@ impl SettingsState {
             is_open: false,
             draft_min_tempo: config.analysis.bpm.min_tempo.to_string(),
             draft_max_tempo: config.analysis.bpm.max_tempo.to_string(),
+            draft_parallel_processes: config.analysis.parallel_processes.to_string(),
             draft_track_name_format: config.track_name_format.clone(),
             draft_grid_bars: config.display.grid_bars,
             status: String::new(),
@@ -400,6 +403,7 @@ pub enum Message {
     CloseSettings,
     UpdateSettingsMinTempo(String),
     UpdateSettingsMaxTempo(String),
+    UpdateSettingsParallelProcesses(String),
     UpdateSettingsTrackNameFormat(String),
     UpdateSettingsGridBars(u32),
     SaveSettings,
@@ -1395,6 +1399,9 @@ impl MeshCueApp {
             Message::UpdateSettingsMaxTempo(value) => {
                 self.settings.draft_max_tempo = value;
             }
+            Message::UpdateSettingsParallelProcesses(value) => {
+                self.settings.draft_parallel_processes = value;
+            }
             Message::UpdateSettingsTrackNameFormat(value) => {
                 self.settings.draft_track_name_format = value;
             }
@@ -1405,11 +1412,13 @@ impl MeshCueApp {
                 // Parse and validate values
                 let min = self.settings.draft_min_tempo.parse::<i32>().unwrap_or(40);
                 let max = self.settings.draft_max_tempo.parse::<i32>().unwrap_or(208);
+                let parallel = self.settings.draft_parallel_processes.parse::<u8>().unwrap_or(4);
 
                 let mut new_config = (*self.config).clone();
                 new_config.analysis.bpm.min_tempo = min;
                 new_config.analysis.bpm.max_tempo = max;
-                new_config.analysis.bpm.validate();
+                new_config.analysis.parallel_processes = parallel;
+                new_config.analysis.validate(); // validates both bpm and parallel_processes
 
                 // Update track name format
                 new_config.track_name_format = self.settings.draft_track_name_format.clone();
@@ -1420,6 +1429,7 @@ impl MeshCueApp {
                 // Update drafts to show validated values
                 self.settings.draft_min_tempo = new_config.analysis.bpm.min_tempo.to_string();
                 self.settings.draft_max_tempo = new_config.analysis.bpm.max_tempo.to_string();
+                self.settings.draft_parallel_processes = new_config.analysis.parallel_processes.to_string();
 
                 // Save to file
                 let config_path = self.config_path.clone();
@@ -2028,18 +2038,22 @@ impl MeshCueApp {
 
             // Batch Import
             Message::OpenImport => {
+                // If import is already running, just open the modal (don't rescan)
+                if self.import_state.phase.is_some() {
+                    self.import_state.is_open = true;
+                    return Task::none();
+                }
+
+                // Not running - reset state and trigger folder scan
                 self.import_state = ImportState::default();
                 self.import_state.is_open = true;
-                // Trigger folder scan
                 return self.update(Message::ScanImportFolder);
             }
             Message::CloseImport => {
-                // Cancel any in-progress import
-                if let Some(ref flag) = self.import_state.cancel_flag {
-                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
+                // Just close the modal - DON'T cancel the import!
+                // Import continues in background, progress visible via status bar at bottom of screen
+                // Only Message::CancelImport (explicit cancel button) should stop the import
                 self.import_state.is_open = false;
-                self.import_state.phase = None;
             }
             Message::ScanImportFolder => {
                 self.import_state.phase = Some(ImportPhase::Scanning);
@@ -2098,6 +2112,7 @@ impl MeshCueApp {
                     import_folder: self.import_state.import_folder.clone(),
                     collection_path: self.collection.collection.path().to_path_buf(),
                     bpm_config: self.config.analysis.bpm.clone(),
+                    parallel_processes: self.config.analysis.parallel_processes,
                 };
 
                 // Spawn delegation thread
@@ -2130,12 +2145,19 @@ impl MeshCueApp {
                             result.base_name,
                             result.success
                         );
+                        let was_success = result.success;
                         if let Some(ImportPhase::Processing { ref mut completed, .. }) =
                             self.import_state.phase
                         {
                             *completed += 1;
                         }
                         self.import_state.results.push(result);
+
+                        // Refresh collection immediately when track imports successfully
+                        // so user sees new tracks appear in browser as they complete
+                        if was_success {
+                            return Task::perform(async {}, |_| Message::RefreshPlaylists);
+                        }
                     }
                     ImportProgress::AllComplete { results } => {
                         log::info!("Import complete: {} tracks processed", results.len());
@@ -2155,7 +2177,11 @@ impl MeshCueApp {
                         self.import_state.cancel_flag = None;
 
                         // Refresh collection to show newly imported tracks
-                        return self.update(Message::RefreshPlaylists);
+                        // Need both: RefreshCollection scans for tracks, RefreshPlaylists updates tree
+                        return Task::batch([
+                            Task::perform(async {}, |_| Message::RefreshCollection),
+                            Task::perform(async {}, |_| Message::RefreshPlaylists),
+                        ]);
                     }
                 }
             }
@@ -2186,7 +2212,13 @@ impl MeshCueApp {
             View::Collection => self.view_collection(),
         };
 
-        let main = column![header, content].spacing(10);
+        // Global status bar at bottom (visible when import is active)
+        let status_bar = super::import_modal::view_progress_bar(&self.import_state);
+
+        let mut main = column![header, content].spacing(10);
+        if let Some(bar) = status_bar {
+            main = main.push(bar);
+        }
 
         let base: Element<Message> = container(main)
             .width(Length::Fill)
@@ -2265,7 +2297,10 @@ impl MeshCueApp {
             .map(|t| t.is_playing())
             .unwrap_or(false);
 
-        if is_playing || self.audio.is_playing() {
+        // Also need Tick during import to poll progress channel
+        let import_active = self.import_state.phase.is_some();
+
+        if is_playing || self.audio.is_playing() || import_active {
             iced::Subscription::batch([
                 keyboard_sub,
                 time::every(Duration::from_millis(16)).map(|_| Message::Tick),
@@ -2297,11 +2332,11 @@ impl MeshCueApp {
     }
 }
 
-/// Nudge amount in samples (~10ms at 44.1kHz for fine-grained control)
-const BEAT_GRID_NUDGE_SAMPLES: i64 = 441;
+/// Nudge amount in samples (~10ms at 48kHz for fine-grained control)
+const BEAT_GRID_NUDGE_SAMPLES: i64 = 480;
 
 /// Sample rate constant (matches mesh_core::types::SAMPLE_RATE)
-const SAMPLE_RATE_F64: f64 = 44100.0;
+const SAMPLE_RATE_F64: f64 = mesh_core::types::SAMPLE_RATE as f64;
 
 /// Nudge the beat grid by a delta amount of samples
 ///

@@ -30,12 +30,13 @@
 //! // Poll progress_rx for updates
 //! ```
 
-use crate::analysis::analyze_audio;
+use crate::analysis::{analyze_audio, AnalysisResult};
 use crate::config::BpmConfig;
 use crate::export::export_stem_file;
 use crate::import::StemImporter;
 use anyhow::{Context, Result};
 use mesh_core::audio_file::{BeatGrid, CuePoint, SavedLoop, TrackMetadata};
+use mesh_core::types::SAMPLE_RATE;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fs;
@@ -44,6 +45,81 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::Instant;
+
+/// Run audio analysis in an isolated subprocess.
+///
+/// Essentia's C++ library is NOT thread-safe - it has global state for logging,
+/// FFT plan caches, and algorithm registries. Running multiple threads causes
+/// segfaults and garbled output.
+///
+/// By spawning each analysis in a separate process, we get true isolation:
+/// each process has its own copy of Essentia's globals.
+///
+/// NOTE: We use temp files instead of serializing samples over IPC.
+/// Serializing 14M+ f32 samples (56MB+) through procspawn's bincode/IPC
+/// causes failures due to buffer limits and memory pressure.
+///
+/// See: <https://github.com/MTG/essentia/issues/87>
+fn analyze_in_subprocess(samples: Vec<f32>, bpm_config: BpmConfig) -> Result<AnalysisResult> {
+    use std::io::{Read, Write};
+
+    // Generate unique temp file path
+    let temp_path = std::env::temp_dir().join(format!(
+        "mesh_audio_{}.bin",
+        std::process::id() ^ (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u32)
+    ));
+
+    // Write samples to temp file (raw f32 bytes)
+    {
+        let mut file = std::fs::File::create(&temp_path)
+            .with_context(|| format!("Failed to create temp file: {:?}", temp_path))?;
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                samples.as_ptr() as *const u8,
+                samples.len() * std::mem::size_of::<f32>(),
+            )
+        };
+        file.write_all(bytes)
+            .with_context(|| "Failed to write samples to temp file")?;
+    }
+    let sample_count = samples.len();
+    drop(samples); // Free memory before spawning subprocess
+
+    // Spawn subprocess with only the temp file path (small data)
+    let temp_path_str = temp_path.to_string_lossy().to_string();
+    let handle = procspawn::spawn((temp_path_str.clone(), sample_count, bpm_config), |(path, count, config)| {
+        // Read samples from temp file in subprocess
+        let samples = (|| -> std::result::Result<Vec<f32>, String> {
+            let mut file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+            let mut bytes = vec![0u8; count * std::mem::size_of::<f32>()];
+            file.read_exact(&mut bytes).map_err(|e| e.to_string())?;
+
+            // Convert bytes back to f32
+            let samples: Vec<f32> = bytes
+                .chunks_exact(4)
+                .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                .collect();
+            Ok(samples)
+        })()?;
+
+        // Run analysis in isolated process
+        analyze_audio(&samples, &config).map_err(|e| e.to_string())
+    });
+
+    // Wait for result
+    let result = handle
+        .join()
+        .map_err(|e| anyhow::anyhow!("Analysis subprocess failed: {:?}", e))?
+        .map_err(|e| anyhow::anyhow!("Analysis error: {}", e));
+
+    // Clean up temp file
+    let _ = std::fs::remove_file(&temp_path);
+
+    result
+}
 
 /// Stem types supported by the import system
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -177,6 +253,8 @@ pub struct ImportConfig {
     pub collection_path: PathBuf,
     /// BPM detection configuration
     pub bpm_config: BpmConfig,
+    /// Number of parallel analysis processes (1-16)
+    pub parallel_processes: u8,
 }
 
 /// Parse a stem filename to extract base name and stem type
@@ -312,7 +390,7 @@ fn process_single_track(group: &StemGroup, config: &ImportConfig) -> TrackImport
     importer.set_other(group.other.as_ref().unwrap());
 
     // Load and combine stems
-    let buffers = match importer.import() {
+    let imported = match importer.import() {
         Ok(b) => b,
         Err(e) => {
             return TrackImportResult {
@@ -323,6 +401,8 @@ fn process_single_track(group: &StemGroup, config: &ImportConfig) -> TrackImport
             };
         }
     };
+    let source_sample_rate = imported.source_sample_rate;
+    let buffers = imported.buffers;
 
     // Get mono mix for analysis
     let mono_samples = match importer.get_mono_sum() {
@@ -337,8 +417,8 @@ fn process_single_track(group: &StemGroup, config: &ImportConfig) -> TrackImport
         }
     };
 
-    // Analyze audio (BPM, key, beat grid)
-    let analysis = match analyze_audio(&mono_samples, &config.bpm_config) {
+    // Analyze audio in isolated subprocess (Essentia is not thread-safe)
+    let analysis = match analyze_in_subprocess(mono_samples, config.bpm_config.clone()) {
         Ok(a) => a,
         Err(e) => {
             return TrackImportResult {
@@ -363,13 +443,24 @@ fn process_single_track(group: &StemGroup, config: &ImportConfig) -> TrackImport
         .next()
         .map(|s| s.to_string());
 
-    // Get duration in samples for beat grid generation
-    let duration_samples = buffers.len() as u64;
+    // Calculate resampling ratio: target samples will differ from source if rates mismatch
+    // E.g., 44100 Hz input → 48000 Hz output means samples scale by 48000/44100 = 1.088
+    let resample_ratio = SAMPLE_RATE as f64 / source_sample_rate as f64;
 
-    // Get first beat position from analysis
-    let first_beat = analysis.beat_grid.first().copied().unwrap_or(0);
+    // Get duration in samples for beat grid generation (at TARGET sample rate after resampling)
+    let source_duration_samples = buffers.len() as u64;
+    let duration_samples = (source_duration_samples as f64 * resample_ratio) as u64;
 
-    // Build metadata
+    // Get first beat position from analysis and scale to target sample rate
+    let source_first_beat = analysis.beat_grid.first().copied().unwrap_or(0);
+    let first_beat = (source_first_beat as f64 * resample_ratio) as u64;
+
+    log::info!(
+        "process_single_track: Resampling {} Hz → {} Hz (ratio: {:.4}), duration: {} → {} samples, first_beat: {} → {}",
+        source_sample_rate, SAMPLE_RATE, resample_ratio, source_duration_samples, duration_samples, source_first_beat, first_beat
+    );
+
+    // Build metadata (beat grid is at TARGET sample rate)
     let metadata = TrackMetadata {
         artist,
         bpm: Some(analysis.bpm),
@@ -379,7 +470,7 @@ fn process_single_track(group: &StemGroup, config: &ImportConfig) -> TrackImport
         ..Default::default()
     };
 
-    // Export to temp file first
+    // Export to temp file first (export handles resampling from source_sample_rate to SAMPLE_RATE)
     let temp_dir = std::env::temp_dir();
     let sanitized_name = sanitize_filename(&base_name);
     let temp_path = temp_dir.join(format!("{}.wav", sanitized_name));
@@ -387,7 +478,7 @@ fn process_single_track(group: &StemGroup, config: &ImportConfig) -> TrackImport
     let empty_cues: Vec<CuePoint> = Vec::new();
     let empty_loops: Vec<SavedLoop> = Vec::new();
 
-    if let Err(e) = export_stem_file(&temp_path, &buffers, &metadata, &empty_cues, &empty_loops) {
+    if let Err(e) = export_stem_file(&temp_path, &buffers, source_sample_rate, &metadata, &empty_cues, &empty_loops) {
         return TrackImportResult {
             base_name,
             success: false,
@@ -478,9 +569,11 @@ pub fn run_batch_import(
         return;
     }
 
-    // Configure rayon thread pool for 4 workers
+    // Configure rayon thread pool with user-specified parallelism
+    let num_workers = config.parallel_processes.clamp(1, 16) as usize;
+    log::info!("run_batch_import: Using {} parallel workers", num_workers);
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
+        .num_threads(num_workers)
         .build()
         .expect("Failed to create thread pool");
 

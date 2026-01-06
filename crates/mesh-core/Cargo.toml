@@ -11,6 +11,7 @@ libpd-rs.workspace = true
 rayon = "1.10"
 basedrop = "0.1"  # RT-safe deferred deallocation for audio
 bytemuck = { version = "1.21", features = ["derive"] }
+rubato = "0.16"   # High-quality sample rate conversion
 log = "0.4"
 
 [dev-dependencies]

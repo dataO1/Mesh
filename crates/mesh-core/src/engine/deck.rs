@@ -954,9 +954,9 @@ impl Deck {
         self.sync_loop_atomic();
     }
 
-    /// Check if any stem effect chain is soloed
+    /// Check if any stem is soloed
     fn any_stem_soloed(&self) -> bool {
-        self.stems.iter().any(|s| s.chain.is_soloed())
+        self.stems.iter().any(|s| s.soloed)
     }
 
     // --- Audio processing ---
@@ -1009,6 +1009,27 @@ impl Deck {
         // For slowdown (ratio < 1): read FEWER samples, stretcher will expand
         let samples_to_read = ((output_len as f64) * self.stretch_ratio).round() as usize;
         let samples_to_read = samples_to_read.clamp(1, MAX_BUFFER_SIZE);
+
+        // Rate-limited debug logging for stretch ratio diagnosis (~once per second)
+        // Also tracks cumulative samples to verify actual stretch over time
+        use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+        static FRAME_COUNT: AtomicU64 = AtomicU64::new(0);
+        static TOTAL_INPUT: AtomicU64 = AtomicU64::new(0);
+        static TOTAL_OUTPUT: AtomicU64 = AtomicU64::new(0);
+
+        let frame = FRAME_COUNT.fetch_add(1, AtomicOrdering::Relaxed);
+        let total_in = TOTAL_INPUT.fetch_add(samples_to_read as u64, AtomicOrdering::Relaxed) + samples_to_read as u64;
+        let total_out = TOTAL_OUTPUT.fetch_add(output_len as u64, AtomicOrdering::Relaxed) + output_len as u64;
+
+        if frame % 47 == 0 {
+            // ~once per second at 1024 buffer size (48000/1024 ≈ 47)
+            let actual_ratio = total_in as f64 / total_out as f64;
+            let elapsed_sec = total_out as f64 / SAMPLE_RATE as f64;
+            log::debug!(
+                "stretch: ratio={:.4}, actual={:.4}, output_len={}, samples_read={}, elapsed={:.1}s",
+                self.stretch_ratio, actual_ratio, output_len, samples_to_read, elapsed_sec
+            );
+        }
 
         // Set stretch_input length to samples we'll read
         stretch_input.set_len_from_capacity(samples_to_read);

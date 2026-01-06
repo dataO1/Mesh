@@ -7,6 +7,11 @@ fn title(_app: &MeshCueApp) -> String {
 }
 
 fn main() -> iced::Result {
+    // Initialize procspawn early, before any threads are created.
+    // This is required for process-based parallelism to work correctly.
+    // Essentia is not thread-safe, so we run analysis in subprocesses.
+    procspawn::init();
+
     // Initialize logger - set RUST_LOG=debug for verbose output
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp_millis()

@@ -12,9 +12,12 @@ pub use bpm::detect_bpm;
 pub use key::detect_key;
 
 use crate::config::BpmConfig;
+use serde::{Deserialize, Serialize};
 
 /// Result of audio analysis
-#[derive(Debug, Clone)]
+///
+/// Serializable for subprocess communication (procspawn)
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisResult {
     /// Detected BPM (beats per minute)
     pub bpm: f64,
@@ -22,7 +25,7 @@ pub struct AnalysisResult {
     pub original_bpm: f64,
     /// Musical key (e.g., "Am", "C", "F#m")
     pub key: String,
-    /// Beat grid as sample positions at 44.1kHz
+    /// Beat grid as sample positions at the system sample rate
     pub beat_grid: Vec<u64>,
     /// Analysis confidence (0.0 - 1.0)
     pub confidence: f32,
@@ -43,16 +46,18 @@ impl Default for AnalysisResult {
 /// Run full analysis on audio samples
 ///
 /// # Arguments
-/// * `samples` - Mono audio samples at 44.1kHz
+/// * `samples` - Mono audio samples at the system sample rate (48kHz)
 /// * `bpm_config` - BPM detection configuration (min/max tempo range)
 ///
 /// # Returns
 /// Complete analysis result with BPM, key, and beat grid
 pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<AnalysisResult> {
+    use mesh_core::types::SAMPLE_RATE;
     log::info!(
-        "analyze_audio: received {} samples ({:.1}s at 44.1kHz)",
+        "analyze_audio: received {} samples ({:.1}s at {}Hz)",
         samples.len(),
-        samples.len() as f64 / 44100.0
+        samples.len() as f64 / SAMPLE_RATE as f64,
+        SAMPLE_RATE
     );
 
     // Detect BPM and beat positions using configured tempo range

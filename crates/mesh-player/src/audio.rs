@@ -202,7 +202,8 @@ impl std::error::Error for JackError {}
 /// Start the JACK audio client
 ///
 /// Returns a handle to the active client, a command sender for controlling
-/// the audio engine from the UI thread, and lock-free atomics for UI reads.
+/// the audio engine from the UI thread, lock-free atomics for UI reads, and
+/// the JACK server's sample rate.
 ///
 /// ## Lock-Free Architecture
 ///
@@ -211,7 +212,7 @@ impl std::error::Error for JackError {}
 /// and guarantees zero audio dropouts during track loading.
 pub fn start_jack_client(
     client_name: &str,
-) -> Result<(JackHandle, CommandSender, [Arc<DeckAtomics>; NUM_DECKS]), JackError> {
+) -> Result<(JackHandle, CommandSender, [Arc<DeckAtomics>; NUM_DECKS], u32), JackError> {
     // Create JACK client
     let (client, _status) = Client::new(client_name, ClientOptions::NO_START_SERVER)
         .map_err(|e| JackError::ClientCreation(e.to_string()))?;
@@ -240,8 +241,9 @@ pub fn start_jack_client(
         .register_port(CUE_RIGHT, AudioOut::default())
         .map_err(|e| JackError::PortRegistration(e.to_string()))?;
 
-    // Create engine and extract atomics before moving to processor
-    let engine = AudioEngine::new();
+    // Create engine with JACK's sample rate and extract atomics before moving to processor
+    let jack_sample_rate = client.sample_rate() as u32;
+    let engine = AudioEngine::new_with_sample_rate(jack_sample_rate);
     let deck_atomics = engine.deck_atomics();
 
     // Create lock-free command channel
@@ -273,6 +275,7 @@ pub fn start_jack_client(
         },
         CommandSender { producer: command_tx },
         deck_atomics,
+        jack_sample_rate,
     ))
 }
 

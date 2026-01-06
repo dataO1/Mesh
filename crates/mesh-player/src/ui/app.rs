@@ -112,9 +112,11 @@ impl MeshApp {
     ///
     /// - `command_sender`: Lock-free command channel for engine control (None for offline mode)
     /// - `deck_atomics`: Lock-free position/state for UI reads (None for offline mode)
+    /// - `jack_sample_rate`: JACK's sample rate for track loading (e.g., 48000 or 44100)
     pub fn new(
         command_sender: Option<CommandSender>,
         deck_atomics: Option<[Arc<DeckAtomics>; NUM_DECKS]>,
+        jack_sample_rate: u32,
     ) -> Self {
         // Load configuration
         let config_path = config::default_config_path();
@@ -125,7 +127,7 @@ impl MeshApp {
         Self {
             command_sender,
             deck_atomics,
-            track_loader: TrackLoader::spawn(),
+            track_loader: TrackLoader::spawn(jack_sample_rate),
             peaks_computer: PeaksComputer::spawn(),
             player_canvas_state: PlayerCanvasState::new(),
             deck_stems: [None, None, None, None],
@@ -390,10 +392,12 @@ impl MeshApp {
             }
 
             Message::SetGlobalBpm(bpm) => {
-                self.global_bpm = bpm;
+                // Round to integer BPM for clean display and computation
+                let bpm_rounded = bpm.round();
+                self.global_bpm = bpm_rounded;
                 // Send BPM change via lock-free command (~50ns)
                 if let Some(ref mut sender) = self.command_sender {
-                    let _ = sender.send(EngineCommand::SetGlobalBpm(bpm));
+                    let _ = sender.send(EngineCommand::SetGlobalBpm(bpm_rounded));
                 }
                 Task::none()
             }
@@ -586,10 +590,10 @@ impl MeshApp {
         let title = text("MESH DJ PLAYER")
             .size(24);
 
-        let bpm_label = text(format!("BPM: {:.1}", self.global_bpm)).size(16);
+        let bpm_label = text(format!("BPM: {}", self.global_bpm as i32)).size(16);
 
         let bpm_slider = slider(30.0..=200.0, self.global_bpm, Message::SetGlobalBpm)
-            .step(0.1)
+            .step(1.0)
             .width(200);
 
         let connection_status = if self.audio_connected {
@@ -626,6 +630,7 @@ impl MeshApp {
 
 impl Default for MeshApp {
     fn default() -> Self {
-        Self::new(None, None)
+        // Default to 48kHz when no JACK rate is available (matches SAMPLE_RATE constant)
+        Self::new(None, None, 48000)
     }
 }

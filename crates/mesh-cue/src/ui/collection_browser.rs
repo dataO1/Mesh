@@ -2,36 +2,27 @@
 
 use super::app::{CollectionState, ImportState, Message};
 use super::editor;
-use super::import_modal;
 use iced::widget::{button, column, container, row, rule, text, Space};
 use iced::{Alignment, Element, Length};
 use mesh_widgets::playlist_browser;
 
 /// Render the collection view (editor + dual browsers below)
-pub fn view<'a>(state: &'a CollectionState, import_state: &'a ImportState) -> Element<'a, Message> {
+/// Note: Progress bar moved to main app view (always visible at bottom of screen)
+pub fn view<'a>(state: &'a CollectionState, _import_state: &'a ImportState) -> Element<'a, Message> {
     let editor = view_editor(state);
     let browser_header = view_browser_header();
     let browsers = view_browsers(state);
 
-    // Progress bar at the bottom (only visible during import)
-    let progress_bar = import_modal::view_progress_bar(import_state);
-
-    let mut content = column![
+    column![
         editor,
         rule::horizontal(2),
         browser_header,
         browsers,
     ]
-    .spacing(5);
-
-    if let Some(bar) = progress_bar {
-        content = content.push(bar);
-    }
-
-    content
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+    .spacing(5)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
 }
 
 /// Header row above the browsers with Import button

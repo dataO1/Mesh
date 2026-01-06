@@ -2,9 +2,14 @@
 //!
 //! Moves expensive track loading operations (file I/O, waveform computation)
 //! off the UI thread to prevent audio stuttering during track loads.
+//!
+//! The loader thread automatically resamples tracks to match JACK's sample rate,
+//! ensuring correct playback speed regardless of the JACK server configuration.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread::{self, JoinHandle};
 
 use basedrop::Shared;
@@ -47,28 +52,46 @@ pub struct TrackLoader {
     tx: Sender<TrackLoadRequest>,
     /// Channel to receive load results
     rx: Receiver<TrackLoadResult>,
+    /// Target sample rate for loading (JACK's sample rate)
+    target_sample_rate: Arc<AtomicU32>,
     /// Thread handle (for graceful shutdown)
     _handle: JoinHandle<()>,
 }
 
 impl TrackLoader {
     /// Spawn the background loader thread
-    pub fn spawn() -> Self {
+    ///
+    /// # Arguments
+    /// * `target_sample_rate` - JACK's sample rate for resampling tracks on load
+    pub fn spawn(target_sample_rate: u32) -> Self {
         let (request_tx, request_rx) = std::sync::mpsc::channel::<TrackLoadRequest>();
         let (result_tx, result_rx) = std::sync::mpsc::channel::<TrackLoadResult>();
+
+        // Store sample rate in Arc<AtomicU32> so loader thread can access it
+        let rate = Arc::new(AtomicU32::new(target_sample_rate));
+        let rate_for_thread = rate.clone();
 
         let handle = thread::Builder::new()
             .name("track-loader".to_string())
             .spawn(move || {
-                loader_thread(request_rx, result_tx);
+                loader_thread(request_rx, result_tx, rate_for_thread);
             })
             .expect("Failed to spawn track loader thread");
+
+        log::info!("TrackLoader spawned with target sample rate: {} Hz", target_sample_rate);
 
         Self {
             tx: request_tx,
             rx: result_rx,
+            target_sample_rate: rate,
             _handle: handle,
         }
+    }
+
+    /// Update the target sample rate (if JACK rate changes)
+    pub fn set_sample_rate(&self, sample_rate: u32) {
+        self.target_sample_rate.store(sample_rate, Ordering::SeqCst);
+        log::info!("TrackLoader target sample rate updated to: {} Hz", sample_rate);
     }
 
     /// Request loading a track (non-blocking)
@@ -92,22 +115,30 @@ impl TrackLoader {
 }
 
 /// The background loader thread function
-fn loader_thread(rx: Receiver<TrackLoadRequest>, tx: Sender<TrackLoadResult>) {
+fn loader_thread(
+    rx: Receiver<TrackLoadRequest>,
+    tx: Sender<TrackLoadResult>,
+    target_sample_rate: Arc<AtomicU32>,
+) {
     log::info!("Track loader thread started");
 
     while let Ok(request) = rx.recv() {
+        // Read the current target sample rate (may have been updated)
+        let sample_rate = target_sample_rate.load(Ordering::SeqCst);
+
         log::info!(
-            "[PERF] Loader: Starting track load for deck {}: {:?}",
+            "[PERF] Loader: Starting track load for deck {}: {:?} (target: {} Hz)",
             request.deck_idx,
-            request.path
+            request.path,
+            sample_rate
         );
 
         let total_start = std::time::Instant::now();
 
-        // Load the track (expensive file I/O)
+        // Load the track with resampling to JACK's sample rate
         let load_start = std::time::Instant::now();
-        let result = LoadedTrack::load(&request.path);
-        log::info!("[PERF] Loader: LoadedTrack::load() took {:?}", load_start.elapsed());
+        let result = LoadedTrack::load_to(&request.path, sample_rate);
+        log::info!("[PERF] Loader: LoadedTrack::load_to({} Hz) took {:?}", sample_rate, load_start.elapsed());
 
         match result {
             Ok(track) => {

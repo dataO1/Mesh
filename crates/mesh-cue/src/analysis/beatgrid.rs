@@ -88,29 +88,34 @@ mod tests {
 
     #[test]
     fn test_beat_grid_generation() {
-        // 120 BPM = 0.5 seconds per beat = 22050 samples per beat at 44100Hz
+        // 120 BPM = 0.5 seconds per beat = 24000 samples per beat at 48000Hz
         let bpm = 120.0;
         let beat_ticks = vec![0.0, 0.5, 1.0, 1.5, 2.0];
-        // 10 seconds of audio at 44100 Hz
-        let duration_samples = 44100 * 10;
+        // 10 seconds of audio at 48000 Hz (SAMPLE_RATE)
+        let duration_samples = SAMPLE_RATE as u64 * 10;
 
         let grid = generate_beat_grid(bpm, &beat_ticks, duration_samples);
 
+        // Expected samples per beat at 48kHz: 48000 * 60 / 120 = 24000
+        let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
+
         assert!(!grid.is_empty());
         assert_eq!(grid[0], 0); // First beat at 0
-        assert_eq!(grid[1], 22050); // Second beat at 0.5s
-        assert_eq!(grid[2], 44100); // Third beat at 1.0s
+        assert_eq!(grid[1], samples_per_beat); // Second beat at 0.5s
+        assert_eq!(grid[2], samples_per_beat * 2); // Third beat at 1.0s
         // Should have beats for full 10 seconds (20 beats at 120 BPM)
         assert_eq!(grid.len(), 21); // 0..=20 = 21 beats
     }
 
     #[test]
     fn test_grid_offset() {
-        let grid = vec![0, 22050, 44100];
+        // Samples per beat at 48kHz, 120 BPM
+        let spb = (SAMPLE_RATE as f64 * 60.0 / 120.0) as u64;
+        let grid = vec![0, spb, spb * 2];
         let offset = adjust_grid_start(&grid, 1000);
 
         assert_eq!(offset[0], 1000);
-        assert_eq!(offset[1], 23050);
-        assert_eq!(offset[2], 45100);
+        assert_eq!(offset[1], spb + 1000);
+        assert_eq!(offset[2], spb * 2 + 1000);
     }
 }

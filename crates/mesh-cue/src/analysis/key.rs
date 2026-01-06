@@ -16,11 +16,12 @@ use essentia::essentia::Essentia;
 /// The "edma" profile type is used, which is optimized for Electronic Dance Music.
 ///
 /// # Arguments
-/// * `samples` - Mono audio samples at 44.1kHz
+/// * `samples` - Mono audio samples at the system sample rate (48kHz)
 ///
 /// # Returns
 /// Key string in format like "Am", "C", "F#m", "Bb"
 pub fn detect_key(samples: &[f32]) -> Result<String> {
+    use mesh_core::types::SAMPLE_RATE;
     log::info!("Starting key detection on {} samples", samples.len());
 
     // Create Essentia instance
@@ -28,12 +29,12 @@ pub fn detect_key(samples: &[f32]) -> Result<String> {
 
     // Create and configure KeyExtractor
     // - profile_type: "edma" (Electronic Dance Music Average) for EDM tracks
-    // - sample_rate: 44100.0 (standard audio sample rate)
+    // - sample_rate: System sample rate (48kHz default)
     let mut key_algo = essentia
         .create::<KeyExtractor>()
         .profile_type("edma")
         .context("Failed to set profile_type")?
-        .sample_rate(44100.0)
+        .sample_rate(SAMPLE_RATE as f32)
         .context("Failed to set sample_rate")?
         .configure()
         .context("Failed to configure KeyExtractor")?;

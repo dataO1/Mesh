@@ -2,12 +2,17 @@
 //!
 //! Exports stem buffers to the mesh-player compatible format:
 //! - 8 channels (4 stereo stems interleaved)
-//! - 44.1 kHz, 16-bit
+//! - 48 kHz, 16-bit (matches JACK default)
 //! - Metadata in bext chunk
 //! - Cue points in cue/adtl chunks
+//!
+//! If the source audio is at a different sample rate (e.g., 44100 Hz from demucs),
+//! it is resampled to SAMPLE_RATE (48000 Hz) before writing.
 
 use anyhow::{Context, Result};
 use mesh_core::audio_file::{serialize_wvfm_chunk, CuePoint, SavedLoop, StemBuffers, TrackMetadata};
+use mesh_core::types::SAMPLE_RATE;
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -15,30 +20,55 @@ use std::path::Path;
 use crate::ui::waveform::generate_waveform_preview;
 
 /// Export stem buffers to an 8-channel WAV file with metadata
+///
+/// # Arguments
+/// * `path` - Output file path
+/// * `buffers` - Source stem buffers
+/// * `source_sample_rate` - Sample rate of the source buffers (e.g., 44100 Hz from demucs)
+/// * `metadata` - Track metadata (BPM, key, beat grid at TARGET sample rate)
+/// * `cue_points` - Cue point markers
+/// * `saved_loops` - Saved loop regions
+///
+/// If `source_sample_rate` differs from SAMPLE_RATE (48000 Hz), the audio is
+/// automatically resampled to ensure correct playback speed.
 pub fn export_stem_file(
     path: &Path,
     buffers: &StemBuffers,
+    source_sample_rate: u32,
     metadata: &TrackMetadata,
     cue_points: &[CuePoint],
     saved_loops: &[SavedLoop],
 ) -> Result<()> {
     log::info!("export_stem_file: Starting export to {:?}", path);
-    log::info!("  Buffer length: {} samples", buffers.len());
+    log::info!("  Buffer length: {} samples @ {} Hz", buffers.len(), source_sample_rate);
+    log::info!("  Target sample rate: {} Hz", SAMPLE_RATE);
     log::info!("  Metadata: BPM={:?}, Key={:?}", metadata.bpm, metadata.key);
     log::info!("  Cue points: {}", cue_points.len());
     log::info!("  Saved loops: {}", saved_loops.len());
+
+    // Resample if source rate differs from target rate
+    let buffers: Cow<StemBuffers> = if source_sample_rate != SAMPLE_RATE {
+        log::info!("  Resampling from {} Hz to {} Hz...", source_sample_rate, SAMPLE_RATE);
+        let resampled = buffers
+            .resample(source_sample_rate, SAMPLE_RATE)
+            .context("Failed to resample stems")?;
+        log::info!("  Resampled: {} samples -> {} samples", buffers.len(), resampled.len());
+        Cow::Owned(resampled)
+    } else {
+        Cow::Borrowed(buffers)
+    };
 
     let file = File::create(path)
         .with_context(|| format!("Failed to create output file: {:?}", path))?;
     log::debug!("  File created successfully");
     let mut writer = BufWriter::new(file);
 
-    // Calculate sizes
+    // Calculate sizes (using resampled buffer)
     let num_samples = buffers.len();
     let num_channels = 8u16;
     let bits_per_sample = 16u16;
     let bytes_per_sample = bits_per_sample / 8;
-    let sample_rate = 44100u32;
+    let sample_rate = SAMPLE_RATE;
     let byte_rate = sample_rate * num_channels as u32 * bytes_per_sample as u32;
     let block_align = num_channels * bytes_per_sample;
     let data_size = num_samples as u32 * num_channels as u32 * bytes_per_sample as u32;
@@ -56,7 +86,7 @@ pub fn export_stem_file(
 
     // Generate waveform preview and build wvfm chunk
     log::info!("  Generating waveform preview...");
-    let waveform_preview = generate_waveform_preview(buffers);
+    let waveform_preview = generate_waveform_preview(&buffers);
     let wvfm_data = serialize_wvfm_chunk(&waveform_preview);
     // WAV chunks must be word-aligned (2 bytes). Add padding if data length is odd.
     let wvfm_padding = if wvfm_data.len() % 2 != 0 { 1u32 } else { 0u32 };
@@ -349,6 +379,9 @@ fn write_sample_16bit<W: Write>(writer: &mut W, sample: f32) -> Result<()> {
 ///
 /// Re-exports the file with new metadata while preserving audio.
 /// This is used by the track editor to save user modifications.
+///
+/// Note: Existing tracks in the collection are already at SAMPLE_RATE (48kHz),
+/// so no resampling is performed.
 pub fn save_track_metadata(
     path: &Path,
     stems: &StemBuffers,
@@ -357,8 +390,8 @@ pub fn save_track_metadata(
     saved_loops: &[SavedLoop],
 ) -> Result<()> {
     log::info!("save_track_metadata: Saving to {:?}", path);
-    // Reuse the export function - it writes the complete file with updated metadata
-    export_stem_file(path, stems, metadata, cue_points, saved_loops)
+    // Reuse the export function - existing tracks are already at SAMPLE_RATE, so no resampling
+    export_stem_file(path, stems, SAMPLE_RATE, metadata, cue_points, saved_loops)
 }
 
 #[cfg(test)]

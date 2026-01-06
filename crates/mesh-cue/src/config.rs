@@ -78,13 +78,28 @@ impl DisplayConfig {
 pub struct AnalysisConfig {
     /// BPM detection settings
     pub bpm: BpmConfig,
+    /// Number of parallel analysis processes (1-16)
+    ///
+    /// Each track is analyzed in a separate subprocess (procspawn) because
+    /// Essentia's C++ library is not thread-safe. This controls how many
+    /// subprocesses run concurrently during batch import.
+    pub parallel_processes: u8,
 }
 
 impl Default for AnalysisConfig {
     fn default() -> Self {
         Self {
             bpm: BpmConfig::default(),
+            parallel_processes: 4,
         }
+    }
+}
+
+impl AnalysisConfig {
+    /// Validate and clamp parallel_processes to valid range (1-16)
+    pub fn validate(&mut self) {
+        self.parallel_processes = self.parallel_processes.clamp(1, 16);
+        self.bpm.validate();
     }
 }
 
@@ -163,11 +178,12 @@ pub fn load_config(path: &Path) -> Config {
     match std::fs::read_to_string(path) {
         Ok(contents) => match serde_yaml::from_str::<Config>(&contents) {
             Ok(mut config) => {
-                config.analysis.bpm.validate();
+                config.analysis.validate();
                 log::info!(
-                    "load_config: Loaded config - BPM range: {}-{}",
+                    "load_config: Loaded config - BPM range: {}-{}, parallel: {}",
                     config.analysis.bpm.min_tempo,
-                    config.analysis.bpm.max_tempo
+                    config.analysis.bpm.max_tempo,
+                    config.analysis.parallel_processes
                 );
                 config
             }
@@ -247,6 +263,7 @@ mod tests {
                     min_tempo: 160,
                     max_tempo: 190,
                 },
+                parallel_processes: 4,
             },
             display: DisplayConfig::default(),
             track_name_format: String::from("{artist} - {name}"),

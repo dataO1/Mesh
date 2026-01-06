@@ -2,10 +2,14 @@
 //!
 //! This module handles reading 8-channel WAV/RF64 files containing stem-separated
 //! audio (Vocals, Drums, Bass, Other as stereo pairs).
+//!
+//! Supports automatic resampling of legacy 44.1kHz files to 48kHz.
 
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
+
+use rubato::{FftFixedInOut, Resampler};
 
 use crate::types::{StereoBuffer, StereoSample, Stem, SAMPLE_RATE};
 
@@ -62,7 +66,7 @@ impl std::error::Error for AudioFileError {}
 pub struct AudioFormat {
     /// Number of channels (should be 8 for stem files)
     pub channels: u16,
-    /// Sample rate in Hz (should be 44100)
+    /// Sample rate in Hz (48kHz default, 44.1kHz supported with resampling)
     pub sample_rate: u32,
     /// Bits per sample (16, 24, or 32)
     pub bits_per_sample: u16,
@@ -74,6 +78,9 @@ pub struct AudioFormat {
 
 impl AudioFormat {
     /// Check if this format is compatible with Mesh requirements
+    ///
+    /// Note: Sample rate is validated but different rates are allowed -
+    /// files will be resampled to match the system rate (48kHz) on load.
     pub fn is_compatible(&self) -> Result<(), AudioFileError> {
         if self.channels != STEM_CHANNEL_COUNT {
             return Err(AudioFileError::WrongChannelCount {
@@ -81,7 +88,10 @@ impl AudioFormat {
                 found: self.channels,
             });
         }
-        if self.sample_rate != SAMPLE_RATE {
+        // Allow common sample rates - resampling will handle the conversion
+        // Supported: 44100, 48000, 88200, 96000
+        if self.sample_rate != 44100 && self.sample_rate != 48000
+            && self.sample_rate != 88200 && self.sample_rate != 96000 {
             return Err(AudioFileError::WrongSampleRate {
                 expected: SAMPLE_RATE,
                 found: self.sample_rate,
@@ -91,6 +101,11 @@ impl AudioFormat {
             return Err(AudioFileError::UnsupportedBitDepth(self.bits_per_sample));
         }
         Ok(())
+    }
+
+    /// Check if resampling is needed to match the target sample rate
+    pub fn needs_resampling(&self) -> bool {
+        self.sample_rate != SAMPLE_RATE
     }
 }
 
@@ -652,6 +667,123 @@ impl StemBuffers {
     pub fn duration_seconds(&self) -> f64 {
         self.vocals.len() as f64 / SAMPLE_RATE as f64
     }
+
+    /// Resample all stems from source rate to target rate
+    ///
+    /// Uses high-quality FFT-based resampling via rubato.
+    /// This is called automatically when loading legacy 44.1kHz files.
+    pub fn resample(&self, source_rate: u32, target_rate: u32) -> Result<Self, AudioFileError> {
+        if source_rate == target_rate {
+            return Ok(self.clone());
+        }
+
+        use std::time::Instant;
+        let start = Instant::now();
+
+        log::info!(
+            "    [PERF] Resampling {} frames from {}Hz to {}Hz",
+            self.len(),
+            source_rate,
+            target_rate
+        );
+
+        // Calculate output length
+        let ratio = target_rate as f64 / source_rate as f64;
+        let output_len = (self.len() as f64 * ratio).ceil() as usize;
+
+        // Create output buffers
+        let mut output = StemBuffers::with_length(output_len);
+
+        // Resample each stem (stereo = 2 channels)
+        for stem in Stem::ALL {
+            resample_stereo_buffer(
+                self.get(stem),
+                output.get_mut(stem),
+                source_rate,
+                target_rate,
+            )?;
+        }
+
+        log::info!(
+            "    [PERF] Resampling complete: {:?} ({} -> {} frames)",
+            start.elapsed(),
+            self.len(),
+            output_len
+        );
+
+        Ok(output)
+    }
+}
+
+/// Resample a stereo buffer using FFT-based resampling
+fn resample_stereo_buffer(
+    input: &StereoBuffer,
+    output: &mut StereoBuffer,
+    source_rate: u32,
+    target_rate: u32,
+) -> Result<(), AudioFileError> {
+    const CHANNELS: usize = 2;
+
+    // Create resampler
+    let mut resampler = FftFixedInOut::<f32>::new(
+        source_rate as usize,
+        target_rate as usize,
+        1024, // chunk size
+        CHANNELS,
+    ).map_err(|e| AudioFileError::IoError(format!("Resampler init failed: {}", e)))?;
+
+    // Convert StereoBuffer to separate channel vectors (rubato expects Vec<Vec<f32>>)
+    let input_len = input.len();
+    let mut left_in: Vec<f32> = Vec::with_capacity(input_len);
+    let mut right_in: Vec<f32> = Vec::with_capacity(input_len);
+
+    for sample in input.as_slice() {
+        left_in.push(sample.left);
+        right_in.push(sample.right);
+    }
+
+    // Process in chunks
+    let chunk_size = resampler.input_frames_max();
+    let output_chunk_size = resampler.output_frames_max();
+
+    let mut left_out: Vec<f32> = Vec::with_capacity(output.len());
+    let mut right_out: Vec<f32> = Vec::with_capacity(output.len());
+
+    let mut pos = 0;
+    while pos < input_len {
+        let end = (pos + chunk_size).min(input_len);
+        let frames_in = end - pos;
+
+        // Prepare input chunk (pad with zeros if needed)
+        let mut chunk_in = vec![vec![0.0f32; chunk_size]; CHANNELS];
+        chunk_in[0][..frames_in].copy_from_slice(&left_in[pos..end]);
+        chunk_in[1][..frames_in].copy_from_slice(&right_in[pos..end]);
+
+        // Process
+        let chunk_out = resampler.process(&chunk_in, None)
+            .map_err(|e| AudioFileError::IoError(format!("Resampling failed: {}", e)))?;
+
+        // Calculate how many output frames correspond to input frames
+        let frames_out = if frames_in == chunk_size {
+            output_chunk_size
+        } else {
+            // Last partial chunk - scale proportionally
+            ((frames_in as f64 / chunk_size as f64) * output_chunk_size as f64).ceil() as usize
+        };
+
+        left_out.extend_from_slice(&chunk_out[0][..frames_out.min(chunk_out[0].len())]);
+        right_out.extend_from_slice(&chunk_out[1][..frames_out.min(chunk_out[1].len())]);
+
+        pos += chunk_size;
+    }
+
+    // Copy to output buffer
+    let out_len = output.len().min(left_out.len());
+    for i in 0..out_len {
+        output.as_mut_slice()[i] = StereoSample::new(left_out[i], right_out[i]);
+    }
+
+    Ok(())
 }
 
 /// WAV/RF64 file reader
@@ -838,7 +970,21 @@ impl AudioFileReader {
     }
 
     /// Read all audio data into stem buffers
+    ///
+    /// This uses the default target sample rate (SAMPLE_RATE constant, 48kHz).
+    /// For JACK-aware loading, use `read_all_stems_to(target_rate)` instead.
     pub fn read_all_stems(&mut self) -> Result<StemBuffers, AudioFileError> {
+        self.read_all_stems_to(SAMPLE_RATE)
+    }
+
+    /// Read all audio data into stem buffers, resampling to target rate
+    ///
+    /// # Arguments
+    /// * `target_sample_rate` - The target sample rate (typically JACK's sample rate)
+    ///
+    /// This allows loading tracks to match whatever sample rate JACK is running at.
+    /// If the file's sample rate differs from target, audio is automatically resampled.
+    pub fn read_all_stems_to(&mut self, target_sample_rate: u32) -> Result<StemBuffers, AudioFileError> {
         use std::time::Instant;
 
         let frame_count = self.frame_count() as usize;
@@ -885,6 +1031,16 @@ impl AudioFileReader {
             bytes_read as f64 / 1_000_000.0,
             throughput_mb_s
         );
+
+        // Resample if file sample rate differs from target rate (e.g., 48kHz -> 44.1kHz for JACK)
+        if self.format.sample_rate != target_sample_rate {
+            log::info!(
+                "    File sample rate ({} Hz) differs from target rate ({} Hz), resampling...",
+                self.format.sample_rate,
+                target_sample_rate
+            );
+            stems = stems.resample(self.format.sample_rate, target_sample_rate)?;
+        }
 
         Ok(stems)
     }
@@ -1330,7 +1486,7 @@ pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFile
     // Attach saved loops if present
     metadata.saved_loops = saved_loops;
 
-    // Calculate and store duration in seconds (assuming 44100 Hz sample rate)
+    // Calculate and store duration in seconds at system sample rate
     if duration_samples > 0 {
         metadata.duration_seconds = Some(duration_samples as f64 / SAMPLE_RATE as f64);
     }
@@ -1510,12 +1666,26 @@ impl std::fmt::Debug for LoadedTrack {
 
 impl LoadedTrack {
     /// Load a track from a file path
+    ///
+    /// Uses the default system sample rate (48kHz).
+    /// For JACK-aware loading, use `load_to(path, target_rate)` instead.
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, AudioFileError> {
+        Self::load_to(path, SAMPLE_RATE)
+    }
+
+    /// Load a track from a file path, resampling to target sample rate
+    ///
+    /// # Arguments
+    /// * `path` - Path to the audio file
+    /// * `target_sample_rate` - Target sample rate (typically JACK's sample rate)
+    ///
+    /// This allows loading tracks to match whatever sample rate JACK is running at.
+    pub fn load_to<P: AsRef<Path>>(path: P, target_sample_rate: u32) -> Result<Self, AudioFileError> {
         use std::time::Instant;
 
         let path_ref = path.as_ref();
         let total_start = Instant::now();
-        log::info!("[PERF] Loading track: {:?}", path_ref);
+        log::info!("[PERF] Loading track: {:?} (target rate: {} Hz)", path_ref, target_sample_rate);
 
         // Read metadata first (fast, doesn't load audio)
         let meta_start = Instant::now();
@@ -1528,7 +1698,7 @@ impl LoadedTrack {
         log::info!("  [PERF] File opened in {:?}", open_start.elapsed());
 
         let stems_start = Instant::now();
-        let stems = reader.read_all_stems()?;
+        let stems = reader.read_all_stems_to(target_sample_rate)?;
         log::info!(
             "  [PERF] Audio data read in {:?} ({} frames, {:.1} MB)",
             stems_start.elapsed(),
@@ -1562,10 +1732,22 @@ impl LoadedTrack {
 
     /// Load only audio stems from a file (slow, loads all audio data)
     ///
-    /// Use this after metadata is loaded to get the actual audio.
+    /// Uses the default system sample rate (48kHz).
+    /// For JACK-aware loading, use `load_stems_to(path, target_rate)` instead.
     pub fn load_stems<P: AsRef<Path>>(path: P) -> Result<StemBuffers, AudioFileError> {
+        Self::load_stems_to(path, SAMPLE_RATE)
+    }
+
+    /// Load only audio stems from a file, resampling to target sample rate
+    ///
+    /// # Arguments
+    /// * `path` - Path to the audio file
+    /// * `target_sample_rate` - Target sample rate (typically JACK's sample rate)
+    ///
+    /// This allows loading tracks to match whatever sample rate JACK is running at.
+    pub fn load_stems_to<P: AsRef<Path>>(path: P, target_sample_rate: u32) -> Result<StemBuffers, AudioFileError> {
         let mut reader = AudioFileReader::open(path.as_ref())?;
-        reader.read_all_stems()
+        reader.read_all_stems_to(target_sample_rate)
     }
 
     /// Get the BPM of the track (or a default if not set)
@@ -1630,27 +1812,39 @@ mod tests {
 
     #[test]
     fn test_audio_format_compatibility() {
-        let valid_format = AudioFormat {
+        // 48kHz (default) should be compatible
+        let format_48k = AudioFormat {
             format_tag: 1,
             channels: 8,
-            sample_rate: 44100,
+            sample_rate: 48000,
             bits_per_sample: 16,
             block_align: 16,
         };
-        assert!(valid_format.is_compatible().is_ok());
+        assert!(format_48k.is_compatible().is_ok());
+        assert!(!format_48k.needs_resampling());
 
+        // 44.1kHz should be compatible (will be resampled)
+        let format_44k = AudioFormat {
+            sample_rate: 44100,
+            ..format_48k
+        };
+        assert!(format_44k.is_compatible().is_ok());
+        assert!(format_44k.needs_resampling());
+
+        // Wrong channels should fail
         let wrong_channels = AudioFormat {
             channels: 2,
-            ..valid_format
+            ..format_48k
         };
         assert!(matches!(
             wrong_channels.is_compatible(),
             Err(AudioFileError::WrongChannelCount { .. })
         ));
 
+        // Unsupported sample rate (e.g., 22050) should fail
         let wrong_rate = AudioFormat {
-            sample_rate: 48000,
-            ..valid_format
+            sample_rate: 22050,
+            ..format_48k
         };
         assert!(matches!(
             wrong_rate.is_compatible(),

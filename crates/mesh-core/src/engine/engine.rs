@@ -37,20 +37,37 @@ pub struct AudioEngine {
     deck_buffers: [StereoBuffer; NUM_DECKS],
     /// Pre-allocated buffer for time-stretched output
     stretch_input: StereoBuffer,
+    /// Output sample rate (from JACK) - used for sample rate conversion
+    output_sample_rate: u32,
 }
 
 impl AudioEngine {
-    /// Create a new audio engine
-    pub fn new() -> Self {
+    /// Create a new audio engine with the specified output sample rate
+    ///
+    /// The sample rate should come from JACK (or other audio backend).
+    /// Audio files will be resampled to match this rate on load.
+    pub fn new_with_sample_rate(output_sample_rate: u32) -> Self {
+        log::info!("AudioEngine created with sample rate: {} Hz", output_sample_rate);
         Self {
             decks: std::array::from_fn(|i| Deck::new(DeckId::new(i))),
             global_bpm: DEFAULT_BPM,
             mixer: Mixer::new(),
             latency_compensator: LatencyCompensator::new(),
-            stretchers: std::array::from_fn(|_| TimeStretcher::new()),
+            stretchers: std::array::from_fn(|_| TimeStretcher::new_with_sample_rate(output_sample_rate)),
             deck_buffers: std::array::from_fn(|_| StereoBuffer::silence(MAX_BUFFER_SIZE)),
             stretch_input: StereoBuffer::silence(MAX_BUFFER_SIZE),
+            output_sample_rate,
         }
+    }
+
+    /// Create a new audio engine with default sample rate (48000 Hz)
+    pub fn new() -> Self {
+        Self::new_with_sample_rate(crate::types::SAMPLE_RATE)
+    }
+
+    /// Get the output sample rate
+    pub fn sample_rate(&self) -> u32 {
+        self.output_sample_rate
     }
 
     /// Get a reference to a deck
@@ -110,6 +127,10 @@ impl AudioEngine {
 
             // Set stretch ratio for this deck based on track BPM vs global BPM
             let ratio = self.global_bpm / track_bpm;
+            log::debug!(
+                "Track loaded on deck {}: track_bpm={:.2}, global_bpm={:.2}, ratio={:.4}",
+                deck, track_bpm, self.global_bpm, ratio
+            );
             d.set_stretch_ratio(ratio);
         }
 
@@ -141,6 +162,10 @@ impl AudioEngine {
             if let Some(track) = deck.track() {
                 let track_bpm = track.bpm();
                 let ratio = self.global_bpm / track_bpm;
+                log::debug!(
+                    "BPM changed - deck {}: track_bpm={:.2}, global_bpm={:.2}, ratio={:.4}",
+                    i, track_bpm, self.global_bpm, ratio
+                );
                 deck.set_stretch_ratio(ratio);
                 self.stretchers[i].set_bpm(track_bpm, self.global_bpm);
             }

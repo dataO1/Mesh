@@ -304,11 +304,13 @@ cargo build --release
 
 ### Running
 
-1. Start JACK audio server:
+1. Start JACK audio server (48kHz recommended):
    ```bash
-   jackd -d alsa -r 44100
+   jackd -d alsa -r 48000
    ```
    Or use a JACK control application like QjackCtl or Cadence.
+
+   > **Note:** Mesh stores tracks at 48kHz internally. JACK can run at any sample rate (44.1kHz, 48kHz, 96kHz, etc.) — tracks are automatically resampled during loading to match JACK's rate.
 
 2. Run mesh-player (DJ application):
    ```bash
@@ -327,9 +329,11 @@ cargo build --release
 Mesh uses a custom stem file format based on WAV/RF64:
 
 - **8 channels**: 4 stereo stems (L/R pairs for Vocals, Drums, Bass, Other)
-- **Sample rate**: 44100 Hz
-- **Bit depth**: 16-bit (24-bit and 32-bit float also supported)
+- **Sample rate**: 48000 Hz (stems are resampled during import if needed)
+- **Bit depth**: 16-bit (24-bit and 32-bit float also supported for input)
 - **Metadata**: Embedded in `bext` chunk with artist, BPM, key, beat grid, and cue points
+
+> **Sample Rate Handling:** When importing stems (e.g., from Demucs at 44.1kHz), mesh-cue automatically resamples them to 48kHz using a high-quality FFT-based resampler. This ensures consistent playback speed regardless of the source material's sample rate.
 
 Example metadata format:
 ```

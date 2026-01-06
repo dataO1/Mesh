@@ -313,13 +313,20 @@ pub fn view_progress_bar(state: &ImportState) -> Option<Element<'static, Message
                 current_track.clone()
             };
 
+            // Small cancel button for status bar
+            let cancel_btn = button(text("×").size(14))
+                .on_press(Message::CancelImport)
+                .style(button::secondary)
+                .padding([2, 6]);
+
             let bar = container(
                 row![
                     text(format!("Importing: {}", display_name)).size(12),
                     Space::new().width(Length::Fill),
                     text(eta_text).size(12),
+                    cancel_btn,
                 ]
-                .spacing(20)
+                .spacing(10)
                 .align_y(Alignment::Center)
                 .padding([4, 8]),
             )

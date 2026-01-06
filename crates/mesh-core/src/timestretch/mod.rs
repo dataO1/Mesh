@@ -25,14 +25,19 @@ pub struct TimeStretcher {
 }
 
 impl TimeStretcher {
-    /// Create a new time stretcher
-    pub fn new() -> Self {
-        let stretcher = Stretch::preset_default(CHANNELS, SAMPLE_RATE);
+    /// Create a new time stretcher with the specified sample rate
+    pub fn new_with_sample_rate(sample_rate: u32) -> Self {
+        let stretcher = Stretch::preset_default(CHANNELS, sample_rate);
 
         Self {
             stretcher,
             ratio: 1.0,
         }
+    }
+
+    /// Create a new time stretcher with default sample rate
+    pub fn new() -> Self {
+        Self::new_with_sample_rate(SAMPLE_RATE)
     }
 
     /// Set the stretch ratio (output_bpm / input_bpm)

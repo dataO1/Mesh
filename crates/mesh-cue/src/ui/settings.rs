@@ -84,8 +84,34 @@ fn view_bpm_section(state: &SettingsState) -> Element<Message> {
         .spacing(10)
         .align_y(Alignment::Center);
 
+    // Parallel processes subsection
+    let parallel_title = text("Parallel Analysis").size(14);
+    let parallel_hint = text("Number of tracks to analyze simultaneously during batch import")
+        .size(12);
+
+    let parallel_label = text("Processes:").size(14);
+    let parallel_input = text_input("4", &state.draft_parallel_processes)
+        .on_input(Message::UpdateSettingsParallelProcesses)
+        .width(Length::Fixed(80.0));
+    let parallel_range = text("(1-16)").size(12);
+
+    let parallel_row = row![parallel_label, parallel_input, parallel_range]
+        .spacing(10)
+        .align_y(Alignment::Center);
+
     container(
-        column![section_title, subsection_title, hint, min_row, max_row].spacing(10),
+        column![
+            section_title,
+            subsection_title,
+            hint,
+            min_row,
+            max_row,
+            Space::new().height(10),
+            parallel_title,
+            parallel_hint,
+            parallel_row,
+        ]
+        .spacing(10),
     )
     .padding(15)
     .width(Length::Fill)
