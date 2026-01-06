@@ -15,13 +15,23 @@ pub struct PlayerConfig {
     pub audio: AudioConfig,
     /// Display settings (waveform, zoom levels)
     pub display: DisplayConfig,
+    /// Path to the mesh collection folder (shared with mesh-cue)
+    /// Default: ~/Music/mesh-collection
+    pub collection_path: PathBuf,
 }
 
 impl Default for PlayerConfig {
     fn default() -> Self {
+        // Default collection path matches mesh-cue
+        let collection_path = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("Music")
+            .join("mesh-collection");
+
         Self {
             audio: AudioConfig::default(),
             display: DisplayConfig::default(),
+            collection_path,
         }
     }
 }
@@ -174,6 +184,7 @@ mod tests {
                 default_zoom_bars: 4,
                 grid_bars: 16,
             },
+            collection_path: PathBuf::from("/tmp/test-collection"),
         };
 
         let yaml = serde_yaml::to_string(&config).unwrap();

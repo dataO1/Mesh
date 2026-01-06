@@ -26,8 +26,8 @@ use mesh_core::audio_file::StemBuffers;
 use mesh_core::engine::{DeckAtomics, EngineCommand};
 use mesh_core::types::NUM_DECKS;
 use mesh_widgets::{PeaksComputer, PeaksComputeRequest};
+use super::collection_browser::{CollectionBrowserState, CollectionBrowserMessage};
 use super::deck_view::{DeckView, DeckMessage};
-use super::file_browser::{FileBrowserView, FileBrowserMessage};
 use super::mixer_view::{MixerView, MixerMessage};
 use super::player_canvas::{view_player_canvas, PlayerCanvasState};
 use super::settings::SettingsState;
@@ -52,8 +52,8 @@ pub struct MeshApp {
     deck_views: [DeckView; 4],
     /// Mixer view state
     mixer_view: MixerView,
-    /// File browser view
-    file_browser: FileBrowserView,
+    /// Collection browser (read-only, shared with mesh-cue)
+    collection_browser: CollectionBrowserState,
     /// Global BPM (cached for UI display; authoritative value is in audio engine)
     global_bpm: f64,
     /// Status message
@@ -77,8 +77,8 @@ pub enum Message {
     Deck(usize, DeckMessage),
     /// Mixer message
     Mixer(MixerMessage),
-    /// File browser message
-    FileBrowser(FileBrowserMessage),
+    /// Collection browser message
+    CollectionBrowser(CollectionBrowserMessage),
     /// Set global BPM
     SetGlobalBpm(f64),
     /// Load track to deck
@@ -138,7 +138,7 @@ impl MeshApp {
                 DeckView::new(3),
             ],
             mixer_view: MixerView::new(),
-            file_browser: FileBrowserView::new(),
+            collection_browser: CollectionBrowserState::new(config.collection_path.clone()),
             global_bpm: config.audio.global_bpm,
             status: if audio_connected { "Audio connected (lock-free)".to_string() } else { "No audio".to_string() },
             audio_connected,
@@ -381,9 +381,9 @@ impl MeshApp {
                 Task::none()
             }
 
-            Message::FileBrowser(browser_msg) => {
-                // Handle file browser message and check if we need to load a track
-                if let Some((deck_idx, path)) = self.file_browser.handle_message(browser_msg) {
+            Message::CollectionBrowser(browser_msg) => {
+                // Handle collection browser message and check if we need to load a track
+                if let Some((deck_idx, path)) = self.collection_browser.handle_message(browser_msg) {
                     // Convert to LoadTrack message
                     let path_str = path.to_string_lossy().to_string();
                     return self.update(Message::LoadTrack(deck_idx, path_str));
@@ -502,8 +502,8 @@ impl MeshApp {
         // Header with global controls
         let header = self.view_header();
 
-        // File browser (top, full width)
-        let file_browser = self.file_browser.view().map(Message::FileBrowser);
+        // Collection browser (top, full width)
+        let collection_browser = self.collection_browser.view().map(Message::CollectionBrowser);
 
         // 3-column layout for controls + canvas + mixer:
         // Left: Decks 1 & 3 controls | Center: Waveform canvas + Mixer | Right: Decks 2 & 4 controls
@@ -550,7 +550,7 @@ impl MeshApp {
 
         let content = column![
             header,
-            file_browser,
+            collection_browser,
             main_row,
             status_bar,
         ]

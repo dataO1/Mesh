@@ -4,8 +4,8 @@
 //! Uses a message-passing architecture to communicate with the audio thread.
 
 pub mod app;
+pub mod collection_browser;
 pub mod deck_view;
-pub mod file_browser;
 pub mod mixer_view;
 pub mod player_canvas;
 pub mod settings;
