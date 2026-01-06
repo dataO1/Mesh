@@ -1,12 +1,10 @@
 //! Main application state and iced implementation
 
-use crate::analysis::AnalysisResult;
 use crate::audio::{AudioState, JackHandle, start_jack_client};
 use crate::batch_import::{self, ImportConfig, ImportProgress, StemGroup, TrackImportResult};
 use crate::collection::Collection;
 use crate::config::{self, Config};
 use crate::export;
-use crate::import::StemImporter;
 use crate::keybindings::{self, KeybindingsConfig};
 use super::waveform::{CombinedWaveformView, WaveformView, ZoomedWaveformView};
 use iced::widget::{button, center, column, container, mouse_area, opaque, row, stack, text, Space};
@@ -26,8 +24,6 @@ use std::sync::Arc;
 /// Current view in the application
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum View {
-    /// Staging area for importing and analyzing stems (legacy manual import)
-    Staging,
     /// Collection browser and track editor (with batch import)
     #[default]
     Collection,
@@ -49,23 +45,6 @@ pub struct DragState {
     pub track_name: String,
     /// Which browser the drag started from
     pub source_browser: BrowserSide,
-}
-
-/// State for the staging (import) view
-#[derive(Debug, Default)]
-pub struct StagingState {
-    /// Stem importer with loaded file paths
-    pub importer: StemImporter,
-    /// Loaded stem buffers (after import)
-    pub stem_buffers: Option<StemBuffers>,
-    /// Analysis result
-    pub analysis_result: Option<AnalysisResult>,
-    /// Analysis progress (0.0 - 1.0)
-    pub analysis_progress: Option<f32>,
-    /// Track name for export
-    pub track_name: String,
-    /// Status message
-    pub status: String,
 }
 
 /// State for the collection view
@@ -349,21 +328,6 @@ pub enum Message {
     // Navigation
     SwitchView(View),
 
-    // Staging: Import
-    SelectStemFile(usize), // 0=vocals, 1=drums, 2=bass, 3=other
-    StemFileSelected(usize, Option<PathBuf>),
-    SetTrackName(String),
-
-    // Staging: Analysis
-    StartAnalysis,
-    AnalysisProgress(f32),
-    AnalysisComplete(AnalysisResult),
-    AnalysisError(String),
-
-    // Staging: Export
-    AddToCollection,
-    AddToCollectionComplete(Result<PathBuf, String>),
-
     // Collection: Browser
     RefreshCollection,
     SelectTrack(usize),
@@ -496,8 +460,6 @@ pub enum Message {
 pub struct MeshCueApp {
     /// Current view
     current_view: View,
-    /// Staging state
-    staging: StagingState,
     /// Collection state
     collection: CollectionState,
     /// Audio playback state
@@ -584,7 +546,6 @@ impl MeshCueApp {
 
         let app = Self {
             current_view: View::Collection,
-            staging: StagingState::default(),
             collection: collection_state,
             audio,
             jack_client,
@@ -681,235 +642,6 @@ impl MeshCueApp {
                     (Some(save), None) => return save,
                     (None, Some(refresh)) => return refresh,
                     (None, None) => {}
-                }
-            }
-
-            // Staging: Import
-            Message::SelectStemFile(index) => {
-                // Open file dialog
-                return Task::perform(
-                    async move {
-                        let file = rfd::AsyncFileDialog::new()
-                            .add_filter("WAV files", &["wav", "WAV"])
-                            .pick_file()
-                            .await;
-                        (index, file.map(|f| f.path().to_path_buf()))
-                    },
-                    |(index, path)| Message::StemFileSelected(index, path),
-                );
-            }
-            Message::StemFileSelected(index, path) => {
-                if let Some(path) = path {
-                    match index {
-                        0 => self.staging.importer.set_vocals(&path),
-                        1 => self.staging.importer.set_drums(&path),
-                        2 => self.staging.importer.set_bass(&path),
-                        3 => self.staging.importer.set_other(&path),
-                        _ => {}
-                    }
-                    self.staging.status = format!("Loaded stem {}", index + 1);
-
-                    // Auto-fill track name from first stem filename if empty
-                    if self.staging.track_name.is_empty() {
-                        if let Some(parsed_name) = parse_track_name_from_filename(&path) {
-                            self.staging.track_name = parsed_name;
-                        }
-                    }
-                }
-            }
-            Message::SetTrackName(name) => {
-                self.staging.track_name = name;
-            }
-
-            // Staging: Analysis
-            Message::StartAnalysis => {
-                // Check that all stems are loaded before starting
-                if !self.staging.importer.is_complete() {
-                    self.staging.status = String::from("Please load all 4 stem files first");
-                    return Task::none();
-                }
-
-                self.staging.status = String::from("Analyzing... (this may take a moment)");
-
-                // Clone data for the async task
-                let importer = self.staging.importer.clone();
-                let bpm_config = self.config.analysis.bpm.clone();
-
-                // Spawn background task for analysis
-                return Task::perform(
-                    async move {
-                        // Load stems and compute mono sum for analysis
-                        let mono_samples = importer.get_mono_sum()?;
-
-                        // Run analysis with configured BPM range
-                        let result = crate::analysis::analyze_audio(&mono_samples, &bpm_config)?;
-
-                        Ok::<_, anyhow::Error>(result)
-                    },
-                    |result| match result {
-                        Ok(analysis) => Message::AnalysisComplete(analysis),
-                        Err(e) => Message::AnalysisError(e.to_string()),
-                    },
-                );
-            }
-            Message::AnalysisProgress(progress) => {
-                self.staging.analysis_progress = Some(progress);
-            }
-            Message::AnalysisComplete(result) => {
-                self.staging.analysis_result = Some(result);
-                self.staging.analysis_progress = None;
-                self.staging.status = String::from("Analysis complete");
-            }
-            Message::AnalysisError(error) => {
-                self.staging.status = format!("Analysis failed: {}", error);
-                self.staging.analysis_progress = None;
-            }
-
-            // Staging: Export
-            Message::AddToCollection => {
-                log::info!("=== AddToCollection triggered ===");
-
-                // Validate we have analysis result and track name
-                let analysis = match self.staging.analysis_result.clone() {
-                    Some(a) => {
-                        log::info!("Analysis result found: BPM={:.1}, Key={}", a.bpm, a.key);
-                        a
-                    }
-                    None => {
-                        log::warn!("AddToCollection failed: no analysis result");
-                        self.staging.status = String::from("Please analyze first");
-                        return Task::none();
-                    }
-                };
-
-                if self.staging.track_name.trim().is_empty() {
-                    log::warn!("AddToCollection failed: empty track name");
-                    self.staging.status = String::from("Please enter a track name");
-                    return Task::none();
-                }
-
-                log::info!("Track name: '{}'", self.staging.track_name);
-                self.staging.status = String::from("Exporting to collection...");
-
-                // Clone data for async task
-                let importer = self.staging.importer.clone();
-                let track_name = self.staging.track_name.clone();
-                let collection_path = self.collection.collection.path().to_path_buf();
-
-                log::info!("Collection path: {:?}", collection_path);
-                log::info!(
-                    "Stem paths - Vocals: {:?}, Drums: {:?}, Bass: {:?}, Other: {:?}",
-                    importer.vocals_path,
-                    importer.drums_path,
-                    importer.bass_path,
-                    importer.other_path
-                );
-
-                // Spawn background task
-                return Task::perform(
-                    async move {
-                        log::info!("=== Async export task started ===");
-
-                        // Import stems
-                        log::info!("Step 1: Importing stems...");
-                        let buffers = match importer.import() {
-                            Ok(b) => {
-                                log::info!("Stems imported successfully: {} samples", b.len());
-                                b
-                            }
-                            Err(e) => {
-                                log::error!("Failed to import stems: {}", e);
-                                return Err(e);
-                            }
-                        };
-
-                        // Create metadata from analysis result
-                        log::info!("Step 2: Creating metadata...");
-                        let metadata = TrackMetadata {
-                            artist: None, // Will be set by user later
-                            bpm: Some(analysis.bpm),
-                            original_bpm: Some(analysis.original_bpm),
-                            key: Some(analysis.key.clone()),
-                            duration_seconds: None,
-                            beat_grid: BeatGrid {
-                                beats: analysis.beat_grid.clone(),
-                                first_beat_sample: analysis.beat_grid.first().copied(),
-                            },
-                            cue_points: Vec::new(), // No cue points initially
-                            saved_loops: Vec::new(), // No saved loops initially
-                            waveform_preview: None, // Generated during export
-                        };
-                        log::info!(
-                            "Metadata: BPM={:.1}, Key={}, {} beats in grid",
-                            analysis.bpm,
-                            analysis.key,
-                            analysis.beat_grid.len()
-                        );
-
-                        // Create temp file for export
-                        let temp_dir = std::env::temp_dir();
-                        let temp_path = temp_dir.join(format!("{}.wav", &track_name));
-                        log::info!("Step 3: Exporting to temp file: {:?}", temp_path);
-
-                        // Export to temp file (no saved loops for newly analyzed tracks)
-                        match crate::export::export_stem_file(&temp_path, &buffers, &metadata, &[], &[]) {
-                            Ok(()) => log::info!("Export to temp file succeeded"),
-                            Err(e) => {
-                                log::error!("Failed to export to temp file: {}", e);
-                                return Err(e);
-                            }
-                        }
-
-                        // Verify temp file exists and get size
-                        match std::fs::metadata(&temp_path) {
-                            Ok(meta) => log::info!("Temp file size: {} bytes", meta.len()),
-                            Err(e) => log::error!("Temp file doesn't exist: {}", e),
-                        }
-
-                        // Add to collection (copies file to collection folder)
-                        log::info!("Step 4: Adding to collection at {:?}", collection_path);
-                        let mut collection = Collection::new(&collection_path);
-                        let dest_path = match collection.add_track(&temp_path, &track_name) {
-                            Ok(p) => {
-                                log::info!("Added to collection: {:?}", p);
-                                p
-                            }
-                            Err(e) => {
-                                log::error!("Failed to add to collection: {}", e);
-                                return Err(e);
-                            }
-                        };
-
-                        // Clean up temp file
-                        log::info!("Step 5: Cleaning up temp file");
-                        if let Err(e) = std::fs::remove_file(&temp_path) {
-                            log::warn!("Failed to remove temp file: {}", e);
-                        }
-
-                        log::info!("=== Export complete: {:?} ===", dest_path);
-                        Ok::<PathBuf, anyhow::Error>(dest_path)
-                    },
-                    |result| Message::AddToCollectionComplete(result.map_err(|e| e.to_string())),
-                );
-            }
-            Message::AddToCollectionComplete(result) => {
-                log::info!("AddToCollectionComplete received");
-                match result {
-                    Ok(path) => {
-                        log::info!("AddToCollectionComplete: SUCCESS - {:?}", path);
-                        self.staging.status = format!("Added: {}", path.display());
-                        // Clear staging state for next import
-                        self.staging.importer.clear();
-                        self.staging.analysis_result = None;
-                        self.staging.track_name.clear();
-
-                        // Refresh playlist storage to see the new track
-                        return self.update(Message::RefreshPlaylists);
-                    }
-                    Err(e) => {
-                        log::error!("AddToCollectionComplete: FAILED - {}", e);
-                        self.staging.status = format!("Failed to add: {}", e);
-                    }
                 }
             }
 
@@ -2451,7 +2183,6 @@ impl MeshCueApp {
         let header = self.view_header();
 
         let content: Element<Message> = match self.current_view {
-            View::Staging => self.view_staging(),
             View::Collection => self.view_collection(),
         };
 
@@ -2544,24 +2275,8 @@ impl MeshCueApp {
         }
     }
 
-    /// View header with navigation tabs
+    /// View header with app title and settings
     fn view_header(&self) -> Element<Message> {
-        let staging_btn = button(text("Staging"))
-            .on_press(Message::SwitchView(View::Staging))
-            .style(if self.current_view == View::Staging {
-                button::primary
-            } else {
-                button::secondary
-            });
-
-        let collection_btn = button(text("Collection"))
-            .on_press(Message::SwitchView(View::Collection))
-            .style(if self.current_view == View::Collection {
-                button::primary
-            } else {
-                button::secondary
-            });
-
         // Settings gear icon (⚙ U+2699)
         let settings_btn = button(text("⚙").size(20))
             .on_press(Message::OpenSettings)
@@ -2570,65 +2285,15 @@ impl MeshCueApp {
         row![
             text("mesh-cue").size(24),
             Space::new().width(Length::Fill),
-            staging_btn,
-            collection_btn,
             settings_btn,
         ]
         .spacing(10)
         .into()
     }
 
-    /// View for the staging (import) area
-    fn view_staging(&self) -> Element<Message> {
-        super::staging::view(&self.staging)
-    }
-
     /// View for the collection browser and editor
     fn view_collection(&self) -> Element<Message> {
         super::collection_browser::view(&self.collection, &self.import_state)
-    }
-}
-
-/// Parse track name from stem filename
-///
-/// Handles common patterns:
-/// - "Artist - Track Name (Vocals).wav" → "Artist - Track Name"
-/// - "Artist - Track Name_Vocals.wav" → "Artist - Track Name"
-/// - "Track Name - Vocals.wav" → "Track Name"
-fn parse_track_name_from_filename(path: &std::path::Path) -> Option<String> {
-    let filename = path.file_stem()?.to_string_lossy();
-
-    // Remove common stem suffixes (case insensitive)
-    let stem_patterns = [
-        "(Vocals)", "(vocals)", "(VOCALS)",
-        "(Drums)", "(drums)", "(DRUMS)",
-        "(Bass)", "(bass)", "(BASS)",
-        "(Other)", "(other)", "(OTHER)",
-        "_Vocals", "_vocals", "_VOCALS",
-        "_Drums", "_drums", "_DRUMS",
-        "_Bass", "_bass", "_BASS",
-        "_Other", "_other", "_OTHER",
-        " - Vocals", " - vocals",
-        " - Drums", " - drums",
-        " - Bass", " - bass",
-        " - Other", " - other",
-    ];
-
-    let mut name = filename.to_string();
-    for pattern in stem_patterns {
-        if let Some(idx) = name.find(pattern) {
-            name = name[..idx].to_string();
-            break;
-        }
-    }
-
-    // Clean up trailing whitespace, dashes, and underscores
-    let name = name.trim_end_matches(|c| c == ' ' || c == '-' || c == '_');
-
-    if name.is_empty() {
-        None
-    } else {
-        Some(name.to_string())
     }
 }
 

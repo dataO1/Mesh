@@ -7,7 +7,6 @@ pub mod editor;
 pub mod import_modal;
 pub mod saved_loop_buttons;
 pub mod settings;
-pub mod staging;
 pub mod transport;
 pub mod waveform;
 

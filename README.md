@@ -220,7 +220,7 @@ Mesh implements a fully real-time safe architecture:
 - RAVE neural effects integration
 
 **mesh-cue** (Working MVP)
-- Staging area for importing pre-separated stems (4 WAV files → 8-channel format)
+- Batch import system for pre-separated stems (4 WAV files → 8-channel format)
 - BPM detection using Essentia's RhythmExtractor2013 algorithm
 - Key detection using Essentia's KeyExtractor with EDMA profile (optimized for EDM)
 - Beat grid generation from detected beat positions
