@@ -176,6 +176,10 @@ impl MeshApp {
                                 load_result.zoomed_state;
                             self.deck_stems[deck_idx] = Some(load_result.stems);
 
+                            // Set track name for header display (before moving prepared)
+                            let track_name = prepared.track.filename().to_string();
+                            self.player_canvas_state.set_track_name(deck_idx, track_name);
+
                             // Send track to audio engine via lock-free queue (~50ns, never blocks!)
                             if let Some(ref mut sender) = self.command_sender {
                                 log::debug!("[PERF] UI: Sending LoadTrack command for deck {}", deck_idx);
@@ -558,8 +562,8 @@ impl MeshApp {
 
         // Left column: Deck 1 (top) and Deck 3 (bottom) controls
         let left_controls = column![
-            self.deck_views[0].view().map(|m| Message::Deck(0, m)),
-            self.deck_views[2].view().map(|m| Message::Deck(2, m)),
+            self.deck_views[0].view_compact().map(|m| Message::Deck(0, m)),
+            self.deck_views[2].view_compact().map(|m| Message::Deck(2, m)),
         ]
         .spacing(10)
         .width(Length::FillPortion(1));
@@ -576,8 +580,8 @@ impl MeshApp {
 
         // Right column: Deck 2 (top) and Deck 4 (bottom) controls
         let right_controls = column![
-            self.deck_views[1].view().map(|m| Message::Deck(1, m)),
-            self.deck_views[3].view().map(|m| Message::Deck(3, m)),
+            self.deck_views[1].view_compact().map(|m| Message::Deck(1, m)),
+            self.deck_views[3].view_compact().map(|m| Message::Deck(3, m)),
         ]
         .spacing(10)
         .width(Length::FillPortion(1));
@@ -598,8 +602,8 @@ impl MeshApp {
 
         let content = column![
             header,
-            collection_browser,
             main_row,
+            collection_browser,
             status_bar,
         ]
         .spacing(10)

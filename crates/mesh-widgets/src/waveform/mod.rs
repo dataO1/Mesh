@@ -48,7 +48,7 @@ pub use peaks_computer::{PeaksComputer, PeaksComputeRequest, PeaksComputeResult}
 pub use state::{
     CombinedState, OverviewState, PlayerCanvasState, ZoomedState,
     // Constants
-    COMBINED_WAVEFORM_GAP, DEFAULT_ZOOM_BARS, MAX_ZOOM_BARS, MIN_ZOOM_BARS,
+    COMBINED_WAVEFORM_GAP, DECK_HEADER_HEIGHT, DEFAULT_ZOOM_BARS, MAX_ZOOM_BARS, MIN_ZOOM_BARS,
     WAVEFORM_HEIGHT, ZOOMED_WAVEFORM_HEIGHT, ZOOM_PIXELS_PER_LEVEL,
 };
 
@@ -58,6 +58,8 @@ pub use view::{waveform_combined, waveform_overview, waveform_player, waveform_z
 pub use canvas::{
     CombinedInteraction, OverviewInteraction, PlayerInteraction, ZoomedInteraction,
     // Player canvas layout constants
+    DECK_CELL_HEIGHT, DECK_GRID_GAP, DECK_INTERNAL_GAP,
+    // Legacy constants (for backwards compatibility)
     OVERVIEW_STACK_GAP, PLAYER_SECTION_GAP, ZOOMED_GRID_GAP,
 };
 

@@ -13,8 +13,8 @@ use iced::widget::{button, column, container, mouse_area, row, slider, text, Row
 use iced::{Background, Center, Color, Element, Fill};
 
 use mesh_core::engine::Deck;
-use mesh_widgets::CUE_COLORS;
 use mesh_core::types::PlayState;
+use mesh_widgets::{rotary_knob, RotaryKnobState, CUE_COLORS};
 
 /// Stem names for display
 pub const STEM_NAMES: [&str; 4] = ["Vocals", "Drums", "Bass", "Other"];
@@ -57,6 +57,8 @@ pub struct DeckView {
     stem_effect_names: [Vec<String>; 4],
     /// Effect bypass states per stem
     stem_effect_bypassed: [Vec<bool>; 4],
+    /// Rotary knob states for rendering (8 knobs, shared across stems)
+    knob_states: [RotaryKnobState; 8],
 }
 
 /// Messages for deck interaction
@@ -130,6 +132,7 @@ impl DeckView {
             stem_knobs: [[0.0; 8]; 4],
             stem_effect_names: Default::default(),
             stem_effect_bypassed: Default::default(),
+            knob_states: Default::default(),
         }
     }
 
@@ -774,8 +777,10 @@ impl DeckView {
         .into()
     }
 
-    /// Hot cue buttons in 2x4 grid layout
+    /// Hot cue buttons in 2x4 grid layout (fills available width)
     fn view_hot_cues_grid(&self) -> Element<DeckMessage> {
+        use iced::Length;
+
         // Create 2 rows of 4 buttons each
         let make_button = |i: usize| -> Element<DeckMessage> {
             let is_set = self.hot_cue_positions[i].is_some();
@@ -794,10 +799,10 @@ impl DeckView {
                 }
             } else {
                 button::Style {
-                    background: Some(Background::Color(Color::from_rgb(0.25, 0.25, 0.25))),
+                    background: Some(Background::Color(Color::from_rgb(0.2, 0.2, 0.2))),
                     text_color: Color::from_rgb(0.5, 0.5, 0.5),
                     border: iced::Border {
-                        color: Color::from_rgb(0.4, 0.4, 0.4),
+                        color: Color::from_rgb(0.35, 0.35, 0.35),
                         width: 1.0,
                         radius: 4.0.into(),
                     },
@@ -807,7 +812,8 @@ impl DeckView {
 
             let label = format!("{}", i + 1);
             let btn = button(text(label).size(14))
-                .padding([10, 14])
+                .padding([12, 0])
+                .width(Length::Fill)
                 .style(move |_, _| btn_style);
 
             mouse_area(btn)
@@ -823,7 +829,8 @@ impl DeckView {
             make_button(2),
             make_button(3),
         ]
-        .spacing(4);
+        .spacing(4)
+        .width(Length::Fill);
 
         // Row 2: buttons 5-8
         let row2 = row![
@@ -832,16 +839,345 @@ impl DeckView {
             make_button(6),
             make_button(7),
         ]
-        .spacing(4);
+        .spacing(4)
+        .width(Length::Fill);
 
-        column![
-            text("HOT CUES").size(10),
-            row1,
-            row2,
+        column![row1, row2]
+            .spacing(4)
+            .width(Length::Fill)
+            .into()
+    }
+
+    // =========================================================================
+    // Compact Layout (for side-by-side with waveforms)
+    // =========================================================================
+
+    /// Build compact deck controls for placement next to waveforms
+    ///
+    /// Layout:
+    /// ```text
+    /// ┌──────────────────────────────────────────────────────┐
+    /// │ STEM CONTROLS (full width)                           │
+    /// │ ┌─────────┬─────────────────────────────────────────┐│
+    /// │ │ VOC     │ Effect Chain: [Reverb]->[Delay]->...    ││
+    /// │ │ DRM     ├─────────────────────────────────────────┤│
+    /// │ │ BAS     │ [K1][K2][K3][K4][K5][K6][K7][K8]       ││
+    /// │ │ OTH     │                                         ││
+    /// │ └─────────┴─────────────────────────────────────────┘│
+    /// ├──────────────────────────────────────────────────────┤
+    /// │ [LOOP][SLIP] [÷][4][×]  [◀◀][▶▶]                    │
+    /// ├────────────┬─────────────────────────────────────────┤
+    /// │ [  CUE   ] │  ┌─────┬─────┬─────┬─────┐            │
+    /// │ [ PLAY   ] │  │  1  │  2  │  3  │  4  │            │
+    /// │            │  ├─────┼─────┼─────┼─────┤            │
+    /// │            │  │  5  │  6  │  7  │  8  │            │
+    /// │            │  └─────┴─────┴─────┴─────┘            │
+    /// └────────────┴─────────────────────────────────────────┘
+    /// ```
+    pub fn view_compact(&self) -> Element<DeckMessage> {
+        use iced::Length;
+
+        // Top: Stem section (full width)
+        let stem_section = self.view_stem_section_compact();
+
+        // Middle: Loop/Slip + Loop size + Beat jump (horizontal, full width)
+        let control_row = self.view_control_row_compact();
+
+        // Bottom: CUE/PLAY (left) | Hot Cues (right) - aligned vertically
+        let cue_play_col = self.view_cue_play_compact();
+
+        let hot_cues_col = container(self.view_hot_cues_grid())
+            .width(Length::Fill);
+
+        let bottom_section = row![cue_play_col, hot_cues_col]
+            .spacing(12)
+            .align_y(Center);
+
+        column![stem_section, control_row, bottom_section]
+            .spacing(8)
+            .padding(8)
+            .into()
+    }
+
+    /// Compact stem section with horizontal tabs above rotary knobs
+    ///
+    /// Layout:
+    /// ```text
+    /// ┌─────────────────────────────────────────────────────────────┐
+    /// │ [VOC][DRM][BAS][OTH]  [M][S]  Chain: [Reverb●]─[Delay●]─[+] │
+    /// ├─────────────────────────────────────────────────────────────┤
+    /// │   (1)   (2)   (3)   (4)   (5)   (6)   (7)   (8)             │
+    /// │  rotary knobs for effect chain parameters                   │
+    /// └─────────────────────────────────────────────────────────────┘
+    /// ```
+    fn view_stem_section_compact(&self) -> Element<DeckMessage> {
+        use iced::Length;
+
+        let stem_idx = self.selected_stem;
+
+        // Horizontal stem tabs (fixed width buttons)
+        let stem_tabs: Vec<Element<DeckMessage>> = (0..4)
+            .map(|i| {
+                let is_selected = i == self.selected_stem;
+                let label = STEM_NAMES_SHORT[i];
+
+                let btn_style = if is_selected {
+                    button::Style {
+                        background: Some(Background::Color(Color::from_rgb(0.35, 0.35, 0.4))),
+                        text_color: Color::WHITE,
+                        border: iced::Border {
+                            color: Color::from_rgb(0.5, 0.5, 0.6),
+                            width: 1.0,
+                            radius: 3.0.into(),
+                        },
+                        ..Default::default()
+                    }
+                } else {
+                    button::Style {
+                        background: Some(Background::Color(Color::from_rgb(0.2, 0.2, 0.2))),
+                        text_color: Color::from_rgb(0.7, 0.7, 0.7),
+                        border: iced::Border {
+                            color: Color::from_rgb(0.3, 0.3, 0.3),
+                            width: 1.0,
+                            radius: 3.0.into(),
+                        },
+                        ..Default::default()
+                    }
+                };
+
+                button(text(label).size(10))
+                    .on_press(DeckMessage::SelectStem(i))
+                    .padding([4, 8])
+                    .width(Length::Fixed(40.0))
+                    .style(move |_, _| btn_style)
+                    .into()
+            })
+            .collect();
+
+        let tabs_row = Row::with_children(stem_tabs).spacing(2);
+
+        // Mute/Solo buttons for selected stem
+        let mute_label = if self.stem_muted[stem_idx] { "M●" } else { "M" };
+        let solo_label = if self.stem_soloed[stem_idx] { "S●" } else { "S" };
+
+        let mute_btn = button(text(mute_label).size(10))
+            .on_press(DeckMessage::ToggleStemMute(stem_idx))
+            .padding([4, 6])
+            .width(Length::Fixed(28.0));
+
+        let solo_btn = button(text(solo_label).size(10))
+            .on_press(DeckMessage::ToggleStemSolo(stem_idx))
+            .padding([4, 6])
+            .width(Length::Fixed(28.0));
+
+        // Effect chain visualization
+        let effect_chain = self.view_effect_chain_compact(stem_idx);
+
+        // Top row: tabs + M/S + effect chain
+        let top_row = row![
+            tabs_row,
+            Space::new().width(8),
+            mute_btn,
+            solo_btn,
+            Space::new().width(8),
+            effect_chain,
+        ]
+        .spacing(2)
+        .align_y(Center);
+
+        // Rotary knobs row
+        let knobs = self.view_chain_knobs_compact(stem_idx);
+
+        column![top_row, knobs]
+            .spacing(6)
+            .width(Length::Fill)
+            .into()
+    }
+
+    /// Compact effect chain view
+    fn view_effect_chain_compact(&self, stem_idx: usize) -> Element<DeckMessage> {
+        let effects = &self.stem_effect_names[stem_idx];
+        let bypassed = &self.stem_effect_bypassed[stem_idx];
+
+        let mut chain_elements: Vec<Element<DeckMessage>> = Vec::new();
+
+        if effects.is_empty() {
+            chain_elements.push(text("Chain: (empty)").size(9).into());
+            chain_elements.push(button(text("+").size(9)).padding(2).into());
+        } else {
+            for (i, name) in effects.iter().enumerate() {
+                let is_bypassed = bypassed.get(i).copied().unwrap_or(false);
+                let indicator = if is_bypassed { "◯" } else { "●" };
+                let short_name: String = name.chars().take(6).collect();
+
+                let effect_btn = button(text(format!("{}{}", short_name, indicator)).size(9))
+                    .on_press(DeckMessage::ToggleEffectBypass(stem_idx, i))
+                    .padding(2);
+
+                chain_elements.push(effect_btn.into());
+
+                if i < effects.len() - 1 {
+                    chain_elements.push(text("→").size(9).into());
+                }
+            }
+            chain_elements.push(text("→").size(9).into());
+            chain_elements.push(button(text("+").size(9)).padding(2).into());
+        }
+
+        Row::with_children(chain_elements)
+            .spacing(2)
+            .align_y(Center)
+            .into()
+    }
+
+    /// Compact knob row using rotary knobs
+    fn view_chain_knobs_compact(&self, stem_idx: usize) -> Element<DeckMessage> {
+        const KNOB_SIZE: f32 = 32.0;
+        const KNOB_LABELS: [&str; 8] = ["1", "2", "3", "4", "5", "6", "7", "8"];
+
+        let knobs: Vec<Element<DeckMessage>> = (0..8)
+            .map(|k| {
+                let value = self.stem_knobs[stem_idx][k];
+                rotary_knob(
+                    &self.knob_states[k],
+                    value,
+                    KNOB_SIZE,
+                    Some(KNOB_LABELS[k]),
+                    move |v| DeckMessage::SetStemKnob(stem_idx, k, v),
+                )
+            })
+            .collect();
+
+        Row::with_children(knobs)
+            .spacing(4)
+            .align_y(Center)
+            .into()
+    }
+
+    /// Horizontal control row: Loop/Slip, Loop size, Beat jump
+    fn view_control_row_compact(&self) -> Element<DeckMessage> {
+        use iced::Length;
+
+        // Loop button
+        let loop_text = if self.loop_active { "LOOP ●" } else { "LOOP" };
+        let loop_btn = button(text(loop_text).size(10))
+            .on_press(DeckMessage::ToggleLoop)
+            .padding([4, 8])
+            .width(Length::Fixed(60.0));
+
+        // Slip button
+        let slip_text = if self.slip_enabled { "SLIP ●" } else { "SLIP" };
+        let slip_btn = button(text(slip_text).size(10))
+            .on_press(DeckMessage::ToggleSlip)
+            .padding([4, 8])
+            .width(Length::Fixed(60.0));
+
+        // Loop length controls
+        let loop_halve = button(text("÷2").size(10))
+            .on_press(DeckMessage::LoopHalve)
+            .padding([4, 6]);
+
+        let loop_length_text = format_loop_length(self.loop_length_beats);
+        let loop_length = container(text(loop_length_text).size(11))
+            .padding([4, 8])
+            .width(Length::Fixed(32.0))
+            .center_x(Length::Fill);
+
+        let loop_double = button(text("×2").size(10))
+            .on_press(DeckMessage::LoopDouble)
+            .padding([4, 6]);
+
+        // Beat jump buttons
+        let jump_back = button(text("◀◀").size(12))
+            .on_press(DeckMessage::BeatJumpBack)
+            .padding([4, 10]);
+
+        let jump_fwd = button(text("▶▶").size(12))
+            .on_press(DeckMessage::BeatJumpForward)
+            .padding([4, 10]);
+
+        row![
+            loop_btn,
+            slip_btn,
+            Space::new().width(8),
+            loop_halve,
+            loop_length,
+            loop_double,
+            Space::new().width(8),
+            jump_back,
+            jump_fwd,
         ]
         .spacing(4)
-        .align_x(Center)
+        .align_y(Center)
         .into()
+    }
+
+    /// CUE and PLAY buttons column (fixed width, left-aligned)
+    fn view_cue_play_compact(&self) -> Element<DeckMessage> {
+        use iced::Length;
+
+        const BUTTON_WIDTH: f32 = 70.0;
+
+        // Cue button
+        let is_cueing = matches!(self.state, PlayState::Cueing);
+        let cue_style = if is_cueing {
+            button::Style {
+                background: Some(Background::Color(Color::from_rgb(1.0, 0.6, 0.0))),
+                text_color: Color::WHITE,
+                border: iced::Border {
+                    color: Color::WHITE,
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                ..Default::default()
+            }
+        } else {
+            button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.3, 0.3, 0.3))),
+                text_color: Color::WHITE,
+                border: iced::Border {
+                    color: Color::from_rgb(0.5, 0.5, 0.5),
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                ..Default::default()
+            }
+        };
+
+        let cue_btn = mouse_area(
+            button(text("CUE").size(14))
+                .padding([12, 16])
+                .width(Length::Fixed(BUTTON_WIDTH))
+                .style(move |_, _| cue_style)
+        )
+        .on_press(DeckMessage::CuePressed)
+        .on_release(DeckMessage::CueReleased);
+
+        // Play button - sleek minimal style, no colors
+        let is_playing = matches!(self.state, PlayState::Playing);
+        let play_label = if is_playing { "PAUSE" } else { "PLAY" };
+        let play_style = button::Style {
+            background: Some(Background::Color(Color::from_rgb(0.25, 0.25, 0.25))),
+            text_color: Color::WHITE,
+            border: iced::Border {
+                color: Color::from_rgb(0.4, 0.4, 0.4),
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..Default::default()
+        };
+
+        let play_btn = button(text(play_label).size(14))
+            .on_press(DeckMessage::TogglePlayPause)
+            .padding([12, 16])
+            .width(Length::Fixed(BUTTON_WIDTH))
+            .style(move |_, _| play_style);
+
+        column![cue_btn, play_btn]
+            .spacing(6)
+            .align_x(iced::Alignment::Start)
+            .width(Length::Shrink)
+            .into()
     }
 }
 

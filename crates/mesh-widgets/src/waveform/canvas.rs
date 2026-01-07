@@ -6,7 +6,7 @@
 
 use super::state::{
     CombinedState, OverviewState, PlayerCanvasState, ZoomedState,
-    COMBINED_WAVEFORM_GAP, MAX_ZOOM_BARS, MIN_ZOOM_BARS,
+    COMBINED_WAVEFORM_GAP, DECK_HEADER_HEIGHT, MAX_ZOOM_BARS, MIN_ZOOM_BARS,
     WAVEFORM_HEIGHT, ZOOMED_WAVEFORM_HEIGHT, ZOOM_PIXELS_PER_LEVEL,
 };
 use crate::{STEM_COLORS, CueMarker};
@@ -62,6 +62,18 @@ pub struct PlayerInteraction {
 // Player Canvas Layout Constants
 // =============================================================================
 
+/// Gap between deck cells in the 2x2 grid
+pub const DECK_GRID_GAP: f32 = 4.0;
+
+/// Gap between zoomed and overview within a deck cell
+pub const DECK_INTERNAL_GAP: f32 = 2.0;
+
+/// Total height of one deck cell (header + zoomed + gap + overview)
+/// 16 + 120 + 2 + 35 = 173px
+pub const DECK_CELL_HEIGHT: f32 =
+    DECK_HEADER_HEIGHT + ZOOMED_WAVEFORM_HEIGHT + DECK_INTERNAL_GAP + WAVEFORM_HEIGHT;
+
+// Legacy constants (kept for backwards compatibility with CombinedCanvas)
 /// Gap between zoomed waveform cells in the 2x2 grid
 pub const ZOOMED_GRID_GAP: f32 = 4.0;
 
@@ -1101,102 +1113,96 @@ where
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
         let width = bounds.width;
-        let cell_width = (width - ZOOMED_GRID_GAP) / 2.0;
-        let cell_height = ZOOMED_WAVEFORM_HEIGHT;
-        let zoomed_grid_height = cell_height * 2.0 + ZOOMED_GRID_GAP;
+        let cell_width = (width - DECK_GRID_GAP) / 2.0;
+        let cell_height = DECK_CELL_HEIGHT;
 
-        // Check if cursor is in zoomed grid region
-        let zoomed_grid_bounds = Rectangle {
-            x: bounds.x,
-            y: bounds.y,
-            width: bounds.width,
-            height: zoomed_grid_height,
-        };
-
-        if let Some(position) = cursor.position_in(zoomed_grid_bounds) {
-            // Determine which cell (deck) was clicked
+        // Determine which deck quadrant the cursor is in (if any)
+        if let Some(position) = cursor.position_in(bounds) {
             let col = if position.x < cell_width { 0 } else { 1 };
             let row = if position.y < cell_height { 0 } else { 1 };
             let deck_idx = Self::deck_from_grid(row, col);
 
-            match event {
-                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                    interaction.active_deck = Some(deck_idx);
-                    interaction.drag_start_y = Some(position.y);
-                    interaction.drag_start_zoom = self.state.decks[deck_idx].zoomed.zoom_bars;
-                    interaction.is_seeking = false;
-                }
-                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                    interaction.drag_start_y = None;
-                    interaction.active_deck = None;
-                }
-                Event::Mouse(mouse::Event::CursorMoved { .. }) => {
-                    if let (Some(start_y), Some(active_deck)) = (interaction.drag_start_y, interaction.active_deck) {
-                        let delta = start_y - position.y;
-                        let zoom_change = (delta / ZOOM_PIXELS_PER_LEVEL) as i32;
-                        let new_zoom = (interaction.drag_start_zoom as i32 - zoom_change)
-                            .clamp(MIN_ZOOM_BARS as i32, MAX_ZOOM_BARS as i32)
-                            as u32;
+            // Calculate position within the deck cell
+            let cell_x = if col == 0 { 0.0 } else { cell_width + DECK_GRID_GAP };
+            let cell_y = if row == 0 { 0.0 } else { cell_height + DECK_GRID_GAP };
+            let local_x = position.x - cell_x;
+            let local_y = position.y - cell_y;
 
-                        if new_zoom != self.state.decks[active_deck].zoomed.zoom_bars {
-                            return Some(canvas::Action::publish((self.on_zoom)(active_deck, new_zoom)));
-                        }
+            // Determine which region within the cell: header, zoomed, or overview
+            let header_end = DECK_HEADER_HEIGHT;
+            let zoomed_end = header_end + ZOOMED_WAVEFORM_HEIGHT;
+            let overview_start = zoomed_end + DECK_INTERNAL_GAP;
+            let overview_end = overview_start + WAVEFORM_HEIGHT;
+
+            // Check if in zoomed region (drag to zoom)
+            if local_y >= header_end && local_y < zoomed_end {
+                match event {
+                    Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                        interaction.active_deck = Some(deck_idx);
+                        interaction.drag_start_y = Some(position.y);
+                        interaction.drag_start_zoom = self.state.decks[deck_idx].zoomed.zoom_bars;
+                        interaction.is_seeking = false;
                     }
-                }
-                _ => {}
-            }
-        } else if matches!(event, Event::Mouse(mouse::Event::ButtonReleased(_))) {
-            interaction.drag_start_y = None;
-            interaction.active_deck = None;
-            interaction.is_seeking = false;
-        }
-
-        // Check if cursor is in overview stack region
-        let overview_start_y = zoomed_grid_height + PLAYER_SECTION_GAP;
-        let overview_row_height = WAVEFORM_HEIGHT + OVERVIEW_STACK_GAP;
-        let overview_stack_height = overview_row_height * 4.0 - OVERVIEW_STACK_GAP;
-
-        let overview_stack_bounds = Rectangle {
-            x: bounds.x,
-            y: bounds.y + overview_start_y,
-            width: bounds.width,
-            height: overview_stack_height,
-        };
-
-        if let Some(position) = cursor.position_in(overview_stack_bounds) {
-            // Determine which row (deck) was clicked
-            let row = (position.y / overview_row_height).floor() as usize;
-            let deck_idx = row.min(3);
-
-            match event {
-                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                    interaction.active_deck = Some(deck_idx);
-                    interaction.is_seeking = true;
-                    interaction.drag_start_y = None;
-
-                    let overview = &self.state.decks[deck_idx].overview;
-                    if overview.has_track && overview.duration_samples > 0 {
-                        let seek_ratio = (position.x / bounds.width).clamp(0.0, 1.0) as f64;
-                        return Some(canvas::Action::publish((self.on_seek)(deck_idx, seek_ratio)));
+                    Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                        interaction.drag_start_y = None;
+                        interaction.active_deck = None;
                     }
-                }
-                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                    interaction.is_seeking = false;
-                    interaction.active_deck = None;
-                }
-                Event::Mouse(mouse::Event::CursorMoved { .. }) => {
-                    if interaction.is_seeking {
-                        if let Some(active_deck) = interaction.active_deck {
-                            let overview = &self.state.decks[active_deck].overview;
-                            if overview.has_track && overview.duration_samples > 0 {
-                                let seek_ratio = (position.x / bounds.width).clamp(0.0, 1.0) as f64;
-                                return Some(canvas::Action::publish((self.on_seek)(active_deck, seek_ratio)));
+                    Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                        if let (Some(start_y), Some(active_deck)) = (interaction.drag_start_y, interaction.active_deck) {
+                            let delta = start_y - position.y;
+                            let zoom_change = (delta / ZOOM_PIXELS_PER_LEVEL) as i32;
+                            let new_zoom = (interaction.drag_start_zoom as i32 - zoom_change)
+                                .clamp(MIN_ZOOM_BARS as i32, MAX_ZOOM_BARS as i32)
+                                as u32;
+
+                            if new_zoom != self.state.decks[active_deck].zoomed.zoom_bars {
+                                return Some(canvas::Action::publish((self.on_zoom)(active_deck, new_zoom)));
                             }
                         }
                     }
+                    _ => {}
                 }
-                _ => {}
             }
+            // Check if in overview region (click to seek)
+            else if local_y >= overview_start && local_y < overview_end {
+                match event {
+                    Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                        interaction.active_deck = Some(deck_idx);
+                        interaction.is_seeking = true;
+                        interaction.drag_start_y = None;
+
+                        let overview = &self.state.decks[deck_idx].overview;
+                        if overview.has_track && overview.duration_samples > 0 {
+                            // Calculate seek ratio relative to cell width
+                            let seek_ratio = (local_x / cell_width).clamp(0.0, 1.0) as f64;
+                            return Some(canvas::Action::publish((self.on_seek)(deck_idx, seek_ratio)));
+                        }
+                    }
+                    Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                        interaction.is_seeking = false;
+                        interaction.active_deck = None;
+                    }
+                    Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                        if interaction.is_seeking {
+                            if let Some(active_deck) = interaction.active_deck {
+                                let overview = &self.state.decks[active_deck].overview;
+                                if overview.has_track && overview.duration_samples > 0 {
+                                    let seek_ratio = (local_x / cell_width).clamp(0.0, 1.0) as f64;
+                                    return Some(canvas::Action::publish((self.on_seek)(active_deck, seek_ratio)));
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Handle button release outside bounds
+        if matches!(event, Event::Mouse(mouse::Event::ButtonReleased(_))) {
+            interaction.drag_start_y = None;
+            interaction.active_deck = None;
+            interaction.is_seeking = false;
         }
 
         None
@@ -1208,38 +1214,35 @@ where
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
-        let cell_height = ZOOMED_WAVEFORM_HEIGHT;
-        let zoomed_grid_height = cell_height * 2.0 + ZOOMED_GRID_GAP;
+        if let Some(position) = cursor.position_in(bounds) {
+            let cell_height = DECK_CELL_HEIGHT;
 
-        let zoomed_grid_bounds = Rectangle {
-            x: bounds.x,
-            y: bounds.y,
-            width: bounds.width,
-            height: zoomed_grid_height,
-        };
+            // Determine which row we're in
+            let row = if position.y < cell_height { 0 } else { 1 };
+            let cell_y = if row == 0 { 0.0 } else { cell_height + DECK_GRID_GAP };
+            let local_y = position.y - cell_y;
 
-        if cursor.is_over(zoomed_grid_bounds) {
-            if interaction.drag_start_y.is_some() {
-                mouse::Interaction::ResizingVertically
-            } else {
-                mouse::Interaction::Grab
-            }
-        } else {
-            let overview_start_y = zoomed_grid_height + PLAYER_SECTION_GAP;
-            let overview_stack_height = (WAVEFORM_HEIGHT + OVERVIEW_STACK_GAP) * 4.0 - OVERVIEW_STACK_GAP;
+            // Regions within cell
+            let header_end = DECK_HEADER_HEIGHT;
+            let zoomed_end = header_end + ZOOMED_WAVEFORM_HEIGHT;
+            let overview_start = zoomed_end + DECK_INTERNAL_GAP;
+            let overview_end = overview_start + WAVEFORM_HEIGHT;
 
-            let overview_stack_bounds = Rectangle {
-                x: bounds.x,
-                y: bounds.y + overview_start_y,
-                width: bounds.width,
-                height: overview_stack_height,
-            };
-
-            if cursor.is_over(overview_stack_bounds) {
+            if local_y >= header_end && local_y < zoomed_end {
+                // In zoomed region
+                if interaction.drag_start_y.is_some() {
+                    mouse::Interaction::ResizingVertically
+                } else {
+                    mouse::Interaction::Grab
+                }
+            } else if local_y >= overview_start && local_y < overview_end {
+                // In overview region
                 mouse::Interaction::Pointer
             } else {
                 mouse::Interaction::default()
             }
+        } else {
+            mouse::Interaction::default()
         }
     }
 
@@ -1253,54 +1256,37 @@ where
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
         let width = bounds.width;
-        let cell_width = (width - ZOOMED_GRID_GAP) / 2.0;
-        let cell_height = ZOOMED_WAVEFORM_HEIGHT;
+        let cell_width = (width - DECK_GRID_GAP) / 2.0;
+        let cell_height = DECK_CELL_HEIGHT;
 
         // =====================================================================
-        // ZOOMED WAVEFORMS (2x2 grid)
+        // DECK QUADRANTS (2x2 grid, each with header + zoomed + overview)
         // =====================================================================
         // Deck 1 = top-left, Deck 2 = top-right
         // Deck 3 = bottom-left, Deck 4 = bottom-right
         let grid_positions = [
             (0.0, 0.0),                                      // Deck 1: top-left
-            (cell_width + ZOOMED_GRID_GAP, 0.0),            // Deck 2: top-right
-            (0.0, cell_height + ZOOMED_GRID_GAP),           // Deck 3: bottom-left
-            (cell_width + ZOOMED_GRID_GAP, cell_height + ZOOMED_GRID_GAP), // Deck 4: bottom-right
+            (cell_width + DECK_GRID_GAP, 0.0),              // Deck 2: top-right
+            (0.0, cell_height + DECK_GRID_GAP),             // Deck 3: bottom-left
+            (cell_width + DECK_GRID_GAP, cell_height + DECK_GRID_GAP), // Deck 4: bottom-right
         ];
 
         for (deck_idx, (x, y)) in grid_positions.iter().enumerate() {
             // Use interpolated playhead for smooth animation
             let playhead = self.state.interpolated_playhead(deck_idx, SAMPLE_RATE);
             let is_master = self.state.is_master(deck_idx);
-            draw_zoomed_at(
+            let track_name = self.state.track_name(deck_idx);
+
+            draw_deck_quadrant(
                 &mut frame,
-                &self.state.decks[deck_idx].zoomed,
+                &self.state.decks[deck_idx],
                 playhead,
                 *x,
                 *y,
                 cell_width,
+                deck_idx,
+                track_name,
                 is_master,
-            );
-        }
-
-        // =====================================================================
-        // OVERVIEW WAVEFORMS (stacked, 1-4 from top to bottom)
-        // =====================================================================
-        let zoomed_grid_height = cell_height * 2.0 + ZOOMED_GRID_GAP;
-        let overview_start_y = zoomed_grid_height + PLAYER_SECTION_GAP;
-        let overview_row_height = WAVEFORM_HEIGHT + OVERVIEW_STACK_GAP;
-
-        for deck_idx in 0..4 {
-            let y = overview_start_y + (deck_idx as f32) * overview_row_height;
-            // Use interpolated playhead for smooth animation
-            let playhead = self.state.interpolated_playhead(deck_idx, SAMPLE_RATE);
-            draw_overview_at(
-                &mut frame,
-                &self.state.decks[deck_idx].overview,
-                playhead,
-                0.0,
-                y,
-                width,
             );
         }
 
@@ -1311,6 +1297,142 @@ where
 // =============================================================================
 // Offset-Aware Drawing Helpers (for PlayerCanvas)
 // =============================================================================
+
+/// Draw a complete deck quadrant (header + zoomed + overview)
+///
+/// Layout:
+/// ```text
+/// ┌─────────────────────────────────────┐
+/// │ [N] Track Name Here         16px   │ ← Header row
+/// ├─────────────────────────────────────┤
+/// │                                     │
+/// │     Zoomed Waveform          120px │
+/// │                                     │
+/// ├─────────────────────────────────────┤
+/// │     Overview Waveform         35px │
+/// └─────────────────────────────────────┘
+/// ```
+fn draw_deck_quadrant(
+    frame: &mut Frame,
+    deck: &CombinedState,
+    playhead: u64,
+    x: f32,
+    y: f32,
+    width: f32,
+    deck_idx: usize,
+    track_name: &str,
+    is_master: bool,
+) {
+    use iced::widget::canvas::Text;
+    use iced::alignment::{Horizontal, Vertical};
+
+    // Draw header background
+    let header_bg_color = Color::from_rgb(0.10, 0.10, 0.12);
+    frame.fill_rectangle(
+        Point::new(x, y),
+        Size::new(width, DECK_HEADER_HEIGHT),
+        header_bg_color,
+    );
+
+    // Draw deck number badge background
+    let badge_width = 28.0;
+    let badge_margin = 4.0;
+    let badge_height = DECK_HEADER_HEIGHT - 6.0;
+    let badge_y = y + 3.0;
+
+    // Badge background color based on state
+    let badge_bg_color = if is_master {
+        Color::from_rgb(0.15, 0.35, 0.15) // Dark green for master
+    } else if deck.zoomed.has_track {
+        Color::from_rgb(0.15, 0.15, 0.25) // Dark blue for loaded
+    } else {
+        Color::from_rgb(0.15, 0.15, 0.15) // Dark gray for empty
+    };
+
+    frame.fill_rectangle(
+        Point::new(x + badge_margin, badge_y),
+        Size::new(badge_width, badge_height),
+        badge_bg_color,
+    );
+
+    // Draw deck number text
+    let deck_num_text = format!("{}", deck_idx + 1);
+    let text_color = if is_master {
+        Color::from_rgb(0.4, 1.0, 0.4) // Bright green for master
+    } else if deck.zoomed.has_track {
+        Color::from_rgb(0.7, 0.7, 0.9) // Light blue for loaded
+    } else {
+        Color::from_rgb(0.5, 0.5, 0.5) // Gray for empty
+    };
+
+    frame.fill_text(Text {
+        content: deck_num_text,
+        position: Point::new(x + badge_margin + badge_width / 2.0, y + DECK_HEADER_HEIGHT / 2.0),
+        size: 14.0.into(),
+        color: text_color,
+        align_x: Horizontal::Center.into(),
+        align_y: Vertical::Center.into(),
+        ..Text::default()
+    });
+
+    // Draw track name text (if loaded)
+    let name_x = x + badge_margin + badge_width + 8.0;
+    let max_name_width = width - badge_width - badge_margin * 2.0 - 16.0;
+
+    if deck.overview.has_track && !track_name.is_empty() {
+        // Truncate track name if too long (rough estimate: ~7px per char)
+        let max_chars = (max_name_width / 7.0) as usize;
+        let display_name = if track_name.len() > max_chars && max_chars > 3 {
+            format!("{}...", &track_name[..max_chars - 3])
+        } else {
+            track_name.to_string()
+        };
+
+        frame.fill_text(Text {
+            content: display_name,
+            position: Point::new(name_x, y + DECK_HEADER_HEIGHT / 2.0),
+            size: 12.0.into(),
+            color: Color::from_rgb(0.75, 0.75, 0.75),
+            align_x: Horizontal::Left.into(),
+            align_y: Vertical::Center.into(),
+            ..Text::default()
+        });
+    } else {
+        // Show "No track" for empty decks
+        frame.fill_text(Text {
+            content: "No track".to_string(),
+            position: Point::new(name_x, y + DECK_HEADER_HEIGHT / 2.0),
+            size: 11.0.into(),
+            color: Color::from_rgb(0.4, 0.4, 0.4),
+            align_x: Horizontal::Left.into(),
+            align_y: Vertical::Center.into(),
+            ..Text::default()
+        });
+    }
+
+    // Draw zoomed waveform below header
+    let zoomed_y = y + DECK_HEADER_HEIGHT;
+    draw_zoomed_at(
+        frame,
+        &deck.zoomed,
+        playhead,
+        x,
+        zoomed_y,
+        width,
+        is_master,
+    );
+
+    // Draw overview waveform below zoomed
+    let overview_y = zoomed_y + ZOOMED_WAVEFORM_HEIGHT + DECK_INTERNAL_GAP;
+    draw_overview_at(
+        frame,
+        &deck.overview,
+        playhead,
+        x,
+        overview_y,
+        width,
+    );
+}
 
 /// Draw a zoomed waveform at a specific position
 fn draw_zoomed_at(

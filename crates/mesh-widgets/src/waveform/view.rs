@@ -21,7 +21,7 @@
 
 use super::canvas::{
     CombinedCanvas, OverviewCanvas, PlayerCanvas, ZoomedCanvas,
-    OVERVIEW_STACK_GAP, PLAYER_SECTION_GAP, ZOOMED_GRID_GAP,
+    DECK_CELL_HEIGHT, DECK_GRID_GAP,
 };
 use super::state::{
     CombinedState, OverviewState, PlayerCanvasState, ZoomedState,
@@ -151,9 +151,13 @@ where
 
 /// Create a 4-deck player waveform element (all decks in single canvas)
 ///
-/// This displays all 4 DJ player decks in a unified canvas layout:
-/// - **Zoomed grid** (2x2): Deck 1=top-left, 2=top-right, 3=bottom-left, 4=bottom-right
-/// - **Overview stack**: Decks 1-4 stacked vertically below the grid
+/// This displays all 4 DJ player decks in a unified 2x2 grid layout where each
+/// quadrant contains:
+/// - **Header row**: Deck number + track name indicator (16px)
+/// - **Zoomed waveform**: Detail view centered on playhead (120px)
+/// - **Overview waveform**: Full track view with cue markers (35px)
+///
+/// Grid: Deck 1=top-left, 2=top-right, 3=bottom-left, 4=bottom-right
 ///
 /// # Arguments
 ///
@@ -182,10 +186,10 @@ pub fn waveform_player<'a, Message>(
 where
     Message: Clone + 'a,
 {
-    // Calculate total height: zoomed grid (2 rows) + gap + overview stack (4 rows)
-    let zoomed_grid_height = ZOOMED_WAVEFORM_HEIGHT * 2.0 + ZOOMED_GRID_GAP;
-    let overview_stack_height = (WAVEFORM_HEIGHT + OVERVIEW_STACK_GAP) * 4.0 - OVERVIEW_STACK_GAP;
-    let total_height = zoomed_grid_height + PLAYER_SECTION_GAP + overview_stack_height;
+    // Calculate total height: 2 deck rows with gap between them
+    // Each deck cell = header (16) + zoomed (120) + internal gap (2) + overview (35) = 173px
+    // Total = 173 * 2 + 4 (grid gap) = 350px
+    let total_height = DECK_CELL_HEIGHT * 2.0 + DECK_GRID_GAP;
 
     Canvas::new(PlayerCanvas {
         state,

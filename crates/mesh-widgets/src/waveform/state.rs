@@ -581,20 +581,28 @@ impl Default for CombinedState {
 // Player Canvas State (4-Deck Unified View)
 // =============================================================================
 
+/// Height of deck header row showing deck number and track name
+pub const DECK_HEADER_HEIGHT: f32 = 22.0;
+
 /// State for 4-deck player canvas (all waveforms in one)
 ///
 /// This holds waveform data for all 4 decks in a DJ player, allowing
 /// them to be rendered in a single Canvas widget (working around iced bug #3040).
 ///
-/// ## Layout
-/// - **Zoomed grid** (2x2): Deck 1=top-left, 2=top-right, 3=bottom-left, 4=bottom-right
-/// - **Overview stack**: Decks 1-4 stacked vertically
+/// ## Layout (per deck quadrant)
+/// - **Header row**: Deck number + track name (22px)
+/// - **Zoomed waveform**: Detail view centered on playhead (120px)
+/// - **Overview waveform**: Full track view (35px)
+///
+/// Grid: Deck 1=top-left, 2=top-right, 3=bottom-left, 4=bottom-right
 #[derive(Debug, Clone)]
 pub struct PlayerCanvasState {
     /// Per-deck combined state (zoomed + overview)
     pub decks: [CombinedState; 4],
     /// Per-deck playhead positions in samples
     pub playheads: [u64; 4],
+    /// Track names for each deck (displayed in header)
+    track_names: [String; 4],
     /// Last update timestamp for each deck (for smooth interpolation)
     last_update_time: [std::time::Instant; 4],
     /// Whether each deck is currently playing (for interpolation)
@@ -615,9 +623,38 @@ impl PlayerCanvasState {
                 CombinedState::new(),
             ],
             playheads: [0; 4],
+            track_names: [
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+            ],
             last_update_time: [now, now, now, now],
             is_playing: [false, false, false, false],
             is_master: [false, false, false, false],
+        }
+    }
+
+    /// Set the track name for a deck (displayed in header)
+    pub fn set_track_name(&mut self, idx: usize, name: String) {
+        if idx < 4 {
+            self.track_names[idx] = name;
+        }
+    }
+
+    /// Get the track name for a deck
+    pub fn track_name(&self, idx: usize) -> &str {
+        if idx < 4 {
+            &self.track_names[idx]
+        } else {
+            ""
+        }
+    }
+
+    /// Clear track name when deck is unloaded
+    pub fn clear_track_name(&mut self, idx: usize) {
+        if idx < 4 {
+            self.track_names[idx].clear();
         }
     }
 

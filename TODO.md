@@ -22,7 +22,7 @@ and mesh-widget and only if necessary in the ui.
           are greyed out as well)
     - [x] Also the stiling of the buttons is off, this should be very similar to
       the hot cue buttons, but with a loop sign on them.
-- [ ] since we dont have a jog wheel to nudge audio tracks, we need to ensure
+- [x] since we dont have a jog wheel to nudge audio tracks, we need to ensure
   they are always perfectly in sync (on beat) during playback. for this we have the
   beatgrid, which in the player we assume is correctly in sync. so when playing
   in a track we need to make sure it snaps to the grid. i think cueing should
@@ -32,8 +32,8 @@ and mesh-widget and only if necessary in the ui.
   nearest beat and keeps playing. same for hotcues. when audio is already
   playing, pressing cue just jumps back to cue marker as usual, but pressing hot
   cue while playing should jump to the hot cues marker such that it lands
-  aligned with the beat (with an offset of samples of the difference of the current playhead and the nearest beat, ie user presses hot cue 212 samples too eary, so the nearest beat is 212 samples after the current playhead, then jump playhead 212 samples before the pressed hot cues marker and analogally for when the user pressed too late.)
-- [ ] in mesh-player we need to be able to scrub the playhead on the overview
+  aligned with the beat (with an offset of samples of the difference of the current playhead and the nearest beat, ie user presses hot cue 212 samples too eary, so the nearest beat is 212 samples after the current playhead, then jump playhead 212 samples before the pressed hot cues marker and analogally for when the user pressed too late.). this should happen automatically and internally in the deck, abstracted away for ui and should be controllable via a config flag and from the ui.
+- [x] in mesh-player we need to be able to scrub the playhead on the overview
   waveform just like in mesh-cue, but only when audio is not cueing/playing.
 - [/] in the collection browser we need the ability for multi selection (for
   multi drag and drop) and multi deletion. Implement deletion of track from
@@ -48,6 +48,8 @@ and mesh-widget and only if necessary in the ui.
 - [x] In both UIs in general represent button states for buttons that represent some toggleable
   action, like for example selected stem, slip, loop etc.
 - [x] The 8 stem chain effect knobs should be rotary knobs, not sliders.
+- [x] Change minimum loop length to 1 beat and maximum to 64 bars.
+- [x] remove slider next to mute and solo button for stems.
 
 # Bugs
 - [x] Solo button does not work on the stems (does nothing, it should mute all
@@ -82,6 +84,11 @@ and mesh-widget and only if necessary in the ui.
   track, when there is not enough buffer information, we need to pad
   beginning/end of the buffer with zeroes (only in the waveform internally for
   visual computation)
+- [x] while looping, the loop is either not perfectly grid aligned, or theres
+  also some fractions of samples lost, this should stay perfectly in sync as
+  well.
+- [x] while looping beatjumping should beatjump as is right now, but the loop area
+  needs to snap to grid.
 
 # Performance
 - [ ] Can we optimize how stems are stored, this is currently roughly 200-300 mb

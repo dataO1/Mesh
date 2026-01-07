@@ -12,9 +12,12 @@ pub use mesh_widgets::PlayerCanvasState;
 
 /// Create the unified 4-deck waveform canvas element
 ///
-/// This displays all 4 deck waveforms in a single canvas:
-/// - **Zoomed grid** (2x2): Deck 1=top-left, 2=top-right, 3=bottom-left, 4=bottom-right
-/// - **Overview stack**: Decks 1-4 stacked vertically below the grid
+/// This displays all 4 deck waveforms in a 2x2 grid where each quadrant contains:
+/// - **Header row** (16px): Deck number indicator + track load status
+/// - **Zoomed waveform** (120px): Detail view centered on playhead
+/// - **Overview waveform** (35px): Full track view with cue markers
+///
+/// Grid layout: Deck 1=top-left, 2=top-right, 3=bottom-left, 4=bottom-right
 ///
 /// # Arguments
 ///

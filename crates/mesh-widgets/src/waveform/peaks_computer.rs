@@ -251,16 +251,15 @@ mod tests {
 
     #[test]
     fn test_samples_per_bar() {
-        // At 120 BPM, one beat = 0.5 seconds = 22050 samples
-        // One bar = 4 beats = 88200 samples
-        assert_eq!(samples_per_bar(120.0), 88200);
+        // At 120 BPM, one beat = 0.5 seconds = 24000 samples (at 48kHz)
+        // One bar = 4 beats = 96000 samples
+        assert_eq!(samples_per_bar(120.0), 96000);
 
         // At 128 BPM, one beat = 60/128 = 0.46875 seconds
-        // At 44100Hz: 0.46875 * 44100 = 20671.875 samples per beat
-        // One bar = 4 beats = 82687.5 samples -> truncated to integer
-        // Allow small difference due to floating point
+        // At 48000Hz: 0.46875 * 48000 = 22500 samples per beat
+        // One bar = 4 beats = 90000 samples
         let samples = samples_per_bar(128.0);
-        assert!(samples >= 82684 && samples <= 82688, "samples_per_bar(128.0) = {}", samples);
+        assert_eq!(samples, 90000);
     }
 
     #[test]

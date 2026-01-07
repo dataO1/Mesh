@@ -190,13 +190,37 @@ impl MixerView {
     }
 
     /// Build the mixer view
+    ///
+    /// 3-column asymmetric layout:
+    /// ```text
+    /// ┌─────────────┬────────────────────────────────┬─────────────────┐
+    /// │ Empty Space │ CH1   CH2   CH3   CH4          │ MASTER    CUE   │
+    /// │ (spacer)    │ (4 channel strips centered)    │ MIX             │
+    /// │ ~15%        │ ~60%                           │ ~25%            │
+    /// └─────────────┴────────────────────────────────┴─────────────────┘
+    /// ```
     pub fn view(&self) -> Element<MixerMessage> {
-        // Channel strips
+        use iced::widget::Space;
+        use iced::Length;
+
+        // Left spacer column (~15%)
+        let left_spacer = Space::new()
+            .width(Length::FillPortion(15));
+
+        // Channel strips column (~60%)
         let channels: Vec<Element<MixerMessage>> = (0..4)
             .map(|i| self.view_channel(i))
             .collect();
 
-        // Master section
+        let channels_section = container(
+            Row::with_children(channels)
+                .spacing(20)
+                .align_y(Center)
+        )
+        .width(Length::FillPortion(60))
+        .center_x(Length::Fill);
+
+        // Master/Cue section (~25%)
         let master = column![
             text("MASTER").size(10),
             slider(0.0..=1.0, self.master_volume, MixerMessage::SetMasterVolume)
@@ -206,7 +230,6 @@ impl MixerView {
         .spacing(5)
         .align_x(Center);
 
-        // Cue section
         let cue = column![
             text("CUE").size(10),
             slider(0.0..=1.0, self.cue_volume, MixerMessage::SetCueVolume)
@@ -220,15 +243,23 @@ impl MixerView {
         .spacing(5)
         .align_x(Center);
 
+        let master_cue_section = container(
+            row![master, cue]
+                .spacing(20)
+                .align_y(Center)
+        )
+        .width(Length::FillPortion(25));
+
         let content = row![
-            Row::with_children(channels).spacing(20),
-            row![master, cue].spacing(20),
+            left_spacer,
+            channels_section,
+            master_cue_section,
         ]
-        .spacing(20)
         .align_y(Center);
 
         container(content)
             .padding(10)
+            .width(Length::Fill)
             .into()
     }
 
