@@ -169,6 +169,7 @@ Mesh implements a fully real-time safe architecture:
 - Beat jump forward/backward (uses loop length)
 - Loop halve/double buttons with visual display
 - Beat grid support from track metadata
+- **Automatic beat sync** — Tracks automatically phase-align when playing (see [Auto Beat Sync](#automatic-beat-sync))
 
 **Mixer**
 - 4-channel mixer with per-channel controls
@@ -213,8 +214,6 @@ Mesh implements a fully real-time safe architecture:
 **mesh-player**
 - MIDI/HID controller mapping
 - Keyboard shortcuts
-- Quantized loops and hot cues
-- Beat sync between decks
 - Recording to file
 - Pure Data effect patches
 - RAVE neural effects integration
@@ -397,6 +396,41 @@ analysis:
     max_tempo: 190
 track_name_format: "{artist} - {name}"
 ```
+
+---
+
+## Automatic Beat Sync
+
+Mesh includes **automatic inter-deck phase synchronization** — when you start playing a second track while another is already playing, the beats automatically align. No manual nudging or sync buttons required.
+
+### How It Works
+
+1. **Master Deck**: The deck that has been playing the longest is automatically the "master"
+2. **Phase Lock on Play**: When you press play on another deck, it snaps to match the master's beat phase
+3. **Phase Lock on Hot Cues**: Jumping to a hot cue while playing re-syncs to the master's current phase
+4. **Automatic Handoff**: If the master deck stops, the next longest-playing deck becomes the new master
+
+### Example
+
+```
+Deck A: Playing for 2 minutes (MASTER)
+        Currently 200 samples past beat 47
+
+Deck B: You press PLAY
+        Cued at beat 12
+
+        → Automatically jumps to 200 samples past beat 12
+        → Both decks' beats now land at exactly the same time
+```
+
+### What This Means for DJing
+
+- **No beatmatching required** — Just press play and the tracks are in sync
+- **Hot cues stay in phase** — Jump around the track without losing sync
+- **Seamless transitions** — Focus on the creative mix, not the technical alignment
+- **Works with any tempo** — All tracks are time-stretched to the global BPM
+
+> **Note:** This feature requires tracks to have beat grids. mesh-cue automatically generates beat grids during import using Essentia's beat detection.
 
 ---
 
