@@ -178,7 +178,9 @@ mod tests {
     #[test]
     fn test_yaml_roundtrip() {
         let config = PlayerConfig {
-            audio: AudioConfig { global_bpm: 140.0 },
+            audio: AudioConfig {
+                global_bpm: 140.0,
+            },
             display: DisplayConfig {
                 default_loop_length_index: 5, // 8 beats
                 default_zoom_bars: 4,

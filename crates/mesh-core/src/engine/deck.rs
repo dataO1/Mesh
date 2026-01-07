@@ -698,7 +698,8 @@ impl Deck {
             let pos = cue.position;
             match self.state {
                 PlayState::Playing => {
-                    // Already playing - just jump
+                    // Already playing - jump to hot cue
+                    // Phase sync is handled at the engine level
                     self.position = pos;
                     self.sync_position_atomic();
                 }

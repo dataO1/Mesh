@@ -1,7 +1,7 @@
 //! Main audio engine - ties together decks, mixer, and time-stretching
 
 use crate::timestretch::TimeStretcher;
-use crate::types::{DeckId, Stem, StereoBuffer, NUM_DECKS};
+use crate::types::{DeckId, PlayState, Stem, StereoBuffer, NUM_DECKS};
 
 use super::{Deck, DeckAtomics, EngineCommand, LatencyCompensator, Mixer, PreparedTrack};
 
@@ -39,6 +39,16 @@ pub struct AudioEngine {
     stretch_input: StereoBuffer,
     /// Output sample rate (from JACK) - used for sample rate conversion
     output_sample_rate: u32,
+
+    // ─────────────────────────────────────────────────────────────
+    // Inter-deck phase synchronization
+    // ─────────────────────────────────────────────────────────────
+    /// Frame count when each deck started playing (None if stopped)
+    /// Used to determine master deck (longest playing = lowest start frame)
+    deck_play_start: [Option<u64>; NUM_DECKS],
+    /// Global frame counter (incremented each process() call)
+    /// Used for tracking relative play start times
+    frame_counter: u64,
 }
 
 impl AudioEngine {
@@ -57,6 +67,9 @@ impl AudioEngine {
             deck_buffers: std::array::from_fn(|_| StereoBuffer::silence(MAX_BUFFER_SIZE)),
             stretch_input: StereoBuffer::silence(MAX_BUFFER_SIZE),
             output_sample_rate,
+            // Phase sync tracking
+            deck_play_start: [None; NUM_DECKS],
+            frame_counter: 0,
         }
     }
 
@@ -97,6 +110,109 @@ impl AudioEngine {
     /// Get a mutable reference to the mixer
     pub fn mixer_mut(&mut self) -> &mut Mixer {
         &mut self.mixer
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Inter-deck phase synchronization
+    // ─────────────────────────────────────────────────────────────
+
+    /// Find the master deck (longest playing)
+    ///
+    /// The master is the deck that has been playing the longest (lowest start frame).
+    /// Other decks synchronize their phase to the master when starting or jumping.
+    ///
+    /// Returns None if no deck is currently playing.
+    fn master_deck_id(&self) -> Option<usize> {
+        self.deck_play_start
+            .iter()
+            .enumerate()
+            .filter_map(|(id, start)| start.map(|s| (id, s)))
+            .min_by_key(|(_, start)| *start)
+            .map(|(id, _)| id)
+    }
+
+    /// Calculate phase-locked position for a deck syncing to master
+    ///
+    /// When a deck starts playing or jumps while another deck is playing,
+    /// this calculates the position that aligns beats across both decks.
+    ///
+    /// # Algorithm
+    /// 1. Find master deck's phase offset from its beat grid
+    /// 2. Find nearest beat to target position on slave deck
+    /// 3. Apply master's phase offset to land at same relative position
+    ///
+    /// Returns the original position if no master or beat grid unavailable.
+    fn phase_locked_position(&self, deck_id: usize, target_position: usize) -> usize {
+        // Find master deck
+        let Some(master_id) = self.master_deck_id() else {
+            return target_position; // No master, no adjustment
+        };
+
+        // Don't sync to self
+        if master_id == deck_id {
+            return target_position;
+        }
+
+        let master = &self.decks[master_id];
+        let slave = &self.decks[deck_id];
+
+        // Both need loaded tracks with beat grids
+        let Some(master_track) = master.track() else {
+            return target_position;
+        };
+        let Some(slave_track) = slave.track() else {
+            return target_position;
+        };
+
+        // Check master has a beat grid
+        if master_track.metadata.beat_grid.beats.is_empty() {
+            return target_position;
+        }
+
+        // Calculate master's phase offset from its beat grid
+        let master_pos = master.position() as usize;
+        let master_nearest_beat = master.snap_to_beat(master_pos);
+        let phase_offset = master_pos as i64 - master_nearest_beat as i64;
+
+        // Find nearest beat to slave's target position
+        let slave_nearest_beat = slave.snap_to_beat(target_position);
+
+        // Apply master's phase offset to slave
+        let result = (slave_nearest_beat as i64 + phase_offset).max(0) as usize;
+
+        // Clamp to track bounds
+        result.min(slave_track.duration_samples.saturating_sub(1))
+    }
+
+    /// Calculate phase-locked position for a deck jumping while it's the master
+    ///
+    /// When the master deck jumps (e.g., hot cue), it preserves its own phase
+    /// so that slave decks remain in sync. Without this, the master's phase
+    /// would change and slaves would drift out of alignment.
+    ///
+    /// Returns the original position if no track or beat grid available.
+    fn self_phase_locked_position(&self, deck_id: usize, target_position: usize) -> usize {
+        let deck = &self.decks[deck_id];
+
+        let Some(track) = deck.track() else {
+            return target_position;
+        };
+
+        // Check we have a beat grid
+        if track.metadata.beat_grid.beats.is_empty() {
+            return target_position;
+        }
+
+        // Get current phase offset
+        let current_pos = deck.position() as usize;
+        let current_nearest_beat = deck.snap_to_beat(current_pos);
+        let phase_offset = current_pos as i64 - current_nearest_beat as i64;
+
+        // Apply to target
+        let target_nearest_beat = deck.snap_to_beat(target_position);
+        let result = (target_nearest_beat as i64 + phase_offset).max(0) as usize;
+
+        result.min(track.duration_samples.saturating_sub(1))
     }
 
     /// Load a pre-prepared track with minimal mutex hold time
@@ -240,20 +356,62 @@ impl AudioEngine {
                     self.unload_track(deck);
                 }
 
-                // Playback Control
+                // Playback Control (with inter-deck phase sync)
                 EngineCommand::Play { deck } => {
-                    if let Some(d) = self.decks.get_mut(deck) {
-                        d.play();
+                    if deck < NUM_DECKS {
+                        // Check if another deck is playing (we have a master to sync to)
+                        let master_id = self.master_deck_id();
+                        let should_sync = master_id.is_some() && master_id != Some(deck);
+
+                        // Calculate synced position before getting mutable ref
+                        let synced_pos = if should_sync {
+                            let current_pos = self.decks[deck].position() as usize;
+                            Some(self.phase_locked_position(deck, current_pos))
+                        } else {
+                            None
+                        };
+
+                        // Now apply the sync and play
+                        if let Some(pos) = synced_pos {
+                            self.decks[deck].seek(pos);
+                        }
+                        self.decks[deck].play();
+
+                        // Track when this deck started playing
+                        if self.deck_play_start[deck].is_none() {
+                            self.deck_play_start[deck] = Some(self.frame_counter);
+                        }
                     }
                 }
                 EngineCommand::Pause { deck } => {
-                    if let Some(d) = self.decks.get_mut(deck) {
-                        d.pause();
+                    if deck < NUM_DECKS {
+                        self.decks[deck].pause();
+                        // Clear play tracking (deck is no longer playing)
+                        self.deck_play_start[deck] = None;
                     }
                 }
                 EngineCommand::TogglePlay { deck } => {
-                    if let Some(d) = self.decks.get_mut(deck) {
-                        d.toggle_play();
+                    if deck < NUM_DECKS {
+                        let was_playing = self.decks[deck].state() == PlayState::Playing;
+
+                        if !was_playing {
+                            // About to play - check for sync
+                            let master_id = self.master_deck_id();
+                            if master_id.is_some() && master_id != Some(deck) {
+                                let current_pos = self.decks[deck].position() as usize;
+                                let synced_pos = self.phase_locked_position(deck, current_pos);
+                                self.decks[deck].seek(synced_pos);
+                            }
+                        }
+
+                        self.decks[deck].toggle_play();
+
+                        // Update play tracking
+                        if was_playing {
+                            self.deck_play_start[deck] = None;
+                        } else if self.deck_play_start[deck].is_none() {
+                            self.deck_play_start[deck] = Some(self.frame_counter);
+                        }
                     }
                 }
                 EngineCommand::Seek { deck, position } => {
@@ -279,10 +437,35 @@ impl AudioEngine {
                     }
                 }
 
-                // Hot Cues
+                // Hot Cues (with inter-deck phase sync)
                 EngineCommand::HotCuePress { deck, slot } => {
-                    if let Some(d) = self.decks.get_mut(deck) {
-                        d.hot_cue_press(slot);
+                    if deck < NUM_DECKS {
+                        let was_playing = self.decks[deck].state() == PlayState::Playing;
+                        let master_id = self.master_deck_id();
+                        let is_master = master_id == Some(deck);
+
+                        // Get hot cue position before triggering (for phase correction)
+                        let hot_cue_pos = self.decks[deck].hot_cue(slot).map(|c| c.position);
+
+                        // Execute the hot cue press (jump/preview/set)
+                        self.decks[deck].hot_cue_press(slot);
+
+                        // If we jumped while playing, apply phase correction
+                        if was_playing {
+                            if let Some(target_pos) = hot_cue_pos {
+                                let synced_pos = if is_master {
+                                    // Master: preserve own phase for slaves
+                                    self.self_phase_locked_position(deck, target_pos)
+                                } else if master_id.is_some() {
+                                    // Slave: sync to master
+                                    self.phase_locked_position(deck, target_pos)
+                                } else {
+                                    // No master (first deck to play)
+                                    target_pos
+                                };
+                                self.decks[deck].seek(synced_pos);
+                            }
+                        }
                     }
                 }
                 EngineCommand::HotCueRelease { deck } => {
@@ -395,6 +578,9 @@ impl AudioEngine {
     /// This enables each deck to play at its native BPM while outputting audio
     /// synchronized to the global target BPM.
     pub fn process(&mut self, master_out: &mut StereoBuffer, cue_out: &mut StereoBuffer) {
+        // Increment frame counter for phase sync tracking
+        self.frame_counter = self.frame_counter.wrapping_add(1);
+
         let output_len = master_out.len();
 
         // Set working length of deck output buffers (real-time safe: no allocation)

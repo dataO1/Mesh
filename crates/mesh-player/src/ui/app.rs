@@ -114,7 +114,7 @@ impl MeshApp {
     /// - `deck_atomics`: Lock-free position/state for UI reads (None for offline mode)
     /// - `jack_sample_rate`: JACK's sample rate for track loading (e.g., 48000 or 44100)
     pub fn new(
-        command_sender: Option<CommandSender>,
+        mut command_sender: Option<CommandSender>,
         deck_atomics: Option<[Arc<DeckAtomics>; NUM_DECKS]>,
         jack_sample_rate: u32,
     ) -> Self {
@@ -122,6 +122,12 @@ impl MeshApp {
         let config_path = config::default_config_path();
         let config = Arc::new(config::load_config(&config_path));
         let settings = SettingsState::from_config(&config);
+
+        // Send initial config to audio engine
+        if let Some(ref mut sender) = command_sender {
+            // Initialize global BPM
+            let _ = sender.send(EngineCommand::SetGlobalBpm(config.audio.global_bpm));
+        }
 
         let audio_connected = command_sender.is_some();
         Self {
