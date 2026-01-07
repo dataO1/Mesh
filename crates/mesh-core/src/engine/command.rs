@@ -106,6 +106,8 @@ pub enum EngineCommand {
     LoopOff { deck: usize },
     /// Adjust loop length (positive = longer, negative = shorter)
     AdjustLoopLength { deck: usize, direction: i32 },
+    /// Set loop length index directly (0-6 maps to 0.25, 0.5, 1, 2, 4, 8, 16 beats)
+    SetLoopLengthIndex { deck: usize, index: usize },
     /// Toggle slip mode (loop exit returns to where playhead would have been)
     ToggleSlip { deck: usize },
 

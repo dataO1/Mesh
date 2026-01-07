@@ -118,6 +118,8 @@ pub struct DeckAtomics {
     pub loop_start: AtomicU64,
     /// Loop end position in samples
     pub loop_end: AtomicU64,
+    /// Loop length index (0-6 maps to 0.25, 0.5, 1, 2, 4, 8, 16 beats)
+    pub loop_length_index: AtomicU8,
     /// Whether this deck is the master (longest playing, others sync to it)
     pub is_master: AtomicBool,
 }
@@ -132,6 +134,7 @@ impl DeckAtomics {
             loop_active: AtomicBool::new(false),
             loop_start: AtomicU64::new(0),
             loop_end: AtomicU64::new(0),
+            loop_length_index: AtomicU8::new(4), // Default to 4 beats (index 4)
             is_master: AtomicBool::new(false),
         }
     }
@@ -186,6 +189,13 @@ impl DeckAtomics {
     #[inline]
     pub fn loop_end(&self) -> u64 {
         self.loop_end.load(Ordering::Relaxed)
+    }
+
+    /// Get loop length index (lock-free)
+    /// Returns 0-6 mapping to 0.25, 0.5, 1, 2, 4, 8, 16 beats
+    #[inline]
+    pub fn loop_length_index(&self) -> u8 {
+        self.loop_length_index.load(Ordering::Relaxed)
     }
 
     /// Check if this deck is the master (lock-free)
@@ -360,6 +370,7 @@ impl Deck {
         self.atomics.loop_active.store(self.loop_state.active, Ordering::Relaxed);
         self.atomics.loop_start.store(self.loop_state.start as u64, Ordering::Relaxed);
         self.atomics.loop_end.store(self.loop_state.end as u64, Ordering::Relaxed);
+        self.atomics.loop_length_index.store(self.loop_state.length_index as u8, Ordering::Relaxed);
     }
 
     /// Set the default loop length index
@@ -371,6 +382,7 @@ impl Deck {
     /// * `index` - Index into LOOP_LENGTHS (0-6, corresponding to 0.25, 0.5, 1, 2, 4, 8, 16 beats)
     pub fn set_loop_length_index(&mut self, index: usize) {
         self.loop_state.length_index = index.min(LOOP_LENGTHS.len() - 1);
+        self.sync_loop_atomic(); // Sync for UI access
     }
 
     /// Get the current loop length index
@@ -855,8 +867,10 @@ impl Deck {
             let raw_end = self.loop_state.start + length;
             let end = self.snap_to_beat(raw_end);
             self.loop_state.end = end;
-            self.sync_loop_atomic();
         }
+
+        // Always sync loop length index for UI (even when loop not active)
+        self.sync_loop_atomic();
     }
 
     // --- Stem controls ---

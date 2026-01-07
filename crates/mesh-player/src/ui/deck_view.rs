@@ -196,6 +196,15 @@ impl DeckView {
         self.state = state;
     }
 
+    /// Sync loop length from atomics (lock-free UI update)
+    ///
+    /// This is called every frame to update the loop length display.
+    pub fn sync_loop_length_index(&mut self, index: u8) {
+        if let Some(&beats) = LOOP_LENGTHS.get(index as usize) {
+            self.loop_length_beats = beats;
+        }
+    }
+
     /// Set the selected stem for effect chain view (UI-only state)
     pub fn set_selected_stem(&mut self, stem_idx: usize) {
         if stem_idx < 4 {

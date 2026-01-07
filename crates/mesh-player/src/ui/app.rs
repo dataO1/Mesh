@@ -189,6 +189,13 @@ impl MeshApp {
                                     send_start.elapsed(),
                                     result.is_ok()
                                 );
+
+                                // Set default loop length from config
+                                let _ = sender.send(EngineCommand::SetLoopLengthIndex {
+                                    deck: deck_idx,
+                                    index: self.config.display.default_loop_length_index,
+                                });
+
                                 self.status = format!("Loaded track to deck {}", deck_idx + 1);
                             } else {
                                 self.status = format!("Loaded track to deck {} (no audio)", deck_idx + 1);
@@ -232,8 +239,9 @@ impl MeshApp {
                         // Update master status for UI indicator
                         self.player_canvas_state.set_master(i, is_master);
 
-                        // Update deck view play state from atomics
+                        // Update deck view state from atomics
                         self.deck_views[i].sync_play_state(atomics[i].play_state());
+                        self.deck_views[i].sync_loop_length_index(atomics[i].loop_length_index());
 
                         // Update position and loop display in waveform
                         let duration = self.player_canvas_state.decks[i].overview.duration_samples;

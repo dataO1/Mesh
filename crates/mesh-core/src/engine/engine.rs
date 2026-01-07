@@ -560,6 +560,11 @@ impl AudioEngine {
                         d.adjust_loop_length(direction);
                     }
                 }
+                EngineCommand::SetLoopLengthIndex { deck, index } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        d.set_loop_length_index(index);
+                    }
+                }
                 EngineCommand::ToggleSlip { deck } => {
                     if let Some(d) = self.decks.get_mut(deck) {
                         d.toggle_slip();
