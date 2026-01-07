@@ -1276,6 +1276,9 @@ where
             let playhead = self.state.interpolated_playhead(deck_idx, SAMPLE_RATE);
             let is_master = self.state.is_master(deck_idx);
             let track_name = self.state.track_name(deck_idx);
+            let track_key = self.state.track_key(deck_idx);
+            let stem_muted = self.state.stem_muted(deck_idx);
+            let stem_soloed = self.state.stem_soloed(deck_idx);
 
             draw_deck_quadrant(
                 &mut frame,
@@ -1286,7 +1289,10 @@ where
                 cell_width,
                 deck_idx,
                 track_name,
+                track_key,
                 is_master,
+                stem_muted,
+                stem_soloed,
             );
         }
 
@@ -1321,10 +1327,17 @@ fn draw_deck_quadrant(
     width: f32,
     deck_idx: usize,
     track_name: &str,
+    track_key: &str,
     is_master: bool,
+    stem_muted: &[bool; 4],
+    stem_soloed: &[bool; 4],
 ) {
     use iced::widget::canvas::Text;
     use iced::alignment::{Horizontal, Vertical};
+
+    // Stem indicator width on left side
+    const STEM_INDICATOR_WIDTH: f32 = 6.0;
+    const STEM_INDICATOR_GAP: f32 = 2.0;
 
     // Draw header background
     let header_bg_color = Color::from_rgb(0.10, 0.10, 0.12);
@@ -1375,9 +1388,23 @@ fn draw_deck_quadrant(
         ..Text::default()
     });
 
-    // Draw track name text (if loaded)
+    // Draw track key in top right corner (if loaded)
+    if deck.overview.has_track && !track_key.is_empty() {
+        frame.fill_text(Text {
+            content: track_key.to_string(),
+            position: Point::new(x + width - 8.0, y + DECK_HEADER_HEIGHT / 2.0),
+            size: 11.0.into(),
+            color: Color::from_rgb(0.6, 0.8, 0.6), // Subtle green tint
+            align_x: Horizontal::Right.into(),
+            align_y: Vertical::Center.into(),
+            ..Text::default()
+        });
+    }
+
+    // Draw track name text (if loaded) - leave space for key on right
     let name_x = x + badge_margin + badge_width + 8.0;
-    let max_name_width = width - badge_width - badge_margin * 2.0 - 16.0;
+    let key_space = if !track_key.is_empty() { 50.0 } else { 0.0 };
+    let max_name_width = width - badge_width - badge_margin * 2.0 - 16.0 - key_space;
 
     if deck.overview.has_track && !track_name.is_empty() {
         // Truncate track name if too long (rough estimate: ~7px per char)
@@ -1424,6 +1451,43 @@ fn draw_deck_quadrant(
 
     // Draw overview waveform below zoomed
     let overview_y = zoomed_y + ZOOMED_WAVEFORM_HEIGHT + DECK_INTERNAL_GAP;
+
+    // Draw stem status indicators on left side of waveforms
+    // Stem colors: Vocals=cyan, Drums=yellow, Bass=magenta, Other=green
+    let stem_colors = [
+        Color::from_rgb(0.0, 0.8, 0.8),  // Vocals - cyan
+        Color::from_rgb(0.9, 0.9, 0.2),  // Drums - yellow
+        Color::from_rgb(0.9, 0.3, 0.9),  // Bass - magenta
+        Color::from_rgb(0.3, 0.9, 0.3),  // Other - green
+    ];
+
+    // Calculate indicator height (spans from zoomed to end of overview)
+    let total_waveform_height = ZOOMED_WAVEFORM_HEIGHT + DECK_INTERNAL_GAP + WAVEFORM_HEIGHT;
+    let indicator_height = (total_waveform_height - (STEM_INDICATOR_GAP * 3.0)) / 4.0;
+
+    for (stem_idx, &color) in stem_colors.iter().enumerate() {
+        let indicator_y = zoomed_y + (stem_idx as f32) * (indicator_height + STEM_INDICATOR_GAP);
+
+        // Determine color: muted = dark gray, soloed = bright color, normal = stem color
+        let indicator_color = if stem_muted[stem_idx] {
+            Color::from_rgb(0.15, 0.15, 0.15) // Dark/off when muted
+        } else if stem_soloed[stem_idx] {
+            color // Full brightness when soloed
+        } else {
+            // Normal: dimmed version of stem color
+            Color::from_rgb(
+                color.r * 0.5,
+                color.g * 0.5,
+                color.b * 0.5,
+            )
+        };
+
+        frame.fill_rectangle(
+            Point::new(x + 2.0, indicator_y),
+            Size::new(STEM_INDICATOR_WIDTH, indicator_height),
+            indicator_color,
+        );
+    }
     draw_overview_at(
         frame,
         &deck.overview,

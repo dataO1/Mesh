@@ -210,6 +210,16 @@ impl DeckView {
         }
     }
 
+    /// Check if a stem is muted
+    pub fn is_stem_muted(&self, stem_idx: usize) -> bool {
+        self.stem_muted.get(stem_idx).copied().unwrap_or(false)
+    }
+
+    /// Check if a stem is soloed
+    pub fn is_stem_soloed(&self, stem_idx: usize) -> bool {
+        self.stem_soloed.get(stem_idx).copied().unwrap_or(false)
+    }
+
     /// Handle a deck message
     pub fn handle_message(&mut self, msg: DeckMessage, deck: Option<&mut Deck>) {
         let Some(deck) = deck else { return };
@@ -786,23 +796,30 @@ impl DeckView {
             let is_set = self.hot_cue_positions[i].is_some();
             let color = CUE_COLORS[i];
 
+            // When set: dimmed version of cue color (30% blend with dark background)
+            // When not set: plain dark gray
             let btn_style = if is_set {
+                let dimmed_color = Color::from_rgb(
+                    0.15 + color.r * 0.35,
+                    0.15 + color.g * 0.35,
+                    0.15 + color.b * 0.35,
+                );
                 button::Style {
-                    background: Some(Background::Color(color)),
-                    text_color: Color::WHITE,
+                    background: Some(Background::Color(dimmed_color)),
+                    text_color: color, // Text shows the actual cue color
                     border: iced::Border {
-                        color: Color::WHITE,
-                        width: 1.0,
+                        color,
+                        width: 1.5,
                         radius: 4.0.into(),
                     },
                     ..Default::default()
                 }
             } else {
                 button::Style {
-                    background: Some(Background::Color(Color::from_rgb(0.2, 0.2, 0.2))),
-                    text_color: Color::from_rgb(0.5, 0.5, 0.5),
+                    background: Some(Background::Color(Color::from_rgb(0.18, 0.18, 0.18))),
+                    text_color: Color::from_rgb(0.45, 0.45, 0.45),
                     border: iced::Border {
-                        color: Color::from_rgb(0.35, 0.35, 0.35),
+                        color: Color::from_rgb(0.3, 0.3, 0.3),
                         width: 1.0,
                         radius: 4.0.into(),
                     },
@@ -1087,14 +1104,16 @@ impl DeckView {
             .on_press(DeckMessage::LoopDouble)
             .padding([4, 6]);
 
-        // Beat jump buttons
+        // Beat jump buttons (same width as LOOP/SLIP)
         let jump_back = button(text("◀◀").size(12))
             .on_press(DeckMessage::BeatJumpBack)
-            .padding([4, 10]);
+            .padding([4, 8])
+            .width(Length::Fixed(60.0));
 
         let jump_fwd = button(text("▶▶").size(12))
             .on_press(DeckMessage::BeatJumpForward)
-            .padding([4, 10]);
+            .padding([4, 8])
+            .width(Length::Fixed(60.0));
 
         row![
             jump_back,
@@ -1153,9 +1172,9 @@ impl DeckView {
         .on_press(DeckMessage::CuePressed)
         .on_release(DeckMessage::CueReleased);
 
-        // Play button - sleek minimal style, no colors
+        // Play button - sleek minimal style with unicode icons
         let is_playing = matches!(self.state, PlayState::Playing);
-        let play_label = if is_playing { "PAUSE" } else { "PLAY" };
+        let play_label = if is_playing { "❚❚" } else { "▶" }; // Unicode pause (two bars) and play
         let play_style = button::Style {
             background: Some(Background::Color(Color::from_rgb(0.25, 0.25, 0.25))),
             text_color: Color::WHITE,

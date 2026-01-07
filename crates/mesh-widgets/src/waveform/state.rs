@@ -603,6 +603,12 @@ pub struct PlayerCanvasState {
     pub playheads: [u64; 4],
     /// Track names for each deck (displayed in header)
     track_names: [String; 4],
+    /// Track keys for each deck (displayed in header, e.g. "Am", "C#m")
+    track_keys: [String; 4],
+    /// Stem mute status per deck [deck][stem] (4 decks × 4 stems)
+    stem_muted: [[bool; 4]; 4],
+    /// Stem solo status per deck [deck][stem] (4 decks × 4 stems)
+    stem_soloed: [[bool; 4]; 4],
     /// Last update timestamp for each deck (for smooth interpolation)
     last_update_time: [std::time::Instant; 4],
     /// Whether each deck is currently playing (for interpolation)
@@ -629,6 +635,14 @@ impl PlayerCanvasState {
                 String::new(),
                 String::new(),
             ],
+            track_keys: [
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+            ],
+            stem_muted: [[false; 4]; 4],
+            stem_soloed: [[false; 4]; 4],
             last_update_time: [now, now, now, now],
             is_playing: [false, false, false, false],
             is_master: [false, false, false, false],
@@ -655,6 +669,54 @@ impl PlayerCanvasState {
     pub fn clear_track_name(&mut self, idx: usize) {
         if idx < 4 {
             self.track_names[idx].clear();
+        }
+    }
+
+    /// Set the track key for a deck (displayed in header)
+    pub fn set_track_key(&mut self, idx: usize, key: String) {
+        if idx < 4 {
+            self.track_keys[idx] = key;
+        }
+    }
+
+    /// Get the track key for a deck
+    pub fn track_key(&self, idx: usize) -> &str {
+        if idx < 4 {
+            &self.track_keys[idx]
+        } else {
+            ""
+        }
+    }
+
+    /// Set stem mute status for a deck
+    pub fn set_stem_muted(&mut self, deck_idx: usize, stem_idx: usize, muted: bool) {
+        if deck_idx < 4 && stem_idx < 4 {
+            self.stem_muted[deck_idx][stem_idx] = muted;
+        }
+    }
+
+    /// Set stem solo status for a deck
+    pub fn set_stem_soloed(&mut self, deck_idx: usize, stem_idx: usize, soloed: bool) {
+        if deck_idx < 4 && stem_idx < 4 {
+            self.stem_soloed[deck_idx][stem_idx] = soloed;
+        }
+    }
+
+    /// Get stem mute status for a deck
+    pub fn stem_muted(&self, deck_idx: usize) -> &[bool; 4] {
+        if deck_idx < 4 {
+            &self.stem_muted[deck_idx]
+        } else {
+            &[false; 4]
+        }
+    }
+
+    /// Get stem solo status for a deck
+    pub fn stem_soloed(&self, deck_idx: usize) -> &[bool; 4] {
+        if deck_idx < 4 {
+            &self.stem_soloed[deck_idx]
+        } else {
+            &[false; 4]
         }
     }
 

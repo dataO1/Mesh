@@ -176,9 +176,11 @@ impl MeshApp {
                                 load_result.zoomed_state;
                             self.deck_stems[deck_idx] = Some(load_result.stems);
 
-                            // Set track name for header display (before moving prepared)
+                            // Set track name and key for header display (before moving prepared)
                             let track_name = prepared.track.filename().to_string();
+                            let track_key = prepared.track.key().to_string();
                             self.player_canvas_state.set_track_name(deck_idx, track_name);
+                            self.player_canvas_state.set_track_key(deck_idx, track_key);
 
                             // Send track to audio engine via lock-free queue (~50ns, never blocks!)
                             if let Some(ref mut sender) = self.command_sender {
@@ -359,11 +361,17 @@ impl MeshApp {
                                 if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
                                     let _ = sender.send(EngineCommand::ToggleStemMute { deck: deck_idx, stem });
                                 }
+                                // Sync to canvas state for visual indicator
+                                let muted = self.deck_views[deck_idx].is_stem_muted(stem_idx);
+                                self.player_canvas_state.set_stem_muted(deck_idx, stem_idx, !muted);
                             }
                             ToggleStemSolo(stem_idx) => {
                                 if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
                                     let _ = sender.send(EngineCommand::ToggleStemSolo { deck: deck_idx, stem });
                                 }
+                                // Sync to canvas state for visual indicator
+                                let soloed = self.deck_views[deck_idx].is_stem_soloed(stem_idx);
+                                self.player_canvas_state.set_stem_soloed(deck_idx, stem_idx, !soloed);
                             }
                             SelectStem(stem_idx) => {
                                 // UI-only state, no command needed
