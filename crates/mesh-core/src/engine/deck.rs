@@ -1133,9 +1133,16 @@ impl Deck {
                 }
             }
 
-            // Handle looping
+            // Handle looping - preserve overshoot to prevent drift
+            // Without this, we lose samples each loop iteration, causing
+            // cumulative drift (~33ms over 10 minutes of looping)
             if self.loop_state.active && self.position >= self.loop_state.end {
-                self.position = self.loop_state.start;
+                let loop_length = self.loop_state.end.saturating_sub(self.loop_state.start);
+                if loop_length > 0 {
+                    let overshoot = self.position - self.loop_state.end;
+                    // Use modulo in case overshoot exceeds loop length (very short loops)
+                    self.position = self.loop_state.start + (overshoot % loop_length);
+                }
             }
 
             // Handle end of track
