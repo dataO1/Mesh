@@ -69,7 +69,7 @@ and mesh-widget and only if necessary in the ui.
   alone on 149 on the ui is actually ~162 bpm (measured by tapping in).
 - [x] Round the bpm selection in the ui to ints, but make sure there is no
   rounding error in the computation then.
-- [ ] The bpm analysis is not working perfectly yet, all tracks are either 172
+- [x] The bpm analysis is not working perfectly yet, all tracks are either 172
   or 178 which is wrong pretty sure, they should be in range 170 - 180 somewhere
   but more spread i think. check if this is a problem with the rounding, min and
   max bpm for detection or a tuning issue in essentia (can we somehow improve this?). We should try to also just do bpm detection on the drums track, since we have the stems.
