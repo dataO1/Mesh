@@ -405,15 +405,16 @@ Mesh includes **automatic inter-deck phase synchronization** — when you start 
 
 ### How It Works
 
-1. **Master Deck**: The deck that has been playing the longest is automatically the "master"
+1. **Master Deck**: The deck that has been playing the longest is automatically the "master" (shown with a green dot on its waveform)
 2. **Phase Lock on Play**: When you press play on another deck, it snaps to match the master's beat phase
 3. **Phase Lock on Hot Cues**: Jumping to a hot cue while playing re-syncs to the master's current phase
 4. **Automatic Handoff**: If the master deck stops, the next longest-playing deck becomes the new master
+5. **Drift-Free Playback**: Fractional sample accumulation ensures tracks stay perfectly aligned indefinitely
 
 ### Example
 
 ```
-Deck A: Playing for 2 minutes (MASTER)
+Deck A: Playing for 2 minutes (MASTER - green dot)
         Currently 200 samples past beat 47
 
 Deck B: You press PLAY
@@ -429,6 +430,17 @@ Deck B: You press PLAY
 - **Hot cues stay in phase** — Jump around the track without losing sync
 - **Seamless transitions** — Focus on the creative mix, not the technical alignment
 - **Works with any tempo** — All tracks are time-stretched to the global BPM
+- **Zero drift** — Tracks stay phase-locked for hours without any cumulative timing errors
+
+### Technical Note: Drift-Free Time Stretching
+
+When time-stretching audio to match a global BPM, the ideal number of samples to read each frame is often fractional (e.g., 254.54 samples). Simply rounding this value each frame would cause ~1 second of drift per 10 minutes of playback.
+
+Mesh solves this using **fractional sample accumulation**: the remainder from each frame is carried forward and eventually "catches up," ensuring mathematically perfect sync over any duration.
+
+### Configuration
+
+Beat sync can be toggled on/off in **Settings → Playback → Automatic Beat Sync**. When disabled, tracks play from their exact cued position without phase adjustment.
 
 > **Note:** This feature requires tracks to have beat grids. mesh-cue automatically generates beat grids during import using Essentia's beat detection.
 
