@@ -296,6 +296,13 @@ pub struct Deck {
     /// One buffer per stem enables parallel processing with Rayon
     /// Capacity is MAX_BUFFER_SIZE to handle any JACK buffer size
     stem_buffers: [StereoBuffer; NUM_STEMS],
+    /// Accumulated fractional samples for time stretch accuracy
+    ///
+    /// When time stretching, the ideal number of samples to read is often
+    /// fractional (e.g., 254.54). Rounding each frame loses the remainder,
+    /// causing cumulative drift (~1 second over 10 minutes). Instead, we
+    /// accumulate the fractional part and let it "catch up" over time.
+    fractional_position: f64,
 }
 
 impl Deck {
@@ -318,6 +325,7 @@ impl Deck {
             slip_position: None,
             atomics: Arc::new(DeckAtomics::new()),
             stem_buffers: std::array::from_fn(|_| StereoBuffer::silence(MAX_BUFFER_SIZE)),
+            fractional_position: 0.0,
         }
     }
 
@@ -411,6 +419,7 @@ impl Deck {
         };
         self.scratch_offset = 0.0;
         self.hot_cue_preview_return = None;
+        self.fractional_position = 0.0; // Reset stretch accumulator
 
         // Sync atomics for lock-free UI reads (fast atomic stores)
         self.sync_position_atomic();
@@ -603,6 +612,7 @@ impl Deck {
     pub fn seek(&mut self, position: usize) {
         if let Some(track) = &self.track {
             self.position = position.min(track.duration_samples.saturating_sub(1));
+            self.fractional_position = 0.0; // Reset stretch accumulator on seek
             self.sync_position_atomic();
         }
     }
@@ -1017,7 +1027,13 @@ impl Deck {
         // Calculate how many samples to read based on stretch ratio
         // For speedup (ratio > 1): read MORE samples, stretcher will compress
         // For slowdown (ratio < 1): read FEWER samples, stretcher will expand
-        let samples_to_read = ((output_len as f64) * self.stretch_ratio).round() as usize;
+        //
+        // IMPORTANT: We accumulate fractional samples to prevent drift.
+        // Without this, rounding each frame loses ~0.5 samples, causing
+        // ~1 second of drift per 10 minutes of playback.
+        self.fractional_position += (output_len as f64) * self.stretch_ratio;
+        let samples_to_read = self.fractional_position.floor() as usize;
+        self.fractional_position -= samples_to_read as f64;
         let samples_to_read = samples_to_read.clamp(1, MAX_BUFFER_SIZE);
 
         // Rate-limited debug logging for stretch ratio diagnosis (~once per second)
@@ -1036,8 +1052,8 @@ impl Deck {
             let actual_ratio = total_in as f64 / total_out as f64;
             let elapsed_sec = total_out as f64 / SAMPLE_RATE as f64;
             log::debug!(
-                "stretch: ratio={:.4}, actual={:.4}, output_len={}, samples_read={}, elapsed={:.1}s",
-                self.stretch_ratio, actual_ratio, output_len, samples_to_read, elapsed_sec
+                "stretch: ratio={:.4}, actual={:.4}, output_len={}, samples_read={}, frac={:.2}, elapsed={:.1}s",
+                self.stretch_ratio, actual_ratio, output_len, samples_to_read, self.fractional_position, elapsed_sec
             );
         }
 
