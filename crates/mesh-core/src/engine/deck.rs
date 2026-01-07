@@ -118,6 +118,8 @@ pub struct DeckAtomics {
     pub loop_start: AtomicU64,
     /// Loop end position in samples
     pub loop_end: AtomicU64,
+    /// Whether this deck is the master (longest playing, others sync to it)
+    pub is_master: AtomicBool,
 }
 
 impl DeckAtomics {
@@ -130,6 +132,7 @@ impl DeckAtomics {
             loop_active: AtomicBool::new(false),
             loop_start: AtomicU64::new(0),
             loop_end: AtomicU64::new(0),
+            is_master: AtomicBool::new(false),
         }
     }
 
@@ -183,6 +186,12 @@ impl DeckAtomics {
     #[inline]
     pub fn loop_end(&self) -> u64 {
         self.loop_end.load(Ordering::Relaxed)
+    }
+
+    /// Check if this deck is the master (lock-free)
+    #[inline]
+    pub fn is_master(&self) -> bool {
+        self.is_master.load(Ordering::Relaxed)
     }
 }
 

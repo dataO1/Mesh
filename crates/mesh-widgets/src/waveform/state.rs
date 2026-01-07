@@ -599,6 +599,8 @@ pub struct PlayerCanvasState {
     last_update_time: [std::time::Instant; 4],
     /// Whether each deck is currently playing (for interpolation)
     is_playing: [bool; 4],
+    /// Whether each deck is the master (longest playing, others sync to it)
+    is_master: [bool; 4],
 }
 
 impl PlayerCanvasState {
@@ -615,6 +617,23 @@ impl PlayerCanvasState {
             playheads: [0; 4],
             last_update_time: [now, now, now, now],
             is_playing: [false, false, false, false],
+            is_master: [false, false, false, false],
+        }
+    }
+
+    /// Set whether a deck is the master (longest playing)
+    pub fn set_master(&mut self, idx: usize, is_master: bool) {
+        if idx < 4 {
+            self.is_master[idx] = is_master;
+        }
+    }
+
+    /// Check if a deck is the master
+    pub fn is_master(&self, idx: usize) -> bool {
+        if idx < 4 {
+            self.is_master[idx]
+        } else {
+            false
         }
     }
 

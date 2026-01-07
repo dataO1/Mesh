@@ -49,6 +49,8 @@ pub struct AudioEngine {
     /// Global frame counter (incremented each process() call)
     /// Used for tracking relative play start times
     frame_counter: u64,
+    /// Whether phase sync is enabled (can be toggled via config)
+    phase_sync_enabled: bool,
 }
 
 impl AudioEngine {
@@ -70,6 +72,7 @@ impl AudioEngine {
             // Phase sync tracking
             deck_play_start: [None; NUM_DECKS],
             frame_counter: 0,
+            phase_sync_enabled: true, // Enabled by default
         }
     }
 
@@ -141,8 +144,14 @@ impl AudioEngine {
     /// 2. Find nearest beat to target position on slave deck
     /// 3. Apply master's phase offset to land at same relative position
     ///
-    /// Returns the original position if no master or beat grid unavailable.
+    /// Returns the original position if phase sync is disabled, no master,
+    /// or beat grid is unavailable.
     fn phase_locked_position(&self, deck_id: usize, target_position: usize) -> usize {
+        // Skip if phase sync is disabled
+        if !self.phase_sync_enabled {
+            return target_position;
+        }
+
         // Find master deck
         let Some(master_id) = self.master_deck_id() else {
             return target_position; // No master, no adjustment
@@ -190,8 +199,14 @@ impl AudioEngine {
     /// so that slave decks remain in sync. Without this, the master's phase
     /// would change and slaves would drift out of alignment.
     ///
-    /// Returns the original position if no track or beat grid available.
+    /// Returns the original position if phase sync is disabled, no track,
+    /// or beat grid is unavailable.
     fn self_phase_locked_position(&self, deck_id: usize, target_position: usize) -> usize {
+        // Skip if phase sync is disabled
+        if !self.phase_sync_enabled {
+            return target_position;
+        }
+
         let deck = &self.decks[deck_id];
 
         let Some(track) = deck.track() else {
@@ -303,6 +318,33 @@ impl AudioEngine {
         self.latency_compensator.global_latency()
     }
 
+    /// Set whether phase sync is enabled
+    ///
+    /// When enabled, starting playback or hitting hot cues will automatically
+    /// align to the master deck's beat phase. When disabled, decks play
+    /// from their exact cued position without adjustment.
+    pub fn set_phase_sync_enabled(&mut self, enabled: bool) {
+        self.phase_sync_enabled = enabled;
+    }
+
+    /// Check if phase sync is enabled
+    pub fn phase_sync_enabled(&self) -> bool {
+        self.phase_sync_enabled
+    }
+
+    /// Update the is_master atomic on all decks
+    ///
+    /// Call this after any change to deck_play_start (play/pause/stop).
+    /// The master deck's atomic will be set to true, all others to false.
+    fn sync_master_atomics(&self) {
+        let master_id = self.master_deck_id();
+        for (i, deck) in self.decks.iter().enumerate() {
+            deck.atomics()
+                .is_master
+                .store(Some(i) == master_id, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     /// Update latency compensation for a deck's stems
     ///
     /// Calculates total latency for each stem including:
@@ -381,6 +423,9 @@ impl AudioEngine {
                         if self.deck_play_start[deck].is_none() {
                             self.deck_play_start[deck] = Some(self.frame_counter);
                         }
+
+                        // Update master atomics for UI
+                        self.sync_master_atomics();
                     }
                 }
                 EngineCommand::Pause { deck } => {
@@ -388,6 +433,8 @@ impl AudioEngine {
                         self.decks[deck].pause();
                         // Clear play tracking (deck is no longer playing)
                         self.deck_play_start[deck] = None;
+                        // Update master atomics for UI
+                        self.sync_master_atomics();
                     }
                 }
                 EngineCommand::TogglePlay { deck } => {
@@ -412,6 +459,9 @@ impl AudioEngine {
                         } else if self.deck_play_start[deck].is_none() {
                             self.deck_play_start[deck] = Some(self.frame_counter);
                         }
+
+                        // Update master atomics for UI
+                        self.sync_master_atomics();
                     }
                 }
                 EngineCommand::Seek { deck, position } => {
@@ -560,6 +610,9 @@ impl AudioEngine {
                 }
                 EngineCommand::AdjustBpm(delta) => {
                     self.adjust_bpm(delta);
+                }
+                EngineCommand::SetPhaseSync(enabled) => {
+                    self.set_phase_sync_enabled(enabled);
                 }
             }
         }

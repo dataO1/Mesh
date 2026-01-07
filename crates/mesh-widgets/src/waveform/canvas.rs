@@ -1271,6 +1271,7 @@ where
         for (deck_idx, (x, y)) in grid_positions.iter().enumerate() {
             // Use interpolated playhead for smooth animation
             let playhead = self.state.interpolated_playhead(deck_idx, SAMPLE_RATE);
+            let is_master = self.state.is_master(deck_idx);
             draw_zoomed_at(
                 &mut frame,
                 &self.state.decks[deck_idx].zoomed,
@@ -1278,6 +1279,7 @@ where
                 *x,
                 *y,
                 cell_width,
+                is_master,
             );
         }
 
@@ -1318,6 +1320,7 @@ fn draw_zoomed_at(
     x: f32,
     y: f32,
     width: f32,
+    is_master: bool,
 ) {
     let height = ZOOMED_WAVEFORM_HEIGHT;
     let center_y = y + height / 2.0;
@@ -1503,6 +1506,19 @@ fn draw_zoomed_at(
         Size::new(indicator_width, indicator_height),
         Color::from_rgba(1.0, 1.0, 1.0, 0.5),
     );
+
+    // Draw master indicator - green dot in top right corner
+    if is_master {
+        let dot_radius = 6.0;
+        let dot_margin = 8.0;
+        let dot_center = Point::new(
+            x + width - dot_margin - dot_radius,
+            y + dot_margin + dot_radius,
+        );
+        // Draw green filled circle
+        let dot = Path::circle(dot_center, dot_radius);
+        frame.fill(&dot, Color::from_rgb(0.2, 0.9, 0.2));
+    }
 }
 
 /// Draw an overview waveform at a specific position

@@ -142,6 +142,11 @@ pub enum EngineCommand {
     SetGlobalBpm(f64),
     /// Adjust global BPM by delta
     AdjustBpm(f64),
+    /// Enable or disable inter-deck phase synchronization
+    ///
+    /// When enabled, starting playback or triggering hot cues will
+    /// automatically align to the master deck's beat phase.
+    SetPhaseSync(bool),
 }
 
 /// Capacity of the command queue

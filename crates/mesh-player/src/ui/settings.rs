@@ -4,7 +4,7 @@
 
 use super::app::Message;
 use crate::config::LOOP_LENGTH_OPTIONS;
-use iced::widget::{button, column, container, row, text, Space};
+use iced::widget::{button, column, container, row, text, toggler, Space};
 use iced::{Alignment, Element, Length};
 
 /// Settings state for the modal
@@ -18,6 +18,8 @@ pub struct SettingsState {
     pub draft_zoom_bars: u32,
     /// Draft grid bars
     pub draft_grid_bars: u32,
+    /// Draft phase sync enabled
+    pub draft_phase_sync: bool,
     /// Status message (for save feedback)
     pub status: String,
 }
@@ -30,6 +32,7 @@ impl SettingsState {
             draft_loop_length_index: config.display.default_loop_length_index,
             draft_zoom_bars: config.display.default_zoom_bars,
             draft_grid_bars: config.display.grid_bars,
+            draft_phase_sync: config.audio.phase_sync,
             status: String::new(),
         }
     }
@@ -41,6 +44,7 @@ impl SettingsState {
             draft_loop_length_index: 4, // 4 beats
             draft_zoom_bars: 8,
             draft_grid_bars: 8,
+            draft_phase_sync: true, // Enabled by default
             status: String::new(),
         }
     }
@@ -99,10 +103,25 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
         .into()
 }
 
-/// Loop length settings
+/// Playback settings (loop length, phase sync)
 fn view_loop_section(state: &SettingsState) -> Element<'_, Message> {
     let section_title = text("Playback").size(18);
 
+    // Phase sync toggle
+    let phase_sync_label = text("Automatic Beat Sync").size(14);
+    let phase_sync_hint = text("Automatically align beats when starting playback or hot cues")
+        .size(12);
+    let phase_sync_toggle = toggler(state.draft_phase_sync)
+        .on_toggle(Message::UpdateSettingsPhaseSync);
+    let phase_sync_row = row![
+        column![phase_sync_label, phase_sync_hint].spacing(4),
+        Space::new().width(Length::Fill),
+        phase_sync_toggle,
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+
+    // Loop length section
     let subsection_title = text("Default Loop/Beat Jump Length").size(14);
     let hint = text("Loop length also controls beat jump distance")
         .size(12);
@@ -139,7 +158,15 @@ fn view_loop_section(state: &SettingsState) -> Element<'_, Message> {
     .align_y(Alignment::Center);
 
     container(
-        column![section_title, subsection_title, hint, loop_row].spacing(10),
+        column![
+            section_title,
+            phase_sync_row,
+            Space::new().height(10),
+            subsection_title,
+            hint,
+            loop_row
+        ]
+        .spacing(10),
     )
     .padding(15)
     .width(Length::Fill)

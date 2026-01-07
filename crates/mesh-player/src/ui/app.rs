@@ -99,6 +99,8 @@ pub enum Message {
     UpdateSettingsZoomBars(u32),
     /// Update settings: grid bars
     UpdateSettingsGridBars(u32),
+    /// Update settings: phase sync enabled
+    UpdateSettingsPhaseSync(bool),
     /// Save settings to disk
     SaveSettings,
     /// Settings save complete
@@ -127,6 +129,8 @@ impl MeshApp {
         if let Some(ref mut sender) = command_sender {
             // Initialize global BPM
             let _ = sender.send(EngineCommand::SetGlobalBpm(config.audio.global_bpm));
+            // Initialize phase sync setting
+            let _ = sender.send(EngineCommand::SetPhaseSync(config.audio.phase_sync));
         }
 
         let audio_connected = command_sender.is_some();
@@ -218,11 +222,15 @@ impl MeshApp {
                         let loop_active = atomics[i].loop_active();
                         let loop_start = atomics[i].loop_start();
                         let loop_end = atomics[i].loop_end();
+                        let is_master = atomics[i].is_master();
 
                         deck_positions[i] = Some(position);
 
                         // Update playhead state for smooth interpolation
                         self.player_canvas_state.set_playhead(i, position, is_playing);
+
+                        // Update master status for UI indicator
+                        self.player_canvas_state.set_master(i, is_master);
 
                         // Update deck view play state from atomics
                         self.deck_views[i].sync_play_state(atomics[i].play_state());
@@ -459,6 +467,10 @@ impl MeshApp {
                 self.settings.draft_grid_bars = bars;
                 Task::none()
             }
+            Message::UpdateSettingsPhaseSync(enabled) => {
+                self.settings.draft_phase_sync = enabled;
+                Task::none()
+            }
             Message::SaveSettings => {
                 // Apply draft settings to config
                 let mut new_config = (*self.config).clone();
@@ -467,8 +479,15 @@ impl MeshApp {
                 new_config.display.grid_bars = self.settings.draft_grid_bars;
                 // Save global BPM from current state
                 new_config.audio.global_bpm = self.global_bpm;
+                // Save phase sync setting
+                new_config.audio.phase_sync = self.settings.draft_phase_sync;
 
                 self.config = Arc::new(new_config.clone());
+
+                // Send phase sync setting to audio engine immediately
+                if let Some(ref mut sender) = self.command_sender {
+                    let _ = sender.send(EngineCommand::SetPhaseSync(self.settings.draft_phase_sync));
+                }
 
                 // Save to disk in background
                 let config_clone = new_config;

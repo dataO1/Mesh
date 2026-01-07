@@ -42,12 +42,17 @@ impl Default for PlayerConfig {
 pub struct AudioConfig {
     /// Global BPM for time-stretching (saved/restored between sessions)
     pub global_bpm: f64,
+    /// Enable automatic inter-deck phase synchronization
+    /// When enabled, pressing play or hot cues automatically aligns
+    /// to the master deck's beat phase
+    pub phase_sync: bool,
 }
 
 impl Default for AudioConfig {
     fn default() -> Self {
         Self {
             global_bpm: 128.0, // Standard house/techno BPM
+            phase_sync: true,  // Automatic beat sync enabled by default
         }
     }
 }
@@ -113,8 +118,9 @@ pub fn load_config(path: &Path) -> PlayerConfig {
         Ok(contents) => match serde_yaml::from_str::<PlayerConfig>(&contents) {
             Ok(config) => {
                 log::info!(
-                    "load_config: Loaded config - Global BPM: {:.1}, Loop length idx: {}",
+                    "load_config: Loaded config - Global BPM: {:.1}, Phase sync: {}, Loop length idx: {}",
                     config.audio.global_bpm,
+                    config.audio.phase_sync,
                     config.display.default_loop_length_index
                 );
                 config
@@ -166,6 +172,7 @@ mod tests {
     fn test_default_config() {
         let config = PlayerConfig::default();
         assert_eq!(config.audio.global_bpm, 128.0);
+        assert!(config.audio.phase_sync);
         assert_eq!(config.display.default_loop_length_index, 4);
     }
 
@@ -180,6 +187,7 @@ mod tests {
         let config = PlayerConfig {
             audio: AudioConfig {
                 global_bpm: 140.0,
+                phase_sync: false,
             },
             display: DisplayConfig {
                 default_loop_length_index: 5, // 8 beats
@@ -193,6 +201,7 @@ mod tests {
         let parsed: PlayerConfig = serde_yaml::from_str(&yaml).unwrap();
 
         assert_eq!(parsed.audio.global_bpm, 140.0);
+        assert!(!parsed.audio.phase_sync);
         assert_eq!(parsed.display.default_loop_length_index, 5);
         assert_eq!(parsed.display.default_zoom_bars, 4);
     }
