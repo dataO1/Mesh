@@ -2,14 +2,27 @@
 //!
 //! Provides BPM detection, key detection, and beat grid generation
 //! for imported stem files.
+//!
+//! ## BPM Detection
+//!
+//! Multiple algorithms are available via [`BpmAlgorithm`]:
+//! - Essentia-based: multifeature, degara, beat trackers
+//! - Python-based: Madmom DBN, BeatFM (require external setup)
+//!
+//! Use [`create_detector`] to get a detector for a specific algorithm.
 
+pub mod algorithm;
 pub mod beatgrid;
 pub mod bpm;
 pub mod key;
+pub mod python;
 
+// Re-exports for convenient access
+pub use algorithm::BpmAlgorithm;
 pub use beatgrid::generate_beat_grid;
-pub use bpm::detect_bpm;
+pub use bpm::{create_detector, detect_bpm, BpmDetector, BpmResult};
 pub use key::detect_key;
+pub use python::python_algorithms_available;
 
 use crate::config::BpmConfig;
 use serde::{Deserialize, Serialize};

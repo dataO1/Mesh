@@ -63,14 +63,20 @@ use std::time::Instant;
 fn analyze_in_subprocess(samples: Vec<f32>, bpm_config: BpmConfig) -> Result<AnalysisResult> {
     use std::io::{Read, Write};
 
-    // Generate unique temp file path
+    // Generate unique temp file path using UUID to prevent collisions in parallel processing
+    // (process_id XOR timestamp had collisions when rayon threads executed within nanoseconds)
     let temp_path = std::env::temp_dir().join(format!(
         "mesh_audio_{}.bin",
-        std::process::id() ^ (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u32)
+        uuid::Uuid::new_v4()
     ));
+
+    // DIAGNOSTIC: Log sample fingerprint to verify unique data per track
+    let sample_sum: f64 = samples.iter().take(10000).map(|&s| s as f64).sum();
+    let first_samples: Vec<f32> = samples.iter().take(5).copied().collect();
+    log::info!(
+        "DIAGNOSTIC: Writing {} samples to {:?}, sum(first 10k)={:.6}, first 5={:?}",
+        samples.len(), temp_path, sample_sum, first_samples
+    );
 
     // Write samples to temp file (raw f32 bytes)
     {
@@ -84,6 +90,9 @@ fn analyze_in_subprocess(samples: Vec<f32>, bpm_config: BpmConfig) -> Result<Ana
         };
         file.write_all(bytes)
             .with_context(|| "Failed to write samples to temp file")?;
+        // Force flush to disk before subprocess reads
+        file.sync_all()
+            .with_context(|| "Failed to sync temp file to disk")?;
     }
     let sample_count = samples.len();
     drop(samples); // Free memory before spawning subprocess
@@ -114,6 +123,15 @@ fn analyze_in_subprocess(samples: Vec<f32>, bpm_config: BpmConfig) -> Result<Ana
         .join()
         .map_err(|e| anyhow::anyhow!("Analysis subprocess failed: {:?}", e))?
         .map_err(|e| anyhow::anyhow!("Analysis error: {}", e));
+
+    // DIAGNOSTIC: Log what the subprocess actually returned
+    match &result {
+        Ok(analysis) => log::info!(
+            "DIAGNOSTIC: Subprocess returned BPM={:.2}, original_bpm={:.2}, beats={}, key={}",
+            analysis.bpm, analysis.original_bpm, analysis.beat_grid.len(), analysis.key
+        ),
+        Err(e) => log::error!("DIAGNOSTIC: Subprocess failed: {}", e),
+    }
 
     // Clean up temp file
     let _ = std::fs::remove_file(&temp_path);

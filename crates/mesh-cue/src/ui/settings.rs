@@ -3,8 +3,9 @@
 //! Provides a modal dialog for editing application configuration.
 
 use super::app::{Message, SettingsState};
+use crate::analysis::{python_algorithms_available, BpmAlgorithm};
 use crate::config::BpmSource;
-use iced::widget::{button, column, container, row, text, text_input, Space};
+use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
 use iced::{Alignment, Element, Length};
 
 /// Render the settings modal content
@@ -47,9 +48,17 @@ pub fn view(state: &SettingsState) -> Element<Message> {
         .spacing(10)
         .width(Length::Fill);
 
-    let content = column![header, bpm_section, display_section, format_section, status, actions]
-        .spacing(20)
-        .width(Length::Fixed(450.0));
+    // Scrollable content for the settings sections
+    let scrollable_content = scrollable(
+        column![bpm_section, display_section, format_section]
+            .spacing(15)
+            .width(Length::Fill),
+    )
+    .height(Length::Fixed(400.0));
+
+    let content = column![header, scrollable_content, status, actions]
+        .spacing(15)
+        .width(Length::Fixed(480.0));
 
     container(content)
         .padding(30)
@@ -82,6 +91,80 @@ fn view_bpm_section(state: &SettingsState) -> Element<Message> {
     let max_range = text("(60-250)").size(12);
 
     let max_row = row![max_label, max_input, max_range]
+        .spacing(10)
+        .align_y(Alignment::Center);
+
+    // BPM Algorithm subsection
+    let algo_title = text("BPM Detection Algorithm").size(14);
+    let algo_hint_text = if python_algorithms_available() {
+        "Algorithm used for tempo analysis (Essentia + Madmom available)"
+    } else {
+        "Algorithm used for tempo analysis (Essentia built-in)"
+    };
+    let algo_hint = text(algo_hint_text).size(12);
+
+    // Algorithm selection buttons
+    // Include Python algorithms (Madmom) when Python environment is available
+    let mut available_algorithms = vec![
+        BpmAlgorithm::EssentiaMultifeature,
+        BpmAlgorithm::EssentiaDegara,
+        BpmAlgorithm::EssentiaBeatTrackerMulti,
+        BpmAlgorithm::EssentiaBeatTrackerDegara,
+    ];
+    if python_algorithms_available() {
+        available_algorithms.push(BpmAlgorithm::MadmomDbn);
+    }
+    let algo_buttons: Vec<Element<Message>> = available_algorithms
+        .iter()
+        .map(|&algo| {
+            let is_selected = state.draft_bpm_algorithm == algo;
+            let label = match algo {
+                BpmAlgorithm::EssentiaMultifeature => "Multifeature",
+                BpmAlgorithm::EssentiaDegara => "Degara",
+                BpmAlgorithm::EssentiaBeatTrackerMulti => "BeatTracker Multi",
+                BpmAlgorithm::EssentiaBeatTrackerDegara => "BeatTracker Degara",
+                BpmAlgorithm::MadmomDbn => "Madmom DBN",
+                BpmAlgorithm::BeatFM => "BeatFM",
+            };
+            let btn = button(text(label).size(11))
+                .on_press(Message::UpdateSettingsBpmAlgorithm(algo))
+                .style(if is_selected {
+                    iced::widget::button::primary
+                } else {
+                    iced::widget::button::secondary
+                })
+                .padding([4, 8]);
+            btn.into()
+        })
+        .collect();
+
+    let algo_label = text("Algorithm:").size(14);
+    let algo_row = row![
+        algo_label,
+        row(algo_buttons).spacing(4).align_y(Alignment::Center),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+
+    // BPM Rounding toggle
+    let round_label = text("Round BPM:").size(14);
+    let round_btn_on = button(text("Integer").size(12))
+        .on_press(Message::UpdateSettingsRoundBpm(true))
+        .style(if state.draft_round_bpm {
+            iced::widget::button::primary
+        } else {
+            iced::widget::button::secondary
+        })
+        .padding([4, 8]);
+    let round_btn_off = button(text("Decimal").size(12))
+        .on_press(Message::UpdateSettingsRoundBpm(false))
+        .style(if !state.draft_round_bpm {
+            iced::widget::button::primary
+        } else {
+            iced::widget::button::secondary
+        })
+        .padding([4, 8]);
+    let round_row = row![round_label, round_btn_on, round_btn_off]
         .spacing(10)
         .align_y(Alignment::Center);
 
@@ -138,6 +221,11 @@ fn view_bpm_section(state: &SettingsState) -> Element<Message> {
             hint,
             min_row,
             max_row,
+            Space::new().height(10),
+            algo_title,
+            algo_hint,
+            algo_row,
+            round_row,
             Space::new().height(10),
             source_title,
             source_hint,

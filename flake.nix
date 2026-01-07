@@ -112,6 +112,75 @@
           };
         };
 
+        # Build madmom from GitHub (not available in nixpkgs)
+        # Madmom provides DBN (Dynamic Bayesian Network) beat tracking
+        # which is highly accurate for electronic music
+        # Using Python 3.11 because madmom 0.16.1 isn't compatible with Python 3.12+
+        python311 = pkgs.python311;
+        python311Packages = pkgs.python311Packages;
+
+        madmom = python311Packages.buildPythonPackage rec {
+          pname = "madmom";
+          version = "0.16.1";
+          format = "setuptools";
+
+          src = pkgs.fetchFromGitHub {
+            owner = "CPJKU";
+            repo = "madmom";
+            rev = "v${version}";
+            hash = "sha256-rJP3avj/N/YhThL9OHJuRhD5FoGiNwm717ETP23nF/Q=";
+          };
+
+          nativeBuildInputs = with python311Packages; [
+            cython
+            numpy
+          ];
+
+          propagatedBuildInputs = with python311Packages; [
+            numpy
+            scipy
+            mido
+          ];
+
+          # Skip tests (they require audio fixtures)
+          doCheck = false;
+
+          # Disable setup_requires to avoid pytest-runner download attempt
+          # Fix Python 3.10+ compatibility (MutableSequence moved to collections.abc)
+          preConfigure = ''
+            substituteInPlace setup.py --replace-quiet "setup_requires=['pytest-runner']," ""
+            substituteInPlace setup.py --replace-quiet "setup_requires=['pytest-runner']" ""
+
+            # Fix deprecated collections imports for Python 3.10+
+            find . -name "*.py" -exec sed -i \
+              -e 's/from collections import MutableSequence/from collections.abc import MutableSequence/g' \
+              -e 's/from collections import Iterable/from collections.abc import Iterable/g' \
+              -e 's/from collections import Mapping/from collections.abc import Mapping/g' \
+              {} +
+          '';
+
+          # Madmom needs to compile Cython extensions
+          preBuild = ''
+            export HOME=$(mktemp -d)
+          '';
+
+          pythonImportsCheck = [ "madmom" ];
+
+          meta = with pkgs.lib; {
+            description = "Python audio and music signal processing library";
+            homepage = "https://github.com/CPJKU/madmom";
+            license = licenses.bsd3;
+            platforms = platforms.linux;
+          };
+        };
+
+        # Python environment for madmom beat detection (Python 3.11)
+        madmomPython = python311.withPackages (ps: [
+          madmom
+          ps.numpy
+          ps.scipy
+        ]);
+
         # Common native dependencies
         nativeBuildInputs = with pkgs; [
           rustToolchain
@@ -216,10 +285,11 @@
               lockFile = ./Cargo.lock;
             };
 
-            inherit nativeBuildInputs;
+            # Add makeWrapper for wrapping binary with env vars
+            nativeBuildInputs = nativeBuildInputs ++ [ pkgs.makeWrapper ];
 
-            # mesh-cue needs essentia library and its dependencies
-            buildInputs = buildInputs ++ [ essentia ] ++ (with pkgs; [
+            # mesh-cue needs essentia library, madmom Python, and essentia dependencies
+            buildInputs = buildInputs ++ [ essentia madmomPython ] ++ (with pkgs; [
               eigen
               fftwFloat
               taglib
@@ -244,10 +314,22 @@
             installPhase = ''
               mkdir -p $out/bin
               cp target/release/mesh-cue $out/bin/
+
+              # Install Python scripts for madmom analysis
+              mkdir -p $out/share/mesh/scripts
+              if [ -f scripts/madmom_beats.py ]; then
+                cp scripts/madmom_beats.py $out/share/mesh/scripts/
+                chmod +x $out/share/mesh/scripts/madmom_beats.py
+              fi
             '';
 
             postFixup = ''
               patchelf --set-rpath "${pkgs.lib.makeLibraryPath (buildInputs ++ [ essentia ])}" $out/bin/mesh-cue
+
+              # Wrap binary with Python environment for madmom
+              wrapProgram $out/bin/mesh-cue \
+                --set MESH_PYTHON "${madmomPython}/bin/python3" \
+                --set MESH_SCRIPTS "$out/share/mesh/scripts"
             '';
 
             meta = with pkgs.lib; {
@@ -266,6 +348,8 @@
           buildInputs = buildInputs ++ [
             # Custom essentia library (built from source)
             essentia
+            # Python environment for madmom beat detection
+            madmomPython
           ] ++ (with pkgs; [
             # Essentia dependencies (needed for essentia-sys pkg-config)
             eigen
@@ -352,6 +436,10 @@
             export USE_TENSORFLOW=0
             # Fix Eigen include path for essentia-sys (it incorrectly appends /eigen3)
             export CPLUS_INCLUDE_PATH="${pkgs.eigen}/include/eigen3:$CPLUS_INCLUDE_PATH"
+
+            # Madmom Python environment for alternative BPM detection
+            export MESH_PYTHON="${madmomPython}/bin/python3"
+            export MESH_SCRIPTS="${toString ./.}/scripts"
 
             # Vulkan for iced
             export VK_ICD_FILENAMES="${pkgs.vulkan-loader}/share/vulkan/icd.d/intel_icd.x86_64.json:${pkgs.vulkan-loader}/share/vulkan/icd.d/radeon_icd.x86_64.json"

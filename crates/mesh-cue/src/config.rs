@@ -7,6 +7,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::analysis::BpmAlgorithm;
+
 /// Root configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -135,20 +137,26 @@ impl std::fmt::Display for BpmSource {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BpmConfig {
+    /// Which BPM detection algorithm to use
+    pub algorithm: BpmAlgorithm,
     /// Minimum expected tempo in BPM (Essentia range: 40-180)
     pub min_tempo: i32,
     /// Maximum expected tempo in BPM (Essentia range: 60-250)
     pub max_tempo: i32,
     /// Which audio source to use for BPM detection
     pub source: BpmSource,
+    /// Whether to round BPM to nearest integer (true) or keep decimal precision (false)
+    pub round_bpm: bool,
 }
 
 impl Default for BpmConfig {
     fn default() -> Self {
         Self {
+            algorithm: BpmAlgorithm::default(),
             min_tempo: 40,
             max_tempo: 208,
             source: BpmSource::default(),
+            round_bpm: true, // Default: round to integer for cleaner display
         }
     }
 }
@@ -169,9 +177,11 @@ impl BpmConfig {
     /// Create config for a specific genre (e.g., DnB: 160-190)
     pub fn for_range(min: i32, max: i32) -> Self {
         let mut config = Self {
+            algorithm: BpmAlgorithm::default(),
             min_tempo: min,
             max_tempo: max,
             source: BpmSource::default(),
+            round_bpm: true,
         };
         config.validate();
         config
@@ -263,9 +273,11 @@ mod tests {
     #[test]
     fn test_bpm_validation_clamps_values() {
         let mut bpm = BpmConfig {
+            algorithm: BpmAlgorithm::default(),
             min_tempo: 30, // Below minimum
             max_tempo: 300, // Above maximum
             source: BpmSource::default(),
+            round_bpm: true,
         };
         bpm.validate();
         assert_eq!(bpm.min_tempo, 40);
@@ -275,9 +287,11 @@ mod tests {
     #[test]
     fn test_bpm_validation_min_max_order() {
         let mut bpm = BpmConfig {
+            algorithm: BpmAlgorithm::default(),
             min_tempo: 180,
             max_tempo: 100, // Less than min
             source: BpmSource::default(),
+            round_bpm: true,
         };
         bpm.validate();
         assert!(bpm.max_tempo > bpm.min_tempo);
@@ -288,9 +302,11 @@ mod tests {
         let config = Config {
             analysis: AnalysisConfig {
                 bpm: BpmConfig {
+                    algorithm: BpmAlgorithm::EssentiaDegara,
                     min_tempo: 160,
                     max_tempo: 190,
                     source: BpmSource::Drums,
+                    round_bpm: false,
                 },
                 parallel_processes: 4,
             },
@@ -303,5 +319,7 @@ mod tests {
 
         assert_eq!(parsed.analysis.bpm.min_tempo, 160);
         assert_eq!(parsed.analysis.bpm.max_tempo, 190);
+        assert_eq!(parsed.analysis.bpm.algorithm, BpmAlgorithm::EssentiaDegara);
+        assert!(!parsed.analysis.bpm.round_bpm);
     }
 }

@@ -40,6 +40,12 @@ rayon = "1.10"
 # Process-based parallelism (Essentia is not thread-safe)
 procspawn = "1.0"
 serde_json = "1.0"
+# Unique IDs for temp files in parallel processing
+uuid = { version = "1", features = ["v4"] }
+# WAV file writing for Python-based analysis (madmom expects audio files)
+hound = "3.5"
+# Temporary files for Python subprocess IPC
+tempfile = "3.10"
 
 [features]
 default = []

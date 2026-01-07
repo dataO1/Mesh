@@ -3,6 +3,7 @@
 use crate::audio::{AudioState, JackHandle, start_jack_client};
 use crate::batch_import::{self, ImportConfig, ImportProgress, StemGroup, TrackImportResult};
 use crate::collection::Collection;
+use crate::analysis::BpmAlgorithm;
 use crate::config::{self, BpmSource, Config};
 use crate::export;
 use crate::keybindings::{self, KeybindingsConfig};
@@ -250,10 +251,14 @@ impl std::fmt::Debug for LoadedTrackState {
 pub struct SettingsState {
     /// Whether the settings modal is open
     pub is_open: bool,
+    /// Draft BPM algorithm selection
+    pub draft_bpm_algorithm: BpmAlgorithm,
     /// Draft min tempo value (text input)
     pub draft_min_tempo: String,
     /// Draft max tempo value (text input)
     pub draft_max_tempo: String,
+    /// Draft BPM rounding toggle
+    pub draft_round_bpm: bool,
     /// Draft parallel processes value (text input, 1-16)
     pub draft_parallel_processes: String,
     /// Draft track name format template
@@ -271,8 +276,10 @@ impl SettingsState {
     pub fn from_config(config: &Config) -> Self {
         Self {
             is_open: false,
+            draft_bpm_algorithm: config.analysis.bpm.algorithm,
             draft_min_tempo: config.analysis.bpm.min_tempo.to_string(),
             draft_max_tempo: config.analysis.bpm.max_tempo.to_string(),
+            draft_round_bpm: config.analysis.bpm.round_bpm,
             draft_parallel_processes: config.analysis.parallel_processes.to_string(),
             draft_track_name_format: config.track_name_format.clone(),
             draft_grid_bars: config.display.grid_bars,
@@ -439,6 +446,8 @@ pub enum Message {
     UpdateSettingsTrackNameFormat(String),
     UpdateSettingsGridBars(u32),
     UpdateSettingsBpmSource(BpmSource),
+    UpdateSettingsBpmAlgorithm(BpmAlgorithm),
+    UpdateSettingsRoundBpm(bool),
     SaveSettings,
     SaveSettingsComplete(Result<(), String>),
 
@@ -1479,6 +1488,12 @@ impl MeshCueApp {
             Message::UpdateSettingsBpmSource(source) => {
                 self.settings.draft_bpm_source = source;
             }
+            Message::UpdateSettingsBpmAlgorithm(algorithm) => {
+                self.settings.draft_bpm_algorithm = algorithm;
+            }
+            Message::UpdateSettingsRoundBpm(round) => {
+                self.settings.draft_round_bpm = round;
+            }
             Message::SaveSettings => {
                 // Parse and validate values
                 let min = self.settings.draft_min_tempo.parse::<i32>().unwrap_or(40);
@@ -1486,9 +1501,11 @@ impl MeshCueApp {
                 let parallel = self.settings.draft_parallel_processes.parse::<u8>().unwrap_or(4);
 
                 let mut new_config = (*self.config).clone();
+                new_config.analysis.bpm.algorithm = self.settings.draft_bpm_algorithm;
                 new_config.analysis.bpm.min_tempo = min;
                 new_config.analysis.bpm.max_tempo = max;
                 new_config.analysis.bpm.source = self.settings.draft_bpm_source;
+                new_config.analysis.bpm.round_bpm = self.settings.draft_round_bpm;
                 new_config.analysis.parallel_processes = parallel;
                 new_config.analysis.validate(); // validates both bpm and parallel_processes
 
