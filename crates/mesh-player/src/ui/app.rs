@@ -394,8 +394,20 @@ impl MeshApp {
                             let enabled = !self.mixer_view.cue_enabled(*deck);
                             let _ = sender.send(EngineCommand::SetCueListen { deck: *deck, enabled });
                         }
+                        SetChannelEqHi(deck, value) => {
+                            let _ = sender.send(EngineCommand::SetEqHi { deck: *deck, value: *value });
+                        }
+                        SetChannelEqMid(deck, value) => {
+                            let _ = sender.send(EngineCommand::SetEqMid { deck: *deck, value: *value });
+                        }
+                        SetChannelEqLo(deck, value) => {
+                            let _ = sender.send(EngineCommand::SetEqLo { deck: *deck, value: *value });
+                        }
+                        SetChannelFilter(deck, value) => {
+                            let _ = sender.send(EngineCommand::SetFilter { deck: *deck, value: *value });
+                        }
                         _ => {
-                            // EQ, filter, master volume, etc. - not yet in engine commands
+                            // Master volume, cue volume, cue mix - not yet in engine
                         }
                     }
                 }
@@ -554,11 +566,8 @@ impl MeshApp {
         // Header with global controls
         let header = self.view_header();
 
-        // Collection browser (top, full width)
-        let collection_browser = self.collection_browser.view().map(Message::CollectionBrowser);
-
-        // 3-column layout for controls + canvas + mixer:
-        // Left: Decks 1 & 3 controls | Center: Waveform canvas + Mixer | Right: Decks 2 & 4 controls
+        // 3-column layout for controls + canvas:
+        // Left: Decks 1 & 3 controls | Center: Waveform canvas | Right: Decks 2 & 4 controls
 
         // Left column: Deck 1 (top) and Deck 3 (bottom) controls
         let left_controls = column![
@@ -568,15 +577,10 @@ impl MeshApp {
         .spacing(10)
         .width(Length::FillPortion(1));
 
-        // Center column: Waveform canvas (top) + Mixer (bottom)
+        // Center column: Waveform canvas only
         let center_canvas = view_player_canvas(&self.player_canvas_state);
-        let mixer = self.mixer_view.view().map(Message::Mixer);
-        let center_column = column![
-            center_canvas,
-            mixer,
-        ]
-        .spacing(10)
-        .width(Length::FillPortion(2));
+        let center_column = container(center_canvas)
+            .width(Length::FillPortion(2));
 
         // Right column: Deck 2 (top) and Deck 4 (bottom) controls
         let right_controls = column![
@@ -586,11 +590,20 @@ impl MeshApp {
         .spacing(10)
         .width(Length::FillPortion(1));
 
-        // Main content area: controls | canvas+mixer | controls
+        // Main content area: controls | canvas | controls
         let main_row = row![
             left_controls,
             center_column,
             right_controls,
+        ]
+        .spacing(10);
+
+        // Bottom row: Collection browser (left) | Mixer (right)
+        let collection_browser = self.collection_browser.view().map(Message::CollectionBrowser);
+        let mixer = self.mixer_view.view().map(Message::Mixer);
+        let bottom_row = row![
+            container(collection_browser).width(Length::FillPortion(3)),
+            container(mixer).width(Length::FillPortion(2)),
         ]
         .spacing(10);
 
@@ -603,7 +616,7 @@ impl MeshApp {
         let content = column![
             header,
             main_row,
-            collection_browser,
+            bottom_row,
             status_bar,
         ]
         .spacing(10)

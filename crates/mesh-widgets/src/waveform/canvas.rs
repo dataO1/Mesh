@@ -63,7 +63,7 @@ pub struct PlayerInteraction {
 // =============================================================================
 
 /// Gap between deck cells in the 2x2 grid
-pub const DECK_GRID_GAP: f32 = 4.0;
+pub const DECK_GRID_GAP: f32 = 10.0;
 
 /// Gap between zoomed and overview within a deck cell
 pub const DECK_INTERNAL_GAP: f32 = 2.0;
@@ -1629,18 +1629,8 @@ fn draw_zoomed_at(
         Color::from_rgba(1.0, 1.0, 1.0, 0.5),
     );
 
-    // Draw master indicator - green dot in top right corner
-    if is_master {
-        let dot_radius = 6.0;
-        let dot_margin = 8.0;
-        let dot_center = Point::new(
-            x + width - dot_margin - dot_radius,
-            y + dot_margin + dot_radius,
-        );
-        // Draw green filled circle
-        let dot = Path::circle(dot_center, dot_radius);
-        frame.fill(&dot, Color::from_rgb(0.2, 0.9, 0.2));
-    }
+    // Master indicator removed - deck border color indicates master status instead
+    let _ = is_master;
 }
 
 /// Draw an overview waveform at a specific position

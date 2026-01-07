@@ -608,6 +608,26 @@ impl AudioEngine {
                         ch.cue_enabled = enabled;
                     }
                 }
+                EngineCommand::SetEqHi { deck, value } => {
+                    if let Some(ch) = self.mixer.channel_mut(deck) {
+                        ch.set_eq_hi(value);
+                    }
+                }
+                EngineCommand::SetEqMid { deck, value } => {
+                    if let Some(ch) = self.mixer.channel_mut(deck) {
+                        ch.set_eq_mid(value);
+                    }
+                }
+                EngineCommand::SetEqLo { deck, value } => {
+                    if let Some(ch) = self.mixer.channel_mut(deck) {
+                        ch.set_eq_lo(value);
+                    }
+                }
+                EngineCommand::SetFilter { deck, value } => {
+                    if let Some(ch) = self.mixer.channel_mut(deck) {
+                        ch.filter = value;
+                    }
+                }
 
                 // Global
                 EngineCommand::SetGlobalBpm(bpm) => {

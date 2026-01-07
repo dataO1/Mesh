@@ -191,135 +191,136 @@ impl MixerView {
 
     /// Build the mixer view
     ///
-    /// 3-column asymmetric layout:
+    /// Compact 2-section layout (for side panel next to collection browser):
     /// ```text
-    /// ┌─────────────┬────────────────────────────────┬─────────────────┐
-    /// │ Empty Space │ CH1   CH2   CH3   CH4          │ MASTER    CUE   │
-    /// │ (spacer)    │ (4 channel strips centered)    │ MIX             │
-    /// │ ~15%        │ ~60%                           │ ~25%            │
-    /// └─────────────┴────────────────────────────────┴─────────────────┘
+    /// ┌────────────────────────────────┬─────────────────┐
+    /// │ CH1   CH2   CH3   CH4          │ MASTER    CUE   │
+    /// │ (4 channel strips)             │ MIX             │
+    /// │ ~75%                           │ ~25%            │
+    /// └────────────────────────────────┴─────────────────┘
     /// ```
     pub fn view(&self) -> Element<MixerMessage> {
-        use iced::widget::Space;
         use iced::Length;
 
-        // Left spacer column (~15%)
-        let left_spacer = Space::new()
-            .width(Length::FillPortion(15));
-
-        // Channel strips column (~60%)
+        // Channel strips column (~75%)
         let channels: Vec<Element<MixerMessage>> = (0..4)
             .map(|i| self.view_channel(i))
             .collect();
 
         let channels_section = container(
             Row::with_children(channels)
-                .spacing(20)
+                .spacing(12)
                 .align_y(Center)
         )
-        .width(Length::FillPortion(60))
-        .center_x(Length::Fill);
+        .width(Length::FillPortion(75));
 
         // Master/Cue section (~25%)
         let master = column![
             text("MASTER").size(10),
             slider(0.0..=1.0, self.master_volume, MixerMessage::SetMasterVolume)
                 .step(0.01)
-                .width(80),
+                .width(70),
         ]
-        .spacing(5)
+        .spacing(4)
         .align_x(Center);
 
         let cue = column![
             text("CUE").size(10),
             slider(0.0..=1.0, self.cue_volume, MixerMessage::SetCueVolume)
                 .step(0.01)
-                .width(80),
+                .width(70),
             text("MIX").size(10),
             slider(0.0..=1.0, self.cue_mix, MixerMessage::SetCueMix)
                 .step(0.01)
-                .width(80),
+                .width(70),
         ]
-        .spacing(5)
+        .spacing(4)
         .align_x(Center);
 
         let master_cue_section = container(
             row![master, cue]
-                .spacing(20)
+                .spacing(12)
                 .align_y(Center)
         )
         .width(Length::FillPortion(25));
 
         let content = row![
-            left_spacer,
             channels_section,
             master_cue_section,
         ]
         .align_y(Center);
 
         container(content)
-            .padding(10)
+            .padding(8)
             .width(Length::Fill)
             .into()
     }
 
     /// View for a single channel strip
     fn view_channel(&self, ch: usize) -> Element<MixerMessage> {
-        let ch_label = text(format!("CH {}", ch + 1)).size(12);
+        use iced::Length;
 
-        // EQ knobs (represented as sliders for simplicity)
+        let ch_label = text(format!("CH {}", ch + 1)).size(11);
+
+        // EQ sliders (fill available width)
         let eq_hi = column![
-            text("HI").size(8),
+            text("HI").size(9),
             slider(0.0..=1.0, self.channel_eq_hi[ch], move |v| MixerMessage::SetChannelEqHi(ch, v))
                 .step(0.01)
-                .width(40),
+                .width(Length::Fill),
         ]
         .spacing(2)
-        .align_x(Center);
+        .align_x(Center)
+        .width(Length::Fill);
 
         let eq_mid = column![
-            text("MID").size(8),
+            text("MID").size(9),
             slider(0.0..=1.0, self.channel_eq_mid[ch], move |v| MixerMessage::SetChannelEqMid(ch, v))
                 .step(0.01)
-                .width(40),
+                .width(Length::Fill),
         ]
         .spacing(2)
-        .align_x(Center);
+        .align_x(Center)
+        .width(Length::Fill);
 
         let eq_lo = column![
-            text("LO").size(8),
+            text("LO").size(9),
             slider(0.0..=1.0, self.channel_eq_lo[ch], move |v| MixerMessage::SetChannelEqLo(ch, v))
                 .step(0.01)
-                .width(40),
+                .width(Length::Fill),
         ]
         .spacing(2)
-        .align_x(Center);
+        .align_x(Center)
+        .width(Length::Fill);
 
         // Filter
         let filter = column![
-            text("FILTER").size(8),
+            text("FILTER").size(9),
             slider(-1.0..=1.0, self.channel_filters[ch], move |v| MixerMessage::SetChannelFilter(ch, v))
                 .step(0.01)
-                .width(40),
+                .width(Length::Fill),
         ]
         .spacing(2)
-        .align_x(Center);
+        .align_x(Center)
+        .width(Length::Fill);
 
         // Volume fader
         let volume = column![
-            text("VOL").size(8),
+            text("VOL").size(9),
             slider(0.0..=1.0, self.channel_volumes[ch], move |v| MixerMessage::SetChannelVolume(ch, v))
                 .step(0.01)
-                .width(40),
+                .width(Length::Fill),
         ]
         .spacing(2)
-        .align_x(Center);
+        .align_x(Center)
+        .width(Length::Fill);
 
         // Cue button
         let cue_label = if self.channel_cue[ch] { "CUE ●" } else { "CUE" };
         let cue_btn = button(text(cue_label).size(10))
             .on_press(MixerMessage::ToggleChannelCue(ch))
-            .padding(5);
+            .padding([4, 8])
+            .width(Length::Fill);
 
         column![
             ch_label,
@@ -330,8 +331,9 @@ impl MixerView {
             volume,
             cue_btn,
         ]
-        .spacing(5)
+        .spacing(4)
         .align_x(Center)
+        .width(Length::Fill)
         .into()
     }
 }

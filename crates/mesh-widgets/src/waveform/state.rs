@@ -17,11 +17,11 @@ use super::{generate_peaks, generate_peaks_for_range, smooth_peaks_gaussian, DEF
 // =============================================================================
 
 /// Overview waveform height in pixels (compact)
-pub const WAVEFORM_HEIGHT: f32 = 35.0;
+pub const WAVEFORM_HEIGHT: f32 = 45.0;
 
 /// Zoomed waveform height in pixels (detailed, larger)
-/// Set to 120px to better match transport control section height (~160px total with gap + overview)
-pub const ZOOMED_WAVEFORM_HEIGHT: f32 = 120.0;
+/// Set to 160px to match deck control section height
+pub const ZOOMED_WAVEFORM_HEIGHT: f32 = 160.0;
 
 /// Gap between zoomed and overview waveforms in combined view
 pub const COMBINED_WAVEFORM_GAP: f32 = 6.0;

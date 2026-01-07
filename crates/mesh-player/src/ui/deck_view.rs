@@ -1097,15 +1097,15 @@ impl DeckView {
             .padding([4, 10]);
 
         row![
-            loop_btn,
-            slip_btn,
+            jump_back,
+            jump_fwd,
             Space::new().width(8),
             loop_halve,
             loop_length,
             loop_double,
             Space::new().width(8),
-            jump_back,
-            jump_fwd,
+            loop_btn,
+            slip_btn,
         ]
         .spacing(4)
         .align_y(Center)

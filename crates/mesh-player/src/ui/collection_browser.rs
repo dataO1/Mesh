@@ -158,7 +158,7 @@ impl CollectionBrowserState {
             .and_then(|node| node.track_path)
     }
 
-    /// Build the view with deck load buttons
+    /// Build the view with deck load buttons at top (centered)
     pub fn view(&self) -> Element<CollectionBrowserMessage> {
         // mesh-player uses simple single-selection (no Shift/Ctrl modifier tracking)
         let browser_element = playlist_browser(
@@ -168,32 +168,34 @@ impl CollectionBrowserState {
             CollectionBrowserMessage::Browser,
         );
 
-        // Show deck load buttons if a track is selected
+        // Show deck load buttons (centered row at top)
         let load_buttons: Element<CollectionBrowserMessage> = if self.selected_track_path.is_some()
         {
             row![
-                button(text("Load Deck 1").size(11))
+                button(text("1").size(12))
                     .on_press(CollectionBrowserMessage::LoadToDeck(0))
-                    .padding([4, 8]),
-                button(text("Load Deck 2").size(11))
+                    .padding([6, 16]),
+                button(text("2").size(12))
                     .on_press(CollectionBrowserMessage::LoadToDeck(1))
-                    .padding([4, 8]),
-                button(text("Load Deck 3").size(11))
+                    .padding([6, 16]),
+                button(text("3").size(12))
                     .on_press(CollectionBrowserMessage::LoadToDeck(2))
-                    .padding([4, 8]),
-                button(text("Load Deck 4").size(11))
+                    .padding([6, 16]),
+                button(text("4").size(12))
                     .on_press(CollectionBrowserMessage::LoadToDeck(3))
-                    .padding([4, 8]),
+                    .padding([6, 16]),
             ]
-            .spacing(5)
+            .spacing(8)
             .into()
         } else {
             row![text("Select a track to load").size(11),].into()
         };
 
-        let load_bar = container(load_buttons).padding([5, 10]);
+        let load_bar = container(load_buttons)
+            .padding([6, 10])
+            .center_x(Length::Fill);
 
-        column![browser_element, load_bar]
+        column![load_bar, browser_element]
             .spacing(0)
             .height(Length::Fill)
             .into()

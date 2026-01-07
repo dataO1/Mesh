@@ -136,6 +136,14 @@ pub enum EngineCommand {
     SetCrossfader { position: f32 },
     /// Set channel to cue (pre-fader listen)
     SetCueListen { deck: usize, enabled: bool },
+    /// Set channel EQ high (0.0 = kill, 0.5 = flat, 1.0 = boost)
+    SetEqHi { deck: usize, value: f32 },
+    /// Set channel EQ mid (0.0 = kill, 0.5 = flat, 1.0 = boost)
+    SetEqMid { deck: usize, value: f32 },
+    /// Set channel EQ low (0.0 = kill, 0.5 = flat, 1.0 = boost)
+    SetEqLo { deck: usize, value: f32 },
+    /// Set channel filter (-1.0 = full LP, 0.0 = flat, 1.0 = full HP)
+    SetFilter { deck: usize, value: f32 },
 
     // ─────────────────────────────────────────────────────────────
     // Global
