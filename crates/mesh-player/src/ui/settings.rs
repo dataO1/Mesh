@@ -41,7 +41,7 @@ impl SettingsState {
     pub fn new() -> Self {
         Self {
             is_open: false,
-            draft_loop_length_index: 4, // 4 beats
+            draft_loop_length_index: 2, // 4 beats (index 2 in new array)
             draft_zoom_bars: 8,
             draft_grid_bars: 8,
             draft_phase_sync: true, // Enabled by default

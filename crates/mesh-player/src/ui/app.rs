@@ -361,9 +361,6 @@ impl MeshApp {
                                     let _ = sender.send(EngineCommand::ToggleStemSolo { deck: deck_idx, stem });
                                 }
                             }
-                            SetStemVolume(_stem_idx, _volume) => {
-                                // TODO: Add stem volume command
-                            }
                             SelectStem(stem_idx) => {
                                 // UI-only state, no command needed
                                 self.deck_views[deck_idx].set_selected_stem(stem_idx);
@@ -438,8 +435,26 @@ impl MeshApp {
 
             Message::DeckSeek(deck_idx, position) => {
                 if deck_idx < 4 {
-                    // TODO: Implement actual seeking via engine
-                    let _ = position;
+                    // Only allow seeking when deck is stopped (not playing or cueing)
+                    if let Some(ref atomics) = self.deck_atomics {
+                        let is_playing = atomics[deck_idx].is_playing();
+                        let is_cueing = atomics[deck_idx].is_cueing();
+
+                        if !is_playing && !is_cueing {
+                            let duration = self.player_canvas_state.decks[deck_idx].overview.duration_samples;
+                            if duration > 0 {
+                                let seek_samples = (position * duration as f64) as usize;
+
+                                // Send seek command to audio engine (lock-free)
+                                if let Some(ref mut sender) = self.command_sender {
+                                    let _ = sender.send(EngineCommand::Seek {
+                                        deck: deck_idx,
+                                        position: seek_samples,
+                                    });
+                                }
+                            }
+                        }
+                    }
                 }
                 Task::none()
             }

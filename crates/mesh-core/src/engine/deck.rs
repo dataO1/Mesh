@@ -17,8 +17,8 @@ use super::{LatencyCompensator, MAX_BUFFER_SIZE};
 /// Number of hot cue slots per deck
 pub const HOT_CUE_SLOTS: usize = 8;
 
-/// Number of loop lengths available (0.25, 0.5, 1, 2, 4, 8, 16 beats)
-pub const LOOP_LENGTHS: [f64; 7] = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0];
+/// Loop lengths available in beats (1 beat to 64 bars = 256 beats)
+pub const LOOP_LENGTHS: [f64; 9] = [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0];
 
 /// A hot cue point stored in a slot
 #[derive(Debug, Clone)]
@@ -134,7 +134,7 @@ impl DeckAtomics {
             loop_active: AtomicBool::new(false),
             loop_start: AtomicU64::new(0),
             loop_end: AtomicU64::new(0),
-            loop_length_index: AtomicU8::new(4), // Default to 4 beats (index 4)
+            loop_length_index: AtomicU8::new(2), // Default to 4 beats (index 2)
             is_master: AtomicBool::new(false),
         }
     }
@@ -669,11 +669,14 @@ impl Deck {
                 self.position = target_pos as usize;
                 self.sync_position_atomic();
 
-                // If loop is active, move the loop by the same distance
+                // If loop is active, move the loop by the same distance and snap to grid
                 if self.loop_state.active {
                     let jump_distance = self.position.saturating_sub(old_position);
-                    self.loop_state.start = self.loop_state.start.saturating_add(jump_distance);
-                    self.loop_state.end = self.loop_state.end.saturating_add(jump_distance);
+                    let new_start = self.loop_state.start.saturating_add(jump_distance);
+                    let new_end = self.loop_state.end.saturating_add(jump_distance);
+                    // Snap loop boundaries to beat grid
+                    self.loop_state.start = self.snap_to_beat(new_start);
+                    self.loop_state.end = self.snap_to_beat(new_end);
                     self.sync_loop_atomic();
                 }
             }
@@ -695,11 +698,14 @@ impl Deck {
                 self.position = target_pos as usize;
                 self.sync_position_atomic();
 
-                // If loop is active, move the loop by the same distance (backward)
+                // If loop is active, move the loop by the same distance (backward) and snap to grid
                 if self.loop_state.active {
                     let jump_distance = old_position.saturating_sub(self.position);
-                    self.loop_state.start = self.loop_state.start.saturating_sub(jump_distance);
-                    self.loop_state.end = self.loop_state.end.saturating_sub(jump_distance);
+                    let new_start = self.loop_state.start.saturating_sub(jump_distance);
+                    let new_end = self.loop_state.end.saturating_sub(jump_distance);
+                    // Snap loop boundaries to beat grid
+                    self.loop_state.start = self.snap_to_beat(new_start);
+                    self.loop_state.end = self.snap_to_beat(new_end);
                     self.sync_loop_atomic();
                 }
             }
@@ -1196,16 +1202,16 @@ mod tests {
     #[test]
     fn test_loop_state() {
         let mut loop_state = LoopState::default();
-        assert_eq!(loop_state.length_beats(), 0.25); // First element
+        assert_eq!(loop_state.length_beats(), 1.0); // First element (1 beat minimum)
 
         loop_state.increase_length();
-        assert_eq!(loop_state.length_beats(), 0.5);
+        assert_eq!(loop_state.length_beats(), 2.0);
 
         loop_state.increase_length();
-        assert_eq!(loop_state.length_beats(), 1.0);
+        assert_eq!(loop_state.length_beats(), 4.0);
 
         loop_state.decrease_length();
-        assert_eq!(loop_state.length_beats(), 0.5);
+        assert_eq!(loop_state.length_beats(), 2.0);
     }
 
     #[test]

@@ -43,8 +43,6 @@ pub struct DeckView {
     stem_muted: [bool; 4],
     /// Stem solo states
     stem_soloed: [bool; 4],
-    /// Per-stem volumes
-    stem_volumes: [f32; 4],
     /// Loop active
     loop_active: bool,
     /// Current loop length in beats
@@ -100,8 +98,6 @@ pub enum DeckMessage {
     ToggleStemMute(usize),
     /// Toggle stem solo
     ToggleStemSolo(usize),
-    /// Set stem volume
-    SetStemVolume(usize, f32),
     /// Select stem tab for effect chain view
     SelectStem(usize),
     /// Set effect chain knob value (stem_idx, knob_idx, value)
@@ -110,8 +106,8 @@ pub enum DeckMessage {
     ToggleEffectBypass(usize, usize),
 }
 
-/// Loop length labels for display
-const LOOP_LENGTHS: [f32; 7] = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0];
+/// Loop length labels for display (1 beat to 64 bars = 256 beats)
+const LOOP_LENGTHS: [f32; 9] = [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0];
 
 impl DeckView {
     /// Create a new deck view
@@ -127,7 +123,6 @@ impl DeckView {
             hot_cue_positions: [None; 8],
             stem_muted: [false; 4],
             stem_soloed: [false; 4],
-            stem_volumes: [1.0; 4],
             loop_active: false,
             loop_length_beats: 4.0, // Default 4 beats
             slip_enabled: false,
@@ -276,10 +271,6 @@ impl DeckView {
                 if let Some(chain) = deck.stem_chain_mut(stem_idx) {
                     chain.set_soloed(!chain.is_soloed());
                 }
-            }
-            DeckMessage::SetStemVolume(stem_idx, vol) => {
-                self.stem_volumes[stem_idx] = vol;
-                // TODO: implement stem volume control (need to add to effect chain)
             }
             DeckMessage::SelectStem(stem_idx) => {
                 if stem_idx < 4 {
@@ -562,8 +553,6 @@ impl DeckView {
             button(text(solo_label).size(10))
                 .on_press(DeckMessage::ToggleStemSolo(stem_idx))
                 .padding(4),
-            slider(0.0..=1.0, self.stem_volumes[stem_idx], move |v| DeckMessage::SetStemVolume(stem_idx, v))
-                .width(60),
         ]
         .spacing(5)
         .align_y(Center);
