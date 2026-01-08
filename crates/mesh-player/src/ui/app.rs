@@ -198,6 +198,7 @@ impl MeshApp {
                             }
 
                             // Reset stem states for new track (all stems active, none muted/soloed)
+                            // Update UI state
                             for stem_idx in 0..4 {
                                 self.deck_views[deck_idx].set_stem_muted(stem_idx, false);
                                 self.deck_views[deck_idx].set_stem_soloed(stem_idx, false);
@@ -223,6 +224,22 @@ impl MeshApp {
                                     deck: deck_idx,
                                     index: self.config.display.default_loop_length_index,
                                 });
+
+                                // Reset all stems to unmuted/un-soloed in the engine
+                                for stem_idx in 0..4 {
+                                    if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
+                                        let _ = sender.send(EngineCommand::SetStemMute {
+                                            deck: deck_idx,
+                                            stem,
+                                            muted: false,
+                                        });
+                                        let _ = sender.send(EngineCommand::SetStemSolo {
+                                            deck: deck_idx,
+                                            stem,
+                                            soloed: false,
+                                        });
+                                    }
+                                }
 
                                 self.status = format!("Loaded track to deck {}", deck_idx + 1);
                             } else {

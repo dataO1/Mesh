@@ -897,10 +897,22 @@ impl Deck {
         state.muted = !state.muted;
     }
 
+    /// Set mute state for a stem (explicit set, not toggle)
+    pub fn set_stem_mute(&mut self, stem: Stem, muted: bool) {
+        let state = &mut self.stems[stem as usize];
+        state.muted = muted;
+    }
+
     /// Toggle solo for a stem
     pub fn toggle_stem_solo(&mut self, stem: Stem) {
         let state = &mut self.stems[stem as usize];
         state.soloed = !state.soloed;
+    }
+
+    /// Set solo state for a stem (explicit set, not toggle)
+    pub fn set_stem_solo(&mut self, stem: Stem, soloed: bool) {
+        let state = &mut self.stems[stem as usize];
+        state.soloed = soloed;
     }
 
     /// Get a reference to a stem's effect chain by index

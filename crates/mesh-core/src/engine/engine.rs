@@ -593,6 +593,16 @@ impl AudioEngine {
                         d.toggle_stem_solo(stem);
                     }
                 }
+                EngineCommand::SetStemMute { deck, stem, muted } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        d.set_stem_mute(stem, muted);
+                    }
+                }
+                EngineCommand::SetStemSolo { deck, stem, soloed } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        d.set_stem_solo(stem, soloed);
+                    }
+                }
 
                 // Mixer Control
                 EngineCommand::SetVolume { deck, volume } => {

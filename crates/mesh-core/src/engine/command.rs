@@ -124,8 +124,12 @@ pub enum EngineCommand {
     // ─────────────────────────────────────────────────────────────
     /// Toggle mute for a stem
     ToggleStemMute { deck: usize, stem: Stem },
+    /// Set mute state for a stem (explicit, not toggle)
+    SetStemMute { deck: usize, stem: Stem, muted: bool },
     /// Toggle solo for a stem
     ToggleStemSolo { deck: usize, stem: Stem },
+    /// Set solo state for a stem (explicit, not toggle)
+    SetStemSolo { deck: usize, stem: Stem, soloed: bool },
 
     // ─────────────────────────────────────────────────────────────
     // Mixer Control
