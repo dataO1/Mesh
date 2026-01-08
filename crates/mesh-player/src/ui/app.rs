@@ -360,6 +360,15 @@ impl MeshApp {
                                 let _ = sender.send(EngineCommand::SetCuePoint { deck: deck_idx });
                             }
                             HotCuePressed(slot) => {
+                                // If slot is empty, engine will set a new hot cue at current position
+                                // Update UI optimistically by reading current position from atomics
+                                let slot_was_empty = self.deck_views[deck_idx].hot_cue_position(slot).is_none();
+                                if slot_was_empty {
+                                    if let Some(ref atomics) = self.deck_atomics {
+                                        let position = atomics[deck_idx].position();
+                                        self.deck_views[deck_idx].set_hot_cue_position(slot, Some(position));
+                                    }
+                                }
                                 let _ = sender.send(EngineCommand::HotCuePress { deck: deck_idx, slot });
                             }
                             HotCueReleased(_slot) => {
@@ -369,6 +378,8 @@ impl MeshApp {
                                 // Hot cue is set automatically on press if empty
                             }
                             ClearHotCue(slot) => {
+                                // Clear the UI state for this hot cue slot
+                                self.deck_views[deck_idx].set_hot_cue_position(slot, None);
                                 let _ = sender.send(EngineCommand::ClearHotCue { deck: deck_idx, slot });
                             }
                             Sync => {

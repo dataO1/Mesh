@@ -220,7 +220,12 @@ impl DeckView {
         self.stem_soloed.get(stem_idx).copied().unwrap_or(false)
     }
 
-    /// Set hot cue position for a slot (called after track load)
+    /// Get hot cue position for a slot
+    pub fn hot_cue_position(&self, slot: usize) -> Option<u64> {
+        self.hot_cue_positions.get(slot).copied().flatten()
+    }
+
+    /// Set hot cue position for a slot (called after track load or when setting new cue)
     pub fn set_hot_cue_position(&mut self, slot: usize, position: Option<u64>) {
         if slot < 8 {
             self.hot_cue_positions[slot] = position;
