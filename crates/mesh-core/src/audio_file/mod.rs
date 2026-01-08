@@ -534,7 +534,7 @@ impl TrackMetadata {
         if let (Some(first_beat), Some(bpm)) = (metadata.beat_grid.first_beat_sample, metadata.bpm) {
             // Only regenerate if we have very few beats (likely truncated) or none
             if metadata.beat_grid.beats.len() < 50 {
-                log::debug!(
+                log::trace!(
                     "Regenerating beat grid: first_beat={}, bpm={:.1}, duration={}",
                     first_beat, bpm, duration_samples
                 );
@@ -1406,7 +1406,7 @@ pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFile
 
                 match parse_wvfm_chunk(&wvfm_data) {
                     Ok(preview) => {
-                        log::debug!("Loaded waveform preview: {}px width, 4 stems", preview.width);
+                        log::trace!("Loaded waveform preview: {}px width, 4 stems", preview.width);
                         waveform_preview = Some(preview);
                     }
                     Err(e) => {
@@ -1422,7 +1422,7 @@ pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFile
 
                 match parse_mlop_chunk(&mlop_data) {
                     Ok(loops) => {
-                        log::debug!("Loaded {} saved loops", loops.len());
+                        log::trace!("Loaded {} saved loops", loops.len());
                         saved_loops = loops;
                     }
                     Err(e) => {
@@ -1443,7 +1443,7 @@ pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFile
                 .map_err(|e| AudioFileError::IoError(e.to_string()))?;
         }
     }
-    log::debug!("    [PERF] Chunk parsing complete: {:?}", start.elapsed());
+    log::trace!("    [PERF] Chunk parsing complete: {:?}", start.elapsed());
 
     // Calculate duration in samples from format info
     let bytes_per_sample = (bits_per_sample / 8) as u64;
@@ -1458,7 +1458,7 @@ pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFile
     if let Some(description) = bext_description {
         metadata = TrackMetadata::parse_bext_description_with_duration(&description, duration_samples);
     }
-    log::debug!("    [PERF] Beat grid regenerated: {:?}", start.elapsed());
+    log::trace!("    [PERF] Beat grid regenerated: {:?}", start.elapsed());
 
     // Add any cue points without labels
     for (id, pos) in cue_points {
