@@ -170,6 +170,7 @@ Mesh implements a fully real-time safe architecture:
 - Loop halve/double buttons with visual display
 - Beat grid support from track metadata
 - **Automatic beat sync** — Tracks automatically phase-align when playing (see [Auto Beat Sync](#automatic-beat-sync))
+- **Automatic key matching** — Per-deck pitch transposition to match the master deck's key (see [Key Matching](#automatic-key-matching))
 
 **Mixer**
 - 4-channel mixer with per-channel controls
@@ -443,6 +444,55 @@ Mesh solves this using **fractional sample accumulation**: the remainder from ea
 Beat sync can be toggled on/off in **Settings → Playback → Automatic Beat Sync**. When disabled, tracks play from their exact cued position without phase adjustment.
 
 > **Note:** This feature requires tracks to have beat grids. mesh-cue automatically generates beat grids during import using Essentia's beat detection.
+
+---
+
+## Automatic Key Matching
+
+Mesh includes **automatic key matching** — when enabled per-deck, tracks are automatically pitch-shifted to harmonically match the master deck's musical key.
+
+### How It Works
+
+1. **Per-Deck Toggle**: Each deck has a KEY button next to SLIP to enable/disable key matching
+2. **Master Deck Reference**: The longest-playing deck is the master (no transpose applied to it)
+3. **Automatic Transposition**: Slave decks with key matching enabled are pitch-shifted to match the master's key
+4. **Relative Key Detection**: Compatible keys (Am ↔ C major) are detected — no transpose needed
+5. **Real-Time Updates**: When the master deck changes, all slave decks automatically re-transpose
+
+### Waveform Header Display
+
+The waveform header shows the current key matching status:
+
+| Display | Meaning |
+|---------|---------|
+| `Am` | Key matching disabled, or this is the master deck |
+| `Am ✓` | Key match enabled, keys are compatible (no transpose needed) |
+| `Am → +2` | Key match enabled, transposing +2 semitones |
+| `Am → -5` | Key match enabled, transposing -5 semitones |
+
+### Music Theory
+
+Mesh uses the **Camelot Wheel** system for key compatibility:
+
+- **Same key**: Am → Am = no transpose needed
+- **Relative keys**: Am → C (relative major) = no transpose needed
+- **Different keys**: Am → Em = transpose by -5 semitones (or +7)
+
+Transposition always uses the **smallest interval** (±6 semitones max) to minimize pitch artifacts.
+
+### What This Means for DJing
+
+- **Harmonic mixing made easy** — Enable KEY and tracks blend harmonically
+- **No manual pitch shifting** — The system calculates optimal transposition
+- **Relative keys respected** — Am and C major are treated as compatible
+- **Per-deck control** — Enable on slave decks, disable on master
+- **Visual feedback** — See transpose amount in the waveform header
+
+### Technical Details
+
+Key matching uses [signalsmith-stretch](https://signalsmith-audio.co.uk/code/stretch/)'s `set_transpose_factor_semitones()` for high-quality pitch shifting without tempo change. This is applied in the audio engine's real-time processing loop alongside time stretching.
+
+> **Note:** This feature requires tracks to have key metadata. mesh-cue automatically detects keys during import using Essentia's KeyExtractor.
 
 ---
 
