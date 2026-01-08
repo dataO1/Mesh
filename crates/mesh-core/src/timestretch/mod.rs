@@ -10,10 +10,11 @@ use crate::types::{StereoBuffer, SAMPLE_RATE};
 /// Number of channels (stereo)
 const CHANNELS: u32 = 2;
 
-/// Time stretcher for BPM synchronization
+/// Time stretcher for BPM synchronization and pitch shifting
 ///
 /// Takes stereo audio at the track's original tempo and outputs audio
-/// stretched/compressed to match the global BPM.
+/// stretched/compressed to match the global BPM, with optional pitch shifting
+/// for key matching.
 ///
 /// Uses zero-copy format conversion - StereoBuffer is reinterpreted as
 /// interleaved f32 without any per-frame copying.
@@ -22,6 +23,8 @@ pub struct TimeStretcher {
     stretcher: Stretch,
     /// Current stretch ratio (output_bpm / input_bpm)
     ratio: f64,
+    /// Pitch shift in semitones (positive = up, negative = down)
+    pitch_semitones: f64,
 }
 
 impl TimeStretcher {
@@ -32,6 +35,7 @@ impl TimeStretcher {
         Self {
             stretcher,
             ratio: 1.0,
+            pitch_semitones: 0.0,
         }
     }
 
@@ -66,6 +70,23 @@ impl TimeStretcher {
     /// Set ratio from track and target BPM
     pub fn set_bpm(&mut self, track_bpm: f64, target_bpm: f64) {
         self.set_ratio(Self::ratio_from_bpm(track_bpm, target_bpm));
+    }
+
+    /// Set pitch shift in semitones (positive = up, negative = down)
+    ///
+    /// Used for automatic key matching - transposes audio to match the master deck's key.
+    /// Range is clamped to -12..+12 semitones (one octave).
+    pub fn set_pitch_semitones(&mut self, semitones: f64) {
+        self.pitch_semitones = semitones.clamp(-12.0, 12.0);
+        // Call signalsmith-stretch's transpose function
+        // None for tonality_limit means no limit on formant preservation
+        self.stretcher
+            .set_transpose_factor_semitones(self.pitch_semitones as f32, None);
+    }
+
+    /// Get the current pitch shift in semitones
+    pub fn pitch_semitones(&self) -> f64 {
+        self.pitch_semitones
     }
 
     /// Get the input latency in samples
