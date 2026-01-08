@@ -171,6 +171,7 @@ Mesh implements a fully real-time safe architecture:
 - Beat grid support from track metadata
 - **Automatic beat sync** — Tracks automatically phase-align when playing (see [Auto Beat Sync](#automatic-beat-sync))
 - **Automatic key matching** — Per-deck pitch transposition to match the master deck's key (see [Key Matching](#automatic-key-matching))
+- **Stem Slicer** — Real-time audio remixing by rearranging slice playback order (see [Stem Slicer](#stem-slicer))
 
 **Mixer**
 - 4-channel mixer with per-channel controls
@@ -493,6 +494,57 @@ Transposition always uses the **smallest interval** (±6 semitones max) to minim
 Key matching uses [signalsmith-stretch](https://signalsmith-audio.co.uk/code/stretch/)'s `set_transpose_factor_semitones()` for high-quality pitch shifting without tempo change. This is applied in the audio engine's real-time processing loop alongside time stretching.
 
 > **Note:** This feature requires tracks to have key metadata. mesh-cue automatically detects keys during import using Essentia's KeyExtractor.
+
+---
+
+## Stem Slicer
+
+Mesh includes a **Stem Slicer** — a real-time remixing tool that divides stems into slices and lets you rearrange their playback order on the fly.
+
+### How It Works
+
+1. **Buffer Window**: A configurable window (1/4/8/16 bars) is divided into 8 equal slices
+2. **Playback Queue**: An 8-slot queue determines which slice content plays at each timing position
+3. **Beat-Aligned**: Slices snap to the track's beat grid for musical timing
+4. **Per-Stem Control**: Choose which stems (Vocals, Drums, Bass, Other) are affected
+
+### Using the Slicer
+
+1. Click **SLICER** button on a deck to enter slicer mode (activates on next beat)
+2. The 8 action buttons now trigger slices instead of hot cues
+3. Press buttons to queue slices — they play in the order pressed
+4. Click **HOTCUE** to exit slicer mode (queue resets)
+
+### Queue Algorithms
+
+| Algorithm | Behavior |
+|-----------|----------|
+| **FIFO** (default) | New slices added to end, oldest removed |
+| **Replace** | New slice replaces the currently playing slot |
+
+### Configuration
+
+In **Settings → Slicer**:
+
+| Setting | Options | Description |
+|---------|---------|-------------|
+| Buffer Size | 1, 4, 8, 16 bars | Size of the sliced window (always 8 slices) |
+| Queue Algorithm | FIFO, Replace | How new triggers are handled |
+| Affected Stems | Vocals, Drums, Bass, Other | Which stems are sliced (toggle each) |
+
+### Example
+
+With a 4-bar buffer at 128 BPM:
+- Each slice = 2 beats (half a bar)
+- Pressing buttons [1, 1, 3, 3, 5, 5, 7, 7] creates a "stutter" pattern
+- Pressing buttons [8, 7, 6, 5, 4, 3, 2, 1] reverses the playback order
+
+### What This Means for DJing
+
+- **Create live remixes** — Rearrange drum patterns, vocal phrases, or bass lines
+- **Build tension** — Repeat the same slice for buildup effects
+- **Glitch effects** — Rapid slice triggering for stutters and fills
+- **Multi-stem control** — Slice drums independently or lock all stems together
 
 ---
 
