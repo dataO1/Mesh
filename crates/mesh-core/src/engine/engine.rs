@@ -106,6 +106,15 @@ impl AudioEngine {
         std::array::from_fn(|i| self.decks[i].atomics())
     }
 
+    /// Get slicer atomics for the drums stem on all decks
+    ///
+    /// Returns Arc references to each deck's drums slicer atomics.
+    /// The UI can read slicer state (active, queue, current slice) without blocking.
+    pub fn slicer_atomics(&self) -> [std::sync::Arc<super::slicer::SlicerAtomics>; NUM_DECKS] {
+        use crate::types::Stem;
+        std::array::from_fn(|i| self.decks[i].slicer_atomics(Stem::Drums))
+    }
+
     /// Get a reference to the mixer
     pub fn mixer(&self) -> &Mixer {
         &self.mixer
@@ -615,6 +624,33 @@ impl AudioEngine {
                     if let Some(d) = self.decks.get_mut(deck) {
                         let parsed_key = key.as_ref().and_then(|k| crate::music::MusicalKey::parse(k));
                         d.set_track_key(parsed_key);
+                    }
+                }
+
+                // Slicer Control
+                EngineCommand::SetSlicerEnabled { deck, stem, enabled } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        d.set_slicer_enabled(stem, enabled);
+                    }
+                }
+                EngineCommand::SlicerQueueSlice { deck, stem, slice_idx } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        d.slicer_queue_slice(stem, slice_idx);
+                    }
+                }
+                EngineCommand::SlicerResetQueue { deck, stem } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        d.slicer_reset_queue(stem);
+                    }
+                }
+                EngineCommand::SetSlicerBufferBars { deck, stem, bars } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        d.set_slicer_buffer_bars(stem, bars);
+                    }
+                }
+                EngineCommand::SetSlicerQueueAlgorithm { deck, stem, algorithm } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        d.set_slicer_queue_algorithm(stem, algorithm);
                     }
                 }
 

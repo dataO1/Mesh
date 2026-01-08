@@ -62,9 +62,11 @@ mod engine;
 pub mod gc;
 mod latency;
 mod mixer;
+mod slicer;
 
 pub use command::*;
 pub use deck::*;
 pub use engine::*;
 pub use latency::*;
 pub use mixer::*;
+pub use slicer::*;

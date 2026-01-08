@@ -36,6 +36,7 @@
 //! engine.process_commands(&mut rx);
 //! ```
 
+use super::slicer::QueueAlgorithm;
 use super::PreparedTrack;
 use crate::types::Stem;
 
@@ -139,6 +140,20 @@ pub enum EngineCommand {
     SetKeyMatchEnabled { deck: usize, enabled: bool },
     /// Set the track's musical key (parsed from metadata)
     SetTrackKey { deck: usize, key: Option<String> },
+
+    // ─────────────────────────────────────────────────────────────
+    // Slicer Control
+    // ─────────────────────────────────────────────────────────────
+    /// Enable/disable slicer for a stem on a deck
+    SetSlicerEnabled { deck: usize, stem: Stem, enabled: bool },
+    /// Queue a slice for playback (button press in slicer mode, 0-7)
+    SlicerQueueSlice { deck: usize, stem: Stem, slice_idx: usize },
+    /// Reset slicer queue to default order [0,1,2,3,4,5,6,7]
+    SlicerResetQueue { deck: usize, stem: Stem },
+    /// Set slicer buffer size in bars (4, 8, or 16)
+    SetSlicerBufferBars { deck: usize, stem: Stem, bars: u32 },
+    /// Set slicer queue algorithm (FIFO rotate or Replace current)
+    SetSlicerQueueAlgorithm { deck: usize, stem: Stem, algorithm: QueueAlgorithm },
 
     // ─────────────────────────────────────────────────────────────
     // Mixer Control

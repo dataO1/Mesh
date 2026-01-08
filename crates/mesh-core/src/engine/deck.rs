@@ -328,6 +328,8 @@ pub struct Deck {
     current_transpose: i8,
     /// Track's parsed musical key (None if not detected or unavailable)
     track_key: Option<crate::music::MusicalKey>,
+    /// Per-stem slicer states (initially only Drums is used, but modular for future)
+    slicer_states: [super::slicer::SlicerState; NUM_STEMS],
 }
 
 impl Deck {
@@ -354,6 +356,7 @@ impl Deck {
             key_match_enabled: false,
             current_transpose: 0,
             track_key: None,
+            slicer_states: std::array::from_fn(|_| super::slicer::SlicerState::new()),
         }
     }
 
@@ -459,6 +462,12 @@ impl Deck {
         self.scratch_offset = 0.0;
         self.hot_cue_preview_return = None;
         self.fractional_position = 0.0; // Reset stretch accumulator
+
+        // Update slicer grid alignment with track's first beat
+        let first_beat = prepared.first_beat;
+        for slicer in &mut self.slicer_states {
+            slicer.set_first_beat(first_beat);
+        }
 
         // Sync atomics for lock-free UI reads (fast atomic stores)
         self.sync_position_atomic();
@@ -711,6 +720,43 @@ impl Deck {
     /// Set the track's musical key (parsed from metadata)
     pub fn set_track_key(&mut self, key: Option<crate::music::MusicalKey>) {
         self.track_key = key;
+    }
+
+    // --- Slicer ---
+
+    /// Get the slicer atomics for a specific stem (for UI access)
+    pub fn slicer_atomics(&self, stem: Stem) -> std::sync::Arc<super::slicer::SlicerAtomics> {
+        self.slicer_states[stem as usize].atomics()
+    }
+
+    /// Check if slicer is enabled for a stem
+    pub fn slicer_enabled(&self, stem: Stem) -> bool {
+        self.slicer_states[stem as usize].is_enabled()
+    }
+
+    /// Enable or disable slicer for a stem
+    pub fn set_slicer_enabled(&mut self, stem: Stem, enabled: bool) {
+        self.slicer_states[stem as usize].set_enabled(enabled);
+    }
+
+    /// Queue a slice for playback (button press in slicer mode)
+    pub fn slicer_queue_slice(&mut self, stem: Stem, slice_idx: usize) {
+        self.slicer_states[stem as usize].queue_slice(slice_idx);
+    }
+
+    /// Reset the slicer queue to default order
+    pub fn slicer_reset_queue(&mut self, stem: Stem) {
+        self.slicer_states[stem as usize].reset_queue();
+    }
+
+    /// Set the slicer buffer size in bars
+    pub fn set_slicer_buffer_bars(&mut self, stem: Stem, bars: u32) {
+        self.slicer_states[stem as usize].set_buffer_bars(bars);
+    }
+
+    /// Set the slicer queue algorithm
+    pub fn set_slicer_queue_algorithm(&mut self, stem: Stem, algorithm: super::slicer::QueueAlgorithm) {
+        self.slicer_states[stem as usize].set_queue_algorithm(algorithm);
     }
 
     /// Beat jump forward by beat_jump_size beats (equals loop length)
@@ -1127,27 +1173,6 @@ impl Deck {
         self.fractional_position -= samples_to_read as f64;
         let samples_to_read = samples_to_read.clamp(1, MAX_BUFFER_SIZE);
 
-        // Rate-limited debug logging for stretch ratio diagnosis (~once per second)
-        // Also tracks cumulative samples to verify actual stretch over time
-        use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-        static FRAME_COUNT: AtomicU64 = AtomicU64::new(0);
-        static TOTAL_INPUT: AtomicU64 = AtomicU64::new(0);
-        static TOTAL_OUTPUT: AtomicU64 = AtomicU64::new(0);
-
-        let frame = FRAME_COUNT.fetch_add(1, AtomicOrdering::Relaxed);
-        let total_in = TOTAL_INPUT.fetch_add(samples_to_read as u64, AtomicOrdering::Relaxed) + samples_to_read as u64;
-        let total_out = TOTAL_OUTPUT.fetch_add(output_len as u64, AtomicOrdering::Relaxed) + output_len as u64;
-
-        if frame % 47 == 0 {
-            // ~once per second at 1024 buffer size (48000/1024 ≈ 47)
-            let actual_ratio = total_in as f64 / total_out as f64;
-            let elapsed_sec = total_out as f64 / SAMPLE_RATE as f64;
-            log::debug!(
-                "stretch: ratio={:.4}, actual={:.4}, output_len={}, samples_read={}, frac={:.2}, elapsed={:.1}s",
-                self.stretch_ratio, actual_ratio, output_len, samples_to_read, self.fractional_position, elapsed_sec
-            );
-        }
-
         // Set stretch_input length to samples we'll read
         stretch_input.set_len_from_capacity(samples_to_read);
         stretch_input.fill_silence();
@@ -1156,6 +1181,7 @@ impl Deck {
         let any_soloed = self.any_stem_soloed();
         let position = self.position;
         let duration_samples = track.duration_samples;
+        let samples_per_beat = track.samples_per_beat();
 
         // Set working length of all pre-allocated stem buffers (real-time safe: no allocation)
         // Capacity remains at MAX_BUFFER_SIZE, only the length field changes
@@ -1166,12 +1192,13 @@ impl Deck {
         // Parallel stem processing with Rayon
         // Each stem has its own buffer, enabling true parallelism without contention
         // The closure captures immutable references to track data, while each iteration
-        // gets exclusive mutable access to its own (stem_state, stem_buffer) pair
+        // gets exclusive mutable access to its own (stem_state, stem_buffer, slicer_state) tuple
         self.stems
             .par_iter_mut()
             .zip(self.stem_buffers.par_iter_mut())
+            .zip(self.slicer_states.par_iter_mut())
             .enumerate()
-            .for_each(|(stem_idx, (stem_state, stem_buffer))| {
+            .for_each(|(stem_idx, ((stem_state, stem_buffer), slicer_state))| {
                 let stem = Stem::ALL[stem_idx];
 
                 // Skip if muted, or if others are soloed and this isn't
@@ -1191,6 +1218,18 @@ impl Deck {
                     } else {
                         buf_slice[i] = StereoSample::silence();
                     }
+                }
+
+                // Apply slicer if enabled (before effects chain)
+                // The slicer remaps sample positions through the playback queue
+                if slicer_state.is_enabled() {
+                    slicer_state.process(
+                        stem_buffer,
+                        position,
+                        samples_per_beat,
+                        stem_data.as_slice(),
+                        duration_samples,
+                    );
                 }
 
                 // Process through effect chain (pass any_soloed for solo logic)
