@@ -15,6 +15,8 @@ pub struct PlayerConfig {
     pub audio: AudioConfig,
     /// Display settings (waveform, zoom levels)
     pub display: DisplayConfig,
+    /// Slicer settings (buffer size, queue algorithm)
+    pub slicer: SlicerConfig,
     /// Path to the mesh collection folder (shared with mesh-cue)
     /// Default: ~/Music/mesh-collection
     pub collection_path: PathBuf,
@@ -31,6 +33,7 @@ impl Default for PlayerConfig {
         Self {
             audio: AudioConfig::default(),
             display: DisplayConfig::default(),
+            slicer: SlicerConfig::default(),
             collection_path,
         }
     }
@@ -90,6 +93,54 @@ impl DisplayConfig {
             .get(self.default_loop_length_index)
             .copied()
             .unwrap_or(4.0)
+    }
+}
+
+/// Slicer configuration section
+///
+/// Controls the stem slicer feature that allows real-time remixing
+/// by rearranging slice playback order.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SlicerConfig {
+    /// Default buffer size in bars (4, 8, or 16)
+    /// Smaller = more responsive, larger = more material to work with
+    pub default_buffer_bars: u32,
+    /// Queue algorithm for slice triggering
+    /// - "fifo": First-in-first-out - oldest slice removed when queue full
+    /// - "replace": Replace current playing slice immediately
+    pub queue_algorithm: String,
+    /// Which stems are affected by the slicer [Vocals, Drums, Bass, Other]
+    /// Default: only Drums enabled
+    pub affected_stems: [bool; 4],
+}
+
+impl Default for SlicerConfig {
+    fn default() -> Self {
+        Self {
+            default_buffer_bars: 4, // 4 bars = 8 half-bar slices
+            queue_algorithm: "fifo".to_string(),
+            affected_stems: [false, true, false, false], // Only Drums by default
+        }
+    }
+}
+
+impl SlicerConfig {
+    /// Parse the queue algorithm string into the engine's QueueAlgorithm type
+    pub fn queue_algorithm(&self) -> mesh_core::engine::QueueAlgorithm {
+        use mesh_core::engine::QueueAlgorithm;
+        match self.queue_algorithm.to_lowercase().as_str() {
+            "replace" | "replace_current" => QueueAlgorithm::ReplaceCurrent,
+            _ => QueueAlgorithm::FifoRotate,
+        }
+    }
+
+    /// Get buffer bars clamped to valid range
+    pub fn buffer_bars(&self) -> u32 {
+        match self.default_buffer_bars {
+            1 | 4 | 8 | 16 => self.default_buffer_bars,
+            _ => 4, // Default to 4 if invalid
+        }
     }
 }
 
@@ -194,6 +245,10 @@ mod tests {
                 default_loop_length_index: 5, // 8 beats
                 default_zoom_bars: 4,
                 grid_bars: 16,
+            },
+            slicer: SlicerConfig {
+                default_buffer_bars: 8,
+                queue_algorithm: "replace".to_string(),
             },
             collection_path: PathBuf::from("/tmp/test-collection"),
         };

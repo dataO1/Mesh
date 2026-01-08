@@ -20,6 +20,12 @@ pub struct SettingsState {
     pub draft_grid_bars: u32,
     /// Draft phase sync enabled
     pub draft_phase_sync: bool,
+    /// Draft slicer buffer bars (4, 8, or 16)
+    pub draft_slicer_buffer_bars: u32,
+    /// Draft slicer queue algorithm ("fifo" or "replace")
+    pub draft_slicer_queue_algorithm: String,
+    /// Draft slicer affected stems [Vocals, Drums, Bass, Other]
+    pub draft_slicer_affected_stems: [bool; 4],
     /// Status message (for save feedback)
     pub status: String,
 }
@@ -33,6 +39,9 @@ impl SettingsState {
             draft_zoom_bars: config.display.default_zoom_bars,
             draft_grid_bars: config.display.grid_bars,
             draft_phase_sync: config.audio.phase_sync,
+            draft_slicer_buffer_bars: config.slicer.default_buffer_bars,
+            draft_slicer_queue_algorithm: config.slicer.queue_algorithm.clone(),
+            draft_slicer_affected_stems: config.slicer.affected_stems,
             status: String::new(),
         }
     }
@@ -45,6 +54,9 @@ impl SettingsState {
             draft_zoom_bars: 8,
             draft_grid_bars: 8,
             draft_phase_sync: true, // Enabled by default
+            draft_slicer_buffer_bars: 4, // 4 bars = 8 half-bar slices
+            draft_slicer_queue_algorithm: "fifo".to_string(),
+            draft_slicer_affected_stems: [false, true, false, false], // Only Drums by default
             status: String::new(),
         }
     }
@@ -73,6 +85,9 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
     // Display settings section
     let display_section = view_display_section(state);
 
+    // Slicer settings section
+    let slicer_section = view_slicer_section(state);
+
     // Status message (for save feedback)
     let status: Element<Message> = if !state.status.is_empty() {
         text(&state.status).size(14).into()
@@ -93,7 +108,7 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
         .spacing(10)
         .width(Length::Fill);
 
-    let content = column![header, loop_section, display_section, status, actions]
+    let content = column![header, loop_section, display_section, slicer_section, status, actions]
         .spacing(20)
         .width(Length::Fixed(450.0));
 
@@ -247,6 +262,123 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
             grid_subsection,
             grid_hint,
             grid_row,
+        ]
+        .spacing(8),
+    )
+    .padding(15)
+    .width(Length::Fill)
+    .into()
+}
+
+/// Slicer settings (buffer size, queue algorithm)
+fn view_slicer_section(state: &SettingsState) -> Element<'_, Message> {
+    let section_title = text("Slicer").size(18);
+
+    // Buffer bars section
+    let buffer_subsection = text("Buffer Size").size(14);
+    let buffer_hint = text("Size of the slicer buffer window (always 8 slices)")
+        .size(12);
+
+    let buffer_sizes: [u32; 4] = [1, 4, 8, 16];
+    let buffer_buttons: Vec<Element<Message>> = buffer_sizes
+        .iter()
+        .map(|&size| {
+            let is_selected = state.draft_slicer_buffer_bars == size;
+            let btn = button(text(format!("{}", size)).size(11))
+                .on_press(Message::UpdateSettingsSlicerBufferBars(size))
+                .style(if is_selected {
+                    iced::widget::button::primary
+                } else {
+                    iced::widget::button::secondary
+                })
+                .width(Length::Fixed(44.0));
+            btn.into()
+        })
+        .collect();
+
+    let buffer_label = text("Bars:").size(14);
+    let buffer_row = row![
+        buffer_label,
+        row(buffer_buttons).spacing(4).align_y(Alignment::Center),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+
+    // Queue algorithm section
+    let algo_subsection = text("Queue Algorithm").size(14);
+    let algo_hint = text("How new slice triggers are handled when queue is active")
+        .size(12);
+
+    let algorithms = [("fifo", "FIFO"), ("replace", "Replace")];
+    let algo_buttons: Vec<Element<Message>> = algorithms
+        .iter()
+        .map(|(value, label)| {
+            let is_selected = state.draft_slicer_queue_algorithm == *value;
+            let btn = button(text(*label).size(11))
+                .on_press(Message::UpdateSettingsSlicerQueueAlgorithm(value.to_string()))
+                .style(if is_selected {
+                    iced::widget::button::primary
+                } else {
+                    iced::widget::button::secondary
+                })
+                .width(Length::Fixed(70.0));
+            btn.into()
+        })
+        .collect();
+
+    let algo_label = text("Mode:").size(14);
+    let algo_row = row![
+        algo_label,
+        row(algo_buttons).spacing(4).align_y(Alignment::Center),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+
+    // Affected stems section
+    let stems_subsection = text("Affected Stems").size(14);
+    let stems_hint = text("Which stems are processed by the slicer")
+        .size(12);
+
+    let stem_names = ["Vocals", "Drums", "Bass", "Other"];
+    let stems_buttons: Vec<Element<Message>> = stem_names
+        .iter()
+        .enumerate()
+        .map(|(idx, name)| {
+            let is_selected = state.draft_slicer_affected_stems[idx];
+            let btn = button(text(*name).size(11))
+                .on_press(Message::UpdateSettingsSlicerAffectedStem(idx, !is_selected))
+                .style(if is_selected {
+                    iced::widget::button::primary
+                } else {
+                    iced::widget::button::secondary
+                })
+                .width(Length::Fixed(60.0));
+            btn.into()
+        })
+        .collect();
+
+    let stems_label = text("Stems:").size(14);
+    let stems_row = row![
+        stems_label,
+        row(stems_buttons).spacing(4).align_y(Alignment::Center),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+
+    container(
+        column![
+            section_title,
+            buffer_subsection,
+            buffer_hint,
+            buffer_row,
+            Space::new().height(10),
+            algo_subsection,
+            algo_hint,
+            algo_row,
+            Space::new().height(10),
+            stems_subsection,
+            stems_hint,
+            stems_row,
         ]
         .spacing(8),
     )
