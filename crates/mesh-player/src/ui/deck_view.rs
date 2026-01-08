@@ -21,6 +21,16 @@ pub const STEM_NAMES: [&str; 4] = ["Vocals", "Drums", "Bass", "Other"];
 /// Short stem names for compact display
 pub const STEM_NAMES_SHORT: [&str; 4] = ["VOC", "DRM", "BAS", "OTH"];
 
+/// Action button mode - determines behavior of the 8 performance pads
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ActionButtonMode {
+    /// Hot cue mode - buttons trigger/set hot cues (default behavior)
+    #[default]
+    HotCue,
+    /// Slicer mode - buttons queue slices for playback
+    Slicer,
+}
+
 /// State for a deck view
 pub struct DeckView {
     /// Deck index (0-3)
@@ -61,6 +71,16 @@ pub struct DeckView {
     stem_effect_bypassed: [Vec<bool>; 4],
     /// Rotary knob states for rendering (8 knobs, shared across stems)
     knob_states: [RotaryKnobState; 8],
+    /// Current action button mode (HotCue or Slicer)
+    action_mode: ActionButtonMode,
+    /// Whether slicer is active (synced from atomics)
+    slicer_active: bool,
+    /// Current slicer queue (8 slice indices)
+    slicer_queue: [u8; 8],
+    /// Current slice being played (0-7)
+    slicer_current_slice: u8,
+    /// Whether shift is currently held
+    shift_held: bool,
 }
 
 /// Messages for deck interaction
@@ -110,6 +130,16 @@ pub enum DeckMessage {
     SetStemKnob(usize, usize, f32),
     /// Toggle effect bypass in chain (stem_idx, effect_idx)
     ToggleEffectBypass(usize, usize),
+    /// Set action button mode (HotCue or Slicer)
+    SetActionMode(ActionButtonMode),
+    /// Slicer button pressed (0-7) - queues slice for playback
+    SlicerTrigger(usize),
+    /// Toggle slicer on/off (also resets queue when disabling)
+    ToggleSlicer,
+    /// Shift button pressed
+    ShiftPressed,
+    /// Shift button released
+    ShiftReleased,
 }
 
 /// Loop length labels for display (1 beat to 64 bars = 256 beats)
@@ -138,6 +168,11 @@ impl DeckView {
             stem_effect_names: Default::default(),
             stem_effect_bypassed: Default::default(),
             knob_states: Default::default(),
+            action_mode: ActionButtonMode::default(),
+            slicer_active: false,
+            slicer_queue: [0, 1, 2, 3, 4, 5, 6, 7],
+            slicer_current_slice: 0,
+            shift_held: false,
         }
     }
 
@@ -257,6 +292,33 @@ impl DeckView {
         self.key_match_enabled
     }
 
+    /// Set the action button mode
+    pub fn set_action_mode(&mut self, mode: ActionButtonMode) {
+        self.action_mode = mode;
+    }
+
+    /// Get the current action button mode
+    pub fn action_mode(&self) -> ActionButtonMode {
+        self.action_mode
+    }
+
+    /// Check if slicer is active
+    pub fn slicer_active(&self) -> bool {
+        self.slicer_active
+    }
+
+    /// Sync slicer state from atomics
+    pub fn sync_slicer_state(&mut self, active: bool, current_slice: u8, queue: [u8; 8]) {
+        self.slicer_active = active;
+        self.slicer_current_slice = current_slice;
+        self.slicer_queue = queue;
+    }
+
+    /// Set shift held state
+    pub fn set_shift_held(&mut self, held: bool) {
+        self.shift_held = held;
+    }
+
     /// Handle a deck message
     pub fn handle_message(&mut self, msg: DeckMessage, deck: Option<&mut Deck>) {
         let Some(deck) = deck else { return };
@@ -344,6 +406,21 @@ impl DeckView {
                         effect.set_bypass(!effect.is_bypassed());
                     }
                 }
+            }
+            DeckMessage::SetActionMode(mode) => {
+                self.action_mode = mode;
+            }
+            DeckMessage::SlicerTrigger(_idx) => {
+                // Handled at app level via EngineCommand
+            }
+            DeckMessage::ToggleSlicer => {
+                // Handled at app level via EngineCommand
+            }
+            DeckMessage::ShiftPressed => {
+                self.shift_held = true;
+            }
+            DeckMessage::ShiftReleased => {
+                self.shift_held = false;
             }
         }
     }
@@ -917,6 +994,118 @@ impl DeckView {
             .into()
     }
 
+    /// Action buttons grid - displays either hot cues or slicer based on mode
+    fn view_action_buttons_grid(&self) -> Element<DeckMessage> {
+        match self.action_mode {
+            ActionButtonMode::HotCue => self.view_hot_cues_grid(),
+            ActionButtonMode::Slicer => self.view_slicer_grid(),
+        }
+    }
+
+    /// Slicer buttons in 2x4 grid layout (fills available width)
+    ///
+    /// Each button represents a slice (0-7) and queues it for playback when pressed.
+    /// Visual feedback shows which slice is currently playing and the queue state.
+    fn view_slicer_grid(&self) -> Element<DeckMessage> {
+        use iced::Length;
+
+        // Slicer color scheme - orange gradient for slices
+        let slice_colors: [Color; 8] = [
+            Color::from_rgb(1.0, 0.4, 0.1), // Slice 1 - bright orange
+            Color::from_rgb(1.0, 0.5, 0.2), // Slice 2
+            Color::from_rgb(1.0, 0.6, 0.2), // Slice 3
+            Color::from_rgb(0.9, 0.6, 0.3), // Slice 4
+            Color::from_rgb(0.9, 0.5, 0.3), // Slice 5
+            Color::from_rgb(0.8, 0.5, 0.3), // Slice 6
+            Color::from_rgb(0.8, 0.4, 0.2), // Slice 7
+            Color::from_rgb(0.7, 0.4, 0.2), // Slice 8 - darker orange
+        ];
+
+        // Create 2 rows of 4 buttons each
+        let make_button = |i: usize| -> Element<DeckMessage> {
+            let is_current = self.slicer_active && self.slicer_current_slice == i as u8;
+            let is_in_queue = self.slicer_queue.contains(&(i as u8));
+            let color = slice_colors[i];
+
+            let btn_style = if is_current {
+                // Currently playing slice - bright highlight
+                button::Style {
+                    background: Some(Background::Color(color)),
+                    text_color: Color::WHITE,
+                    border: iced::Border {
+                        color: Color::WHITE,
+                        width: 2.0,
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                }
+            } else if is_in_queue && self.slicer_active {
+                // In queue - dimmed version of color
+                let dimmed_color = Color::from_rgb(
+                    0.15 + color.r * 0.35,
+                    0.15 + color.g * 0.35,
+                    0.15 + color.b * 0.35,
+                );
+                button::Style {
+                    background: Some(Background::Color(dimmed_color)),
+                    text_color: color,
+                    border: iced::Border {
+                        color,
+                        width: 1.5,
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                }
+            } else {
+                // Inactive - dark gray
+                button::Style {
+                    background: Some(Background::Color(Color::from_rgb(0.18, 0.18, 0.18))),
+                    text_color: Color::from_rgb(0.5, 0.35, 0.2),
+                    border: iced::Border {
+                        color: Color::from_rgb(0.35, 0.25, 0.15),
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                }
+            };
+
+            let label = format!("{}", i + 1);
+            let btn = button(text(label).size(14))
+                .on_press(DeckMessage::SlicerTrigger(i))
+                .padding([12, 0])
+                .width(Length::Fill)
+                .style(move |_, _| btn_style);
+
+            btn.into()
+        };
+
+        // Row 1: slices 1-4
+        let row1 = row![
+            make_button(0),
+            make_button(1),
+            make_button(2),
+            make_button(3),
+        ]
+        .spacing(4)
+        .width(Length::Fill);
+
+        // Row 2: slices 5-8
+        let row2 = row![
+            make_button(4),
+            make_button(5),
+            make_button(6),
+            make_button(7),
+        ]
+        .spacing(4)
+        .width(Length::Fill);
+
+        column![row1, row2]
+            .spacing(4)
+            .width(Length::Fill)
+            .into()
+    }
+
     // =========================================================================
     // Compact Layout (for side-by-side with waveforms)
     // =========================================================================
@@ -952,17 +1141,21 @@ impl DeckView {
         // Middle: Loop/Slip + Loop size + Beat jump (horizontal, full width)
         let control_row = self.view_control_row_compact();
 
-        // Bottom: CUE/PLAY (left) | Hot Cues (right) - aligned vertically
+        // Mode row: [SHIFT] [HOTCUE] [SLICER] - switches action button behavior
+        let mode_row = self.view_mode_row();
+
+        // Bottom: CUE/PLAY (left) | Action Buttons (right) - aligned vertically
+        // Action buttons show hotcues or slicer grid depending on mode
         let cue_play_col = self.view_cue_play_compact();
 
-        let hot_cues_col = container(self.view_hot_cues_grid())
+        let action_buttons_col = container(self.view_action_buttons_grid())
             .width(Length::Fill);
 
-        let bottom_section = row![cue_play_col, hot_cues_col]
+        let bottom_section = row![cue_play_col, action_buttons_col]
             .spacing(12)
             .align_y(Center);
 
-        column![stem_section, control_row, bottom_section]
+        column![stem_section, control_row, mode_row, bottom_section]
             .spacing(8)
             .padding(8)
             .into()
@@ -1185,6 +1378,141 @@ impl DeckView {
             loop_btn,
             slip_btn,
             key_btn,
+        ]
+        .spacing(4)
+        .align_y(Center)
+        .into()
+    }
+
+    /// Mode selection row: [SHIFT] [HOTCUE] [SLICER]
+    ///
+    /// Determines the behavior of the 8 action buttons below
+    fn view_mode_row(&self) -> Element<DeckMessage> {
+        use iced::Length;
+
+        // Shift button - same width as CUE button for alignment
+        let shift_text = if self.shift_held { "SHIFT ●" } else { "SHIFT" };
+        let shift_style = if self.shift_held {
+            button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.5, 0.4, 0.2))),
+                text_color: Color::WHITE,
+                border: iced::Border {
+                    color: Color::from_rgb(0.8, 0.6, 0.2),
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                ..Default::default()
+            }
+        } else {
+            button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.25, 0.25, 0.25))),
+                text_color: Color::from_rgb(0.8, 0.8, 0.8),
+                border: iced::Border {
+                    color: Color::from_rgb(0.4, 0.4, 0.4),
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                ..Default::default()
+            }
+        };
+
+        let shift_btn = mouse_area(
+            button(text(shift_text).size(10))
+                .padding([6, 12])
+                .width(Length::Fixed(70.0))
+                .style(move |_, _| shift_style)
+        )
+        .on_press(DeckMessage::ShiftPressed)
+        .on_release(DeckMessage::ShiftReleased);
+
+        // Helper to build styled mode button
+        let build_mode_style = |is_active: bool| -> button::Style {
+            if is_active {
+                button::Style {
+                    background: Some(Background::Color(Color::from_rgb(0.3, 0.5, 0.3))),
+                    text_color: Color::WHITE,
+                    border: iced::Border {
+                        color: Color::from_rgb(0.4, 0.7, 0.4),
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                }
+            } else {
+                button::Style {
+                    background: Some(Background::Color(Color::from_rgb(0.25, 0.25, 0.25))),
+                    text_color: Color::from_rgb(0.7, 0.7, 0.7),
+                    border: iced::Border {
+                        color: Color::from_rgb(0.4, 0.4, 0.4),
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                }
+            }
+        };
+
+        // HOTCUE mode button
+        let hotcue_is_active = self.action_mode == ActionButtonMode::HotCue;
+        let hotcue_style = build_mode_style(hotcue_is_active);
+        let hotcue_btn = button(text("HOTCUE").size(10))
+            .on_press(DeckMessage::SetActionMode(ActionButtonMode::HotCue))
+            .padding([6, 12])
+            .width(Length::Fixed(60.0))
+            .style(move |_, _| hotcue_style);
+
+        // SLICER mode button
+        let slicer_is_active = self.action_mode == ActionButtonMode::Slicer;
+        let slicer_style = if slicer_is_active {
+            button::Style {
+                background: Some(Background::Color(if self.slicer_active {
+                    Color::from_rgb(0.6, 0.4, 0.2) // Orange when slicer is running
+                } else {
+                    Color::from_rgb(0.3, 0.5, 0.3) // Green when selected but not running
+                })),
+                text_color: Color::WHITE,
+                border: iced::Border {
+                    color: if self.slicer_active {
+                        Color::from_rgb(0.9, 0.6, 0.2)
+                    } else {
+                        Color::from_rgb(0.4, 0.7, 0.4)
+                    },
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                ..Default::default()
+            }
+        } else {
+            button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.25, 0.25, 0.25))),
+                text_color: Color::from_rgb(0.7, 0.7, 0.7),
+                border: iced::Border {
+                    color: Color::from_rgb(0.4, 0.4, 0.4),
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                ..Default::default()
+            }
+        };
+
+        // If shift is held and slicer mode is selected, clicking toggles slicer
+        let slicer_btn_msg = if self.shift_held && self.action_mode == ActionButtonMode::Slicer {
+            DeckMessage::ToggleSlicer
+        } else {
+            DeckMessage::SetActionMode(ActionButtonMode::Slicer)
+        };
+
+        let slicer_btn = button(text("SLICER").size(10))
+            .on_press(slicer_btn_msg)
+            .padding([6, 12])
+            .width(Length::Fixed(70.0))
+            .style(move |_, _| slicer_style);
+
+        row![
+            shift_btn,
+            Space::new().width(12),
+            hotcue_btn,
+            slicer_btn,
         ]
         .spacing(4)
         .align_y(Center)

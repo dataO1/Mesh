@@ -970,6 +970,64 @@ fn draw_overview_section(
         }
     }
 
+    // Draw slicer region (semi-transparent orange overlay with 8 divisions)
+    if let Some((slicer_start, slicer_end)) = overview.slicer_region {
+        let start_x = (slicer_start * width as f64) as f32;
+        let end_x = (slicer_end * width as f64) as f32;
+        let slicer_width = end_x - start_x;
+        if slicer_width > 0.0 {
+            // Orange overlay for slicer buffer
+            frame.fill_rectangle(
+                Point::new(start_x, overview_y),
+                Size::new(slicer_width, overview_height),
+                Color::from_rgba(1.0, 0.5, 0.0, 0.15), // Semi-transparent orange
+            );
+
+            // Draw 8 slice divisions
+            let slice_width = slicer_width / 8.0;
+            for i in 0..9 {
+                let x = start_x + slice_width * i as f32;
+                let is_boundary = i == 0 || i == 8;
+                let line_width = if is_boundary { 2.0 } else { 1.0 };
+                let alpha = if is_boundary { 0.8 } else { 0.4 };
+
+                // Highlight current slice
+                let color = if !is_boundary {
+                    if let Some(current) = overview.slicer_current_slice {
+                        if i as u8 == current + 1 {
+                            // Highlight line after current slice
+                            Color::from_rgba(1.0, 0.8, 0.2, 0.9)
+                        } else {
+                            Color::from_rgba(1.0, 0.6, 0.1, alpha)
+                        }
+                    } else {
+                        Color::from_rgba(1.0, 0.6, 0.1, alpha)
+                    }
+                } else {
+                    Color::from_rgba(1.0, 0.6, 0.1, alpha)
+                };
+
+                frame.stroke(
+                    &Path::line(
+                        Point::new(x, overview_y),
+                        Point::new(x, overview_y + overview_height),
+                    ),
+                    Stroke::default().with_color(color).with_width(line_width),
+                );
+            }
+
+            // Highlight current playing slice with brighter overlay
+            if let Some(current) = overview.slicer_current_slice {
+                let slice_x = start_x + slice_width * current as f32;
+                frame.fill_rectangle(
+                    Point::new(slice_x, overview_y),
+                    Size::new(slice_width, overview_height),
+                    Color::from_rgba(1.0, 0.6, 0.0, 0.25), // Brighter orange for current slice
+                );
+            }
+        }
+    }
+
     // Draw beat markers with configurable density
     let step = (overview.grid_bars * 4) as usize;
     for (i, &beat_pos) in overview.beat_markers.iter().enumerate() {
@@ -1585,6 +1643,83 @@ fn draw_zoomed_at(
             }
         }
 
+        // Draw slicer region (orange overlay with 8 divisions)
+        if let Some((slicer_start_norm, slicer_end_norm)) = zoomed.slicer_region {
+            let slicer_start_sample = (slicer_start_norm * zoomed.duration_samples as f64) as u64;
+            let slicer_end_sample = (slicer_end_norm * zoomed.duration_samples as f64) as u64;
+
+            if slicer_end_sample > view_start && slicer_start_sample < view_end {
+                let start_x = if slicer_start_sample <= view_start {
+                    x
+                } else {
+                    x + ((slicer_start_sample - view_start) as f64 / view_samples * width as f64) as f32
+                };
+                let end_x = if slicer_end_sample >= view_end {
+                    x + width
+                } else {
+                    x + ((slicer_end_sample - view_start) as f64 / view_samples * width as f64) as f32
+                };
+
+                let slicer_width = end_x - start_x;
+                if slicer_width > 0.0 {
+                    // Orange overlay for slicer buffer
+                    frame.fill_rectangle(
+                        Point::new(start_x, y),
+                        Size::new(slicer_width, height),
+                        Color::from_rgba(1.0, 0.5, 0.0, 0.12),
+                    );
+
+                    // Draw 8 slice divisions (if they fit in view)
+                    let total_slicer_samples = (slicer_end_sample - slicer_start_sample) as f64;
+                    let samples_per_slice = total_slicer_samples / 8.0;
+
+                    for i in 0..9 {
+                        let slice_sample = slicer_start_sample as f64 + samples_per_slice * i as f64;
+                        let slice_sample_u64 = slice_sample as u64;
+
+                        if slice_sample_u64 >= view_start && slice_sample_u64 <= view_end {
+                            let slice_x = x + ((slice_sample_u64 - view_start) as f64 / view_samples * width as f64) as f32;
+                            let is_boundary = i == 0 || i == 8;
+                            let line_width = if is_boundary { 2.0 } else { 1.0 };
+                            let alpha = if is_boundary { 0.8 } else { 0.5 };
+
+                            frame.stroke(
+                                &Path::line(Point::new(slice_x, y), Point::new(slice_x, y + height)),
+                                Stroke::default()
+                                    .with_color(Color::from_rgba(1.0, 0.6, 0.1, alpha))
+                                    .with_width(line_width),
+                            );
+                        }
+                    }
+
+                    // Highlight current playing slice with brighter overlay
+                    if let Some(current) = zoomed.slicer_current_slice {
+                        let slice_start_sample = slicer_start_sample as f64 + samples_per_slice * current as f64;
+                        let slice_end_sample = slice_start_sample + samples_per_slice;
+
+                        if (slice_end_sample as u64) > view_start && (slice_start_sample as u64) < view_end {
+                            let slice_start_x = if (slice_start_sample as u64) <= view_start {
+                                x
+                            } else {
+                                x + ((slice_start_sample as u64 - view_start) as f64 / view_samples * width as f64) as f32
+                            };
+                            let slice_end_x = if (slice_end_sample as u64) >= view_end {
+                                x + width
+                            } else {
+                                x + ((slice_end_sample as u64 - view_start) as f64 / view_samples * width as f64) as f32
+                            };
+
+                            frame.fill_rectangle(
+                                Point::new(slice_start_x, y),
+                                Size::new(slice_end_x - slice_start_x, height),
+                                Color::from_rgba(1.0, 0.6, 0.0, 0.2),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         // Draw beat markers
         for &beat_sample in &zoomed.beat_grid {
             if beat_sample >= view_start && beat_sample <= view_end {
@@ -1758,6 +1893,47 @@ fn draw_overview_at(
                     .with_color(Color::from_rgba(0.2, 0.9, 0.2, 0.8))
                     .with_width(2.0),
             );
+        }
+    }
+
+    // Draw slicer region (semi-transparent orange overlay with 8 divisions)
+    if let Some((slicer_start, slicer_end)) = overview.slicer_region {
+        let start_x = x + (slicer_start * width as f64) as f32;
+        let end_x = x + (slicer_end * width as f64) as f32;
+        let slicer_width = end_x - start_x;
+        if slicer_width > 0.0 {
+            // Orange overlay for slicer buffer
+            frame.fill_rectangle(
+                Point::new(start_x, y),
+                Size::new(slicer_width, height),
+                Color::from_rgba(1.0, 0.5, 0.0, 0.15),
+            );
+
+            // Draw 8 slice divisions
+            let slice_width = slicer_width / 8.0;
+            for i in 0..9 {
+                let slice_x = start_x + slice_width * i as f32;
+                let is_boundary = i == 0 || i == 8;
+                let line_width = if is_boundary { 2.0 } else { 1.0 };
+                let alpha = if is_boundary { 0.8 } else { 0.4 };
+
+                frame.stroke(
+                    &Path::line(Point::new(slice_x, y), Point::new(slice_x, y + height)),
+                    Stroke::default()
+                        .with_color(Color::from_rgba(1.0, 0.6, 0.1, alpha))
+                        .with_width(line_width),
+                );
+            }
+
+            // Highlight current playing slice with brighter overlay
+            if let Some(current) = overview.slicer_current_slice {
+                let slice_x = start_x + slice_width * current as f32;
+                frame.fill_rectangle(
+                    Point::new(slice_x, y),
+                    Size::new(slice_width, height),
+                    Color::from_rgba(1.0, 0.6, 0.0, 0.25),
+                );
+            }
         }
     }
 

@@ -23,7 +23,7 @@ use crate::audio::CommandSender;
 use crate::config::{self, PlayerConfig};
 use crate::loader::TrackLoader;
 use mesh_core::audio_file::StemBuffers;
-use mesh_core::engine::{DeckAtomics, EngineCommand};
+use mesh_core::engine::{DeckAtomics, EngineCommand, SlicerAtomics};
 use mesh_core::types::NUM_DECKS;
 use mesh_widgets::{PeaksComputer, PeaksComputeRequest};
 use super::collection_browser::{CollectionBrowserState, CollectionBrowserMessage};
@@ -40,6 +40,8 @@ pub struct MeshApp {
     /// Lock-free deck state for UI reads (position, play state, loop)
     /// These atomics are updated by the audio thread; UI reads are wait-free
     deck_atomics: Option<[Arc<DeckAtomics>; NUM_DECKS]>,
+    /// Lock-free slicer state for UI reads (drums stem slicer on all decks)
+    slicer_atomics: Option<[Arc<SlicerAtomics>; NUM_DECKS]>,
     /// Background track loader (avoids blocking UI/audio during loads)
     track_loader: TrackLoader,
     /// Background peak computer (offloads expensive waveform peak computation)
@@ -101,6 +103,12 @@ pub enum Message {
     UpdateSettingsGridBars(u32),
     /// Update settings: phase sync enabled
     UpdateSettingsPhaseSync(bool),
+    /// Update settings: slicer buffer bars (4, 8, or 16)
+    UpdateSettingsSlicerBufferBars(u32),
+    /// Update settings: slicer queue algorithm ("fifo" or "replace")
+    UpdateSettingsSlicerQueueAlgorithm(String),
+    /// Update settings: toggle slicer affected stem (stem_index, enabled)
+    UpdateSettingsSlicerAffectedStem(usize, bool),
     /// Save settings to disk
     SaveSettings,
     /// Settings save complete
@@ -114,10 +122,12 @@ impl MeshApp {
     ///
     /// - `command_sender`: Lock-free command channel for engine control (None for offline mode)
     /// - `deck_atomics`: Lock-free position/state for UI reads (None for offline mode)
+    /// - `slicer_atomics`: Lock-free slicer state for UI reads (None for offline mode)
     /// - `jack_sample_rate`: JACK's sample rate for track loading (e.g., 48000 or 44100)
     pub fn new(
         mut command_sender: Option<CommandSender>,
         deck_atomics: Option<[Arc<DeckAtomics>; NUM_DECKS]>,
+        slicer_atomics: Option<[Arc<SlicerAtomics>; NUM_DECKS]>,
         jack_sample_rate: u32,
     ) -> Self {
         // Load configuration
@@ -137,6 +147,7 @@ impl MeshApp {
         Self {
             command_sender,
             deck_atomics,
+            slicer_atomics,
             track_loader: TrackLoader::spawn(jack_sample_rate),
             peaks_computer: PeaksComputer::spawn(),
             player_canvas_state: PlayerCanvasState::new(),
@@ -347,6 +358,46 @@ impl MeshApp {
                     }
                 }
 
+                // Sync slicer state from atomics (LOCK-FREE - never blocks audio thread)
+                // Updates slicer active state, queue, and current slice for UI display
+                if let Some(ref slicer_atomics) = self.slicer_atomics {
+                    for i in 0..4 {
+                        let sa = &slicer_atomics[i];
+                        let active = sa.active.load(std::sync::atomic::Ordering::Relaxed);
+                        let current_slice = sa.current_slice.load(std::sync::atomic::Ordering::Relaxed);
+                        let queue_packed = sa.queue.load(std::sync::atomic::Ordering::Relaxed);
+                        let queue = SlicerAtomics::unpack_queue(queue_packed);
+
+                        // Sync to deck view for button display
+                        self.deck_views[i].sync_slicer_state(active, current_slice, queue);
+
+                        // Sync to canvas for waveform overlay
+                        let duration = self.player_canvas_state.decks[i].overview.duration_samples;
+                        if active && duration > 0 {
+                            let buffer_start = sa.buffer_start.load(std::sync::atomic::Ordering::Relaxed);
+                            let buffer_end = sa.buffer_end.load(std::sync::atomic::Ordering::Relaxed);
+
+                            // Convert to normalized positions
+                            let start_norm = buffer_start as f64 / duration as f64;
+                            let end_norm = buffer_end as f64 / duration as f64;
+
+                            self.player_canvas_state.decks[i]
+                                .overview
+                                .set_slicer_region(Some((start_norm, end_norm)), Some(current_slice));
+                            self.player_canvas_state.decks[i]
+                                .zoomed
+                                .set_slicer_region(Some((start_norm, end_norm)), Some(current_slice));
+                        } else {
+                            self.player_canvas_state.decks[i]
+                                .overview
+                                .set_slicer_region(None, None);
+                            self.player_canvas_state.decks[i]
+                                .zoomed
+                                .set_slicer_region(None, None);
+                        }
+                    }
+                }
+
                 // Request zoomed waveform peak recomputation in background thread
                 // This expensive operation (10-50ms) is fully async - UI never blocks
                 for i in 0..4 {
@@ -489,6 +540,95 @@ impl MeshApp {
                             ToggleEffectBypass(_stem_idx, _effect_idx) => {
                                 // TODO: Effect bypass control
                             }
+                            // ─────────────────────────────────────────────────
+                            // Slicer Mode Controls
+                            // ─────────────────────────────────────────────────
+                            SetActionMode(mode) => {
+                                // Update UI state
+                                self.deck_views[deck_idx].set_action_mode(mode);
+
+                                // Enable/disable slicer based on mode for all affected stems
+                                use crate::ui::deck_view::ActionButtonMode;
+                                use mesh_core::types::Stem;
+                                let affected_stems = self.config.slicer.affected_stems;
+                                let stems = [Stem::Vocals, Stem::Drums, Stem::Bass, Stem::Other];
+
+                                match mode {
+                                    ActionButtonMode::Slicer => {
+                                        // Entering slicer mode - enable slicer processing for affected stems
+                                        for (idx, &stem) in stems.iter().enumerate() {
+                                            if affected_stems[idx] {
+                                                let _ = sender.send(EngineCommand::SetSlicerEnabled {
+                                                    deck: deck_idx,
+                                                    stem,
+                                                    enabled: true,
+                                                });
+                                            }
+                                        }
+                                    }
+                                    ActionButtonMode::HotCue => {
+                                        // Leaving slicer mode - disable slicer and reset queue for all stems
+                                        for &stem in &stems {
+                                            let _ = sender.send(EngineCommand::SetSlicerEnabled {
+                                                deck: deck_idx,
+                                                stem,
+                                                enabled: false,
+                                            });
+                                            let _ = sender.send(EngineCommand::SlicerResetQueue {
+                                                deck: deck_idx,
+                                                stem,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            SlicerTrigger(slice_idx) => {
+                                // Queue a slice for playback on all affected stems
+                                use mesh_core::types::Stem;
+                                let affected_stems = self.config.slicer.affected_stems;
+                                let stems = [Stem::Vocals, Stem::Drums, Stem::Bass, Stem::Other];
+                                for (idx, &stem) in stems.iter().enumerate() {
+                                    if affected_stems[idx] {
+                                        let _ = sender.send(EngineCommand::SlicerQueueSlice {
+                                            deck: deck_idx,
+                                            stem,
+                                            slice_idx,
+                                        });
+                                    }
+                                }
+                            }
+                            ToggleSlicer => {
+                                // Toggle slicer for all affected stems
+                                use mesh_core::types::Stem;
+                                let enabled = !self.deck_views[deck_idx].slicer_active();
+                                let affected_stems = self.config.slicer.affected_stems;
+                                let stems = [Stem::Vocals, Stem::Drums, Stem::Bass, Stem::Other];
+
+                                for (idx, &stem) in stems.iter().enumerate() {
+                                    if affected_stems[idx] {
+                                        let _ = sender.send(EngineCommand::SetSlicerEnabled {
+                                            deck: deck_idx,
+                                            stem,
+                                            enabled,
+                                        });
+                                        // Reset queue when disabling
+                                        if !enabled {
+                                            let _ = sender.send(EngineCommand::SlicerResetQueue {
+                                                deck: deck_idx,
+                                                stem,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            ShiftPressed => {
+                                // UI-only state change
+                                self.deck_views[deck_idx].set_shift_held(true);
+                            }
+                            ShiftReleased => {
+                                // UI-only state change
+                                self.deck_views[deck_idx].set_shift_held(false);
+                            }
                         }
                     }
                 }
@@ -624,6 +764,20 @@ impl MeshApp {
                 self.settings.draft_phase_sync = enabled;
                 Task::none()
             }
+            Message::UpdateSettingsSlicerBufferBars(bars) => {
+                self.settings.draft_slicer_buffer_bars = bars;
+                Task::none()
+            }
+            Message::UpdateSettingsSlicerQueueAlgorithm(algo) => {
+                self.settings.draft_slicer_queue_algorithm = algo;
+                Task::none()
+            }
+            Message::UpdateSettingsSlicerAffectedStem(stem_idx, enabled) => {
+                if stem_idx < 4 {
+                    self.settings.draft_slicer_affected_stems[stem_idx] = enabled;
+                }
+                Task::none()
+            }
             Message::SaveSettings => {
                 // Apply draft settings to config
                 let mut new_config = (*self.config).clone();
@@ -634,12 +788,31 @@ impl MeshApp {
                 new_config.audio.global_bpm = self.global_bpm;
                 // Save phase sync setting
                 new_config.audio.phase_sync = self.settings.draft_phase_sync;
+                // Save slicer settings
+                new_config.slicer.default_buffer_bars = self.settings.draft_slicer_buffer_bars;
+                new_config.slicer.queue_algorithm = self.settings.draft_slicer_queue_algorithm.clone();
+                new_config.slicer.affected_stems = self.settings.draft_slicer_affected_stems;
 
                 self.config = Arc::new(new_config.clone());
 
                 // Send phase sync setting to audio engine immediately
                 if let Some(ref mut sender) = self.command_sender {
                     let _ = sender.send(EngineCommand::SetPhaseSync(self.settings.draft_phase_sync));
+                    // Send slicer settings to audio engine for all decks
+                    let algo = new_config.slicer.queue_algorithm();
+                    let buffer_bars = new_config.slicer.buffer_bars();
+                    for deck in 0..4 {
+                        let _ = sender.send(EngineCommand::SetSlicerBufferBars {
+                            deck,
+                            stem: mesh_core::types::Stem::Drums,
+                            bars: buffer_bars,
+                        });
+                        let _ = sender.send(EngineCommand::SetSlicerQueueAlgorithm {
+                            deck,
+                            stem: mesh_core::types::Stem::Drums,
+                            algorithm: algo,
+                        });
+                    }
                 }
 
                 // Save to disk in background
@@ -813,6 +986,6 @@ impl MeshApp {
 impl Default for MeshApp {
     fn default() -> Self {
         // Default to 48kHz when no JACK rate is available (matches SAMPLE_RATE constant)
-        Self::new(None, None, 48000)
+        Self::new(None, None, None, 48000)
     }
 }

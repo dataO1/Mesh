@@ -76,6 +76,10 @@ pub struct OverviewState {
     pub grid_bars: u32,
     /// Loop region (start, end) as normalized positions (0.0 to 1.0), None if no loop active
     pub loop_region: Option<(f64, f64)>,
+    /// Slicer region (start, end) as normalized positions (0.0 to 1.0), None if slicer not active
+    pub slicer_region: Option<(f64, f64)>,
+    /// Current playing slice index (0-7), for highlighting in visualization
+    pub slicer_current_slice: Option<u8>,
 }
 
 impl OverviewState {
@@ -93,6 +97,8 @@ impl OverviewState {
             missing_preview_message: None,
             grid_bars: 8, // Default: show grid every 8 bars
             loop_region: None,
+            slicer_region: None,
+            slicer_current_slice: None,
         }
     }
 
@@ -111,6 +117,14 @@ impl OverviewState {
     /// Pass `None` to clear the loop region.
     pub fn set_loop_region(&mut self, region: Option<(f64, f64)>) {
         self.loop_region = region;
+    }
+
+    /// Set the slicer region (normalized positions 0.0 to 1.0)
+    ///
+    /// Pass `None` to clear the slicer region.
+    pub fn set_slicer_region(&mut self, region: Option<(f64, f64)>, current_slice: Option<u8>) {
+        self.slicer_region = region;
+        self.slicer_current_slice = current_slice;
     }
 
     /// Create from a cached waveform preview
@@ -167,6 +181,8 @@ impl OverviewState {
             missing_preview_message: None,
             grid_bars: 8,
             loop_region: None,
+            slicer_region: None,
+            slicer_current_slice: None,
         }
     }
 
@@ -188,6 +204,8 @@ impl OverviewState {
             missing_preview_message: Some(message.to_string()),
             grid_bars: 8,
             loop_region: None,
+            slicer_region: None,
+            slicer_current_slice: None,
         }
     }
 
@@ -221,6 +239,8 @@ impl OverviewState {
             missing_preview_message: None,
             grid_bars: 8,
             loop_region: None,
+            slicer_region: None,
+            slicer_current_slice: None,
         }
     }
 
@@ -294,6 +314,8 @@ impl OverviewState {
             missing_preview_message: None,
             grid_bars: 8,
             loop_region: None,
+            slicer_region: None,
+            slicer_current_slice: None,
         }
     }
 
@@ -372,6 +394,10 @@ pub struct ZoomedState {
     pub has_track: bool,
     /// Loop region (start, end) as normalized positions (0.0 to 1.0)
     pub loop_region: Option<(f64, f64)>,
+    /// Slicer region (start, end) as normalized positions (0.0 to 1.0), None if slicer not active
+    pub slicer_region: Option<(f64, f64)>,
+    /// Current playing slice index (0-7), for highlighting in visualization
+    pub slicer_current_slice: Option<u8>,
 }
 
 impl ZoomedState {
@@ -388,6 +414,8 @@ impl ZoomedState {
             bpm: 120.0,
             has_track: false,
             loop_region: None,
+            slicer_region: None,
+            slicer_current_slice: None,
         }
     }
 
@@ -404,6 +432,8 @@ impl ZoomedState {
             bpm: if bpm > 0.0 { bpm } else { 120.0 },
             has_track: true,
             loop_region: None,
+            slicer_region: None,
+            slicer_current_slice: None,
         }
     }
 
@@ -427,6 +457,14 @@ impl ZoomedState {
     /// Pass `None` to clear the loop region.
     pub fn set_loop_region(&mut self, region: Option<(f64, f64)>) {
         self.loop_region = region;
+    }
+
+    /// Set the slicer region (normalized positions 0.0 to 1.0)
+    ///
+    /// Pass `None` to clear the slicer region.
+    pub fn set_slicer_region(&mut self, region: Option<(f64, f64)>, current_slice: Option<u8>) {
+        self.slicer_region = region;
+        self.slicer_current_slice = current_slice;
     }
 
     /// Update cue markers
