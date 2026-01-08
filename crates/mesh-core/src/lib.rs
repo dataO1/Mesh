@@ -7,5 +7,6 @@ pub mod timestretch;
 pub mod pd;
 pub mod engine;
 pub mod playlist;
+pub mod music;
 
 pub use types::*;
