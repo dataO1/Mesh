@@ -182,6 +182,28 @@ impl MeshApp {
                             self.player_canvas_state.set_track_name(deck_idx, track_name);
                             self.player_canvas_state.set_track_key(deck_idx, track_key);
 
+                            // Sync hot cue positions from track metadata for button colors
+                            // First clear all slots
+                            for slot in 0..8 {
+                                self.deck_views[deck_idx].set_hot_cue_position(slot, None);
+                            }
+                            // Then set positions from cue points (indexed by their slot/index field)
+                            for i in 0..prepared.track.cue_count() {
+                                if let Some(cue) = prepared.track.get_cue(i) {
+                                    let slot = cue.index as usize;
+                                    if slot < 8 {
+                                        self.deck_views[deck_idx].set_hot_cue_position(slot, Some(cue.sample_position));
+                                    }
+                                }
+                            }
+
+                            // Reset stem states for new track (all stems active, none muted/soloed)
+                            for stem_idx in 0..4 {
+                                self.deck_views[deck_idx].set_stem_muted(stem_idx, false);
+                                self.deck_views[deck_idx].set_stem_soloed(stem_idx, false);
+                                self.player_canvas_state.set_stem_active(deck_idx, stem_idx, true);
+                            }
+
                             // Send track to audio engine via lock-free queue (~50ns, never blocks!)
                             if let Some(ref mut sender) = self.command_sender {
                                 log::debug!("[PERF] UI: Sending LoadTrack command for deck {}", deck_idx);
@@ -249,9 +271,19 @@ impl MeshApp {
                         self.deck_views[i].sync_play_state(atomics[i].play_state());
                         self.deck_views[i].sync_loop_length_index(atomics[i].loop_length_index());
 
-                        // Sync stem active states to canvas (active = NOT muted)
+                        // Sync stem active states to canvas
+                        // Check if any stem is soloed
+                        let any_soloed = (0..4).any(|s| self.deck_views[i].is_stem_soloed(s));
                         for stem_idx in 0..4 {
-                            let is_active = !self.deck_views[i].is_stem_muted(stem_idx);
+                            let is_muted = self.deck_views[i].is_stem_muted(stem_idx);
+                            let is_soloed = self.deck_views[i].is_stem_soloed(stem_idx);
+                            // If any stem is soloed, only soloed stems are active
+                            // Otherwise, non-muted stems are active
+                            let is_active = if any_soloed {
+                                is_soloed && !is_muted
+                            } else {
+                                !is_muted
+                            };
                             self.player_canvas_state.set_stem_active(i, stem_idx, is_active);
                         }
 
@@ -367,17 +399,38 @@ impl MeshApp {
                                 if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
                                     let _ = sender.send(EngineCommand::ToggleStemMute { deck: deck_idx, stem });
                                 }
-                                // Sync visual indicator: stem_active = !new_muted = current_muted
-                                // (after toggle, the active state equals the PREVIOUS mute state)
+                                // Toggle mute state in DeckView for UI
                                 let was_muted = self.deck_views[deck_idx].is_stem_muted(stem_idx);
-                                self.player_canvas_state.set_stem_active(deck_idx, stem_idx, was_muted);
+                                let new_muted = !was_muted;
+                                self.deck_views[deck_idx].set_stem_muted(stem_idx, new_muted);
+
+                                // stem_active = NOT muted (when muted, stem is inactive)
+                                self.player_canvas_state.set_stem_active(deck_idx, stem_idx, !new_muted);
                             }
                             ToggleStemSolo(stem_idx) => {
                                 if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
                                     let _ = sender.send(EngineCommand::ToggleStemSolo { deck: deck_idx, stem });
                                 }
-                                // Solo affects multiple stems - visual state will sync on next tick
-                                // from the actual engine state via deck_view.sync_from_deck()
+                                // Toggle solo state
+                                let was_soloed = self.deck_views[deck_idx].is_stem_soloed(stem_idx);
+                                let new_soloed = !was_soloed;
+
+                                if new_soloed {
+                                    // Solo: this stem becomes active, all others become inactive
+                                    for i in 0..4 {
+                                        self.deck_views[deck_idx].set_stem_soloed(i, i == stem_idx);
+                                        // When soloing, set active state based on solo selection
+                                        // (ignore mute state - solo overrides)
+                                        self.player_canvas_state.set_stem_active(deck_idx, i, i == stem_idx);
+                                    }
+                                } else {
+                                    // Un-solo: all stems become active (unless muted)
+                                    self.deck_views[deck_idx].set_stem_soloed(stem_idx, false);
+                                    for i in 0..4 {
+                                        let is_muted = self.deck_views[deck_idx].is_stem_muted(i);
+                                        self.player_canvas_state.set_stem_active(deck_idx, i, !is_muted);
+                                    }
+                                }
                             }
                             SelectStem(stem_idx) => {
                                 // UI-only state, no command needed

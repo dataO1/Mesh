@@ -220,6 +220,27 @@ impl DeckView {
         self.stem_soloed.get(stem_idx).copied().unwrap_or(false)
     }
 
+    /// Set hot cue position for a slot (called after track load)
+    pub fn set_hot_cue_position(&mut self, slot: usize, position: Option<u64>) {
+        if slot < 8 {
+            self.hot_cue_positions[slot] = position;
+        }
+    }
+
+    /// Update stem mute state (for optimistic UI updates)
+    pub fn set_stem_muted(&mut self, stem_idx: usize, muted: bool) {
+        if stem_idx < 4 {
+            self.stem_muted[stem_idx] = muted;
+        }
+    }
+
+    /// Update stem solo state (for optimistic UI updates)
+    pub fn set_stem_soloed(&mut self, stem_idx: usize, soloed: bool) {
+        if stem_idx < 4 {
+            self.stem_soloed[stem_idx] = soloed;
+        }
+    }
+
     /// Handle a deck message
     pub fn handle_message(&mut self, msg: DeckMessage, deck: Option<&mut Deck>) {
         let Some(deck) = deck else { return };
