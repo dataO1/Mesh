@@ -605,10 +605,9 @@ pub struct PlayerCanvasState {
     track_names: [String; 4],
     /// Track keys for each deck (displayed in header, e.g. "Am", "C#m")
     track_keys: [String; 4],
-    /// Stem mute status per deck [deck][stem] (4 decks × 4 stems)
-    stem_muted: [[bool; 4]; 4],
-    /// Stem solo status per deck [deck][stem] (4 decks × 4 stems)
-    stem_soloed: [[bool; 4]; 4],
+    /// Stem active status per deck [deck][stem] (4 decks × 4 stems)
+    /// true = stem is playing, false = stem is bypassed/muted
+    stem_active: [[bool; 4]; 4],
     /// Last update timestamp for each deck (for smooth interpolation)
     last_update_time: [std::time::Instant; 4],
     /// Whether each deck is currently playing (for interpolation)
@@ -641,8 +640,7 @@ impl PlayerCanvasState {
                 String::new(),
                 String::new(),
             ],
-            stem_muted: [[false; 4]; 4],
-            stem_soloed: [[false; 4]; 4],
+            stem_active: [[true; 4]; 4], // All stems active by default
             last_update_time: [now, now, now, now],
             is_playing: [false, false, false, false],
             is_master: [false, false, false, false],
@@ -688,35 +686,19 @@ impl PlayerCanvasState {
         }
     }
 
-    /// Set stem mute status for a deck
-    pub fn set_stem_muted(&mut self, deck_idx: usize, stem_idx: usize, muted: bool) {
+    /// Set stem active status for a deck (true = playing, false = bypassed)
+    pub fn set_stem_active(&mut self, deck_idx: usize, stem_idx: usize, active: bool) {
         if deck_idx < 4 && stem_idx < 4 {
-            self.stem_muted[deck_idx][stem_idx] = muted;
+            self.stem_active[deck_idx][stem_idx] = active;
         }
     }
 
-    /// Set stem solo status for a deck
-    pub fn set_stem_soloed(&mut self, deck_idx: usize, stem_idx: usize, soloed: bool) {
-        if deck_idx < 4 && stem_idx < 4 {
-            self.stem_soloed[deck_idx][stem_idx] = soloed;
-        }
-    }
-
-    /// Get stem mute status for a deck
-    pub fn stem_muted(&self, deck_idx: usize) -> &[bool; 4] {
+    /// Get stem active status for a deck (true = playing, false = bypassed)
+    pub fn stem_active(&self, deck_idx: usize) -> &[bool; 4] {
         if deck_idx < 4 {
-            &self.stem_muted[deck_idx]
+            &self.stem_active[deck_idx]
         } else {
-            &[false; 4]
-        }
-    }
-
-    /// Get stem solo status for a deck
-    pub fn stem_soloed(&self, deck_idx: usize) -> &[bool; 4] {
-        if deck_idx < 4 {
-            &self.stem_soloed[deck_idx]
-        } else {
-            &[false; 4]
+            &[true; 4]  // Default: all stems active
         }
     }
 

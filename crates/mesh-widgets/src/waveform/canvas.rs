@@ -1277,8 +1277,7 @@ where
             let is_master = self.state.is_master(deck_idx);
             let track_name = self.state.track_name(deck_idx);
             let track_key = self.state.track_key(deck_idx);
-            let stem_muted = self.state.stem_muted(deck_idx);
-            let stem_soloed = self.state.stem_soloed(deck_idx);
+            let stem_active = self.state.stem_active(deck_idx);
 
             draw_deck_quadrant(
                 &mut frame,
@@ -1291,8 +1290,7 @@ where
                 track_name,
                 track_key,
                 is_master,
-                stem_muted,
-                stem_soloed,
+                stem_active,
             );
         }
 
@@ -1329,8 +1327,7 @@ fn draw_deck_quadrant(
     track_name: &str,
     track_key: &str,
     is_master: bool,
-    stem_muted: &[bool; 4],
-    stem_soloed: &[bool; 4],
+    stem_active: &[bool; 4],
 ) {
     use iced::widget::canvas::Text;
     use iced::alignment::{Horizontal, Vertical};
@@ -1452,7 +1449,7 @@ fn draw_deck_quadrant(
     // Draw overview waveform below zoomed
     let overview_y = zoomed_y + ZOOMED_WAVEFORM_HEIGHT + DECK_INTERNAL_GAP;
 
-    // Draw stem status indicators on left side of waveforms
+    // Draw stem status indicators on left side of zoomed waveform only
     // Stem colors: Vocals=cyan, Drums=yellow, Bass=magenta, Other=green
     let stem_colors = [
         Color::from_rgb(0.0, 0.8, 0.8),  // Vocals - cyan
@@ -1461,25 +1458,23 @@ fn draw_deck_quadrant(
         Color::from_rgb(0.3, 0.9, 0.3),  // Other - green
     ];
 
-    // Calculate indicator height (spans from zoomed to end of overview)
-    let total_waveform_height = ZOOMED_WAVEFORM_HEIGHT + DECK_INTERNAL_GAP + WAVEFORM_HEIGHT;
-    let indicator_height = (total_waveform_height - (STEM_INDICATOR_GAP * 3.0)) / 4.0;
+    // Calculate indicator height to fit within zoomed waveform only
+    let indicator_height = (ZOOMED_WAVEFORM_HEIGHT - (STEM_INDICATOR_GAP * 3.0)) / 4.0;
 
     for (stem_idx, &color) in stem_colors.iter().enumerate() {
         let indicator_y = zoomed_y + (stem_idx as f32) * (indicator_height + STEM_INDICATOR_GAP);
 
-        // Determine color: muted = dark gray, soloed = bright color, normal = stem color
-        let indicator_color = if stem_muted[stem_idx] {
-            Color::from_rgb(0.15, 0.15, 0.15) // Dark/off when muted
-        } else if stem_soloed[stem_idx] {
-            color // Full brightness when soloed
-        } else {
-            // Normal: dimmed version of stem color
+        // Simple bypass toggle: 50% brightness if active, dark if bypassed
+        let indicator_color = if stem_active[stem_idx] {
+            // Active: 50% brightness of stem color
             Color::from_rgb(
                 color.r * 0.5,
                 color.g * 0.5,
                 color.b * 0.5,
             )
+        } else {
+            // Bypassed: dark/off
+            Color::from_rgb(0.12, 0.12, 0.12)
         };
 
         frame.fill_rectangle(

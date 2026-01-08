@@ -249,6 +249,12 @@ impl MeshApp {
                         self.deck_views[i].sync_play_state(atomics[i].play_state());
                         self.deck_views[i].sync_loop_length_index(atomics[i].loop_length_index());
 
+                        // Sync stem active states to canvas (active = NOT muted)
+                        for stem_idx in 0..4 {
+                            let is_active = !self.deck_views[i].is_stem_muted(stem_idx);
+                            self.player_canvas_state.set_stem_active(i, stem_idx, is_active);
+                        }
+
                         // Update position and loop display in waveform
                         let duration = self.player_canvas_state.decks[i].overview.duration_samples;
                         if duration > 0 {
@@ -361,17 +367,17 @@ impl MeshApp {
                                 if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
                                     let _ = sender.send(EngineCommand::ToggleStemMute { deck: deck_idx, stem });
                                 }
-                                // Sync to canvas state for visual indicator
-                                let muted = self.deck_views[deck_idx].is_stem_muted(stem_idx);
-                                self.player_canvas_state.set_stem_muted(deck_idx, stem_idx, !muted);
+                                // Sync visual indicator: stem_active = !new_muted = current_muted
+                                // (after toggle, the active state equals the PREVIOUS mute state)
+                                let was_muted = self.deck_views[deck_idx].is_stem_muted(stem_idx);
+                                self.player_canvas_state.set_stem_active(deck_idx, stem_idx, was_muted);
                             }
                             ToggleStemSolo(stem_idx) => {
                                 if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
                                     let _ = sender.send(EngineCommand::ToggleStemSolo { deck: deck_idx, stem });
                                 }
-                                // Sync to canvas state for visual indicator
-                                let soloed = self.deck_views[deck_idx].is_stem_soloed(stem_idx);
-                                self.player_canvas_state.set_stem_soloed(deck_idx, stem_idx, !soloed);
+                                // Solo affects multiple stems - visual state will sync on next tick
+                                // from the actual engine state via deck_view.sync_from_deck()
                             }
                             SelectStem(stem_idx) => {
                                 // UI-only state, no command needed
@@ -577,10 +583,12 @@ impl MeshApp {
         // 3-column layout for controls + canvas:
         // Left: Decks 1 & 3 controls | Center: Waveform canvas | Right: Decks 2 & 4 controls
 
-        // Left column: Deck 1 (top) and Deck 3 (bottom) controls
+        // Left column: Deck 1 (top) and Deck 3 (bottom) controls with spacer
+        use iced::widget::Space;
         let left_controls = column![
             self.deck_views[0].view_compact().map(|m| Message::Deck(0, m)),
             self.deck_views[2].view_compact().map(|m| Message::Deck(2, m)),
+            Space::new().height(Length::Fixed(10.0)),
         ]
         .spacing(10)
         .width(Length::FillPortion(1));
@@ -590,10 +598,11 @@ impl MeshApp {
         let center_column = container(center_canvas)
             .width(Length::FillPortion(2));
 
-        // Right column: Deck 2 (top) and Deck 4 (bottom) controls
+        // Right column: Deck 2 (top) and Deck 4 (bottom) controls with spacer
         let right_controls = column![
             self.deck_views[1].view_compact().map(|m| Message::Deck(1, m)),
             self.deck_views[3].view_compact().map(|m| Message::Deck(3, m)),
+            Space::new().height(Length::Fixed(10.0)),
         ]
         .spacing(10)
         .width(Length::FillPortion(1));

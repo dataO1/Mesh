@@ -50,7 +50,11 @@ and mesh-widget and only if necessary in the ui.
 - [x] The 8 stem chain effect knobs should be rotary knobs, not sliders.
 - [x] Change minimum loop length to 1 beat and maximum to 64 bars.
 - [x] remove slider next to mute and solo button for stems.
-
+- [x] Lets work on the player ui, the overall layout is mostly fine, but i dont like
+  the deck controls layout, we need to clean this up properly. Also the overview
+  waveform of each track should be underneight the zoomed waveform, so also in
+  2x2 grid. Then next to the respective waveform section of the deck i want the
+  controls. They should be just as high as the two waveforms for the deck. Instead of the header for the deck in the controls i want the decks number (just the number) and the loaded track ias a header row above the zoomed waveform(it must be part of the canvas i think, since the canvas needs to be a single unit due to the iced bug). Then next to the respective canvas of the deck i want the controls, and they should be just as high as the waveforms for the deck (so the controls of 1 and 3 should be left of waveform 1 and 3 and 2 and 4 right to 2 and 4). In these controls i want a single full span row with the stem controls. on the left side of everything a header with 4 buttons for the stem selection. on the right side two rows 1 with the chain and 1 for the 8 potentiometer knobs, full spanning width. Underneight the stem controls i want two columns (20% and 80% width). The left column contains a row for loop and slip, then a row for loop/jump length selection (as it is right now), then a row for beatjump buttons, then a row for big cue buttons, then a row for big play/pause button. on the right column i want the 8 performance pads fully filling height and widght equally spaced.
 # Bugs
 - [x] Solo button does not work on the stems (does nothing, it should mute all
   other stems in this deck)
