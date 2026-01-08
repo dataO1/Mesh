@@ -1278,6 +1278,8 @@ where
             let track_name = self.state.track_name(deck_idx);
             let track_key = self.state.track_key(deck_idx);
             let stem_active = self.state.stem_active(deck_idx);
+            let transpose = self.state.transpose(deck_idx);
+            let key_match_enabled = self.state.key_match_enabled(deck_idx);
 
             draw_deck_quadrant(
                 &mut frame,
@@ -1291,6 +1293,8 @@ where
                 track_key,
                 is_master,
                 stem_active,
+                transpose,
+                key_match_enabled,
             );
         }
 
@@ -1328,6 +1332,8 @@ fn draw_deck_quadrant(
     track_key: &str,
     is_master: bool,
     stem_active: &[bool; 4],
+    transpose: i8,
+    key_match_enabled: bool,
 ) {
     use iced::widget::canvas::Text;
     use iced::alignment::{Horizontal, Vertical};
@@ -1386,12 +1392,25 @@ fn draw_deck_quadrant(
     });
 
     // Draw track key in top right corner (if loaded)
+    // Format: "Am" (normal), "Am → +2" (transposing), "Am ✓" (compatible/no transpose)
     if deck.overview.has_track && !track_key.is_empty() {
+        let (key_display, key_color) = if is_master || !key_match_enabled {
+            // Master deck or key match disabled: just show key
+            (track_key.to_string(), Color::from_rgb(0.6, 0.8, 0.6))
+        } else if transpose == 0 {
+            // Key match enabled, compatible keys (no transpose needed)
+            (format!("{} ✓", track_key), Color::from_rgb(0.5, 0.9, 0.5)) // Brighter green
+        } else {
+            // Key match enabled, transposing
+            let sign = if transpose > 0 { "+" } else { "" };
+            (format!("{} → {}{}", track_key, sign, transpose), Color::from_rgb(0.9, 0.7, 0.5)) // Orange tint
+        };
+
         frame.fill_text(Text {
-            content: track_key.to_string(),
+            content: key_display,
             position: Point::new(x + width - 8.0, y + DECK_HEADER_HEIGHT / 2.0),
             size: 11.0.into(),
-            color: Color::from_rgb(0.6, 0.8, 0.6), // Subtle green tint
+            color: key_color,
             align_x: Horizontal::Right.into(),
             align_y: Vertical::Center.into(),
             ..Text::default()
@@ -1400,7 +1419,8 @@ fn draw_deck_quadrant(
 
     // Draw track name text (if loaded) - leave space for key on right
     let name_x = x + badge_margin + badge_width + 8.0;
-    let key_space = if !track_key.is_empty() { 50.0 } else { 0.0 };
+    // More space needed when showing transpose info (e.g. "Am → +2")
+    let key_space = if !track_key.is_empty() { 80.0 } else { 0.0 };
     let max_name_width = width - badge_width - badge_margin * 2.0 - 16.0 - key_space;
 
     if deck.overview.has_track && !track_name.is_empty() {

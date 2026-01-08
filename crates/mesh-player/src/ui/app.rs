@@ -179,6 +179,8 @@ impl MeshApp {
                             // Set track name and key for header display (before moving prepared)
                             let track_name = prepared.track.filename().to_string();
                             let track_key = prepared.track.key().to_string();
+                            // Clone key for engine command (before moving to canvas state)
+                            let key_for_engine = if track_key.is_empty() { None } else { Some(track_key.clone()) };
                             self.player_canvas_state.set_track_name(deck_idx, track_name);
                             self.player_canvas_state.set_track_key(deck_idx, track_key);
 
@@ -241,6 +243,12 @@ impl MeshApp {
                                     }
                                 }
 
+                                // Send track key to engine for key matching
+                                let _ = sender.send(EngineCommand::SetTrackKey {
+                                    deck: deck_idx,
+                                    key: key_for_engine.clone(),
+                                });
+
                                 self.status = format!("Loaded track to deck {}", deck_idx + 1);
                             } else {
                                 self.status = format!("Loaded track to deck {} (no audio)", deck_idx + 1);
@@ -283,6 +291,12 @@ impl MeshApp {
 
                         // Update master status for UI indicator
                         self.player_canvas_state.set_master(i, is_master);
+
+                        // Update key matching state for header display
+                        let key_match_enabled = atomics[i].key_match_enabled.load(std::sync::atomic::Ordering::Relaxed);
+                        let current_transpose = atomics[i].current_transpose.load(std::sync::atomic::Ordering::Relaxed);
+                        self.player_canvas_state.set_key_match_enabled(i, key_match_enabled);
+                        self.player_canvas_state.set_transpose(i, current_transpose);
 
                         // Update deck view state from atomics
                         self.deck_views[i].sync_play_state(atomics[i].play_state());
@@ -407,6 +421,11 @@ impl MeshApp {
                             }
                             ToggleSlip => {
                                 let _ = sender.send(EngineCommand::ToggleSlip { deck: deck_idx });
+                            }
+                            ToggleKeyMatch => {
+                                // Toggle key matching for this deck
+                                let current = self.deck_views[deck_idx].key_match_enabled();
+                                let _ = sender.send(EngineCommand::SetKeyMatchEnabled { deck: deck_idx, enabled: !current });
                             }
                             SetLoopLength(_beats) => {
                                 // Loop length is handled via adjust commands

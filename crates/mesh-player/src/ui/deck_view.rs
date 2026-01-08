@@ -49,6 +49,8 @@ pub struct DeckView {
     loop_length_beats: f32,
     /// Slip mode enabled
     slip_enabled: bool,
+    /// Key matching enabled
+    key_match_enabled: bool,
     /// Currently selected stem for effect chain view (0-3)
     selected_stem: usize,
     /// Effect chain knob values per stem (8 knobs x 4 stems)
@@ -86,6 +88,8 @@ pub enum DeckMessage {
     ToggleLoop,
     /// Toggle slip mode
     ToggleSlip,
+    /// Toggle key matching
+    ToggleKeyMatch,
     /// Set loop length (beats)
     SetLoopLength(u32),
     /// Halve loop length
@@ -128,6 +132,7 @@ impl DeckView {
             loop_active: false,
             loop_length_beats: 4.0, // Default 4 beats
             slip_enabled: false,
+            key_match_enabled: false,
             selected_stem: 0,       // Start with Vocals selected
             stem_knobs: [[0.0; 8]; 4],
             stem_effect_names: Default::default(),
@@ -142,6 +147,7 @@ impl DeckView {
         self.position = deck.position();
         self.loop_active = deck.loop_state().active;
         self.slip_enabled = deck.slip_enabled();
+        self.key_match_enabled = deck.key_match_enabled();
 
         if let Some(track) = deck.track() {
             self.track_bpm = track.bpm();
@@ -246,6 +252,11 @@ impl DeckView {
         }
     }
 
+    /// Check if key matching is enabled
+    pub fn key_match_enabled(&self) -> bool {
+        self.key_match_enabled
+    }
+
     /// Handle a deck message
     pub fn handle_message(&mut self, msg: DeckMessage, deck: Option<&mut Deck>) {
         let Some(deck) = deck else { return };
@@ -273,6 +284,9 @@ impl DeckView {
             }
             DeckMessage::ToggleSlip => {
                 deck.toggle_slip();
+            }
+            DeckMessage::ToggleKeyMatch => {
+                // Handled at engine level via command
             }
             DeckMessage::SetLoopLength(beats) => {
                 // Find index for this beat length and set it
@@ -481,6 +495,12 @@ impl DeckView {
             .on_press(DeckMessage::ToggleSlip)
             .padding(6);
 
+        // Key match button (shows state)
+        let key_text = if self.key_match_enabled { "KEY ●" } else { "KEY" };
+        let key_btn = button(text(key_text).size(12))
+            .on_press(DeckMessage::ToggleKeyMatch)
+            .padding(6);
+
         let loop_halve = button(text("÷2").size(10))
             .on_press(DeckMessage::LoopHalve)
             .padding(4);
@@ -503,6 +523,7 @@ impl DeckView {
             loop_double,
             loop_btn,
             slip_btn,
+            key_btn,
         ]
         .spacing(3)
         .align_y(Center)
@@ -797,7 +818,12 @@ impl DeckView {
             .on_press(DeckMessage::ToggleSlip)
             .padding(5);
 
-        let loop_row = row![loop_halve, loop_length, loop_double, loop_btn, slip_btn]
+        let key_text = if self.key_match_enabled { "KEY ●" } else { "KEY" };
+        let key_btn = button(text(key_text).size(11))
+            .on_press(DeckMessage::ToggleKeyMatch)
+            .padding(5);
+
+        let loop_row = row![loop_halve, loop_length, loop_double, loop_btn, slip_btn, key_btn]
             .spacing(4)
             .align_y(Center);
 
@@ -1115,6 +1141,13 @@ impl DeckView {
             .padding([4, 8])
             .width(Length::Fixed(60.0));
 
+        // Key match button
+        let key_text = if self.key_match_enabled { "KEY ●" } else { "KEY" };
+        let key_btn = button(text(key_text).size(10))
+            .on_press(DeckMessage::ToggleKeyMatch)
+            .padding([4, 8])
+            .width(Length::Fixed(60.0));
+
         // Loop length controls
         let loop_halve = button(text("÷2").size(10))
             .on_press(DeckMessage::LoopHalve)
@@ -1151,6 +1184,7 @@ impl DeckView {
             Space::new().width(8),
             loop_btn,
             slip_btn,
+            key_btn,
         ]
         .spacing(4)
         .align_y(Center)

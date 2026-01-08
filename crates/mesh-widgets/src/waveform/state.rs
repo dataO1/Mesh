@@ -614,6 +614,10 @@ pub struct PlayerCanvasState {
     is_playing: [bool; 4],
     /// Whether each deck is the master (longest playing, others sync to it)
     is_master: [bool; 4],
+    /// Current transpose in semitones per deck (-12 to +12, 0 if disabled or compatible)
+    current_transpose: [i8; 4],
+    /// Whether key matching is enabled per deck
+    key_match_enabled: [bool; 4],
 }
 
 impl PlayerCanvasState {
@@ -644,6 +648,8 @@ impl PlayerCanvasState {
             last_update_time: [now, now, now, now],
             is_playing: [false, false, false, false],
             is_master: [false, false, false, false],
+            current_transpose: [0; 4],
+            key_match_enabled: [false; 4],
         }
     }
 
@@ -713,6 +719,38 @@ impl PlayerCanvasState {
     pub fn is_master(&self, idx: usize) -> bool {
         if idx < 4 {
             self.is_master[idx]
+        } else {
+            false
+        }
+    }
+
+    /// Set the current transpose for a deck
+    pub fn set_transpose(&mut self, idx: usize, semitones: i8) {
+        if idx < 4 {
+            self.current_transpose[idx] = semitones;
+        }
+    }
+
+    /// Get the current transpose for a deck
+    pub fn transpose(&self, idx: usize) -> i8 {
+        if idx < 4 {
+            self.current_transpose[idx]
+        } else {
+            0
+        }
+    }
+
+    /// Set whether key matching is enabled for a deck
+    pub fn set_key_match_enabled(&mut self, idx: usize, enabled: bool) {
+        if idx < 4 {
+            self.key_match_enabled[idx] = enabled;
+        }
+    }
+
+    /// Check if key matching is enabled for a deck
+    pub fn key_match_enabled(&self, idx: usize) -> bool {
+        if idx < 4 {
+            self.key_match_enabled[idx]
         } else {
             false
         }
