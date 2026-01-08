@@ -132,6 +132,15 @@ pub enum EngineCommand {
     SetStemSolo { deck: usize, stem: Stem, soloed: bool },
 
     // ─────────────────────────────────────────────────────────────
+    // Key Matching
+    // ─────────────────────────────────────────────────────────────
+    /// Enable/disable automatic key matching for a deck
+    /// When enabled, the deck will transpose to match the master deck's key
+    SetKeyMatchEnabled { deck: usize, enabled: bool },
+    /// Set the track's musical key (parsed from metadata)
+    SetTrackKey { deck: usize, key: Option<String> },
+
+    // ─────────────────────────────────────────────────────────────
     // Mixer Control
     // ─────────────────────────────────────────────────────────────
     /// Set channel volume (0.0 - 1.0)
@@ -206,9 +215,10 @@ mod tests {
 
     #[test]
     fn test_command_size() {
-        // Ensure EngineCommand stays small (pointer-sized for boxed variant)
-        // This is important for cache efficiency in the ringbuffer
+        // Ensure EngineCommand stays small for cache efficiency in the ringbuffer
+        // SetTrackKey with Option<String> is the largest variant at 32 bytes
+        // This still fits 2 commands per 64-byte cache line
         let size = std::mem::size_of::<EngineCommand>();
-        assert!(size <= 24, "EngineCommand is {} bytes, expected <= 24", size);
+        assert!(size <= 32, "EngineCommand is {} bytes, expected <= 32", size);
     }
 }

@@ -1,6 +1,6 @@
 //! Deck - Individual track player with stems and effect chains
 
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI8, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 
 use rayon::prelude::*;
@@ -122,6 +122,12 @@ pub struct DeckAtomics {
     pub loop_length_index: AtomicU8,
     /// Whether this deck is the master (longest playing, others sync to it)
     pub is_master: AtomicBool,
+    /// Whether key matching is enabled for this deck
+    pub key_match_enabled: AtomicBool,
+    /// Current transpose in semitones (-12 to +12)
+    pub current_transpose: AtomicI8,
+    /// Whether keys are compatible (no transpose needed even with key match on)
+    pub keys_compatible: AtomicBool,
 }
 
 impl DeckAtomics {
@@ -136,6 +142,9 @@ impl DeckAtomics {
             loop_end: AtomicU64::new(0),
             loop_length_index: AtomicU8::new(2), // Default to 4 beats (index 2)
             is_master: AtomicBool::new(false),
+            key_match_enabled: AtomicBool::new(false),
+            current_transpose: AtomicI8::new(0),
+            keys_compatible: AtomicBool::new(true),
         }
     }
 
@@ -313,6 +322,12 @@ pub struct Deck {
     /// causing cumulative drift (~1 second over 10 minutes). Instead, we
     /// accumulate the fractional part and let it "catch up" over time.
     fractional_position: f64,
+    /// Key match enabled - when true, deck transposes to match master key
+    key_match_enabled: bool,
+    /// Current transposition in semitones (0 if disabled or compatible)
+    current_transpose: i8,
+    /// Track's parsed musical key (None if not detected or unavailable)
+    track_key: Option<crate::music::MusicalKey>,
 }
 
 impl Deck {
@@ -336,6 +351,9 @@ impl Deck {
             atomics: Arc::new(DeckAtomics::new()),
             stem_buffers: std::array::from_fn(|_| StereoBuffer::silence(MAX_BUFFER_SIZE)),
             fractional_position: 0.0,
+            key_match_enabled: false,
+            current_transpose: 0,
+            track_key: None,
         }
     }
 
@@ -394,6 +412,15 @@ impl Deck {
     #[inline]
     fn sync_cue_atomic(&self) {
         self.atomics.cue_point.store(self.cue_point as u64, Ordering::Relaxed);
+    }
+
+    /// Write key match state to atomics (internal helper)
+    #[inline]
+    fn sync_key_match_atomic(&self) {
+        self.atomics.key_match_enabled.store(self.key_match_enabled, Ordering::Relaxed);
+        self.atomics.current_transpose.store(self.current_transpose, Ordering::Relaxed);
+        // Keys are compatible if transpose is 0
+        self.atomics.keys_compatible.store(self.current_transpose == 0, Ordering::Relaxed);
     }
 
     /// Get the deck ID
@@ -652,6 +679,38 @@ impl Deck {
     /// Clamped to 0.5..2.0 range (half speed to double speed)
     pub fn set_stretch_ratio(&mut self, ratio: f64) {
         self.stretch_ratio = ratio.clamp(0.5, 2.0);
+    }
+
+    /// Check if key matching is enabled for this deck
+    pub fn key_match_enabled(&self) -> bool {
+        self.key_match_enabled
+    }
+
+    /// Enable or disable key matching for this deck
+    pub fn set_key_match_enabled(&mut self, enabled: bool) {
+        self.key_match_enabled = enabled;
+        self.sync_key_match_atomic();
+    }
+
+    /// Get the current transposition in semitones
+    pub fn current_transpose(&self) -> i8 {
+        self.current_transpose
+    }
+
+    /// Set the current transposition (called by engine during key match calculation)
+    pub fn set_current_transpose(&mut self, semitones: i8) {
+        self.current_transpose = semitones;
+        self.sync_key_match_atomic();
+    }
+
+    /// Get the track's musical key
+    pub fn track_key(&self) -> Option<crate::music::MusicalKey> {
+        self.track_key
+    }
+
+    /// Set the track's musical key (parsed from metadata)
+    pub fn set_track_key(&mut self, key: Option<crate::music::MusicalKey>) {
+        self.track_key = key;
     }
 
     /// Beat jump forward by beat_jump_size beats (equals loop length)

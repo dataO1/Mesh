@@ -1,5 +1,6 @@
 //! Main audio engine - ties together decks, mixer, and time-stretching
 
+use crate::music::semitones_to_match;
 use crate::timestretch::TimeStretcher;
 use crate::types::{DeckId, PlayState, Stem, StereoBuffer, NUM_DECKS};
 
@@ -604,6 +605,19 @@ impl AudioEngine {
                     }
                 }
 
+                // Key Matching
+                EngineCommand::SetKeyMatchEnabled { deck, enabled } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        d.set_key_match_enabled(enabled);
+                    }
+                }
+                EngineCommand::SetTrackKey { deck, key } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        let parsed_key = key.as_ref().and_then(|k| crate::music::MusicalKey::parse(k));
+                        d.set_track_key(parsed_key);
+                    }
+                }
+
                 // Mixer Control
                 EngineCommand::SetVolume { deck, volume } => {
                     if let Some(ch) = self.mixer.channel_mut(deck) {
@@ -668,6 +682,30 @@ impl AudioEngine {
     pub fn process(&mut self, master_out: &mut StereoBuffer, cue_out: &mut StereoBuffer) {
         // Increment frame counter for phase sync tracking
         self.frame_counter = self.frame_counter.wrapping_add(1);
+
+        // Update key matching transposition for each deck
+        // The master deck is the one that has been playing longest
+        let master_id = self.master_deck_id();
+        let master_key = master_id.and_then(|id| self.decks[id].track_key());
+
+        for (i, deck) in self.decks.iter_mut().enumerate() {
+            if deck.key_match_enabled() && Some(i) != master_id {
+                // Slave deck with key matching enabled: transpose to match master
+                if let (Some(deck_key), Some(master_key)) = (deck.track_key(), master_key) {
+                    let semitones = semitones_to_match(&deck_key, &master_key);
+                    deck.set_current_transpose(semitones);
+                    self.stretchers[i].set_pitch_semitones(semitones as f64);
+                } else {
+                    // Missing key info: reset to no transpose
+                    deck.set_current_transpose(0);
+                    self.stretchers[i].set_pitch_semitones(0.0);
+                }
+            } else {
+                // Master deck or key matching disabled: no transpose
+                deck.set_current_transpose(0);
+                self.stretchers[i].set_pitch_semitones(0.0);
+            }
+        }
 
         let output_len = master_out.len();
 
