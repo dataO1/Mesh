@@ -59,6 +59,10 @@ pub fn generate_peaks(stems: &StemBuffers, width: usize) -> [Vec<(f32, f32)>; 4]
 ///
 /// Used for zoomed waveform views where only a portion of the track is visible.
 /// Returns 4 arrays of (min, max) pairs for the specified range.
+///
+/// Handles ranges that extend beyond track bounds (at start or end) by treating
+/// out-of-bounds samples as silence (zeros). This enables symmetric views at
+/// track boundaries.
 pub fn generate_peaks_for_range(
     stems: &StemBuffers,
     start_sample: u64,
@@ -66,14 +70,13 @@ pub fn generate_peaks_for_range(
     width: usize,
 ) -> [Vec<(f32, f32)>; 4] {
     let len = stems.len();
-    let start = start_sample as usize;
-    let end = (end_sample as usize).min(len);
 
-    if start >= end || width == 0 {
+    // Calculate the total range (may extend beyond actual data)
+    let range_len = end_sample.saturating_sub(start_sample) as usize;
+    if range_len == 0 || width == 0 {
         return [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
     }
 
-    let range_len = end - start;
     let samples_per_column = range_len / width;
     if samples_per_column == 0 {
         return [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
@@ -85,18 +88,26 @@ pub fn generate_peaks_for_range(
     for (stem_idx, stem_buffer) in stem_refs.iter().enumerate() {
         result[stem_idx] = (0..width)
             .map(|col| {
-                let col_start = start + col * samples_per_column;
-                let col_end = (start + (col + 1) * samples_per_column).min(end);
+                // Calculate column range in the virtual window (may be out of bounds)
+                let col_start_virtual = start_sample as usize + col * samples_per_column;
+                let col_end_virtual = start_sample as usize + (col + 1) * samples_per_column;
+
+                // Clamp to actual data bounds
+                let col_start = col_start_virtual.min(len);
+                let col_end = col_end_virtual.min(len);
+
+                // If entire column is out of bounds, return silence
+                if col_start >= len || col_start >= col_end {
+                    return (0.0, 0.0);
+                }
 
                 let mut min = f32::INFINITY;
                 let mut max = f32::NEG_INFINITY;
 
                 for i in col_start..col_end {
-                    if i < stem_buffer.len() {
-                        let sample = (stem_buffer[i].left + stem_buffer[i].right) / 2.0;
-                        min = min.min(sample);
-                        max = max.max(sample);
-                    }
+                    let sample = (stem_buffer[i].left + stem_buffer[i].right) / 2.0;
+                    min = min.min(sample);
+                    max = max.max(sample);
                 }
 
                 if min == f32::INFINITY {

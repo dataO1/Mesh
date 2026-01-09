@@ -172,12 +172,16 @@ fn samples_per_bar(bpm: f64) -> u64 {
 }
 
 /// Calculate the visible sample range centered on playhead
-fn visible_range(playhead: u64, zoom_bars: u32, bpm: f64, duration_samples: u64) -> (u64, u64) {
+///
+/// Note: The returned range may extend beyond `duration_samples`.
+/// This enables symmetric views at track boundaries. The peak generation
+/// handles out-of-bounds samples as silence (zeros).
+fn visible_range(playhead: u64, zoom_bars: u32, bpm: f64, _duration_samples: u64) -> (u64, u64) {
     let window_samples = samples_per_bar(bpm) * zoom_bars as u64;
     let half_window = window_samples / 2;
 
     let start = playhead.saturating_sub(half_window);
-    let end = (playhead + half_window).min(duration_samples);
+    let end = playhead + half_window; // May extend beyond track, handled by generate_peaks_for_range
 
     (start, end)
 }
@@ -222,10 +226,11 @@ fn peaks_thread(rx: Receiver<PeaksComputeRequest>, tx: Sender<PeaksComputeResult
         // Cache window sizing depends on view mode
         let (cache_start, cache_end) = match request.view_mode {
             ZoomedViewMode::Scrolling => {
-                // In scrolling mode, cache a larger window to reduce recomputation
+                // In scrolling mode, cache 3× visible window to reduce recomputation
+                // (visible + 1× padding before + 1× padding after = 3× total)
                 let window_size = end - start;
-                let cs = start.saturating_sub(window_size / 2);
-                let ce = (end + window_size / 2).min(request.duration_samples);
+                let cs = start.saturating_sub(window_size);
+                let ce = end + window_size; // May extend beyond track, handled by generate_peaks_for_range
                 (cs, ce)
             }
             ZoomedViewMode::FixedBuffer => {
@@ -264,8 +269,9 @@ fn peaks_thread(rx: Receiver<PeaksComputeRequest>, tx: Sender<PeaksComputeResult
                 }
             }
             ZoomedViewMode::FixedBuffer => {
-                // Fixed buffer mode (slicer): use base width, no scaling
-                request.width
+                // Fixed buffer mode (slicer): use 80% of base width
+                // Slightly reduced resolution is acceptable, reduces visual noise
+                ((request.width as f64) * 0.8) as usize
             }
         };
 

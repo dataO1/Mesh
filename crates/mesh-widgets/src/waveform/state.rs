@@ -394,6 +394,8 @@ pub struct ZoomedState {
     pub cache_end: u64,
     /// Current zoom level in bars (1-64)
     pub zoom_bars: u32,
+    /// Zoom level saved from scrolling mode (restored when exiting FixedBuffer)
+    scrolling_zoom_bars: u32,
     /// Beat grid positions in samples
     pub beat_grid: Vec<u64>,
     /// Cue markers with sample positions
@@ -412,6 +414,8 @@ pub struct ZoomedState {
     pub slicer_current_slice: Option<u8>,
     /// View mode (scrolling vs fixed buffer)
     pub view_mode: ZoomedViewMode,
+    /// View mode the cache was computed for (to detect mode changes)
+    cached_view_mode: ZoomedViewMode,
     /// Fixed buffer bounds in samples (for FixedBuffer mode)
     pub fixed_buffer_bounds: Option<(u64, u64)>,
 }
@@ -424,6 +428,7 @@ impl ZoomedState {
             cache_start: 0,
             cache_end: 0,
             zoom_bars: DEFAULT_ZOOM_BARS,
+            scrolling_zoom_bars: DEFAULT_ZOOM_BARS,
             beat_grid: Vec::new(),
             cue_markers: Vec::new(),
             duration_samples: 0,
@@ -433,6 +438,7 @@ impl ZoomedState {
             slicer_region: None,
             slicer_current_slice: None,
             view_mode: ZoomedViewMode::Scrolling,
+            cached_view_mode: ZoomedViewMode::Scrolling,
             fixed_buffer_bounds: None,
         }
     }
@@ -444,6 +450,7 @@ impl ZoomedState {
             cache_start: 0,
             cache_end: 0,
             zoom_bars: DEFAULT_ZOOM_BARS,
+            scrolling_zoom_bars: DEFAULT_ZOOM_BARS,
             beat_grid,
             cue_markers,
             duration_samples: 0,
@@ -453,6 +460,7 @@ impl ZoomedState {
             slicer_region: None,
             slicer_current_slice: None,
             view_mode: ZoomedViewMode::Scrolling,
+            cached_view_mode: ZoomedViewMode::Scrolling,
             fixed_buffer_bounds: None,
         }
     }
@@ -488,8 +496,40 @@ impl ZoomedState {
     }
 
     /// Set the view mode (scrolling or fixed buffer)
+    ///
+    /// When entering FixedBuffer mode:
+    /// - Saves current zoom_bars to scrolling_zoom_bars
+    /// - Set zoom_bars appropriately via `set_fixed_buffer_zoom()`
+    ///
+    /// When exiting to Scrolling mode:
+    /// - Restores zoom_bars from scrolling_zoom_bars
     pub fn set_view_mode(&mut self, mode: ZoomedViewMode) {
+        if self.view_mode == mode {
+            return; // No change
+        }
+
+        match mode {
+            ZoomedViewMode::FixedBuffer => {
+                // Save current zoom level before entering fixed buffer mode
+                self.scrolling_zoom_bars = self.zoom_bars;
+            }
+            ZoomedViewMode::Scrolling => {
+                // Restore saved zoom level when exiting fixed buffer mode
+                self.zoom_bars = self.scrolling_zoom_bars;
+            }
+        }
+
         self.view_mode = mode;
+    }
+
+    /// Set the zoom level for fixed buffer mode based on buffer size in bars
+    ///
+    /// Should be called after `set_view_mode(FixedBuffer)` and `set_fixed_buffer_bounds()`.
+    /// Sets zoom_bars to match the buffer size for appropriate resolution.
+    pub fn set_fixed_buffer_zoom(&mut self, buffer_bars: u32) {
+        if self.view_mode == ZoomedViewMode::FixedBuffer {
+            self.zoom_bars = buffer_bars.clamp(MIN_ZOOM_BARS, MAX_ZOOM_BARS);
+        }
     }
 
     /// Get the current view mode
@@ -532,16 +572,21 @@ impl ZoomedState {
 
     /// Calculate visible window based on view mode
     ///
-    /// - Scrolling mode: window centered on playhead
+    /// - Scrolling mode: window centered on playhead (may extend beyond track bounds)
     /// - FixedBuffer mode: shows slicer buffer bounds (playhead moves within view)
+    ///
+    /// Note: In scrolling mode, the returned range may extend beyond `duration_samples`.
+    /// This ensures symmetric views at track start/end. Rendering code must handle
+    /// out-of-bounds samples as silence (zeros).
     pub fn visible_range(&self, playhead: u64) -> (u64, u64) {
         match self.view_mode {
             ZoomedViewMode::Scrolling => {
-                // Current behavior: center on playhead
+                // Always symmetric window centered on playhead
+                // May extend beyond track bounds - rendering handles as zeros
                 let window_samples = self.samples_per_bar() * self.zoom_bars as u64;
                 let half_window = window_samples / 2;
                 let start = playhead.saturating_sub(half_window);
-                let end = (playhead + half_window).min(self.duration_samples);
+                let end = playhead + half_window;
                 (start, end)
             }
             ZoomedViewMode::FixedBuffer => {
@@ -557,7 +602,7 @@ impl ZoomedState {
                     // No buffer set, fall back to scrolling behavior
                     let window_samples = self.samples_per_bar() * self.zoom_bars as u64;
                     let half_window = window_samples / 2;
-                    (playhead.saturating_sub(half_window), (playhead + half_window).min(self.duration_samples))
+                    (playhead.saturating_sub(half_window), playhead + half_window)
                 }
             }
         }
@@ -583,11 +628,16 @@ impl ZoomedState {
             return true;
         }
 
+        // Force recompute if view mode changed (resolution differs between modes)
+        if self.view_mode != self.cached_view_mode {
+            return true;
+        }
+
         let (start, end) = self.visible_range(playhead);
 
         // Recompute if visible range is outside cached range
-        // Add some margin to reduce frequent recomputation
-        let margin = (end - start) / 4;
+        // Use /2 margin (4 bars at 8-bar zoom) for smoother scrolling with fewer recomputes
+        let margin = (end - start) / 2;
         start < self.cache_start.saturating_add(margin)
             || end > self.cache_end.saturating_sub(margin)
     }
@@ -610,11 +660,11 @@ impl ZoomedState {
         // Cache window sizing depends on view mode
         let (cache_start, cache_end) = match self.view_mode {
             ZoomedViewMode::Scrolling => {
-                // In scrolling mode, cache a larger window to reduce recomputation
-                // when the playhead moves slightly
+                // In scrolling mode, cache 3× visible window to reduce recomputation
+                // (visible + 1× padding before + 1× padding after = 3× total)
                 let window_size = end - start;
-                let cs = start.saturating_sub(window_size / 2);
-                let ce = (end + window_size / 2).min(self.duration_samples);
+                let cs = start.saturating_sub(window_size);
+                let ce = end + window_size; // May extend beyond track, handled by generate_peaks_for_range
                 (cs, ce)
             }
             ZoomedViewMode::FixedBuffer => {
@@ -651,8 +701,9 @@ impl ZoomedState {
                 }
             }
             ZoomedViewMode::FixedBuffer => {
-                // Fixed buffer mode (slicer): use base width, no scaling
-                width
+                // Fixed buffer mode (slicer): use 80% of base width
+                // Slightly reduced resolution is acceptable, reduces visual noise
+                ((width as f64) * 0.8) as usize
             }
         };
 
@@ -674,6 +725,20 @@ impl ZoomedState {
                 self.cached_peaks[stem_idx] = smooth_peaks_gaussian(&self.cached_peaks[stem_idx]);
             }
         }
+
+        // Track which view mode this cache was computed for
+        self.cached_view_mode = self.view_mode;
+    }
+
+    /// Apply peaks computed by the background PeaksComputer thread
+    ///
+    /// Updates cached_peaks, cache_start, cache_end, and cached_view_mode.
+    pub fn apply_computed_peaks(&mut self, result: super::peaks_computer::PeaksComputeResult) {
+        self.cached_peaks = result.cached_peaks;
+        self.cache_start = result.cache_start;
+        self.cache_end = result.cache_end;
+        // Track that this cache matches the current view mode
+        self.cached_view_mode = self.view_mode;
     }
 }
 

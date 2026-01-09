@@ -295,9 +295,7 @@ impl MeshApp {
                 while let Some(result) = self.peaks_computer.try_recv() {
                     if result.id < 4 {
                         let zoomed = &mut self.player_canvas_state.decks[result.id].zoomed;
-                        zoomed.cached_peaks = result.cached_peaks;
-                        zoomed.cache_start = result.cache_start;
-                        zoomed.cache_end = result.cache_end;
+                        zoomed.apply_computed_peaks(result);
                     }
                 }
 
@@ -412,6 +410,10 @@ impl MeshApp {
                             self.player_canvas_state.decks[i]
                                 .zoomed
                                 .set_view_mode(ZoomedViewMode::FixedBuffer);
+                            // Set zoom level based on slicer buffer size for optimal resolution
+                            self.player_canvas_state.decks[i]
+                                .zoomed
+                                .set_fixed_buffer_zoom(self.config.slicer.buffer_bars());
                         } else {
                             self.player_canvas_state.decks[i]
                                 .overview
