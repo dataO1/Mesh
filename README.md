@@ -507,47 +507,32 @@ Mesh includes a **Stem Slicer** — a real-time remixing tool that divides stems
 2. **Playback Queue**: A 16-slot queue determines which slice content plays at each timing position
 3. **Beat-Aligned**: Slices snap to the track's beat grid for musical timing
 4. **Per-Stem Control**: Choose which stems (Vocals, Drums, Bass, Other) are affected
+5. **All Slices Used**: Every preset uses all 16 slices — no audio material is lost
 
 ### Using the Slicer
 
 1. Click **SLICER** button on a deck to enter slicer mode (activates on next beat)
-2. The 8 action buttons now trigger slices 0-7 instead of hot cues
-3. Press buttons to trigger slices — they play immediately from the beginning, then resume grid-locked playback
-4. **Shift+Slicer** resets the queue to default [0,1,2...15]
+2. **Button 1-8**: Load preset pattern (1 = sequential, 2-8 = remixed patterns)
+3. **Shift + Button**: Assign slice to current timing slot + preview it immediately
+4. **Shift + Slicer**: Reset queue to default [0,1,2...15]
 5. Click **HOTCUE** to exit slicer mode
 
-### Preset Mode
+### Presets
 
-The slicer supports **8 preset patterns** — pre-defined 16-step sequences that create instant remix effects.
+All 8 presets are **permutations** of the 16 slices — every beat is heard exactly once per cycle:
 
-| Action | Result |
-|--------|--------|
-| **Shift + Button 1-8** | Load preset pattern, enter preset mode |
-| **Shift + Slicer** | Reset to default [0..15], exit preset mode |
-
-In **preset mode**, individual button triggers are disabled — only preset loading works. This prevents accidental pattern corruption during performance.
-
-### Default Presets
-
-| Preset | Pattern | Effect |
-|--------|---------|--------|
-| 1 | Sequential [0,1,2...15] | Normal playback |
-| 2 | Double-up [0,0,1,1,2,2...] | Stutter effect |
-| 3 | Reverse [15,14,13...0] | Backwards playback |
-| 4 | Odds/Evens | Split pattern |
-| 5 | Quad repeat | 4x repeat of first 4 slices |
-| 6 | Loop halves | A-A-B-B pattern |
-| 7 | Interleaved | Complex shuffle |
-| 8 | Repeat first 8 | Loop first half |
+| Button | Name | Pattern | Effect |
+|--------|------|---------|--------|
+| 1 | Sequential | `[0,1,2,3...15]` | Normal playback (reset) |
+| 2 | Bar Swap | `[8-15, 0-7]` | Play second half first |
+| 3 | Reverse Full | `[15,14,13...0]` | Backwards playback |
+| 4 | Reverse Per Bar | `[3,2,1,0,7,6,5,4...]` | Each bar reversed |
+| 5 | Interleave | `[0,8,1,9,2,10...]` | Zip bars 1+3 and 2+4 |
+| 6 | Funky Shuffle | Complex permutation | Syncopated feel |
+| 7 | Evens Then Odds | `[0,2,4,6...1,3,5,7]` | Skip shuffle |
+| 8 | Adjacent Swap | `[1,0,3,2,5,4...]` | Flip each pair |
 
 Presets are configurable in `~/.config/mesh-player/config.yaml`.
-
-### Queue Algorithms
-
-| Algorithm | Behavior |
-|-----------|----------|
-| **FIFO** (default) | New slices added to end, oldest removed |
-| **Replace** | New slice replaces the currently playing slot |
 
 ### Configuration
 
@@ -556,25 +541,24 @@ In **Settings → Slicer**:
 | Setting | Options | Description |
 |---------|---------|-------------|
 | Buffer Size | 1, 4, 8, 16 bars | Size of the sliced window (always 16 slices) |
-| Queue Algorithm | FIFO, Replace | How manual triggers are handled |
 | Affected Stems | Vocals, Drums, Bass, Other | Which stems are sliced (toggle each) |
 
 ### Example
 
-With a 4-bar buffer at 128 BPM:
-- Each slice = 1 beat (quarter bar)
-- **Manual mode**: Press button 3 to trigger slice 3, it plays immediately then grid resumes
-- **Preset mode**: Shift+2 loads the "double-up" preset for instant stutter effect
-- Shift+Slicer resets everything back to normal sequential playback
+With a 4-bar buffer at 174 BPM:
+- Each slice = 1 beat (4 bars ÷ 16 slices)
+- **Button 3**: Load "Reverse Full" preset — drums play backwards
+- **Shift + Button 5**: Assign slice 5 to current timing position + hear it immediately
+- **Shift + Slicer**: Reset everything back to normal sequential playback
 
 ### What This Means for DJing
 
 - **Create live remixes** — Rearrange drum patterns, vocal phrases, or bass lines
-- **Instant preset effects** — Shift+button for complex patterns with one press
-- **Build tension** — Use stutter or repeat presets for buildups
-- **Glitch effects** — Rapid slice triggering or the interleaved preset
+- **Instant preset effects** — One button press for complex remix patterns
+- **Build tension** — Use reverse or interleave presets for buildups
+- **Glitch effects** — Shift+button for rapid slice triggering
 - **Multi-stem control** — Slice drums independently or lock all stems together
-- **Safe preset mode** — Prevents accidental queue changes during preset playback
+- **Full audio coverage** — Every preset plays all 16 beats, just reordered
 
 ---
 

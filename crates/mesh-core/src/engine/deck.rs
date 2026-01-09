@@ -740,9 +740,19 @@ impl Deck {
         self.slicer_states[stem as usize].set_enabled(enabled);
     }
 
-    /// Queue a slice for playback (button press in slicer mode)
-    pub fn slicer_queue_slice(&mut self, stem: Stem, slice_idx: usize) {
-        self.slicer_states[stem as usize].queue_slice(slice_idx);
+    /// Handle a slicer button action (unified API from UI)
+    ///
+    /// The UI just reports which button was pressed and whether shift was held.
+    /// All behavior logic is handled by the slicer internally.
+    pub fn slicer_handle_button_action(
+        &mut self,
+        stem: Stem,
+        button_idx: usize,
+        shift_held: bool,
+        current_pos: usize,
+        presets: &[[u8; 16]; 8],
+    ) {
+        self.slicer_states[stem as usize].handle_button_action(button_idx, shift_held, current_pos, presets);
     }
 
     /// Reset the slicer queue to default order
@@ -750,32 +760,9 @@ impl Deck {
         self.slicer_states[stem as usize].reset_queue();
     }
 
-    /// Load a preset pattern into the slicer queue
-    pub fn slicer_load_preset(&mut self, stem: Stem, preset: [u8; 16]) {
-        self.slicer_states[stem as usize].load_preset(preset);
-    }
-
-    /// Set a specific slot in the slicer queue
-    pub fn slicer_set_slot(&mut self, stem: Stem, slot: usize, slice_idx: usize) {
-        self.slicer_states[stem as usize].set_slot(slot, slice_idx);
-    }
-
-    /// Trigger a slice with immediate playback and phase-preserved seek
-    ///
-    /// Returns the target position to seek to, or None if slicer not initialized.
-    pub fn slicer_trigger_slice(&mut self, stem: Stem, slice_idx: usize) -> Option<usize> {
-        let current_pos = self.position;
-        self.slicer_states[stem as usize].trigger_slice(current_pos, slice_idx)
-    }
-
     /// Set the slicer buffer size in bars
     pub fn set_slicer_buffer_bars(&mut self, stem: Stem, bars: u32) {
         self.slicer_states[stem as usize].set_buffer_bars(bars);
-    }
-
-    /// Set the slicer queue algorithm
-    pub fn set_slicer_queue_algorithm(&mut self, stem: Stem, algorithm: super::slicer::QueueAlgorithm) {
-        self.slicer_states[stem as usize].set_queue_algorithm(algorithm);
     }
 
     /// Beat jump forward by beat_jump_size beats (equals loop length)

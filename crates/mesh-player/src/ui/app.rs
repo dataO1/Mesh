@@ -105,8 +105,6 @@ pub enum Message {
     UpdateSettingsPhaseSync(bool),
     /// Update settings: slicer buffer bars (4, 8, or 16)
     UpdateSettingsSlicerBufferBars(u32),
-    /// Update settings: slicer queue algorithm ("fifo" or "replace")
-    UpdateSettingsSlicerQueueAlgorithm(String),
     /// Update settings: toggle slicer affected stem (stem_index, enabled)
     UpdateSettingsSlicerAffectedStem(usize, bool),
     /// Save settings to disk
@@ -141,8 +139,11 @@ impl MeshApp {
             let _ = sender.send(EngineCommand::SetGlobalBpm(config.audio.global_bpm));
             // Initialize phase sync setting
             let _ = sender.send(EngineCommand::SetPhaseSync(config.audio.phase_sync));
-            // Initialize slicer settings for all decks and stems
-            let algo = config.slicer.queue_algorithm();
+            // Initialize slicer presets from config
+            let _ = sender.send(EngineCommand::SetSlicerPresets {
+                presets: Box::new(config.slicer.presets),
+            });
+            // Initialize slicer buffer size for all decks and stems
             let buffer_bars = config.slicer.buffer_bars();
             let stems = [
                 mesh_core::types::Stem::Vocals,
@@ -156,11 +157,6 @@ impl MeshApp {
                         deck,
                         stem,
                         bars: buffer_bars,
-                    });
-                    let _ = sender.send(EngineCommand::SetSlicerQueueAlgorithm {
-                        deck,
-                        stem,
-                        algorithm: algo,
                     });
                 }
             }
@@ -616,44 +612,26 @@ impl MeshApp {
                                     }
                                 }
                             }
-                            SlicerTrigger(slice_idx) => {
+                            SlicerTrigger(button_idx) => {
+                                // UI just reports button press - engine handles all behavior
                                 use mesh_core::types::Stem;
                                 let affected_stems = self.config.slicer.affected_stems;
                                 let stems = [Stem::Vocals, Stem::Drums, Stem::Bass, Stem::Other];
                                 let shift_held = self.deck_views[deck_idx].shift_held();
 
-                                if shift_held {
-                                    // Shift+button: load preset pattern
-                                    if let Some(preset) = self.config.slicer.preset(slice_idx) {
-                                        for (idx, &stem) in stems.iter().enumerate() {
-                                            if affected_stems[idx] {
-                                                let _ = sender.send(EngineCommand::SlicerLoadPreset {
-                                                    deck: deck_idx,
-                                                    stem,
-                                                    preset,
-                                                });
-                                            }
-                                        }
-                                        // Enter preset mode (disables individual triggers)
-                                        self.deck_views[deck_idx].set_slicer_preset_mode(true);
-                                        log::info!("slicer: loaded preset {} on deck {}", slice_idx + 1, deck_idx);
-                                    }
-                                } else if !self.deck_views[deck_idx].slicer_preset_mode() {
-                                    // Normal trigger (only when not in preset mode)
-                                    for (idx, &stem) in stems.iter().enumerate() {
-                                        if affected_stems[idx] {
-                                            let _ = sender.send(EngineCommand::SlicerTriggerSlice {
-                                                deck: deck_idx,
-                                                stem,
-                                                slice_idx,
-                                            });
-                                        }
+                                for (idx, &stem) in stems.iter().enumerate() {
+                                    if affected_stems[idx] {
+                                        let _ = sender.send(EngineCommand::SlicerButtonAction {
+                                            deck: deck_idx,
+                                            stem,
+                                            button_idx,
+                                            shift_held,
+                                        });
                                     }
                                 }
-                                // In preset mode without shift: buttons are disabled
                             }
                             ResetSlicerPattern => {
-                                // Reset slicer queue to default [0..15] and exit preset mode
+                                // Reset slicer queue to default [0..15]
                                 use mesh_core::types::Stem;
                                 let affected_stems = self.config.slicer.affected_stems;
                                 let stems = [Stem::Vocals, Stem::Drums, Stem::Bass, Stem::Other];
@@ -666,8 +644,6 @@ impl MeshApp {
                                         });
                                     }
                                 }
-                                // Exit preset mode
-                                self.deck_views[deck_idx].set_slicer_preset_mode(false);
                             }
                             ShiftPressed => {
                                 // UI-only state change
@@ -816,10 +792,6 @@ impl MeshApp {
                 self.settings.draft_slicer_buffer_bars = bars;
                 Task::none()
             }
-            Message::UpdateSettingsSlicerQueueAlgorithm(algo) => {
-                self.settings.draft_slicer_queue_algorithm = algo;
-                Task::none()
-            }
             Message::UpdateSettingsSlicerAffectedStem(stem_idx, enabled) => {
                 if stem_idx < 4 {
                     self.settings.draft_slicer_affected_stems[stem_idx] = enabled;
@@ -838,16 +810,14 @@ impl MeshApp {
                 new_config.audio.phase_sync = self.settings.draft_phase_sync;
                 // Save slicer settings
                 new_config.slicer.default_buffer_bars = self.settings.draft_slicer_buffer_bars;
-                new_config.slicer.queue_algorithm = self.settings.draft_slicer_queue_algorithm.clone();
                 new_config.slicer.affected_stems = self.settings.draft_slicer_affected_stems;
 
                 self.config = Arc::new(new_config.clone());
 
-                // Send phase sync setting to audio engine immediately
+                // Send settings to audio engine immediately
                 if let Some(ref mut sender) = self.command_sender {
                     let _ = sender.send(EngineCommand::SetPhaseSync(self.settings.draft_phase_sync));
-                    // Send slicer settings to audio engine for all decks and stems
-                    let algo = new_config.slicer.queue_algorithm();
+                    // Send slicer buffer bars to audio engine for all decks and stems
                     let buffer_bars = new_config.slicer.buffer_bars();
                     let stems = [
                         mesh_core::types::Stem::Vocals,
@@ -861,11 +831,6 @@ impl MeshApp {
                                 deck,
                                 stem,
                                 bars: buffer_bars,
-                            });
-                            let _ = sender.send(EngineCommand::SetSlicerQueueAlgorithm {
-                                deck,
-                                stem,
-                                algorithm: algo,
                             });
                         }
                     }

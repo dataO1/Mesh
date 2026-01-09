@@ -81,8 +81,6 @@ pub struct DeckView {
     slicer_current_slice: u8,
     /// Whether shift is currently held
     shift_held: bool,
-    /// Whether slicer is in preset mode (disables individual triggers)
-    slicer_preset_mode: bool,
 }
 
 /// Messages for deck interaction
@@ -175,7 +173,6 @@ impl DeckView {
             slicer_queue: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
             slicer_current_slice: 0,
             shift_held: false,
-            slicer_preset_mode: false,
         }
     }
 
@@ -325,16 +322,6 @@ impl DeckView {
     /// Check if shift is held
     pub fn shift_held(&self) -> bool {
         self.shift_held
-    }
-
-    /// Set slicer preset mode
-    pub fn set_slicer_preset_mode(&mut self, preset_mode: bool) {
-        self.slicer_preset_mode = preset_mode;
-    }
-
-    /// Check if slicer is in preset mode
-    pub fn slicer_preset_mode(&self) -> bool {
-        self.slicer_preset_mode
     }
 
     /// Handle a deck message

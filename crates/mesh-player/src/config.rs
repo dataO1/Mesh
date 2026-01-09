@@ -103,59 +103,47 @@ impl DisplayConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SlicerConfig {
-    /// Default buffer size in bars (4, 8, or 16)
+    /// Default buffer size in bars (1, 4, 8, or 16)
     /// Smaller = more responsive, larger = more material to work with
     pub default_buffer_bars: u32,
-    /// Queue algorithm for slice triggering
-    /// - "fifo": First-in-first-out - oldest slice removed when queue full
-    /// - "replace": Replace current playing slice immediately
-    pub queue_algorithm: String,
     /// Which stems are affected by the slicer [Vocals, Drums, Bass, Other]
     /// Default: only Drums enabled
     pub affected_stems: [bool; 4],
-    /// 8 preset patterns, each with 16 steps (slice indices 0-15)
-    /// Loaded via Shift+button in Slicer mode
+    /// 8 preset patterns for breakbeat manipulation (sorted sparse → busy)
+    /// Button 0-7 loads preset. Each pattern has 16 steps (slice indices 0-15).
     pub presets: [[u8; 16]; 8],
 }
 
 impl Default for SlicerConfig {
     fn default() -> Self {
         Self {
-            default_buffer_bars: 4, // 4 bars = 16 quarter-bar slices
-            queue_algorithm: "fifo".to_string(),
+            default_buffer_bars: 4, // 4 bars = 16 slices (one per 16th note)
             affected_stems: [false, true, false, false], // Only Drums by default
+            // Breakbeat presets: all use all 16 slices for full variety
+            // Each preset is a permutation ensuring all beats are heard
             presets: [
-                // Preset 1: Sequential (default)
+                // Preset 1: Sequential (default/reset)
                 [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
-                // Preset 2: Double-up first half
-                [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7],
-                // Preset 3: Reverse
+                // Preset 2: Bar swap (play bar 3-4 then bar 1-2)
+                [8, 9, 10, 11, 12, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7],
+                // Preset 3: Reverse full
                 [15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
-                // Preset 4: Odds/evens split
+                // Preset 4: Reverse per bar
+                [3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12],
+                // Preset 5: Interleave (zip bar1+bar3, bar2+bar4)
+                [0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15],
+                // Preset 6: Funky shuffle
+                [0, 5, 2, 7, 4, 1, 6, 3, 8, 13, 10, 15, 12, 9, 14, 11],
+                // Preset 7: Evens then odds (skip shuffle)
                 [0, 2, 4, 6, 8, 10, 12, 14, 1, 3, 5, 7, 9, 11, 13, 15],
-                // Preset 5: Quad repeat first 4
-                [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3],
-                // Preset 6: Loop halves
-                [0, 1, 2, 3, 0, 1, 2, 3, 4, 5, 6, 7, 4, 5, 6, 7],
-                // Preset 7: Interleaved
-                [0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15],
-                // Preset 8: Repeat first 8
-                [0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7],
+                // Preset 8: Adjacent swap (pair flip)
+                [1, 0, 3, 2, 5, 4, 7, 6, 9, 8, 11, 10, 13, 12, 15, 14],
             ],
         }
     }
 }
 
 impl SlicerConfig {
-    /// Parse the queue algorithm string into the engine's QueueAlgorithm type
-    pub fn queue_algorithm(&self) -> mesh_core::engine::QueueAlgorithm {
-        use mesh_core::engine::QueueAlgorithm;
-        match self.queue_algorithm.to_lowercase().as_str() {
-            "replace" | "replace_current" => QueueAlgorithm::ReplaceCurrent,
-            _ => QueueAlgorithm::FifoRotate,
-        }
-    }
-
     /// Get buffer bars clamped to valid range
     pub fn buffer_bars(&self) -> u32 {
         match self.default_buffer_bars {
@@ -274,7 +262,6 @@ mod tests {
             },
             slicer: SlicerConfig {
                 default_buffer_bars: 8,
-                queue_algorithm: "replace".to_string(),
                 ..Default::default()
             },
             collection_path: PathBuf::from("/tmp/test-collection"),

@@ -42,16 +42,6 @@ pub const SLICER_DEFAULT_BARS: u32 = 4;
 /// 16 bars * 4 beats/bar * 60/200 sec/beat * 48000 samples/sec ≈ 460800 samples
 pub const SLICER_MAX_BUFFER_SAMPLES: usize = 500_000;
 
-/// Queue replacement algorithms
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum QueueAlgorithm {
-    /// FIFO: oldest entry removed, new slice added to end
-    #[default]
-    FifoRotate,
-    /// Replace: new slice replaces current playback position
-    ReplaceCurrent,
-}
-
 /// Lock-free slicer state for UI access
 ///
 /// This struct contains atomic fields that can be read by the UI thread
@@ -163,14 +153,10 @@ pub struct SlicerState {
     buffer_end: usize,
     /// Samples per slice (buffer_length / 8)
     samples_per_slice: usize,
-    /// Playback queue - indices 0-7 in each slot determine which slice plays
+    /// Playback queue - indices 0-15 in each slot determine which slice plays
     queue: [u8; SLICER_NUM_SLICES],
-    /// Queue write index for FIFO mode (cycles 0-7)
-    queue_write_idx: usize,
-    /// Buffer size in bars (4, 8, or 16)
+    /// Buffer size in bars (1, 4, 8, or 16)
     buffer_bars: u32,
-    /// Queue algorithm for button presses
-    queue_algorithm: QueueAlgorithm,
     /// Lock-free atomics for UI access
     atomics: Arc<SlicerAtomics>,
     /// Pre-allocated cache for the full slicer buffer window
@@ -203,9 +189,7 @@ impl SlicerState {
             buffer_end: 0,
             samples_per_slice: 0,
             queue: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
-            queue_write_idx: 0,
             buffer_bars: SLICER_DEFAULT_BARS,
-            queue_algorithm: QueueAlgorithm::default(),
             atomics: Arc::new(SlicerAtomics::new()),
             buffer_cache: vec![StereoSample::silence(); SLICER_MAX_BUFFER_SAMPLES],
             buffer_cache_valid: false,
@@ -261,9 +245,8 @@ impl SlicerState {
             // Don't enable immediately - wait for next beat boundary
             self.pending_enable = true;
             log::info!(
-                "slicer: PENDING (buffer_bars={}, algorithm={:?}) - will activate on next beat",
-                self.buffer_bars,
-                self.queue_algorithm
+                "slicer: PENDING (buffer_bars={}) - will activate on next beat",
+                self.buffer_bars
             );
         } else if !enabled {
             self.enabled = false;
@@ -288,11 +271,6 @@ impl SlicerState {
         self.buffer_bars
     }
 
-    /// Set the queue algorithm
-    pub fn set_queue_algorithm(&mut self, algorithm: QueueAlgorithm) {
-        self.queue_algorithm = algorithm;
-    }
-
     /// Set the first beat sample position from track's beat grid
     ///
     /// This is used to align the slicer buffer to the track's beat grid
@@ -303,45 +281,10 @@ impl SlicerState {
         self.buffer_cache_valid = false;
     }
 
-    /// Queue a slice for playback (button press)
-    ///
-    /// Depending on the queue algorithm:
-    /// - FIFO: Adds slice to the end, rotating out the oldest
-    /// - Replace: Replaces the current slice position
-    pub fn queue_slice(&mut self, slice_idx: usize) {
-        if slice_idx >= SLICER_NUM_SLICES {
-            return;
-        }
-
-        match self.queue_algorithm {
-            QueueAlgorithm::FifoRotate => {
-                // Shift all elements left by one, add new at the end
-                for i in 0..SLICER_NUM_SLICES - 1 {
-                    self.queue[i] = self.queue[i + 1];
-                }
-                self.queue[SLICER_NUM_SLICES - 1] = slice_idx as u8;
-            }
-            QueueAlgorithm::ReplaceCurrent => {
-                // Replace at current write position, advance write index
-                self.queue[self.queue_write_idx] = slice_idx as u8;
-                self.queue_write_idx = (self.queue_write_idx + 1) % SLICER_NUM_SLICES;
-            }
-        }
-
-        log::debug!(
-            "slicer: queued slice {} -> queue={:?}",
-            slice_idx,
-            &self.queue[..]
-        );
-
-        self.sync_atomics();
-    }
-
     /// Reset the queue to default order [0, 1, 2, ..., 15]
     pub fn reset_queue(&mut self) {
         log::debug!("slicer: queue reset to [0..15]");
         self.queue = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-        self.queue_write_idx = 0;
         self.sync_atomics();
     }
 
@@ -351,14 +294,59 @@ impl SlicerState {
     pub fn load_preset(&mut self, preset: [u8; 16]) {
         log::debug!("slicer: loading preset {:?}", &preset[..]);
         self.queue = preset;
-        self.queue_write_idx = 0;
         self.sync_atomics();
+    }
+
+    /// Handle a button action from the UI
+    ///
+    /// This is the unified API for slicer button presses. The UI just reports
+    /// which button was pressed and whether shift was held - all behavior
+    /// logic lives here.
+    ///
+    /// - **Normal press (no shift)**: Load preset pattern at button_idx
+    /// - **Shift+press**: Assign context-aware slice to current timing slot + preview
+    ///
+    /// Context-aware slice mapping:
+    /// - If playhead is in first half of buffer (slots 0-7): button N → slice N
+    /// - If playhead is in second half (slots 8-15): button N → slice N+8
+    pub fn handle_button_action(
+        &mut self,
+        button_idx: usize,
+        shift_held: bool,
+        current_pos: usize,
+        presets: &[[u8; 16]; 8],
+    ) {
+        if shift_held {
+            // Shift+button: Assign slice to current timing slot + one-shot preview
+            let current_slot = self.slice_for_position(current_pos) as usize;
+
+            // Context-aware slice mapping: first half uses 0-7, second half uses 8-15
+            let slice_idx = if current_slot < 8 {
+                button_idx.min(7)  // Clamp to valid slice index
+            } else {
+                (button_idx + 8).min(15)
+            };
+
+            log::debug!(
+                "slicer: shift+button {} -> assign slice {} to slot {} + preview",
+                button_idx, slice_idx, current_slot
+            );
+
+            // Trigger slice (assigns to current slot + one-shot preview)
+            self.trigger_slice(current_pos, slice_idx);
+        } else {
+            // Normal button press: Load preset pattern
+            if button_idx < 8 {
+                log::debug!("slicer: button {} -> load preset", button_idx);
+                self.load_preset(presets[button_idx]);
+            }
+        }
     }
 
     /// Set a specific slot in the queue to a slice index
     ///
-    /// Unlike queue_slice (which uses FIFO/Replace algorithms), this directly
-    /// sets a specific slot. Used for immediate slice triggering.
+    /// Directly sets a specific slot to a slice index.
+    /// Used by handle_button_action for shift+button slice assignment.
     pub fn set_slot(&mut self, slot: usize, slice_idx: usize) {
         if slot < SLICER_NUM_SLICES && slice_idx < SLICER_NUM_SLICES {
             self.queue[slot] = slice_idx as u8;
@@ -696,45 +684,37 @@ mod tests {
     }
 
     #[test]
-    fn test_queue_slice_fifo() {
+    fn test_load_preset() {
         let mut slicer = SlicerState::new();
-        slicer.set_queue_algorithm(QueueAlgorithm::FifoRotate);
 
         // Initial queue: [0..15]
         assert_eq!(slicer.queue, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
 
-        // Queue slice 3 - shifts all left, adds 3 at end
-        slicer.queue_slice(3);
-        assert_eq!(slicer.queue, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 3]);
-
-        // Queue slice 5
-        slicer.queue_slice(5);
-        assert_eq!(slicer.queue, [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 3, 5]);
+        // Load a preset pattern
+        let preset = [0, 0, 2, 2, 4, 4, 6, 6, 8, 8, 10, 10, 12, 12, 14, 14];
+        slicer.load_preset(preset);
+        assert_eq!(slicer.queue, preset);
     }
 
     #[test]
-    fn test_queue_slice_replace() {
+    fn test_set_slot() {
         let mut slicer = SlicerState::new();
-        slicer.set_queue_algorithm(QueueAlgorithm::ReplaceCurrent);
 
-        // Initial queue: [0..15]
-        assert_eq!(slicer.queue, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
-
-        // Queue slice 3 at position 0
-        slicer.queue_slice(3);
-        assert_eq!(slicer.queue, [3, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
-
-        // Queue slice 5 at position 1
-        slicer.queue_slice(5);
-        assert_eq!(slicer.queue, [3, 5, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+        // Set specific slots
+        slicer.set_slot(0, 5);
+        slicer.set_slot(3, 7);
+        assert_eq!(slicer.queue[0], 5);
+        assert_eq!(slicer.queue[3], 7);
+        // Other slots unchanged
+        assert_eq!(slicer.queue[1], 1);
     }
 
     #[test]
     fn test_reset_queue() {
         let mut slicer = SlicerState::new();
-        slicer.queue_slice(3);
-        slicer.queue_slice(5);
-        slicer.queue_slice(1);
+
+        // Modify the queue
+        slicer.load_preset([15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]);
 
         slicer.reset_queue();
         assert_eq!(slicer.queue, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);

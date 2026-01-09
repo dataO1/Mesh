@@ -52,6 +52,9 @@ pub struct AudioEngine {
     frame_counter: u64,
     /// Whether phase sync is enabled (can be toggled via config)
     phase_sync_enabled: bool,
+    /// Slicer preset patterns (8 patterns of 16 steps each)
+    /// Used by SlicerButtonAction for preset loading
+    slicer_presets: [[u8; 16]; 8],
 }
 
 impl AudioEngine {
@@ -74,6 +77,17 @@ impl AudioEngine {
             deck_play_start: [None; NUM_DECKS],
             frame_counter: 0,
             phase_sync_enabled: true, // Enabled by default
+            // Default slicer presets (can be overwritten via SetSlicerPresets command)
+            slicer_presets: [
+                [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], // Sequential
+                [0, 0, 2, 2, 4, 4, 6, 6, 8, 8, 10, 10, 12, 12, 14, 14], // Half-time
+                [0, 1, 0, 3, 4, 5, 4, 7, 8, 9, 8, 11, 12, 13, 12, 15],  // Kick emphasis
+                [0, 1, 2, 2, 4, 5, 6, 6, 8, 9, 6, 6, 12, 6, 6, 6],      // Snare roll
+                [0, 1, 2, 3, 4, 4, 6, 7, 8, 9, 10, 11, 12, 12, 14, 15], // Shuffle
+                [3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12], // Reverse
+                [0, 0, 2, 2, 4, 4, 6, 6, 0, 0, 2, 2, 4, 4, 6, 6],       // Stutter
+                [0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6],       // Rapid fire
+            ],
         }
     }
 
@@ -633,17 +647,11 @@ impl AudioEngine {
                         d.set_slicer_enabled(stem, enabled);
                     }
                 }
-                EngineCommand::SlicerQueueSlice { deck, stem, slice_idx } => {
+                EngineCommand::SlicerButtonAction { deck, stem, button_idx, shift_held } => {
+                    // Unified button action - slicer handles all behavior internally
                     if let Some(d) = self.decks.get_mut(deck) {
-                        d.slicer_queue_slice(stem, slice_idx);
-                    }
-                }
-                EngineCommand::SlicerTriggerSlice { deck, stem, slice_idx } => {
-                    // Trigger slice with one-shot playback (no seek, handles queue internally)
-                    if let Some(d) = self.decks.get_mut(deck) {
-                        // trigger_slice sets one-shot override and updates queue via set_slot
-                        // Returns None (no seek needed) - one-shot handles playback via remap
-                        d.slicer_trigger_slice(stem, slice_idx);
+                        let current_pos = d.position() as usize;
+                        d.slicer_handle_button_action(stem, button_idx, shift_held, current_pos, &self.slicer_presets);
                     }
                 }
                 EngineCommand::SlicerResetQueue { deck, stem } => {
@@ -651,20 +659,13 @@ impl AudioEngine {
                         d.slicer_reset_queue(stem);
                     }
                 }
-                EngineCommand::SlicerLoadPreset { deck, stem, preset } => {
-                    if let Some(d) = self.decks.get_mut(deck) {
-                        d.slicer_load_preset(stem, preset);
-                    }
-                }
                 EngineCommand::SetSlicerBufferBars { deck, stem, bars } => {
                     if let Some(d) = self.decks.get_mut(deck) {
                         d.set_slicer_buffer_bars(stem, bars);
                     }
                 }
-                EngineCommand::SetSlicerQueueAlgorithm { deck, stem, algorithm } => {
-                    if let Some(d) = self.decks.get_mut(deck) {
-                        d.set_slicer_queue_algorithm(stem, algorithm);
-                    }
+                EngineCommand::SetSlicerPresets { presets } => {
+                    self.slicer_presets = *presets;
                 }
 
                 // Mixer Control

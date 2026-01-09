@@ -36,7 +36,6 @@
 //! engine.process_commands(&mut rx);
 //! ```
 
-use super::slicer::QueueAlgorithm;
 use super::PreparedTrack;
 use crate::types::Stem;
 
@@ -146,19 +145,21 @@ pub enum EngineCommand {
     // ─────────────────────────────────────────────────────────────
     /// Enable/disable slicer for a stem on a deck
     SetSlicerEnabled { deck: usize, stem: Stem, enabled: bool },
-    /// Queue a slice for playback (button press in slicer mode, 0-7)
-    SlicerQueueSlice { deck: usize, stem: Stem, slice_idx: usize },
-    /// Trigger a slice with immediate playback and phase-preserved seek
-    /// Seeks to the slice position while preserving beat phase offset
-    SlicerTriggerSlice { deck: usize, stem: Stem, slice_idx: usize },
+    /// Unified slicer button action from UI (UI doesn't know about behavior)
+    /// Engine decides what to do based on shift_held state
+    SlicerButtonAction {
+        deck: usize,
+        stem: Stem,
+        button_idx: usize,
+        shift_held: bool,
+    },
     /// Reset slicer queue to default order [0,1,2,...,15]
     SlicerResetQueue { deck: usize, stem: Stem },
-    /// Load a 16-step preset pattern into the slicer queue
-    SlicerLoadPreset { deck: usize, stem: Stem, preset: [u8; 16] },
-    /// Set slicer buffer size in bars (4, 8, or 16)
+    /// Set slicer buffer size in bars (1, 4, 8, or 16)
     SetSlicerBufferBars { deck: usize, stem: Stem, bars: u32 },
-    /// Set slicer queue algorithm (FIFO rotate or Replace current)
-    SetSlicerQueueAlgorithm { deck: usize, stem: Stem, algorithm: QueueAlgorithm },
+    /// Set slicer preset patterns (loaded from config)
+    /// Boxed because the 8×16 array is large (128 bytes)
+    SetSlicerPresets { presets: Box<[[u8; 16]; 8]> },
 
     // ─────────────────────────────────────────────────────────────
     // Mixer Control

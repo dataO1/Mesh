@@ -22,8 +22,6 @@ pub struct SettingsState {
     pub draft_phase_sync: bool,
     /// Draft slicer buffer bars (4, 8, or 16)
     pub draft_slicer_buffer_bars: u32,
-    /// Draft slicer queue algorithm ("fifo" or "replace")
-    pub draft_slicer_queue_algorithm: String,
     /// Draft slicer affected stems [Vocals, Drums, Bass, Other]
     pub draft_slicer_affected_stems: [bool; 4],
     /// Status message (for save feedback)
@@ -40,7 +38,6 @@ impl SettingsState {
             draft_grid_bars: config.display.grid_bars,
             draft_phase_sync: config.audio.phase_sync,
             draft_slicer_buffer_bars: config.slicer.default_buffer_bars,
-            draft_slicer_queue_algorithm: config.slicer.queue_algorithm.clone(),
             draft_slicer_affected_stems: config.slicer.affected_stems,
             status: String::new(),
         }
@@ -54,8 +51,7 @@ impl SettingsState {
             draft_zoom_bars: 8,
             draft_grid_bars: 8,
             draft_phase_sync: true, // Enabled by default
-            draft_slicer_buffer_bars: 4, // 4 bars = 8 half-bar slices
-            draft_slicer_queue_algorithm: "fifo".to_string(),
+            draft_slicer_buffer_bars: 4, // 4 bars = 16 slices
             draft_slicer_affected_stems: [false, true, false, false], // Only Drums by default
             status: String::new(),
         }
@@ -304,36 +300,6 @@ fn view_slicer_section(state: &SettingsState) -> Element<'_, Message> {
     .spacing(10)
     .align_y(Alignment::Center);
 
-    // Queue algorithm section
-    let algo_subsection = text("Queue Algorithm").size(14);
-    let algo_hint = text("How new slice triggers are handled when queue is active")
-        .size(12);
-
-    let algorithms = [("fifo", "FIFO"), ("replace", "Replace")];
-    let algo_buttons: Vec<Element<Message>> = algorithms
-        .iter()
-        .map(|(value, label)| {
-            let is_selected = state.draft_slicer_queue_algorithm == *value;
-            let btn = button(text(*label).size(11))
-                .on_press(Message::UpdateSettingsSlicerQueueAlgorithm(value.to_string()))
-                .style(if is_selected {
-                    iced::widget::button::primary
-                } else {
-                    iced::widget::button::secondary
-                })
-                .width(Length::Fixed(70.0));
-            btn.into()
-        })
-        .collect();
-
-    let algo_label = text("Mode:").size(14);
-    let algo_row = row![
-        algo_label,
-        row(algo_buttons).spacing(4).align_y(Alignment::Center),
-    ]
-    .spacing(10)
-    .align_y(Alignment::Center);
-
     // Affected stems section
     let stems_subsection = text("Affected Stems").size(14);
     let stems_hint = text("Which stems are processed by the slicer")
@@ -371,10 +337,6 @@ fn view_slicer_section(state: &SettingsState) -> Element<'_, Message> {
             buffer_subsection,
             buffer_hint,
             buffer_row,
-            Space::new().height(10),
-            algo_subsection,
-            algo_hint,
-            algo_row,
             Space::new().height(10),
             stems_subsection,
             stems_hint,
