@@ -172,6 +172,12 @@ pub struct SlicerState {
     pending_enable: bool,
     /// Last beat index for detecting beat boundary crossings
     last_beat_index: usize,
+    /// One-shot override: play this slice content instead of queue lookup
+    one_shot_content: Option<u8>,
+    /// The timing slot when one-shot was triggered
+    one_shot_slot: usize,
+    /// Position offset when triggered (to start from slice beginning)
+    one_shot_start_offset: usize,
 }
 
 impl SlicerState {
@@ -193,6 +199,9 @@ impl SlicerState {
             first_beat_sample: 0,
             pending_enable: false,
             last_beat_index: 0,
+            one_shot_content: None,
+            one_shot_slot: 0,
+            one_shot_start_offset: 0,
         }
     }
 
@@ -340,37 +349,42 @@ impl SlicerState {
         }
     }
 
-    /// Trigger a slice with immediate playback and phase-preserved seek
+    /// Trigger a slice with one-shot playback from slice beginning
     ///
-    /// Calculates the target position that preserves beat phase while jumping
-    /// to the triggered slice's content. Returns the position to seek to,
-    /// or None if slicer is not initialized.
+    /// Sets up a one-shot override that plays the triggered slice's content
+    /// from its beginning, without seeking the deck. The deck continues its
+    /// natural progression, and at the next slot boundary, normal queue
+    /// playback resumes (grid-locked).
     ///
-    /// This also updates the queue so the triggered slice plays at the current
-    /// timing slot.
+    /// The queue is also updated so future loops play the triggered content
+    /// at this timing slot.
+    ///
+    /// Returns None (no seek needed - one-shot handles playback via remap).
     pub fn trigger_slice(&mut self, current_pos: usize, slice_idx: usize) -> Option<usize> {
         if slice_idx >= SLICER_NUM_SLICES || self.samples_per_slice == 0 {
             return None;
         }
 
-        // Calculate current phase offset within the slice
+        // Calculate current timing slot and position within slot
         let relative = current_pos.saturating_sub(self.buffer_start);
         let current_slot = (relative / self.samples_per_slice).min(SLICER_NUM_SLICES - 1);
-        let phase_offset = relative % self.samples_per_slice;
+        let pos_within_slot = relative % self.samples_per_slice;
 
-        // Calculate target: triggered slice's start + same phase offset
-        // This preserves beat phase while jumping to new slice content
-        let target_pos = self.buffer_start + (slice_idx * self.samples_per_slice) + phase_offset;
+        // Set one-shot override for immediate playback from slice start
+        self.one_shot_content = Some(slice_idx as u8);
+        self.one_shot_slot = current_slot;
+        self.one_shot_start_offset = pos_within_slot;
 
-        log::debug!(
-            "slicer trigger: pos={} slot={} offset={} -> slice {} at {}",
-            current_pos, current_slot, phase_offset, slice_idx, target_pos
-        );
-
-        // Set queue so this slice plays at current timing slot
+        // Also update queue for future loops
         self.set_slot(current_slot, slice_idx);
 
-        Some(target_pos)
+        log::debug!(
+            "slicer trigger: one-shot slice {} at slot {}, offset {} (start from beginning)",
+            slice_idx, current_slot, pos_within_slot
+        );
+
+        // Return None - don't seek the deck, one-shot handles it
+        None
     }
 
     /// Update the buffer window based on the current playhead position
@@ -463,10 +477,11 @@ impl SlicerState {
         );
     }
 
-    /// Remap a position through the queue
+    /// Remap a position through the queue (with one-shot override support)
     ///
     /// Given an original position within the buffer, returns the remapped position
-    /// based on the queue order.
+    /// based on the queue order. If a one-shot override is active for the current
+    /// timing slot, plays that slice's content from the beginning instead.
     #[inline]
     fn remap_position(&self, original_pos: usize) -> usize {
         if original_pos < self.buffer_start || original_pos >= self.buffer_end {
@@ -478,14 +493,22 @@ impl SlicerState {
         }
 
         let relative = original_pos - self.buffer_start;
-        let original_slice_idx = (relative / self.samples_per_slice).min(SLICER_NUM_SLICES - 1);
-        let pos_within_slice = relative % self.samples_per_slice;
+        let timing_slot = (relative / self.samples_per_slice).min(SLICER_NUM_SLICES - 1);
+        let pos_within_slot = relative % self.samples_per_slice;
 
-        // Look up remapped slice from queue
-        let remapped_slice_idx = self.queue[original_slice_idx] as usize;
+        // Check for one-shot override
+        if let Some(content) = self.one_shot_content {
+            if timing_slot == self.one_shot_slot {
+                // One-shot active: play triggered content from beginning
+                // Subtract the start offset to make playback start from slice beginning
+                let adjusted_pos = pos_within_slot.saturating_sub(self.one_shot_start_offset);
+                return (content as usize) * self.samples_per_slice + adjusted_pos;
+            }
+        }
 
-        // Calculate remapped position within cache (relative to buffer start)
-        remapped_slice_idx * self.samples_per_slice + pos_within_slice
+        // Normal queue lookup
+        let remapped_slice_idx = self.queue[timing_slot] as usize;
+        remapped_slice_idx * self.samples_per_slice + pos_within_slot
     }
 
     /// Calculate which slice index corresponds to a position
@@ -573,7 +596,26 @@ impl SlicerState {
 
         // Update current slice indicator for UI - store which slice CONTENT is playing
         let timing_slice = self.slice_for_position(playhead);
-        let content_slice = self.queue[timing_slice as usize];
+
+        // Clear one-shot if we've moved to a different slot
+        if self.one_shot_content.is_some() {
+            let timing_slot = timing_slice as usize;
+            if timing_slot != self.one_shot_slot {
+                log::debug!(
+                    "slicer: one-shot cleared (slot {} -> {})",
+                    self.one_shot_slot, timing_slot
+                );
+                self.one_shot_content = None;
+            }
+        }
+
+        // Determine content slice - use one-shot if active, otherwise queue
+        let content_slice = if let Some(content) = self.one_shot_content {
+            content
+        } else {
+            self.queue[timing_slice as usize]
+        };
+
         let prev_content = self.atomics.current_slice.load(Ordering::Relaxed);
         self.atomics
             .current_slice

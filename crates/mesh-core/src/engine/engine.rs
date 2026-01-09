@@ -639,14 +639,11 @@ impl AudioEngine {
                     }
                 }
                 EngineCommand::SlicerTriggerSlice { deck, stem, slice_idx } => {
-                    // Trigger slice with immediate playback and phase-preserved seek
+                    // Trigger slice with one-shot playback (no seek, handles queue internally)
                     if let Some(d) = self.decks.get_mut(deck) {
-                        if let Some(target_pos) = d.slicer_trigger_slice(stem, slice_idx) {
-                            d.seek(target_pos);
-                        } else {
-                            // Slicer not initialized, fall back to queue
-                            d.slicer_queue_slice(stem, slice_idx);
-                        }
+                        // trigger_slice sets one-shot override and updates queue via set_slot
+                        // Returns None (no seek needed) - one-shot handles playback via remap
+                        d.slicer_trigger_slice(stem, slice_idx);
                     }
                 }
                 EngineCommand::SlicerResetQueue { deck, stem } => {
