@@ -388,8 +388,7 @@ impl MeshApp {
                         let sa = &slicer_atomics[i];
                         let active = sa.active.load(std::sync::atomic::Ordering::Relaxed);
                         let current_slice = sa.current_slice.load(std::sync::atomic::Ordering::Relaxed);
-                        let queue_packed = sa.queue.load(std::sync::atomic::Ordering::Relaxed);
-                        let queue = SlicerAtomics::unpack_queue(queue_packed);
+                        let queue = sa.queue();
 
                         // Sync to deck view for button display
                         self.deck_views[i].sync_slicer_state(active, current_slice, queue);
@@ -616,22 +615,43 @@ impl MeshApp {
                                 }
                             }
                             SlicerTrigger(slice_idx) => {
-                                // Trigger slice with immediate playback on all affected stems
                                 use mesh_core::types::Stem;
                                 let affected_stems = self.config.slicer.affected_stems;
                                 let stems = [Stem::Vocals, Stem::Drums, Stem::Bass, Stem::Other];
-                                for (idx, &stem) in stems.iter().enumerate() {
-                                    if affected_stems[idx] {
-                                        let _ = sender.send(EngineCommand::SlicerTriggerSlice {
-                                            deck: deck_idx,
-                                            stem,
-                                            slice_idx,
-                                        });
+                                let shift_held = self.deck_views[deck_idx].shift_held();
+
+                                if shift_held {
+                                    // Shift+button: load preset pattern
+                                    if let Some(preset) = self.config.slicer.preset(slice_idx) {
+                                        for (idx, &stem) in stems.iter().enumerate() {
+                                            if affected_stems[idx] {
+                                                let _ = sender.send(EngineCommand::SlicerLoadPreset {
+                                                    deck: deck_idx,
+                                                    stem,
+                                                    preset,
+                                                });
+                                            }
+                                        }
+                                        // Enter preset mode (disables individual triggers)
+                                        self.deck_views[deck_idx].set_slicer_preset_mode(true);
+                                        log::info!("slicer: loaded preset {} on deck {}", slice_idx + 1, deck_idx);
+                                    }
+                                } else if !self.deck_views[deck_idx].slicer_preset_mode() {
+                                    // Normal trigger (only when not in preset mode)
+                                    for (idx, &stem) in stems.iter().enumerate() {
+                                        if affected_stems[idx] {
+                                            let _ = sender.send(EngineCommand::SlicerTriggerSlice {
+                                                deck: deck_idx,
+                                                stem,
+                                                slice_idx,
+                                            });
+                                        }
                                     }
                                 }
+                                // In preset mode without shift: buttons are disabled
                             }
                             ResetSlicerPattern => {
-                                // Reset slicer queue to default [0,1,2,3,4,5,6,7] for all affected stems
+                                // Reset slicer queue to default [0..15] and exit preset mode
                                 use mesh_core::types::Stem;
                                 let affected_stems = self.config.slicer.affected_stems;
                                 let stems = [Stem::Vocals, Stem::Drums, Stem::Bass, Stem::Other];
@@ -644,6 +664,8 @@ impl MeshApp {
                                         });
                                     }
                                 }
+                                // Exit preset mode
+                                self.deck_views[deck_idx].set_slicer_preset_mode(false);
                             }
                             ShiftPressed => {
                                 // UI-only state change

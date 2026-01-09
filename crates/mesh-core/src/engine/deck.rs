@@ -750,6 +750,11 @@ impl Deck {
         self.slicer_states[stem as usize].reset_queue();
     }
 
+    /// Load a preset pattern into the slicer queue
+    pub fn slicer_load_preset(&mut self, stem: Stem, preset: [u8; 16]) {
+        self.slicer_states[stem as usize].load_preset(preset);
+    }
+
     /// Set a specific slot in the slicer queue
     pub fn slicer_set_slot(&mut self, stem: Stem, slot: usize, slice_idx: usize) {
         self.slicer_states[stem as usize].set_slot(slot, slice_idx);

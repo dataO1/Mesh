@@ -12,6 +12,7 @@ use super::state::{
 use crate::{STEM_COLORS, CueMarker};
 use iced::widget::canvas::{self, Event, Frame, Geometry, Path, Program, Stroke};
 use iced::{mouse, Color, Point, Rectangle, Size, Theme};
+use mesh_core::engine::SLICER_NUM_SLICES;
 use mesh_core::types::SAMPLE_RATE;
 
 // =============================================================================
@@ -970,7 +971,7 @@ fn draw_overview_section(
         }
     }
 
-    // Draw slicer region (semi-transparent orange overlay with 8 divisions)
+    // Draw slicer region (semi-transparent orange overlay with slice divisions)
     if let Some((slicer_start, slicer_end)) = overview.slicer_region {
         let start_x = (slicer_start * width as f64) as f32;
         let end_x = (slicer_end * width as f64) as f32;
@@ -983,11 +984,11 @@ fn draw_overview_section(
                 Color::from_rgba(1.0, 0.5, 0.0, 0.15), // Semi-transparent orange
             );
 
-            // Draw 8 slice divisions
-            let slice_width = slicer_width / 8.0;
-            for i in 0..9 {
+            // Draw slice divisions
+            let slice_width = slicer_width / SLICER_NUM_SLICES as f32;
+            for i in 0..=SLICER_NUM_SLICES {
                 let x = start_x + slice_width * i as f32;
-                let is_boundary = i == 0 || i == 8;
+                let is_boundary = i == 0 || i == SLICER_NUM_SLICES;
                 let line_width = if is_boundary { 2.0 } else { 1.0 };
                 let alpha = if is_boundary { 0.8 } else { 0.4 };
 
@@ -1643,7 +1644,7 @@ fn draw_zoomed_at(
             }
         }
 
-        // Draw slicer region (orange overlay with 8 divisions)
+        // Draw slicer region (orange overlay with slice divisions)
         if let Some((slicer_start_norm, slicer_end_norm)) = zoomed.slicer_region {
             let slicer_start_sample = (slicer_start_norm * zoomed.duration_samples as f64) as u64;
             let slicer_end_sample = (slicer_end_norm * zoomed.duration_samples as f64) as u64;
@@ -1669,17 +1670,17 @@ fn draw_zoomed_at(
                         Color::from_rgba(1.0, 0.5, 0.0, 0.12),
                     );
 
-                    // Draw 8 slice divisions (if they fit in view)
+                    // Draw slice divisions (if they fit in view)
                     let total_slicer_samples = (slicer_end_sample - slicer_start_sample) as f64;
-                    let samples_per_slice = total_slicer_samples / 8.0;
+                    let samples_per_slice = total_slicer_samples / SLICER_NUM_SLICES as f64;
 
-                    for i in 0..9 {
+                    for i in 0..=SLICER_NUM_SLICES {
                         let slice_sample = slicer_start_sample as f64 + samples_per_slice * i as f64;
                         let slice_sample_u64 = slice_sample as u64;
 
                         if slice_sample_u64 >= view_start && slice_sample_u64 <= view_end {
                             let slice_x = x + ((slice_sample_u64 - view_start) as f64 / view_samples * width as f64) as f32;
-                            let is_boundary = i == 0 || i == 8;
+                            let is_boundary = i == 0 || i == SLICER_NUM_SLICES;
                             let line_width = if is_boundary { 2.0 } else { 1.0 };
                             let alpha = if is_boundary { 0.8 } else { 0.5 };
 
@@ -1917,7 +1918,7 @@ fn draw_overview_at(
         }
     }
 
-    // Draw slicer region (semi-transparent orange overlay with 8 divisions)
+    // Draw slicer region (semi-transparent orange overlay with slice divisions)
     if let Some((slicer_start, slicer_end)) = overview.slicer_region {
         let start_x = x + (slicer_start * width as f64) as f32;
         let end_x = x + (slicer_end * width as f64) as f32;
@@ -1930,11 +1931,11 @@ fn draw_overview_at(
                 Color::from_rgba(1.0, 0.5, 0.0, 0.15),
             );
 
-            // Draw 8 slice divisions
-            let slice_width = slicer_width / 8.0;
-            for i in 0..9 {
+            // Draw slice divisions
+            let slice_width = slicer_width / SLICER_NUM_SLICES as f32;
+            for i in 0..=SLICER_NUM_SLICES {
                 let slice_x = start_x + slice_width * i as f32;
-                let is_boundary = i == 0 || i == 8;
+                let is_boundary = i == 0 || i == SLICER_NUM_SLICES;
                 let line_width = if is_boundary { 2.0 } else { 1.0 };
                 let alpha = if is_boundary { 0.8 } else { 0.4 };
 

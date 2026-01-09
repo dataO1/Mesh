@@ -151,8 +151,10 @@ pub enum EngineCommand {
     /// Trigger a slice with immediate playback and phase-preserved seek
     /// Seeks to the slice position while preserving beat phase offset
     SlicerTriggerSlice { deck: usize, stem: Stem, slice_idx: usize },
-    /// Reset slicer queue to default order [0,1,2,3,4,5,6,7]
+    /// Reset slicer queue to default order [0,1,2,...,15]
     SlicerResetQueue { deck: usize, stem: Stem },
+    /// Load a 16-step preset pattern into the slicer queue
+    SlicerLoadPreset { deck: usize, stem: Stem, preset: [u8; 16] },
     /// Set slicer buffer size in bars (4, 8, or 16)
     SetSlicerBufferBars { deck: usize, stem: Stem, bars: u32 },
     /// Set slicer queue algorithm (FIFO rotate or Replace current)
@@ -234,9 +236,9 @@ mod tests {
     #[test]
     fn test_command_size() {
         // Ensure EngineCommand stays small for cache efficiency in the ringbuffer
-        // SetTrackKey with Option<String> is the largest variant at 32 bytes
-        // This still fits 2 commands per 64-byte cache line
+        // SlicerLoadPreset with [u8; 16] is the largest variant at 40 bytes
+        // This still fits comfortably within a 64-byte cache line
         let size = std::mem::size_of::<EngineCommand>();
-        assert!(size <= 32, "EngineCommand is {} bytes, expected <= 32", size);
+        assert!(size <= 40, "EngineCommand is {} bytes, expected <= 40", size);
     }
 }

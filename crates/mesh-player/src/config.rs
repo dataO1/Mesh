@@ -113,14 +113,35 @@ pub struct SlicerConfig {
     /// Which stems are affected by the slicer [Vocals, Drums, Bass, Other]
     /// Default: only Drums enabled
     pub affected_stems: [bool; 4],
+    /// 8 preset patterns, each with 16 steps (slice indices 0-15)
+    /// Loaded via Shift+button in Slicer mode
+    pub presets: [[u8; 16]; 8],
 }
 
 impl Default for SlicerConfig {
     fn default() -> Self {
         Self {
-            default_buffer_bars: 4, // 4 bars = 8 half-bar slices
+            default_buffer_bars: 4, // 4 bars = 16 quarter-bar slices
             queue_algorithm: "fifo".to_string(),
             affected_stems: [false, true, false, false], // Only Drums by default
+            presets: [
+                // Preset 1: Sequential (default)
+                [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+                // Preset 2: Double-up first half
+                [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7],
+                // Preset 3: Reverse
+                [15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
+                // Preset 4: Odds/evens split
+                [0, 2, 4, 6, 8, 10, 12, 14, 1, 3, 5, 7, 9, 11, 13, 15],
+                // Preset 5: Quad repeat first 4
+                [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3],
+                // Preset 6: Loop halves
+                [0, 1, 2, 3, 0, 1, 2, 3, 4, 5, 6, 7, 4, 5, 6, 7],
+                // Preset 7: Interleaved
+                [0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15],
+                // Preset 8: Repeat first 8
+                [0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7],
+            ],
         }
     }
 }
@@ -141,6 +162,11 @@ impl SlicerConfig {
             1 | 4 | 8 | 16 => self.default_buffer_bars,
             _ => 4, // Default to 4 if invalid
         }
+    }
+
+    /// Get a preset pattern by index (0-7)
+    pub fn preset(&self, index: usize) -> Option<[u8; 16]> {
+        self.presets.get(index).copied()
     }
 }
 
@@ -249,6 +275,7 @@ mod tests {
             slicer: SlicerConfig {
                 default_buffer_bars: 8,
                 queue_algorithm: "replace".to_string(),
+                ..Default::default()
             },
             collection_path: PathBuf::from("/tmp/test-collection"),
         };

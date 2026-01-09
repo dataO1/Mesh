@@ -651,6 +651,11 @@ impl AudioEngine {
                         d.slicer_reset_queue(stem);
                     }
                 }
+                EngineCommand::SlicerLoadPreset { deck, stem, preset } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        d.slicer_load_preset(stem, preset);
+                    }
+                }
                 EngineCommand::SetSlicerBufferBars { deck, stem, bars } => {
                     if let Some(d) = self.decks.get_mut(deck) {
                         d.set_slicer_buffer_bars(stem, bars);
@@ -778,6 +783,20 @@ impl AudioEngine {
                 // No track loaded - copy silence from stretch_input to deck_buffer
                 self.deck_buffers[deck_idx].copy_from(&self.stretch_input);
             }
+        }
+
+        // Detect decks that stopped naturally (end of track) and update master tracking
+        // This ensures a deck reaching end of playback is properly unset as master
+        let mut master_changed = false;
+        for deck_idx in 0..NUM_DECKS {
+            if self.deck_play_start[deck_idx].is_some() && self.decks[deck_idx].state() == PlayState::Stopped {
+                self.deck_play_start[deck_idx] = None;
+                master_changed = true;
+                log::debug!("deck {}: stopped naturally (end of track), clearing master tracking", deck_idx);
+            }
+        }
+        if master_changed {
+            self.sync_master_atomics();
         }
 
         // Mix deck outputs to master and cue

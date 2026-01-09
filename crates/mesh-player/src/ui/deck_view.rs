@@ -75,12 +75,14 @@ pub struct DeckView {
     action_mode: ActionButtonMode,
     /// Whether slicer is active (synced from atomics)
     slicer_active: bool,
-    /// Current slicer queue (8 slice indices)
-    slicer_queue: [u8; 8],
-    /// Current slice being played (0-7)
+    /// Current slicer queue (16 slice indices)
+    slicer_queue: [u8; 16],
+    /// Current slice being played (0-15)
     slicer_current_slice: u8,
     /// Whether shift is currently held
     shift_held: bool,
+    /// Whether slicer is in preset mode (disables individual triggers)
+    slicer_preset_mode: bool,
 }
 
 /// Messages for deck interaction
@@ -170,9 +172,10 @@ impl DeckView {
             knob_states: Default::default(),
             action_mode: ActionButtonMode::default(),
             slicer_active: false,
-            slicer_queue: [0, 1, 2, 3, 4, 5, 6, 7],
+            slicer_queue: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
             slicer_current_slice: 0,
             shift_held: false,
+            slicer_preset_mode: false,
         }
     }
 
@@ -308,7 +311,7 @@ impl DeckView {
     }
 
     /// Sync slicer state from atomics
-    pub fn sync_slicer_state(&mut self, active: bool, current_slice: u8, queue: [u8; 8]) {
+    pub fn sync_slicer_state(&mut self, active: bool, current_slice: u8, queue: [u8; 16]) {
         self.slicer_active = active;
         self.slicer_current_slice = current_slice;
         self.slicer_queue = queue;
@@ -317,6 +320,21 @@ impl DeckView {
     /// Set shift held state
     pub fn set_shift_held(&mut self, held: bool) {
         self.shift_held = held;
+    }
+
+    /// Check if shift is held
+    pub fn shift_held(&self) -> bool {
+        self.shift_held
+    }
+
+    /// Set slicer preset mode
+    pub fn set_slicer_preset_mode(&mut self, preset_mode: bool) {
+        self.slicer_preset_mode = preset_mode;
+    }
+
+    /// Check if slicer is in preset mode
+    pub fn slicer_preset_mode(&self) -> bool {
+        self.slicer_preset_mode
     }
 
     /// Handle a deck message

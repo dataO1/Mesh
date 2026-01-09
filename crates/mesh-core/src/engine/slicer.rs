@@ -1,8 +1,8 @@
 //! Stem Slicer - Real-time audio remixing by rearranging slice playback order
 //!
-//! The slicer divides a configurable buffer window (1/4/8/16 bars) into 8 equal slices.
-//! Users can rearrange playback order by pressing buttons 1-8, which queue slices
-//! in the order pressed. The playhead remains locked to the deck's background playhead,
+//! The slicer divides a configurable buffer window (1/4/8/16 bars) into 16 equal slices.
+//! Users can rearrange playback order via manual triggering (slices 0-7) or by loading
+//! one of 8 preset patterns. The playhead remains locked to the deck's background playhead,
 //! but the slicer remaps which slice content plays at each timing position.
 //!
 //! # Architecture
@@ -12,23 +12,28 @@
 //! Track → Deck.process() → [SLICER] → EffectChain → TimeStretch → Mixer
 //! ```
 //!
+//! # Modes
+//!
+//! - **Manual mode**: Buttons 0-7 trigger individual slices, pattern is editable
+//! - **Preset mode**: Pattern loaded from config presets, individual triggers disabled
+//!
 //! # Queue Behavior
 //!
-//! The 8-slot queue determines playback order. Initially [0,1,2,3,4,5,6,7] for
-//! normal playback. When a user presses button 3, slice index 3 is queued.
-//! Two algorithms are supported:
+//! The 16-slot queue determines playback order. Initially [0,1,2...15] for
+//! normal playback. Presets provide pre-defined 16-step patterns.
+//! Two algorithms are supported for manual triggering:
 //! - **FIFO Rotate**: Oldest entry removed, new slice added to end
 //! - **Replace Current**: New slice replaces the currently playing position
 //!
-//! The queue persists until explicitly cleared (shift+slicer or mode switch).
+//! The queue persists until explicitly cleared (shift+slicer).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 
 use crate::types::{StereoBuffer, StereoSample};
 
-/// Number of slices in the slicer buffer (always 8)
-pub const SLICER_NUM_SLICES: usize = 8;
+/// Number of slices in the slicer buffer (always 16)
+pub const SLICER_NUM_SLICES: usize = 16;
 
 /// Default buffer size in bars
 pub const SLICER_DEFAULT_BARS: u32 = 4;
@@ -59,41 +64,48 @@ pub struct SlicerAtomics {
     pub buffer_start: AtomicU64,
     /// Current buffer end position in samples
     pub buffer_end: AtomicU64,
-    /// Current playback queue packed as 8 u8 values into a u64
-    /// Each byte (0-7) holds a slice index (0-7)
-    pub queue: AtomicU64,
-    /// Current slice index being played (0-7)
+    /// Current playback queue packed as 16 u8 values into two u64s
+    /// queue_low holds steps 0-7, queue_high holds steps 8-15
+    pub queue_low: AtomicU64,
+    pub queue_high: AtomicU64,
+    /// Current slice index being played (0-15)
     pub current_slice: AtomicU8,
 }
 
 impl SlicerAtomics {
     /// Create new atomic state with defaults
     pub fn new() -> Self {
+        let (low, high) = Self::pack_queue(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
         Self {
             active: AtomicBool::new(false),
             buffer_start: AtomicU64::new(0),
             buffer_end: AtomicU64::new(0),
-            queue: AtomicU64::new(Self::pack_queue(&[0, 1, 2, 3, 4, 5, 6, 7])),
+            queue_low: AtomicU64::new(low),
+            queue_high: AtomicU64::new(high),
             current_slice: AtomicU8::new(0),
         }
     }
 
-    /// Pack 8 u8 values into a single u64 for atomic storage
+    /// Pack 16 u8 values into two u64s for atomic storage
+    /// Returns (low, high) where low contains elements 0-7 and high contains 8-15
     #[inline]
-    pub fn pack_queue(queue: &[u8; SLICER_NUM_SLICES]) -> u64 {
-        let mut packed = 0u64;
-        for (i, &val) in queue.iter().enumerate() {
-            packed |= (val as u64) << (i * 8);
+    pub fn pack_queue(queue: &[u8; SLICER_NUM_SLICES]) -> (u64, u64) {
+        let mut low = 0u64;
+        let mut high = 0u64;
+        for i in 0..8 {
+            low |= (queue[i] as u64) << (i * 8);
+            high |= (queue[i + 8] as u64) << (i * 8);
         }
-        packed
+        (low, high)
     }
 
-    /// Unpack a u64 into 8 u8 values
+    /// Unpack two u64s into 16 u8 values
     #[inline]
-    pub fn unpack_queue(packed: u64) -> [u8; SLICER_NUM_SLICES] {
+    pub fn unpack_queue(low: u64, high: u64) -> [u8; SLICER_NUM_SLICES] {
         let mut queue = [0u8; SLICER_NUM_SLICES];
-        for (i, val) in queue.iter_mut().enumerate() {
-            *val = ((packed >> (i * 8)) & 0xFF) as u8;
+        for i in 0..8 {
+            queue[i] = ((low >> (i * 8)) & 0xFF) as u8;
+            queue[i + 8] = ((high >> (i * 8)) & 0xFF) as u8;
         }
         queue
     }
@@ -125,7 +137,9 @@ impl SlicerAtomics {
     /// Get unpacked queue (lock-free)
     #[inline]
     pub fn queue(&self) -> [u8; SLICER_NUM_SLICES] {
-        Self::unpack_queue(self.queue.load(Ordering::Relaxed))
+        let low = self.queue_low.load(Ordering::Relaxed);
+        let high = self.queue_high.load(Ordering::Relaxed);
+        Self::unpack_queue(low, high)
     }
 }
 
@@ -188,7 +202,7 @@ impl SlicerState {
             buffer_start: 0,
             buffer_end: 0,
             samples_per_slice: 0,
-            queue: [0, 1, 2, 3, 4, 5, 6, 7],
+            queue: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
             queue_write_idx: 0,
             buffer_bars: SLICER_DEFAULT_BARS,
             queue_algorithm: QueueAlgorithm::default(),
@@ -315,19 +329,28 @@ impl SlicerState {
         }
 
         log::debug!(
-            "slicer: queued slice {} -> queue=[{},{},{},{},{},{},{},{}]",
+            "slicer: queued slice {} -> queue={:?}",
             slice_idx,
-            self.queue[0], self.queue[1], self.queue[2], self.queue[3],
-            self.queue[4], self.queue[5], self.queue[6], self.queue[7]
+            &self.queue[..]
         );
 
         self.sync_atomics();
     }
 
-    /// Reset the queue to default order [0, 1, 2, 3, 4, 5, 6, 7]
+    /// Reset the queue to default order [0, 1, 2, ..., 15]
     pub fn reset_queue(&mut self) {
-        log::debug!("slicer: queue reset to [0,1,2,3,4,5,6,7]");
-        self.queue = [0, 1, 2, 3, 4, 5, 6, 7];
+        log::debug!("slicer: queue reset to [0..15]");
+        self.queue = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        self.queue_write_idx = 0;
+        self.sync_atomics();
+    }
+
+    /// Load a preset pattern into the queue
+    ///
+    /// Replaces the entire queue with the provided 16-step pattern.
+    pub fn load_preset(&mut self, preset: [u8; 16]) {
+        log::debug!("slicer: loading preset {:?}", &preset[..]);
+        self.queue = preset;
         self.queue_write_idx = 0;
         self.sync_atomics();
     }
@@ -340,10 +363,9 @@ impl SlicerState {
         if slot < SLICER_NUM_SLICES && slice_idx < SLICER_NUM_SLICES {
             self.queue[slot] = slice_idx as u8;
             log::debug!(
-                "slicer: set slot {} = slice {} -> queue=[{},{},{},{},{},{},{},{}]",
+                "slicer: set slot {} = slice {} -> queue={:?}",
                 slot, slice_idx,
-                self.queue[0], self.queue[1], self.queue[2], self.queue[3],
-                self.queue[4], self.queue[5], self.queue[6], self.queue[7]
+                &self.queue[..]
             );
             self.sync_atomics();
         }
@@ -643,9 +665,9 @@ impl SlicerState {
         self.atomics
             .buffer_end
             .store(self.buffer_end as u64, Ordering::Relaxed);
-        self.atomics
-            .queue
-            .store(SlicerAtomics::pack_queue(&self.queue), Ordering::Relaxed);
+        let (low, high) = SlicerAtomics::pack_queue(&self.queue);
+        self.atomics.queue_low.store(low, Ordering::Relaxed);
+        self.atomics.queue_high.store(high, Ordering::Relaxed);
     }
 }
 
@@ -661,14 +683,14 @@ mod tests {
 
     #[test]
     fn test_queue_packing() {
-        let queue = [0, 1, 2, 3, 4, 5, 6, 7];
-        let packed = SlicerAtomics::pack_queue(&queue);
-        let unpacked = SlicerAtomics::unpack_queue(packed);
+        let queue = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        let (low, high) = SlicerAtomics::pack_queue(&queue);
+        let unpacked = SlicerAtomics::unpack_queue(low, high);
         assert_eq!(queue, unpacked);
 
-        let queue2 = [7, 6, 5, 4, 3, 2, 1, 0];
-        let packed2 = SlicerAtomics::pack_queue(&queue2);
-        let unpacked2 = SlicerAtomics::unpack_queue(packed2);
+        let queue2 = [15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0];
+        let (low2, high2) = SlicerAtomics::pack_queue(&queue2);
+        let unpacked2 = SlicerAtomics::unpack_queue(low2, high2);
         assert_eq!(queue2, unpacked2);
     }
 
@@ -677,16 +699,16 @@ mod tests {
         let mut slicer = SlicerState::new();
         slicer.set_queue_algorithm(QueueAlgorithm::FifoRotate);
 
-        // Initial queue: [0, 1, 2, 3, 4, 5, 6, 7]
-        assert_eq!(slicer.queue, [0, 1, 2, 3, 4, 5, 6, 7]);
+        // Initial queue: [0..15]
+        assert_eq!(slicer.queue, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
 
-        // Queue slice 3
+        // Queue slice 3 - shifts all left, adds 3 at end
         slicer.queue_slice(3);
-        assert_eq!(slicer.queue, [1, 2, 3, 4, 5, 6, 7, 3]);
+        assert_eq!(slicer.queue, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 3]);
 
         // Queue slice 5
         slicer.queue_slice(5);
-        assert_eq!(slicer.queue, [2, 3, 4, 5, 6, 7, 3, 5]);
+        assert_eq!(slicer.queue, [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 3, 5]);
     }
 
     #[test]
@@ -694,16 +716,16 @@ mod tests {
         let mut slicer = SlicerState::new();
         slicer.set_queue_algorithm(QueueAlgorithm::ReplaceCurrent);
 
-        // Initial queue: [0, 1, 2, 3, 4, 5, 6, 7]
-        assert_eq!(slicer.queue, [0, 1, 2, 3, 4, 5, 6, 7]);
+        // Initial queue: [0..15]
+        assert_eq!(slicer.queue, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
 
         // Queue slice 3 at position 0
         slicer.queue_slice(3);
-        assert_eq!(slicer.queue, [3, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(slicer.queue, [3, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
 
         // Queue slice 5 at position 1
         slicer.queue_slice(5);
-        assert_eq!(slicer.queue, [3, 5, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(slicer.queue, [3, 5, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
     }
 
     #[test]
@@ -714,24 +736,24 @@ mod tests {
         slicer.queue_slice(1);
 
         slicer.reset_queue();
-        assert_eq!(slicer.queue, [0, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(slicer.queue, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
     }
 
     #[test]
     fn test_remap_position() {
         let mut slicer = SlicerState::new();
         slicer.buffer_start = 0;
-        slicer.buffer_end = 8000; // 8000 samples = 8 slices of 1000 samples each
+        slicer.buffer_end = 16000; // 16000 samples = 16 slices of 1000 samples each
         slicer.samples_per_slice = 1000;
         slicer.enabled = true;
 
-        // Default queue [0,1,2,3,4,5,6,7] - no remapping
+        // Default queue [0..15] - no remapping
         assert_eq!(slicer.remap_position(0), 0);
         assert_eq!(slicer.remap_position(500), 500);
         assert_eq!(slicer.remap_position(1000), 1000);
 
         // Swap queue: slice 0 plays slice 1's content, slice 1 plays slice 0's content
-        slicer.queue = [1, 0, 2, 3, 4, 5, 6, 7];
+        slicer.queue = [1, 0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
         // Position 0-999 (originally slice 0) should now play from slice 1 (1000-1999)
         assert_eq!(slicer.remap_position(0), 1000);
@@ -747,7 +769,7 @@ mod tests {
     fn test_slice_for_position() {
         let mut slicer = SlicerState::new();
         slicer.buffer_start = 0;
-        slicer.buffer_end = 8000;
+        slicer.buffer_end = 16000;
         slicer.samples_per_slice = 1000;
         slicer.enabled = true;
 
@@ -755,6 +777,7 @@ mod tests {
         assert_eq!(slicer.slice_for_position(999), 0);
         assert_eq!(slicer.slice_for_position(1000), 1);
         assert_eq!(slicer.slice_for_position(7000), 7);
-        assert_eq!(slicer.slice_for_position(7999), 7);
+        assert_eq!(slicer.slice_for_position(15000), 15);
+        assert_eq!(slicer.slice_for_position(15999), 15);
     }
 }
