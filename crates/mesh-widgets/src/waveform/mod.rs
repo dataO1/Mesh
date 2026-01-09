@@ -32,10 +32,17 @@
 //! - View functions with callback closures for reusable waveform widgets
 
 mod canvas;
+mod peak_computation;
 mod peaks;
 mod peaks_computer;
 mod state;
 mod view;
+
+pub use peak_computation::{
+    CacheInfo, WindowInfo,
+    compute_effective_width, generate_peaks_for_cache, generate_peaks_with_padding,
+    samples_per_bar, smooth_peaks as smooth_peaks_array,
+};
 
 pub use peaks::{
     generate_peaks, generate_peaks_for_range, generate_waveform_preview,

@@ -1,0 +1,396 @@
+//! Unified peak computation for waveform displays
+//!
+//! This module provides a single source of truth for all waveform peak calculations.
+//! It handles window calculation, resolution scaling, and peak generation with proper
+//! boundary padding for track start/end.
+//!
+//! # Architecture
+//!
+//! The UI provides:
+//! - Stem audio buffers
+//! - Playhead position
+//! - Zoom level / buffer bounds
+//! - View mode (scrolling vs fixed)
+//!
+//! This module handles:
+//! - Window calculation with boundary padding
+//! - Cache sizing and margins
+//! - Resolution scaling based on zoom/mode
+//! - Peak generation with zero-padding for boundaries
+
+use mesh_core::audio_file::StemBuffers;
+use mesh_core::types::SAMPLE_RATE;
+
+use super::state::ZoomedViewMode;
+use super::peaks::smooth_peaks_gaussian;
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+/// Default zoom level in bars (8 bars = 32 beats)
+pub const DEFAULT_ZOOM_BARS: u32 = 8;
+
+/// Minimum zoom level (1 bar = very zoomed in)
+pub const MIN_ZOOM_BARS: u32 = 1;
+
+/// Maximum zoom level (64 bars = very zoomed out)
+pub const MAX_ZOOM_BARS: u32 = 64;
+
+// =============================================================================
+// Window Information
+// =============================================================================
+
+/// Result of window calculation with boundary padding info
+///
+/// This struct captures the actual sample range plus any "virtual" padding
+/// needed for track boundaries. When playhead is near position 0, `left_padding`
+/// indicates how many samples of silence should be prepended to center the playhead.
+#[derive(Debug, Clone, Copy)]
+pub struct WindowInfo {
+    /// Actual start sample (clamped to 0)
+    pub start: u64,
+    /// Actual end sample (may exceed track duration - handled as zeros)
+    pub end: u64,
+    /// Virtual samples before track start (for centering at position 0)
+    pub left_padding: u64,
+    /// Total window size in samples (always consistent regardless of boundaries)
+    pub total_samples: u64,
+}
+
+impl WindowInfo {
+    /// Create a window for scrolling mode (centered on playhead)
+    ///
+    /// The window is always `total_samples` wide in "virtual" space, but the
+    /// actual audio range (`start` to `end`) may be smaller when near track
+    /// boundaries:
+    ///
+    /// ```text
+    /// At track start (playhead=0):
+    ///   |<-- left_padding -->|<-- actual audio -->|
+    ///   |----- total_samples (full window) -------|
+    ///                        ^
+    ///                    playhead (center)
+    /// ```
+    pub fn scrolling(playhead: u64, zoom_bars: u32, bpm: f64) -> Self {
+        let window_samples = samples_per_bar(bpm) * zoom_bars as u64;
+        let half_window = window_samples / 2;
+
+        // Calculate virtual start/end (may be negative conceptually)
+        let virtual_start = playhead as i64 - half_window as i64;
+        let virtual_end = playhead as i64 + half_window as i64;
+
+        // Clamp to valid sample range (actual audio data)
+        let start = virtual_start.max(0) as u64;
+        let end = virtual_end.max(0) as u64;
+
+        // Padding needed for samples "before" position 0
+        let left_padding = (-virtual_start).max(0) as u64;
+
+        Self {
+            start,
+            end,
+            left_padding,
+            total_samples: window_samples,
+        }
+    }
+
+    /// Create a window for fixed buffer mode (slicer)
+    pub fn fixed_buffer(buffer_start: u64, buffer_end: u64) -> Self {
+        let total_samples = buffer_end.saturating_sub(buffer_start);
+        Self {
+            start: buffer_start,
+            end: buffer_end,
+            left_padding: 0, // Fixed buffers don't need padding
+            total_samples,
+        }
+    }
+
+    /// Create a window based on view mode and parameters
+    pub fn compute(
+        playhead: u64,
+        zoom_bars: u32,
+        bpm: f64,
+        view_mode: ZoomedViewMode,
+        fixed_bounds: Option<(u64, u64)>,
+    ) -> Self {
+        match view_mode {
+            ZoomedViewMode::Scrolling => Self::scrolling(playhead, zoom_bars, bpm),
+            ZoomedViewMode::FixedBuffer => {
+                if let Some((start, end)) = fixed_bounds {
+                    Self::fixed_buffer(start, end)
+                } else {
+                    // Fall back to scrolling behavior if no bounds
+                    Self::scrolling(playhead, zoom_bars, bpm)
+                }
+            }
+        }
+    }
+
+    /// Get the range for actual audio data (excluding padding)
+    pub fn data_range(&self) -> (u64, u64) {
+        (self.start, self.end)
+    }
+}
+
+// =============================================================================
+// Cache Information
+// =============================================================================
+
+/// Cache window sizing for background computation
+#[derive(Debug, Clone, Copy)]
+pub struct CacheInfo {
+    /// Start of cache window
+    pub start: u64,
+    /// End of cache window
+    pub end: u64,
+    /// Left padding from original window
+    pub left_padding: u64,
+}
+
+impl CacheInfo {
+    /// Compute cache bounds for a visible window
+    ///
+    /// In scrolling mode, caches 3× the visible window (1× padding on each side)
+    /// In fixed buffer mode, caches exactly the visible range
+    pub fn from_window(window: &WindowInfo, view_mode: ZoomedViewMode) -> Self {
+        match view_mode {
+            ZoomedViewMode::Scrolling => {
+                // Cache 3× visible window for smooth scrolling
+                // Use total_samples (full virtual window) for sizing, not (end - start)
+                // which may be smaller when there's padding
+                let cache_start = window.start.saturating_sub(window.total_samples);
+                let cache_end = window.end + window.total_samples;
+
+                Self {
+                    start: cache_start,
+                    end: cache_end,
+                    left_padding: window.left_padding,
+                }
+            }
+            ZoomedViewMode::FixedBuffer => {
+                // Cache exactly the visible range
+                Self {
+                    start: window.start,
+                    end: window.end,
+                    left_padding: 0,
+                }
+            }
+        }
+    }
+
+    /// Check if a window is within this cache (with margin)
+    pub fn contains_with_margin(&self, window: &WindowInfo) -> bool {
+        // Use /2 margin for recompute threshold (4 bars at 8-bar zoom)
+        // Use total_samples for margin calculation (consistent with cache sizing)
+        let margin = window.total_samples / 2;
+
+        window.start >= self.start.saturating_add(margin)
+            && window.end <= self.end.saturating_sub(margin)
+    }
+}
+
+// =============================================================================
+// Resolution Calculation
+// =============================================================================
+
+/// Calculate effective width (resolution) for peak generation
+///
+/// Resolution scaling depends on view mode:
+/// - **Scrolling**: Reduces resolution when zoomed out (more audio, less detail needed)
+/// - **FixedBuffer**: Uses 80% of base width (slightly reduced for slicer)
+pub fn compute_effective_width(base_width: usize, zoom_bars: u32, view_mode: ZoomedViewMode) -> usize {
+    match view_mode {
+        ZoomedViewMode::Scrolling => {
+            let zoom_ratio = zoom_bars as f64 / DEFAULT_ZOOM_BARS as f64;
+            if zoom_ratio > 1.0 {
+                // Zoomed out: reduce resolution
+                (base_width as f64 / zoom_ratio.sqrt()).max(base_width as f64 / 4.0) as usize
+            } else {
+                // Zoomed in or at default: keep base width
+                base_width
+            }
+        }
+        ZoomedViewMode::FixedBuffer => {
+            // Slicer mode: use 80% of base width
+            ((base_width as f64) * 0.8) as usize
+        }
+    }
+}
+
+// =============================================================================
+// Peak Generation
+// =============================================================================
+
+/// Generate peaks for a window with proper boundary handling
+///
+/// This function handles:
+/// - Left padding: Prepends zeros for samples "before" track start
+/// - Right padding: Treats samples beyond track duration as zeros
+/// - Always returns exactly `width` peaks
+pub fn generate_peaks_with_padding(
+    stems: &StemBuffers,
+    window: &WindowInfo,
+    width: usize,
+) -> [Vec<(f32, f32)>; 4] {
+    if window.total_samples == 0 || width == 0 {
+        return [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    }
+
+    let stem_len = stems.len();
+    // total_samples already represents the full virtual window size (including padding conceptually)
+    let total_virtual_samples = window.total_samples;
+    let samples_per_column = total_virtual_samples as usize / width;
+
+    if samples_per_column == 0 {
+        return [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    }
+
+    let stem_refs = [&stems.vocals, &stems.drums, &stems.bass, &stems.other];
+    let mut result: [Vec<(f32, f32)>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+
+    for (stem_idx, stem_buffer) in stem_refs.iter().enumerate() {
+        result[stem_idx] = (0..width)
+            .map(|col| {
+                // Calculate virtual position (includes padding region)
+                let virtual_col_start = col * samples_per_column;
+                let virtual_col_end = (col + 1) * samples_per_column;
+
+                // If entirely in left padding region, return silence
+                if virtual_col_end <= window.left_padding as usize {
+                    return (0.0, 0.0);
+                }
+
+                // Calculate actual sample positions (subtract padding)
+                let actual_col_start = virtual_col_start.saturating_sub(window.left_padding as usize);
+                let actual_col_end = virtual_col_end.saturating_sub(window.left_padding as usize);
+
+                // Map to stem buffer indices
+                let data_start = (window.start as usize + actual_col_start).min(stem_len);
+                let data_end = (window.start as usize + actual_col_end).min(stem_len);
+
+                // If entirely beyond track data, return silence
+                if data_start >= stem_len || data_start >= data_end {
+                    return (0.0, 0.0);
+                }
+
+                let mut min = f32::INFINITY;
+                let mut max = f32::NEG_INFINITY;
+
+                for i in data_start..data_end {
+                    let sample = (stem_buffer[i].left + stem_buffer[i].right) / 2.0;
+                    min = min.min(sample);
+                    max = max.max(sample);
+                }
+
+                if min == f32::INFINITY {
+                    (0.0, 0.0)
+                } else {
+                    (min, max)
+                }
+            })
+            .collect();
+    }
+
+    result
+}
+
+/// Generate peaks for a cache window (used by background thread)
+///
+/// Similar to `generate_peaks_with_padding` but for larger cache regions.
+pub fn generate_peaks_for_cache(
+    stems: &StemBuffers,
+    cache: &CacheInfo,
+    width: usize,
+) -> [Vec<(f32, f32)>; 4] {
+    let window = WindowInfo {
+        start: cache.start,
+        end: cache.end,
+        left_padding: cache.left_padding,
+        total_samples: cache.end - cache.start,
+    };
+
+    generate_peaks_with_padding(stems, &window, width)
+}
+
+/// Apply Gaussian smoothing to computed peaks
+pub fn smooth_peaks(peaks: &mut [Vec<(f32, f32)>; 4]) {
+    for stem_idx in 0..4 {
+        if peaks[stem_idx].len() >= 5 {
+            peaks[stem_idx] = smooth_peaks_gaussian(&peaks[stem_idx]);
+        }
+    }
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/// Calculate samples per bar at the given BPM
+pub fn samples_per_bar(bpm: f64) -> u64 {
+    let beats_per_bar = 4;
+    let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
+    samples_per_beat * beats_per_bar
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_window_at_track_start() {
+        // At playhead=0, window should have left_padding for centering
+        // 8 bars at 120 BPM = 768000 samples total, half_window = 384000
+        let window = WindowInfo::scrolling(0, 8, 120.0);
+
+        // Verify the window structure at track start
+        assert_eq!(window.start, 0, "Start should be clamped to 0");
+        assert_eq!(window.left_padding, 384000, "Left padding should be half_window");
+        assert_eq!(window.end, 384000, "End should be playhead + half_window");
+        assert_eq!(window.total_samples, 768000, "Total samples should be full window");
+
+        // Verify: left_padding + (end - start) = total_samples
+        assert_eq!(
+            window.left_padding + (window.end - window.start),
+            window.total_samples,
+            "Padding + actual data should equal total window"
+        );
+    }
+
+    #[test]
+    fn test_window_in_middle() {
+        // In middle of track, no padding needed
+        let window = WindowInfo::scrolling(1_000_000, 8, 120.0);
+
+        assert_eq!(window.left_padding, 0, "No padding needed in middle of track");
+        assert!(window.start > 0, "Start should be positive");
+    }
+
+    #[test]
+    fn test_fixed_buffer_no_padding() {
+        let window = WindowInfo::fixed_buffer(100_000, 500_000);
+
+        assert_eq!(window.left_padding, 0, "Fixed buffer should never have padding");
+        assert_eq!(window.start, 100_000);
+        assert_eq!(window.end, 500_000);
+    }
+
+    #[test]
+    fn test_cache_contains_margin() {
+        // Use a position well inside the track (far from boundaries)
+        // At 120 BPM: 1 bar = 96000 samples, 8 bars = 768000 samples
+        // We need playhead far enough that cache doesn't get clamped to 0
+        let window = WindowInfo::scrolling(5_000_000, 8, 120.0);
+        let cache = CacheInfo::from_window(&window, ZoomedViewMode::Scrolling);
+
+        // Same window should be contained (window is centered in 3× cache)
+        assert!(cache.contains_with_margin(&window),
+            "Window should be within cache margin. cache=({}, {}), window=({}, {})",
+            cache.start, cache.end, window.start, window.end);
+
+        // Window at edge of cache should trigger recompute
+        let edge_window = WindowInfo::scrolling(cache.end - 100_000, 8, 120.0);
+        assert!(!cache.contains_with_margin(&edge_window),
+            "Window at cache edge should trigger recompute");
+    }
+}

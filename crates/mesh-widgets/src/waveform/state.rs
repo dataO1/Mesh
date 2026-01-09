@@ -7,10 +7,13 @@
 use super::CueMarker;
 use crate::CUE_COLORS;
 use mesh_core::audio_file::{dequantize_peak, CuePoint, LoadedTrack, StemBuffers, WaveformPreview};
-use mesh_core::types::SAMPLE_RATE;
 use std::sync::Arc;
 
-use super::{generate_peaks, generate_peaks_for_range, smooth_peaks_gaussian, DEFAULT_WIDTH};
+use super::peak_computation::{
+    CacheInfo, WindowInfo, compute_effective_width,
+    generate_peaks_with_padding, samples_per_bar,
+};
+use super::{generate_peaks, smooth_peaks_gaussian, DEFAULT_WIDTH};
 
 // =============================================================================
 // Configuration Constants
@@ -392,6 +395,8 @@ pub struct ZoomedState {
     pub cache_start: u64,
     /// End sample of cached window
     pub cache_end: u64,
+    /// Left padding samples in cache (for boundary centering)
+    pub cache_left_padding: u64,
     /// Current zoom level in bars (1-64)
     pub zoom_bars: u32,
     /// Zoom level saved from scrolling mode (restored when exiting FixedBuffer)
@@ -427,6 +432,7 @@ impl ZoomedState {
             cached_peaks: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             cache_start: 0,
             cache_end: 0,
+            cache_left_padding: 0,
             zoom_bars: DEFAULT_ZOOM_BARS,
             scrolling_zoom_bars: DEFAULT_ZOOM_BARS,
             beat_grid: Vec::new(),
@@ -449,6 +455,7 @@ impl ZoomedState {
             cached_peaks: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             cache_start: 0,
             cache_end: 0,
+            cache_left_padding: 0,
             zoom_bars: DEFAULT_ZOOM_BARS,
             scrolling_zoom_bars: DEFAULT_ZOOM_BARS,
             beat_grid,
@@ -565,47 +572,32 @@ impl ZoomedState {
 
     /// Samples per bar at current BPM
     pub fn samples_per_bar(&self) -> u64 {
-        let beats_per_bar = 4;
-        let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / self.bpm) as u64;
-        samples_per_beat * beats_per_bar
+        samples_per_bar(self.bpm)
     }
 
-    /// Calculate visible window based on view mode
+    /// Calculate visible window with boundary padding information
     ///
-    /// - Scrolling mode: window centered on playhead (may extend beyond track bounds)
-    /// - FixedBuffer mode: shows slicer buffer bounds (playhead moves within view)
+    /// Uses the shared `WindowInfo` type which includes:
+    /// - Actual start/end sample positions
+    /// - Left padding for centering at track boundaries
+    /// - Total window size (always consistent)
+    pub fn visible_window(&self, playhead: u64) -> WindowInfo {
+        WindowInfo::compute(
+            playhead,
+            self.zoom_bars,
+            self.bpm,
+            self.view_mode,
+            self.fixed_buffer_bounds,
+        )
+    }
+
+    /// Calculate visible range (legacy compatibility)
     ///
-    /// Note: In scrolling mode, the returned range may extend beyond `duration_samples`.
-    /// This ensures symmetric views at track start/end. Rendering code must handle
-    /// out-of-bounds samples as silence (zeros).
+    /// Returns (start, end) tuple. For proper boundary handling with padding,
+    /// use `visible_window()` instead.
     pub fn visible_range(&self, playhead: u64) -> (u64, u64) {
-        match self.view_mode {
-            ZoomedViewMode::Scrolling => {
-                // Always symmetric window centered on playhead
-                // May extend beyond track bounds - rendering handles as zeros
-                let window_samples = self.samples_per_bar() * self.zoom_bars as u64;
-                let half_window = window_samples / 2;
-                let start = playhead.saturating_sub(half_window);
-                let end = playhead + half_window;
-                (start, end)
-            }
-            ZoomedViewMode::FixedBuffer => {
-                // Fixed buffer mode: show slicer buffer bounds
-                if let Some((start, end)) = self.fixed_buffer_bounds {
-                    (start, end)
-                } else if let Some((start_norm, end_norm)) = self.slicer_region {
-                    // Fall back to slicer_region (normalized)
-                    let start = (start_norm * self.duration_samples as f64) as u64;
-                    let end = (end_norm * self.duration_samples as f64) as u64;
-                    (start, end)
-                } else {
-                    // No buffer set, fall back to scrolling behavior
-                    let window_samples = self.samples_per_bar() * self.zoom_bars as u64;
-                    let half_window = window_samples / 2;
-                    (playhead.saturating_sub(half_window), playhead + half_window)
-                }
-            }
-        }
+        let window = self.visible_window(playhead);
+        (window.start, window.end)
     }
 
     /// Set zoom level (clamped to valid range)
@@ -633,90 +625,66 @@ impl ZoomedState {
             return true;
         }
 
-        let (start, end) = self.visible_range(playhead);
+        // Use shared CacheInfo to check if window is still within cache
+        let window = self.visible_window(playhead);
+        let cache = CacheInfo {
+            start: self.cache_start,
+            end: self.cache_end,
+            left_padding: self.cache_left_padding,
+        };
 
-        // Recompute if visible range is outside cached range
-        // Use /2 margin (4 bars at 8-bar zoom) for smoother scrolling with fewer recomputes
-        let margin = (end - start) / 2;
-        start < self.cache_start.saturating_add(margin)
-            || end > self.cache_end.saturating_sub(margin)
+        !cache.contains_with_margin(&window)
     }
 
     /// Compute peaks for the visible window from stem data
     ///
-    /// Resolution scaling depends on view mode:
-    /// - **Scrolling mode**: Uses base width (same as before), no scaling
-    /// - **FixedBuffer mode**: Scales up resolution for small buffers (slicer)
-    ///   to prevent jagged lines when showing a small audio segment
+    /// Uses shared peak_computation module for consistent handling across
+    /// foreground and background computation paths.
     pub fn compute_peaks(&mut self, stems: &StemBuffers, playhead: u64, width: usize) {
         log::debug!(
             "[ZOOM-DBG] compute_peaks: playhead={}, width={}, duration_samples={}, stems.len()={}, has_track={}",
             playhead, width, self.duration_samples, stems.len(), self.has_track
         );
 
-        let (start, end) = self.visible_range(playhead);
-        log::debug!("[ZOOM-DBG] visible_range: start={}, end={}", start, end);
+        // Get window with boundary padding info
+        let window = self.visible_window(playhead);
+        log::debug!(
+            "[ZOOM-DBG] window: start={}, end={}, left_padding={}, total={}",
+            window.start, window.end, window.left_padding, window.total_samples
+        );
 
-        // Cache window sizing depends on view mode
-        let (cache_start, cache_end) = match self.view_mode {
-            ZoomedViewMode::Scrolling => {
-                // In scrolling mode, cache 3× visible window to reduce recomputation
-                // (visible + 1× padding before + 1× padding after = 3× total)
-                let window_size = end - start;
-                let cs = start.saturating_sub(window_size);
-                let ce = end + window_size; // May extend beyond track, handled by generate_peaks_for_range
-                (cs, ce)
-            }
-            ZoomedViewMode::FixedBuffer => {
-                // In fixed buffer mode, cache exactly the visible range
-                // No margins needed since the view doesn't scroll
-                (start, end)
-            }
-        };
+        // Compute cache bounds using shared logic
+        let cache = CacheInfo::from_window(&window, self.view_mode);
+        self.cache_start = cache.start;
+        self.cache_end = cache.end;
+        self.cache_left_padding = cache.left_padding;
 
-        self.cache_start = cache_start;
-        self.cache_end = cache_end;
-
-        let cache_len = (cache_end - cache_start) as usize;
+        let cache_len = (cache.end - cache.start) as usize;
         if cache_len == 0 || width == 0 || self.duration_samples == 0 {
             log::warn!("[ZOOM-DBG] compute_peaks: EARLY RETURN - cache_len={}, width={}", cache_len, width);
             self.cached_peaks = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
             return;
         }
 
-        // Resolution scaling depends on view mode
-        let effective_width = match self.view_mode {
-            ZoomedViewMode::Scrolling => {
-                // Scrolling mode: reduce resolution when zoomed out, keep base when zoomed in
-                // zoom_bars: 1 = fully zoomed in, 64 = fully zoomed out
-                // At default (8 bars): use base width
-                // At 64 bars: use 1/2 width (showing 8x more audio, need less detail)
-                let zoom_ratio = self.zoom_bars as f64 / DEFAULT_ZOOM_BARS as f64;
-                if zoom_ratio > 1.0 {
-                    // Zoomed out: reduce resolution
-                    (width as f64 / zoom_ratio.sqrt()).max(width as f64 / 4.0) as usize
-                } else {
-                    // Zoomed in or at default: keep base width
-                    width
-                }
-            }
-            ZoomedViewMode::FixedBuffer => {
-                // Fixed buffer mode (slicer): use 80% of base width
-                // Slightly reduced resolution is acceptable, reduces visual noise
-                ((width as f64) * 0.8) as usize
-            }
-        };
-
+        // Use shared resolution calculation
+        let effective_width = compute_effective_width(width, self.zoom_bars, self.view_mode);
         log::debug!(
             "[ZOOM-DBG] resolution: view_mode={:?}, base_width={}, effective_width={}",
             self.view_mode, width, effective_width
         );
 
-        // Compute peaks for the cached window
-        self.cached_peaks = generate_peaks_for_range(stems, cache_start, cache_end, effective_width);
+        // Use shared peak generation with padding support
+        let cache_window = WindowInfo {
+            start: cache.start,
+            end: cache.end,
+            left_padding: cache.left_padding,
+            total_samples: cache.end - cache.start + cache.left_padding,
+        };
+        self.cached_peaks = generate_peaks_with_padding(stems, &cache_window, effective_width);
+
         log::debug!(
-            "[ZOOM-DBG] compute_peaks: generated {} peaks per stem (cache {}..{})",
-            self.cached_peaks[0].len(), cache_start, cache_end
+            "[ZOOM-DBG] compute_peaks: generated {} peaks per stem (cache {}..{}, padding={})",
+            self.cached_peaks[0].len(), cache.start, cache.end, cache.left_padding
         );
 
         // Apply Gaussian smoothing for smoother waveform display
@@ -732,11 +700,12 @@ impl ZoomedState {
 
     /// Apply peaks computed by the background PeaksComputer thread
     ///
-    /// Updates cached_peaks, cache_start, cache_end, and cached_view_mode.
+    /// Updates cached_peaks, cache_start, cache_end, cache_left_padding, and cached_view_mode.
     pub fn apply_computed_peaks(&mut self, result: super::peaks_computer::PeaksComputeResult) {
         self.cached_peaks = result.cached_peaks;
         self.cache_start = result.cache_start;
         self.cache_end = result.cache_end;
+        self.cache_left_padding = result.cache_left_padding;
         // Track that this cache matches the current view mode
         self.cached_view_mode = self.view_mode;
     }

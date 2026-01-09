@@ -4,6 +4,7 @@
 //! Each canvas type takes callback closures for event handling, following
 //! idiomatic iced 0.14 patterns.
 
+use super::peak_computation::WindowInfo;
 use super::state::{
     CombinedState, OverviewState, PlayerCanvasState, ZoomedState, ZoomedViewMode,
     COMBINED_WAVEFORM_GAP, DECK_HEADER_HEIGHT, MAX_ZOOM_BARS, MIN_ZOOM_BARS,
@@ -342,21 +343,21 @@ where
         let height = bounds.height;
         let center_y = height / 2.0;
 
-        let (view_start, view_end) = self.state.visible_range(self.playhead);
-        let view_samples = (view_end - view_start) as f64;
+        // Get window with padding info for proper boundary handling
+        let window = self.state.visible_window(self.playhead);
 
-        if view_samples <= 0.0 {
+        if window.total_samples == 0 {
             return vec![frame.into_geometry()];
         }
 
-        // Draw beat markers (only those in visible range)
-        draw_beat_markers_zoomed(&mut frame, &self.state.beat_grid, view_start, view_end, view_samples, width, height);
+        // Draw beat markers (uses WindowInfo for proper positioning with padding)
+        draw_beat_markers_zoomed(&mut frame, &self.state.beat_grid, &window, width, height);
 
-        // Draw stem waveforms from cached peaks
-        draw_cached_peaks(&mut frame, self.state, view_start, view_samples, width, center_y);
+        // Draw stem waveforms from cached peaks (uses WindowInfo for padding)
+        draw_cached_peaks(&mut frame, self.state, &window, width, center_y);
 
-        // Draw cue markers in visible range
-        draw_cue_markers_zoomed(&mut frame, &self.state.cue_markers, self.state.duration_samples, view_start, view_end, view_samples, width, height);
+        // Draw cue markers (uses WindowInfo for proper positioning with padding)
+        draw_cue_markers_zoomed(&mut frame, &self.state.cue_markers, self.state.duration_samples, &window, width, height);
 
         // Draw playhead at center
         let playhead_x = width / 2.0;
@@ -675,18 +676,20 @@ fn draw_cue_markers(
 fn draw_beat_markers_zoomed(
     frame: &mut Frame,
     beat_grid: &[u64],
-    view_start: u64,
-    view_end: u64,
-    view_samples: f64,
+    window: &WindowInfo,
     width: f32,
     height: f32,
 ) {
     for (i, &beat_sample) in beat_grid.iter().enumerate() {
-        if beat_sample < view_start || beat_sample > view_end {
+        // Only draw beats within actual audio range
+        if beat_sample < window.start || beat_sample > window.end {
             continue;
         }
 
-        let x = ((beat_sample - view_start) as f64 / view_samples * width as f64) as f32;
+        // Calculate x position accounting for left_padding
+        // Sample at window.start should appear at x = (left_padding / total_samples) * width
+        let offset_from_virtual_start = window.left_padding + (beat_sample - window.start);
+        let x = (offset_from_virtual_start as f64 / window.total_samples as f64 * width as f64) as f32;
 
         let (color, line_width) = if i % 4 == 0 {
             (Color::from_rgba(1.0, 0.3, 0.3, 0.9), 2.0)
@@ -702,19 +705,24 @@ fn draw_beat_markers_zoomed(
 }
 
 /// Draw cached peaks for zoomed view using filled paths
+///
+/// Uses WindowInfo to properly handle track boundary padding:
+/// - When playhead is at track start, left half of view shows silence
+/// - When playhead is at track end, right half of view shows silence
+/// - Playhead is always visually centered
 fn draw_cached_peaks(
     frame: &mut Frame,
     state: &ZoomedState,
-    view_start: u64,
-    view_samples: f64,
+    window: &WindowInfo,
     width: f32,
     center_y: f32,
 ) {
-    if state.cache_end <= state.cache_start {
+    if state.cache_end <= state.cache_start && state.cache_left_padding == 0 {
         return;
     }
 
-    let cache_samples = (state.cache_end - state.cache_start) as f64;
+    // Cache includes left_padding worth of virtual samples (zeros before track start)
+    let cache_virtual_total = (state.cache_end - state.cache_start + state.cache_left_padding) as f64;
     let height_scale = center_y * 0.85;
 
     for stem_idx in (0..4).rev() {
@@ -734,13 +742,23 @@ fn draw_cached_peaks(
             let mut lower_points: Vec<(f32, f32)> = Vec::with_capacity(width as usize);
 
             for x in 0..(width as usize) {
-                let view_sample = view_start as f64 + (x as f64 / width as f64) * view_samples;
-                let cache_offset = view_sample - state.cache_start as f64;
-                if cache_offset < 0.0 || cache_offset >= cache_samples {
+                // Position within the visible window (0 to total_samples)
+                let window_offset = (x as f64 / width as f64) * window.total_samples as f64;
+
+                // Convert window offset to actual sample position
+                // window_offset 0 = left edge (may be before track start)
+                // window_offset left_padding = track start (actual sample window.start)
+                let actual_sample = window.start as i64 - window.left_padding as i64 + window_offset as i64;
+
+                // Convert actual sample to cache virtual offset
+                // Cache virtual offset = actual_sample - cache_start + cache_left_padding
+                let cache_virtual_offset = actual_sample - state.cache_start as i64 + state.cache_left_padding as i64;
+
+                if cache_virtual_offset < 0 || cache_virtual_offset as f64 >= cache_virtual_total {
                     continue;
                 }
 
-                let cache_idx = (cache_offset / cache_samples * peaks_len) as usize;
+                let cache_idx = (cache_virtual_offset as f64 / cache_virtual_total * peaks_len) as usize;
                 if cache_idx >= peaks.len() {
                     continue;
                 }
@@ -784,20 +802,21 @@ fn draw_cue_markers_zoomed(
     frame: &mut Frame,
     cue_markers: &[CueMarker],
     duration_samples: u64,
-    view_start: u64,
-    view_end: u64,
-    view_samples: f64,
+    window: &WindowInfo,
     width: f32,
     height: f32,
 ) {
     for marker in cue_markers {
         let cue_sample = (marker.position * duration_samples as f64) as u64;
 
-        if cue_sample < view_start || cue_sample > view_end {
+        // Only draw cues within actual audio range
+        if cue_sample < window.start || cue_sample > window.end {
             continue;
         }
 
-        let x = ((cue_sample - view_start) as f64 / view_samples * width as f64) as f32;
+        // Calculate x position accounting for left_padding
+        let offset_from_virtual_start = window.left_padding + (cue_sample - window.start);
+        let x = (offset_from_virtual_start as f64 / window.total_samples as f64 * width as f64) as f32;
 
         frame.fill_rectangle(
             Point::new(x - 1.0, 0.0),
@@ -836,56 +855,59 @@ fn draw_zoomed_section(
         return;
     }
 
-    let (view_start, view_end) = zoomed.visible_range(playhead);
-    let view_samples = (view_end - view_start) as f64;
+    // Get window with padding info for proper boundary handling
+    let window = zoomed.visible_window(playhead);
 
-    if view_samples > 0.0 {
+    if window.total_samples == 0 {
+        return;
+    }
+
+    // Helper to convert sample position to x coordinate (accounting for padding)
+    let sample_to_x = |sample: u64| -> f32 {
+        if sample < window.start {
+            // Before visible audio - clamp to left edge of audio region
+            (window.left_padding as f64 / window.total_samples as f64 * width as f64) as f32
+        } else if sample > window.end {
+            // After visible audio - clamp to right edge
+            width
+        } else {
+            let offset = window.left_padding + (sample - window.start);
+            (offset as f64 / window.total_samples as f64 * width as f64) as f32
+        }
+    };
+
+    {
         // Draw loop region (behind everything else)
         if let Some((loop_start_norm, loop_end_norm)) = zoomed.loop_region {
-            // Convert normalized positions to sample positions
             let loop_start_sample = (loop_start_norm * zoomed.duration_samples as f64) as u64;
             let loop_end_sample = (loop_end_norm * zoomed.duration_samples as f64) as u64;
 
             // Only draw if loop overlaps the visible window
-            if loop_end_sample > view_start && loop_start_sample < view_end {
-                // Calculate x positions (clamp to visible window)
-                let start_x = if loop_start_sample <= view_start {
-                    0.0
-                } else {
-                    ((loop_start_sample - view_start) as f64 / view_samples * width as f64) as f32
-                };
-                let end_x = if loop_end_sample >= view_end {
-                    width
-                } else {
-                    ((loop_end_sample - view_start) as f64 / view_samples * width as f64) as f32
-                };
+            if loop_end_sample > window.start && loop_start_sample < window.end {
+                let start_x = sample_to_x(loop_start_sample.max(window.start));
+                let end_x = sample_to_x(loop_end_sample.min(window.end));
 
                 let loop_width = end_x - start_x;
                 if loop_width > 0.0 {
-                    // Semi-transparent green fill
                     frame.fill_rectangle(
                         Point::new(start_x, 0.0),
                         Size::new(loop_width, zoomed_height),
                         Color::from_rgba(0.2, 0.8, 0.2, 0.25),
                     );
-                    // Draw loop boundaries (only if visible)
-                    if loop_start_sample > view_start && loop_start_sample < view_end {
+                    // Draw loop boundaries (only if within visible audio range)
+                    if loop_start_sample >= window.start && loop_start_sample <= window.end {
+                        let x = sample_to_x(loop_start_sample);
                         frame.stroke(
-                            &Path::line(
-                                Point::new(start_x, 0.0),
-                                Point::new(start_x, zoomed_height),
-                            ),
+                            &Path::line(Point::new(x, 0.0), Point::new(x, zoomed_height)),
                             Stroke::default()
                                 .with_color(Color::from_rgba(0.2, 0.9, 0.2, 0.8))
                                 .with_width(2.0),
                         );
                     }
-                    if loop_end_sample > view_start && loop_end_sample < view_end {
+                    if loop_end_sample >= window.start && loop_end_sample <= window.end {
+                        let x = sample_to_x(loop_end_sample);
                         frame.stroke(
-                            &Path::line(
-                                Point::new(end_x, 0.0),
-                                Point::new(end_x, zoomed_height),
-                            ),
+                            &Path::line(Point::new(x, 0.0), Point::new(x, zoomed_height)),
                             Stroke::default()
                                 .with_color(Color::from_rgba(0.2, 0.9, 0.2, 0.8))
                                 .with_width(2.0),
@@ -895,14 +917,14 @@ fn draw_zoomed_section(
             }
         }
 
-        // Draw beat markers
-        draw_beat_markers_zoomed(frame, &zoomed.beat_grid, view_start, view_end, view_samples, width, zoomed_height);
+        // Draw beat markers (uses WindowInfo for proper positioning)
+        draw_beat_markers_zoomed(frame, &zoomed.beat_grid, &window, width, zoomed_height);
 
-        // Draw stem waveforms
-        draw_cached_peaks(frame, zoomed, view_start, view_samples, width, zoomed_center_y);
+        // Draw stem waveforms (uses WindowInfo for padding)
+        draw_cached_peaks(frame, zoomed, &window, width, zoomed_center_y);
 
-        // Draw cue markers
-        draw_cue_markers_zoomed(frame, &zoomed.cue_markers, zoomed.duration_samples, view_start, view_end, view_samples, width, zoomed_height);
+        // Draw cue markers (uses WindowInfo for proper positioning)
+        draw_cue_markers_zoomed(frame, &zoomed.cue_markers, zoomed.duration_samples, &window, width, zoomed_height);
     }
 
     // Draw playhead at center
@@ -1604,26 +1626,34 @@ fn draw_zoomed_at(
         return;
     }
 
-    let (view_start, view_end) = zoomed.visible_range(playhead);
-    let view_samples = (view_end - view_start) as f64;
+    // Get window with padding info for proper boundary handling
+    let window = zoomed.visible_window(playhead);
 
-    if view_samples > 0.0 {
+    if window.total_samples == 0 {
+        return;
+    }
+
+    // Helper to convert sample position to x coordinate (accounting for padding)
+    let sample_to_x = |sample: u64| -> f32 {
+        if sample < window.start {
+            x + (window.left_padding as f64 / window.total_samples as f64 * width as f64) as f32
+        } else if sample > window.end {
+            x + width
+        } else {
+            let offset = window.left_padding + (sample - window.start);
+            x + (offset as f64 / window.total_samples as f64 * width as f64) as f32
+        }
+    };
+
+    {
         // Draw loop region (behind everything else)
         if let Some((loop_start_norm, loop_end_norm)) = zoomed.loop_region {
             let loop_start_sample = (loop_start_norm * zoomed.duration_samples as f64) as u64;
             let loop_end_sample = (loop_end_norm * zoomed.duration_samples as f64) as u64;
 
-            if loop_end_sample > view_start && loop_start_sample < view_end {
-                let start_x = if loop_start_sample <= view_start {
-                    x
-                } else {
-                    x + ((loop_start_sample - view_start) as f64 / view_samples * width as f64) as f32
-                };
-                let end_x = if loop_end_sample >= view_end {
-                    x + width
-                } else {
-                    x + ((loop_end_sample - view_start) as f64 / view_samples * width as f64) as f32
-                };
+            if loop_end_sample > window.start && loop_start_sample < window.end {
+                let start_x = sample_to_x(loop_start_sample.max(window.start));
+                let end_x = sample_to_x(loop_end_sample.min(window.end));
 
                 let loop_width = end_x - start_x;
                 if loop_width > 0.0 {
@@ -1632,17 +1662,19 @@ fn draw_zoomed_at(
                         Size::new(loop_width, height),
                         Color::from_rgba(0.2, 0.8, 0.2, 0.25),
                     );
-                    if loop_start_sample > view_start && loop_start_sample < view_end {
+                    if loop_start_sample >= window.start && loop_start_sample <= window.end {
+                        let lx = sample_to_x(loop_start_sample);
                         frame.stroke(
-                            &Path::line(Point::new(start_x, y), Point::new(start_x, y + height)),
+                            &Path::line(Point::new(lx, y), Point::new(lx, y + height)),
                             Stroke::default()
                                 .with_color(Color::from_rgba(0.2, 0.9, 0.2, 0.8))
                                 .with_width(2.0),
                         );
                     }
-                    if loop_end_sample > view_start && loop_end_sample < view_end {
+                    if loop_end_sample >= window.start && loop_end_sample <= window.end {
+                        let lx = sample_to_x(loop_end_sample);
                         frame.stroke(
-                            &Path::line(Point::new(end_x, y), Point::new(end_x, y + height)),
+                            &Path::line(Point::new(lx, y), Point::new(lx, y + height)),
                             Stroke::default()
                                 .with_color(Color::from_rgba(0.2, 0.9, 0.2, 0.8))
                                 .with_width(2.0),
@@ -1663,17 +1695,9 @@ fn draw_zoomed_at(
         });
 
         if let Some((slicer_start_sample, slicer_end_sample)) = slicer_bounds {
-            if slicer_end_sample > view_start && slicer_start_sample < view_end {
-                let start_x = if slicer_start_sample <= view_start {
-                    x
-                } else {
-                    x + ((slicer_start_sample - view_start) as f64 / view_samples * width as f64) as f32
-                };
-                let end_x = if slicer_end_sample >= view_end {
-                    x + width
-                } else {
-                    x + ((slicer_end_sample - view_start) as f64 / view_samples * width as f64) as f32
-                };
+            if slicer_end_sample > window.start && slicer_start_sample < window.end {
+                let start_x = sample_to_x(slicer_start_sample.max(window.start));
+                let end_x = sample_to_x(slicer_end_sample.min(window.end));
 
                 let slicer_width = end_x - start_x;
                 if slicer_width > 0.0 {
@@ -1685,14 +1709,13 @@ fn draw_zoomed_at(
                     );
 
                     // Draw slice divisions (if they fit in view)
-                    // Use integer division to match audio engine exactly
                     let samples_per_slice = (slicer_end_sample - slicer_start_sample) / SLICER_NUM_SLICES as u64;
 
                     for i in 0..=SLICER_NUM_SLICES {
                         let slice_sample = slicer_start_sample + samples_per_slice * i as u64;
 
-                        if slice_sample >= view_start && slice_sample <= view_end {
-                            let slice_x = x + ((slice_sample - view_start) as f64 / view_samples * width as f64) as f32;
+                        if slice_sample >= window.start && slice_sample <= window.end {
+                            let slice_x = sample_to_x(slice_sample);
                             let is_boundary = i == 0 || i == SLICER_NUM_SLICES;
                             let line_width = if is_boundary { 2.0 } else { 1.0 };
                             let alpha = if is_boundary { 0.8 } else { 0.5 };
@@ -1711,17 +1734,9 @@ fn draw_zoomed_at(
                         let slice_start_sample = slicer_start_sample + samples_per_slice * current as u64;
                         let slice_end_sample = slice_start_sample + samples_per_slice;
 
-                        if slice_end_sample > view_start && slice_start_sample < view_end {
-                            let slice_start_x = if slice_start_sample <= view_start {
-                                x
-                            } else {
-                                x + ((slice_start_sample - view_start) as f64 / view_samples * width as f64) as f32
-                            };
-                            let slice_end_x = if slice_end_sample >= view_end {
-                                x + width
-                            } else {
-                                x + ((slice_end_sample - view_start) as f64 / view_samples * width as f64) as f32
-                            };
+                        if slice_end_sample > window.start && slice_start_sample < window.end {
+                            let slice_start_x = sample_to_x(slice_start_sample.max(window.start));
+                            let slice_end_x = sample_to_x(slice_end_sample.min(window.end));
 
                             frame.fill_rectangle(
                                 Point::new(slice_start_x, y),
@@ -1734,12 +1749,11 @@ fn draw_zoomed_at(
             }
         }
 
-        // Draw beat markers
-        for &beat_sample in &zoomed.beat_grid {
-            if beat_sample >= view_start && beat_sample <= view_end {
-                let beat_x = x + ((beat_sample - view_start) as f64 / view_samples * width as f64) as f32;
-                let beat_idx = zoomed.beat_grid.iter().position(|&b| b == beat_sample).unwrap_or(0);
-                let (color, w) = if beat_idx % 4 == 0 {
+        // Draw beat markers (only within actual audio range)
+        for (i, &beat_sample) in zoomed.beat_grid.iter().enumerate() {
+            if beat_sample >= window.start && beat_sample <= window.end {
+                let beat_x = sample_to_x(beat_sample);
+                let (color, w) = if i % 4 == 0 {
                     (Color::from_rgba(1.0, 0.3, 0.3, 0.6), 2.0)
                 } else {
                     (Color::from_rgba(0.5, 0.5, 0.5, 0.4), 1.0)
@@ -1751,11 +1765,10 @@ fn draw_zoomed_at(
             }
         }
 
-        // Draw cached peaks using filled paths
-        if !zoomed.cached_peaks[0].is_empty() {
-            let cache_start = zoomed.cache_start;
-            let cache_end = zoomed.cache_end;
-            let cache_samples = (cache_end - cache_start) as f64;
+        // Draw cached peaks using filled paths (with padding support)
+        if !zoomed.cached_peaks[0].is_empty() && (zoomed.cache_end > zoomed.cache_start || zoomed.cache_left_padding > 0) {
+            // Cache includes left_padding worth of virtual samples (zeros before track start)
+            let cache_virtual_total = (zoomed.cache_end - zoomed.cache_start + zoomed.cache_left_padding) as f64;
             let height_scale = height / 2.0 * 0.85;
 
             for stem_idx in (0..4).rev() {
@@ -1774,12 +1787,20 @@ fn draw_zoomed_at(
                     let mut lower_points: Vec<(f32, f32)> = Vec::with_capacity(width as usize);
 
                     for px in 0..(width as usize) {
-                        let view_sample = view_start as f64 + (px as f64 / width as f64) * view_samples;
-                        if view_sample < cache_start as f64 || view_sample > cache_end as f64 {
+                        // Position within the visible window (0 to total_samples)
+                        let window_offset = (px as f64 / width as f64) * window.total_samples as f64;
+
+                        // Convert window offset to actual sample position
+                        let actual_sample = window.start as i64 - window.left_padding as i64 + window_offset as i64;
+
+                        // Convert actual sample to cache virtual offset
+                        let cache_virtual_offset = actual_sample - zoomed.cache_start as i64 + zoomed.cache_left_padding as i64;
+
+                        if cache_virtual_offset < 0 || cache_virtual_offset as f64 >= cache_virtual_total {
                             continue;
                         }
-                        let cache_offset = view_sample - cache_start as f64;
-                        let cache_idx = (cache_offset / cache_samples * peaks_len) as usize;
+
+                        let cache_idx = (cache_virtual_offset as f64 / cache_virtual_total * peaks_len) as usize;
                         if cache_idx >= peaks.len() {
                             continue;
                         }
@@ -1818,11 +1839,11 @@ fn draw_zoomed_at(
             }
         }
 
-        // Draw cue markers
+        // Draw cue markers (using sample_to_x for correct padding handling)
         for marker in &zoomed.cue_markers {
             let marker_sample = (marker.position * zoomed.duration_samples as f64) as u64;
-            if marker_sample >= view_start && marker_sample <= view_end {
-                let cue_x = x + ((marker_sample - view_start) as f64 / view_samples * width as f64) as f32;
+            if marker_sample >= window.start && marker_sample <= window.end {
+                let cue_x = sample_to_x(marker_sample);
                 frame.fill_rectangle(
                     Point::new(cue_x - 1.0, y),
                     Size::new(2.0, height),
@@ -1846,15 +1867,13 @@ fn draw_zoomed_at(
             x + width / 2.0
         }
         ZoomedViewMode::FixedBuffer => {
-            // Fixed buffer mode: playhead moves within view
-            let (view_start, view_end) = zoomed.visible_range(playhead);
-            let view_samples = (view_end - view_start) as f64;
-            if view_samples > 0.0 && playhead >= view_start && playhead <= view_end {
-                let offset = (playhead - view_start) as f64;
-                x + (offset / view_samples * width as f64) as f32
+            // Fixed buffer mode: playhead moves within view (no padding in this mode)
+            if window.total_samples > 0 && playhead >= window.start && playhead <= window.end {
+                let offset = (playhead - window.start) as f64;
+                x + (offset / window.total_samples as f64 * width as f64) as f32
             } else {
                 // Playhead outside view - clamp to edges
-                if playhead < view_start {
+                if playhead < window.start {
                     x
                 } else {
                     x + width

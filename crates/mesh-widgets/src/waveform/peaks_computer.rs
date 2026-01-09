@@ -45,9 +45,11 @@ use std::thread::{self, JoinHandle};
 
 use basedrop::Shared;
 use mesh_core::audio_file::StemBuffers;
-use mesh_core::types::SAMPLE_RATE;
 
-use super::peaks::{generate_peaks_for_range, smooth_peaks_gaussian};
+use super::peak_computation::{
+    CacheInfo, WindowInfo, compute_effective_width,
+    generate_peaks_with_padding, smooth_peaks,
+};
 use super::state::ZoomedViewMode;
 
 /// Request to compute peaks for a waveform view
@@ -99,6 +101,8 @@ pub struct PeaksComputeResult {
     pub cache_start: u64,
     /// End sample of the cached window
     pub cache_end: u64,
+    /// Left padding samples in cache (for boundary centering)
+    pub cache_left_padding: u64,
     /// Zoom level used for computation
     pub zoom_bars: u32,
 }
@@ -164,82 +168,32 @@ impl PeaksComputer {
     }
 }
 
-/// Calculate samples per bar at the given BPM
-fn samples_per_bar(bpm: f64) -> u64 {
-    let beats_per_bar = 4;
-    let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
-    samples_per_beat * beats_per_bar
-}
-
-/// Calculate the visible sample range centered on playhead
-///
-/// Note: The returned range may extend beyond `duration_samples`.
-/// This enables symmetric views at track boundaries. The peak generation
-/// handles out-of-bounds samples as silence (zeros).
-fn visible_range(playhead: u64, zoom_bars: u32, bpm: f64, _duration_samples: u64) -> (u64, u64) {
-    let window_samples = samples_per_bar(bpm) * zoom_bars as u64;
-    let half_window = window_samples / 2;
-
-    let start = playhead.saturating_sub(half_window);
-    let end = playhead + half_window; // May extend beyond track, handled by generate_peaks_for_range
-
-    (start, end)
-}
-
 /// The background peak computation thread
 ///
-/// Resolution scaling depends on view mode:
-/// - **Scrolling mode**: Uses base width (same as before), no scaling
-/// - **FixedBuffer mode**: Scales up resolution for small buffers (slicer)
+/// Uses shared peak_computation module for consistent calculations:
+/// - `WindowInfo::compute()` for window/boundary handling
+/// - `CacheInfo::from_window()` for cache sizing
+/// - `compute_effective_width()` for resolution scaling
+/// - `generate_peaks_with_padding()` for peak generation with boundary padding
 fn peaks_thread(rx: Receiver<PeaksComputeRequest>, tx: Sender<PeaksComputeResult>) {
     log::debug!("Peaks computer thread starting");
 
     while let Ok(request) = rx.recv() {
         let start_time = std::time::Instant::now();
 
-        // Calculate visible window based on view mode
-        let (start, end) = match request.view_mode {
-            ZoomedViewMode::FixedBuffer => {
-                // Use fixed buffer bounds if provided
-                if let Some((s, e)) = request.fixed_buffer_bounds {
-                    (s, e)
-                } else {
-                    // Fall back to scrolling behavior
-                    visible_range(
-                        request.playhead,
-                        request.zoom_bars,
-                        request.bpm,
-                        request.duration_samples,
-                    )
-                }
-            }
-            ZoomedViewMode::Scrolling => {
-                visible_range(
-                    request.playhead,
-                    request.zoom_bars,
-                    request.bpm,
-                    request.duration_samples,
-                )
-            }
-        };
+        // Use shared WindowInfo for consistent window calculation with boundary padding
+        let window = WindowInfo::compute(
+            request.playhead,
+            request.zoom_bars,
+            request.bpm,
+            request.view_mode,
+            request.fixed_buffer_bounds,
+        );
 
-        // Cache window sizing depends on view mode
-        let (cache_start, cache_end) = match request.view_mode {
-            ZoomedViewMode::Scrolling => {
-                // In scrolling mode, cache 3× visible window to reduce recomputation
-                // (visible + 1× padding before + 1× padding after = 3× total)
-                let window_size = end - start;
-                let cs = start.saturating_sub(window_size);
-                let ce = end + window_size; // May extend beyond track, handled by generate_peaks_for_range
-                (cs, ce)
-            }
-            ZoomedViewMode::FixedBuffer => {
-                // In fixed buffer mode, cache exactly the visible range
-                (start, end)
-            }
-        };
+        // Use shared CacheInfo for consistent cache sizing
+        let cache = CacheInfo::from_window(&window, request.view_mode);
 
-        let cache_len = (cache_end - cache_start) as usize;
+        let cache_len = (cache.end - cache.start) as usize;
         if cache_len == 0 || request.width == 0 || request.duration_samples == 0 {
             // Send empty result
             let _ = tx.send(PeaksComputeResult {
@@ -247,70 +201,60 @@ fn peaks_thread(rx: Receiver<PeaksComputeRequest>, tx: Sender<PeaksComputeResult
                 cached_peaks: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
                 cache_start: 0,
                 cache_end: 0,
+                cache_left_padding: 0,
                 zoom_bars: request.zoom_bars,
             });
             continue;
         }
 
-        // Resolution scaling depends on view mode
-        // Import DEFAULT_ZOOM_BARS value (8)
-        const DEFAULT_ZOOM_BARS: u32 = 8;
-
-        let effective_width = match request.view_mode {
-            ZoomedViewMode::Scrolling => {
-                // Scrolling mode: reduce resolution when zoomed out, keep base when zoomed in
-                let zoom_ratio = request.zoom_bars as f64 / DEFAULT_ZOOM_BARS as f64;
-                if zoom_ratio > 1.0 {
-                    // Zoomed out: reduce resolution
-                    (request.width as f64 / zoom_ratio.sqrt()).max(request.width as f64 / 4.0) as usize
-                } else {
-                    // Zoomed in or at default: keep base width
-                    request.width
-                }
-            }
-            ZoomedViewMode::FixedBuffer => {
-                // Fixed buffer mode (slicer): use 80% of base width
-                // Slightly reduced resolution is acceptable, reduces visual noise
-                ((request.width as f64) * 0.8) as usize
-            }
-        };
+        // Use shared resolution calculation
+        let effective_width = compute_effective_width(
+            request.width,
+            request.zoom_bars,
+            request.view_mode,
+        );
 
         log::debug!(
             "Peaks compute: view_mode={:?}, base_width={}, effective_width={}",
             request.view_mode, request.width, effective_width
         );
 
-        // Compute peaks for the cached window
-        let mut cached_peaks = generate_peaks_for_range(
+        // Create cache window with padding info for peak generation
+        let cache_window = WindowInfo {
+            start: cache.start,
+            end: cache.end,
+            left_padding: cache.left_padding,
+            total_samples: cache.end - cache.start + cache.left_padding,
+        };
+
+        // Use shared peak generation with boundary padding support
+        let mut cached_peaks = generate_peaks_with_padding(
             &request.stems,
-            cache_start,
-            cache_end,
+            &cache_window,
             effective_width,
         );
 
-        // Apply Gaussian smoothing for smoother waveform display
-        for stem_idx in 0..4 {
-            if cached_peaks[stem_idx].len() >= 5 {
-                cached_peaks[stem_idx] = smooth_peaks_gaussian(&cached_peaks[stem_idx]);
-            }
-        }
+        // Apply Gaussian smoothing using shared function
+        smooth_peaks(&mut cached_peaks);
 
         let elapsed = start_time.elapsed();
         log::debug!(
-            "Peaks computed for id={} in {:?} ({}..{}, {} peaks/stem)",
+            "Peaks computed for id={} in {:?} ({}..{}, {} peaks/stem, padding={})",
             request.id,
             elapsed,
-            cache_start,
-            cache_end,
-            cached_peaks[0].len()
+            cache.start,
+            cache.end,
+            cached_peaks[0].len(),
+            cache.left_padding
         );
 
         // Send result back to UI thread
         let _ = tx.send(PeaksComputeResult {
             id: request.id,
             cached_peaks,
-            cache_start,
-            cache_end,
+            cache_start: cache.start,
+            cache_end: cache.end,
+            cache_left_padding: cache.left_padding,
             zoom_bars: request.zoom_bars,
         });
     }
@@ -321,6 +265,7 @@ fn peaks_thread(rx: Receiver<PeaksComputeRequest>, tx: Sender<PeaksComputeResult
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::peak_computation::samples_per_bar;
 
     #[test]
     fn test_samples_per_bar() {
@@ -336,16 +281,19 @@ mod tests {
     }
 
     #[test]
-    fn test_visible_range() {
-        let duration = 1_000_000u64;
+    fn test_window_info() {
         let bpm = 120.0;
 
-        // At playhead 500000, zoom 8 bars = 8 * 88200 = 705600 samples window
-        // Half = 352800, so range should be (147200, 852800) but clamped to duration
-        let (start, end) = visible_range(500000, 8, bpm, duration);
-        assert!(start < 500000);
-        assert!(end > 500000);
-        assert!(end <= duration);
+        // At playhead 500000, zoom 8 bars: window should be centered
+        let window = WindowInfo::scrolling(500000, 8, bpm);
+        assert!(window.start < 500000, "Window start should be before playhead");
+        assert!(window.end > 500000, "Window end should be after playhead");
+        assert_eq!(window.left_padding, 0, "No padding needed in middle of track");
+
+        // At playhead 0, should have left padding
+        let window_at_start = WindowInfo::scrolling(0, 8, bpm);
+        assert!(window_at_start.left_padding > 0, "Should have left padding at track start");
+        assert_eq!(window_at_start.start, 0, "Start should be clamped to 0");
     }
 
     #[test]
