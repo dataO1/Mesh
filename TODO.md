@@ -64,6 +64,26 @@ and mesh-widget and only if necessary in the ui.
     the slice buttons indexes content. button 3 "contains" the third piece
     divided of equal size of the original buffer. pressing shift + slicer should
     stop slicer mode and the output just flows through the slicer module.
+- [x] new feature: midi controller compatability
+  - [x] we need a separate midi.yaml which is automatically loaded on startup
+    like the other config, which defines a mapping from midi channels and
+    message to all potential interaction possibilities. a user could potentially
+    have many mapping files for different devices, that follow a specific format
+    (research available rust crates, that implement parts of this), but only a
+    single active one should be loaded. so lets say i have a
+    midi device, i want a specific knob to handle the value of a certain
+    interaction point of the application. so we need some sort of abstraction
+    around the app, which lets it define mappable interactions. then we can map
+    these to midi capabilities (from multiple devices potentially, so multiple
+    channels?). this should be able to normalize between value
+    ranges (midi is usually from 0-127, the application abstraction layer needs
+    to take this and map this to the required value range from the application).
+    this needs to be fully modular and the app should be easily adjustable to
+    add new interaction points.
+  - [x] initially each knob/slider from the player ui should be mappable. also
+    the scrolling and loading of tracks from the browser.
+  - [x] this should be its own module, potentially with a trait, that defines
+    interaction points or something? think of a good abstraction pattern
 
 # Changes
 - [x] The waveform indicators of hot cues use colors, but the hot cue buttons
@@ -133,6 +153,9 @@ and mesh-widget and only if necessary in the ui.
   level per mode (fixed waveform mode should have its own fixed resolution based
   on the config selected slicer buffer length. if 1 bar, the resolution should
   be high.)
+- [ ] the colors of the stem status in the waveform do not match with the
+  waveform colors of the stems. bass should be red/orange, vocals green, other
+  cyan, drums yellow.
 
 # Performance
 - [ ] Can we optimize how stems are stored, this is currently roughly 200-300 mb
