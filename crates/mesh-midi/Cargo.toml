@@ -21,3 +21,6 @@ thiserror.workspace = true
 anyhow.workspace = true
 dirs.workspace = true
 log = "0.4"
+
+[dev-dependencies]
+env_logger = "0.11"

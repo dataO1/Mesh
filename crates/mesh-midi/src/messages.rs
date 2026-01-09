@@ -105,6 +105,11 @@ pub enum DeckAction {
         /// Enable slicer mode
         enabled: bool,
     },
+    /// Set hot cue mode on/off
+    SetHotCueMode {
+        /// Enable hot cue mode
+        enabled: bool,
+    },
     /// Reset slicer pattern
     SlicerReset,
 
@@ -197,6 +202,8 @@ pub enum GlobalAction {
     SetMasterVolume(f32),
     /// Set cue/headphone volume
     SetCueVolume(f32),
+    /// Set cue/master mix for headphones (0.0 = all cue, 1.0 = all master)
+    SetCueMix(f32),
 }
 
 impl MidiMessage {

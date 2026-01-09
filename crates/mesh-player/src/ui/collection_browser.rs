@@ -42,6 +42,10 @@ pub enum CollectionBrowserMessage {
     LoadToDeck(usize),
     /// Refresh collection from disk
     Refresh,
+    /// Scroll selection by delta (positive = down, negative = up)
+    ScrollBy(i32),
+    /// Select current item (enter folder or activate track)
+    SelectCurrent,
 }
 
 impl CollectionBrowserState {
@@ -145,6 +149,48 @@ impl CollectionBrowserState {
                         self.tracks = get_tracks_for_folder(storage, folder);
                     }
                 }
+                None
+            }
+            CollectionBrowserMessage::ScrollBy(delta) => {
+                // Move selection by delta within the track list
+                if self.tracks.is_empty() {
+                    return None;
+                }
+
+                // Find current selection index
+                let current_idx = self
+                    .browser
+                    .table_state
+                    .selected
+                    .iter()
+                    .next()
+                    .and_then(|selected| {
+                        self.tracks
+                            .iter()
+                            .position(|t| &t.id == selected)
+                    })
+                    .unwrap_or(0);
+
+                // Calculate new index with wrapping
+                let new_idx = if delta > 0 {
+                    (current_idx + delta as usize).min(self.tracks.len() - 1)
+                } else {
+                    current_idx.saturating_sub((-delta) as usize)
+                };
+
+                // Select the new track
+                if let Some(track) = self.tracks.get(new_idx) {
+                    self.browser.table_state.select(track.id.clone());
+                    self.selected_track_path = self.get_track_path(&track.id);
+                }
+                None
+            }
+            CollectionBrowserMessage::SelectCurrent => {
+                // If there's a selected track, activate it (load to deck 0)
+                if let Some(path) = self.selected_track_path.clone() {
+                    return Some((0, path));
+                }
+                // Otherwise, could expand/collapse current folder, but for now just ignore
                 None
             }
         }

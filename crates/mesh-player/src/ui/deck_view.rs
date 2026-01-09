@@ -16,6 +16,8 @@ use mesh_core::engine::Deck;
 use mesh_core::types::PlayState;
 use mesh_widgets::{rotary_knob, RotaryKnobState, CUE_COLORS};
 
+use super::midi_learn::HighlightTarget;
+
 /// Stem names for display
 pub const STEM_NAMES: [&str; 4] = ["Vocals", "Drums", "Bass", "Other"];
 /// Short stem names for compact display
@@ -81,6 +83,8 @@ pub struct DeckView {
     slicer_current_slice: u8,
     /// Whether shift is currently held
     shift_held: bool,
+    /// Current highlight target for MIDI learn mode (if any)
+    highlight_target: Option<HighlightTarget>,
 }
 
 /// Messages for deck interaction
@@ -173,6 +177,26 @@ impl DeckView {
             slicer_queue: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
             slicer_current_slice: 0,
             shift_held: false,
+            highlight_target: None,
+        }
+    }
+
+    /// Set the highlight target for MIDI learn mode
+    pub fn set_highlight(&mut self, target: Option<HighlightTarget>) {
+        self.highlight_target = target;
+    }
+
+    /// Check if a specific target should be highlighted
+    fn is_highlighted(&self, target: HighlightTarget) -> bool {
+        self.highlight_target == Some(target)
+    }
+
+    /// Get highlight border style for MIDI learn mode
+    fn highlight_border() -> iced::Border {
+        iced::Border {
+            color: Color::from_rgb(1.0, 0.0, 0.0),
+            width: 3.0,
+            radius: 4.0.into(),
         }
     }
 
@@ -925,10 +949,30 @@ impl DeckView {
     fn view_hot_cues_grid(&self) -> Element<DeckMessage> {
         use iced::Length;
 
+        let deck_idx = self.deck_idx;
+
         // Create 2 rows of 4 buttons each
         let make_button = |i: usize| -> Element<DeckMessage> {
             let is_set = self.hot_cue_positions[i].is_some();
+            let is_highlighted = self.is_highlighted(HighlightTarget::DeckHotCue(deck_idx, i));
             let color = CUE_COLORS[i];
+
+            // Determine border based on highlight state
+            let border = if is_highlighted {
+                Self::highlight_border()
+            } else if is_set {
+                iced::Border {
+                    color,
+                    width: 1.5,
+                    radius: 4.0.into(),
+                }
+            } else {
+                iced::Border {
+                    color: Color::from_rgb(0.3, 0.3, 0.3),
+                    width: 1.0,
+                    radius: 4.0.into(),
+                }
+            };
 
             // When set: dimmed version of cue color (30% blend with dark background)
             // When not set: plain dark gray
@@ -941,22 +985,14 @@ impl DeckView {
                 button::Style {
                     background: Some(Background::Color(dimmed_color)),
                     text_color: color, // Text shows the actual cue color
-                    border: iced::Border {
-                        color,
-                        width: 1.5,
-                        radius: 4.0.into(),
-                    },
+                    border,
                     ..Default::default()
                 }
             } else {
                 button::Style {
                     background: Some(Background::Color(Color::from_rgb(0.18, 0.18, 0.18))),
                     text_color: Color::from_rgb(0.45, 0.45, 0.45),
-                    border: iced::Border {
-                        color: Color::from_rgb(0.3, 0.3, 0.3),
-                        width: 1.0,
-                        radius: 4.0.into(),
-                    },
+                    border,
                     ..Default::default()
                 }
             };
@@ -1530,28 +1566,40 @@ impl DeckView {
 
         const BUTTON_WIDTH: f32 = 70.0;
 
+        // Check for highlight targets
+        let highlight_cue = self.is_highlighted(HighlightTarget::DeckCue(self.deck_idx));
+        let highlight_play = self.is_highlighted(HighlightTarget::DeckPlay(self.deck_idx));
+
         // Cue button
         let is_cueing = matches!(self.state, PlayState::Cueing);
+        let cue_border = if highlight_cue {
+            Self::highlight_border()
+        } else if is_cueing {
+            iced::Border {
+                color: Color::WHITE,
+                width: 1.0,
+                radius: 4.0.into(),
+            }
+        } else {
+            iced::Border {
+                color: Color::from_rgb(0.5, 0.5, 0.5),
+                width: 1.0,
+                radius: 4.0.into(),
+            }
+        };
+
         let cue_style = if is_cueing {
             button::Style {
                 background: Some(Background::Color(Color::from_rgb(1.0, 0.6, 0.0))),
                 text_color: Color::WHITE,
-                border: iced::Border {
-                    color: Color::WHITE,
-                    width: 1.0,
-                    radius: 4.0.into(),
-                },
+                border: cue_border,
                 ..Default::default()
             }
         } else {
             button::Style {
                 background: Some(Background::Color(Color::from_rgb(0.3, 0.3, 0.3))),
                 text_color: Color::WHITE,
-                border: iced::Border {
-                    color: Color::from_rgb(0.5, 0.5, 0.5),
-                    width: 1.0,
-                    radius: 4.0.into(),
-                },
+                border: cue_border,
                 ..Default::default()
             }
         };
@@ -1568,14 +1616,21 @@ impl DeckView {
         // Play button - sleek minimal style with unicode icons
         let is_playing = matches!(self.state, PlayState::Playing);
         let play_label = if is_playing { "❚❚" } else { "▶" }; // Unicode pause (two bars) and play
-        let play_style = button::Style {
-            background: Some(Background::Color(Color::from_rgb(0.25, 0.25, 0.25))),
-            text_color: Color::WHITE,
-            border: iced::Border {
+
+        let play_border = if highlight_play {
+            Self::highlight_border()
+        } else {
+            iced::Border {
                 color: Color::from_rgb(0.4, 0.4, 0.4),
                 width: 1.0,
                 radius: 4.0.into(),
-            },
+            }
+        };
+
+        let play_style = button::Style {
+            background: Some(Background::Color(Color::from_rgb(0.25, 0.25, 0.25))),
+            text_color: Color::WHITE,
+            border: play_border,
             ..Default::default()
         };
 

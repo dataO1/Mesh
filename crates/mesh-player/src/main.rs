@@ -4,6 +4,10 @@
 //! 1. Starts the JACK audio client in a background thread
 //! 2. Launches the iced GUI application
 //! 3. Passes shared state between UI and audio
+//!
+//! ## Command line flags
+//!
+//! - `--midi-learn`: Start in MIDI learn mode for creating controller profiles
 
 mod audio;
 mod config;
@@ -13,17 +17,24 @@ mod ui;
 use iced::{Size, Task};
 
 use audio::{start_jack_client, auto_connect_ports};
-use ui::{MeshApp, app::Message};
+use ui::{MeshApp, app::Message, midi_learn::MidiLearnMessage};
 
 const CLIENT_NAME: &str = "mesh-player";
 
 fn main() -> iced::Result {
+    // Parse command line arguments
+    let args: Vec<String> = std::env::args().collect();
+    let start_midi_learn = args.iter().any(|arg| arg == "--midi-learn");
+
     // Initialize logger - set RUST_LOG=debug for verbose output
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp_millis()
         .init();
 
     log::info!("mesh-player starting up");
+    if start_midi_learn {
+        log::info!("MIDI learn mode requested via --midi-learn flag");
+    }
 
     // Initialize Rayon thread pool before audio starts
     // This prevents lazy initialization from causing latency in the audio callback
@@ -84,7 +95,15 @@ fn main() -> iced::Result {
             let deck_atomics = deck_atomics_cell.borrow_mut().take();
             let slicer_atomics = slicer_atomics_cell.borrow_mut().take();
             let app = MeshApp::new(sender, deck_atomics, slicer_atomics, jack_sample_rate);
-            (app, Task::none())
+
+            // If --midi-learn flag was passed, start MIDI learn mode
+            let startup_task = if start_midi_learn {
+                Task::done(Message::MidiLearn(MidiLearnMessage::Start))
+            } else {
+                Task::none()
+            };
+
+            (app, startup_task)
         },
         update,
         view,

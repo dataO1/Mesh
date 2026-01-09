@@ -10,9 +10,10 @@
 //! Note: No crossfader - Mesh uses stem-based mixing with global BPM sync
 
 use iced::widget::{button, column, container, row, slider, text, Row};
-use iced::{Center, Element};
+use iced::{Center, Color, Element};
 
 use mesh_core::engine::Mixer;
+use super::midi_learn::HighlightTarget;
 
 /// State for the mixer view
 pub struct MixerView {
@@ -34,6 +35,8 @@ pub struct MixerView {
     cue_volume: f32,
     /// Cue/master mix for headphones
     cue_mix: f32,
+    /// Current highlight target for MIDI learn mode
+    highlight_target: Option<HighlightTarget>,
 }
 
 /// Messages for mixer interaction
@@ -72,6 +75,26 @@ impl MixerView {
             master_volume: 0.8,
             cue_volume: 0.8,
             cue_mix: 0.5,
+            highlight_target: None,
+        }
+    }
+
+    /// Set the highlight target for MIDI learn mode
+    pub fn set_highlight(&mut self, target: Option<HighlightTarget>) {
+        self.highlight_target = target;
+    }
+
+    /// Check if a specific target should be highlighted
+    fn is_highlighted(&self, target: HighlightTarget) -> bool {
+        self.highlight_target == Some(target)
+    }
+
+    /// Get highlight border style for MIDI learn mode
+    fn highlight_border() -> iced::Border {
+        iced::Border {
+            color: Color::from_rgb(1.0, 0.0, 0.0),
+            width: 3.0,
+            radius: 4.0.into(),
         }
     }
 
@@ -257,63 +280,133 @@ impl MixerView {
     }
 
     /// View for a single channel strip
-    fn view_channel(&self, ch: usize) -> Element<MixerMessage> {
+    fn view_channel(&self, ch: usize) -> Element<'_, MixerMessage> {
         use iced::Length;
 
         let ch_label = text(format!("CH {}", ch + 1)).size(11);
 
-        // EQ sliders (fill available width)
-        let eq_hi = column![
-            text("HI").size(9),
-            slider(0.0..=1.0, self.channel_eq_hi[ch], move |v| MixerMessage::SetChannelEqHi(ch, v))
-                .step(0.01)
-                .width(Length::Fill),
-        ]
-        .spacing(2)
-        .align_x(Center)
-        .width(Length::Fill);
+        // EQ sliders (fill available width), with optional highlight border
+        let eq_hi_slider = slider(0.0..=1.0, self.channel_eq_hi[ch], move |v| MixerMessage::SetChannelEqHi(ch, v))
+            .step(0.01)
+            .width(Length::Fill);
+        let eq_hi: Element<'_, MixerMessage> = if self.is_highlighted(HighlightTarget::MixerEqHi(ch)) {
+            column![
+                text("HI").size(9),
+                container(eq_hi_slider)
+                    .style(|_| container::Style {
+                        border: Self::highlight_border(),
+                        ..Default::default()
+                    }),
+            ]
+            .spacing(2)
+            .align_x(Center)
+            .width(Length::Fill)
+            .into()
+        } else {
+            column![text("HI").size(9), eq_hi_slider]
+                .spacing(2)
+                .align_x(Center)
+                .width(Length::Fill)
+                .into()
+        };
 
-        let eq_mid = column![
-            text("MID").size(9),
-            slider(0.0..=1.0, self.channel_eq_mid[ch], move |v| MixerMessage::SetChannelEqMid(ch, v))
-                .step(0.01)
-                .width(Length::Fill),
-        ]
-        .spacing(2)
-        .align_x(Center)
-        .width(Length::Fill);
+        let eq_mid_slider = slider(0.0..=1.0, self.channel_eq_mid[ch], move |v| MixerMessage::SetChannelEqMid(ch, v))
+            .step(0.01)
+            .width(Length::Fill);
+        let eq_mid: Element<'_, MixerMessage> = if self.is_highlighted(HighlightTarget::MixerEqMid(ch)) {
+            column![
+                text("MID").size(9),
+                container(eq_mid_slider)
+                    .style(|_| container::Style {
+                        border: Self::highlight_border(),
+                        ..Default::default()
+                    }),
+            ]
+            .spacing(2)
+            .align_x(Center)
+            .width(Length::Fill)
+            .into()
+        } else {
+            column![text("MID").size(9), eq_mid_slider]
+                .spacing(2)
+                .align_x(Center)
+                .width(Length::Fill)
+                .into()
+        };
 
-        let eq_lo = column![
-            text("LO").size(9),
-            slider(0.0..=1.0, self.channel_eq_lo[ch], move |v| MixerMessage::SetChannelEqLo(ch, v))
-                .step(0.01)
-                .width(Length::Fill),
-        ]
-        .spacing(2)
-        .align_x(Center)
-        .width(Length::Fill);
+        let eq_lo_slider = slider(0.0..=1.0, self.channel_eq_lo[ch], move |v| MixerMessage::SetChannelEqLo(ch, v))
+            .step(0.01)
+            .width(Length::Fill);
+        let eq_lo: Element<'_, MixerMessage> = if self.is_highlighted(HighlightTarget::MixerEqLo(ch)) {
+            column![
+                text("LO").size(9),
+                container(eq_lo_slider)
+                    .style(|_| container::Style {
+                        border: Self::highlight_border(),
+                        ..Default::default()
+                    }),
+            ]
+            .spacing(2)
+            .align_x(Center)
+            .width(Length::Fill)
+            .into()
+        } else {
+            column![text("LO").size(9), eq_lo_slider]
+                .spacing(2)
+                .align_x(Center)
+                .width(Length::Fill)
+                .into()
+        };
 
         // Filter
-        let filter = column![
-            text("FILTER").size(9),
-            slider(-1.0..=1.0, self.channel_filters[ch], move |v| MixerMessage::SetChannelFilter(ch, v))
-                .step(0.01)
-                .width(Length::Fill),
-        ]
-        .spacing(2)
-        .align_x(Center)
-        .width(Length::Fill);
+        let filter_slider = slider(-1.0..=1.0, self.channel_filters[ch], move |v| MixerMessage::SetChannelFilter(ch, v))
+            .step(0.01)
+            .width(Length::Fill);
+        let filter: Element<'_, MixerMessage> = if self.is_highlighted(HighlightTarget::MixerFilter(ch)) {
+            column![
+                text("FILTER").size(9),
+                container(filter_slider)
+                    .style(|_| container::Style {
+                        border: Self::highlight_border(),
+                        ..Default::default()
+                    }),
+            ]
+            .spacing(2)
+            .align_x(Center)
+            .width(Length::Fill)
+            .into()
+        } else {
+            column![text("FILTER").size(9), filter_slider]
+                .spacing(2)
+                .align_x(Center)
+                .width(Length::Fill)
+                .into()
+        };
 
         // Volume fader
-        let volume = column![
-            text("VOL").size(9),
-            slider(0.0..=1.0, self.channel_volumes[ch], move |v| MixerMessage::SetChannelVolume(ch, v))
-                .step(0.01)
-                .width(Length::Fill),
-        ]
-        .spacing(2)
-        .align_x(Center)
-        .width(Length::Fill);
+        let volume_slider = slider(0.0..=1.0, self.channel_volumes[ch], move |v| MixerMessage::SetChannelVolume(ch, v))
+            .step(0.01)
+            .width(Length::Fill);
+        let volume: Element<'_, MixerMessage> = if self.is_highlighted(HighlightTarget::MixerVolume(ch)) {
+            column![
+                text("VOL").size(9),
+                container(volume_slider)
+                    .style(|_| container::Style {
+                        border: Self::highlight_border(),
+                        ..Default::default()
+                    }),
+            ]
+            .spacing(2)
+            .align_x(Center)
+            .width(Length::Fill)
+            .into()
+        } else {
+            column![text("VOL").size(9), volume_slider]
+                .spacing(2)
+                .align_x(Center)
+                .width(Length::Fill)
+                .into()
+        };
 
         // Cue button
         let cue_label = if self.channel_cue[ch] { "CUE ●" } else { "CUE" };
@@ -321,6 +414,16 @@ impl MixerView {
             .on_press(MixerMessage::ToggleChannelCue(ch))
             .padding([4, 8])
             .width(Length::Fill);
+        let cue: Element<'_, MixerMessage> = if self.is_highlighted(HighlightTarget::MixerCue(ch)) {
+            container(cue_btn)
+                .style(|_| container::Style {
+                    border: Self::highlight_border(),
+                    ..Default::default()
+                })
+                .into()
+        } else {
+            cue_btn.into()
+        };
 
         column![
             ch_label,
@@ -329,7 +432,7 @@ impl MixerView {
             eq_lo,
             filter,
             volume,
-            cue_btn,
+            cue,
         ]
         .spacing(4)
         .align_x(Center)

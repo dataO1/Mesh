@@ -6,6 +6,7 @@
 pub mod app;
 pub mod collection_browser;
 pub mod deck_view;
+pub mod midi_learn;
 pub mod mixer_view;
 pub mod player_canvas;
 pub mod settings;

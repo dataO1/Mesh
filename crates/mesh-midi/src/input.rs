@@ -139,6 +139,8 @@ impl MidiInputEvent {
 /// Callback data passed to midir
 struct CallbackData {
     message_tx: Sender<MidiMessage>,
+    /// Optional raw event sender for learn mode
+    raw_event_tx: Option<Sender<MidiInputEvent>>,
     mapping_engine: Arc<MappingEngine>,
     shift_control: Option<MidiControlConfig>,
     shift_held: Arc<AtomicBool>,
@@ -152,6 +154,8 @@ pub struct MidiInputHandler {
     _connection: MidiInputConnection<CallbackData>,
     /// Shift state (shared with callback)
     shift_held: Arc<AtomicBool>,
+    /// Raw event receiver for learn mode
+    raw_event_rx: Option<flume::Receiver<MidiInputEvent>>,
 }
 
 impl MidiInputHandler {
@@ -164,12 +168,35 @@ impl MidiInputHandler {
         mapping_engine: Arc<MappingEngine>,
         shift_control: Option<MidiControlConfig>,
     ) -> Result<Self, MidiConnectionError> {
+        Self::connect_with_raw_events(port_match, message_tx, mapping_engine, shift_control, false)
+    }
+
+    /// Connect to a MIDI port with optional raw event capture
+    ///
+    /// When `capture_raw` is true, raw MIDI events are also sent to a separate channel
+    /// that can be read via `drain_raw_events()`. This is used for MIDI learn mode.
+    pub fn connect_with_raw_events(
+        port_match: &str,
+        message_tx: Sender<MidiMessage>,
+        mapping_engine: Arc<MappingEngine>,
+        shift_control: Option<MidiControlConfig>,
+        capture_raw: bool,
+    ) -> Result<Self, MidiConnectionError> {
         let (midi_in, port) = crate::connection::MidiConnection::find_input_port(port_match)?;
 
         let shift_held = Arc::new(AtomicBool::new(false));
 
+        // Create raw event channel if requested
+        let (raw_event_tx, raw_event_rx) = if capture_raw {
+            let (tx, rx) = flume::bounded(256);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+
         let callback_data = CallbackData {
             message_tx,
+            raw_event_tx,
             mapping_engine,
             shift_control,
             shift_held: shift_held.clone(),
@@ -184,11 +211,12 @@ impl MidiInputHandler {
             )
             .map_err(|e| MidiConnectionError::ConnectionError(e.to_string()))?;
 
-        log::info!("MIDI: Input handler connected");
+        log::info!("MIDI: Input handler connected (raw capture: {})", capture_raw);
 
         Ok(Self {
             _connection: connection,
             shift_held,
+            raw_event_rx,
         })
     }
 
@@ -202,6 +230,11 @@ impl MidiInputHandler {
             Some(e) => e,
             None => return,
         };
+
+        // Send raw event for learn mode (if channel is set up)
+        if let Some(ref raw_tx) = callback_data.raw_event_tx {
+            let _ = raw_tx.try_send(event);
+        }
 
         // Check for shift button
         if let Some(ref shift_ctrl) = callback_data.shift_control {
@@ -230,6 +263,18 @@ impl MidiInputHandler {
     /// Check if shift is currently held
     pub fn is_shift_held(&self) -> bool {
         self.shift_held.load(Ordering::Relaxed)
+    }
+
+    /// Drain all pending raw MIDI events (for learn mode)
+    ///
+    /// Returns an iterator over raw events. Only available if connected
+    /// with `capture_raw: true`.
+    pub fn drain_raw_events(&self) -> impl Iterator<Item = MidiInputEvent> + '_ {
+        std::iter::from_fn(|| {
+            self.raw_event_rx
+                .as_ref()
+                .and_then(|rx| rx.try_recv().ok())
+        })
     }
 }
 

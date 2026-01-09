@@ -22,13 +22,14 @@ use iced::time;
 use crate::audio::CommandSender;
 use crate::config::{self, PlayerConfig};
 use crate::loader::TrackLoader;
-use mesh_midi::{MidiController, MidiMessage as MidiMsg, DeckAction as MidiDeckAction, MixerAction as MidiMixerAction, BrowserAction as MidiBrowserAction};
+use mesh_midi::{MidiController, MidiMessage as MidiMsg, MidiInputEvent, DeckAction as MidiDeckAction, MixerAction as MidiMixerAction, BrowserAction as MidiBrowserAction};
 use mesh_core::audio_file::StemBuffers;
 use mesh_core::engine::{DeckAtomics, EngineCommand, SlicerAtomics};
 use mesh_core::types::NUM_DECKS;
 use mesh_widgets::{PeaksComputer, PeaksComputeRequest, ZoomedViewMode};
 use super::collection_browser::{CollectionBrowserState, CollectionBrowserMessage};
 use super::deck_view::{DeckView, DeckMessage};
+use super::midi_learn::{MidiLearnState, MidiLearnMessage, HighlightTarget};
 use super::mixer_view::{MixerView, MixerMessage};
 use super::player_canvas::{view_player_canvas, PlayerCanvasState};
 use super::settings::SettingsState;
@@ -71,6 +72,8 @@ pub struct MeshApp {
     settings: SettingsState,
     /// MIDI controller (optional - works without MIDI)
     midi_controller: Option<MidiController>,
+    /// MIDI learn mode state
+    midi_learn: MidiLearnState,
 }
 
 /// Messages that can be sent to the application
@@ -114,6 +117,10 @@ pub enum Message {
     SaveSettings,
     /// Settings save complete
     SaveSettingsComplete(Result<(), String>),
+
+    // MIDI Learn
+    /// MIDI learn mode message
+    MidiLearn(MidiLearnMessage),
 }
 
 impl MeshApp {
@@ -167,11 +174,12 @@ impl MeshApp {
 
         let audio_connected = command_sender.is_some();
 
-        // Initialize MIDI controller (graceful if unavailable)
-        let midi_controller = match MidiController::new(None) {
+        // Initialize MIDI controller with raw event capture enabled (for MIDI learn mode)
+        // Raw capture has minimal overhead when not actively reading
+        let midi_controller = match MidiController::new_with_options(None, true) {
             Ok(controller) => {
                 if controller.is_connected() {
-                    log::info!("MIDI controller connected");
+                    log::info!("MIDI controller connected (raw capture enabled)");
                 }
                 Some(controller)
             }
@@ -204,6 +212,21 @@ impl MeshApp {
             config_path,
             settings,
             midi_controller,
+            midi_learn: MidiLearnState::new(),
+        }
+    }
+
+    /// Start MIDI learn mode
+    pub fn start_midi_learn(&mut self) {
+        self.midi_learn.start();
+    }
+
+    /// Get highlight target for views to check
+    pub fn midi_learn_highlight(&self) -> Option<HighlightTarget> {
+        if self.midi_learn.is_active {
+            self.midi_learn.highlight_target
+        } else {
+            None
         }
     }
 
@@ -329,6 +352,61 @@ impl MeshApp {
                 for midi_msg in midi_messages {
                     self.handle_midi_message(midi_msg);
                 }
+
+                // MIDI Learn mode: capture raw events when waiting for input
+                // This happens before normal MIDI routing so we can intercept events
+                if self.midi_learn.is_active {
+                    let needs_capture = match self.midi_learn.phase {
+                        super::midi_learn::LearnPhase::Setup => {
+                            // Only capture during ShiftButton step
+                            self.midi_learn.setup_step == super::midi_learn::SetupStep::ShiftButton
+                        }
+                        super::midi_learn::LearnPhase::Review => false,
+                        // All other phases need MIDI capture
+                        _ => true,
+                    };
+
+                    if needs_capture {
+                        if let Some(ref controller) = self.midi_controller {
+                            // Drain raw events and find first valid one
+                            for raw_event in controller.drain_raw_events() {
+                                let captured = convert_midi_event_to_captured(&raw_event);
+
+                                // Always update display so user sees what's happening
+                                self.midi_learn.last_captured = Some(captured.clone());
+
+                                // Check if this event should be captured (debounce + Note Off filter)
+                                if !self.midi_learn.should_capture(&captured) {
+                                    continue; // Skip this event, check next
+                                }
+
+                                // Mark capture time for debouncing
+                                self.midi_learn.mark_captured();
+
+                                // Handle based on current phase
+                                if self.midi_learn.phase == super::midi_learn::LearnPhase::Setup {
+                                    // Shift button detection - auto-advance
+                                    self.midi_learn.shift_mapping = Some(captured);
+                                    self.midi_learn.advance();
+                                } else {
+                                    // Mapping phase - record and advance
+                                    self.midi_learn.record_mapping(captured);
+                                }
+
+                                // Only process one valid event per tick
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Update highlight targets for MIDI learn mode
+                // Each deck/mixer view needs to know if one of its elements should be highlighted
+                let highlight = self.midi_learn.highlight_target;
+                for i in 0..4 {
+                    self.deck_views[i].set_highlight(highlight);
+                }
+                self.mixer_view.set_highlight(highlight);
 
                 // Read deck positions from atomics (LOCK-FREE - never blocks audio thread)
                 // Position/state reads happen ~60Hz with zero contention
@@ -893,6 +971,102 @@ impl MeshApp {
                 }
                 Task::none()
             }
+
+            // MIDI Learn mode
+            Message::MidiLearn(learn_msg) => {
+                use MidiLearnMessage::*;
+                match learn_msg {
+                    Start => {
+                        self.midi_learn.start();
+                        // Close settings modal if open
+                        self.settings.is_open = false;
+                        self.status = "MIDI Learn mode started".to_string();
+                    }
+                    Cancel => {
+                        self.midi_learn.cancel();
+                        self.status = "MIDI Learn cancelled".to_string();
+                    }
+                    Next => {
+                        self.midi_learn.advance();
+                    }
+                    Back => {
+                        self.midi_learn.go_back();
+                    }
+                    Skip => {
+                        self.midi_learn.advance();
+                    }
+                    Save => {
+                        self.status = format!(
+                            "Saving {} mappings for {}...",
+                            self.midi_learn.pending_mappings.len(),
+                            self.midi_learn.controller_name
+                        );
+
+                        // Generate the config from learned mappings
+                        let config = self.midi_learn.generate_config();
+                        let config_path = mesh_midi::default_midi_config_path();
+
+                        // Save to disk in background
+                        return Task::perform(
+                            async move {
+                                mesh_midi::save_midi_config(&config, &config_path)
+                                    .map_err(|e| e.to_string())
+                            },
+                            |result| Message::MidiLearn(MidiLearnMessage::SaveComplete(result)),
+                        );
+                    }
+                    SaveComplete(result) => {
+                        match result {
+                            Ok(()) => {
+                                self.midi_learn.cancel(); // Reset state
+                                self.status = "MIDI config saved! Reloading...".to_string();
+
+                                // Reload MIDI controller with new config
+                                // Drop old controller first to release the port
+                                self.midi_controller = None;
+
+                                // Create new controller with fresh config
+                                match MidiController::new_with_options(None, true) {
+                                    Ok(controller) => {
+                                        if controller.is_connected() {
+                                            log::info!("MIDI: Reloaded controller with new config");
+                                            self.status = "MIDI config saved and loaded!".to_string();
+                                        } else {
+                                            self.status = "MIDI config saved (no device connected)".to_string();
+                                        }
+                                        self.midi_controller = Some(controller);
+                                    }
+                                    Err(e) => {
+                                        log::warn!("MIDI: Failed to reload controller: {}", e);
+                                        self.status = format!("Config saved, but reload failed: {}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                self.midi_learn.status = format!("Save failed: {}", e);
+                                self.status = format!("MIDI config save failed: {}", e);
+                            }
+                        }
+                    }
+                    SetControllerName(name) => {
+                        self.midi_learn.controller_name = name;
+                    }
+                    SetDeckCount(count) => {
+                        self.midi_learn.deck_count = count;
+                    }
+                    SetHasLayerToggle(has) => {
+                        self.midi_learn.has_layer_toggle = has;
+                    }
+                    ShiftDetected(event) => {
+                        self.midi_learn.shift_mapping = event;
+                        self.midi_learn.advance();
+                    }
+                    MidiCaptured(event) => {
+                        self.midi_learn.record_mapping(event);
+                    }
+                }
+                Task::none()
+            }
         }
     }
 
@@ -922,6 +1096,13 @@ impl MeshApp {
                             Some(DeckMessage::SetActionMode(super::deck_view::ActionButtonMode::Slicer))
                         } else {
                             Some(DeckMessage::SetActionMode(super::deck_view::ActionButtonMode::HotCue))
+                        }
+                    }
+                    MidiDeckAction::SetHotCueMode { enabled } => {
+                        if enabled {
+                            Some(DeckMessage::SetActionMode(super::deck_view::ActionButtonMode::HotCue))
+                        } else {
+                            Some(DeckMessage::SetActionMode(super::deck_view::ActionButtonMode::Slicer))
                         }
                     }
                     MidiDeckAction::SlicerReset => Some(DeckMessage::ResetSlicerPattern),
@@ -965,22 +1146,40 @@ impl MeshApp {
             MidiMsg::Browser(action) => {
                 match action {
                     MidiBrowserAction::Scroll { delta } => {
-                        // Scroll the collection browser
-                        // TODO: Wire up browser scroll via CollectionBrowserMessage
-                        log::debug!("MIDI: Browser scroll {}", delta);
+                        // Scroll the collection browser selection by delta
+                        let _ = self.update(Message::CollectionBrowser(
+                            CollectionBrowserMessage::ScrollBy(delta),
+                        ));
                     }
                     MidiBrowserAction::Select => {
-                        // TODO: Wire up browser select
-                        log::debug!("MIDI: Browser select");
+                        // Select current item (activates track -> loads to deck 0)
+                        let _ = self.update(Message::CollectionBrowser(
+                            CollectionBrowserMessage::SelectCurrent,
+                        ));
                     }
                     MidiBrowserAction::Back => {
-                        log::debug!("MIDI: Browser back");
+                        // Could implement folder navigation back, for now just log
+                        log::debug!("MIDI: Browser back (not implemented)");
                     }
                 }
             }
 
-            MidiMsg::Global(_action) => {
-                // TODO: Global actions like BPM
+            MidiMsg::Global(action) => {
+                use mesh_midi::GlobalAction as MidiGlobalAction;
+                match action {
+                    MidiGlobalAction::SetMasterVolume(v) => {
+                        let _ = self.update(Message::Mixer(MixerMessage::SetMasterVolume(v)));
+                    }
+                    MidiGlobalAction::SetCueVolume(v) => {
+                        let _ = self.update(Message::Mixer(MixerMessage::SetCueVolume(v)));
+                    }
+                    MidiGlobalAction::SetCueMix(v) => {
+                        let _ = self.update(Message::Mixer(MixerMessage::SetCueMix(v)));
+                    }
+                    MidiGlobalAction::SetBpm(_) | MidiGlobalAction::AdjustBpm(_) => {
+                        // BPM control not implemented yet
+                    }
+                }
             }
 
             MidiMsg::LayerToggle { physical_deck } => {
@@ -1072,6 +1271,24 @@ impl MeshApp {
             .height(Fill)
             .into();
 
+        // MIDI Learn drawer at the bottom (if active)
+        let with_drawer: Element<Message> = if self.midi_learn.is_active {
+            let drawer = super::midi_learn::view_drawer(&self.midi_learn)
+                .map(Message::MidiLearn);
+
+            // Use a column to put the drawer at the bottom
+            let main_with_drawer = column![
+                container(base).height(Length::FillPortion(1)),
+                drawer,
+            ]
+            .width(Length::Fill)
+            .height(Length::Fill);
+
+            main_with_drawer.into()
+        } else {
+            base
+        };
+
         // Overlay settings modal if open
         if self.settings.is_open {
             let backdrop = mouse_area(
@@ -1089,9 +1306,9 @@ impl MeshApp {
                 .width(Length::Fill)
                 .height(Length::Fill);
 
-            stack![base, backdrop, modal].into()
+            stack![with_drawer, backdrop, modal].into()
         } else {
-            base
+            with_drawer
         }
     }
 
@@ -1142,5 +1359,31 @@ impl Default for MeshApp {
     fn default() -> Self {
         // Default to 48kHz when no JACK rate is available (matches SAMPLE_RATE constant)
         Self::new(None, None, None, 48000)
+    }
+}
+
+/// Convert a raw MidiInputEvent to CapturedMidiEvent for learn mode
+fn convert_midi_event_to_captured(event: &MidiInputEvent) -> super::midi_learn::CapturedMidiEvent {
+    use super::midi_learn::CapturedMidiEvent;
+
+    match event {
+        MidiInputEvent::NoteOn { channel, note, velocity } => CapturedMidiEvent {
+            channel: *channel,
+            number: *note,
+            value: *velocity,
+            is_note: true,
+        },
+        MidiInputEvent::NoteOff { channel, note, velocity } => CapturedMidiEvent {
+            channel: *channel,
+            number: *note,
+            value: *velocity,
+            is_note: true,
+        },
+        MidiInputEvent::ControlChange { channel, cc, value } => CapturedMidiEvent {
+            channel: *channel,
+            number: *cc,
+            value: *value,
+            is_note: false,
+        },
     }
 }

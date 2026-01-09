@@ -3,6 +3,7 @@
 //! Provides a modal dialog for editing player configuration.
 
 use super::app::Message;
+use super::midi_learn::MidiLearnMessage;
 use crate::config::LOOP_LENGTH_OPTIONS;
 use iced::widget::{button, column, container, row, text, toggler, Space};
 use iced::{Alignment, Element, Length};
@@ -84,6 +85,9 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
     // Slicer settings section
     let slicer_section = view_slicer_section(state);
 
+    // MIDI settings section
+    let midi_section = view_midi_section();
+
     // Status message (for save feedback)
     let status: Element<Message> = if !state.status.is_empty() {
         text(&state.status).size(14).into()
@@ -104,7 +108,7 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
         .spacing(10)
         .width(Length::Fill);
 
-    let content = column![header, loop_section, display_section, slicer_section, status, actions]
+    let content = column![header, loop_section, display_section, slicer_section, midi_section, status, actions]
         .spacing(20)
         .width(Length::Fixed(450.0));
 
@@ -341,6 +345,31 @@ fn view_slicer_section(state: &SettingsState) -> Element<'_, Message> {
             stems_subsection,
             stems_hint,
             stems_row,
+        ]
+        .spacing(8),
+    )
+    .padding(15)
+    .width(Length::Fill)
+    .into()
+}
+
+/// MIDI settings section (learn button)
+fn view_midi_section() -> Element<'static, Message> {
+    let section_title = text("MIDI Controller").size(18);
+
+    let hint = text("Create a custom mapping for your MIDI controller")
+        .size(12);
+
+    let learn_btn = button(text("Start MIDI Learn").size(14))
+        .on_press(Message::MidiLearn(MidiLearnMessage::Start))
+        .style(button::primary);
+
+    container(
+        column![
+            section_title,
+            hint,
+            Space::new().height(5),
+            learn_btn,
         ]
         .spacing(8),
     )

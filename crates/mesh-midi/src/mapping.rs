@@ -5,7 +5,7 @@
 use crate::config::{ControlMapping, DeviceProfile, EncoderMode, MidiControlConfig};
 use crate::deck_target::DeckTargetState;
 use crate::input::MidiInputEvent;
-use crate::messages::{BrowserAction, DeckAction, MidiMessage, MixerAction};
+use crate::messages::{BrowserAction, DeckAction, GlobalAction, MidiMessage, MixerAction};
 use crate::normalize::{encoder_to_delta, normalize_cc_value, range_for_action, ControlRange};
 use std::collections::HashMap;
 
@@ -55,6 +55,7 @@ impl ActionRegistry {
             "deck.slicer_trigger",
             "deck.slicer_assign",
             "deck.slicer_mode",
+            "deck.hot_cue_mode",
             "deck.slicer_reset",
             "deck.stem_mute",
             "deck.stem_solo",
@@ -145,6 +146,27 @@ impl ActionRegistry {
                     min: 60.0,
                     max: 200.0,
                 },
+            },
+        );
+        actions.insert(
+            "global.master_volume".to_string(),
+            ActionInfo {
+                deck_targetable: false,
+                value_range: ControlRange::Unit,
+            },
+        );
+        actions.insert(
+            "global.cue_volume".to_string(),
+            ActionInfo {
+                deck_targetable: false,
+                value_range: ControlRange::Unit,
+            },
+        );
+        actions.insert(
+            "mixer.cue_mix".to_string(),
+            ActionInfo {
+                deck_targetable: false,
+                value_range: ControlRange::Unit,
             },
         );
 
@@ -412,6 +434,16 @@ impl MappingEngine {
                     None
                 }
             }
+            "deck.hot_cue_mode" => {
+                if event.is_press() {
+                    Some(MidiMessage::Deck {
+                        deck,
+                        action: DeckAction::SetHotCueMode { enabled: true },
+                    })
+                } else {
+                    None
+                }
+            }
             "deck.slicer_reset" => {
                 if event.is_press() {
                     Some(MidiMessage::Deck {
@@ -592,6 +624,32 @@ impl MappingEngine {
             "browser.back" => {
                 if event.is_press() {
                     Some(MidiMessage::Browser(BrowserAction::Back))
+                } else {
+                    None
+                }
+            }
+
+            // Global actions
+            "global.master_volume" => {
+                if let MidiInputEvent::ControlChange { value, .. } = event {
+                    let normalized = normalize_cc_value(*value, ControlRange::Unit, None);
+                    Some(MidiMessage::Global(GlobalAction::SetMasterVolume(normalized)))
+                } else {
+                    None
+                }
+            }
+            "global.cue_volume" => {
+                if let MidiInputEvent::ControlChange { value, .. } = event {
+                    let normalized = normalize_cc_value(*value, ControlRange::Unit, None);
+                    Some(MidiMessage::Global(GlobalAction::SetCueVolume(normalized)))
+                } else {
+                    None
+                }
+            }
+            "mixer.cue_mix" => {
+                if let MidiInputEvent::ControlChange { value, .. } = event {
+                    let normalized = normalize_cc_value(*value, ControlRange::Unit, None);
+                    Some(MidiMessage::Global(GlobalAction::SetCueMix(normalized)))
                 } else {
                     None
                 }

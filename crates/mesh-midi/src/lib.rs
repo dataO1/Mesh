@@ -27,8 +27,8 @@ mod normalize;
 mod output;
 
 pub use config::{
-    default_midi_config_path, load_midi_config, ControlBehavior, ControlMapping,
-    DeckTargetConfig, DeviceProfile, FeedbackMapping, MidiConfig, MidiControlConfig,
+    default_midi_config_path, load_midi_config, save_midi_config, ControlBehavior, ControlMapping,
+    DeckTargetConfig, DeviceProfile, EncoderMode, FeedbackMapping, MidiConfig, MidiControlConfig,
 };
 pub use connection::{MidiConnection, MidiConnectionError};
 pub use deck_target::{DeckTargetMode, DeckTargetState, LayerSelection};
@@ -84,6 +84,16 @@ impl MidiController {
     /// Attempts to connect to a MIDI device matching the config.
     /// Returns Ok even if no device is found (graceful degradation).
     pub fn new(config_path: Option<&std::path::Path>) -> Result<Self, MidiError> {
+        Self::new_with_options(config_path, false)
+    }
+
+    /// Create a new MIDI controller with options
+    ///
+    /// - `capture_raw`: Enable raw event capture for MIDI learn mode
+    pub fn new_with_options(
+        config_path: Option<&std::path::Path>,
+        capture_raw: bool,
+    ) -> Result<Self, MidiError> {
         let config_path = config_path
             .map(|p| p.to_path_buf())
             .unwrap_or_else(default_midi_config_path);
@@ -104,23 +114,24 @@ impl MidiController {
         };
 
         // Try to connect to a device
-        controller.try_connect(message_tx)?;
+        controller.try_connect(message_tx, capture_raw)?;
 
         Ok(controller)
     }
 
     /// Try to connect to a MIDI device matching config
-    fn try_connect(&mut self, message_tx: Sender<MidiMessage>) -> Result<(), MidiError> {
+    fn try_connect(&mut self, message_tx: Sender<MidiMessage>, capture_raw: bool) -> Result<(), MidiError> {
         for profile in &self.config.devices {
             // Create mapping engine
             let mapping_engine = Arc::new(MappingEngine::new(profile));
 
             // Try to connect input handler
-            match MidiInputHandler::connect(
+            match MidiInputHandler::connect_with_raw_events(
                 &profile.port_match,
                 message_tx.clone(),
                 mapping_engine,
                 profile.shift.clone(),
+                capture_raw,
             ) {
                 Ok(input_handler) => {
                     log::info!(
@@ -221,6 +232,18 @@ impl MidiController {
     /// Get current shift state
     pub fn is_shift_held(&self) -> bool {
         self.shift_held
+    }
+
+    /// Drain all pending raw MIDI events (for learn mode)
+    ///
+    /// Returns an iterator over raw events. Only available if created
+    /// with `new_with_options(..., capture_raw: true)`.
+    pub fn drain_raw_events(&self) -> impl Iterator<Item = MidiInputEvent> + '_ {
+        std::iter::from_fn(|| {
+            self.input_handler
+                .as_ref()
+                .and_then(|h| h.drain_raw_events().next())
+        })
     }
 }
 
