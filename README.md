@@ -630,6 +630,54 @@ devices:
         behavior: continuous
 ```
 
+### MIDI Learn
+
+The easiest way to configure a new MIDI controller is using **MIDI Learn mode** — a guided wizard that walks you through mapping every control on your device.
+
+#### Starting MIDI Learn
+
+1. Connect your MIDI controller
+2. Launch mesh-player with the `--midi-learn` flag:
+   ```bash
+   cargo run -p mesh-player -- --midi-learn
+   ```
+3. Or click **MIDI Learn** in the Settings tab
+
+#### The Learning Process
+
+MIDI Learn guides you through mapping controls in a logical order:
+
+| Phase | Controls Mapped |
+|-------|-----------------|
+| **Setup** | Controller name, deck count, shift button |
+| **Transport** | Play, cue, loop, beat jump, mode buttons (per deck) |
+| **Pads** | 8 hot cue pads (per deck) |
+| **Stems** | 4 stem mute buttons (per deck) |
+| **Mixer** | Volume, filter, EQ hi/mid/lo, cue button (per channel) |
+| **Browser** | Scroll encoder, select button, master/cue volumes, load buttons |
+
+For each control:
+1. The UI highlights the target control with a **red border**
+2. A prompt tells you what to press/move (e.g., "Press PLAY button on deck 1")
+3. Press/move the control on your hardware
+4. The mapping is captured automatically and you advance to the next control
+
+#### Tips for Best Results
+
+- **Wait for the prompt** — There's a 1-second debounce between captures to prevent accidental double-mappings
+- **Use Skip (→)** for controls your hardware doesn't have
+- **Use Back (←)** to re-map a control if you pressed the wrong button
+- **Mappings work live** — You can test your mappings while still in learn mode
+
+#### Saving Your Profile
+
+When you complete all phases, click **Save** to write your mappings to:
+```
+~/.config/mesh-player/midi.yaml
+```
+
+Your controller is now ready to use! The profile includes LED feedback mappings that mirror button presses back to your controller's LEDs.
+
 ### Included Profiles
 
 Device profiles are included in the `midi/` folder:
