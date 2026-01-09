@@ -41,6 +41,29 @@ and mesh-widget and only if necessary in the ui.
   Same for playlists. Always require confirmation via a small popup for deleting
   anything. We also need a right click menu, when clicking on tracks/playlists,
   where users can rename/delete/re-analyse.
+- [ ] Stem Slicing (if you have any questions or are unsure of what i mean, please ask before, so we can be
+  sure you understand my intention)
+  - [ ] Description: I want another module in the audio engine, which is used
+    for mangling the arrangement of a stem during playback, think of it as real
+    time remixing the stems. The user should enter slicer mode, which for a stem
+    of a deck (independent of other stems or decks) slices a fixed size of the
+    buffer (configurable from the global config, default 4 bars, snapped to grid) into equal 8 parts. these 8 parts can then be triggered form the action buttons. The slicer remembers the order in which the action buttons got pressed, which becomes the new "arrangement". Now the playback of the deck in the background continues normally and every time it surpasses the bounds of the fixed slicer buffer size  the slicer fills it with new buffer infos(kind of like a loop with its range, that keeps moving forward in fixed steps snapped to grid). the buffer plays with the new order ("arrangemnet") with the information from the deck playback. this output is then routed further to the audioengine as the current playback.
+  - [ ] Architecture: Should be its own module, where all audio buffer of a deck runs
+    through after the buffer is loaded (in the deck) but before the effects chain. seperation
+    of concern is important this is independent for each deck, this module should just get a slice of the buffer,
+    which can be updated, based on this buffer the slicer module computes a new
+    buffer, which is given to the effects -> jack output.
+  - [ ] UI: above the hotcues and cue button and underneight the beatjump, loop,
+    slip etc, there should be another row with a shift button at the left that
+    is as wide as the cue button then next to it (with some space between)
+    buttons for the action button modes. the first mode which is already
+    implemented is hot cues, the second mode will be slicer. whatever is
+    selected defines the hot cues behaviour and visuals. there can only ever be
+    one mode selected. hot cuee behaviour and visuals is good as is. in slicer
+    mode each action button fills the slice buffer sequentially, depending on
+    the slice buttons indexes content. button 3 "contains" the third piece
+    divided of equal size of the original buffer. pressing shift + slicer should
+    stop slicer mode and the output just flows through the slicer module.
 
 # Changes
 - [x] The waveform indicators of hot cues use colors, but the hot cue buttons
