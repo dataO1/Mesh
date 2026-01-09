@@ -722,7 +722,7 @@ fn draw_cached_peaks(
     }
 
     // Cache includes left_padding worth of virtual samples (zeros before track start)
-    let cache_virtual_total = (state.cache_end - state.cache_start + state.cache_left_padding) as f64;
+    let cache_virtual_total = (state.cache_end - state.cache_start + state.cache_left_padding) as usize;
     let height_scale = center_y * 0.85;
 
     for stem_idx in (0..4).rev() {
@@ -733,17 +733,20 @@ fn draw_cached_peaks(
 
         let base_color = STEM_COLORS[stem_idx];
         let waveform_color = Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.7);
-        let peaks_len = peaks.len() as f64;
+        let peaks_len = peaks.len();
+        let width_usize = width as usize;
+        let total_samples = window.total_samples as usize;
 
         // Build filled path for this stem
         let path = Path::new(|builder| {
             let mut first_point = true;
-            let mut upper_points: Vec<(f32, f32)> = Vec::with_capacity(width as usize);
-            let mut lower_points: Vec<(f32, f32)> = Vec::with_capacity(width as usize);
+            let mut upper_points: Vec<(f32, f32)> = Vec::with_capacity(width_usize);
+            let mut lower_points: Vec<(f32, f32)> = Vec::with_capacity(width_usize);
 
-            for x in 0..(width as usize) {
-                // Position within the visible window (0 to total_samples)
-                let window_offset = (x as f64 / width as f64) * window.total_samples as f64;
+            for x in 0..width_usize {
+                // Bresenham-style integer division: x * total_samples / width
+                // This distributes remainder evenly with no floating-point
+                let window_offset = x * total_samples / width_usize;
 
                 // Convert window offset to actual sample position
                 // window_offset 0 = left edge (may be before track start)
@@ -754,11 +757,12 @@ fn draw_cached_peaks(
                 // Cache virtual offset = actual_sample - cache_start + cache_left_padding
                 let cache_virtual_offset = actual_sample - state.cache_start as i64 + state.cache_left_padding as i64;
 
-                if cache_virtual_offset < 0 || cache_virtual_offset as f64 >= cache_virtual_total {
+                if cache_virtual_offset < 0 || cache_virtual_offset as usize >= cache_virtual_total {
                     continue;
                 }
 
-                let cache_idx = (cache_virtual_offset as f64 / cache_virtual_total * peaks_len) as usize;
+                // Bresenham-style cache index: offset * peaks_len / total
+                let cache_idx = (cache_virtual_offset as usize * peaks_len) / cache_virtual_total;
                 if cache_idx >= peaks.len() {
                     continue;
                 }
@@ -1768,27 +1772,30 @@ fn draw_zoomed_at(
         // Draw cached peaks using filled paths (with padding support)
         if !zoomed.cached_peaks[0].is_empty() && (zoomed.cache_end > zoomed.cache_start || zoomed.cache_left_padding > 0) {
             // Cache includes left_padding worth of virtual samples (zeros before track start)
-            let cache_virtual_total = (zoomed.cache_end - zoomed.cache_start + zoomed.cache_left_padding) as f64;
+            let cache_virtual_total = (zoomed.cache_end - zoomed.cache_start + zoomed.cache_left_padding) as usize;
             let height_scale = height / 2.0 * 0.85;
+            let width_usize = width as usize;
+            let total_samples = window.total_samples as usize;
 
             for stem_idx in (0..4).rev() {
                 let peaks = &zoomed.cached_peaks[stem_idx];
                 if peaks.is_empty() {
                     continue;
                 }
-                let peaks_len = peaks.len() as f64;
+                let peaks_len = peaks.len();
                 let base_color = STEM_COLORS[stem_idx];
                 let waveform_color = Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.7);
 
                 // Build filled path for this stem
                 let path = Path::new(|builder| {
                     let mut first_point = true;
-                    let mut upper_points: Vec<(f32, f32)> = Vec::with_capacity(width as usize);
-                    let mut lower_points: Vec<(f32, f32)> = Vec::with_capacity(width as usize);
+                    let mut upper_points: Vec<(f32, f32)> = Vec::with_capacity(width_usize);
+                    let mut lower_points: Vec<(f32, f32)> = Vec::with_capacity(width_usize);
 
-                    for px in 0..(width as usize) {
-                        // Position within the visible window (0 to total_samples)
-                        let window_offset = (px as f64 / width as f64) * window.total_samples as f64;
+                    for px in 0..width_usize {
+                        // Bresenham-style integer division: px * total_samples / width
+                        // This distributes remainder evenly with no floating-point
+                        let window_offset = px * total_samples / width_usize;
 
                         // Convert window offset to actual sample position
                         let actual_sample = window.start as i64 - window.left_padding as i64 + window_offset as i64;
@@ -1796,11 +1803,12 @@ fn draw_zoomed_at(
                         // Convert actual sample to cache virtual offset
                         let cache_virtual_offset = actual_sample - zoomed.cache_start as i64 + zoomed.cache_left_padding as i64;
 
-                        if cache_virtual_offset < 0 || cache_virtual_offset as f64 >= cache_virtual_total {
+                        if cache_virtual_offset < 0 || cache_virtual_offset as usize >= cache_virtual_total {
                             continue;
                         }
 
-                        let cache_idx = (cache_virtual_offset as f64 / cache_virtual_total * peaks_len) as usize;
+                        // Bresenham-style cache index: offset * peaks_len / total
+                        let cache_idx = (cache_virtual_offset as usize * peaks_len) / cache_virtual_total;
                         if cache_idx >= peaks.len() {
                             continue;
                         }

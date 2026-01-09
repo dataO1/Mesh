@@ -143,32 +143,75 @@ pub fn smooth_peaks(peaks: &[(f32, f32)]) -> Vec<(f32, f32)> {
 
 /// Gaussian smoothing weights for 5-sample window
 ///
-/// Weights are designed to sum to 1.0 for normalized output.
-/// Center sample gets highest weight (0.40), with symmetric falloff.
-const GAUSSIAN_WEIGHTS: [f32; 5] = [0.06, 0.24, 0.40, 0.24, 0.06];
+/// Weights approximate a Gaussian distribution centered on middle sample.
+/// Sum = 0.06 + 0.24 + 0.40 + 0.24 + 0.06 = 1.0 (no normalization needed)
+const GAUSSIAN_WEIGHTS_5: [f32; 5] = [0.06, 0.24, 0.40, 0.24, 0.06];
 
-/// Apply Gaussian-weighted smoothing to peaks
+/// Wide Gaussian smoothing weights for 17-sample window
+///
+/// Designed for bass frequencies where one oscillation cycle spans ~16 pixels.
+/// Wider window averages out slow oscillations to show envelope instead of waveform.
+/// Sum ≈ 1.0 (normalized)
+const GAUSSIAN_WEIGHTS_17: [f32; 17] = [
+    0.01, 0.02, 0.04, 0.06, 0.08, 0.10, 0.12, 0.14,
+    0.16,  // center
+    0.14, 0.12, 0.10, 0.08, 0.06, 0.04, 0.02, 0.01,
+];
+// Sum = 2*0.01 + 2*0.02 + 2*0.04 + 2*0.06 + 2*0.08 + 2*0.10 + 2*0.12 + 2*0.14 + 0.16
+//     = 0.02 + 0.04 + 0.08 + 0.12 + 0.16 + 0.20 + 0.24 + 0.28 + 0.16 = 1.30
+const GAUSSIAN_WEIGHTS_17_SUM: f32 = 1.30;
+
+/// Apply Gaussian-weighted smoothing to peaks (5-sample window)
 ///
 /// Produces smoother results than simple moving average by weighting
-/// the center sample more heavily. This preserves peaks better while
-/// still reducing noise in the waveform visualization.
+/// the center sample more heavily. Uses 5-sample window for light smoothing.
 ///
 /// Note: This reduces the array length by 4 (window_size - 1).
 pub fn smooth_peaks_gaussian(peaks: &[(f32, f32)]) -> Vec<(f32, f32)> {
-    if peaks.len() < 5 {
+    const WINDOW_SIZE: usize = 5;
+
+    if peaks.len() < WINDOW_SIZE {
         return peaks.to_vec();
     }
 
     peaks
-        .windows(5)
+        .windows(WINDOW_SIZE)
         .map(|w| {
             let mut min_sum = 0.0f32;
             let mut max_sum = 0.0f32;
             for (i, (min, max)) in w.iter().enumerate() {
-                min_sum += min * GAUSSIAN_WEIGHTS[i];
-                max_sum += max * GAUSSIAN_WEIGHTS[i];
+                min_sum += min * GAUSSIAN_WEIGHTS_5[i];
+                max_sum += max * GAUSSIAN_WEIGHTS_5[i];
             }
             (min_sum, max_sum)
+        })
+        .collect()
+}
+
+/// Apply wide Gaussian smoothing to peaks (17-sample window)
+///
+/// Designed for bass stem where low frequencies create slow oscillations.
+/// The wide window covers approximately one bass cycle (~16 pixels at typical zoom),
+/// averaging out the oscillation to show the amplitude envelope.
+///
+/// Note: This reduces the array length by 16 (window_size - 1).
+pub fn smooth_peaks_gaussian_wide(peaks: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    const WINDOW_SIZE: usize = 17;
+
+    if peaks.len() < WINDOW_SIZE {
+        return peaks.to_vec();
+    }
+
+    peaks
+        .windows(WINDOW_SIZE)
+        .map(|w| {
+            let mut min_sum = 0.0f32;
+            let mut max_sum = 0.0f32;
+            for (i, (min, max)) in w.iter().enumerate() {
+                min_sum += min * GAUSSIAN_WEIGHTS_17[i];
+                max_sum += max * GAUSSIAN_WEIGHTS_17[i];
+            }
+            (min_sum / GAUSSIAN_WEIGHTS_17_SUM, max_sum / GAUSSIAN_WEIGHTS_17_SUM)
         })
         .collect()
 }

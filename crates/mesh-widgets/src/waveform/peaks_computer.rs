@@ -190,7 +190,8 @@ fn peaks_thread(rx: Receiver<PeaksComputeRequest>, tx: Sender<PeaksComputeResult
             request.fixed_buffer_bounds,
         );
 
-        // Use shared CacheInfo for consistent cache sizing
+        // Window-based cache: cache visible window + small margin
+        // Bresenham integer math in canvas.rs prevents jiggling
         let cache = CacheInfo::from_window(&window, request.view_mode);
 
         let cache_len = (cache.end - cache.start) as usize;
@@ -215,8 +216,8 @@ fn peaks_thread(rx: Receiver<PeaksComputeRequest>, tx: Sender<PeaksComputeResult
         );
 
         log::debug!(
-            "Peaks compute: view_mode={:?}, base_width={}, effective_width={}",
-            request.view_mode, request.width, effective_width
+            "Peaks compute: view_mode={:?}, base_width={}, effective_width={}, cache={}..{}",
+            request.view_mode, request.width, effective_width, cache.start, cache.end
         );
 
         // Create cache window with padding info for peak generation
@@ -227,15 +228,44 @@ fn peaks_thread(rx: Receiver<PeaksComputeRequest>, tx: Sender<PeaksComputeResult
             total_samples: cache.end - cache.start + cache.left_padding,
         };
 
-        // Use shared peak generation with boundary padding support
+        // Generate peaks for cache window at effective resolution
         let mut cached_peaks = generate_peaks_with_padding(
             &request.stems,
             &cache_window,
             effective_width,
         );
 
-        // Apply Gaussian smoothing using shared function
-        smooth_peaks(&mut cached_peaks);
+        // Adaptive smoothing based on zoom level:
+        // - Zoomed in (1-2 bars): more detail visible, needs more smoothing
+        // - Zoomed out (16+ bars): natural averaging, less/no smoothing needed
+        let smoothing_passes = match request.zoom_bars {
+            1..=2 => 3,   // Very zoomed in: heavy smoothing
+            3..=4 => 2,   // Zoomed in: medium smoothing
+            5..=12 => 1,  // Default range: light smoothing
+            _ => 0,       // Zoomed out (16+): no smoothing
+        };
+
+        for _ in 0..smoothing_passes {
+            smooth_peaks(&mut cached_peaks);
+        }
+
+        // Wide smoothing for bass stem (index 2):
+        // Low frequencies (~50Hz) create slow oscillations spanning ~16 pixels.
+        // At very zoomed in levels, apply multiple passes to cover longer cycles.
+        const BASS_STEM_IDX: usize = 2;
+        let bass_wide_passes = match request.zoom_bars {
+            1 => 3,       // Very zoomed in: 3 passes (~48 pixel coverage)
+            2 => 2,       // Zoomed in: 2 passes (~32 pixel coverage)
+            3..=8 => 1,   // Default: 1 pass (~16 pixel coverage)
+            _ => 0,       // Zoomed out: skip (natural averaging sufficient)
+        };
+
+        for _ in 0..bass_wide_passes {
+            if cached_peaks[BASS_STEM_IDX].len() >= 17 {
+                cached_peaks[BASS_STEM_IDX] =
+                    super::peaks::smooth_peaks_gaussian_wide(&cached_peaks[BASS_STEM_IDX]);
+            }
+        }
 
         let elapsed = start_time.elapsed();
         log::debug!(
