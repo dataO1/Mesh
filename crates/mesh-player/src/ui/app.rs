@@ -25,7 +25,7 @@ use crate::loader::TrackLoader;
 use mesh_core::audio_file::StemBuffers;
 use mesh_core::engine::{DeckAtomics, EngineCommand, SlicerAtomics};
 use mesh_core::types::NUM_DECKS;
-use mesh_widgets::{PeaksComputer, PeaksComputeRequest};
+use mesh_widgets::{PeaksComputer, PeaksComputeRequest, ZoomedViewMode};
 use super::collection_browser::{CollectionBrowserState, CollectionBrowserMessage};
 use super::deck_view::{DeckView, DeckMessage};
 use super::mixer_view::{MixerView, MixerMessage};
@@ -387,6 +387,13 @@ impl MeshApp {
                             self.player_canvas_state.decks[i]
                                 .zoomed
                                 .set_slicer_region(Some((start_norm, end_norm)), Some(current_slice));
+                            // Set fixed buffer view mode for slicer
+                            self.player_canvas_state.decks[i]
+                                .zoomed
+                                .set_fixed_buffer_bounds(Some((buffer_start as u64, buffer_end as u64)));
+                            self.player_canvas_state.decks[i]
+                                .zoomed
+                                .set_view_mode(ZoomedViewMode::FixedBuffer);
                         } else {
                             self.player_canvas_state.decks[i]
                                 .overview
@@ -394,6 +401,13 @@ impl MeshApp {
                             self.player_canvas_state.decks[i]
                                 .zoomed
                                 .set_slicer_region(None, None);
+                            // Restore scrolling view mode
+                            self.player_canvas_state.decks[i]
+                                .zoomed
+                                .set_fixed_buffer_bounds(None);
+                            self.player_canvas_state.decks[i]
+                                .zoomed
+                                .set_view_mode(ZoomedViewMode::Scrolling);
                         }
                     }
                 }
@@ -579,13 +593,13 @@ impl MeshApp {
                                 }
                             }
                             SlicerTrigger(slice_idx) => {
-                                // Queue a slice for playback on all affected stems
+                                // Trigger slice with immediate playback on all affected stems
                                 use mesh_core::types::Stem;
                                 let affected_stems = self.config.slicer.affected_stems;
                                 let stems = [Stem::Vocals, Stem::Drums, Stem::Bass, Stem::Other];
                                 for (idx, &stem) in stems.iter().enumerate() {
                                     if affected_stems[idx] {
-                                        let _ = sender.send(EngineCommand::SlicerQueueSlice {
+                                        let _ = sender.send(EngineCommand::SlicerTriggerSlice {
                                             deck: deck_idx,
                                             stem,
                                             slice_idx,
@@ -593,19 +607,17 @@ impl MeshApp {
                                     }
                                 }
                             }
-                            ToggleSlicer => {
-                                // Toggle slicer for all affected stems (queue preserved when disabling)
+                            ResetSlicerPattern => {
+                                // Reset slicer queue to default [0,1,2,3,4,5,6,7] for all affected stems
                                 use mesh_core::types::Stem;
-                                let enabled = !self.deck_views[deck_idx].slicer_active();
                                 let affected_stems = self.config.slicer.affected_stems;
                                 let stems = [Stem::Vocals, Stem::Drums, Stem::Bass, Stem::Other];
 
                                 for (idx, &stem) in stems.iter().enumerate() {
                                     if affected_stems[idx] {
-                                        let _ = sender.send(EngineCommand::SetSlicerEnabled {
+                                        let _ = sender.send(EngineCommand::SlicerResetQueue {
                                             deck: deck_idx,
                                             stem,
-                                            enabled,
                                         });
                                     }
                                 }

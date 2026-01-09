@@ -134,8 +134,8 @@ pub enum DeckMessage {
     SetActionMode(ActionButtonMode),
     /// Slicer button pressed (0-7) - queues slice for playback
     SlicerTrigger(usize),
-    /// Toggle slicer on/off (also resets queue when disabling)
-    ToggleSlicer,
+    /// Reset slicer pattern to default [0,1,2,3,4,5,6,7] (Shift+Slicer)
+    ResetSlicerPattern,
     /// Shift button pressed
     ShiftPressed,
     /// Shift button released
@@ -413,7 +413,7 @@ impl DeckView {
             DeckMessage::SlicerTrigger(_idx) => {
                 // Handled at app level via EngineCommand
             }
-            DeckMessage::ToggleSlicer => {
+            DeckMessage::ResetSlicerPattern => {
                 // Handled at app level via EngineCommand
             }
             DeckMessage::ShiftPressed => {
@@ -1495,9 +1495,9 @@ impl DeckView {
             }
         };
 
-        // If shift is held and slicer mode is selected, clicking toggles slicer
+        // If shift is held and slicer mode is active, clicking resets the pattern
         let slicer_btn_msg = if self.shift_held && self.action_mode == ActionButtonMode::Slicer {
-            DeckMessage::ToggleSlicer
+            DeckMessage::ResetSlicerPattern
         } else {
             DeckMessage::SetActionMode(ActionButtonMode::Slicer)
         };
