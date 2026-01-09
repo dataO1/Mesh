@@ -1653,10 +1653,16 @@ fn draw_zoomed_at(
         }
 
         // Draw slicer region (orange overlay with slice divisions)
-        if let Some((slicer_start_norm, slicer_end_norm)) = zoomed.slicer_region {
-            let slicer_start_sample = (slicer_start_norm * zoomed.duration_samples as f64) as u64;
-            let slicer_end_sample = (slicer_end_norm * zoomed.duration_samples as f64) as u64;
+        // Prefer fixed_buffer_bounds (sample-precise) over slicer_region (normalized, loses precision)
+        let slicer_bounds: Option<(u64, u64)> = zoomed.fixed_buffer_bounds.or_else(|| {
+            zoomed.slicer_region.map(|(start_norm, end_norm)| {
+                let start = (start_norm * zoomed.duration_samples as f64) as u64;
+                let end = (end_norm * zoomed.duration_samples as f64) as u64;
+                (start, end)
+            })
+        });
 
+        if let Some((slicer_start_sample, slicer_end_sample)) = slicer_bounds {
             if slicer_end_sample > view_start && slicer_start_sample < view_end {
                 let start_x = if slicer_start_sample <= view_start {
                     x
@@ -1679,15 +1685,14 @@ fn draw_zoomed_at(
                     );
 
                     // Draw slice divisions (if they fit in view)
-                    let total_slicer_samples = (slicer_end_sample - slicer_start_sample) as f64;
-                    let samples_per_slice = total_slicer_samples / SLICER_NUM_SLICES as f64;
+                    // Use integer division to match audio engine exactly
+                    let samples_per_slice = (slicer_end_sample - slicer_start_sample) / SLICER_NUM_SLICES as u64;
 
                     for i in 0..=SLICER_NUM_SLICES {
-                        let slice_sample = slicer_start_sample as f64 + samples_per_slice * i as f64;
-                        let slice_sample_u64 = slice_sample as u64;
+                        let slice_sample = slicer_start_sample + samples_per_slice * i as u64;
 
-                        if slice_sample_u64 >= view_start && slice_sample_u64 <= view_end {
-                            let slice_x = x + ((slice_sample_u64 - view_start) as f64 / view_samples * width as f64) as f32;
+                        if slice_sample >= view_start && slice_sample <= view_end {
+                            let slice_x = x + ((slice_sample - view_start) as f64 / view_samples * width as f64) as f32;
                             let is_boundary = i == 0 || i == SLICER_NUM_SLICES;
                             let line_width = if is_boundary { 2.0 } else { 1.0 };
                             let alpha = if is_boundary { 0.8 } else { 0.5 };
@@ -1703,19 +1708,19 @@ fn draw_zoomed_at(
 
                     // Highlight current playing slice with brighter overlay
                     if let Some(current) = zoomed.slicer_current_slice {
-                        let slice_start_sample = slicer_start_sample as f64 + samples_per_slice * current as f64;
+                        let slice_start_sample = slicer_start_sample + samples_per_slice * current as u64;
                         let slice_end_sample = slice_start_sample + samples_per_slice;
 
-                        if (slice_end_sample as u64) > view_start && (slice_start_sample as u64) < view_end {
-                            let slice_start_x = if (slice_start_sample as u64) <= view_start {
+                        if slice_end_sample > view_start && slice_start_sample < view_end {
+                            let slice_start_x = if slice_start_sample <= view_start {
                                 x
                             } else {
-                                x + ((slice_start_sample as u64 - view_start) as f64 / view_samples * width as f64) as f32
+                                x + ((slice_start_sample - view_start) as f64 / view_samples * width as f64) as f32
                             };
-                            let slice_end_x = if (slice_end_sample as u64) >= view_end {
+                            let slice_end_x = if slice_end_sample >= view_end {
                                 x + width
                             } else {
-                                x + ((slice_end_sample as u64 - view_start) as f64 / view_samples * width as f64) as f32
+                                x + ((slice_end_sample - view_start) as f64 / view_samples * width as f64) as f32
                             };
 
                             frame.fill_rectangle(

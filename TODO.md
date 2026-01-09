@@ -41,19 +41,19 @@ and mesh-widget and only if necessary in the ui.
   Same for playlists. Always require confirmation via a small popup for deleting
   anything. We also need a right click menu, when clicking on tracks/playlists,
   where users can rename/delete/re-analyse.
-- [ ] Stem Slicing (if you have any questions or are unsure of what i mean, please ask before, so we can be
+- [x] Stem Slicing (if you have any questions or are unsure of what i mean, please ask before, so we can be
   sure you understand my intention)
-  - [ ] Description: I want another module in the audio engine, which is used
+  - [x] Description: I want another module in the audio engine, which is used
     for mangling the arrangement of a stem during playback, think of it as real
     time remixing the stems. The user should enter slicer mode, which for a stem
     of a deck (independent of other stems or decks) slices a fixed size of the
     buffer (configurable from the global config, default 4 bars, snapped to grid) into equal 8 parts. these 8 parts can then be triggered form the action buttons. The slicer remembers the order in which the action buttons got pressed, which becomes the new "arrangement". Now the playback of the deck in the background continues normally and every time it surpasses the bounds of the fixed slicer buffer size  the slicer fills it with new buffer infos(kind of like a loop with its range, that keeps moving forward in fixed steps snapped to grid). the buffer plays with the new order ("arrangemnet") with the information from the deck playback. this output is then routed further to the audioengine as the current playback.
-  - [ ] Architecture: Should be its own module, where all audio buffer of a deck runs
+  - [x] Architecture: Should be its own module, where all audio buffer of a deck runs
     through after the buffer is loaded (in the deck) but before the effects chain. seperation
     of concern is important this is independent for each deck, this module should just get a slice of the buffer,
     which can be updated, based on this buffer the slicer module computes a new
     buffer, which is given to the effects -> jack output.
-  - [ ] UI: above the hotcues and cue button and underneight the beatjump, loop,
+  - [x] UI: above the hotcues and cue button and underneight the beatjump, loop,
     slip etc, there should be another row with a shift button at the left that
     is as wide as the cue button then next to it (with some space between)
     buttons for the action button modes. the first mode which is already
@@ -78,6 +78,17 @@ and mesh-widget and only if necessary in the ui.
   waveform of each track should be underneight the zoomed waveform, so also in
   2x2 grid. Then next to the respective waveform section of the deck i want the
   controls. They should be just as high as the two waveforms for the deck. Instead of the header for the deck in the controls i want the decks number (just the number) and the loaded track ias a header row above the zoomed waveform(it must be part of the canvas i think, since the canvas needs to be a single unit due to the iced bug). Then next to the respective canvas of the deck i want the controls, and they should be just as high as the waveforms for the deck (so the controls of 1 and 3 should be left of waveform 1 and 3 and 2 and 4 right to 2 and 4). In these controls i want a single full span row with the stem controls. on the left side of everything a header with 4 buttons for the stem selection. on the right side two rows 1 with the chain and 1 for the 8 potentiometer knobs, full spanning width. Underneight the stem controls i want two columns (20% and 80% width). The left column contains a row for loop and slip, then a row for loop/jump length selection (as it is right now), then a row for beatjump buttons, then a row for big cue buttons, then a row for big play/pause button. on the right column i want the 8 performance pads fully filling height and widght equally spaced.
+- [ ] Slicer preset mode should be the default mode and instead on shift +
+  action button we want to assign the action buttons slice buffer to the current
+  timed queue slot and preview the slice (one-shot style like in the current "replace" mode of the slicer). also remove the fifo implementation and config settings, this is not working well in live play, but keep the affected stem selection and buffer size selection in the config.
+- [ ] change the presets to some breaktbeat relevant patterns (assume a dnb
+  breakbeat/2step pattern incoming which is chopped into 16th, then rearrange
+  them to interestingly musically relevant new patterns instead of the current
+  algorithmic patterns). They should be sorted from "empty sounding" (pattern 1)
+  to most busy, repetetive sounding(pattern 8).
+
+
+
 # Bugs
 - [x] Solo button does not work on the stems (does nothing, it should mute all
   other stems in this deck)
@@ -116,6 +127,12 @@ and mesh-widget and only if necessary in the ui.
   well.
 - [x] while looping beatjumping should beatjump as is right now, but the loop area
   needs to snap to grid.
+- [ ] the slicer visual resolution depends on the previous zoom level from the
+  "normal" mode. so when im zoomed out i nthe normal mode the visuals in the
+  slicer are too low-res, when zoomed in they are good. solution: set the zoom
+  level per mode (fixed waveform mode should have its own fixed resolution based
+  on the config selected slicer buffer length. if 1 bar, the resolution should
+  be high.)
 
 # Performance
 - [ ] Can we optimize how stems are stored, this is currently roughly 200-300 mb

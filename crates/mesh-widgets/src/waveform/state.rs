@@ -651,12 +651,8 @@ impl ZoomedState {
                 }
             }
             ZoomedViewMode::FixedBuffer => {
-                // Fixed buffer mode (slicer): modest resolution increase
-                // Small buffers need more peaks but 8x was too much
-                let visible_samples = (end - start).max(1) as f64;
-                let zoom_factor = self.duration_samples as f64 / visible_samples;
-                // Use sqrt for diminishing returns, cap at 2x
-                (width as f64 * zoom_factor.sqrt()).min(width as f64 * 2.0) as usize
+                // Fixed buffer mode (slicer): use base width, no scaling
+                width
             }
         };
 

@@ -602,6 +602,7 @@ impl SlicerState {
         }
 
         // Process each sample through remapping
+        // No crossfade - slicer creates intentional rhythmic chops (like Serato/Traktor)
         let buffer_slice = buffer.as_mut_slice();
         for (i, sample) in buffer_slice.iter_mut().enumerate() {
             let original_pos = playhead + i;

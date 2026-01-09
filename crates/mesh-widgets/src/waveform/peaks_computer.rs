@@ -264,11 +264,8 @@ fn peaks_thread(rx: Receiver<PeaksComputeRequest>, tx: Sender<PeaksComputeResult
                 }
             }
             ZoomedViewMode::FixedBuffer => {
-                // Fixed buffer mode (slicer): modest resolution increase
-                let visible_samples = (end - start).max(1) as f64;
-                let zoom_factor = request.duration_samples as f64 / visible_samples;
-                // Use sqrt for diminishing returns, cap at 2x
-                (request.width as f64 * zoom_factor.sqrt()).min(request.width as f64 * 2.0) as usize
+                // Fixed buffer mode (slicer): use base width, no scaling
+                request.width
             }
         };
 
