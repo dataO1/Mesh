@@ -509,20 +509,20 @@ impl SlicerState {
             // Positions outside the window keep their original samples (already in buffer)
         }
 
-        // Update current slice indicator for UI
-        let current_slice = self.slice_for_position(playhead);
-        let prev_slice = self.atomics.current_slice.load(Ordering::Relaxed);
+        // Update current slice indicator for UI - store which slice CONTENT is playing
+        let timing_slice = self.slice_for_position(playhead);
+        let content_slice = self.queue[timing_slice as usize];
+        let prev_content = self.atomics.current_slice.load(Ordering::Relaxed);
         self.atomics
             .current_slice
-            .store(current_slice, Ordering::Relaxed);
+            .store(content_slice, Ordering::Relaxed);
 
-        // Log when slice changes (remapped slice = queue[current_slice])
-        if current_slice != prev_slice {
-            let remapped = self.queue[current_slice as usize];
+        // Log when content slice changes
+        if content_slice != prev_content {
             log::debug!(
-                "slicer: slice {} -> playing content from slice {} (pos={})",
-                current_slice,
-                remapped,
+                "slicer: position {} -> playing slice {} content (pos={})",
+                timing_slice,
+                content_slice,
                 playhead
             );
         }
