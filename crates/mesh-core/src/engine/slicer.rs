@@ -217,6 +217,18 @@ impl SlicerState {
         self.enabled
     }
 
+    /// Get the buffer start position (in samples)
+    #[inline]
+    pub fn buffer_start(&self) -> usize {
+        self.buffer_start
+    }
+
+    /// Get the number of samples per slice
+    #[inline]
+    pub fn samples_per_slice(&self) -> usize {
+        self.samples_per_slice
+    }
+
     /// Enable or disable the slicer
     ///
     /// When enabling, the slicer enters a pending state and will activate
@@ -309,6 +321,56 @@ impl SlicerState {
         self.queue = [0, 1, 2, 3, 4, 5, 6, 7];
         self.queue_write_idx = 0;
         self.sync_atomics();
+    }
+
+    /// Set a specific slot in the queue to a slice index
+    ///
+    /// Unlike queue_slice (which uses FIFO/Replace algorithms), this directly
+    /// sets a specific slot. Used for immediate slice triggering.
+    pub fn set_slot(&mut self, slot: usize, slice_idx: usize) {
+        if slot < SLICER_NUM_SLICES && slice_idx < SLICER_NUM_SLICES {
+            self.queue[slot] = slice_idx as u8;
+            log::debug!(
+                "slicer: set slot {} = slice {} -> queue=[{},{},{},{},{},{},{},{}]",
+                slot, slice_idx,
+                self.queue[0], self.queue[1], self.queue[2], self.queue[3],
+                self.queue[4], self.queue[5], self.queue[6], self.queue[7]
+            );
+            self.sync_atomics();
+        }
+    }
+
+    /// Trigger a slice with immediate playback and phase-preserved seek
+    ///
+    /// Calculates the target position that preserves beat phase while jumping
+    /// to the triggered slice's content. Returns the position to seek to,
+    /// or None if slicer is not initialized.
+    ///
+    /// This also updates the queue so the triggered slice plays at the current
+    /// timing slot.
+    pub fn trigger_slice(&mut self, current_pos: usize, slice_idx: usize) -> Option<usize> {
+        if slice_idx >= SLICER_NUM_SLICES || self.samples_per_slice == 0 {
+            return None;
+        }
+
+        // Calculate current phase offset within the slice
+        let relative = current_pos.saturating_sub(self.buffer_start);
+        let current_slot = (relative / self.samples_per_slice).min(SLICER_NUM_SLICES - 1);
+        let phase_offset = relative % self.samples_per_slice;
+
+        // Calculate target: triggered slice's start + same phase offset
+        // This preserves beat phase while jumping to new slice content
+        let target_pos = self.buffer_start + (slice_idx * self.samples_per_slice) + phase_offset;
+
+        log::debug!(
+            "slicer trigger: pos={} slot={} offset={} -> slice {} at {}",
+            current_pos, current_slot, phase_offset, slice_idx, target_pos
+        );
+
+        // Set queue so this slice plays at current timing slot
+        self.set_slot(current_slot, slice_idx);
+
+        Some(target_pos)
     }
 
     /// Update the buffer window based on the current playhead position

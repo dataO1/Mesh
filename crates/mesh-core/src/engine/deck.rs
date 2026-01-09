@@ -750,6 +750,19 @@ impl Deck {
         self.slicer_states[stem as usize].reset_queue();
     }
 
+    /// Set a specific slot in the slicer queue
+    pub fn slicer_set_slot(&mut self, stem: Stem, slot: usize, slice_idx: usize) {
+        self.slicer_states[stem as usize].set_slot(slot, slice_idx);
+    }
+
+    /// Trigger a slice with immediate playback and phase-preserved seek
+    ///
+    /// Returns the target position to seek to, or None if slicer not initialized.
+    pub fn slicer_trigger_slice(&mut self, stem: Stem, slice_idx: usize) -> Option<usize> {
+        let current_pos = self.position;
+        self.slicer_states[stem as usize].trigger_slice(current_pos, slice_idx)
+    }
+
     /// Set the slicer buffer size in bars
     pub fn set_slicer_buffer_bars(&mut self, stem: Stem, bars: u32) {
         self.slicer_states[stem as usize].set_buffer_bars(bars);

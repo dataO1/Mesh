@@ -148,6 +148,9 @@ pub enum EngineCommand {
     SetSlicerEnabled { deck: usize, stem: Stem, enabled: bool },
     /// Queue a slice for playback (button press in slicer mode, 0-7)
     SlicerQueueSlice { deck: usize, stem: Stem, slice_idx: usize },
+    /// Trigger a slice with immediate playback and phase-preserved seek
+    /// Seeks to the slice position while preserving beat phase offset
+    SlicerTriggerSlice { deck: usize, stem: Stem, slice_idx: usize },
     /// Reset slicer queue to default order [0,1,2,3,4,5,6,7]
     SlicerResetQueue { deck: usize, stem: Stem },
     /// Set slicer buffer size in bars (4, 8, or 16)
