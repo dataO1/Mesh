@@ -194,19 +194,26 @@ impl CacheInfo {
 /// Calculate effective width (resolution) for peak generation
 ///
 /// Resolution scaling depends on view mode:
-/// - **Scrolling**: Reduces resolution when zoomed out (more audio, less detail needed)
+/// - **Scrolling**: Aggressively reduces resolution when zoomed out to prevent
+///   overlapping lines from causing visual jiggling
 /// - **FixedBuffer**: Uses 80% of base width (slightly reduced for slicer)
 pub fn compute_effective_width(base_width: usize, zoom_bars: u32, view_mode: ZoomedViewMode) -> usize {
     match view_mode {
         ZoomedViewMode::Scrolling => {
-            let zoom_ratio = zoom_bars as f64 / DEFAULT_ZOOM_BARS as f64;
-            if zoom_ratio > 1.0 {
-                // Zoomed out: reduce resolution
-                (base_width as f64 / zoom_ratio.sqrt()).max(base_width as f64 / 4.0) as usize
-            } else {
-                // Zoomed in or at default: keep base width
-                base_width
-            }
+            // Linear resolution scaling based on zoom level:
+            // - 1 bar (very zoomed in): 1280 pixels
+            // - 64 bars (very zoomed out): 256 pixels
+            // Fewer peaks when zoomed out = less overlapping lines = less jiggling
+            const MAX_RES: f64 = 1280.0;
+            const MIN_RES: f64 = 256.0;
+            const MIN_ZOOM: f64 = 1.0;
+            const MAX_ZOOM: f64 = 64.0;
+
+            // Linear interpolation: lerp from MAX_RES to MIN_RES as zoom goes 1→64
+            let t = ((zoom_bars as f64) - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM);
+            let t = t.clamp(0.0, 1.0);
+            let effective = MAX_RES - t * (MAX_RES - MIN_RES);
+            (effective as usize).max(256)
         }
         ZoomedViewMode::FixedBuffer => {
             // Slicer mode: use 80% of base width
