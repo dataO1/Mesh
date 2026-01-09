@@ -61,7 +61,7 @@ pub use waveform::{PeaksComputer, PeaksComputeRequest, PeaksComputeResult};
 
 // Waveform state structures
 pub use waveform::{
-    CombinedState, CueMarker, OverviewState, PlayerCanvasState, ZoomedState,
+    CombinedState, CueMarker, OverviewState, PlayerCanvasState, ZoomedState, ZoomedViewMode,
     // Constants
     COMBINED_WAVEFORM_GAP, DEFAULT_ZOOM_BARS, MAX_ZOOM_BARS, MIN_ZOOM_BARS,
     WAVEFORM_HEIGHT, ZOOMED_WAVEFORM_HEIGHT, ZOOM_PIXELS_PER_LEVEL,

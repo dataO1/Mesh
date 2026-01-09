@@ -5,7 +5,7 @@
 //! idiomatic iced 0.14 patterns.
 
 use super::state::{
-    CombinedState, OverviewState, PlayerCanvasState, ZoomedState,
+    CombinedState, OverviewState, PlayerCanvasState, ZoomedState, ZoomedViewMode,
     COMBINED_WAVEFORM_GAP, DECK_HEADER_HEIGHT, MAX_ZOOM_BARS, MIN_ZOOM_BARS,
     WAVEFORM_HEIGHT, ZOOMED_WAVEFORM_HEIGHT, ZOOM_PIXELS_PER_LEVEL,
 };
@@ -1825,8 +1825,29 @@ fn draw_zoomed_at(
         }
     }
 
-    // Draw playhead at center
-    let playhead_x = x + width / 2.0;
+    // Draw playhead - position depends on view mode
+    let playhead_x = match zoomed.view_mode() {
+        ZoomedViewMode::Scrolling => {
+            // Scrolling mode: playhead fixed at center
+            x + width / 2.0
+        }
+        ZoomedViewMode::FixedBuffer => {
+            // Fixed buffer mode: playhead moves within view
+            let (view_start, view_end) = zoomed.visible_range(playhead);
+            let view_samples = (view_end - view_start) as f64;
+            if view_samples > 0.0 && playhead >= view_start && playhead <= view_end {
+                let offset = (playhead - view_start) as f64;
+                x + (offset / view_samples * width as f64) as f32
+            } else {
+                // Playhead outside view - clamp to edges
+                if playhead < view_start {
+                    x
+                } else {
+                    x + width
+                }
+            }
+        }
+    };
     frame.stroke(
         &Path::line(Point::new(playhead_x, y), Point::new(playhead_x, y + height)),
         Stroke::default()

@@ -367,6 +367,18 @@ impl Default for OverviewState {
 /// Zoomed waveform state (detail view centered on playhead)
 ///
 /// Contains data for rendering a zoomed-in view of the waveform:
+/// View mode for zoomed waveform
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum ZoomedViewMode {
+    /// Playhead at center, waveform scrolls (default)
+    #[default]
+    Scrolling,
+    /// Slicer buffer fixed to view, playhead moves left-to-right
+    FixedBuffer,
+}
+
+/// State for zoomed waveform rendering
+///
 /// - Cached peak data for the visible window
 /// - Zoom level and visible range calculation
 /// - Beat grid and cue markers (in sample positions)
@@ -398,6 +410,10 @@ pub struct ZoomedState {
     pub slicer_region: Option<(f64, f64)>,
     /// Current playing slice index (0-7), for highlighting in visualization
     pub slicer_current_slice: Option<u8>,
+    /// View mode (scrolling vs fixed buffer)
+    pub view_mode: ZoomedViewMode,
+    /// Fixed buffer bounds in samples (for FixedBuffer mode)
+    pub fixed_buffer_bounds: Option<(u64, u64)>,
 }
 
 impl ZoomedState {
@@ -416,6 +432,8 @@ impl ZoomedState {
             loop_region: None,
             slicer_region: None,
             slicer_current_slice: None,
+            view_mode: ZoomedViewMode::Scrolling,
+            fixed_buffer_bounds: None,
         }
     }
 
@@ -434,6 +452,8 @@ impl ZoomedState {
             loop_region: None,
             slicer_region: None,
             slicer_current_slice: None,
+            view_mode: ZoomedViewMode::Scrolling,
+            fixed_buffer_bounds: None,
         }
     }
 
@@ -467,6 +487,21 @@ impl ZoomedState {
         self.slicer_current_slice = current_slice;
     }
 
+    /// Set the view mode (scrolling or fixed buffer)
+    pub fn set_view_mode(&mut self, mode: ZoomedViewMode) {
+        self.view_mode = mode;
+    }
+
+    /// Get the current view mode
+    pub fn view_mode(&self) -> ZoomedViewMode {
+        self.view_mode
+    }
+
+    /// Set fixed buffer bounds in samples (for FixedBuffer mode)
+    pub fn set_fixed_buffer_bounds(&mut self, bounds: Option<(u64, u64)>) {
+        self.fixed_buffer_bounds = bounds;
+    }
+
     /// Update cue markers
     pub fn update_cue_markers(&mut self, cue_points: &[CuePoint]) {
         if self.duration_samples == 0 {
@@ -495,15 +530,37 @@ impl ZoomedState {
         samples_per_beat * beats_per_bar
     }
 
-    /// Calculate visible window centered on playhead
+    /// Calculate visible window based on view mode
+    ///
+    /// - Scrolling mode: window centered on playhead
+    /// - FixedBuffer mode: shows slicer buffer bounds (playhead moves within view)
     pub fn visible_range(&self, playhead: u64) -> (u64, u64) {
-        let window_samples = self.samples_per_bar() * self.zoom_bars as u64;
-        let half_window = window_samples / 2;
-
-        let start = playhead.saturating_sub(half_window);
-        let end = (playhead + half_window).min(self.duration_samples);
-
-        (start, end)
+        match self.view_mode {
+            ZoomedViewMode::Scrolling => {
+                // Current behavior: center on playhead
+                let window_samples = self.samples_per_bar() * self.zoom_bars as u64;
+                let half_window = window_samples / 2;
+                let start = playhead.saturating_sub(half_window);
+                let end = (playhead + half_window).min(self.duration_samples);
+                (start, end)
+            }
+            ZoomedViewMode::FixedBuffer => {
+                // Fixed buffer mode: show slicer buffer bounds
+                if let Some((start, end)) = self.fixed_buffer_bounds {
+                    (start, end)
+                } else if let Some((start_norm, end_norm)) = self.slicer_region {
+                    // Fall back to slicer_region (normalized)
+                    let start = (start_norm * self.duration_samples as f64) as u64;
+                    let end = (end_norm * self.duration_samples as f64) as u64;
+                    (start, end)
+                } else {
+                    // No buffer set, fall back to scrolling behavior
+                    let window_samples = self.samples_per_bar() * self.zoom_bars as u64;
+                    let half_window = window_samples / 2;
+                    (playhead.saturating_sub(half_window), (playhead + half_window).min(self.duration_samples))
+                }
+            }
+        }
     }
 
     /// Set zoom level (clamped to valid range)

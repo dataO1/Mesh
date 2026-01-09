@@ -46,7 +46,7 @@ pub use peaks::{
 pub use peaks_computer::{PeaksComputer, PeaksComputeRequest, PeaksComputeResult};
 
 pub use state::{
-    CombinedState, OverviewState, PlayerCanvasState, ZoomedState,
+    CombinedState, OverviewState, PlayerCanvasState, ZoomedState, ZoomedViewMode,
     // Constants
     COMBINED_WAVEFORM_GAP, DECK_HEADER_HEIGHT, DEFAULT_ZOOM_BARS, MAX_ZOOM_BARS, MIN_ZOOM_BARS,
     WAVEFORM_HEIGHT, ZOOMED_WAVEFORM_HEIGHT, ZOOM_PIXELS_PER_LEVEL,
