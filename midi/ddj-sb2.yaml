@@ -1,0 +1,452 @@
+# MIDI Controller Configuration for mesh-player
+# This file defines device profiles for MIDI controller integration.
+#
+# Location: ~/.config/mesh-player/midi.yaml
+# Restart mesh-player after making changes.
+
+devices:
+  - name: "Pioneer DDJ-SB2"
+    port_match: "DDJ-SB2"
+
+    # Layer toggle mode for 2-deck controller accessing 4 virtual decks
+    deck_target:
+      type: "Layer"
+      toggle_left:
+        type: "Note"
+        channel: 0
+        note: 0x72  # DECK 1/3 toggle
+      toggle_right:
+        type: "Note"
+        channel: 1
+        note: 0x72  # DECK 2/4 toggle
+      # Layer A (default): Physical decks → Deck 1, 2
+      layer_a: [0, 1]
+      # Layer B (toggled): Physical decks → Deck 3, 4
+      layer_b: [2, 3]
+
+    # Shift button (for secondary functions)
+    shift:
+      type: "Note"
+      channel: 0
+      note: 0x63
+
+    mappings:
+      # ============================================================
+      # TRANSPORT CONTROLS (layer-resolved via physical_deck)
+      # ============================================================
+
+      # Play/Pause - Left deck (Deck 1 or 3)
+      - control: { type: "Note", channel: 0, note: 0x0B }
+        action: "deck.play"
+        physical_deck: 0
+      # Play/Pause - Right deck (Deck 2 or 4)
+      - control: { type: "Note", channel: 1, note: 0x0B }
+        action: "deck.play"
+        physical_deck: 1
+
+      # Cue - Left deck
+      - control: { type: "Note", channel: 0, note: 0x0C }
+        action: "deck.cue_press"
+        shift_action: "deck.set_cue"
+        physical_deck: 0
+        behavior: momentary
+      # Cue - Right deck
+      - control: { type: "Note", channel: 1, note: 0x0C }
+        action: "deck.cue_press"
+        shift_action: "deck.set_cue"
+        physical_deck: 1
+        behavior: momentary
+
+      # Sync - Left deck
+      - control: { type: "Note", channel: 0, note: 0x58 }
+        action: "deck.sync"
+        physical_deck: 0
+      # Sync - Right deck
+      - control: { type: "Note", channel: 1, note: 0x58 }
+        action: "deck.sync"
+        physical_deck: 1
+
+      # ============================================================
+      # PERFORMANCE PADS (layer-resolved, hot cue mode by default)
+      # ============================================================
+
+      # Left deck - Pads 1-8
+      - control: { type: "Note", channel: 0, note: 0x00 }
+        action: "deck.hot_cue_press"
+        shift_action: "deck.hot_cue_clear"
+        physical_deck: 0
+        params: { slot: 0 }
+        behavior: momentary
+      - control: { type: "Note", channel: 0, note: 0x01 }
+        action: "deck.hot_cue_press"
+        shift_action: "deck.hot_cue_clear"
+        physical_deck: 0
+        params: { slot: 1 }
+        behavior: momentary
+      - control: { type: "Note", channel: 0, note: 0x02 }
+        action: "deck.hot_cue_press"
+        shift_action: "deck.hot_cue_clear"
+        physical_deck: 0
+        params: { slot: 2 }
+        behavior: momentary
+      - control: { type: "Note", channel: 0, note: 0x03 }
+        action: "deck.hot_cue_press"
+        shift_action: "deck.hot_cue_clear"
+        physical_deck: 0
+        params: { slot: 3 }
+        behavior: momentary
+      - control: { type: "Note", channel: 0, note: 0x04 }
+        action: "deck.hot_cue_press"
+        shift_action: "deck.hot_cue_clear"
+        physical_deck: 0
+        params: { slot: 4 }
+        behavior: momentary
+      - control: { type: "Note", channel: 0, note: 0x05 }
+        action: "deck.hot_cue_press"
+        shift_action: "deck.hot_cue_clear"
+        physical_deck: 0
+        params: { slot: 5 }
+        behavior: momentary
+      - control: { type: "Note", channel: 0, note: 0x06 }
+        action: "deck.hot_cue_press"
+        shift_action: "deck.hot_cue_clear"
+        physical_deck: 0
+        params: { slot: 6 }
+        behavior: momentary
+      - control: { type: "Note", channel: 0, note: 0x07 }
+        action: "deck.hot_cue_press"
+        shift_action: "deck.hot_cue_clear"
+        physical_deck: 0
+        params: { slot: 7 }
+        behavior: momentary
+
+      # Right deck - Pads 1-8
+      - control: { type: "Note", channel: 1, note: 0x00 }
+        action: "deck.hot_cue_press"
+        shift_action: "deck.hot_cue_clear"
+        physical_deck: 1
+        params: { slot: 0 }
+        behavior: momentary
+      - control: { type: "Note", channel: 1, note: 0x01 }
+        action: "deck.hot_cue_press"
+        shift_action: "deck.hot_cue_clear"
+        physical_deck: 1
+        params: { slot: 1 }
+        behavior: momentary
+      - control: { type: "Note", channel: 1, note: 0x02 }
+        action: "deck.hot_cue_press"
+        shift_action: "deck.hot_cue_clear"
+        physical_deck: 1
+        params: { slot: 2 }
+        behavior: momentary
+      - control: { type: "Note", channel: 1, note: 0x03 }
+        action: "deck.hot_cue_press"
+        shift_action: "deck.hot_cue_clear"
+        physical_deck: 1
+        params: { slot: 3 }
+        behavior: momentary
+      - control: { type: "Note", channel: 1, note: 0x04 }
+        action: "deck.hot_cue_press"
+        shift_action: "deck.hot_cue_clear"
+        physical_deck: 1
+        params: { slot: 4 }
+        behavior: momentary
+      - control: { type: "Note", channel: 1, note: 0x05 }
+        action: "deck.hot_cue_press"
+        shift_action: "deck.hot_cue_clear"
+        physical_deck: 1
+        params: { slot: 5 }
+        behavior: momentary
+      - control: { type: "Note", channel: 1, note: 0x06 }
+        action: "deck.hot_cue_press"
+        shift_action: "deck.hot_cue_clear"
+        physical_deck: 1
+        params: { slot: 6 }
+        behavior: momentary
+      - control: { type: "Note", channel: 1, note: 0x07 }
+        action: "deck.hot_cue_press"
+        shift_action: "deck.hot_cue_clear"
+        physical_deck: 1
+        params: { slot: 7 }
+        behavior: momentary
+
+      # ============================================================
+      # LOOP CONTROLS (layer-resolved)
+      # ============================================================
+
+      # Loop toggle - Left deck
+      - control: { type: "Note", channel: 0, note: 0x4D }
+        action: "deck.loop_toggle"
+        physical_deck: 0
+      # Loop toggle - Right deck
+      - control: { type: "Note", channel: 1, note: 0x4D }
+        action: "deck.loop_toggle"
+        physical_deck: 1
+
+      # Loop halve - Left deck
+      - control: { type: "Note", channel: 0, note: 0x12 }
+        action: "deck.loop_halve"
+        physical_deck: 0
+      # Loop halve - Right deck
+      - control: { type: "Note", channel: 1, note: 0x12 }
+        action: "deck.loop_halve"
+        physical_deck: 1
+
+      # Loop double - Left deck
+      - control: { type: "Note", channel: 0, note: 0x13 }
+        action: "deck.loop_double"
+        physical_deck: 0
+      # Loop double - Right deck
+      - control: { type: "Note", channel: 1, note: 0x13 }
+        action: "deck.loop_double"
+        physical_deck: 1
+
+      # ============================================================
+      # MIXER CONTROLS (direct deck mapping, NOT layer-resolved)
+      # These always control the same channel regardless of layer
+      # ============================================================
+
+      # Volume faders (per channel)
+      - control: { type: "ControlChange", channel: 0, cc: 0x13 }
+        action: "mixer.volume"
+        deck_index: 0
+        behavior: continuous
+      - control: { type: "ControlChange", channel: 1, cc: 0x13 }
+        action: "mixer.volume"
+        deck_index: 1
+        behavior: continuous
+
+      # Filter knobs (per channel)
+      - control: { type: "ControlChange", channel: 0, cc: 0x17 }
+        action: "mixer.filter"
+        deck_index: 0
+        behavior: continuous
+      - control: { type: "ControlChange", channel: 1, cc: 0x17 }
+        action: "mixer.filter"
+        deck_index: 1
+        behavior: continuous
+
+      # EQ High (per channel)
+      - control: { type: "ControlChange", channel: 0, cc: 0x07 }
+        action: "mixer.eq_hi"
+        deck_index: 0
+        behavior: continuous
+      - control: { type: "ControlChange", channel: 1, cc: 0x07 }
+        action: "mixer.eq_hi"
+        deck_index: 1
+        behavior: continuous
+
+      # EQ Mid (per channel)
+      - control: { type: "ControlChange", channel: 0, cc: 0x0B }
+        action: "mixer.eq_mid"
+        deck_index: 0
+        behavior: continuous
+      - control: { type: "ControlChange", channel: 1, cc: 0x0B }
+        action: "mixer.eq_mid"
+        deck_index: 1
+        behavior: continuous
+
+      # EQ Low (per channel)
+      - control: { type: "ControlChange", channel: 0, cc: 0x0F }
+        action: "mixer.eq_lo"
+        deck_index: 0
+        behavior: continuous
+      - control: { type: "ControlChange", channel: 1, cc: 0x0F }
+        action: "mixer.eq_lo"
+        deck_index: 1
+        behavior: continuous
+
+      # Cue/headphone buttons (per channel)
+      - control: { type: "Note", channel: 0, note: 0x47 }
+        action: "mixer.cue_toggle"
+        deck_index: 0
+      - control: { type: "Note", channel: 1, note: 0x47 }
+        action: "mixer.cue_toggle"
+        deck_index: 1
+
+      # ============================================================
+      # BROWSER CONTROLS
+      # ============================================================
+
+      # Browse encoder (rotary for scrolling)
+      - control: { type: "ControlChange", channel: 0, cc: 0x40 }
+        action: "browser.scroll"
+        encoder_mode: relative
+
+      # Load buttons - Left deck (layer-resolved)
+      - control: { type: "Note", channel: 0, note: 0x46 }
+        action: "deck.load_selected"
+        physical_deck: 0
+      # Load buttons - Right deck (layer-resolved)
+      - control: { type: "Note", channel: 1, note: 0x46 }
+        action: "deck.load_selected"
+        physical_deck: 1
+
+      # ============================================================
+      # JOG WHEEL / PITCH (optional, TODO)
+      # ============================================================
+
+      # Pitch fader - Left deck
+      - control: { type: "ControlChange", channel: 0, cc: 0x00 }
+        action: "deck.pitch"
+        physical_deck: 0
+        behavior: continuous
+      # Pitch fader - Right deck
+      - control: { type: "ControlChange", channel: 1, cc: 0x00 }
+        action: "deck.pitch"
+        physical_deck: 1
+        behavior: continuous
+
+    # ============================================================
+    # LED FEEDBACK MAPPINGS
+    # ============================================================
+    feedback:
+      # Play button LEDs (layer-resolved)
+      - state: "deck.is_playing"
+        physical_deck: 0
+        output: { type: "Note", channel: 0, note: 0x0B }
+        on_value: 127
+        off_value: 0
+      - state: "deck.is_playing"
+        physical_deck: 1
+        output: { type: "Note", channel: 1, note: 0x0B }
+        on_value: 127
+        off_value: 0
+
+      # Cue button LEDs
+      - state: "deck.cue_active"
+        physical_deck: 0
+        output: { type: "Note", channel: 0, note: 0x0C }
+        on_value: 127
+        off_value: 0
+      - state: "deck.cue_active"
+        physical_deck: 1
+        output: { type: "Note", channel: 1, note: 0x0C }
+        on_value: 127
+        off_value: 0
+
+      # Loop active LEDs
+      - state: "deck.loop_active"
+        physical_deck: 0
+        output: { type: "Note", channel: 0, note: 0x4D }
+        on_value: 127
+        off_value: 0
+      - state: "deck.loop_active"
+        physical_deck: 1
+        output: { type: "Note", channel: 1, note: 0x4D }
+        on_value: 127
+        off_value: 0
+
+      # Hot cue LEDs - Left deck (slots 0-7)
+      - state: "deck.hot_cue_set"
+        physical_deck: 0
+        params: { slot: 0 }
+        output: { type: "Note", channel: 0, note: 0x00 }
+        on_value: 127
+        off_value: 0
+      - state: "deck.hot_cue_set"
+        physical_deck: 0
+        params: { slot: 1 }
+        output: { type: "Note", channel: 0, note: 0x01 }
+        on_value: 127
+        off_value: 0
+      - state: "deck.hot_cue_set"
+        physical_deck: 0
+        params: { slot: 2 }
+        output: { type: "Note", channel: 0, note: 0x02 }
+        on_value: 127
+        off_value: 0
+      - state: "deck.hot_cue_set"
+        physical_deck: 0
+        params: { slot: 3 }
+        output: { type: "Note", channel: 0, note: 0x03 }
+        on_value: 127
+        off_value: 0
+      - state: "deck.hot_cue_set"
+        physical_deck: 0
+        params: { slot: 4 }
+        output: { type: "Note", channel: 0, note: 0x04 }
+        on_value: 127
+        off_value: 0
+      - state: "deck.hot_cue_set"
+        physical_deck: 0
+        params: { slot: 5 }
+        output: { type: "Note", channel: 0, note: 0x05 }
+        on_value: 127
+        off_value: 0
+      - state: "deck.hot_cue_set"
+        physical_deck: 0
+        params: { slot: 6 }
+        output: { type: "Note", channel: 0, note: 0x06 }
+        on_value: 127
+        off_value: 0
+      - state: "deck.hot_cue_set"
+        physical_deck: 0
+        params: { slot: 7 }
+        output: { type: "Note", channel: 0, note: 0x07 }
+        on_value: 127
+        off_value: 0
+
+      # Hot cue LEDs - Right deck (slots 0-7)
+      - state: "deck.hot_cue_set"
+        physical_deck: 1
+        params: { slot: 0 }
+        output: { type: "Note", channel: 1, note: 0x00 }
+        on_value: 127
+        off_value: 0
+      - state: "deck.hot_cue_set"
+        physical_deck: 1
+        params: { slot: 1 }
+        output: { type: "Note", channel: 1, note: 0x01 }
+        on_value: 127
+        off_value: 0
+      - state: "deck.hot_cue_set"
+        physical_deck: 1
+        params: { slot: 2 }
+        output: { type: "Note", channel: 1, note: 0x02 }
+        on_value: 127
+        off_value: 0
+      - state: "deck.hot_cue_set"
+        physical_deck: 1
+        params: { slot: 3 }
+        output: { type: "Note", channel: 1, note: 0x03 }
+        on_value: 127
+        off_value: 0
+      - state: "deck.hot_cue_set"
+        physical_deck: 1
+        params: { slot: 4 }
+        output: { type: "Note", channel: 1, note: 0x04 }
+        on_value: 127
+        off_value: 0
+      - state: "deck.hot_cue_set"
+        physical_deck: 1
+        params: { slot: 5 }
+        output: { type: "Note", channel: 1, note: 0x05 }
+        on_value: 127
+        off_value: 0
+      - state: "deck.hot_cue_set"
+        physical_deck: 1
+        params: { slot: 6 }
+        output: { type: "Note", channel: 1, note: 0x06 }
+        on_value: 127
+        off_value: 0
+      - state: "deck.hot_cue_set"
+        physical_deck: 1
+        params: { slot: 7 }
+        output: { type: "Note", channel: 1, note: 0x07 }
+        on_value: 127
+        off_value: 0
+
+      # Layer indicator LEDs (Deck 3/4 indicator)
+      - state: "deck.layer_active"
+        physical_deck: 0
+        layer: "B"
+        output: { type: "Note", channel: 0, note: 0x72 }
+        on_value: 127
+        off_value: 0
+      - state: "deck.layer_active"
+        physical_deck: 1
+        layer: "B"
+        output: { type: "Note", channel: 1, note: 0x72 }
+        on_value: 127
+        off_value: 0

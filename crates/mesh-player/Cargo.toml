@@ -11,6 +11,7 @@ path = "src/main.rs"
 rtrb.workspace = true
 mesh-core.workspace = true
 mesh-widgets.workspace = true
+mesh-midi = { path = "../mesh-midi" }
 jack.workspace = true
 iced.workspace = true
 tokio.workspace = true

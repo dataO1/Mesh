@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/mesh-core",
     "crates/mesh-widgets",
+    "crates/mesh-midi",
     "crates/mesh-player",
     "crates/mesh-cue",
 ]

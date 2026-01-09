@@ -49,6 +49,7 @@ Mesh also integrates **neural audio effects** powered by [RAVE](https://github.c
 | **Effects** | Pure Data (libpd) | Visual patching for custom effects |
 | **Neural Audio** | RAVE + libtorch | Real-time neural audio transformation |
 | **Audio Analysis** | Essentia | BPM detection, key detection, beat tracking |
+| **MIDI I/O** | midir | Cross-platform MIDI input/output |
 
 ### Project Structure
 
@@ -63,7 +64,12 @@ mesh/
 │   ├── mesh-player/     # DJ player application
 │   │   ├── audio.rs     # JACK client
 │   │   └── ui/          # iced GUI components
+│   ├── mesh-midi/       # MIDI controller support
+│   │   ├── config.rs    # YAML profile schema
+│   │   ├── input.rs     # MIDI input handling
+│   │   └── mapping.rs   # Control-to-action mapping
 │   └── mesh-cue/        # Track preparation app
+├── midi/                # MIDI controller profiles
 └── flake.nix            # Nix development environment
 ```
 
@@ -204,6 +210,15 @@ Mesh implements a fully real-time safe architecture:
 - Mixer section with EQ, filter, volume faders
 - Global BPM control with slider
 
+**MIDI Controller Support**
+- Configurable MIDI mapping via YAML profiles
+- Support for Note On/Off and Control Change messages
+- Layer toggle mode for 2-deck controllers accessing 4 virtual decks
+- Auto value normalization (MIDI 0-127 → control ranges)
+- MIDI shift button for secondary functions
+- LED feedback output with change detection
+- Included profile: Pioneer DDJ-SB2
+
 ### In Progress 🚧
 
 - Waveform display with beat markers and cue points
@@ -214,7 +229,6 @@ Mesh implements a fully real-time safe architecture:
 ### Planned 📋
 
 **mesh-player**
-- MIDI/HID controller mapping
 - Keyboard shortcuts
 - Recording to file
 - Pure Data effect patches
@@ -562,6 +576,89 @@ With a 4-bar buffer at 174 BPM:
 
 ---
 
+## MIDI Controller Support
+
+Mesh supports MIDI controllers for hands-on DJ performance. Controllers are configured via YAML profiles stored in `~/.config/mesh-player/midi.yaml`.
+
+### Supported Features
+
+| Feature | Description |
+|---------|-------------|
+| **Note On/Off** | Buttons, pads, transport controls |
+| **Control Change** | Faders, knobs, encoders |
+| **Layer Toggle** | 2-deck controllers can access 4 virtual decks |
+| **Shift Button** | Secondary functions via MIDI shift |
+| **LED Feedback** | Controller LEDs reflect deck state |
+| **Value Normalization** | MIDI 0-127 auto-maps to control ranges |
+
+### Layer Toggle Mode
+
+For 2-deck controllers like the Pioneer DDJ-SB2, layer toggle lets each physical deck control two virtual decks:
+
+```
+Physical Deck 1 ──► Layer A: Deck 1  │  Layer B: Deck 3
+Physical Deck 2 ──► Layer A: Deck 2  │  Layer B: Deck 4
+
+[DECK 1/3 toggle] switches left side between Deck 1 and Deck 3
+[DECK 2/4 toggle] switches right side between Deck 2 and Deck 4
+```
+
+Mixer controls (volume, EQ, filter) always map directly to channels 1-2, while transport and performance pads follow the layer selection.
+
+### Configuration
+
+Create or edit `~/.config/mesh-player/midi.yaml`:
+
+```yaml
+devices:
+  - name: "My Controller"
+    port_match: "Controller"  # Case-insensitive substring match
+
+    shift:
+      type: "Note"
+      channel: 0
+      note: 0x63
+
+    mappings:
+      - control: { type: "Note", channel: 0, note: 0x0B }
+        action: "deck.play"
+        physical_deck: 0
+
+      - control: { type: "ControlChange", channel: 0, cc: 0x13 }
+        action: "mixer.volume"
+        deck_index: 0
+        behavior: continuous
+```
+
+### Included Profiles
+
+Device profiles are included in the `midi/` folder:
+
+| Controller | File | Features |
+|------------|------|----------|
+| Pioneer DDJ-SB2 | `ddj-sb2.yaml` | Layer toggle, 8 hot cues, transport, mixer, LED feedback |
+
+Copy a profile to `~/.config/mesh-player/midi.yaml` and adjust `port_match` to match your device.
+
+### Available Actions
+
+**Deck Actions** (use `physical_deck` for layer-resolved mapping):
+- `deck.play` — Toggle play/pause
+- `deck.cue_press` / `deck.cue_release` — CDJ-style cue
+- `deck.hot_cue_press` / `deck.hot_cue_clear` — Hot cue with params: `{ slot: 0-7 }`
+- `deck.loop_toggle` / `deck.loop_halve` / `deck.loop_double`
+- `deck.load_selected` — Load selected browser track
+
+**Mixer Actions** (use `deck_index` for direct channel mapping):
+- `mixer.volume` / `mixer.filter` — Continuous 0-1
+- `mixer.eq_hi` / `mixer.eq_mid` / `mixer.eq_lo` — EQ bands
+- `mixer.cue_toggle` — Headphone cue
+
+**Browser Actions**:
+- `browser.scroll` — Encoder with `encoder_mode: relative`
+
+---
+
 ## Using the Collection Browser
 
 The Collection Browser provides a dual-panel interface for organizing and editing your track library.
@@ -708,6 +805,7 @@ This project uses [Essentia](https://essentia.upf.edu/) which is licensed under 
 - [RAVE](https://github.com/acids-ircam/RAVE) for neural audio synthesis
 - [libpd](https://github.com/libpd/libpd) for Pure Data integration
 - [Essentia](https://essentia.upf.edu/) for audio analysis (BPM, key, beat detection)
+- [midir](https://github.com/Boddlnagg/midir) for cross-platform MIDI I/O
 
 ---
 

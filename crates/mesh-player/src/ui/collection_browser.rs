@@ -158,6 +158,11 @@ impl CollectionBrowserState {
             .and_then(|node| node.track_path)
     }
 
+    /// Get the currently selected track path (for MIDI load functionality)
+    pub fn get_selected_track_path(&self) -> Option<&PathBuf> {
+        self.selected_track_path.as_ref()
+    }
+
     /// Build the view with deck load buttons at top (centered)
     pub fn view(&self) -> Element<CollectionBrowserMessage> {
         // mesh-player uses simple single-selection (no Shift/Ctrl modifier tracking)

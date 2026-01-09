@@ -22,6 +22,7 @@ use iced::time;
 use crate::audio::CommandSender;
 use crate::config::{self, PlayerConfig};
 use crate::loader::TrackLoader;
+use mesh_midi::{MidiController, MidiMessage as MidiMsg, DeckAction as MidiDeckAction, MixerAction as MidiMixerAction, BrowserAction as MidiBrowserAction};
 use mesh_core::audio_file::StemBuffers;
 use mesh_core::engine::{DeckAtomics, EngineCommand, SlicerAtomics};
 use mesh_core::types::NUM_DECKS;
@@ -68,6 +69,8 @@ pub struct MeshApp {
     config_path: PathBuf,
     /// Settings modal state
     settings: SettingsState,
+    /// MIDI controller (optional - works without MIDI)
+    midi_controller: Option<MidiController>,
 }
 
 /// Messages that can be sent to the application
@@ -163,6 +166,21 @@ impl MeshApp {
         }
 
         let audio_connected = command_sender.is_some();
+
+        // Initialize MIDI controller (graceful if unavailable)
+        let midi_controller = match MidiController::new(None) {
+            Ok(controller) => {
+                if controller.is_connected() {
+                    log::info!("MIDI controller connected");
+                }
+                Some(controller)
+            }
+            Err(e) => {
+                log::warn!("MIDI not available: {}", e);
+                None
+            }
+        };
+
         Self {
             command_sender,
             deck_atomics,
@@ -185,6 +203,7 @@ impl MeshApp {
             config,
             config_path,
             settings,
+            midi_controller,
         }
     }
 
@@ -297,6 +316,18 @@ impl MeshApp {
                         let zoomed = &mut self.player_canvas_state.decks[result.id].zoomed;
                         zoomed.apply_computed_peaks(result);
                     }
+                }
+
+                // Poll MIDI input (non-blocking)
+                // MIDI messages are processed at 60fps, providing ~16ms latency
+                // Collect first to release borrow before calling handle_midi_message
+                let midi_messages: Vec<_> = self
+                    .midi_controller
+                    .as_ref()
+                    .map(|m| m.drain().collect())
+                    .unwrap_or_default();
+                for midi_msg in midi_messages {
+                    self.handle_midi_message(midi_msg);
                 }
 
                 // Read deck positions from atomics (LOCK-FREE - never blocks audio thread)
@@ -861,6 +892,107 @@ impl MeshApp {
                     }
                 }
                 Task::none()
+            }
+        }
+    }
+
+    /// Handle a MIDI message by dispatching to existing message handlers
+    fn handle_midi_message(&mut self, msg: MidiMsg) {
+        match msg {
+            MidiMsg::Deck { deck, action } => {
+                // Map MIDI deck actions to existing DeckMessages
+                let deck_msg = match action {
+                    MidiDeckAction::TogglePlay => Some(DeckMessage::TogglePlayPause),
+                    MidiDeckAction::CuePress => Some(DeckMessage::CuePressed),
+                    MidiDeckAction::CueRelease => Some(DeckMessage::CueReleased),
+                    MidiDeckAction::Sync => None, // TODO: Add sync support
+                    MidiDeckAction::HotCuePress { slot } => Some(DeckMessage::HotCuePressed(slot)),
+                    MidiDeckAction::HotCueRelease { slot } => Some(DeckMessage::HotCueReleased(slot)),
+                    MidiDeckAction::HotCueClear { slot } => Some(DeckMessage::ClearHotCue(slot)),
+                    MidiDeckAction::ToggleLoop => Some(DeckMessage::ToggleLoop),
+                    MidiDeckAction::LoopHalve => Some(DeckMessage::LoopHalve),
+                    MidiDeckAction::LoopDouble => Some(DeckMessage::LoopDouble),
+                    MidiDeckAction::LoopIn | MidiDeckAction::LoopOut => None, // TODO
+                    MidiDeckAction::BeatJumpForward => Some(DeckMessage::BeatJumpForward),
+                    MidiDeckAction::BeatJumpBackward => Some(DeckMessage::BeatJumpBack),
+                    MidiDeckAction::SlicerTrigger { pad } => Some(DeckMessage::SlicerTrigger(pad)),
+                    MidiDeckAction::SlicerAssign { .. } => None, // TODO
+                    MidiDeckAction::SetSlicerMode { enabled } => {
+                        if enabled {
+                            Some(DeckMessage::SetActionMode(super::deck_view::ActionButtonMode::Slicer))
+                        } else {
+                            Some(DeckMessage::SetActionMode(super::deck_view::ActionButtonMode::HotCue))
+                        }
+                    }
+                    MidiDeckAction::SlicerReset => Some(DeckMessage::ResetSlicerPattern),
+                    MidiDeckAction::ToggleStemMute { stem } => Some(DeckMessage::ToggleStemMute(stem)),
+                    MidiDeckAction::ToggleStemSolo { stem } => Some(DeckMessage::ToggleStemSolo(stem)),
+                    MidiDeckAction::SelectStem { stem } => Some(DeckMessage::SelectStem(stem)),
+                    MidiDeckAction::SetEffectParam { .. } => None, // TODO: Not implemented yet
+                    MidiDeckAction::ToggleSlip => Some(DeckMessage::ToggleSlip),
+                    MidiDeckAction::ToggleKeyMatch => Some(DeckMessage::ToggleKeyMatch),
+                    MidiDeckAction::LoadSelected => {
+                        // Load currently selected track in browser to this deck
+                        if let Some(track_path) = self.collection_browser.get_selected_track_path() {
+                            let _ = self.update(Message::LoadTrack(deck, track_path.to_string_lossy().to_string()));
+                        }
+                        None
+                    }
+                    MidiDeckAction::Seek { .. } | MidiDeckAction::Nudge { .. } => None, // TODO
+                };
+
+                if let Some(dm) = deck_msg {
+                    let _ = self.update(Message::Deck(deck, dm));
+                }
+            }
+
+            MidiMsg::Mixer { channel, action } => {
+                let mixer_msg = match action {
+                    MidiMixerAction::SetVolume(v) => Some(MixerMessage::SetChannelVolume(channel, v)),
+                    MidiMixerAction::SetFilter(v) => Some(MixerMessage::SetChannelFilter(channel, v)),
+                    MidiMixerAction::SetEqHi(v) => Some(MixerMessage::SetChannelEqHi(channel, v)),
+                    MidiMixerAction::SetEqMid(v) => Some(MixerMessage::SetChannelEqMid(channel, v)),
+                    MidiMixerAction::SetEqLo(v) => Some(MixerMessage::SetChannelEqLo(channel, v)),
+                    MidiMixerAction::ToggleCue => Some(MixerMessage::ToggleChannelCue(channel)),
+                    MidiMixerAction::SetCrossfader(_) => None, // No crossfader in mesh-player
+                };
+
+                if let Some(mm) = mixer_msg {
+                    let _ = self.update(Message::Mixer(mm));
+                }
+            }
+
+            MidiMsg::Browser(action) => {
+                match action {
+                    MidiBrowserAction::Scroll { delta } => {
+                        // Scroll the collection browser
+                        // TODO: Wire up browser scroll via CollectionBrowserMessage
+                        log::debug!("MIDI: Browser scroll {}", delta);
+                    }
+                    MidiBrowserAction::Select => {
+                        // TODO: Wire up browser select
+                        log::debug!("MIDI: Browser select");
+                    }
+                    MidiBrowserAction::Back => {
+                        log::debug!("MIDI: Browser back");
+                    }
+                }
+            }
+
+            MidiMsg::Global(_action) => {
+                // TODO: Global actions like BPM
+            }
+
+            MidiMsg::LayerToggle { physical_deck } => {
+                // Handled internally by MidiController
+                log::debug!("MIDI: Layer toggle for physical deck {}", physical_deck);
+            }
+
+            MidiMsg::ShiftChanged { held } => {
+                // Update deck views' shift state
+                for deck_view in &mut self.deck_views {
+                    deck_view.set_shift_held(held);
+                }
             }
         }
     }
