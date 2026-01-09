@@ -141,6 +141,29 @@ impl MeshApp {
             let _ = sender.send(EngineCommand::SetGlobalBpm(config.audio.global_bpm));
             // Initialize phase sync setting
             let _ = sender.send(EngineCommand::SetPhaseSync(config.audio.phase_sync));
+            // Initialize slicer settings for all decks and stems
+            let algo = config.slicer.queue_algorithm();
+            let buffer_bars = config.slicer.buffer_bars();
+            let stems = [
+                mesh_core::types::Stem::Vocals,
+                mesh_core::types::Stem::Drums,
+                mesh_core::types::Stem::Bass,
+                mesh_core::types::Stem::Other,
+            ];
+            for deck in 0..4 {
+                for &stem in &stems {
+                    let _ = sender.send(EngineCommand::SetSlicerBufferBars {
+                        deck,
+                        stem,
+                        bars: buffer_bars,
+                    });
+                    let _ = sender.send(EngineCommand::SetSlicerQueueAlgorithm {
+                        deck,
+                        stem,
+                        algorithm: algo,
+                    });
+                }
+            }
         }
 
         let audio_connected = command_sender.is_some();
@@ -799,20 +822,28 @@ impl MeshApp {
                 // Send phase sync setting to audio engine immediately
                 if let Some(ref mut sender) = self.command_sender {
                     let _ = sender.send(EngineCommand::SetPhaseSync(self.settings.draft_phase_sync));
-                    // Send slicer settings to audio engine for all decks
+                    // Send slicer settings to audio engine for all decks and stems
                     let algo = new_config.slicer.queue_algorithm();
                     let buffer_bars = new_config.slicer.buffer_bars();
+                    let stems = [
+                        mesh_core::types::Stem::Vocals,
+                        mesh_core::types::Stem::Drums,
+                        mesh_core::types::Stem::Bass,
+                        mesh_core::types::Stem::Other,
+                    ];
                     for deck in 0..4 {
-                        let _ = sender.send(EngineCommand::SetSlicerBufferBars {
-                            deck,
-                            stem: mesh_core::types::Stem::Drums,
-                            bars: buffer_bars,
-                        });
-                        let _ = sender.send(EngineCommand::SetSlicerQueueAlgorithm {
-                            deck,
-                            stem: mesh_core::types::Stem::Drums,
-                            algorithm: algo,
-                        });
+                        for &stem in &stems {
+                            let _ = sender.send(EngineCommand::SetSlicerBufferBars {
+                                deck,
+                                stem,
+                                bars: buffer_bars,
+                            });
+                            let _ = sender.send(EngineCommand::SetSlicerQueueAlgorithm {
+                                deck,
+                                stem,
+                                algorithm: algo,
+                            });
+                        }
                     }
                 }
 
