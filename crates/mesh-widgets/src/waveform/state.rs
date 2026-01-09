@@ -593,6 +593,11 @@ impl ZoomedState {
     }
 
     /// Compute peaks for the visible window from stem data
+    ///
+    /// Resolution scaling depends on view mode:
+    /// - **Scrolling mode**: Uses base width (same as before), no scaling
+    /// - **FixedBuffer mode**: Scales up resolution for small buffers (slicer)
+    ///   to prevent jagged lines when showing a small audio segment
     pub fn compute_peaks(&mut self, stems: &StemBuffers, playhead: u64, width: usize) {
         log::debug!(
             "[ZOOM-DBG] compute_peaks: playhead={}, width={}, duration_samples={}, stems.len()={}, has_track={}",
@@ -602,23 +607,66 @@ impl ZoomedState {
         let (start, end) = self.visible_range(playhead);
         log::debug!("[ZOOM-DBG] visible_range: start={}, end={}", start, end);
 
-        // Cache a larger window to reduce recomputation frequency
-        let window_size = end - start;
-        let cache_start = start.saturating_sub(window_size / 2);
-        let cache_end = (end + window_size / 2).min(self.duration_samples);
+        // Cache window sizing depends on view mode
+        let (cache_start, cache_end) = match self.view_mode {
+            ZoomedViewMode::Scrolling => {
+                // In scrolling mode, cache a larger window to reduce recomputation
+                // when the playhead moves slightly
+                let window_size = end - start;
+                let cs = start.saturating_sub(window_size / 2);
+                let ce = (end + window_size / 2).min(self.duration_samples);
+                (cs, ce)
+            }
+            ZoomedViewMode::FixedBuffer => {
+                // In fixed buffer mode, cache exactly the visible range
+                // No margins needed since the view doesn't scroll
+                (start, end)
+            }
+        };
 
         self.cache_start = cache_start;
         self.cache_end = cache_end;
 
         let cache_len = (cache_end - cache_start) as usize;
-        if cache_len == 0 || width == 0 {
+        if cache_len == 0 || width == 0 || self.duration_samples == 0 {
             log::warn!("[ZOOM-DBG] compute_peaks: EARLY RETURN - cache_len={}, width={}", cache_len, width);
             self.cached_peaks = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
             return;
         }
 
+        // Resolution scaling depends on view mode
+        let effective_width = match self.view_mode {
+            ZoomedViewMode::Scrolling => {
+                // Scrolling mode: reduce resolution when zoomed out, keep base when zoomed in
+                // zoom_bars: 1 = fully zoomed in, 64 = fully zoomed out
+                // At default (8 bars): use base width
+                // At 64 bars: use 1/2 width (showing 8x more audio, need less detail)
+                let zoom_ratio = self.zoom_bars as f64 / DEFAULT_ZOOM_BARS as f64;
+                if zoom_ratio > 1.0 {
+                    // Zoomed out: reduce resolution
+                    (width as f64 / zoom_ratio.sqrt()).max(width as f64 / 4.0) as usize
+                } else {
+                    // Zoomed in or at default: keep base width
+                    width
+                }
+            }
+            ZoomedViewMode::FixedBuffer => {
+                // Fixed buffer mode (slicer): modest resolution increase
+                // Small buffers need more peaks but 8x was too much
+                let visible_samples = (end - start).max(1) as f64;
+                let zoom_factor = self.duration_samples as f64 / visible_samples;
+                // Use sqrt for diminishing returns, cap at 2x
+                (width as f64 * zoom_factor.sqrt()).min(width as f64 * 2.0) as usize
+            }
+        };
+
+        log::debug!(
+            "[ZOOM-DBG] resolution: view_mode={:?}, base_width={}, effective_width={}",
+            self.view_mode, width, effective_width
+        );
+
         // Compute peaks for the cached window
-        self.cached_peaks = generate_peaks_for_range(stems, cache_start, cache_end, width);
+        self.cached_peaks = generate_peaks_for_range(stems, cache_start, cache_end, effective_width);
         log::debug!(
             "[ZOOM-DBG] compute_peaks: generated {} peaks per stem (cache {}..{})",
             self.cached_peaks[0].len(), cache_start, cache_end

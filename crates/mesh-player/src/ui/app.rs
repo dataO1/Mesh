@@ -449,6 +449,8 @@ impl MeshApp {
                                     zoom_bars: zoomed.zoom_bars,
                                     duration_samples: zoomed.duration_samples,
                                     bpm: zoomed.bpm,
+                                    view_mode: zoomed.view_mode,
+                                    fixed_buffer_bounds: zoomed.fixed_buffer_bounds,
                                 });
                             }
                         }

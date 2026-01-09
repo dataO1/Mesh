@@ -265,6 +265,11 @@ where
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
+        // In FixedBuffer mode (slicer), zoom is locked - always show entire buffer
+        if self.state.view_mode == ZoomedViewMode::FixedBuffer {
+            return None;
+        }
+
         if let Some(position) = cursor.position_in(bounds) {
             match event {
                 Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
@@ -418,33 +423,36 @@ where
             height: ZOOMED_WAVEFORM_HEIGHT,
         };
 
-        // Handle zoom gestures in zoomed region
-        if let Some(position) = cursor.position_in(zoomed_bounds) {
-            match event {
-                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                    interaction.drag_start_y = Some(position.y);
-                    interaction.drag_start_zoom = self.state.zoomed.zoom_bars;
-                }
-                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                    interaction.drag_start_y = None;
-                }
-                Event::Mouse(mouse::Event::CursorMoved { .. }) => {
-                    if let Some(start_y) = interaction.drag_start_y {
-                        let delta = start_y - position.y;
-                        let zoom_change = (delta / ZOOM_PIXELS_PER_LEVEL) as i32;
-                        let new_zoom = (interaction.drag_start_zoom as i32 - zoom_change)
-                            .clamp(MIN_ZOOM_BARS as i32, MAX_ZOOM_BARS as i32)
-                            as u32;
+        // Handle zoom gestures in zoomed region (disabled in FixedBuffer mode)
+        let zoom_enabled = self.state.zoomed.view_mode != ZoomedViewMode::FixedBuffer;
+        if zoom_enabled {
+            if let Some(position) = cursor.position_in(zoomed_bounds) {
+                match event {
+                    Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                        interaction.drag_start_y = Some(position.y);
+                        interaction.drag_start_zoom = self.state.zoomed.zoom_bars;
+                    }
+                    Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                        interaction.drag_start_y = None;
+                    }
+                    Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                        if let Some(start_y) = interaction.drag_start_y {
+                            let delta = start_y - position.y;
+                            let zoom_change = (delta / ZOOM_PIXELS_PER_LEVEL) as i32;
+                            let new_zoom = (interaction.drag_start_zoom as i32 - zoom_change)
+                                .clamp(MIN_ZOOM_BARS as i32, MAX_ZOOM_BARS as i32)
+                                as u32;
 
-                        if new_zoom != self.state.zoomed.zoom_bars {
-                            return Some(canvas::Action::publish((self.on_zoom)(new_zoom)));
+                            if new_zoom != self.state.zoomed.zoom_bars {
+                                return Some(canvas::Action::publish((self.on_zoom)(new_zoom)));
+                            }
                         }
                     }
+                    _ => {}
                 }
-                _ => {}
+            } else if matches!(event, Event::Mouse(mouse::Event::ButtonReleased(_))) {
+                interaction.drag_start_y = None;
             }
-        } else if matches!(event, Event::Mouse(mouse::Event::ButtonReleased(_))) {
-            interaction.drag_start_y = None;
         }
 
         // Overview waveform region (bottom)

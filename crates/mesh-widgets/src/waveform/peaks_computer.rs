@@ -30,6 +30,8 @@
 //!     zoom_bars: 8,
 //!     duration_samples,
 //!     bpm: 128.0,
+//!     view_mode: ZoomedViewMode::Scrolling,
+//!     fixed_buffer_bounds: None,
 //! });
 //!
 //! // In tick handler, poll for results:
@@ -46,6 +48,7 @@ use mesh_core::audio_file::StemBuffers;
 use mesh_core::types::SAMPLE_RATE;
 
 use super::peaks::{generate_peaks_for_range, smooth_peaks_gaussian};
+use super::state::ZoomedViewMode;
 
 /// Request to compute peaks for a waveform view
 pub struct PeaksComputeRequest {
@@ -63,6 +66,10 @@ pub struct PeaksComputeRequest {
     pub duration_samples: u64,
     /// Track BPM (for calculating samples per bar)
     pub bpm: f64,
+    /// View mode (affects resolution scaling)
+    pub view_mode: ZoomedViewMode,
+    /// Fixed buffer bounds for FixedBuffer mode (start, end in samples)
+    pub fixed_buffer_bounds: Option<(u64, u64)>,
 }
 
 impl std::fmt::Debug for PeaksComputeRequest {
@@ -75,6 +82,8 @@ impl std::fmt::Debug for PeaksComputeRequest {
             .field("zoom_bars", &self.zoom_bars)
             .field("duration_samples", &self.duration_samples)
             .field("bpm", &self.bpm)
+            .field("view_mode", &self.view_mode)
+            .field("fixed_buffer_bounds", &self.fixed_buffer_bounds)
             .finish()
     }
 }
@@ -174,27 +183,59 @@ fn visible_range(playhead: u64, zoom_bars: u32, bpm: f64, duration_samples: u64)
 }
 
 /// The background peak computation thread
+///
+/// Resolution scaling depends on view mode:
+/// - **Scrolling mode**: Uses base width (same as before), no scaling
+/// - **FixedBuffer mode**: Scales up resolution for small buffers (slicer)
 fn peaks_thread(rx: Receiver<PeaksComputeRequest>, tx: Sender<PeaksComputeResult>) {
     log::debug!("Peaks computer thread starting");
 
     while let Ok(request) = rx.recv() {
         let start_time = std::time::Instant::now();
 
-        // Calculate visible window
-        let (start, end) = visible_range(
-            request.playhead,
-            request.zoom_bars,
-            request.bpm,
-            request.duration_samples,
-        );
+        // Calculate visible window based on view mode
+        let (start, end) = match request.view_mode {
+            ZoomedViewMode::FixedBuffer => {
+                // Use fixed buffer bounds if provided
+                if let Some((s, e)) = request.fixed_buffer_bounds {
+                    (s, e)
+                } else {
+                    // Fall back to scrolling behavior
+                    visible_range(
+                        request.playhead,
+                        request.zoom_bars,
+                        request.bpm,
+                        request.duration_samples,
+                    )
+                }
+            }
+            ZoomedViewMode::Scrolling => {
+                visible_range(
+                    request.playhead,
+                    request.zoom_bars,
+                    request.bpm,
+                    request.duration_samples,
+                )
+            }
+        };
 
-        // Cache a larger window to reduce recomputation frequency
-        let window_size = end - start;
-        let cache_start = start.saturating_sub(window_size / 2);
-        let cache_end = (end + window_size / 2).min(request.duration_samples);
+        // Cache window sizing depends on view mode
+        let (cache_start, cache_end) = match request.view_mode {
+            ZoomedViewMode::Scrolling => {
+                // In scrolling mode, cache a larger window to reduce recomputation
+                let window_size = end - start;
+                let cs = start.saturating_sub(window_size / 2);
+                let ce = (end + window_size / 2).min(request.duration_samples);
+                (cs, ce)
+            }
+            ZoomedViewMode::FixedBuffer => {
+                // In fixed buffer mode, cache exactly the visible range
+                (start, end)
+            }
+        };
 
         let cache_len = (cache_end - cache_start) as usize;
-        if cache_len == 0 || request.width == 0 {
+        if cache_len == 0 || request.width == 0 || request.duration_samples == 0 {
             // Send empty result
             let _ = tx.send(PeaksComputeResult {
                 id: request.id,
@@ -206,12 +247,42 @@ fn peaks_thread(rx: Receiver<PeaksComputeRequest>, tx: Sender<PeaksComputeResult
             continue;
         }
 
+        // Resolution scaling depends on view mode
+        // Import DEFAULT_ZOOM_BARS value (8)
+        const DEFAULT_ZOOM_BARS: u32 = 8;
+
+        let effective_width = match request.view_mode {
+            ZoomedViewMode::Scrolling => {
+                // Scrolling mode: reduce resolution when zoomed out, keep base when zoomed in
+                let zoom_ratio = request.zoom_bars as f64 / DEFAULT_ZOOM_BARS as f64;
+                if zoom_ratio > 1.0 {
+                    // Zoomed out: reduce resolution
+                    (request.width as f64 / zoom_ratio.sqrt()).max(request.width as f64 / 4.0) as usize
+                } else {
+                    // Zoomed in or at default: keep base width
+                    request.width
+                }
+            }
+            ZoomedViewMode::FixedBuffer => {
+                // Fixed buffer mode (slicer): modest resolution increase
+                let visible_samples = (end - start).max(1) as f64;
+                let zoom_factor = request.duration_samples as f64 / visible_samples;
+                // Use sqrt for diminishing returns, cap at 2x
+                (request.width as f64 * zoom_factor.sqrt()).min(request.width as f64 * 2.0) as usize
+            }
+        };
+
+        log::debug!(
+            "Peaks compute: view_mode={:?}, base_width={}, effective_width={}",
+            request.view_mode, request.width, effective_width
+        );
+
         // Compute peaks for the cached window
         let mut cached_peaks = generate_peaks_for_range(
             &request.stems,
             cache_start,
             cache_end,
-            request.width,
+            effective_width,
         );
 
         // Apply Gaussian smoothing for smoother waveform display
@@ -247,7 +318,6 @@ fn peaks_thread(rx: Receiver<PeaksComputeRequest>, tx: Sender<PeaksComputeResult
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_core::audio_file::StemBuffers;
 
     #[test]
     fn test_samples_per_bar() {
