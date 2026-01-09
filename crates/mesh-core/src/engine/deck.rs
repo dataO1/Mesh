@@ -463,10 +463,11 @@ impl Deck {
         self.hot_cue_preview_return = None;
         self.fractional_position = 0.0; // Reset stretch accumulator
 
-        // Update slicer grid alignment with track's first beat
+        // Update slicer grid alignment and reset queue for new track
         let first_beat = prepared.first_beat;
         for slicer in &mut self.slicer_states {
             slicer.set_first_beat(first_beat);
+            slicer.reset_queue();
         }
 
         // Sync atomics for lock-free UI reads (fast atomic stores)

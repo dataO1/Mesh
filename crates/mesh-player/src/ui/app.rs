@@ -567,16 +567,12 @@ impl MeshApp {
                                         }
                                     }
                                     ActionButtonMode::HotCue => {
-                                        // Leaving slicer mode - disable slicer and reset queue for all stems
+                                        // Leaving slicer mode - disable processing but keep queue arrangement
                                         for &stem in &stems {
                                             let _ = sender.send(EngineCommand::SetSlicerEnabled {
                                                 deck: deck_idx,
                                                 stem,
                                                 enabled: false,
-                                            });
-                                            let _ = sender.send(EngineCommand::SlicerResetQueue {
-                                                deck: deck_idx,
-                                                stem,
                                             });
                                         }
                                     }
@@ -598,7 +594,7 @@ impl MeshApp {
                                 }
                             }
                             ToggleSlicer => {
-                                // Toggle slicer for all affected stems
+                                // Toggle slicer for all affected stems (queue preserved when disabling)
                                 use mesh_core::types::Stem;
                                 let enabled = !self.deck_views[deck_idx].slicer_active();
                                 let affected_stems = self.config.slicer.affected_stems;
@@ -611,13 +607,6 @@ impl MeshApp {
                                             stem,
                                             enabled,
                                         });
-                                        // Reset queue when disabling
-                                        if !enabled {
-                                            let _ = sender.send(EngineCommand::SlicerResetQueue {
-                                                deck: deck_idx,
-                                                stem,
-                                            });
-                                        }
                                     }
                                 }
                             }
