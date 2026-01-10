@@ -413,6 +413,34 @@ analysis:
 track_name_format: "{artist} - {name}"
 ```
 
+### mesh-player Theme
+
+mesh-player supports customizable stem colors via a theme configuration file:
+
+```
+~/.config/mesh-player/theme.yaml
+```
+
+This allows you to personalize the waveform display colors for each stem type.
+
+Example `theme.yaml`:
+```yaml
+stems:
+  vocals: "#33CC66"   # Green
+  drums: "#CC3333"    # Dark Red
+  bass: "#E6604D"     # Orange-Red
+  other: "#00CCCC"    # Cyan
+```
+
+| Stem | Default Color | Hex Code |
+|------|---------------|----------|
+| Vocals | Green | `#33CC66` |
+| Drums | Dark Red | `#CC3333` |
+| Bass | Orange-Red | `#E6604D` |
+| Other | Cyan | `#00CCCC` |
+
+Colors use standard hex format (`#RRGGBB`). Changes take effect on next launch.
+
 ---
 
 ## Automatic Beat Sync
