@@ -29,6 +29,7 @@ mod output;
 pub use config::{
     default_midi_config_path, load_midi_config, save_midi_config, ControlBehavior, ControlMapping,
     DeckTargetConfig, DeviceProfile, EncoderMode, FeedbackMapping, MidiConfig, MidiControlConfig,
+    PadModeSource,
 };
 pub use connection::{MidiConnection, MidiConnectionError};
 pub use deck_target::{DeckTargetMode, DeckTargetState, LayerSelection};
@@ -36,7 +37,7 @@ pub use input::{MidiInputEvent, MidiInputHandler};
 pub use mapping::{ActionRegistry, MappingEngine};
 pub use messages::{DeckAction, GlobalAction, MidiMessage, MixerAction, BrowserAction};
 pub use normalize::{normalize_cc_value, ControlRange};
-pub use output::{FeedbackState, MidiOutputHandler};
+pub use output::{ActionMode, DeckFeedbackState, FeedbackState, MidiOutputHandler, MixerFeedbackState};
 
 use flume::{Receiver, Sender};
 use std::sync::Arc;
@@ -232,6 +233,16 @@ impl MidiController {
     /// Get current shift state
     pub fn is_shift_held(&self) -> bool {
         self.shift_held
+    }
+
+    /// Get the pad mode source from the active profile
+    ///
+    /// Returns `PadModeSource::App` (default) if no device is connected.
+    pub fn pad_mode_source(&self) -> PadModeSource {
+        self.active_profile
+            .as_ref()
+            .map(|p| p.pad_mode_source)
+            .unwrap_or_default()
     }
 
     /// Drain all pending raw MIDI events (for learn mode)

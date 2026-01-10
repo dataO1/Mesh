@@ -18,6 +18,14 @@ pub struct FeedbackState {
     pub mixer: [MixerFeedbackState; 4],
 }
 
+/// Action button mode (what the pad grid currently controls)
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ActionMode {
+    #[default]
+    HotCue,
+    Slicer,
+}
+
 /// Per-deck feedback state
 #[derive(Debug, Clone, Default)]
 pub struct DeckFeedbackState {
@@ -37,6 +45,10 @@ pub struct DeckFeedbackState {
     pub slicer_current_slice: u8,
     /// Is key match enabled?
     pub key_match_enabled: bool,
+    /// Which stems are muted? (bitmap, bit N = stem N is muted)
+    pub stems_muted: u8,
+    /// Current action button mode
+    pub action_mode: ActionMode,
 }
 
 /// Per-channel mixer feedback state
@@ -182,8 +194,23 @@ impl MidiOutputHandler {
                 state.mixer[channel].cue_enabled
             }
 
+            // Action mode states (for mode indicator LEDs)
+            "deck.hot_cue_mode" => deck_state.action_mode == ActionMode::HotCue,
+            "deck.slicer_mode" => deck_state.action_mode == ActionMode::Slicer,
+
+            // Stem mute states
+            "deck.stem_muted" => {
+                let stem = mapping
+                    .params
+                    .get("stem")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u8;
+                (deck_state.stems_muted & (1 << stem)) != 0
+            }
+
             _ => {
-                log::debug!("MIDI output: Unknown state '{}'", mapping.state);
+                // Use trace level to avoid spamming logs every tick
+                log::trace!("MIDI output: Unknown state '{}'", mapping.state);
                 false
             }
         }
@@ -201,6 +228,10 @@ impl MidiOutputHandler {
         // Build and send MIDI message
         let message = match control {
             MidiControlConfig::Note { channel, note } => {
+                log::debug!(
+                    "[MIDI OUT] Note ch={} note={:#04x} val={}",
+                    channel, note, value
+                );
                 if value > 0 {
                     // Note On
                     vec![0x90 | channel, *note, value]
@@ -210,6 +241,10 @@ impl MidiOutputHandler {
                 }
             }
             MidiControlConfig::ControlChange { channel, cc } => {
+                log::debug!(
+                    "[MIDI OUT] CC ch={} cc={:#04x} val={}",
+                    channel, cc, value
+                );
                 vec![0xB0 | channel, *cc, value]
             }
         };
@@ -227,6 +262,10 @@ impl MidiOutputHandler {
     pub fn send(&mut self, control: &MidiControlConfig, value: u8) {
         let message = match control {
             MidiControlConfig::Note { channel, note } => {
+                log::debug!(
+                    "[MIDI OUT] Note ch={} note={:#04x} val={} (forced)",
+                    channel, note, value
+                );
                 if value > 0 {
                     vec![0x90 | channel, *note, value]
                 } else {
@@ -234,6 +273,10 @@ impl MidiOutputHandler {
                 }
             }
             MidiControlConfig::ControlChange { channel, cc } => {
+                log::debug!(
+                    "[MIDI OUT] CC ch={} cc={:#04x} val={} (forced)",
+                    channel, cc, value
+                );
                 vec![0xB0 | channel, *cc, value]
             }
         };

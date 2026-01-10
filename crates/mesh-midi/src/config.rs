@@ -28,6 +28,10 @@ pub struct DeviceProfile {
     #[serde(default)]
     pub deck_target: DeckTargetConfig,
 
+    /// How pad button actions are determined (app-driven vs controller-driven)
+    #[serde(default)]
+    pub pad_mode_source: PadModeSource,
+
     /// Shift button configuration
     pub shift: Option<MidiControlConfig>,
 
@@ -168,6 +172,22 @@ pub enum EncoderMode {
     Relative,
     /// Relative with 64 as center: <64 = CCW, >64 = CW
     RelativeSigned,
+}
+
+/// How pad button actions are determined
+///
+/// Controllers like DDJ-SB2 have hardware mode switches that change which MIDI notes
+/// the pads send. Other controllers use the same notes and rely on software mode switching.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PadModeSource {
+    /// App-driven: check app's action_mode to determine what pad presses do
+    /// Use this for controllers with unified pads (same MIDI notes in all modes)
+    #[default]
+    App,
+    /// Controller-driven: MIDI notes directly map to actions
+    /// Use this for controllers with separate hot cue/slicer buttons (different MIDI notes per mode)
+    Controller,
 }
 
 /// LED feedback mapping
