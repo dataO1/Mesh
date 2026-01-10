@@ -5,7 +5,8 @@
 //! level while view functions consume references to generate UI elements.
 
 use super::CueMarker;
-use crate::CUE_COLORS;
+use crate::{CUE_COLORS, STEM_COLORS};
+use iced::Color;
 use mesh_core::audio_file::{dequantize_peak, CuePoint, LoadedTrack, StemBuffers, WaveformPreview};
 use std::sync::Arc;
 
@@ -793,6 +794,8 @@ pub struct PlayerCanvasState {
     current_transpose: [i8; 4],
     /// Whether key matching is enabled per deck
     key_match_enabled: [bool; 4],
+    /// Stem colors for waveform rendering [Vocals, Drums, Bass, Other]
+    stem_colors: [Color; 4],
 }
 
 impl PlayerCanvasState {
@@ -825,6 +828,7 @@ impl PlayerCanvasState {
             is_master: [false, false, false, false],
             current_transpose: [0; 4],
             key_match_enabled: [false; 4],
+            stem_colors: STEM_COLORS,
         }
     }
 
@@ -929,6 +933,16 @@ impl PlayerCanvasState {
         } else {
             false
         }
+    }
+
+    /// Set stem colors for waveform rendering [Vocals, Drums, Bass, Other]
+    pub fn set_stem_colors(&mut self, colors: [Color; 4]) {
+        self.stem_colors = colors;
+    }
+
+    /// Get stem colors for waveform rendering [Vocals, Drums, Bass, Other]
+    pub fn stem_colors(&self) -> &[Color; 4] {
+        &self.stem_colors
     }
 
     /// Get a reference to a deck's state

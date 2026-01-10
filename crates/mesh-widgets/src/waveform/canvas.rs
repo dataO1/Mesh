@@ -16,6 +16,16 @@ use iced::{mouse, Color, Point, Rectangle, Size, Theme};
 use mesh_core::engine::SLICER_NUM_SLICES;
 use mesh_core::types::SAMPLE_RATE;
 
+/// Stem rendering order (back to front): Drums, Bass, Vocals, Other
+/// Drums drawn first (behind), Other drawn last (on top)
+/// Index mapping: 0=Vocals, 1=Drums, 2=Bass, 3=Other
+const STEM_RENDER_ORDER: [usize; 4] = [1, 2, 0, 3];
+
+/// Stem indicator order (top to bottom): Other, Vocals, Bass, Drums
+/// This is the reverse of STEM_RENDER_ORDER, matching visual layering
+/// (bottom indicator = back layer, top indicator = front layer)
+const STEM_INDICATOR_ORDER: [usize; 4] = [3, 0, 2, 1];
+
 // =============================================================================
 // Canvas Interaction States
 // =============================================================================
@@ -628,8 +638,8 @@ fn draw_stem_waveforms(
     center_y: f32,
     alpha: f32,
 ) {
-    // Draw stems in reverse order for proper layering (Other behind, Vocals on top)
-    for stem_idx in (0..4).rev() {
+    // Draw stems in layered order: Drums (back) → Bass → Vocals → Other (front)
+    for &stem_idx in STEM_RENDER_ORDER.iter() {
         let waveform_data = &stem_waveforms[stem_idx];
         if waveform_data.is_empty() {
             continue;
@@ -725,7 +735,8 @@ fn draw_cached_peaks(
     let cache_virtual_total = (state.cache_end - state.cache_start + state.cache_left_padding) as usize;
     let height_scale = center_y * 0.85;
 
-    for stem_idx in (0..4).rev() {
+    // Draw stems in layered order: Drums (back) → Bass → Vocals → Other (front)
+    for &stem_idx in STEM_RENDER_ORDER.iter() {
         let peaks = &state.cached_peaks[stem_idx];
         if peaks.is_empty() {
             continue;
@@ -1084,9 +1095,9 @@ fn draw_overview_section(
         );
     }
 
-    // Draw stem waveforms using filled paths
+    // Draw stem waveforms in layered order: Drums (back) → Bass → Vocals → Other (front)
     let height_scale = overview_height / 2.0 * 0.85;
-    for stem_idx in (0..4).rev() {
+    for &stem_idx in STEM_RENDER_ORDER.iter() {
         let stem_peaks = &overview.stem_waveforms[stem_idx];
         if stem_peaks.is_empty() {
             continue;
@@ -1388,6 +1399,7 @@ where
                 stem_active,
                 transpose,
                 key_match_enabled,
+                self.state.stem_colors(),
             );
         }
 
@@ -1427,6 +1439,7 @@ fn draw_deck_quadrant(
     stem_active: &[bool; 4],
     transpose: i8,
     key_match_enabled: bool,
+    stem_colors: &[Color; 4],
 ) {
     use iced::widget::canvas::Text;
     use iced::alignment::{Horizontal, Vertical};
@@ -1557,25 +1570,21 @@ fn draw_deck_quadrant(
         zoomed_y,
         width,
         is_master,
+        stem_colors,
     );
 
     // Draw overview waveform below zoomed
     let overview_y = zoomed_y + ZOOMED_WAVEFORM_HEIGHT + DECK_INTERNAL_GAP;
 
     // Draw stem status indicators on left side of zoomed waveform only
-    // Stem colors: Vocals=cyan, Drums=yellow, Bass=magenta, Other=green
-    let stem_colors = [
-        Color::from_rgb(0.0, 0.8, 0.8),  // Vocals - cyan
-        Color::from_rgb(0.9, 0.9, 0.2),  // Drums - yellow
-        Color::from_rgb(0.9, 0.3, 0.9),  // Bass - magenta
-        Color::from_rgb(0.3, 0.9, 0.3),  // Other - green
-    ];
+    // Uses stem_colors passed from theme configuration
 
     // Calculate indicator height to fit within zoomed waveform only
     let indicator_height = (ZOOMED_WAVEFORM_HEIGHT - (STEM_INDICATOR_GAP * 3.0)) / 4.0;
 
-    for (stem_idx, &color) in stem_colors.iter().enumerate() {
-        let indicator_y = zoomed_y + (stem_idx as f32) * (indicator_height + STEM_INDICATOR_GAP);
+    for (visual_idx, &stem_idx) in STEM_INDICATOR_ORDER.iter().enumerate() {
+        let indicator_y = zoomed_y + (visual_idx as f32) * (indicator_height + STEM_INDICATOR_GAP);
+        let color = stem_colors[stem_idx];
 
         // Simple bypass toggle: 50% brightness if active, dark if bypassed
         let indicator_color = if stem_active[stem_idx] {
@@ -1603,6 +1612,7 @@ fn draw_deck_quadrant(
         x,
         overview_y,
         width,
+        stem_colors,
     );
 }
 
@@ -1615,6 +1625,7 @@ fn draw_zoomed_at(
     y: f32,
     width: f32,
     is_master: bool,
+    stem_colors: &[Color; 4],
 ) {
     let height = ZOOMED_WAVEFORM_HEIGHT;
     let center_y = y + height / 2.0;
@@ -1777,13 +1788,14 @@ fn draw_zoomed_at(
             let width_usize = width as usize;
             let total_samples = window.total_samples as usize;
 
-            for stem_idx in (0..4).rev() {
+            // Draw stems in layered order: Drums (back) → Bass → Vocals → Other (front)
+            for &stem_idx in STEM_RENDER_ORDER.iter() {
                 let peaks = &zoomed.cached_peaks[stem_idx];
                 if peaks.is_empty() {
                     continue;
                 }
                 let peaks_len = peaks.len();
-                let base_color = STEM_COLORS[stem_idx];
+                let base_color = stem_colors[stem_idx];
                 let waveform_color = Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.7);
 
                 // Build filled path for this stem
@@ -1917,6 +1929,7 @@ fn draw_overview_at(
     x: f32,
     y: f32,
     width: f32,
+    stem_colors: &[Color; 4],
 ) {
     let height = WAVEFORM_HEIGHT;
     let center_y = y + height / 2.0;
@@ -2020,15 +2033,15 @@ fn draw_overview_at(
         );
     }
 
-    // Draw stem waveforms using filled paths
+    // Draw stem waveforms in layered order: Drums (back) → Bass → Vocals → Other (front)
     let height_scale = height / 2.0 * 0.85;
-    for stem_idx in (0..4).rev() {
+    for &stem_idx in STEM_RENDER_ORDER.iter() {
         let stem_peaks = &overview.stem_waveforms[stem_idx];
         if stem_peaks.is_empty() {
             continue;
         }
 
-        let base_color = STEM_COLORS[stem_idx];
+        let base_color = stem_colors[stem_idx];
         let waveform_color = Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.6);
 
         draw_stem_waveform_filled(frame, stem_peaks, x, center_y, height_scale, waveform_color, width);

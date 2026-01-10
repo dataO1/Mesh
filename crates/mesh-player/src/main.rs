@@ -17,7 +17,7 @@ mod ui;
 use iced::{Size, Task};
 
 use audio::{start_jack_client, auto_connect_ports};
-use ui::{MeshApp, app::Message, midi_learn::MidiLearnMessage};
+use ui::{MeshApp, app::Message, midi_learn::MidiLearnMessage, theme};
 
 const CLIENT_NAME: &str = "mesh-player";
 
@@ -81,6 +81,9 @@ fn main() -> iced::Result {
 
     println!();
     println!("Starting Mesh DJ Player GUI...");
+
+    // Initialize theme from ~/.config/mesh-player/theme.yaml
+    theme::init_theme();
 
     // Wrap command_sender in a cell so the boot closure can be Fn (required by iced)
     // The boot function is only called once, but iced requires Fn for API consistency

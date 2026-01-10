@@ -10,5 +10,6 @@ pub mod midi_learn;
 pub mod mixer_view;
 pub mod player_canvas;
 pub mod settings;
+pub mod theme;
 
 pub use app::MeshApp;

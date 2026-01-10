@@ -9,11 +9,12 @@ use iced::Color;
 ///
 /// Used for waveform display with 4 color-coded audio stems.
 /// Colors are semi-transparent when overlapped in the waveform view.
+/// Configurable via ~/.config/mesh-player/theme.yaml in mesh-player.
 pub const STEM_COLORS: [Color; 4] = [
-    Color::from_rgb(0.0, 0.8, 0.8), // Vocals - Cyan
-    Color::from_rgb(0.9, 0.3, 0.3), // Drums - Red
-    Color::from_rgb(0.9, 0.8, 0.2), // Bass - Yellow
-    Color::from_rgb(0.3, 0.8, 0.4), // Other - Green
+    Color::from_rgb(0.2, 0.8, 0.4),   // Vocals - Green (#33CC66)
+    Color::from_rgb(0.8, 0.2, 0.2),   // Drums - Dark Red (#CC3333)
+    Color::from_rgb(0.9, 0.38, 0.3),  // Bass - Orange-Red (#E6604D)
+    Color::from_rgb(0.0, 0.8, 0.8),   // Other - Cyan (#00CCCC)
 ];
 
 /// Cue point colors (8 distinct colors for 8 hot cue buttons)

@@ -208,7 +208,11 @@ impl MeshApp {
             slicer_atomics,
             track_loader: TrackLoader::spawn(jack_sample_rate),
             peaks_computer: PeaksComputer::spawn(),
-            player_canvas_state: PlayerCanvasState::new(),
+            player_canvas_state: {
+                let mut state = PlayerCanvasState::new();
+                state.set_stem_colors(super::theme::stem_colors());
+                state
+            },
             deck_stems: [None, None, None, None],
             deck_views: [
                 DeckView::new(0),
