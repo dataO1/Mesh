@@ -690,12 +690,44 @@ For each control:
 3. Press/move the control on your hardware
 4. The mapping is captured automatically and you advance to the next control
 
+#### Hardware Type Auto-Detection
+
+MIDI Learn automatically detects what type of physical control you're using by analyzing the MIDI messages:
+
+| Hardware Type | Detection Method | Auto-Configuration |
+|---------------|------------------|-------------------|
+| **Button** | Note On/Off messages | Momentary behavior |
+| **Knob** | CC values with wide range, variable direction | Absolute mode |
+| **Fader** | CC values with wide range, monotonic movement | Absolute mode |
+| **Encoder** | CC values centered around 64, small range | Relative mode |
+| **Jog Wheel** | Like encoder but high message rate (>15/sec) | Relative mode |
+| **14-bit Fader** | CC pair (N and N+32) arriving within 5ms | High-resolution mode |
+
+When you move a control, MIDI Learn samples the messages for about 1 second to determine the hardware type. The UI shows "Sampling... X samples (Y%)" during detection and "Detected: Knob" (or similar) when complete.
+
+**Why this matters:**
+- **Knob mapped to button action**: Automatically adds threshold conversion (value > 63 = pressed)
+- **Encoder mapped to scroll**: Automatically uses relative mode instead of absolute
+- **14-bit fader detected**: Automatically combines MSB + LSB for high resolution
+
+#### Encoder Press Capture
+
+When MIDI Learn detects an **encoder** (like a browse encoder), it automatically prompts you to capture the encoder's push/click function as a separate mapping:
+
+1. Turn the encoder → Hardware detected as "Encoder"
+2. Prompt appears: "Now PRESS the encoder (or skip if it doesn't click)"
+3. Press the encoder → Captured as a button (e.g., `browser.select`)
+4. Or click **Skip** if your encoder doesn't have a push function
+
+This captures both the rotation (CC) and press (Note) on the same physical control as two separate mappings.
+
 #### Tips for Best Results
 
 - **Wait for the prompt** — There's a 1-second debounce between captures to prevent accidental double-mappings
 - **Use Skip (→)** for controls your hardware doesn't have
 - **Use Back (←)** to re-map a control if you pressed the wrong button
 - **Mappings work live** — You can test your mappings while still in learn mode
+- **Move the full range** — For knobs/faders, move from min to max during sampling for best detection
 
 #### Saving Your Profile
 
