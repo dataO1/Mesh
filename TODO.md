@@ -90,16 +90,42 @@ and mesh-widget and only if necessary in the ui.
     this needs to be remembered that after beat jumping/hotcue presses and other
     seek operations this offset is kept in mind, so the dj doest need to nudge
     again.
-  - [ ] the zoomed and overview waveform should adjust alpha value for currently
-    not active stems. They should be visible to be inactive. make them different
-    gray tones (drums darker, bass dark, vocals middle, other light)
-  - [x] the midi exploration needs to detect various kinds of midi
-    messages/hardware types, like standart knobs, sliders/faders, encoders etc
-    with their various midi message types and while mapping defines this smartly
-    in the config and be able to automatically defer the range and format. for
-    example currently the stem for other is expecting a button , but i only have
-    a poti knob, the midi mapper needs to understand this during midi
-    exploration and corrrectly map this. here are some message types for my
+- [x] the zoomed and overview waveform should adjust alpha value for currently
+  not active stems. They should be visible to be inactive. make them different
+  gray tones (drums darker, bass dark, vocals middle, other light)
+- [x] the midi exploration needs to detect various kinds of midi
+  messages/hardware types, like standart knobs, sliders/faders, encoders etc
+  with their various midi message types and while mapping defines this smartly
+  in the config and be able to automatically defer the range and format. for
+  example currently the stem for other is expecting a button , but i only have
+  a poti knob, the midi mapper needs to understand this during midi
+  exploration and corrrectly map this. here are some message types for my
+- [ ] hot swapping of stems in a loaded track with another tracks stem ( we
+  should keep both options in memory, so the user can hot swap between them )
+  - [ ] several possibilities
+    - [ ] prepared in mesh-cue:  user can per track per stem define a linked
+      other tracks stem by pressing one of four stem link buttons, then select a
+      another track in the browser, which links the selected tracks stem to the
+      track the dj is currently cueing (this does not copy the data over, but
+      only references the track name in the collection, the dj software should
+      load this smartly if defined). so for example when the user is cueing
+      track A and presses the vocal stem link button (underneight the hot cue
+      and loop buttons) the file browser is focused with highlighting that
+      indicates the stem color and that a stem of another track is being linked.
+      on selecting a track and clicking enter the vocal stem of selected track B
+      is linked into the wav (via headers) into track As wav form. the player
+      then knows how to handle this.
+    - [ ] unprepared/on-the-fly: this is the more important case, the user
+      should be able to press a button combination (like shift + stem button),
+      which redirects to the browser (just like in the other scenario) with
+      highlighting and indicating that another track for stem linking is
+      expected. with encoder press this is allowed then. this should populate
+      the players linked stem buffer with the stem of the selected track
+      (matching the grid, this is very important!). the new stem is only
+      prepared, not running yet, on pressing shift + stem button on a loaded
+      linked stem toggle between original stem and buffered stem. this should
+      happen all internally in the deck and be abstracted away from the ui and the ui should only send high level commands. waveform should also visually indicate linked stems and on toggle show the correct buffer info (i think what is being rendered is linked to what is played, so this should require no/minimal changes to the waveform canvas itself).
+    - [ ] if you still have questions let me know and lets design this together.
 
 # Changes
 - [x] The waveform indicators of hot cues use colors, but the hot cue buttons
@@ -191,6 +217,17 @@ and mesh-widget and only if necessary in the ui.
 - [ ] it seems the deck virtual deck toggle buttons need similar logic like the
   action pad modes. on the ddj-sb2, the deck toggle buttons make the deck
   specific buttons have their own channel (action buttons, mode switches)
+- [ ] there is still problems with the interdeck syncing of two beats. when one
+  track is playing and i add another by pressing hot cue, play, then hot cue
+  release, they are not synced. either
+  the grids are not perfectly aligned (you should assume they are) or there is
+  some bug with the aligning when pressing play,hot cue buttons etc or we simply
+  dont use the syncing logic in this case. make sure
+  this also works when triggered through midi mappings. also make sure we
+  properly use fractional sample correction correctly so the playback does not
+  drift. also validate the code quality and duplication of this. can we improve
+  this, by making this better factored out, such that all the correction,
+  playback logic etc happens at a central point like the deck/engine.
 
 # Performance
 - [ ] Can we optimize how stems are stored, this is currently roughly 200-300 mb
