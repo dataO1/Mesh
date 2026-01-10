@@ -13,10 +13,17 @@
 //! );
 //! ```
 
-use iced::widget::{button, column, container, mouse_area, row, scrollable, text, text_input};
+use iced::widget::{button, column, container, mouse_area, row, scrollable, text, text_input, Id};
 use iced::{Background, Border, Color, Element, Length, Padding, Theme};
 use std::collections::HashSet;
 use std::hash::Hash;
+use std::sync::LazyLock;
+
+/// Row height for track table rows (used for scroll calculations)
+pub const TRACK_ROW_HEIGHT: f32 = 28.0;
+
+/// Scrollable ID for the track table (used for programmatic scrolling)
+pub static TRACK_TABLE_SCROLLABLE_ID: LazyLock<Id> = LazyLock::new(Id::unique);
 
 /// Modifier keys held during a selection click
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -414,6 +421,7 @@ where
         .into()
     } else {
         scrollable(column(rows).spacing(1))
+            .id(TRACK_TABLE_SCROLLABLE_ID.clone())
             .height(Length::Fill)
             .into()
     };

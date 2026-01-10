@@ -209,6 +209,22 @@ impl CollectionBrowserState {
         self.selected_track_path.as_ref()
     }
 
+    /// Get the currently selected track index (for auto-scroll)
+    /// Returns None if no track is selected or tracks list is empty
+    pub fn get_selected_index(&self) -> Option<usize> {
+        self.browser
+            .table_state
+            .selected
+            .iter()
+            .next()
+            .and_then(|selected| self.tracks.iter().position(|t| &t.id == selected))
+    }
+
+    /// Get total track count (for scroll calculations)
+    pub fn track_count(&self) -> usize {
+        self.tracks.len()
+    }
+
     /// Build the view with deck load buttons at top (centered)
     pub fn view(&self) -> Element<CollectionBrowserMessage> {
         // mesh-player uses simple single-selection (no Shift/Ctrl modifier tracking)

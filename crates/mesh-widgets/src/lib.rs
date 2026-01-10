@@ -83,6 +83,8 @@ pub use tree::{tree_view, TreeIcon, TreeMessage, TreeNode, TreeState};
 // Track table widget for displaying tracks
 pub use track_table::{
     track_table, SelectModifiers, TrackColumn, TrackRow, TrackTableMessage, TrackTableState,
+    // Constants for programmatic scrolling
+    TRACK_ROW_HEIGHT, TRACK_TABLE_SCROLLABLE_ID,
 };
 
 // Combined playlist browser (tree + table)
