@@ -1383,7 +1383,9 @@ impl MeshApp {
         let canvas = view_player_canvas(&self.player_canvas_state);
         // Use compact browser (no load buttons) for performance mode
         let browser = self.collection_browser.view_compact().map(Message::CollectionBrowser);
-        let status_bar = container(text(&self.status).size(12)).padding(5);
+        let status_bar = container(text(&self.status).size(12))
+            .padding(5)
+            .height(Length::Shrink);
 
         column![
             header,
@@ -1397,6 +1399,7 @@ impl MeshApp {
         ]
         .spacing(8)
         .padding(10)
+        .height(Length::Fill)
         .into()
     }
 
