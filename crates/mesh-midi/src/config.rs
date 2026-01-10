@@ -147,6 +147,11 @@ pub struct ControlMapping {
 
     /// Encoder mode for CC controls
     pub encoder_mode: Option<EncoderMode>,
+
+    /// Detected or configured hardware type
+    /// Auto-detected during MIDI learn, used for adapter behavior
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardware_type: Option<HardwareType>,
 }
 
 /// Control behavior type
@@ -172,6 +177,61 @@ pub enum EncoderMode {
     Relative,
     /// Relative with 64 as center: <64 = CCW, >64 = CW
     RelativeSigned,
+}
+
+/// Detected or manually specified MIDI hardware control type
+///
+/// Used during MIDI learn to auto-detect the physical control type and
+/// configure appropriate behavior and encoder modes.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HardwareType {
+    /// Unknown hardware type - needs manual configuration
+    #[default]
+    Unknown,
+    /// Physical button (Note On/Off pairs)
+    Button,
+    /// Rotary potentiometer/knob (absolute CC 0-127)
+    Knob,
+    /// Linear fader (absolute CC 0-127, monotonic movement)
+    Fader,
+    /// High-resolution 14-bit fader (CC pair: MSB + LSB)
+    Fader14Bit,
+    /// Rotary encoder (relative CC values centered around 64)
+    Encoder,
+    /// Jog wheel (high-rate relative CC for scratching/nudging)
+    JogWheel,
+}
+
+impl HardwareType {
+    /// Get recommended ControlBehavior for this hardware type
+    pub fn default_behavior(&self) -> ControlBehavior {
+        match self {
+            Self::Button => ControlBehavior::Momentary,
+            Self::Knob | Self::Fader | Self::Fader14Bit => ControlBehavior::Continuous,
+            Self::Encoder | Self::JogWheel => ControlBehavior::Continuous,
+            Self::Unknown => ControlBehavior::Momentary,
+        }
+    }
+
+    /// Get recommended EncoderMode for CC controls (None for buttons)
+    pub fn default_encoder_mode(&self) -> Option<EncoderMode> {
+        match self {
+            Self::Knob | Self::Fader | Self::Fader14Bit => Some(EncoderMode::Absolute),
+            Self::Encoder | Self::JogWheel => Some(EncoderMode::Relative),
+            Self::Button | Self::Unknown => None,
+        }
+    }
+
+    /// Check if this hardware type uses relative CC values
+    pub fn is_relative(&self) -> bool {
+        matches!(self, Self::Encoder | Self::JogWheel)
+    }
+
+    /// Check if this hardware type is continuous (vs discrete button)
+    pub fn is_continuous(&self) -> bool {
+        !matches!(self, Self::Button | Self::Unknown)
+    }
 }
 
 /// How pad button actions are determined

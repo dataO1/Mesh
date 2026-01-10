@@ -2,7 +2,7 @@
 //!
 //! Maps MIDI events to application actions based on the device profile configuration.
 
-use crate::config::{ControlMapping, DeviceProfile, EncoderMode, MidiControlConfig};
+use crate::config::{ControlBehavior, ControlMapping, DeviceProfile, EncoderMode, HardwareType, MidiControlConfig};
 use crate::deck_target::DeckTargetState;
 use crate::input::MidiInputEvent;
 use crate::messages::{BrowserAction, DeckAction, GlobalAction, MidiMessage, MixerAction};
@@ -198,6 +198,9 @@ pub struct MappingEngine {
     action_registry: ActionRegistry,
     /// Debounce state with interior mutability for use from Arc<Self>
     debounce: std::sync::Mutex<DebounceState>,
+    /// CC-as-button state for edge detection (key is (channel, cc), value is "is_pressed")
+    /// Used when continuous hardware (knob) is mapped to momentary action (button)
+    cc_button_state: std::sync::Mutex<HashMap<(u8, u8), bool>>,
 }
 
 impl MappingEngine {
@@ -234,6 +237,7 @@ impl MappingEngine {
                 last_browser_select: None,
                 last_deck_load: [None; 4],
             }),
+            cc_button_state: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -256,6 +260,14 @@ impl MappingEngine {
             }
         };
 
+        // Check if this is CC-as-button (continuous hardware mapped to momentary action)
+        // Use edge detection to prevent repeated triggers
+        if let MidiInputEvent::ControlChange { channel, cc, value } = event {
+            if self.needs_cc_edge_detection(mapping) {
+                return self.handle_cc_as_button(*channel, *cc, *value, mapping, shift_held);
+            }
+        }
+
         // Determine which action to use (shift or normal)
         let action = if shift_held {
             mapping.shift_action.as_ref().unwrap_or(&mapping.action)
@@ -268,6 +280,95 @@ impl MappingEngine {
 
         // Convert to MidiMessage based on action
         self.action_to_message(action, event, mapping, deck)
+    }
+
+    /// Check if this mapping needs CC-as-button edge detection
+    fn needs_cc_edge_detection(&self, mapping: &ControlMapping) -> bool {
+        // Only apply edge detection for:
+        // 1. Momentary behavior (button actions)
+        // 2. Continuous hardware type (knob, fader, encoder)
+        if mapping.behavior != ControlBehavior::Momentary {
+            return false;
+        }
+
+        match mapping.hardware_type {
+            Some(hw_type) => hw_type.is_continuous(),
+            None => false, // No hardware type info - use default behavior
+        }
+    }
+
+    /// Handle CC event mapped to button action with edge detection
+    fn handle_cc_as_button(
+        &self,
+        channel: u8,
+        cc: u8,
+        value: u8,
+        mapping: &ControlMapping,
+        shift_held: bool,
+    ) -> Option<MidiMessage> {
+        const THRESHOLD: u8 = 63;
+
+        let key = (channel, cc);
+        let is_pressed = value > THRESHOLD;
+
+        // Get current state
+        let was_pressed = {
+            let state = self.cc_button_state.lock().unwrap();
+            state.get(&key).copied().unwrap_or(false)
+        };
+
+        // Check for edge transition
+        let (is_press_edge, is_release_edge) = if is_pressed && !was_pressed {
+            // Rising edge: knob crossed above threshold
+            (true, false)
+        } else if !is_pressed && was_pressed {
+            // Falling edge: knob crossed below threshold
+            (false, true)
+        } else {
+            // No edge - ignore
+            return None;
+        };
+
+        // Update state
+        {
+            let mut state = self.cc_button_state.lock().unwrap();
+            state.insert(key, is_pressed);
+        }
+
+        // Determine which action to use
+        let action = if shift_held {
+            mapping.shift_action.as_ref().unwrap_or(&mapping.action)
+        } else {
+            &mapping.action
+        };
+
+        // Resolve deck index
+        let deck = self.resolve_deck(mapping);
+
+        // Create synthetic Note event for the action handler
+        let synthetic_event = if is_press_edge {
+            MidiInputEvent::NoteOn {
+                channel,
+                note: cc, // Use CC number as note
+                velocity: 127,
+            }
+        } else {
+            MidiInputEvent::NoteOff {
+                channel,
+                note: cc,
+                velocity: 0,
+            }
+        };
+
+        log::debug!(
+            "[MIDI] CC-as-button edge: ch={} cc={} value={} -> {}",
+            channel,
+            cc,
+            value,
+            if is_press_edge { "PRESS" } else { "RELEASE" }
+        );
+
+        self.action_to_message(action, &synthetic_event, mapping, deck)
     }
 
     /// Find the mapping for an event

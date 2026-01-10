@@ -20,6 +20,7 @@
 mod config;
 mod connection;
 mod deck_target;
+mod detection;
 mod input;
 mod mapping;
 mod messages;
@@ -28,10 +29,11 @@ mod output;
 
 pub use config::{
     default_midi_config_path, load_midi_config, save_midi_config, ControlBehavior, ControlMapping,
-    DeckTargetConfig, DeviceProfile, EncoderMode, FeedbackMapping, MidiConfig, MidiControlConfig,
-    PadModeSource,
+    DeckTargetConfig, DeviceProfile, EncoderMode, FeedbackMapping, HardwareType, MidiConfig,
+    MidiControlConfig, PadModeSource,
 };
 pub use connection::{MidiConnection, MidiConnectionError};
+pub use detection::{MidiSample, MidiSampleBuffer};
 pub use deck_target::{DeckTargetMode, DeckTargetState, LayerSelection};
 pub use input::{MidiInputEvent, MidiInputHandler};
 pub use mapping::{ActionRegistry, MappingEngine};

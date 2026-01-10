@@ -386,33 +386,66 @@ impl MeshApp {
 
                     if needs_capture {
                         if let Some(ref controller) = self.midi_controller {
-                            // Drain raw events and find first valid one
+                            // Check if we're in hardware detection mode (sampling in progress)
+                            let sampling_active = self.midi_learn.detection_buffer.is_some();
+                            // Check if we're waiting for encoder press
+                            let awaiting_encoder_press = self.midi_learn.awaiting_encoder_press;
+
+                            // Drain raw events
                             for raw_event in controller.drain_raw_events() {
                                 let captured = convert_midi_event_to_captured(&raw_event);
 
                                 // Always update display so user sees what's happening
                                 self.midi_learn.last_captured = Some(captured.clone());
 
-                                // Check if this event should be captured (debounce + Note Off filter)
-                                if !self.midi_learn.should_capture(&captured) {
-                                    continue; // Skip this event, check next
-                                }
+                                if sampling_active {
+                                    // Add sample to detection buffer
+                                    if self.midi_learn.add_detection_sample(&captured) {
+                                        // Buffer is complete - finalize mapping
+                                        self.midi_learn.finalize_mapping();
+                                        break;
+                                    }
+                                } else if awaiting_encoder_press {
+                                    // Waiting for encoder press - capture button event
+                                    // Check if this event should be captured (debounce + Note Off filter)
+                                    if !self.midi_learn.should_capture(&captured) {
+                                        continue; // Skip this event, check next
+                                    }
 
-                                // Mark capture time for debouncing
-                                self.midi_learn.mark_captured();
-
-                                // Handle based on current phase
-                                if self.midi_learn.phase == super::midi_learn::LearnPhase::Setup {
-                                    // Shift button detection - auto-advance
-                                    self.midi_learn.shift_mapping = Some(captured);
-                                    self.midi_learn.advance();
+                                    // Record the encoder press and advance
+                                    self.midi_learn.record_encoder_press(captured);
+                                    break;
                                 } else {
-                                    // Mapping phase - record and advance
-                                    self.midi_learn.record_mapping(captured);
-                                }
+                                    // Not sampling yet - check if we should start
 
-                                // Only process one valid event per tick
-                                break;
+                                    // Check if this event should be captured (debounce + Note Off filter)
+                                    if !self.midi_learn.should_capture(&captured) {
+                                        continue; // Skip this event, check next
+                                    }
+
+                                    // Mark capture time for debouncing
+                                    self.midi_learn.mark_captured();
+
+                                    // Handle based on current phase
+                                    if self.midi_learn.phase == super::midi_learn::LearnPhase::Setup {
+                                        // Shift button detection - auto-advance
+                                        self.midi_learn.shift_mapping = Some(captured);
+                                        self.midi_learn.advance();
+                                    } else {
+                                        // Mapping phase - start hardware detection
+                                        // record_mapping creates buffer, adds first sample
+                                        // For buttons (Note events), it completes immediately
+                                        self.midi_learn.record_mapping(captured);
+                                    }
+
+                                    // Only start one capture per tick
+                                    break;
+                                }
+                            }
+
+                            // Check if detection timed out (1 second elapsed)
+                            if self.midi_learn.is_detection_complete() {
+                                self.midi_learn.finalize_mapping();
                             }
                         }
                     }
@@ -1080,7 +1113,11 @@ impl MeshApp {
                         self.midi_learn.go_back();
                     }
                     Skip => {
-                        self.midi_learn.advance();
+                        if self.midi_learn.awaiting_encoder_press {
+                            self.midi_learn.skip_encoder_press();
+                        } else {
+                            self.midi_learn.advance();
+                        }
                     }
                     Save => {
                         self.status = format!(

@@ -15,7 +15,7 @@ use iced::widget::{button, column, container, row, text, text_input, Space};
 use iced::{Alignment, Color, Element, Length};
 use mesh_midi::{
     ControlBehavior, ControlMapping, DeckTargetConfig, DeviceProfile, FeedbackMapping,
-    MidiConfig, MidiControlConfig,
+    HardwareType, MidiConfig, MidiControlConfig, MidiSampleBuffer,
 };
 
 /// Debounce duration for MIDI capture (prevents release/encoder spam from double-mapping)
@@ -166,6 +166,8 @@ pub struct LearnedMapping {
     pub number: u8,
     /// Whether this is a Note or CC message
     pub is_note: bool,
+    /// Detected hardware type (Button, Knob, Fader, Encoder, etc.)
+    pub hardware_type: HardwareType,
 }
 
 /// Raw MIDI event captured during learn mode
@@ -245,6 +247,18 @@ pub struct MidiLearnState {
     /// Timestamp of last successful capture (for debouncing)
     last_capture_time: Option<Instant>,
 
+    // Hardware detection state
+    /// Active sample buffer for hardware type detection (None when not sampling)
+    pub detection_buffer: Option<MidiSampleBuffer>,
+    /// Last detected hardware type (for display)
+    pub detected_hardware: Option<HardwareType>,
+
+    // Encoder press capture state
+    /// True when waiting for user to press an encoder after rotation was captured
+    pub awaiting_encoder_press: bool,
+    /// The target we just mapped (to associate encoder press with it)
+    encoder_rotation_target: Option<HighlightTarget>,
+
     // Setup phase state
     /// Controller name (user input)
     pub controller_name: String,
@@ -281,6 +295,10 @@ impl MidiLearnState {
             pending_mappings: Vec::new(),
             last_captured: None,
             last_capture_time: None,
+            detection_buffer: None,
+            detected_hardware: None,
+            awaiting_encoder_press: false,
+            encoder_rotation_target: None,
             controller_name: String::new(),
             deck_count: 2,
             has_layer_toggle: false,
@@ -367,28 +385,182 @@ impl MidiLearnState {
             LearnPhase::Mixer => self.go_back_mixer(),
             LearnPhase::Browser => self.go_back_browser(),
             LearnPhase::Review => {
-                // Go back to browser
+                // Go back to last step of browser phase
                 self.phase = LearnPhase::Browser;
-                self.enter_browser_phase();
+                self.total_steps = 4 + self.deck_count;
+                self.current_step = self.total_steps - 1;
+                self.update_browser_target();
             }
         }
     }
 
     /// Record a captured MIDI event for the current target
+    ///
+    /// This starts the hardware detection process by creating a sample buffer.
+    /// Call `add_sample` for subsequent events, then `finalize_mapping` when complete.
     pub fn record_mapping(&mut self, event: CapturedMidiEvent) {
         self.last_captured = Some(event.clone());
 
-        if let Some(target) = self.highlight_target {
+        if self.highlight_target.is_some() {
+            // Start sampling for hardware detection
+            self.detection_buffer = Some(MidiSampleBuffer::new(
+                event.channel,
+                event.number,
+                event.is_note,
+            ));
+
+            // Add the first sample
+            let is_note_on = event.is_note && event.value > 0;
+            if let Some(ref mut buffer) = self.detection_buffer {
+                buffer.add_sample(event.value, is_note_on, Some(event.number));
+            }
+
+            self.status = format!("Sampling: {} (move control...)", event.display());
+
+            // For Note events (buttons), complete immediately
+            if event.is_note {
+                self.finalize_mapping();
+            }
+        }
+    }
+
+    /// Add a sample to the active detection buffer
+    ///
+    /// Returns true if the buffer is now complete and ready to finalize
+    pub fn add_detection_sample(&mut self, event: &CapturedMidiEvent) -> bool {
+        if let Some(ref mut buffer) = self.detection_buffer {
+            // Check if event matches the control being sampled
+            if buffer.matches(event.channel, event.number, event.is_note) {
+                let is_note_on = event.is_note && event.value > 0;
+                buffer.add_sample(event.value, is_note_on, Some(event.number));
+                self.last_captured = Some(event.clone());
+
+                // Update status with sample count
+                let count = buffer.sample_count();
+                let progress = (buffer.elapsed_ratio() * 100.0) as u8;
+                self.status = format!("Sampling... {} samples ({}%)", count, progress);
+
+                return buffer.is_complete();
+            }
+        }
+        false
+    }
+
+    /// Check if detection buffer is complete (timed out or sufficient samples)
+    pub fn is_detection_complete(&self) -> bool {
+        self.detection_buffer
+            .as_ref()
+            .map(|b| b.is_complete())
+            .unwrap_or(false)
+    }
+
+    /// Check if a target is an encoder that should prompt for press capture
+    fn should_prompt_encoder_press(target: HighlightTarget, hw_type: HardwareType) -> bool {
+        // Only prompt for encoder press if we detected an encoder-type control
+        if !matches!(hw_type, HardwareType::Encoder | HardwareType::JogWheel) {
+            return false;
+        }
+
+        // These targets are encoders that typically have a press function
+        matches!(target, HighlightTarget::BrowserEncoder)
+    }
+
+    /// Finalize the mapping with detected hardware type
+    pub fn finalize_mapping(&mut self) {
+        if let (Some(target), Some(ref buffer)) = (self.highlight_target, &self.detection_buffer) {
+            let hw_type = buffer.analyze();
+            self.detected_hardware = Some(hw_type);
+
             self.pending_mappings.push(LearnedMapping {
                 target,
-                channel: event.channel,
-                number: event.number,
-                is_note: event.is_note,
+                channel: buffer.get_channel(),
+                number: buffer.get_number(),
+                is_note: buffer.is_note(),
+                hardware_type: hw_type,
             });
 
-            self.status = format!("Mapped: {}", event.display());
+            self.status = format!("Mapped as {:?}", hw_type);
+            log::info!(
+                "MIDI Learn: Mapped {:?} as {:?} (ch={}, num={})",
+                target,
+                hw_type,
+                buffer.get_channel(),
+                buffer.get_number()
+            );
+
+            // Clear buffer
+            self.detection_buffer = None;
+
+            // Check if we should prompt for encoder press
+            if Self::should_prompt_encoder_press(target, hw_type) {
+                self.awaiting_encoder_press = true;
+                self.encoder_rotation_target = Some(target);
+                self.highlight_target = Some(HighlightTarget::BrowserSelect);
+                self.status = "Now PRESS the encoder (or skip if it doesn't click)".to_string();
+                self.last_captured = None; // Clear to show waiting state
+                log::info!("MIDI Learn: Prompting for encoder press");
+            } else {
+                self.advance();
+            }
+        }
+    }
+
+    /// Record an encoder press mapping (called when awaiting_encoder_press is true)
+    pub fn record_encoder_press(&mut self, event: CapturedMidiEvent) {
+        if !self.awaiting_encoder_press {
+            return;
+        }
+
+        // Store the encoder press mapping
+        self.pending_mappings.push(LearnedMapping {
+            target: HighlightTarget::BrowserSelect,
+            channel: event.channel,
+            number: event.number,
+            is_note: event.is_note,
+            hardware_type: HardwareType::Button, // Encoder press is always a button
+        });
+
+        self.last_captured = Some(event.clone());
+        self.status = format!("Encoder press mapped: {}", event.display());
+        log::info!(
+            "MIDI Learn: Encoder press mapped (ch={}, num={}, is_note={})",
+            event.channel,
+            event.number,
+            event.is_note
+        );
+
+        // Clear encoder press state and advance
+        self.awaiting_encoder_press = false;
+        self.encoder_rotation_target = None;
+        self.mark_captured();
+        self.advance();
+    }
+
+    /// Skip encoder press capture
+    pub fn skip_encoder_press(&mut self) {
+        if self.awaiting_encoder_press {
+            log::info!("MIDI Learn: Encoder press skipped");
+            self.awaiting_encoder_press = false;
+            self.encoder_rotation_target = None;
             self.advance();
         }
+    }
+
+    /// Remove any existing mappings for a given target
+    ///
+    /// Used by go_back methods to remove mappings before re-learning.
+    /// This is idempotent - safe to call even if no mapping exists.
+    fn remove_mappings_for_target(&mut self, target: HighlightTarget) {
+        self.pending_mappings.retain(|m| {
+            if m.target == target {
+                return false;
+            }
+            // If removing browser encoder, also remove its paired press mapping
+            if target == HighlightTarget::BrowserEncoder && m.target == HighlightTarget::BrowserSelect {
+                return false;
+            }
+            true
+        });
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -486,10 +658,13 @@ impl MidiLearnState {
     }
 
     fn go_back_transport(&mut self) {
+        // Remove mapping for current target (if any exists)
+        if let Some(target) = self.highlight_target {
+            self.remove_mappings_for_target(target);
+        }
+
         if self.current_step > 0 {
             self.current_step -= 1;
-            // Remove the last mapping for this target
-            self.pending_mappings.pop();
             self.update_transport_target();
         } else {
             // Go back to setup
@@ -562,16 +737,19 @@ impl MidiLearnState {
     }
 
     fn go_back_pads(&mut self) {
+        // Remove mapping for current target (if any exists)
+        if let Some(target) = self.highlight_target {
+            self.remove_mappings_for_target(target);
+        }
+
         if self.current_step > 0 {
             self.current_step -= 1;
-            self.pending_mappings.pop();
             self.update_pads_target();
         } else {
             // Go back to transport
             self.phase = LearnPhase::Transport;
             self.current_step = self.deck_count * 7 - 1;
             self.total_steps = self.deck_count * 7;
-            self.pending_mappings.pop();
             self.update_transport_target();
         }
     }
@@ -605,9 +783,13 @@ impl MidiLearnState {
     }
 
     fn go_back_stems(&mut self) {
+        // Remove mapping for current target (if any exists)
+        if let Some(target) = self.highlight_target {
+            self.remove_mappings_for_target(target);
+        }
+
         if self.current_step > 0 {
             self.current_step -= 1;
-            self.pending_mappings.pop();
             self.update_stems_target();
         } else {
             // Go back to pads
@@ -615,7 +797,6 @@ impl MidiLearnState {
             self.phase = LearnPhase::Pads;
             self.current_step = self.deck_count * steps_per_deck - 1;
             self.total_steps = self.deck_count * steps_per_deck;
-            self.pending_mappings.pop();
             self.update_pads_target();
         }
     }
@@ -657,16 +838,19 @@ impl MidiLearnState {
     }
 
     fn go_back_mixer(&mut self) {
+        // Remove mapping for current target (if any exists)
+        if let Some(target) = self.highlight_target {
+            self.remove_mappings_for_target(target);
+        }
+
         if self.current_step > 0 {
             self.current_step -= 1;
-            self.pending_mappings.pop();
             self.update_mixer_target();
         } else {
             // Go back to stems
             self.phase = LearnPhase::Stems;
             self.current_step = self.deck_count * 4 - 1;
             self.total_steps = self.deck_count * 4;
-            self.pending_mappings.pop();
             self.update_stems_target();
         }
     }
@@ -706,16 +890,25 @@ impl MidiLearnState {
     }
 
     fn go_back_browser(&mut self) {
+        // Clear encoder press state if active
+        if self.awaiting_encoder_press {
+            self.awaiting_encoder_press = false;
+            self.encoder_rotation_target = None;
+        }
+
+        // Remove mapping for current target (if any exists)
+        if let Some(target) = self.highlight_target {
+            self.remove_mappings_for_target(target);
+        }
+
         if self.current_step > 0 {
             self.current_step -= 1;
-            self.pending_mappings.pop();
             self.update_browser_target();
         } else {
             // Go back to mixer
             self.phase = LearnPhase::Mixer;
             self.current_step = self.deck_count * 6 - 1;
             self.total_steps = self.deck_count * 6;
-            self.pending_mappings.pop();
             self.update_mixer_target();
         }
     }
@@ -892,24 +1085,33 @@ impl MidiLearnState {
                 _ => {}
             }
 
+            // Use detected hardware type to determine encoder mode
+            let encoder_mode = if !learned.is_note {
+                learned.hardware_type.default_encoder_mode()
+            } else {
+                None
+            };
+
+            // Adjust behavior based on detected hardware type
+            let actual_behavior = if learned.hardware_type.is_continuous() && behavior == ControlBehavior::Momentary {
+                // Continuous hardware mapped to button action - keep momentary for adapter
+                ControlBehavior::Momentary
+            } else if learned.hardware_type.is_continuous() {
+                ControlBehavior::Continuous
+            } else {
+                behavior
+            };
+
             mappings.push(ControlMapping {
                 control: control.clone(),
                 action,
                 physical_deck,
                 deck_index,
                 params: params.clone(),
-                behavior,
+                behavior: actual_behavior,
                 shift_action: None,
-                encoder_mode: if !learned.is_note && behavior == ControlBehavior::Continuous {
-                    // Use relative mode for encoders, absolute for faders
-                    if matches!(learned.target, HighlightTarget::BrowserEncoder) {
-                        Some(mesh_midi::EncoderMode::Relative)
-                    } else {
-                        Some(mesh_midi::EncoderMode::Absolute)
-                    }
-                } else {
-                    None
-                },
+                encoder_mode,
+                hardware_type: Some(learned.hardware_type),
             });
 
             // Generate LED feedback for buttons with state (same-note assumption)
@@ -1224,9 +1426,26 @@ fn view_mapping_phase(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
         text("Waiting for MIDI input...").size(12)
     };
 
-    row![prompt, Space::new().width(Length::Fill), last_midi]
-        .align_y(Alignment::Center)
-        .into()
+    // Show detected hardware type if available
+    let hw_info = if let Some(hw) = state.detected_hardware {
+        if state.awaiting_encoder_press {
+            text(format!("Detected: {:?} - now press it!", hw)).size(12)
+        } else {
+            text(format!("Detected: {:?}", hw)).size(12)
+        }
+    } else {
+        text("").size(12)
+    };
+
+    row![
+        prompt,
+        Space::new().width(Length::Fill),
+        hw_info,
+        Space::new().width(20),
+        last_midi
+    ]
+    .align_y(Alignment::Center)
+    .into()
 }
 
 /// View for the review phase
