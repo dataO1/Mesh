@@ -84,6 +84,22 @@ and mesh-widget and only if necessary in the ui.
     the scrolling and loading of tracks from the browser.
   - [x] this should be its own module, potentially with a trait, that defines
     interaction points or something? think of a good abstraction pattern
+  - [ ] for backwards compatability with old devices (like sb2) we should
+    support beat nudging via the jog wheel. this needs to work with the current
+    snapping system, that when a user nudged a beat a certain amount of samples,
+    this needs to be remembered that after beat jumping/hotcue presses and other
+    seek operations this offset is kept in mind, so the dj doest need to nudge
+    again.
+  - [ ] the zoomed and overview waveform should adjust alpha value for currently
+    not active stems. They should be visible to be inactive. make them different
+    gray tones (drums darker, bass dark, vocals middle, other light)
+  - [x] the midi exploration needs to detect various kinds of midi
+    messages/hardware types, like standart knobs, sliders/faders, encoders etc
+    with their various midi message types and while mapping defines this smartly
+    in the config and be able to automatically defer the range and format. for
+    example currently the stem for other is expecting a button , but i only have
+    a poti knob, the midi mapper needs to understand this during midi
+    exploration and corrrectly map this. here are some message types for my
 
 # Changes
 - [x] The waveform indicators of hot cues use colors, but the hot cue buttons
@@ -106,6 +122,18 @@ and mesh-widget and only if necessary in the ui.
   them to interestingly musically relevant new patterns instead of the current
   algorithmic patterns). They should be sorted from "empty sounding" (pattern 1)
   to most busy, repetetive sounding(pattern 8).
+- [x] ok now that we have midi support, we want to distinguish between performance
+  mode and mapping mode. the default mode with no flags should launch the player
+  in performance mode, where the layout is much simpler, just the canvas with
+  the waveforms on top and the file brwoser in the bottom (around 60% height and
+  40% height for the browser). make sure to not have code duplication, all the
+  logic should be not in the ui itself, but factored out if necessary (like
+  engine behaviour and interaction handlers etc) and the layout should reuse the
+  existing components.
+- [ ] in the slicer the pad slices should actually be offset a few samples (to
+  the past, like ~10ms), so the transients of drums are captured properly, beat
+  snapping etc should still work as before, just the playback should have a
+  fixed "anti-delay"
 
 
 
@@ -154,12 +182,15 @@ and mesh-widget and only if necessary in the ui.
   on the config selected slicer buffer length. if 1 bar, the resolution should
   be high.)
 - [ ] the colors of the stem status in the waveform do not match with the
-  waveform colors of the stems. bass should be red/orange, vocals green, other
-  cyan, drums yellow.
+  waveform colors of the stems and also the waveform stem colors are different
+  for zoomed and overview waveform. make this uniform and conigurable via a third style config, that is read like the other on startup (called theme.yaml), all color styling related config should lie in there and be read from the static config service. default bass should be red, vocals green, other cyan, drums yellow/orange.
 - [x] with the midi buttons having a hot cue pressed, then press play, then
   release hot cue stops the playback again. when the deck is playing releasing
   the hot cue (same for normal cue button) should not stop preview, but keep the
   deck playing.
+- [ ] it seems the deck virtual deck toggle buttons need similar logic like the
+  action pad modes. on the ddj-sb2, the deck toggle buttons make the deck
+  specific buttons have their own channel (action buttons, mode switches)
 
 # Performance
 - [ ] Can we optimize how stems are stored, this is currently roughly 200-300 mb
