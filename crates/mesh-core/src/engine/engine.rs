@@ -254,6 +254,42 @@ impl AudioEngine {
         result.min(track.duration_samples.saturating_sub(1))
     }
 
+    /// Apply phase sync correction after a position jump
+    ///
+    /// Call this after any operation that moves a playing deck's position
+    /// (beat jump, hot cue, etc.). Handles master/slave distinction and
+    /// edge cases (no master, sync disabled, no beat grid).
+    ///
+    /// Returns the phase-corrected position, or None if no correction needed.
+    fn apply_post_jump_phase_sync(&self, deck_id: usize) -> Option<usize> {
+        // Only apply if deck is playing
+        if self.decks[deck_id].state() != PlayState::Playing {
+            return None;
+        }
+
+        let master_id = self.master_deck_id();
+        let is_master = master_id == Some(deck_id);
+        let current_pos = self.decks[deck_id].position() as usize;
+
+        let synced_pos = if is_master {
+            // Master: preserve own phase for slaves to follow
+            self.self_phase_locked_position(deck_id, current_pos)
+        } else if master_id.is_some() {
+            // Slave: sync to master
+            self.phase_locked_position(deck_id, current_pos)
+        } else {
+            // No master (first/only deck playing)
+            return None;
+        };
+
+        // Only return if position actually changed
+        if synced_pos != current_pos {
+            Some(synced_pos)
+        } else {
+            None
+        }
+    }
+
     /// Load a pre-prepared track with minimal mutex hold time
     ///
     /// This method uses `Deck::apply_prepared_track()` which only performs
@@ -425,22 +461,20 @@ impl AudioEngine {
                 // Playback Control (with inter-deck phase sync)
                 EngineCommand::Play { deck } => {
                     if deck < NUM_DECKS {
-                        // Check if another deck is playing (we have a master to sync to)
-                        let master_id = self.master_deck_id();
-                        let should_sync = master_id.is_some() && master_id != Some(deck);
+                        // Skip sync if coming from preview mode (Cueing) - already synced there
+                        let was_cueing = self.decks[deck].state() == PlayState::Cueing;
 
-                        // Calculate synced position before getting mutable ref
-                        let synced_pos = if should_sync {
-                            let current_pos = self.decks[deck].position() as usize;
-                            Some(self.phase_locked_position(deck, current_pos))
-                        } else {
-                            None
-                        };
-
-                        // Now apply the sync and play
-                        if let Some(pos) = synced_pos {
-                            self.decks[deck].seek(pos);
+                        // Only sync if NOT coming from preview mode
+                        if !was_cueing {
+                            let master_id = self.master_deck_id();
+                            let should_sync = master_id.is_some() && master_id != Some(deck);
+                            if should_sync {
+                                let current_pos = self.decks[deck].position() as usize;
+                                let synced_pos = self.phase_locked_position(deck, current_pos);
+                                self.decks[deck].seek(synced_pos);
+                            }
                         }
+
                         self.decks[deck].play();
 
                         // Track when this deck started playing
@@ -463,10 +497,12 @@ impl AudioEngine {
                 }
                 EngineCommand::TogglePlay { deck } => {
                     if deck < NUM_DECKS {
-                        let was_playing = self.decks[deck].state() == PlayState::Playing;
+                        let state = self.decks[deck].state();
+                        let was_playing = state == PlayState::Playing;
+                        let was_cueing = state == PlayState::Cueing;
 
-                        if !was_playing {
-                            // About to play - check for sync
+                        // Only sync if transitioning from Stopped (not Cueing - already synced there)
+                        if !was_playing && !was_cueing {
                             let master_id = self.master_deck_id();
                             if master_id.is_some() && master_id != Some(deck) {
                                 let current_pos = self.decks[deck].position() as usize;
@@ -494,10 +530,26 @@ impl AudioEngine {
                     }
                 }
 
-                // CDJ-Style Cueing
+                // CDJ-Style Cueing (with inter-deck phase sync on preview)
                 EngineCommand::CuePress { deck } => {
-                    if let Some(d) = self.decks.get_mut(deck) {
-                        d.cue_press();
+                    if deck < NUM_DECKS {
+                        let was_stopped = self.decks[deck].state() == PlayState::Stopped;
+
+                        self.decks[deck].cue_press();
+
+                        // If we just entered preview mode from stopped, sync the position
+                        // so the preview sounds correctly aligned with master
+                        if was_stopped && self.decks[deck].state() == PlayState::Cueing {
+                            if let Some(master_id) = self.master_deck_id() {
+                                if master_id != deck {
+                                    let current_pos = self.decks[deck].position() as usize;
+                                    let synced_pos = self.phase_locked_position(deck, current_pos);
+                                    if synced_pos != current_pos {
+                                        self.decks[deck].seek(synced_pos);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 EngineCommand::CueRelease { deck } => {
@@ -514,30 +566,27 @@ impl AudioEngine {
                 // Hot Cues (with inter-deck phase sync)
                 EngineCommand::HotCuePress { deck, slot } => {
                     if deck < NUM_DECKS {
-                        let was_playing = self.decks[deck].state() == PlayState::Playing;
-                        let master_id = self.master_deck_id();
-                        let is_master = master_id == Some(deck);
-
-                        // Get hot cue position before triggering (for phase correction)
-                        let hot_cue_pos = self.decks[deck].hot_cue(slot).map(|c| c.position);
+                        // Save state before hot cue (pressing when stopped enters preview mode)
+                        let was_stopped = self.decks[deck].state() == PlayState::Stopped;
 
                         // Execute the hot cue press (jump/preview/set)
                         self.decks[deck].hot_cue_press(slot);
 
-                        // If we jumped while playing, apply phase correction
-                        if was_playing {
-                            if let Some(target_pos) = hot_cue_pos {
-                                let synced_pos = if is_master {
-                                    // Master: preserve own phase for slaves
-                                    self.self_phase_locked_position(deck, target_pos)
-                                } else if master_id.is_some() {
-                                    // Slave: sync to master
-                                    self.phase_locked_position(deck, target_pos)
-                                } else {
-                                    // No master (first deck to play)
-                                    target_pos
-                                };
-                                self.decks[deck].seek(synced_pos);
+                        // Apply phase sync correction:
+                        // - If was playing: helper handles it (deck is still Playing)
+                        // - If was stopped (now Cueing): sync preview position so it sounds correct
+                        if let Some(synced_pos) = self.apply_post_jump_phase_sync(deck) {
+                            self.decks[deck].seek(synced_pos);
+                        } else if was_stopped {
+                            // Helper returns None for Cueing state, but we still need to sync preview
+                            if let Some(master_id) = self.master_deck_id() {
+                                if master_id != deck {
+                                    let current_pos = self.decks[deck].position() as usize;
+                                    let synced_pos = self.phase_locked_position(deck, current_pos);
+                                    if synced_pos != current_pos {
+                                        self.decks[deck].seek(synced_pos);
+                                    }
+                                }
                             }
                         }
                     }
@@ -595,15 +644,27 @@ impl AudioEngine {
                     }
                 }
 
-                // Beat Jump
+                // Beat Jump (with inter-deck phase sync)
                 EngineCommand::BeatJumpForward { deck } => {
-                    if let Some(d) = self.decks.get_mut(deck) {
-                        d.beat_jump_forward();
+                    if deck < NUM_DECKS {
+                        // Execute beat jump (handles position + loop movement)
+                        self.decks[deck].beat_jump_forward();
+
+                        // Apply phase sync correction if playing
+                        if let Some(synced_pos) = self.apply_post_jump_phase_sync(deck) {
+                            self.decks[deck].seek(synced_pos);
+                        }
                     }
                 }
                 EngineCommand::BeatJumpBackward { deck } => {
-                    if let Some(d) = self.decks.get_mut(deck) {
-                        d.beat_jump_backward();
+                    if deck < NUM_DECKS {
+                        // Execute beat jump (handles position + loop movement)
+                        self.decks[deck].beat_jump_backward();
+
+                        // Apply phase sync correction if playing
+                        if let Some(synced_pos) = self.apply_post_jump_phase_sync(deck) {
+                            self.decks[deck].seek(synced_pos);
+                        }
                     }
                 }
                 // Stem Control
