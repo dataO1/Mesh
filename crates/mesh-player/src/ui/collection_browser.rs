@@ -152,11 +152,13 @@ impl CollectionBrowserState {
                 None
             }
             CollectionBrowserMessage::ScrollBy(delta) => {
-                // Move selection by delta within the track list
+                // If no folder selected or tracks are empty, scroll through folders (tree)
                 if self.tracks.is_empty() {
+                    self.scroll_tree(delta);
                     return None;
                 }
 
+                // Otherwise, scroll through tracks in the current folder
                 // Find current selection index
                 let current_idx = self
                     .browser
@@ -190,7 +192,21 @@ impl CollectionBrowserState {
                 if let Some(path) = self.selected_track_path.clone() {
                     return Some((0, path));
                 }
-                // Otherwise, could expand/collapse current folder, but for now just ignore
+                // If no track selected but we have a selected folder in tree, enter it
+                if let Some(ref folder_id) = self.browser.tree_state.selected.clone() {
+                    // Expand the folder in the tree view
+                    self.browser.tree_state.expanded.insert(folder_id.clone());
+                    // Set as current folder and load its tracks
+                    self.browser.current_folder = Some(folder_id.clone());
+                    if let Some(ref storage) = self.storage {
+                        self.tracks = get_tracks_for_folder(storage, folder_id);
+                    }
+                    // Select first track if any
+                    if let Some(first_track) = self.tracks.first() {
+                        self.browser.table_state.select(first_track.id.clone());
+                        self.selected_track_path = self.get_track_path(&first_track.id);
+                    }
+                }
                 None
             }
         }
@@ -266,6 +282,64 @@ impl CollectionBrowserState {
             .spacing(0)
             .height(Length::Fill)
             .into()
+    }
+
+    /// Compact view without load buttons (for performance mode)
+    pub fn view_compact(&self) -> Element<CollectionBrowserMessage> {
+        playlist_browser(
+            &self.tree_nodes,
+            &self.tracks,
+            &self.browser,
+            CollectionBrowserMessage::Browser,
+        )
+    }
+
+    /// Scroll through tree nodes (folders) when not viewing tracks
+    fn scroll_tree(&mut self, delta: i32) {
+        // Build flat list of visible tree nodes
+        let visible_nodes = self.get_visible_tree_nodes();
+        if visible_nodes.is_empty() {
+            return;
+        }
+
+        // Find current selection index
+        let current_idx = self
+            .browser
+            .tree_state
+            .selected
+            .as_ref()
+            .and_then(|selected| visible_nodes.iter().position(|id| id == selected))
+            .unwrap_or(0);
+
+        // Calculate new index with clamping
+        let new_idx = if delta > 0 {
+            (current_idx + delta as usize).min(visible_nodes.len() - 1)
+        } else {
+            current_idx.saturating_sub((-delta) as usize)
+        };
+
+        // Select the new node
+        if let Some(node_id) = visible_nodes.get(new_idx) {
+            self.browser.tree_state.selected = Some(node_id.clone());
+        }
+    }
+
+    /// Get flat list of visible tree node IDs (respecting expansion state)
+    fn get_visible_tree_nodes(&self) -> Vec<NodeId> {
+        let mut visible = Vec::new();
+        self.collect_visible_nodes(&self.tree_nodes, &mut visible);
+        visible
+    }
+
+    /// Recursively collect visible node IDs
+    fn collect_visible_nodes(&self, nodes: &[TreeNode<NodeId>], visible: &mut Vec<NodeId>) {
+        for node in nodes {
+            visible.push(node.id.clone());
+            // Only include children if this node is expanded
+            if self.browser.tree_state.expanded.contains(&node.id) {
+                self.collect_visible_nodes(&node.children, visible);
+            }
+        }
     }
 
 }

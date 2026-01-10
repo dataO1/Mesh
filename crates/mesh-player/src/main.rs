@@ -33,7 +33,9 @@ fn main() -> iced::Result {
 
     log::info!("mesh-player starting up");
     if start_midi_learn {
-        log::info!("MIDI learn mode requested via --midi-learn flag");
+        log::info!("Mapping mode requested via --midi-learn flag");
+    } else {
+        log::info!("Starting in performance mode (use --midi-learn for full UI)");
     }
 
     // Initialize Rayon thread pool before audio starts
@@ -94,9 +96,10 @@ fn main() -> iced::Result {
             let sender = command_sender_cell.borrow_mut().take();
             let deck_atomics = deck_atomics_cell.borrow_mut().take();
             let slicer_atomics = slicer_atomics_cell.borrow_mut().take();
-            let app = MeshApp::new(sender, deck_atomics, slicer_atomics, jack_sample_rate);
+            // mapping_mode = true shows full UI with controls, false = performance mode
+            let app = MeshApp::new(sender, deck_atomics, slicer_atomics, jack_sample_rate, start_midi_learn);
 
-            // If --midi-learn flag was passed, start MIDI learn mode
+            // If --midi-learn flag was passed, start MIDI learn mode (opens the drawer)
             let startup_task = if start_midi_learn {
                 Task::done(Message::MidiLearn(MidiLearnMessage::Start))
             } else {

@@ -20,11 +20,12 @@ use super::{generate_peaks, smooth_peaks_gaussian, DEFAULT_WIDTH};
 // =============================================================================
 
 /// Overview waveform height in pixels (compact)
-pub const WAVEFORM_HEIGHT: f32 = 45.0;
+/// 54px = 1080/20, scales to 108px on UHD (2160p)
+pub const WAVEFORM_HEIGHT: f32 = 54.0;
 
 /// Zoomed waveform height in pixels (detailed, larger)
-/// Set to 160px to match deck control section height
-pub const ZOOMED_WAVEFORM_HEIGHT: f32 = 160.0;
+/// 180px = 1080/6, scales to 360px on UHD (2160p)
+pub const ZOOMED_WAVEFORM_HEIGHT: f32 = 180.0;
 
 /// Gap between zoomed and overview waveforms in combined view
 pub const COMBINED_WAVEFORM_GAP: f32 = 6.0;
@@ -755,7 +756,8 @@ impl Default for CombinedState {
 // =============================================================================
 
 /// Height of deck header row showing deck number and track name
-pub const DECK_HEADER_HEIGHT: f32 = 22.0;
+/// 24px = 1080/45, scales to 48px on UHD (2160p)
+pub const DECK_HEADER_HEIGHT: f32 = 24.0;
 
 /// State for 4-deck player canvas (all waveforms in one)
 ///

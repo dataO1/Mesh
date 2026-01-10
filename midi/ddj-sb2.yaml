@@ -641,6 +641,17 @@ devices:
     shift_action: null
     encoder_mode: relative
   - control:
+      type: Note
+      channel: 6
+      note: 65
+    action: browser.select
+    physical_deck: null
+    deck_index: null
+    params: {}
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+  - control:
       type: ControlChange
       channel: 6
       cc: 5

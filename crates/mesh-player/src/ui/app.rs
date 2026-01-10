@@ -34,6 +34,16 @@ use super::mixer_view::{MixerView, MixerMessage};
 use super::player_canvas::{view_player_canvas, PlayerCanvasState};
 use super::settings::SettingsState;
 
+/// UI display mode - affects layout only, not engine behavior
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AppMode {
+    /// Simplified layout: waveform canvas + browser only (for live performance)
+    #[default]
+    Performance,
+    /// Full layout with deck controls and mixer (for MIDI mapping/configuration)
+    Mapping,
+}
+
 /// Application state
 pub struct MeshApp {
     /// Command sender for lock-free communication with audio engine
@@ -74,6 +84,8 @@ pub struct MeshApp {
     midi_controller: Option<MidiController>,
     /// MIDI learn mode state
     midi_learn: MidiLearnState,
+    /// UI display mode (performance vs mapping)
+    app_mode: AppMode,
 }
 
 /// Messages that can be sent to the application
@@ -137,6 +149,7 @@ impl MeshApp {
         deck_atomics: Option<[Arc<DeckAtomics>; NUM_DECKS]>,
         slicer_atomics: Option<[Arc<SlicerAtomics>; NUM_DECKS]>,
         jack_sample_rate: u32,
+        mapping_mode: bool,
     ) -> Self {
         // Load configuration
         let config_path = config::default_config_path();
@@ -213,6 +226,7 @@ impl MeshApp {
             settings,
             midi_controller,
             midi_learn: MidiLearnState::new(),
+            app_mode: if mapping_mode { AppMode::Mapping } else { AppMode::Performance },
         }
     }
 
@@ -1310,6 +1324,44 @@ impl MeshApp {
 
     /// Build the view
     pub fn view(&self) -> Element<Message> {
+        // Build base content based on app mode
+        let base = match self.app_mode {
+            AppMode::Performance => self.view_performance_mode(),
+            AppMode::Mapping => self.view_mapping_mode(),
+        };
+
+        // Apply overlays (MIDI learn drawer and settings modal) - same for both modes
+        self.apply_overlays(base)
+    }
+
+    /// Performance mode: simplified layout with canvas (~60%) + browser (~40%)
+    /// Waveform heights are fractional for clean display on Full HD and UHD screens
+    /// For live performance with MIDI controller - no load buttons
+    fn view_performance_mode(&self) -> Element<Message> {
+        let header = self.view_header();
+        let canvas = view_player_canvas(&self.player_canvas_state);
+        // Use compact browser (no load buttons) for performance mode
+        let browser = self.collection_browser.view_compact().map(Message::CollectionBrowser);
+        let status_bar = container(text(&self.status).size(12)).padding(5);
+
+        column![
+            header,
+            container(canvas)
+                .width(Length::Fill)
+                .height(Length::FillPortion(11)),  // ~55% (11/20)
+            container(browser)
+                .width(Length::Fill)
+                .height(Length::FillPortion(9)),   // ~45% (9/20)
+            status_bar,
+        ]
+        .spacing(8)
+        .padding(10)
+        .into()
+    }
+
+    /// Mapping mode: full 3-column layout with deck controls and mixer
+    /// For MIDI mapping/configuration
+    fn view_mapping_mode(&self) -> Element<Message> {
         // Header with global controls
         let header = self.view_header();
 
@@ -1363,22 +1415,28 @@ impl MeshApp {
         )
         .padding(5);
 
-        let content = column![
+        column![
             header,
             main_row,
             bottom_row,
             status_bar,
         ]
         .spacing(10)
-        .padding(10);
+        .padding(10)
+        .into()
+    }
 
-        let base: Element<Message> = container(content)
+    /// Apply overlays (MIDI learn drawer and settings modal) to base content
+    fn apply_overlays<'a>(&'a self, base: Element<'a, Message>) -> Element<'a, Message> {
+        use iced::widget::Space;
+
+        let base: Element<'a, Message> = container(base)
             .width(Fill)
             .height(Fill)
             .into();
 
         // MIDI Learn drawer at the bottom (if active)
-        let with_drawer: Element<Message> = if self.midi_learn.is_active {
+        let with_drawer: Element<'a, Message> = if self.midi_learn.is_active {
             let drawer = super::midi_learn::view_drawer(&self.midi_learn)
                 .map(Message::MidiLearn);
 
@@ -1464,7 +1522,8 @@ impl MeshApp {
 impl Default for MeshApp {
     fn default() -> Self {
         // Default to 48kHz when no JACK rate is available (matches SAMPLE_RATE constant)
-        Self::new(None, None, None, 48000)
+        // Default to performance mode
+        Self::new(None, None, None, 48000, false)
     }
 }
 
