@@ -156,15 +156,22 @@ and mesh-widget and only if necessary in the ui.
 - [ ] the colors of the stem status in the waveform do not match with the
   waveform colors of the stems. bass should be red/orange, vocals green, other
   cyan, drums yellow.
+- [x] with the midi buttons having a hot cue pressed, then press play, then
+  release hot cue stops the playback again. when the deck is playing releasing
+  the hot cue (same for normal cue button) should not stop preview, but keep the
+  deck playing.
 
 # Performance
 - [ ] Can we optimize how stems are stored, this is currently roughly 200-300 mb
   per multi-track file.
 
 # Future fields
-- [ ] automatic gain staging for optimal headroom and perfect sound quality
+- [ ] automatic gain staging for optimal headroom and that the dj doesnt
+  manually need to configure the trim knob for each track( some older tracks are
+  very much not loud, while modern tracks are mastered very loud, we need to
+  "normalize them" in the analysis step.).
 - [ ] real-time short-term lufs normalisation (that introduces no latency) per
-  stem using ebur128 or lufs crate ( i want stems after processing to be
+  stem using essentia or ebur128 or lufs crate ( i want stems after processing to be
   relatively comparable loudness as input stem loudness, since rave processing can either
   be very loud or silent ).
 
