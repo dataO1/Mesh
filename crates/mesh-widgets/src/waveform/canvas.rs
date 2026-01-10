@@ -26,6 +26,15 @@ const STEM_RENDER_ORDER: [usize; 4] = [1, 2, 0, 3];
 /// (bottom indicator = back layer, top indicator = front layer)
 const STEM_INDICATOR_ORDER: [usize; 4] = [3, 0, 2, 1];
 
+/// Gray colors for inactive stems (different brightness per stem type)
+/// Index: 0=Vocals (middle), 1=Drums (darkest), 2=Bass (dark), 3=Other (lightest)
+const INACTIVE_STEM_GRAYS: [Color; 4] = [
+    Color::from_rgb(0.35, 0.35, 0.35), // Vocals - middle gray
+    Color::from_rgb(0.20, 0.20, 0.20), // Drums - darkest gray
+    Color::from_rgb(0.25, 0.25, 0.25), // Bass - dark gray
+    Color::from_rgb(0.45, 0.45, 0.45), // Other - lightest gray
+];
+
 // =============================================================================
 // Canvas Interaction States
 // =============================================================================
@@ -1571,6 +1580,7 @@ fn draw_deck_quadrant(
         width,
         is_master,
         stem_colors,
+        stem_active,
     );
 
     // Draw overview waveform below zoomed
@@ -1613,6 +1623,7 @@ fn draw_deck_quadrant(
         overview_y,
         width,
         stem_colors,
+        stem_active,
     );
 }
 
@@ -1626,6 +1637,7 @@ fn draw_zoomed_at(
     width: f32,
     is_master: bool,
     stem_colors: &[Color; 4],
+    stem_active: &[bool; 4],
 ) {
     let height = ZOOMED_WAVEFORM_HEIGHT;
     let center_y = y + height / 2.0;
@@ -1795,8 +1807,15 @@ fn draw_zoomed_at(
                     continue;
                 }
                 let peaks_len = peaks.len();
-                let base_color = stem_colors[stem_idx];
-                let waveform_color = Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.7);
+
+                // Use stem color if active, gray tone if inactive
+                let waveform_color = if stem_active[stem_idx] {
+                    let base_color = stem_colors[stem_idx];
+                    Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.7)
+                } else {
+                    let gray = INACTIVE_STEM_GRAYS[stem_idx];
+                    Color::from_rgba(gray.r, gray.g, gray.b, 0.5)
+                };
 
                 // Build filled path for this stem
                 let path = Path::new(|builder| {
@@ -1930,6 +1949,7 @@ fn draw_overview_at(
     y: f32,
     width: f32,
     stem_colors: &[Color; 4],
+    stem_active: &[bool; 4],
 ) {
     let height = WAVEFORM_HEIGHT;
     let center_y = y + height / 2.0;
@@ -2041,8 +2061,14 @@ fn draw_overview_at(
             continue;
         }
 
-        let base_color = stem_colors[stem_idx];
-        let waveform_color = Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.6);
+        // Use stem color if active, gray tone if inactive
+        let waveform_color = if stem_active[stem_idx] {
+            let base_color = stem_colors[stem_idx];
+            Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.6)
+        } else {
+            let gray = INACTIVE_STEM_GRAYS[stem_idx];
+            Color::from_rgba(gray.r, gray.g, gray.b, 0.4)
+        };
 
         draw_stem_waveform_filled(frame, stem_peaks, x, center_y, height_scale, waveform_color, width);
     }
