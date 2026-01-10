@@ -591,7 +591,12 @@ impl Deck {
     pub fn toggle_play(&mut self) {
         match self.state {
             PlayState::Playing => self.pause(),
-            PlayState::Stopped | PlayState::Cueing => self.play(),
+            PlayState::Stopped | PlayState::Cueing => {
+                // Clear preview return when committing to play - this ensures
+                // releasing a hot cue button won't stop playback once play is pressed
+                self.clear_preview_return();
+                self.play();
+            }
         }
     }
 
