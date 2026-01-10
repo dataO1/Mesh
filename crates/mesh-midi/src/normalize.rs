@@ -109,11 +109,13 @@ pub fn encoder_to_delta(midi_value: u8, mode: EncoderMode) -> i32 {
             midi_value as i32 - 64
         }
         EncoderMode::Relative => {
-            // 1-63 = CW (positive), 65-127 = CCW (negative)
+            // Standard 2's complement relative encoding:
+            // 1-63 = CW steps (1 to 63 clockwise)
+            // 65-127 = CCW steps (127=-1, 126=-2, ... 65=-63)
             if midi_value >= 1 && midi_value <= 63 {
                 midi_value as i32
             } else if midi_value >= 65 {
-                -((midi_value as i32) - 64)
+                (midi_value as i32) - 128  // 127→-1, 126→-2, etc.
             } else {
                 0
             }
@@ -198,10 +200,12 @@ mod tests {
         // CW rotation (positive)
         assert_eq!(encoder_to_delta(1, EncoderMode::Relative), 1);
         assert_eq!(encoder_to_delta(10, EncoderMode::Relative), 10);
+        assert_eq!(encoder_to_delta(63, EncoderMode::Relative), 63);
 
-        // CCW rotation (negative)
-        assert_eq!(encoder_to_delta(65, EncoderMode::Relative), -1);
-        assert_eq!(encoder_to_delta(75, EncoderMode::Relative), -11);
+        // CCW rotation (negative) - 2's complement: 127=-1, 126=-2, etc.
+        assert_eq!(encoder_to_delta(127, EncoderMode::Relative), -1);
+        assert_eq!(encoder_to_delta(126, EncoderMode::Relative), -2);
+        assert_eq!(encoder_to_delta(65, EncoderMode::Relative), -63);
 
         // No movement
         assert_eq!(encoder_to_delta(64, EncoderMode::Relative), 0);

@@ -231,6 +231,9 @@ impl MidiInputHandler {
             None => return,
         };
 
+        // Log incoming MIDI event
+        log::debug!("[MIDI IN] {:?}", event);
+
         // Send raw event for learn mode (if channel is set up)
         if let Some(ref raw_tx) = callback_data.raw_event_tx {
             let _ = raw_tx.try_send(event);
@@ -241,6 +244,7 @@ impl MidiInputHandler {
             if event.matches(shift_ctrl) {
                 let held = event.is_press();
                 callback_data.shift_held.store(held, Ordering::Relaxed);
+                log::debug!("[MIDI IN] -> Shift {}", if held { "pressed" } else { "released" });
 
                 // Send shift state change to app
                 let _ = callback_data
@@ -252,11 +256,14 @@ impl MidiInputHandler {
 
         // Map event to action
         let shift = callback_data.shift_held.load(Ordering::Relaxed);
-        if let Some(message) = callback_data.mapping_engine.map_event(&event, shift) {
+        if let Some(ref message) = callback_data.mapping_engine.map_event(&event, shift) {
+            log::debug!("[MIDI IN] -> {:?}", message);
             // Send to app (non-blocking)
-            if callback_data.message_tx.try_send(message).is_err() {
+            if callback_data.message_tx.try_send(message.clone()).is_err() {
                 log::warn!("MIDI: Message channel full, dropping message");
             }
+        } else {
+            log::trace!("[MIDI IN] -> (no mapping)");
         }
     }
 
