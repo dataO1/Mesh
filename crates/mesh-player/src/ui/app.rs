@@ -26,7 +26,7 @@ use mesh_midi::{MidiController, MidiMessage as MidiMsg, MidiInputEvent, DeckActi
 use mesh_core::audio_file::StemBuffers;
 use mesh_core::engine::{DeckAtomics, EngineCommand, SlicerAtomics};
 use mesh_core::types::NUM_DECKS;
-use mesh_widgets::{PeaksComputer, PeaksComputeRequest, ZoomedViewMode};
+use mesh_widgets::{PeaksComputer, PeaksComputeRequest, ZoomedViewMode, TRACK_TABLE_SCROLLABLE_ID, TRACK_ROW_HEIGHT};
 use super::collection_browser::{CollectionBrowserState, CollectionBrowserMessage};
 use super::deck_view::{DeckView, DeckMessage};
 use super::midi_learn::{MidiLearnState, MidiLearnMessage, HighlightTarget};
@@ -564,6 +564,46 @@ impl MeshApp {
                     }
                 }
 
+                // Update MIDI LED feedback (send state to controller LEDs)
+                // Only runs if controller has output connection and feedback mappings
+                if let Some(ref mut controller) = self.midi_controller {
+                    let mut feedback = mesh_midi::FeedbackState::default();
+
+                    for deck_idx in 0..4 {
+                        // Get play state and loop active from atomics
+                        if let Some(ref atomics) = self.deck_atomics {
+                            feedback.decks[deck_idx].is_playing = atomics[deck_idx].is_playing();
+                            feedback.decks[deck_idx].loop_active = atomics[deck_idx].loop_active();
+                            feedback.decks[deck_idx].key_match_enabled =
+                                atomics[deck_idx].key_match_enabled.load(std::sync::atomic::Ordering::Relaxed);
+                        }
+
+                        // Get slicer state
+                        if let Some(ref slicer_atomics) = self.slicer_atomics {
+                            feedback.decks[deck_idx].slicer_active =
+                                slicer_atomics[deck_idx].active.load(std::sync::atomic::Ordering::Relaxed);
+                            feedback.decks[deck_idx].slicer_current_slice =
+                                slicer_atomics[deck_idx].current_slice.load(std::sync::atomic::Ordering::Relaxed);
+                        }
+
+                        // Get deck view state (hot cues, slip, stem mutes, action mode)
+                        feedback.decks[deck_idx].hot_cues_set = self.deck_views[deck_idx].hot_cues_bitmap();
+                        feedback.decks[deck_idx].slip_active = self.deck_views[deck_idx].slip_enabled();
+                        feedback.decks[deck_idx].stems_muted = self.deck_views[deck_idx].stems_muted_bitmap();
+
+                        // Set action mode for LED feedback
+                        feedback.decks[deck_idx].action_mode = match self.deck_views[deck_idx].action_mode() {
+                            super::deck_view::ActionButtonMode::HotCue => mesh_midi::ActionMode::HotCue,
+                            super::deck_view::ActionButtonMode::Slicer => mesh_midi::ActionMode::Slicer,
+                        };
+
+                        // Get mixer cue (PFL) state
+                        feedback.mixer[deck_idx].cue_enabled = self.mixer_view.cue_enabled(deck_idx);
+                    }
+
+                    controller.update_feedback(&feedback);
+                }
+
                 Task::none()
             }
 
@@ -806,12 +846,41 @@ impl MeshApp {
             }
 
             Message::CollectionBrowser(browser_msg) => {
+                // Check if this is a scroll message (for auto-scroll after)
+                let is_scroll = matches!(browser_msg, CollectionBrowserMessage::ScrollBy(_));
+
                 // Handle collection browser message and check if we need to load a track
                 if let Some((deck_idx, path)) = self.collection_browser.handle_message(browser_msg) {
                     // Convert to LoadTrack message
                     let path_str = path.to_string_lossy().to_string();
                     return self.update(Message::LoadTrack(deck_idx, path_str));
                 }
+
+                // If it was a scroll, create a Task to auto-scroll the track list
+                if is_scroll {
+                    if let Some(selected_idx) = self.collection_browser.get_selected_index() {
+                        // Calculate scroll offset to keep selection centered in view
+                        // Assume ~10 visible rows; center selection with some margin
+                        let visible_rows = 10.0_f32;
+                        let center_offset = (visible_rows / 2.0 - 1.0) * TRACK_ROW_HEIGHT;
+                        let target_y = (selected_idx as f32 * TRACK_ROW_HEIGHT - center_offset)
+                            .max(0.0);
+
+                        // Create scroll operation
+                        use iced::widget::scrollable;
+                        let offset = scrollable::AbsoluteOffset { x: 0.0, y: target_y };
+                        let scroll_id = TRACK_TABLE_SCROLLABLE_ID.clone();
+
+                        // Use iced's widget operation system to scroll
+                        return iced::advanced::widget::operate(
+                            iced::advanced::widget::operation::scrollable::scroll_to(
+                                scroll_id.into(),
+                                offset.into(),
+                            )
+                        );
+                    }
+                }
+
                 Task::none()
             }
 
@@ -1057,6 +1126,9 @@ impl MeshApp {
                     SetHasLayerToggle(has) => {
                         self.midi_learn.has_layer_toggle = has;
                     }
+                    SetPadModeSource(source) => {
+                        self.midi_learn.pad_mode_source = source;
+                    }
                     ShiftDetected(event) => {
                         self.midi_learn.shift_mapping = event;
                         self.midi_learn.advance();
@@ -1080,8 +1152,42 @@ impl MeshApp {
                     MidiDeckAction::CuePress => Some(DeckMessage::CuePressed),
                     MidiDeckAction::CueRelease => Some(DeckMessage::CueReleased),
                     MidiDeckAction::Sync => None, // TODO: Add sync support
-                    MidiDeckAction::HotCuePress { slot } => Some(DeckMessage::HotCuePressed(slot)),
-                    MidiDeckAction::HotCueRelease { slot } => Some(DeckMessage::HotCueReleased(slot)),
+                    MidiDeckAction::HotCuePress { slot } => {
+                        // Check pad mode source to determine routing
+                        let pad_mode_source = self.midi_controller
+                            .as_ref()
+                            .map(|c| c.pad_mode_source())
+                            .unwrap_or_default();
+
+                        if pad_mode_source == mesh_midi::PadModeSource::Controller {
+                            // Controller-driven: MIDI note already determined action
+                            Some(DeckMessage::HotCuePressed(slot))
+                        } else {
+                            // App-driven: check current action mode
+                            match self.deck_views[deck].action_mode() {
+                                super::deck_view::ActionButtonMode::HotCue => Some(DeckMessage::HotCuePressed(slot)),
+                                super::deck_view::ActionButtonMode::Slicer => Some(DeckMessage::SlicerTrigger(slot)),
+                            }
+                        }
+                    }
+                    MidiDeckAction::HotCueRelease { slot } => {
+                        // Check pad mode source for release handling
+                        let pad_mode_source = self.midi_controller
+                            .as_ref()
+                            .map(|c| c.pad_mode_source())
+                            .unwrap_or_default();
+
+                        if pad_mode_source == mesh_midi::PadModeSource::Controller {
+                            // Controller-driven: always hot cue release
+                            Some(DeckMessage::HotCueReleased(slot))
+                        } else {
+                            // App-driven: only release for hot cue mode
+                            match self.deck_views[deck].action_mode() {
+                                super::deck_view::ActionButtonMode::HotCue => Some(DeckMessage::HotCueReleased(slot)),
+                                super::deck_view::ActionButtonMode::Slicer => None,
+                            }
+                        }
+                    }
                     MidiDeckAction::HotCueClear { slot } => Some(DeckMessage::ClearHotCue(slot)),
                     MidiDeckAction::ToggleLoop => Some(DeckMessage::ToggleLoop),
                     MidiDeckAction::LoopHalve => Some(DeckMessage::LoopHalve),

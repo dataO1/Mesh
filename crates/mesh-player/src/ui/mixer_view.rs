@@ -237,25 +237,61 @@ impl MixerView {
         )
         .width(Length::FillPortion(75));
 
-        // Master/Cue section (~25%)
+        // Master/Cue section (~25%) with optional MIDI learn highlights
+        let master_slider = slider(0.0..=1.0, self.master_volume, MixerMessage::SetMasterVolume)
+            .step(0.01)
+            .width(70);
+        let master_elem: Element<_> = if self.is_highlighted(HighlightTarget::MasterVolume) {
+            container(master_slider)
+                .style(|_| container::Style {
+                    border: Self::highlight_border(),
+                    ..Default::default()
+                })
+                .into()
+        } else {
+            master_slider.into()
+        };
+
         let master = column![
             text("MASTER").size(10),
-            slider(0.0..=1.0, self.master_volume, MixerMessage::SetMasterVolume)
-                .step(0.01)
-                .width(70),
+            master_elem,
         ]
         .spacing(4)
         .align_x(Center);
 
+        let cue_vol_slider = slider(0.0..=1.0, self.cue_volume, MixerMessage::SetCueVolume)
+            .step(0.01)
+            .width(70);
+        let cue_vol_elem: Element<_> = if self.is_highlighted(HighlightTarget::CueVolume) {
+            container(cue_vol_slider)
+                .style(|_| container::Style {
+                    border: Self::highlight_border(),
+                    ..Default::default()
+                })
+                .into()
+        } else {
+            cue_vol_slider.into()
+        };
+
+        let cue_mix_slider = slider(0.0..=1.0, self.cue_mix, MixerMessage::SetCueMix)
+            .step(0.01)
+            .width(70);
+        let cue_mix_elem: Element<_> = if self.is_highlighted(HighlightTarget::CueMix) {
+            container(cue_mix_slider)
+                .style(|_| container::Style {
+                    border: Self::highlight_border(),
+                    ..Default::default()
+                })
+                .into()
+        } else {
+            cue_mix_slider.into()
+        };
+
         let cue = column![
             text("CUE").size(10),
-            slider(0.0..=1.0, self.cue_volume, MixerMessage::SetCueVolume)
-                .step(0.01)
-                .width(70),
+            cue_vol_elem,
             text("MIX").size(10),
-            slider(0.0..=1.0, self.cue_mix, MixerMessage::SetCueMix)
-                .step(0.01)
-                .width(70),
+            cue_mix_elem,
         ]
         .spacing(4)
         .align_x(Center);

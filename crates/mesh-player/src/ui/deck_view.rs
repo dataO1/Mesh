@@ -348,6 +348,40 @@ impl DeckView {
         self.shift_held
     }
 
+    /// Get hot cues bitmap (bit N = hot cue N is set)
+    ///
+    /// Used for LED feedback to MIDI controllers.
+    pub fn hot_cues_bitmap(&self) -> u8 {
+        let mut bitmap = 0u8;
+        for (i, pos) in self.hot_cue_positions.iter().enumerate() {
+            if i < 8 && pos.is_some() {
+                bitmap |= 1 << i;
+            }
+        }
+        bitmap
+    }
+
+    /// Check if loop is active
+    pub fn loop_active(&self) -> bool {
+        self.loop_active
+    }
+
+    /// Check if slip mode is enabled
+    pub fn slip_enabled(&self) -> bool {
+        self.slip_enabled
+    }
+
+    /// Get stem mute states as bitmap (bit N = stem N is muted)
+    pub fn stems_muted_bitmap(&self) -> u8 {
+        let mut bitmap = 0u8;
+        for (i, &muted) in self.stem_muted.iter().enumerate() {
+            if i < 4 && muted {
+                bitmap |= 1 << i;
+            }
+        }
+        bitmap
+    }
+
     /// Handle a deck message
     pub fn handle_message(&mut self, msg: DeckMessage, deck: Option<&mut Deck>) {
         let Some(deck) = deck else { return };
@@ -1268,6 +1302,18 @@ impl DeckView {
             .padding([4, 6])
             .width(Length::Fixed(28.0));
 
+        // Wrap mute button with optional MIDI learn highlight
+        let mute_elem: Element<_> = if self.is_highlighted(HighlightTarget::DeckStemMute(self.deck_idx, stem_idx)) {
+            container(mute_btn)
+                .style(|_| container::Style {
+                    border: Self::highlight_border(),
+                    ..Default::default()
+                })
+                .into()
+        } else {
+            mute_btn.into()
+        };
+
         let solo_btn = button(text(solo_label).size(10))
             .on_press(DeckMessage::ToggleStemSolo(stem_idx))
             .padding([4, 6])
@@ -1280,7 +1326,7 @@ impl DeckView {
         let top_row = row![
             tabs_row,
             Space::new().width(8),
-            mute_btn,
+            mute_elem,
             solo_btn,
             Space::new().width(8),
             effect_chain,
@@ -1361,12 +1407,22 @@ impl DeckView {
     fn view_control_row_compact(&self) -> Element<DeckMessage> {
         use iced::Length;
 
-        // Loop button
+        // Loop button with optional MIDI learn highlight
         let loop_text = if self.loop_active { "LOOP ●" } else { "LOOP" };
         let loop_btn = button(text(loop_text).size(10))
             .on_press(DeckMessage::ToggleLoop)
             .padding([4, 8])
             .width(Length::Fixed(60.0));
+        let loop_elem: Element<_> = if self.is_highlighted(HighlightTarget::DeckLoop(self.deck_idx)) {
+            container(loop_btn)
+                .style(|_| container::Style {
+                    border: Self::highlight_border(),
+                    ..Default::default()
+                })
+                .into()
+        } else {
+            loop_btn.into()
+        };
 
         // Slip button
         let slip_text = if self.slip_enabled { "SLIP ●" } else { "SLIP" };
@@ -1382,10 +1438,20 @@ impl DeckView {
             .padding([4, 8])
             .width(Length::Fixed(60.0));
 
-        // Loop length controls
+        // Loop length controls with optional MIDI learn highlights
         let loop_halve = button(text("÷2").size(10))
             .on_press(DeckMessage::LoopHalve)
             .padding([4, 6]);
+        let loop_halve_elem: Element<_> = if self.is_highlighted(HighlightTarget::DeckLoopHalve(self.deck_idx)) {
+            container(loop_halve)
+                .style(|_| container::Style {
+                    border: Self::highlight_border(),
+                    ..Default::default()
+                })
+                .into()
+        } else {
+            loop_halve.into()
+        };
 
         let loop_length_text = format_loop_length(self.loop_length_beats);
         let loop_length = container(text(loop_length_text).size(11))
@@ -1396,27 +1462,57 @@ impl DeckView {
         let loop_double = button(text("×2").size(10))
             .on_press(DeckMessage::LoopDouble)
             .padding([4, 6]);
+        let loop_double_elem: Element<_> = if self.is_highlighted(HighlightTarget::DeckLoopDouble(self.deck_idx)) {
+            container(loop_double)
+                .style(|_| container::Style {
+                    border: Self::highlight_border(),
+                    ..Default::default()
+                })
+                .into()
+        } else {
+            loop_double.into()
+        };
 
-        // Beat jump buttons (same width as LOOP/SLIP)
+        // Beat jump buttons with optional MIDI learn highlights
         let jump_back = button(text("◀◀").size(12))
             .on_press(DeckMessage::BeatJumpBack)
             .padding([4, 8])
             .width(Length::Fixed(60.0));
+        let jump_back_elem: Element<_> = if self.is_highlighted(HighlightTarget::DeckBeatJumpBack(self.deck_idx)) {
+            container(jump_back)
+                .style(|_| container::Style {
+                    border: Self::highlight_border(),
+                    ..Default::default()
+                })
+                .into()
+        } else {
+            jump_back.into()
+        };
 
         let jump_fwd = button(text("▶▶").size(12))
             .on_press(DeckMessage::BeatJumpForward)
             .padding([4, 8])
             .width(Length::Fixed(60.0));
+        let jump_fwd_elem: Element<_> = if self.is_highlighted(HighlightTarget::DeckBeatJumpForward(self.deck_idx)) {
+            container(jump_fwd)
+                .style(|_| container::Style {
+                    border: Self::highlight_border(),
+                    ..Default::default()
+                })
+                .into()
+        } else {
+            jump_fwd.into()
+        };
 
         row![
-            jump_back,
-            jump_fwd,
+            jump_back_elem,
+            jump_fwd_elem,
             Space::new().width(8),
-            loop_halve,
+            loop_halve_elem,
             loop_length,
-            loop_double,
+            loop_double_elem,
             Space::new().width(8),
-            loop_btn,
+            loop_elem,
             slip_btn,
             key_btn,
         ]
@@ -1549,11 +1645,34 @@ impl DeckView {
             .width(Length::Fixed(70.0))
             .style(move |_, _| slicer_style);
 
+        // Wrap mode buttons with optional MIDI learn highlights
+        let hotcue_elem: Element<_> = if self.is_highlighted(HighlightTarget::DeckHotCueMode(self.deck_idx)) {
+            container(hotcue_btn)
+                .style(|_| container::Style {
+                    border: Self::highlight_border(),
+                    ..Default::default()
+                })
+                .into()
+        } else {
+            hotcue_btn.into()
+        };
+
+        let slicer_elem: Element<_> = if self.is_highlighted(HighlightTarget::DeckSlicerMode(self.deck_idx)) {
+            container(slicer_btn)
+                .style(|_| container::Style {
+                    border: Self::highlight_border(),
+                    ..Default::default()
+                })
+                .into()
+        } else {
+            slicer_btn.into()
+        };
+
         row![
             shift_btn,
             Space::new().width(12),
-            hotcue_btn,
-            slicer_btn,
+            hotcue_elem,
+            slicer_elem,
         ]
         .spacing(4)
         .align_y(Center)
