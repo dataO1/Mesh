@@ -64,6 +64,7 @@ pub enum SetupStep {
     ControllerName,
     DeckCount,
     LayerToggle,
+    PadModeSource,
     ShiftButton,
 }
 
@@ -89,6 +90,7 @@ pub enum HighlightTarget {
 
     // Performance pads (deck, slot)
     DeckHotCue(usize, usize),
+    DeckSlicerPad(usize, usize),
 
     // Stem controls (deck, stem_index 0-3)
     DeckStemMute(usize, usize),
@@ -128,7 +130,10 @@ impl HighlightTarget {
             HighlightTarget::DeckHotCueMode(d) => format!("Press HOT CUE mode button on deck {}", d + 1),
             HighlightTarget::DeckSlicerMode(d) => format!("Press SLICER mode button on deck {}", d + 1),
             HighlightTarget::DeckHotCue(d, s) => {
-                format!("Press pad {} on deck {}", s + 1, d + 1)
+                format!("Press HOT CUE pad {} on deck {}", s + 1, d + 1)
+            }
+            HighlightTarget::DeckSlicerPad(d, s) => {
+                format!("Press SLICER pad {} on deck {}", s + 1, d + 1)
             }
             HighlightTarget::DeckStemMute(d, s) => {
                 let stem_name = ["VOCALS", "DRUMS", "BASS", "OTHER"][*s];
@@ -212,6 +217,8 @@ pub enum MidiLearnMessage {
     SetDeckCount(usize),
     /// Set whether controller has layer toggle buttons
     SetHasLayerToggle(bool),
+    /// Set pad mode source (controller vs app driven)
+    SetPadModeSource(mesh_midi::PadModeSource),
     /// Shift button detected (or skipped)
     ShiftDetected(Option<CapturedMidiEvent>),
 
@@ -245,6 +252,8 @@ pub struct MidiLearnState {
     pub deck_count: usize,
     /// Whether controller has layer toggle buttons
     pub has_layer_toggle: bool,
+    /// How pad button actions are determined (controller vs app driven)
+    pub pad_mode_source: mesh_midi::PadModeSource,
     /// Shift button mapping (if detected)
     pub shift_mapping: Option<CapturedMidiEvent>,
     /// Current setup step
@@ -275,6 +284,7 @@ impl MidiLearnState {
             controller_name: String::new(),
             deck_count: 2,
             has_layer_toggle: false,
+            pad_mode_source: Default::default(),
             shift_mapping: None,
             setup_step: SetupStep::ControllerName,
             status: String::new(),
@@ -398,6 +408,10 @@ impl MidiLearnState {
                 self.status = "Does your controller have layer toggle buttons?".to_string();
             }
             SetupStep::LayerToggle => {
+                self.setup_step = SetupStep::PadModeSource;
+                self.status = "How does your controller handle pad modes?".to_string();
+            }
+            SetupStep::PadModeSource => {
                 self.setup_step = SetupStep::ShiftButton;
                 self.status = "Press your SHIFT button (or skip)".to_string();
             }
@@ -421,9 +435,13 @@ impl MidiLearnState {
                 self.setup_step = SetupStep::DeckCount;
                 self.status = "How many physical decks?".to_string();
             }
-            SetupStep::ShiftButton => {
+            SetupStep::PadModeSource => {
                 self.setup_step = SetupStep::LayerToggle;
                 self.status = "Does your controller have layer toggle buttons?".to_string();
+            }
+            SetupStep::ShiftButton => {
+                self.setup_step = SetupStep::PadModeSource;
+                self.status = "How does your controller handle pad modes?".to_string();
             }
         }
     }
@@ -431,16 +449,16 @@ impl MidiLearnState {
     fn enter_transport_phase(&mut self) {
         self.phase = LearnPhase::Transport;
         self.current_step = 0;
-        // 9 controls per deck:
-        // play, cue, loop, loop halve, loop double,
-        // beat jump back, beat jump forward, hot cue mode, slicer mode
-        self.total_steps = self.deck_count * 9;
+        // 7 controls per deck:
+        // play, cue, loop, loop halve, loop double, beat jump back, beat jump forward
+        // (mode buttons moved to pads phase for better workflow)
+        self.total_steps = self.deck_count * 7;
         self.update_transport_target();
     }
 
     fn update_transport_target(&mut self) {
-        let deck = self.current_step / 9;
-        let control = self.current_step % 9;
+        let deck = self.current_step / 7;
+        let control = self.current_step % 7;
 
         self.highlight_target = Some(match control {
             0 => HighlightTarget::DeckPlay(deck),
@@ -450,8 +468,6 @@ impl MidiLearnState {
             4 => HighlightTarget::DeckLoopDouble(deck),
             5 => HighlightTarget::DeckBeatJumpBack(deck),
             6 => HighlightTarget::DeckBeatJumpForward(deck),
-            7 => HighlightTarget::DeckHotCueMode(deck),
-            8 => HighlightTarget::DeckSlicerMode(deck),
             _ => unreachable!(),
         });
 
@@ -484,19 +500,52 @@ impl MidiLearnState {
         }
     }
 
+    /// Calculate the number of steps per deck in the pads phase
+    fn pads_steps_per_deck(&self) -> usize {
+        if self.pad_mode_source == mesh_midi::PadModeSource::Controller {
+            // Controller mode: hot cue mode + 8 hot cue pads + slicer mode + 8 slicer pads = 18
+            18
+        } else {
+            // App mode: hot cue mode + 8 pads + slicer mode = 10
+            10
+        }
+    }
+
     fn enter_pads_phase(&mut self) {
         self.phase = LearnPhase::Pads;
         self.current_step = 0;
-        // 8 hot cue pads per deck
-        self.total_steps = self.deck_count * 8;
+        self.total_steps = self.deck_count * self.pads_steps_per_deck();
         self.update_pads_target();
     }
 
     fn update_pads_target(&mut self) {
-        let deck = self.current_step / 8;
-        let pad = self.current_step % 8;
+        // Per-deck layout:
+        // Controller mode (18 steps): hot cue mode, 8 hot cue pads, slicer mode, 8 slicer pads
+        // App mode (10 steps): hot cue mode, 8 pads, slicer mode
+        let steps_per_deck = self.pads_steps_per_deck();
+        let deck = self.current_step / steps_per_deck;
+        let step_within_deck = self.current_step % steps_per_deck;
 
-        self.highlight_target = Some(HighlightTarget::DeckHotCue(deck, pad));
+        self.highlight_target = Some(if self.pad_mode_source == mesh_midi::PadModeSource::Controller {
+            // Controller mode layout:
+            // 0: hot cue mode, 1-8: hot cue pads, 9: slicer mode, 10-17: slicer pads
+            match step_within_deck {
+                0 => HighlightTarget::DeckHotCueMode(deck),
+                1..=8 => HighlightTarget::DeckHotCue(deck, step_within_deck - 1),
+                9 => HighlightTarget::DeckSlicerMode(deck),
+                10..=17 => HighlightTarget::DeckSlicerPad(deck, step_within_deck - 10),
+                _ => unreachable!(),
+            }
+        } else {
+            // App mode layout:
+            // 0: hot cue mode, 1-8: pads, 9: slicer mode
+            match step_within_deck {
+                0 => HighlightTarget::DeckHotCueMode(deck),
+                1..=8 => HighlightTarget::DeckHotCue(deck, step_within_deck - 1),
+                9 => HighlightTarget::DeckSlicerMode(deck),
+                _ => unreachable!(),
+            }
+        });
 
         if let Some(ref target) = self.highlight_target {
             self.status = target.description();
@@ -520,8 +569,8 @@ impl MidiLearnState {
         } else {
             // Go back to transport
             self.phase = LearnPhase::Transport;
-            self.current_step = self.deck_count * 9 - 1;
-            self.total_steps = self.deck_count * 9;
+            self.current_step = self.deck_count * 7 - 1;
+            self.total_steps = self.deck_count * 7;
             self.pending_mappings.pop();
             self.update_transport_target();
         }
@@ -562,9 +611,10 @@ impl MidiLearnState {
             self.update_stems_target();
         } else {
             // Go back to pads
+            let steps_per_deck = self.pads_steps_per_deck();
             self.phase = LearnPhase::Pads;
-            self.current_step = self.deck_count * 8 - 1;
-            self.total_steps = self.deck_count * 8;
+            self.current_step = self.deck_count * steps_per_deck - 1;
+            self.total_steps = self.deck_count * steps_per_deck;
             self.pending_mappings.pop();
             self.update_pads_target();
         }
@@ -624,20 +674,21 @@ impl MidiLearnState {
     fn enter_browser_phase(&mut self) {
         self.phase = LearnPhase::Browser;
         self.current_step = 0;
-        // Browser: encoder, select + Master: master vol, cue vol, cue mix + Load buttons per deck
-        // = 2 (browser) + 3 (master) + deck_count (load)
-        self.total_steps = 5 + self.deck_count;
+        // Browser: encoder + Master: master vol, cue vol, cue mix + Load buttons per deck
+        // = 1 (browser encoder) + 3 (master) + deck_count (load)
+        // NOTE: BrowserSelect removed - use separate DeckLoad buttons instead
+        self.total_steps = 4 + self.deck_count;
         self.update_browser_target();
     }
 
     fn update_browser_target(&mut self) {
         self.highlight_target = Some(match self.current_step {
             0 => HighlightTarget::BrowserEncoder,
-            1 => HighlightTarget::BrowserSelect,
-            2 => HighlightTarget::MasterVolume,
-            3 => HighlightTarget::CueVolume,
-            4 => HighlightTarget::CueMix,
-            n => HighlightTarget::DeckLoad(n - 5),
+            // BrowserSelect removed - encoder press does nothing, use DeckLoad buttons
+            1 => HighlightTarget::MasterVolume,
+            2 => HighlightTarget::CueVolume,
+            3 => HighlightTarget::CueMix,
+            n => HighlightTarget::DeckLoad(n - 4),
         });
 
         if let Some(ref target) = self.highlight_target {
@@ -682,9 +733,12 @@ impl MidiLearnState {
 
     /// Get the overall progress as (current, total)
     pub fn overall_progress(&self) -> (usize, usize) {
-        let setup_steps = 4; // name, deck count, layer toggle, shift
-        let transport_steps = self.deck_count * 9; // play, cue, loop, loop×2, beat jump, modes
-        let pads_steps = self.deck_count * 8;
+        let setup_steps = 5; // name, deck count, layer toggle, pad mode, shift
+        let transport_steps = self.deck_count * 7; // play, cue, loop, loop halve/double, beat jump
+        // Pads phase includes mode buttons + pads:
+        // Controller mode: (hot cue mode + 8 pads + slicer mode + 8 pads) = 18 per deck
+        // App mode: (hot cue mode + 8 pads + slicer mode) = 10 per deck
+        let pads_steps = self.deck_count * self.pads_steps_per_deck();
         let stems_steps = self.deck_count * 4; // 4 stem mute buttons per deck
         let mixer_steps = self.deck_count * 6; // volume, filter, eq hi/mid/lo, cue
         let browser_steps = 5 + self.deck_count; // encoder, select, master vol, cue vol, cue mix, load buttons
@@ -695,7 +749,8 @@ impl MidiLearnState {
                 SetupStep::ControllerName => 0,
                 SetupStep::DeckCount => 1,
                 SetupStep::LayerToggle => 2,
-                SetupStep::ShiftButton => 3,
+                SetupStep::PadModeSource => 3,
+                SetupStep::ShiftButton => 4,
             },
             LearnPhase::Transport => setup_steps + self.current_step,
             LearnPhase::Pads => setup_steps + transport_steps + self.current_step,
@@ -769,6 +824,11 @@ impl MidiLearnState {
                     ("deck.hot_cue_press".to_string(), Some(d), None, ControlBehavior::Momentary, Some("deck.hot_cue_set"))
                 }
 
+                // Slicer pads - layer-resolved (only in controller mode)
+                HighlightTarget::DeckSlicerPad(d, _slice) => {
+                    ("deck.slicer_trigger".to_string(), Some(d), None, ControlBehavior::Momentary, Some("deck.slicer_slice_active"))
+                }
+
                 // Stem mute buttons
                 HighlightTarget::DeckStemMute(d, _stem) => {
                     ("deck.stem_mute".to_string(), Some(d), None, ControlBehavior::Toggle, Some("deck.stem_muted"))
@@ -823,6 +883,9 @@ impl MidiLearnState {
                 HighlightTarget::DeckHotCue(_, slot) => {
                     params.insert("slot".to_string(), serde_yaml::Value::Number(slot.into()));
                 }
+                HighlightTarget::DeckSlicerPad(_, slice) => {
+                    params.insert("pad".to_string(), serde_yaml::Value::Number(slice.into()));
+                }
                 HighlightTarget::DeckStemMute(_, stem) => {
                     params.insert("stem".to_string(), serde_yaml::Value::Number(stem.into()));
                 }
@@ -838,9 +901,9 @@ impl MidiLearnState {
                 behavior,
                 shift_action: None,
                 encoder_mode: if !learned.is_note && behavior == ControlBehavior::Continuous {
-                    // Assume encoder for browser, absolute for faders
+                    // Use relative mode for encoders, absolute for faders
                     if matches!(learned.target, HighlightTarget::BrowserEncoder) {
-                        Some(mesh_midi::EncoderMode::RelativeSigned)
+                        Some(mesh_midi::EncoderMode::Relative)
                     } else {
                         Some(mesh_midi::EncoderMode::Absolute)
                     }
@@ -899,6 +962,7 @@ impl MidiLearnState {
             name: self.controller_name.clone(),
             port_match: self.controller_name.clone(), // Use name as port match hint
             deck_target,
+            pad_mode_source: self.pad_mode_source,
             shift,
             mappings,
             feedback,
@@ -1092,6 +1156,47 @@ fn view_setup_phase(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
                 next_btn
             ]
             .align_y(Alignment::Center)
+            .into()
+        }
+        SetupStep::PadModeSource => {
+            // Explanation of pad mode source
+            let label = text("Pad buttons behavior:").size(14);
+            let explanation = text(
+                "Controller-driven: Pads send different MIDI notes in hot cue vs slicer mode (e.g. DDJ-SB2). \
+                 App-driven: Same notes in all modes, app decides what they do."
+            ).size(11);
+
+            let controller_btn = button(text("Controller").size(12))
+                .on_press(MidiLearnMessage::SetPadModeSource(mesh_midi::PadModeSource::Controller))
+                .style(if state.pad_mode_source == mesh_midi::PadModeSource::Controller {
+                    button::primary
+                } else {
+                    button::secondary
+                });
+            let app_btn = button(text("App").size(12))
+                .on_press(MidiLearnMessage::SetPadModeSource(mesh_midi::PadModeSource::App))
+                .style(if state.pad_mode_source == mesh_midi::PadModeSource::App {
+                    button::primary
+                } else {
+                    button::secondary
+                });
+            let next_btn = button(text("Next").size(12))
+                .on_press(MidiLearnMessage::Next)
+                .style(button::primary);
+
+            column![
+                row![
+                    label,
+                    Space::new().width(10),
+                    controller_btn,
+                    Space::new().width(5),
+                    app_btn,
+                    Space::new().width(20),
+                    next_btn
+                ].align_y(Alignment::Center),
+                explanation
+            ]
+            .spacing(5)
             .into()
         }
         SetupStep::ShiftButton => {

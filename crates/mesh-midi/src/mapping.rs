@@ -43,7 +43,7 @@ impl ActionRegistry {
             "deck.cue_press",
             "deck.cue_release",
             "deck.sync",
-            "deck.hot_cue",
+            "deck.hot_cue_press",
             "deck.hot_cue_clear",
             "deck.toggle_loop",
             "deck.loop_halve",
@@ -179,6 +179,14 @@ impl ActionRegistry {
     }
 }
 
+/// Debounce state for actions that shouldn't fire repeatedly
+struct DebounceState {
+    /// Last time browser.select was triggered
+    last_browser_select: Option<std::time::Instant>,
+    /// Last time deck.load_selected was triggered per deck
+    last_deck_load: [Option<std::time::Instant>; 4],
+}
+
 /// Mapping engine - converts MIDI events to app messages
 pub struct MappingEngine {
     /// Control-to-mapping lookup (key is (channel, note/cc))
@@ -188,6 +196,8 @@ pub struct MappingEngine {
     deck_target: DeckTargetState,
     /// Action registry for value ranges
     action_registry: ActionRegistry,
+    /// Debounce state with interior mutability for use from Arc<Self>
+    debounce: std::sync::Mutex<DebounceState>,
 }
 
 impl MappingEngine {
@@ -209,17 +219,42 @@ impl MappingEngine {
 
         let deck_target = DeckTargetState::from_config(&profile.deck_target);
 
+        log::info!(
+            "MIDI: Loaded {} note mappings, {} CC mappings",
+            note_mappings.len(),
+            cc_mappings.len()
+        );
+
         Self {
             note_mappings,
             cc_mappings,
             deck_target,
             action_registry: ActionRegistry::new(),
+            debounce: std::sync::Mutex::new(DebounceState {
+                last_browser_select: None,
+                last_deck_load: [None; 4],
+            }),
         }
     }
 
     /// Map a MIDI event to an app message
     pub fn map_event(&self, event: &MidiInputEvent, shift_held: bool) -> Option<MidiMessage> {
-        let mapping = self.find_mapping(event)?;
+        let mapping = match self.find_mapping(event) {
+            Some(m) => m,
+            None => {
+                // Log unmapped events to help debug missing mappings
+                match event {
+                    MidiInputEvent::NoteOn { channel, note, .. }
+                    | MidiInputEvent::NoteOff { channel, note, .. } => {
+                        log::debug!("[MIDI] No mapping for Note ch={} note={}", channel, note);
+                    }
+                    MidiInputEvent::ControlChange { channel, cc, .. } => {
+                        log::debug!("[MIDI] No mapping for CC ch={} cc={}", channel, cc);
+                    }
+                }
+                return None;
+            }
+        };
 
         // Determine which action to use (shift or normal)
         let action = if shift_held {
@@ -229,10 +264,10 @@ impl MappingEngine {
         };
 
         // Resolve deck index
-        let deck = self.resolve_deck(&mapping);
+        let deck = self.resolve_deck(mapping);
 
         // Convert to MidiMessage based on action
-        self.action_to_message(action, event, &mapping, deck)
+        self.action_to_message(action, event, mapping, deck)
     }
 
     /// Find the mapping for an event
@@ -307,7 +342,7 @@ impl MappingEngine {
             }
 
             // Hot Cues
-            "deck.hot_cue" | "deck.pad_press" => {
+            "deck.hot_cue_press" | "deck.pad_press" => {
                 let slot = get_param("slot").or_else(|| get_param("pad")).unwrap_or(0);
                 if event.is_press() {
                     Some(MidiMessage::hot_cue_press(deck, slot))
@@ -513,6 +548,18 @@ impl MappingEngine {
             }
             "deck.load_selected" => {
                 if event.is_press() {
+                    // Debounce: require 300ms between load actions per deck
+                    let now = std::time::Instant::now();
+                    if deck < 4 {
+                        let mut debounce = self.debounce.lock().unwrap();
+                        if let Some(last) = debounce.last_deck_load[deck] {
+                            if now.duration_since(last) < std::time::Duration::from_millis(300) {
+                                log::debug!("MIDI: deck.load_selected debounced for deck {}", deck);
+                                return None;
+                            }
+                        }
+                        debounce.last_deck_load[deck] = Some(now);
+                    }
                     Some(MidiMessage::Deck {
                         deck,
                         action: DeckAction::LoadSelected,
@@ -616,6 +663,16 @@ impl MappingEngine {
             }
             "browser.select" => {
                 if event.is_press() {
+                    // Debounce: require 300ms between select actions to prevent repeated loads
+                    let now = std::time::Instant::now();
+                    let mut debounce = self.debounce.lock().unwrap();
+                    if let Some(last) = debounce.last_browser_select {
+                        if now.duration_since(last) < std::time::Duration::from_millis(300) {
+                            log::debug!("MIDI: browser.select debounced");
+                            return None;
+                        }
+                    }
+                    debounce.last_browser_select = Some(now);
                     Some(MidiMessage::Browser(BrowserAction::Select))
                 } else {
                     None
