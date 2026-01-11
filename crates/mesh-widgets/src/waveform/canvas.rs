@@ -691,6 +691,84 @@ fn draw_cue_markers(
     }
 }
 
+/// Orange color for drop marker
+const DROP_MARKER_COLOR: Color = Color::from_rgb(1.0, 0.5, 0.0);
+
+/// Draw drop marker (orange diamond shape)
+///
+/// The drop marker indicates the structural reference point for linked stem alignment.
+/// It's displayed as an orange diamond at the top of the waveform.
+fn draw_drop_marker(
+    frame: &mut Frame,
+    drop_marker: Option<u64>,
+    duration_samples: u64,
+    width: f32,
+    height: f32,
+    y_offset: f32,
+) {
+    if let Some(drop_sample) = drop_marker {
+        if duration_samples == 0 {
+            return;
+        }
+
+        let x = (drop_sample as f64 / duration_samples as f64 * width as f64) as f32;
+
+        // Draw vertical line (thinner than cue markers)
+        frame.fill_rectangle(
+            Point::new(x - 1.0, y_offset),
+            Size::new(2.0, height),
+            DROP_MARKER_COLOR,
+        );
+
+        // Draw diamond shape at top
+        let diamond = Path::new(|builder| {
+            builder.move_to(Point::new(x, y_offset));          // Top point
+            builder.line_to(Point::new(x - 6.0, y_offset + 8.0)); // Left point
+            builder.line_to(Point::new(x, y_offset + 16.0));      // Bottom point
+            builder.line_to(Point::new(x + 6.0, y_offset + 8.0)); // Right point
+            builder.close();
+        });
+        frame.fill(&diamond, DROP_MARKER_COLOR);
+    }
+}
+
+/// Draw drop marker for zoomed view (using window coordinates)
+fn draw_drop_marker_zoomed(
+    frame: &mut Frame,
+    drop_marker: Option<u64>,
+    window: &WindowInfo,
+    width: f32,
+    height: f32,
+) {
+    if let Some(drop_sample) = drop_marker {
+        // Only draw if within visible window
+        if drop_sample < window.start || drop_sample > window.end {
+            return;
+        }
+
+        // Calculate x position accounting for left_padding
+        let offset_from_virtual_start = window.left_padding + (drop_sample - window.start);
+        let x = (offset_from_virtual_start as f64 / window.total_samples as f64 * width as f64) as f32;
+
+        // Draw vertical line
+        frame.fill_rectangle(
+            Point::new(x - 1.0, 0.0),
+            Size::new(2.0, height),
+            DROP_MARKER_COLOR,
+        );
+
+        // Draw diamond shape at top
+        let diamond = Path::new(|builder| {
+            builder.move_to(Point::new(x, 0.0));              // Top point
+            builder.line_to(Point::new(x - 8.0, 10.0));       // Left point
+            builder.line_to(Point::new(x, 20.0));             // Bottom point
+            builder.line_to(Point::new(x + 8.0, 10.0));       // Right point
+            builder.close();
+        });
+        frame.fill(&diamond, DROP_MARKER_COLOR);
+    }
+}
+
 /// Draw beat markers for zoomed view
 fn draw_beat_markers_zoomed(
     frame: &mut Frame,
@@ -1135,6 +1213,16 @@ fn draw_overview_section(
         frame.fill(&triangle, marker.color);
     }
 
+    // Draw drop marker (orange diamond for linked stem alignment)
+    draw_drop_marker(
+        frame,
+        overview.drop_marker,
+        overview.duration_samples,
+        width,
+        overview_height,
+        overview_y,
+    );
+
     // Draw main cue point marker (orange)
     if let Some(cue_pos) = overview.cue_position {
         let cue_x = (cue_pos * width as f64) as f32;
@@ -1393,6 +1481,7 @@ where
             let stem_active = self.state.stem_active(deck_idx);
             let transpose = self.state.transpose(deck_idx);
             let key_match_enabled = self.state.key_match_enabled(deck_idx);
+            let (linked_stems, linked_active) = self.state.linked_stems(deck_idx);
 
             draw_deck_quadrant(
                 &mut frame,
@@ -1409,6 +1498,8 @@ where
                 transpose,
                 key_match_enabled,
                 self.state.stem_colors(),
+                linked_stems,
+                linked_active,
             );
         }
 
@@ -1449,6 +1540,8 @@ fn draw_deck_quadrant(
     transpose: i8,
     key_match_enabled: bool,
     stem_colors: &[Color; 4],
+    linked_stems: &[bool; 4],
+    linked_active: &[bool; 4],
 ) {
     use iced::widget::canvas::Text;
     use iced::alignment::{Horizontal, Vertical};
@@ -1532,11 +1625,59 @@ fn draw_deck_quadrant(
         });
     }
 
-    // Draw track name text (if loaded) - leave space for key on right
-    let name_x = x + badge_margin + badge_width + 8.0;
+    // Draw linked stem indicators (small diamonds between deck badge and track name)
+    // Only draw if any stems have links
+    let has_any_links = linked_stems.iter().any(|&has| has);
+    if has_any_links {
+        let link_x_start = x + badge_margin + badge_width + 4.0;
+        let link_y = y + DECK_HEADER_HEIGHT / 2.0;
+        let diamond_size = 4.0;
+        let diamond_gap = 2.0;
+
+        for (stem_idx, &has_link) in linked_stems.iter().enumerate() {
+            if has_link {
+                let dx = link_x_start + (stem_idx as f32) * (diamond_size * 2.0 + diamond_gap);
+                let is_active = linked_active[stem_idx];
+
+                // Use stem color for the diamond, brighter if active
+                let base_color = stem_colors[stem_idx];
+                let diamond_color = if is_active {
+                    // Bright stem color when linked stem is active
+                    Color::from_rgba(base_color.r, base_color.g, base_color.b, 1.0)
+                } else {
+                    // Dimmed when link exists but using original
+                    Color::from_rgba(base_color.r * 0.5, base_color.g * 0.5, base_color.b * 0.5, 0.6)
+                };
+
+                // Draw diamond shape
+                let diamond = Path::new(|builder| {
+                    builder.move_to(Point::new(dx, link_y - diamond_size)); // Top
+                    builder.line_to(Point::new(dx - diamond_size, link_y)); // Left
+                    builder.line_to(Point::new(dx, link_y + diamond_size)); // Bottom
+                    builder.line_to(Point::new(dx + diamond_size, link_y)); // Right
+                    builder.close();
+                });
+                frame.fill(&diamond, diamond_color);
+
+                // Add small "L" indicator for "linked" when active
+                if is_active {
+                    frame.stroke(
+                        &diamond,
+                        Stroke::default()
+                            .with_color(Color::WHITE)
+                            .with_width(0.5),
+                    );
+                }
+            }
+        }
+    }
+
+    // Draw track name text (if loaded) - leave space for key on right and linked indicators
+    let linked_indicator_space = if has_any_links { 48.0 } else { 0.0 }; // ~4 diamonds + gaps
+    let name_x = x + badge_margin + badge_width + 8.0 + linked_indicator_space;
     // More space needed when showing transpose info (e.g. "Am → +2")
     let key_space = if !track_key.is_empty() { 80.0 } else { 0.0 };
-    let max_name_width = width - badge_width - badge_margin * 2.0 - 16.0 - key_space;
+    let max_name_width = width - badge_width - badge_margin * 2.0 - 16.0 - key_space - linked_indicator_space;
 
     if deck.overview.has_track && !track_name.is_empty() {
         // Truncate track name if too long (rough estimate: ~7px per char)
@@ -1581,6 +1722,7 @@ fn draw_deck_quadrant(
         is_master,
         stem_colors,
         stem_active,
+        linked_active,
     );
 
     // Draw overview waveform below zoomed
@@ -1624,6 +1766,7 @@ fn draw_deck_quadrant(
         width,
         stem_colors,
         stem_active,
+        linked_active,
     );
 }
 
@@ -1638,6 +1781,7 @@ fn draw_zoomed_at(
     is_master: bool,
     stem_colors: &[Color; 4],
     stem_active: &[bool; 4],
+    linked_active: &[bool; 4],
 ) {
     let height = ZOOMED_WAVEFORM_HEIGHT;
     let center_y = y + height / 2.0;
@@ -1802,7 +1946,14 @@ fn draw_zoomed_at(
 
             // Draw stems in layered order: Drums (back) → Bass → Vocals → Other (front)
             for &stem_idx in STEM_RENDER_ORDER.iter() {
-                let peaks = &zoomed.cached_peaks[stem_idx];
+                // Choose peaks source: use linked peaks if stem is linked-active and has linked peaks
+                let peaks = if linked_active[stem_idx] {
+                    zoomed.linked_cached_peaks[stem_idx]
+                        .as_ref()
+                        .unwrap_or(&zoomed.cached_peaks[stem_idx])
+                } else {
+                    &zoomed.cached_peaks[stem_idx]
+                };
                 if peaks.is_empty() {
                     continue;
                 }
@@ -1897,6 +2048,26 @@ fn draw_zoomed_at(
                 frame.fill(&triangle, marker.color);
             }
         }
+
+        // Draw drop marker (using sample_to_x for correct padding handling)
+        if let Some(drop_sample) = zoomed.drop_marker {
+            if drop_sample >= window.start && drop_sample <= window.end {
+                let drop_x = sample_to_x(drop_sample);
+                frame.fill_rectangle(
+                    Point::new(drop_x - 1.0, y),
+                    Size::new(2.0, height),
+                    DROP_MARKER_COLOR,
+                );
+                let diamond = Path::new(|builder| {
+                    builder.move_to(Point::new(drop_x, y));              // Top point
+                    builder.line_to(Point::new(drop_x - 6.0, y + 8.0));  // Left point
+                    builder.line_to(Point::new(drop_x, y + 16.0));       // Bottom point
+                    builder.line_to(Point::new(drop_x + 6.0, y + 8.0));  // Right point
+                    builder.close();
+                });
+                frame.fill(&diamond, DROP_MARKER_COLOR);
+            }
+        }
     }
 
     // Draw playhead - position depends on view mode
@@ -1950,6 +2121,7 @@ fn draw_overview_at(
     width: f32,
     stem_colors: &[Color; 4],
     stem_active: &[bool; 4],
+    linked_active: &[bool; 4],
 ) {
     let height = WAVEFORM_HEIGHT;
     let center_y = y + height / 2.0;
@@ -2056,7 +2228,14 @@ fn draw_overview_at(
     // Draw stem waveforms in layered order: Drums (back) → Bass → Vocals → Other (front)
     let height_scale = height / 2.0 * 0.85;
     for &stem_idx in STEM_RENDER_ORDER.iter() {
-        let stem_peaks = &overview.stem_waveforms[stem_idx];
+        // Choose peaks source: use linked peaks if stem is linked-active and has linked peaks
+        let stem_peaks = if linked_active[stem_idx] {
+            overview.linked_stem_waveforms[stem_idx]
+                .as_ref()
+                .unwrap_or(&overview.stem_waveforms[stem_idx])
+        } else {
+            &overview.stem_waveforms[stem_idx]
+        };
         if stem_peaks.is_empty() {
             continue;
         }

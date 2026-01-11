@@ -10,7 +10,10 @@
 //! it is resampled to SAMPLE_RATE (48000 Hz) before writing.
 
 use anyhow::{Context, Result};
-use mesh_core::audio_file::{serialize_wvfm_chunk, CuePoint, SavedLoop, StemBuffers, TrackMetadata};
+use mesh_core::audio_file::{
+    serialize_mslk_chunk, serialize_wvfm_chunk, CuePoint, SavedLoop, StemBuffers,
+    StemLinkReference, TrackMetadata,
+};
 use mesh_core::types::SAMPLE_RATE;
 use std::borrow::Cow;
 use std::fs::File;
@@ -73,8 +76,8 @@ pub fn export_stem_file(
     let block_align = num_channels * bytes_per_sample;
     let data_size = num_samples as u32 * num_channels as u32 * bytes_per_sample as u32;
 
-    // Build metadata string for bext chunk
-    let metadata_str = format_metadata_string(metadata);
+    // Build metadata string for bext chunk (includes DROP marker if set)
+    let metadata_str = metadata.to_bext_description();
     let bext_size = calculate_bext_size(&metadata_str);
 
     // Build cue chunk data
@@ -83,6 +86,12 @@ pub fn export_stem_file(
 
     // Build saved loops chunk (custom "mlop" chunk)
     let mlop_chunk_data = build_mlop_chunk(saved_loops);
+
+    // Build stem links chunk (custom "mslk" chunk for prepared mode)
+    let mslk_chunk_data = build_mslk_chunk(&metadata.stem_links);
+    if !mslk_chunk_data.is_empty() {
+        log::info!("  Stem links: {} links", metadata.stem_links.len());
+    }
 
     // Generate waveform preview and build wvfm chunk
     log::info!("  Generating waveform preview...");
@@ -94,12 +103,13 @@ pub fn export_stem_file(
     log::info!("  Waveform preview: {} bytes (padding: {})", wvfm_data.len(), wvfm_padding);
 
     // Calculate total file size
-    // RIFF header (12) + fmt chunk (24) + bext chunk + cue chunk + adtl chunk + mlop chunk + wvfm chunk + data chunk (8 + data)
+    // RIFF header (12) + fmt chunk (24) + bext chunk + cue chunk + adtl chunk + mlop chunk + mslk chunk + wvfm chunk + data chunk (8 + data)
     let chunks_size = 24 // fmt chunk
         + bext_size
         + cue_chunk_data.len() as u32
         + adtl_chunk_data.len() as u32
         + mlop_chunk_data.len() as u32
+        + mslk_chunk_data.len() as u32
         + wvfm_chunk_size
         + 8 + data_size; // data chunk header + data
 
@@ -138,6 +148,11 @@ pub fn export_stem_file(
         writer.write_all(&mlop_chunk_data)?;
     }
 
+    // Write mslk chunk (stem links - custom mesh chunk for prepared mode)
+    if !mslk_chunk_data.is_empty() {
+        writer.write_all(&mslk_chunk_data)?;
+    }
+
     // Write wvfm chunk (waveform preview for instant display)
     writer.write_all(b"wvfm")?;
     writer.write_all(&(wvfm_data.len() as u32).to_le_bytes())?;
@@ -168,28 +183,6 @@ pub fn export_stem_file(
     writer.flush()?;
     log::info!("export_stem_file: Export complete, wrote {} samples to {:?}", num_samples, path);
     Ok(())
-}
-
-/// Format metadata string for bext chunk description
-///
-/// Uses FIRST_BEAT instead of full GRID to fit within the 256-byte bext description limit.
-/// The full beat grid is regenerated from BPM + FIRST_BEAT when the file is loaded.
-fn format_metadata_string(metadata: &TrackMetadata) -> String {
-    let bpm = metadata.bpm.unwrap_or(120.0);
-    let original_bpm = metadata.original_bpm.unwrap_or(bpm);
-    let key = metadata.key.as_deref().unwrap_or("?");
-
-    // Get first beat position (either from explicit field or first beat in grid)
-    let first_beat = metadata
-        .beat_grid
-        .first_beat_sample
-        .or_else(|| metadata.beat_grid.beats.first().copied())
-        .unwrap_or(0);
-
-    format!(
-        "BPM:{:.2}|KEY:{}|FIRST_BEAT:{}|ORIGINAL_BPM:{:.2}",
-        bpm, key, first_beat, original_bpm
-    )
 }
 
 /// Calculate bext chunk size (padded to even bytes)
@@ -361,6 +354,33 @@ fn build_mlop_chunk(saved_loops: &[SavedLoop]) -> Vec<u8> {
     data
 }
 
+/// Build "mslk" (mesh stem links) custom chunk for prepared mode
+///
+/// Format:
+/// - "mslk" (4 bytes) - chunk ID
+/// - size (4 bytes) - chunk data size
+/// - data (variable) - serialized stem links from mesh_core::audio_file::serialize_mslk_chunk
+fn build_mslk_chunk(stem_links: &[StemLinkReference]) -> Vec<u8> {
+    if stem_links.is_empty() {
+        return Vec::new();
+    }
+
+    let mslk_data = serialize_mslk_chunk(stem_links);
+
+    // Pad to word boundary if needed
+    let padding = if mslk_data.len() % 2 != 0 { 1 } else { 0 };
+
+    let mut data = Vec::new();
+    data.extend_from_slice(b"mslk");
+    data.extend_from_slice(&(mslk_data.len() as u32).to_le_bytes());
+    data.extend_from_slice(&mslk_data);
+    if padding > 0 {
+        data.push(0);
+    }
+
+    data
+}
+
 /// Format color for output (use existing color or default)
 fn format_color(color: &Option<String>) -> &str {
     color.as_deref().unwrap_or("#FF5500")
@@ -400,7 +420,8 @@ mod tests {
     use mesh_core::audio_file::BeatGrid;
 
     #[test]
-    fn test_format_metadata() {
+    fn test_metadata_to_bext_description() {
+        // Test basic metadata
         let metadata = TrackMetadata {
             bpm: Some(128.0),
             original_bpm: Some(125.5),
@@ -409,11 +430,25 @@ mod tests {
             ..Default::default()
         };
 
-        let result = format_metadata_string(&metadata);
+        let result = metadata.to_bext_description();
         assert!(result.contains("BPM:128.00"));
         assert!(result.contains("KEY:Am"));
-        assert!(result.contains("FIRST_BEAT:0")); // Now uses FIRST_BEAT instead of GRID
+        assert!(result.contains("FIRST_BEAT:0"));
         assert!(result.contains("ORIGINAL_BPM:125.50"));
+    }
+
+    #[test]
+    fn test_metadata_with_drop_marker() {
+        // Test that DROP marker is included in bext description
+        let metadata = TrackMetadata {
+            bpm: Some(128.0),
+            key: Some(String::from("Am")),
+            drop_marker: Some(1234567),
+            ..Default::default()
+        };
+
+        let result = metadata.to_bext_description();
+        assert!(result.contains("DROP:1234567"), "DROP marker should be in bext description: {}", result);
     }
 
     #[test]

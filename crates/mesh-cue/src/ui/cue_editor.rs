@@ -4,6 +4,8 @@
 //! - Click on set cue → Jump to that cue position
 //! - Click on empty slot → Set cue at current playhead position
 //! - Shift+Click on set cue → Clear/delete that cue point
+//!
+//! Plus a DROP button for setting the drop marker (used for linked stem alignment).
 
 use super::app::{LoadedTrackState, Message};
 use iced::widget::{button, container, mouse_area, row, text};
@@ -11,15 +13,21 @@ use iced::{Alignment, Color, Element, Length, Theme};
 use mesh_core::types::SAMPLE_RATE;
 use mesh_widgets::CUE_COLORS;
 
-/// Render the hot cue buttons (single row of 8 action buttons)
+/// Drop marker color (orange - same as used in waveform visualization)
+const DROP_MARKER_COLOR: Color = Color::from_rgb(1.0, 0.5, 0.0);
+
+/// Render the hot cue buttons (single row of 8 action buttons + DROP button)
 pub fn view(state: &LoadedTrackState) -> Element<Message> {
-    // Create all 8 hot cue buttons in a single row
-    let buttons: Vec<Element<Message>> = (0..8)
+    // Create all 8 hot cue buttons
+    let mut buttons: Vec<Element<Message>> = (0..8)
         .map(|i| {
             let cue = state.cue_points.iter().find(|c| c.index == i as u8);
             create_hot_cue_button(i, cue)
         })
         .collect();
+
+    // Add DROP button at the end
+    buttons.push(create_drop_marker_button(state.drop_marker));
 
     let hot_cue_row = row(buttons).spacing(8).align_y(Alignment::Center);
 
@@ -29,6 +37,34 @@ pub fn view(state: &LoadedTrackState) -> Element<Message> {
         .width(Length::Fill)
         .center_x(Length::Fill)
         .into()
+}
+
+/// Create the DROP marker button
+fn create_drop_marker_button(drop_marker: Option<u64>) -> Element<'static, Message> {
+    let label_text = if let Some(position) = drop_marker {
+        let time = format_time_short(position);
+        format!("DROP\n{}", time)
+    } else {
+        "DROP".to_string()
+    };
+
+    let btn = button(text(label_text).size(11).center())
+        .width(Length::Fixed(60.0)) // Fixed width for DROP button
+        .height(Length::Fixed(44.0));
+
+    if drop_marker.is_some() {
+        // Drop marker is set - orange button, shift+click to clear
+        btn.on_press(Message::SetDropMarker) // Click updates position
+            .style(move |theme: &Theme, status| {
+                colored_button_style(theme, status, DROP_MARKER_COLOR)
+            })
+            .into()
+    } else {
+        // No drop marker - secondary button, click to set
+        btn.on_press(Message::SetDropMarker)
+            .style(iced::widget::button::secondary)
+            .into()
+    }
 }
 
 /// Create a single hot cue button
@@ -121,5 +157,111 @@ fn format_time_short(samples: u64) -> String {
         let minutes = (seconds / 60.0).floor() as u64;
         let secs = (seconds % 60.0).floor() as u64;
         format!("{}:{:02}", minutes, secs)
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────────
+// Stem Link Buttons (for prepared mode - links stored in mslk chunk)
+// ────────────────────────────────────────────────────────────────────────────────
+
+/// Stem names for display
+const STEM_NAMES: [&str; 4] = ["VOC", "DRM", "BAS", "OTH"];
+
+/// Stem colors (matching mesh_widgets::STEM_COLORS)
+const STEM_COLORS: [Color; 4] = [
+    Color::from_rgb(0.0, 0.8, 0.4),  // Vocals - green
+    Color::from_rgb(0.8, 0.2, 0.2),  // Drums - red
+    Color::from_rgb(0.2, 0.4, 0.9),  // Bass - blue
+    Color::from_rgb(0.9, 0.7, 0.1),  // Other - yellow
+];
+
+/// Render the stem link buttons (4 buttons, one per stem)
+///
+/// Each button shows the stem name and the linked track (if any).
+/// Click to start link selection, Shift+click to clear.
+pub fn view_stem_links(
+    state: &LoadedTrackState,
+    stem_link_selection: Option<usize>,
+) -> Element<Message> {
+    use mesh_core::audio_file::StemLinkReference;
+
+    let buttons: Vec<Element<Message>> = (0..4)
+        .map(|stem_idx| {
+            // Find if this stem has a link
+            let link: Option<&StemLinkReference> = state
+                .stem_links
+                .iter()
+                .find(|l| l.stem_index == stem_idx as u8);
+
+            create_stem_link_button(stem_idx, link, stem_link_selection)
+        })
+        .collect();
+
+    let row = row(buttons).spacing(8).align_y(Alignment::Center);
+
+    container(row)
+        .padding([4, 10])
+        .width(Length::Fill)
+        .center_x(Length::Fill)
+        .into()
+}
+
+/// Create a single stem link button
+fn create_stem_link_button(
+    stem_idx: usize,
+    link: Option<&mesh_core::audio_file::StemLinkReference>,
+    stem_link_selection: Option<usize>,
+) -> Element<'static, Message> {
+    let stem_name = STEM_NAMES[stem_idx];
+    let color = STEM_COLORS[stem_idx];
+    let is_selecting = stem_link_selection == Some(stem_idx);
+
+    let label_text = if let Some(link_ref) = link {
+        // Show stem name and linked track name
+        let track_name = link_ref
+            .source_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("?");
+        // Truncate long names
+        let short_name: String = track_name.chars().take(12).collect();
+        format!("{}\n{}", stem_name, short_name)
+    } else if is_selecting {
+        // Show that we're selecting
+        format!("{}\n...", stem_name)
+    } else {
+        // Empty slot
+        format!("{}\nLink", stem_name)
+    };
+
+    let btn = button(text(label_text).size(10).center())
+        .width(Length::Fill)
+        .height(Length::Fixed(40.0));
+
+    if link.is_some() {
+        // Has link - show in stem color
+        btn.on_press(Message::StartStemLinkSelection(stem_idx))
+            .style(move |theme: &Theme, status| {
+                colored_button_style(theme, status, color)
+            })
+            .into()
+    } else if is_selecting {
+        // Currently selecting - highlight
+        btn.on_press(Message::ConfirmStemLink(stem_idx))
+            .style(move |theme: &Theme, status| {
+                // Brighter version of stem color
+                let bright_color = Color::from_rgb(
+                    (color.r + 0.3).min(1.0),
+                    (color.g + 0.3).min(1.0),
+                    (color.b + 0.3).min(1.0),
+                );
+                colored_button_style(theme, status, bright_color)
+            })
+            .into()
+    } else {
+        // No link - secondary style
+        btn.on_press(Message::StartStemLinkSelection(stem_idx))
+            .style(iced::widget::button::secondary)
+            .into()
     }
 }

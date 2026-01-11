@@ -36,7 +36,7 @@
 //! engine.process_commands(&mut rx);
 //! ```
 
-use super::PreparedTrack;
+use super::{LinkedStemData, PreparedTrack};
 use crate::types::Stem;
 
 /// Commands sent from UI thread to audio thread
@@ -160,6 +160,26 @@ pub enum EngineCommand {
     /// Set slicer preset patterns (loaded from config)
     /// Boxed because the 8×16 array is large (128 bytes)
     SetSlicerPresets { presets: Box<[[u8; 16]; 8]> },
+
+    // ─────────────────────────────────────────────────────────────
+    // Linked Stems (Hot-Swappable)
+    // ─────────────────────────────────────────────────────────────
+    /// Link a stem from another track to a deck's stem slot
+    ///
+    /// The linked stem should be pre-stretched to match the host deck's BPM.
+    /// Drop markers are used for structural alignment during playback.
+    ///
+    /// Boxed because LinkedStemData contains large pre-stretched buffer.
+    LinkStem {
+        deck: usize,
+        stem: Stem,
+        linked_stem: Box<LinkedStemData>,
+    },
+    /// Toggle between original and linked stem
+    ///
+    /// Only has effect if a linked stem exists for this slot.
+    /// Returns immediately without blocking.
+    ToggleLinkedStem { deck: usize, stem: Stem },
 
     // ─────────────────────────────────────────────────────────────
     // Mixer Control

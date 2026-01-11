@@ -55,9 +55,9 @@ fn main() -> iced::Result {
     println!();
 
     // Try to start JACK client
-    // Returns CommandSender (lock-free queue), DeckAtomics, SlicerAtomics, and sample rate
-    let (jack_handle, command_sender, deck_atomics, slicer_atomics, jack_sample_rate) = match start_jack_client(CLIENT_NAME) {
-        Ok((handle, sender, deck_atomics, slicer_atomics, sample_rate)) => {
+    // Returns CommandSender (lock-free queue), DeckAtomics, SlicerAtomics, LinkedStemAtomics, and sample rate
+    let (jack_handle, command_sender, deck_atomics, slicer_atomics, linked_stem_atomics, jack_sample_rate) = match start_jack_client(CLIENT_NAME) {
+        Ok((handle, sender, deck_atomics, slicer_atomics, linked_stem_atomics, sample_rate)) => {
             println!("JACK client started successfully (lock-free command queue, {} Hz)", sample_rate);
 
             // Try to auto-connect to system outputs
@@ -65,7 +65,7 @@ fn main() -> iced::Result {
                 eprintln!("Warning: Could not auto-connect ports: {}", e);
             }
 
-            (Some(handle), Some(sender), Some(deck_atomics), Some(slicer_atomics), sample_rate)
+            (Some(handle), Some(sender), Some(deck_atomics), Some(slicer_atomics), Some(linked_stem_atomics), sample_rate)
         }
         Err(e) => {
             eprintln!("Warning: Could not start JACK client: {}", e);
@@ -75,7 +75,7 @@ fn main() -> iced::Result {
             eprintln!("  jackd -d alsa -r 44100");
             eprintln!("or use QjackCtl/Cadence to start it.");
             // Default to 48000 Hz when JACK is not available (matches SAMPLE_RATE constant)
-            (None, None, None, None, 48000)
+            (None, None, None, None, None, 48000)
         }
     };
 
@@ -90,6 +90,7 @@ fn main() -> iced::Result {
     let command_sender_cell = std::cell::RefCell::new(command_sender);
     let deck_atomics_cell = std::cell::RefCell::new(deck_atomics);
     let slicer_atomics_cell = std::cell::RefCell::new(slicer_atomics);
+    let linked_stem_atomics_cell = std::cell::RefCell::new(linked_stem_atomics);
 
     // Run the iced application using the functional API
     let result = iced::application(
@@ -99,8 +100,9 @@ fn main() -> iced::Result {
             let sender = command_sender_cell.borrow_mut().take();
             let deck_atomics = deck_atomics_cell.borrow_mut().take();
             let slicer_atomics = slicer_atomics_cell.borrow_mut().take();
+            let linked_stem_atomics = linked_stem_atomics_cell.borrow_mut().take();
             // mapping_mode = true shows full UI with controls, false = performance mode
-            let app = MeshApp::new(sender, deck_atomics, slicer_atomics, jack_sample_rate, start_midi_learn);
+            let app = MeshApp::new(sender, deck_atomics, slicer_atomics, linked_stem_atomics, jack_sample_rate, start_midi_learn);
 
             // If --midi-learn flag was passed, start MIDI learn mode (opens the drawer)
             let startup_task = if start_midi_learn {

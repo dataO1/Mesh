@@ -21,10 +21,10 @@ use iced::time;
 
 use crate::audio::CommandSender;
 use crate::config::{self, PlayerConfig};
-use crate::loader::TrackLoader;
+use crate::loader::{LoaderResult, TrackLoader};
 use mesh_midi::{MidiController, MidiMessage as MidiMsg, MidiInputEvent, DeckAction as MidiDeckAction, MixerAction as MidiMixerAction, BrowserAction as MidiBrowserAction};
 use mesh_core::audio_file::StemBuffers;
-use mesh_core::engine::{DeckAtomics, EngineCommand, SlicerAtomics};
+use mesh_core::engine::{DeckAtomics, EngineCommand, LinkedStemAtomics, SlicerAtomics};
 use mesh_core::types::NUM_DECKS;
 use mesh_widgets::{PeaksComputer, PeaksComputeRequest, ZoomedViewMode, TRACK_TABLE_SCROLLABLE_ID, TRACK_ROW_HEIGHT};
 use super::collection_browser::{CollectionBrowserState, CollectionBrowserMessage};
@@ -44,6 +44,37 @@ pub enum AppMode {
     Mapping,
 }
 
+/// State machine for linked stem selection workflow
+///
+/// Workflow:
+/// 1. Shift+Stem → Enter Selecting (browser highlights with stem color)
+/// 2. Encoder rotate → Navigate browser
+/// 3. Encoder press → Load linked stem in background
+/// 4. Load completes → Ready for toggle
+/// 5. Shift+Stem again → Toggle between original/linked
+#[derive(Debug, Clone, Default)]
+pub enum StemLinkState {
+    /// No linked stem operation in progress
+    #[default]
+    Idle,
+    /// Shift+stem pressed, waiting for track selection from browser
+    Selecting {
+        /// Host deck that will receive the linked stem
+        deck: usize,
+        /// Which stem slot to link (0-3)
+        stem: usize,
+    },
+    /// Track selected, loading linked stem in background
+    Loading {
+        /// Host deck that will receive the linked stem
+        deck: usize,
+        /// Which stem slot to link
+        stem: usize,
+        /// Path to the source track being loaded
+        path: std::path::PathBuf,
+    },
+}
+
 /// Application state
 pub struct MeshApp {
     /// Command sender for lock-free communication with audio engine
@@ -54,6 +85,8 @@ pub struct MeshApp {
     deck_atomics: Option<[Arc<DeckAtomics>; NUM_DECKS]>,
     /// Lock-free slicer state for UI reads (drums stem slicer on all decks)
     slicer_atomics: Option<[Arc<SlicerAtomics>; NUM_DECKS]>,
+    /// Lock-free linked stem state for UI reads (which stems have links)
+    linked_stem_atomics: Option<[Arc<LinkedStemAtomics>; NUM_DECKS]>,
     /// Background track loader (avoids blocking UI/audio during loads)
     track_loader: TrackLoader,
     /// Background peak computer (offloads expensive waveform peak computation)
@@ -86,6 +119,8 @@ pub struct MeshApp {
     midi_learn: MidiLearnState,
     /// UI display mode (performance vs mapping)
     app_mode: AppMode,
+    /// Linked stem selection state machine
+    stem_link_state: StemLinkState,
 }
 
 /// Messages that can be sent to the application
@@ -143,11 +178,13 @@ impl MeshApp {
     /// - `command_sender`: Lock-free command channel for engine control (None for offline mode)
     /// - `deck_atomics`: Lock-free position/state for UI reads (None for offline mode)
     /// - `slicer_atomics`: Lock-free slicer state for UI reads (None for offline mode)
+    /// - `linked_stem_atomics`: Lock-free linked stem state for UI reads (None for offline mode)
     /// - `jack_sample_rate`: JACK's sample rate for track loading (e.g., 48000 or 44100)
     pub fn new(
         mut command_sender: Option<CommandSender>,
         deck_atomics: Option<[Arc<DeckAtomics>; NUM_DECKS]>,
         slicer_atomics: Option<[Arc<SlicerAtomics>; NUM_DECKS]>,
+        linked_stem_atomics: Option<[Arc<LinkedStemAtomics>; NUM_DECKS]>,
         jack_sample_rate: u32,
         mapping_mode: bool,
     ) -> Self {
@@ -206,6 +243,7 @@ impl MeshApp {
             command_sender,
             deck_atomics,
             slicer_atomics,
+            linked_stem_atomics,
             track_loader: TrackLoader::spawn(jack_sample_rate),
             peaks_computer: PeaksComputer::spawn(),
             player_canvas_state: {
@@ -231,6 +269,7 @@ impl MeshApp {
             midi_controller,
             midi_learn: MidiLearnState::new(),
             app_mode: if mapping_mode { AppMode::Mapping } else { AppMode::Performance },
+            stem_link_state: StemLinkState::Idle,
         }
     }
 
@@ -252,100 +291,206 @@ impl MeshApp {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Tick => {
-                // Poll for completed background track loads (non-blocking)
+                // Poll for completed background track/linked stem loads (non-blocking)
                 // With lock-free architecture, there's no contention - commands always succeed
                 while let Some(load_result) = self.track_loader.try_recv() {
-                    let deck_idx = load_result.deck_idx;
+                    match load_result {
+                        LoaderResult::Track(track_result) => {
+                            let deck_idx = track_result.deck_idx;
 
-                    match load_result.result {
-                        Ok(prepared) => {
-                            // Update waveform state (UI-only)
-                            self.player_canvas_state.decks[deck_idx].overview =
-                                load_result.overview_state;
-                            self.player_canvas_state.decks[deck_idx].zoomed =
-                                load_result.zoomed_state;
-                            self.deck_stems[deck_idx] = Some(load_result.stems);
+                            match track_result.result {
+                                Ok(prepared) => {
+                                    // Update waveform state (UI-only)
+                                    self.player_canvas_state.decks[deck_idx].overview =
+                                        track_result.overview_state;
+                                    self.player_canvas_state.decks[deck_idx].zoomed =
+                                        track_result.zoomed_state;
+                                    self.deck_stems[deck_idx] = Some(track_result.stems);
 
-                            // Set track name and key for header display (before moving prepared)
-                            let track_name = prepared.track.filename().to_string();
-                            let track_key = prepared.track.key().to_string();
-                            // Clone key for engine command (before moving to canvas state)
-                            let key_for_engine = if track_key.is_empty() { None } else { Some(track_key.clone()) };
-                            self.player_canvas_state.set_track_name(deck_idx, track_name);
-                            self.player_canvas_state.set_track_key(deck_idx, track_key);
+                                    // Set track name and key for header display (before moving prepared)
+                                    let track_name = prepared.track.filename().to_string();
+                                    let track_key = prepared.track.key().to_string();
+                                    // Clone key for engine command (before moving to canvas state)
+                                    let key_for_engine = if track_key.is_empty() { None } else { Some(track_key.clone()) };
+                                    // Clone stem links, drop marker, and track BPM for auto-loading (before moving prepared)
+                                    let stem_links_to_load = prepared.track.metadata.stem_links.clone();
+                                    let host_drop_marker = prepared.track.metadata.drop_marker.unwrap_or(0);
+                                    let track_bpm = prepared.track.bpm();
+                                    self.player_canvas_state.set_track_name(deck_idx, track_name);
+                                    self.player_canvas_state.set_track_key(deck_idx, track_key);
 
-                            // Sync hot cue positions from track metadata for button colors
-                            // First clear all slots
-                            for slot in 0..8 {
-                                self.deck_views[deck_idx].set_hot_cue_position(slot, None);
-                            }
-                            // Then set positions from cue points (indexed by their slot/index field)
-                            for i in 0..prepared.track.cue_count() {
-                                if let Some(cue) = prepared.track.get_cue(i) {
-                                    let slot = cue.index as usize;
-                                    if slot < 8 {
-                                        self.deck_views[deck_idx].set_hot_cue_position(slot, Some(cue.sample_position));
+                                    // Sync hot cue positions from track metadata for button colors
+                                    // First clear all slots
+                                    for slot in 0..8 {
+                                        self.deck_views[deck_idx].set_hot_cue_position(slot, None);
+                                    }
+                                    // Then set positions from cue points (indexed by their slot/index field)
+                                    for i in 0..prepared.track.cue_count() {
+                                        if let Some(cue) = prepared.track.get_cue(i) {
+                                            let slot = cue.index as usize;
+                                            if slot < 8 {
+                                                self.deck_views[deck_idx].set_hot_cue_position(slot, Some(cue.sample_position));
+                                            }
+                                        }
+                                    }
+
+                                    // Reset stem states for new track (all stems active, none muted/soloed)
+                                    // Update UI state
+                                    for stem_idx in 0..4 {
+                                        self.deck_views[deck_idx].set_stem_muted(stem_idx, false);
+                                        self.deck_views[deck_idx].set_stem_soloed(stem_idx, false);
+                                        self.player_canvas_state.set_stem_active(deck_idx, stem_idx, true);
+                                    }
+
+                                    // Send track to audio engine via lock-free queue (~50ns, never blocks!)
+                                    if let Some(ref mut sender) = self.command_sender {
+                                        log::debug!("[PERF] UI: Sending LoadTrack command for deck {}", deck_idx);
+                                        let send_start = std::time::Instant::now();
+                                        let result = sender.send(EngineCommand::LoadTrack {
+                                            deck: deck_idx,
+                                            track: Box::new(prepared),
+                                        });
+                                        log::debug!(
+                                            "[PERF] UI: LoadTrack command sent in {:?} (success: {})",
+                                            send_start.elapsed(),
+                                            result.is_ok()
+                                        );
+
+                                        // Set default loop length from config
+                                        let _ = sender.send(EngineCommand::SetLoopLengthIndex {
+                                            deck: deck_idx,
+                                            index: self.config.display.default_loop_length_index,
+                                        });
+
+                                        // Reset all stems to unmuted/un-soloed in the engine
+                                        for stem_idx in 0..4 {
+                                            if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
+                                                let _ = sender.send(EngineCommand::SetStemMute {
+                                                    deck: deck_idx,
+                                                    stem,
+                                                    muted: false,
+                                                });
+                                                let _ = sender.send(EngineCommand::SetStemSolo {
+                                                    deck: deck_idx,
+                                                    stem,
+                                                    soloed: false,
+                                                });
+                                            }
+                                        }
+
+                                        // Send track key to engine for key matching
+                                        let _ = sender.send(EngineCommand::SetTrackKey {
+                                            deck: deck_idx,
+                                            key: key_for_engine.clone(),
+                                        });
+
+                                        self.status = format!("Loaded track to deck {}", deck_idx + 1);
+                                    } else {
+                                        self.status = format!("Loaded track to deck {} (no audio)", deck_idx + 1);
+                                    }
+
+                                    // Auto-load prepared stem links from track metadata (mslk chunk)
+                                    // This happens outside the command_sender block to avoid borrow issues
+                                    if !stem_links_to_load.is_empty() {
+                                        log::info!(
+                                            "Auto-loading {} prepared stem link(s) for deck {}",
+                                            stem_links_to_load.len(),
+                                            deck_idx + 1
+                                        );
+                                        for link in stem_links_to_load {
+                                            let stem_idx = link.stem_index as usize;
+                                            if stem_idx < 4 {
+                                                // Use track's BPM for pre-stretching (not global BPM)
+                                                // Linked stems were prepared against the host track's BPM
+                                                if let Err(e) = self.track_loader.load_linked_stem(
+                                                    deck_idx,
+                                                    stem_idx,
+                                                    link.source_path.clone(),
+                                                    track_bpm,
+                                                    host_drop_marker,
+                                                ) {
+                                                    log::warn!(
+                                                        "Failed to auto-load prepared stem link for stem {}: {}",
+                                                        stem_idx,
+                                                        e
+                                                    );
+                                                } else {
+                                                    log::info!(
+                                                        "  Queued stem {} from {:?}",
+                                                        mesh_core::types::Stem::from_index(stem_idx)
+                                                            .map(|s| s.name())
+                                                            .unwrap_or("?"),
+                                                        link.source_path.file_name()
+                                                    );
+                                                }
+                                            }
+                                        }
                                     }
                                 }
-                            }
-
-                            // Reset stem states for new track (all stems active, none muted/soloed)
-                            // Update UI state
-                            for stem_idx in 0..4 {
-                                self.deck_views[deck_idx].set_stem_muted(stem_idx, false);
-                                self.deck_views[deck_idx].set_stem_soloed(stem_idx, false);
-                                self.player_canvas_state.set_stem_active(deck_idx, stem_idx, true);
-                            }
-
-                            // Send track to audio engine via lock-free queue (~50ns, never blocks!)
-                            if let Some(ref mut sender) = self.command_sender {
-                                log::debug!("[PERF] UI: Sending LoadTrack command for deck {}", deck_idx);
-                                let send_start = std::time::Instant::now();
-                                let result = sender.send(EngineCommand::LoadTrack {
-                                    deck: deck_idx,
-                                    track: Box::new(prepared),
-                                });
-                                log::debug!(
-                                    "[PERF] UI: LoadTrack command sent in {:?} (success: {})",
-                                    send_start.elapsed(),
-                                    result.is_ok()
-                                );
-
-                                // Set default loop length from config
-                                let _ = sender.send(EngineCommand::SetLoopLengthIndex {
-                                    deck: deck_idx,
-                                    index: self.config.display.default_loop_length_index,
-                                });
-
-                                // Reset all stems to unmuted/un-soloed in the engine
-                                for stem_idx in 0..4 {
-                                    if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
-                                        let _ = sender.send(EngineCommand::SetStemMute {
-                                            deck: deck_idx,
-                                            stem,
-                                            muted: false,
-                                        });
-                                        let _ = sender.send(EngineCommand::SetStemSolo {
-                                            deck: deck_idx,
-                                            stem,
-                                            soloed: false,
-                                        });
-                                    }
+                                Err(e) => {
+                                    self.status = format!("Error loading track: {}", e);
                                 }
-
-                                // Send track key to engine for key matching
-                                let _ = sender.send(EngineCommand::SetTrackKey {
-                                    deck: deck_idx,
-                                    key: key_for_engine.clone(),
-                                });
-
-                                self.status = format!("Loaded track to deck {}", deck_idx + 1);
-                            } else {
-                                self.status = format!("Loaded track to deck {} (no audio)", deck_idx + 1);
                             }
                         }
-                        Err(e) => {
-                            self.status = format!("Error loading track: {}", e);
+                        LoaderResult::LinkedStem(linked_result) => {
+                            // Handle linked stem load completion
+                            let deck_idx = linked_result.host_deck_idx;
+                            let stem_idx = linked_result.stem_idx;
+
+                            match linked_result.result {
+                                Ok(linked_data) => {
+                                    // Store linked stem overview peaks in waveform state for visualization
+                                    if let Some(peaks) = linked_result.overview_peaks {
+                                        log::info!(
+                                            "[LINKED] Storing {} overview peaks for deck {} stem {}",
+                                            peaks.len(),
+                                            deck_idx,
+                                            stem_idx
+                                        );
+                                        self.player_canvas_state
+                                            .deck_mut(deck_idx)
+                                            .overview
+                                            .set_linked_stem_peaks(stem_idx, peaks);
+                                    }
+
+                                    // Send linked stem to audio engine
+                                    if let Some(ref mut sender) = self.command_sender {
+                                        if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
+                                            let track_name = linked_data.track_name.clone();
+                                            let _ = sender.send(EngineCommand::LinkStem {
+                                                deck: deck_idx,
+                                                stem,
+                                                linked_stem: Box::new(linked_data),
+                                            });
+                                            self.status = format!(
+                                                "Linked {} stem on deck {} from {}",
+                                                stem.name(),
+                                                deck_idx + 1,
+                                                track_name
+                                            );
+                                        }
+                                    }
+
+                                    // Transition from Loading to Idle - linked stem is ready
+                                    if matches!(
+                                        self.stem_link_state,
+                                        StemLinkState::Loading { deck, stem, .. }
+                                        if deck == deck_idx && stem == stem_idx
+                                    ) {
+                                        self.stem_link_state = StemLinkState::Idle;
+                                        log::info!(
+                                            "Linked stem ready: deck={}, stem={} - shift+stem to toggle",
+                                            deck_idx,
+                                            stem_idx
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    self.status = format!("Error loading linked stem: {}", e);
+                                    // Also reset state on error
+                                    self.stem_link_state = StemLinkState::Idle;
+                                }
+                            }
                         }
                     }
                 }
@@ -592,6 +737,19 @@ impl MeshApp {
                     }
                 }
 
+                // Sync linked stem state from atomics (LOCK-FREE - never blocks audio thread)
+                // Updates which stems have links and whether links are active for UI display
+                if let Some(ref linked_atomics) = self.linked_stem_atomics {
+                    for i in 0..4 {
+                        let la = &linked_atomics[i];
+                        for stem_idx in 0..4 {
+                            let has_linked = la.has_linked[stem_idx].load(std::sync::atomic::Ordering::Relaxed);
+                            let is_active = la.use_linked[stem_idx].load(std::sync::atomic::Ordering::Relaxed);
+                            self.player_canvas_state.set_linked_stem(i, stem_idx, has_linked, is_active);
+                        }
+                    }
+                }
+
                 // Request zoomed waveform peak recomputation in background thread
                 // This expensive operation (10-50ms) is fully async - UI never blocks
                 for i in 0..4 {
@@ -730,16 +888,28 @@ impl MeshApp {
                                 let _ = sender.send(EngineCommand::BeatJumpForward { deck: deck_idx });
                             }
                             ToggleStemMute(stem_idx) => {
-                                if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
-                                    let _ = sender.send(EngineCommand::ToggleStemMute { deck: deck_idx, stem });
-                                }
-                                // Toggle mute state in DeckView for UI
-                                let was_muted = self.deck_views[deck_idx].is_stem_muted(stem_idx);
-                                let new_muted = !was_muted;
-                                self.deck_views[deck_idx].set_stem_muted(stem_idx, new_muted);
+                                let shift_held = self.deck_views[deck_idx].shift_held();
+                                log::info!(
+                                    "[STEM_TOGGLE] Stem button pressed: deck={}, stem={}, shift_held={}",
+                                    deck_idx, stem_idx, shift_held
+                                );
 
-                                // stem_active = NOT muted (when muted, stem is inactive)
-                                self.player_canvas_state.set_stem_active(deck_idx, stem_idx, !new_muted);
+                                if shift_held {
+                                    // Shift+Stem: Linked stem operation
+                                    self.handle_shift_stem(deck_idx, stem_idx);
+                                } else {
+                                    // Normal: Toggle mute
+                                    if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
+                                        let _ = sender.send(EngineCommand::ToggleStemMute { deck: deck_idx, stem });
+                                    }
+                                    // Toggle mute state in DeckView for UI
+                                    let was_muted = self.deck_views[deck_idx].is_stem_muted(stem_idx);
+                                    let new_muted = !was_muted;
+                                    self.deck_views[deck_idx].set_stem_muted(stem_idx, new_muted);
+
+                                    // stem_active = NOT muted (when muted, stem is inactive)
+                                    self.player_canvas_state.set_stem_active(deck_idx, stem_idx, !new_muted);
+                                }
                             }
                             ToggleStemSolo(stem_idx) => {
                                 if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
@@ -1197,6 +1367,147 @@ impl MeshApp {
         }
     }
 
+    /// Handle shift+stem gesture for linked stem operations
+    ///
+    /// When shift is held and a stem button is pressed:
+    /// - If already in Selecting mode for same deck/stem: cancel selection
+    /// - If a linked stem exists: toggle between original/linked
+    /// - Otherwise: enter Selecting mode for browser track selection
+    fn handle_shift_stem(&mut self, deck_idx: usize, stem_idx: usize) {
+        // Check if we have atomics to query linked stem state
+        // Read from LinkedStemAtomics (lock-free, ~5ns)
+        let has_linked = self.linked_stem_atomics.as_ref().map_or(false, |atomics| {
+            atomics[deck_idx].has_linked[stem_idx].load(std::sync::atomic::Ordering::Relaxed)
+        });
+
+        log::info!(
+            "[STEM_TOGGLE] handle_shift_stem: deck={}, stem={}, has_linked={}, state={:?}",
+            deck_idx, stem_idx, has_linked, self.stem_link_state
+        );
+
+        match &self.stem_link_state {
+            StemLinkState::Idle => {
+                if has_linked {
+                    // Toggle existing linked stem
+                    if let Some(ref mut sender) = self.command_sender {
+                        if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
+                            log::info!(
+                                "[STEM_TOGGLE] Sending ToggleLinkedStem: deck={}, stem={:?}",
+                                deck_idx, stem
+                            );
+                            let _ = sender.send(EngineCommand::ToggleLinkedStem {
+                                deck: deck_idx,
+                                stem,
+                            });
+                            self.status = format!(
+                                "Toggled {} linked stem on deck {}",
+                                stem.name(),
+                                deck_idx + 1
+                            );
+                        }
+                    } else {
+                        log::warn!("[STEM_TOGGLE] command_sender is None!");
+                    }
+                } else {
+                    // Enter Selecting mode - user will pick a track from browser
+                    self.stem_link_state = StemLinkState::Selecting {
+                        deck: deck_idx,
+                        stem: stem_idx,
+                    };
+                    self.status = format!(
+                        "Select track for {} stem link (deck {})",
+                        mesh_core::types::Stem::from_index(stem_idx)
+                            .map(|s| s.name())
+                            .unwrap_or("?"),
+                        deck_idx + 1
+                    );
+                    log::info!(
+                        "Entered stem link selection mode: deck={}, stem={}",
+                        deck_idx,
+                        stem_idx
+                    );
+                }
+            }
+            StemLinkState::Selecting { deck, stem } => {
+                if *deck == deck_idx && *stem == stem_idx {
+                    // Same deck/stem pressed again - cancel selection
+                    self.stem_link_state = StemLinkState::Idle;
+                    self.status = "Cancelled stem link selection".to_string();
+                    log::info!("Cancelled stem link selection");
+                } else {
+                    // Different deck/stem - switch to new selection
+                    self.stem_link_state = StemLinkState::Selecting {
+                        deck: deck_idx,
+                        stem: stem_idx,
+                    };
+                    self.status = format!(
+                        "Select track for {} stem link (deck {})",
+                        mesh_core::types::Stem::from_index(stem_idx)
+                            .map(|s| s.name())
+                            .unwrap_or("?"),
+                        deck_idx + 1
+                    );
+                }
+            }
+            StemLinkState::Loading { .. } => {
+                // Already loading - ignore
+                self.status = "Linked stem loading in progress...".to_string();
+            }
+        }
+    }
+
+    /// Confirm linked stem selection from browser
+    ///
+    /// Called when user presses encoder/enter while in Selecting mode
+    fn confirm_stem_link_selection(&mut self) {
+        if let StemLinkState::Selecting { deck, stem } = self.stem_link_state.clone() {
+            // Get selected track path from browser
+            if let Some(path) = self.collection_browser.get_selected_track_path().cloned() {
+                // Get host deck's BPM and drop marker
+                let host_bpm = self.global_bpm;
+                // Get host track's drop marker from LinkedStemAtomics (set when track loads)
+                let host_drop_marker = self
+                    .linked_stem_atomics
+                    .as_ref()
+                    .map(|atomics| {
+                        atomics[deck]
+                            .host_drop_marker
+                            .load(std::sync::atomic::Ordering::Relaxed)
+                    })
+                    .unwrap_or(0);
+
+                // Request linked stem load
+                if let Err(e) = self.track_loader.load_linked_stem(
+                    deck,
+                    stem,
+                    path.clone(),
+                    host_bpm,
+                    host_drop_marker,
+                ) {
+                    self.status = format!("Failed to start linked stem load: {}", e);
+                    self.stem_link_state = StemLinkState::Idle;
+                } else {
+                    self.stem_link_state = StemLinkState::Loading {
+                        deck,
+                        stem,
+                        path: path.clone(),
+                    };
+                    self.status = format!(
+                        "Loading {} stem from {}...",
+                        mesh_core::types::Stem::from_index(stem)
+                            .map(|s| s.name())
+                            .unwrap_or("?"),
+                        path.file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("track")
+                    );
+                }
+            } else {
+                self.status = "No track selected in browser".to_string();
+            }
+        }
+    }
+
     /// Handle a MIDI message by dispatching to existing message handlers
     fn handle_midi_message(&mut self, msg: MidiMsg) {
         match msg {
@@ -1313,10 +1624,16 @@ impl MeshApp {
                         ));
                     }
                     MidiBrowserAction::Select => {
-                        // Select current item (activates track -> loads to deck 0)
-                        let _ = self.update(Message::CollectionBrowser(
-                            CollectionBrowserMessage::SelectCurrent,
-                        ));
+                        // Check if we're in stem link selection mode
+                        if matches!(self.stem_link_state, StemLinkState::Selecting { .. }) {
+                            // Confirm linked stem selection instead of loading track
+                            self.confirm_stem_link_selection();
+                        } else {
+                            // Normal: select current item (activates track -> loads to deck 0)
+                            let _ = self.update(Message::CollectionBrowser(
+                                CollectionBrowserMessage::SelectCurrent,
+                            ));
+                        }
                     }
                     MidiBrowserAction::Back => {
                         // Could implement folder navigation back, for now just log
@@ -1567,7 +1884,7 @@ impl Default for MeshApp {
     fn default() -> Self {
         // Default to 48kHz when no JACK rate is available (matches SAMPLE_RATE constant)
         // Default to performance mode
-        Self::new(None, None, None, 48000, false)
+        Self::new(None, None, None, None, 48000, false)
     }
 }
 

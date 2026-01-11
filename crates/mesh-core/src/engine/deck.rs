@@ -12,7 +12,9 @@ use crate::types::{
     NUM_STEMS, SAMPLE_RATE,
 };
 
-use super::{LatencyCompensator, MAX_BUFFER_SIZE};
+use super::{
+    map_host_to_linked_position, LatencyCompensator, LinkedStemAtomics, StemLink, MAX_BUFFER_SIZE,
+};
 
 /// Number of hot cue slots per deck
 pub const HOT_CUE_SLOTS: usize = 8;
@@ -330,6 +332,15 @@ pub struct Deck {
     track_key: Option<crate::music::MusicalKey>,
     /// Per-stem slicer states (initially only Drums is used, but modular for future)
     slicer_states: [super::slicer::SlicerState; NUM_STEMS],
+    /// Per-stem link state for hot-swappable stems from other tracks
+    ///
+    /// Each stem slot can optionally have a linked stem from another track.
+    /// When linked, the stem can be toggled between original and linked.
+    stem_links: [StemLink; NUM_STEMS],
+    /// Lock-free state for linked stems (for UI access without mutex)
+    linked_stem_atomics: Arc<LinkedStemAtomics>,
+    /// Drop marker position for this track (for linked stem alignment)
+    drop_marker: Option<u64>,
 }
 
 impl Deck {
@@ -357,6 +368,9 @@ impl Deck {
             current_transpose: 0,
             track_key: None,
             slicer_states: std::array::from_fn(|_| super::slicer::SlicerState::new()),
+            stem_links: std::array::from_fn(|_| StemLink::new()),
+            linked_stem_atomics: Arc::new(LinkedStemAtomics::new()),
+            drop_marker: None,
         }
     }
 
@@ -366,6 +380,14 @@ impl Deck {
     /// the engine mutex, eliminating lock contention during playback.
     pub fn atomics(&self) -> Arc<DeckAtomics> {
         Arc::clone(&self.atomics)
+    }
+
+    /// Get a reference to the linked stem atomic state
+    ///
+    /// The UI can clone this Arc and read linked stem state without
+    /// acquiring the engine mutex.
+    pub fn linked_stem_atomics(&self) -> Arc<LinkedStemAtomics> {
+        Arc::clone(&self.linked_stem_atomics)
     }
 
     /// Write play state to atomics (internal helper)
@@ -470,6 +492,18 @@ impl Deck {
             slicer.reset_queue();
         }
 
+        // Load drop marker from track metadata (for linked stem alignment)
+        self.drop_marker = self.track.as_ref().and_then(|t| t.metadata.drop_marker);
+
+        // Clear any existing linked stems when loading a new track
+        for (i, link) in self.stem_links.iter_mut().enumerate() {
+            link.clear();
+            self.linked_stem_atomics.sync_from_stem_link(i, link);
+        }
+        if let Some(dm) = self.drop_marker {
+            self.linked_stem_atomics.set_host_drop_marker(dm);
+        }
+
         // Sync atomics for lock-free UI reads (fast atomic stores)
         self.sync_position_atomic();
         self.sync_state_atomic();
@@ -496,6 +530,14 @@ impl Deck {
         self.hot_cues = std::array::from_fn(|_| None);
         self.loop_state = LoopState::default();
         self.hot_cue_preview_return = None;
+
+        // Clear drop marker and linked stems
+        self.drop_marker = None;
+        for (i, link) in self.stem_links.iter_mut().enumerate() {
+            link.clear();
+            self.linked_stem_atomics.sync_from_stem_link(i, link);
+        }
+        self.linked_stem_atomics.set_host_drop_marker(0);
 
         // Sync atomics for lock-free UI reads
         self.sync_position_atomic();
@@ -1194,6 +1236,20 @@ impl Deck {
         let duration_samples = track.duration_samples;
         let samples_per_beat = track.samples_per_beat();
 
+        // Extract linked stem buffer references before parallel section
+        // This avoids borrow checker issues with stem_links in the parallel closure
+        let host_drop_marker = self.drop_marker.unwrap_or(0);
+        let linked_stems: [Option<(&StereoBuffer, u64)>; NUM_STEMS] = std::array::from_fn(|i| {
+            if self.stem_links[i].is_linked_active() {
+                self.stem_links[i]
+                    .linked
+                    .as_ref()
+                    .map(|info| (&info.buffer, info.drop_marker))
+            } else {
+                None
+            }
+        });
+
         // Set working length of all pre-allocated stem buffers (real-time safe: no allocation)
         // Capacity remains at MAX_BUFFER_SIZE, only the length field changes
         for buf in &mut self.stem_buffers {
@@ -1218,29 +1274,66 @@ impl Deck {
                     return;
                 }
 
-                // Copy samples from track to stem buffer
-                // Note: reads samples_to_read samples (may differ from output_len)
+                // Get the original stem data from track (always needed for slicer fallback)
                 let stem_data = track.stems.get(stem);
                 let buf_slice = stem_buffer.as_mut_slice();
-                for i in 0..samples_to_read {
-                    let read_pos = position + i;
-                    if read_pos < duration_samples {
-                        buf_slice[i] = stem_data[read_pos];
-                    } else {
-                        buf_slice[i] = StereoSample::silence();
+
+                // Check for linked stem - read from linked buffer if active
+                if let Some((linked_buffer, linked_drop_marker)) = linked_stems[stem_idx] {
+                    // LINKED STEM PATH: Read from pre-stretched linked buffer
+                    // Uses drop marker alignment for structural synchronization
+                    let linked_len = linked_buffer.len();
+                    let linked_slice = linked_buffer.as_slice();
+
+                    for i in 0..samples_to_read {
+                        let host_pos = position + i;
+                        if let Some(linked_pos) = map_host_to_linked_position(
+                            host_pos,
+                            host_drop_marker,
+                            linked_drop_marker,
+                            linked_len,
+                        ) {
+                            buf_slice[i] = linked_slice[linked_pos];
+                        } else {
+                            // Outside linked buffer bounds - output silence
+                            buf_slice[i] = StereoSample::silence();
+                        }
+                    }
+                } else {
+                    // ORIGINAL STEM PATH: Read from track's stem buffer
+                    for i in 0..samples_to_read {
+                        let read_pos = position + i;
+                        if read_pos < duration_samples {
+                            buf_slice[i] = stem_data[read_pos];
+                        } else {
+                            buf_slice[i] = StereoSample::silence();
+                        }
                     }
                 }
 
-                // Apply slicer if enabled (before effects chain)
+                // Apply slicer if enabled (works on whichever stem is active - original or linked)
                 // The slicer remaps sample positions through the playback queue
+                // Uses the appropriate buffer (linked or original) for slice lookup
                 if slicer_state.is_enabled() {
-                    slicer_state.process(
-                        stem_buffer,
-                        position,
-                        samples_per_beat,
-                        stem_data.as_slice(),
-                        duration_samples,
-                    );
+                    if let Some((linked_buffer, _)) = linked_stems[stem_idx] {
+                        // Slicer uses linked buffer when linked stem is active
+                        slicer_state.process(
+                            stem_buffer,
+                            position,
+                            samples_per_beat,
+                            linked_buffer.as_slice(),
+                            linked_buffer.len(),
+                        );
+                    } else {
+                        // Slicer uses original stem buffer
+                        slicer_state.process(
+                            stem_buffer,
+                            position,
+                            samples_per_beat,
+                            stem_data.as_slice(),
+                            duration_samples,
+                        );
+                    }
                 }
 
                 // Process through effect chain (pass any_soloed for solo logic)
@@ -1305,6 +1398,62 @@ impl Deck {
             .map(|s| s.chain.total_latency())
             .max()
             .unwrap_or(0)
+    }
+
+    // ────────────────────────────────────────────────────────────────────────────────
+    // Linked Stems
+    // ────────────────────────────────────────────────────────────────────────────────
+
+    /// Get the drop marker position for this track
+    ///
+    /// Returns None if no drop marker is set.
+    pub fn drop_marker(&self) -> Option<u64> {
+        self.drop_marker
+    }
+
+    /// Set a linked stem for a stem slot
+    ///
+    /// The linked stem info should already be pre-stretched to match
+    /// this deck's BPM when this is called.
+    pub fn set_linked_stem(&mut self, stem_idx: usize, info: super::LinkedStemInfo) {
+        if stem_idx >= NUM_STEMS {
+            return;
+        }
+        self.stem_links[stem_idx].set_linked(info);
+        self.linked_stem_atomics.sync_from_stem_link(stem_idx, &self.stem_links[stem_idx]);
+    }
+
+    /// Toggle a linked stem between original and linked
+    ///
+    /// Returns the new state (true = linked is active, false = original is active).
+    /// Returns false if no linked stem exists for this slot.
+    pub fn toggle_linked_stem(&mut self, stem_idx: usize) -> bool {
+        if stem_idx >= NUM_STEMS {
+            return false;
+        }
+        let result = self.stem_links[stem_idx].toggle();
+        self.linked_stem_atomics.sync_from_stem_link(stem_idx, &self.stem_links[stem_idx]);
+        result
+    }
+
+    /// Get a reference to a stem link
+    pub fn stem_link(&self, stem_idx: usize) -> Option<&StemLink> {
+        self.stem_links.get(stem_idx)
+    }
+
+    /// Get a mutable reference to a stem link
+    pub fn stem_link_mut(&mut self, stem_idx: usize) -> Option<&mut StemLink> {
+        self.stem_links.get_mut(stem_idx)
+    }
+
+    /// Check if any stem has a linked stem
+    pub fn has_any_linked_stem(&self) -> bool {
+        self.stem_links.iter().any(|link| link.has_linked())
+    }
+
+    /// Check if any linked stem is currently active
+    pub fn has_any_active_linked_stem(&self) -> bool {
+        self.stem_links.iter().any(|link| link.is_linked_active())
     }
 }
 

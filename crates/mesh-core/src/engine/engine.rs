@@ -129,6 +129,14 @@ impl AudioEngine {
         std::array::from_fn(|i| self.decks[i].slicer_atomics(Stem::Drums))
     }
 
+    /// Get linked stem atomics for all decks
+    ///
+    /// Returns Arc references to each deck's linked stem atomics.
+    /// The UI can read linked stem state (has_linked, use_linked) without blocking.
+    pub fn linked_stem_atomics(&self) -> [std::sync::Arc<super::LinkedStemAtomics>; NUM_DECKS] {
+        std::array::from_fn(|i| self.decks[i].linked_stem_atomics())
+    }
+
     /// Get a reference to the mixer
     pub fn mixer(&self) -> &Mixer {
         &self.mixer
@@ -727,6 +735,41 @@ impl AudioEngine {
                 }
                 EngineCommand::SetSlicerPresets { presets } => {
                     self.slicer_presets = *presets;
+                }
+
+                // Linked Stems
+                EngineCommand::LinkStem { deck, stem, linked_stem } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        let stem_idx = stem as usize;
+                        let info = linked_stem.into_info();
+                        d.set_linked_stem(stem_idx, info);
+                        log::info!(
+                            "Linked stem {} on deck {} from external track",
+                            stem_idx, deck
+                        );
+                    }
+                }
+                EngineCommand::ToggleLinkedStem { deck, stem } => {
+                    let stem_idx = stem as usize;
+                    log::info!(
+                        "[STEM_TOGGLE] Engine received ToggleLinkedStem: deck={}, stem={}",
+                        deck, stem_idx
+                    );
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        let has_linked = d.stem_link(stem_idx).map_or(false, |l| l.has_linked());
+                        log::info!(
+                            "[STEM_TOGGLE] Before toggle: has_linked={}",
+                            has_linked
+                        );
+                        let is_linked = d.toggle_linked_stem(stem_idx);
+                        log::info!(
+                            "[STEM_TOGGLE] Toggled linked stem {} on deck {}: now {}",
+                            stem_idx, deck,
+                            if is_linked { "LINKED" } else { "ORIGINAL" }
+                        );
+                    } else {
+                        log::warn!("[STEM_TOGGLE] Deck {} not found!", deck);
+                    }
                 }
 
                 // Mixer Control

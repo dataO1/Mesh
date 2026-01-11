@@ -149,6 +149,10 @@ pub struct LoadedTrackState {
     pub key: String,
     /// Beat grid from metadata
     pub beat_grid: Vec<u64>,
+    /// Drop marker sample position (for linked stem alignment)
+    pub drop_marker: Option<u64>,
+    /// Stem links for prepared mode (stored in mslk chunk)
+    pub stem_links: Vec<mesh_core::audio_file::StemLinkReference>,
     /// Duration in samples (from metadata or computed)
     pub duration_samples: u64,
     /// Whether there are unsaved changes
@@ -417,6 +421,21 @@ pub enum Message {
     /// Clear saved loop at index (Shift+click)
     ClearSavedLoop(usize),
 
+    // Drop Marker (for linked stem alignment)
+    /// Set drop marker at current playhead position
+    SetDropMarker,
+    /// Clear drop marker (Shift+click)
+    ClearDropMarker,
+
+    // Stem Links (for prepared mode - stored in mslk chunk)
+    /// Start stem link selection for a stem slot (0=Vocals, 1=Drums, 2=Bass, 3=Other)
+    /// This focuses the browser for track selection
+    StartStemLinkSelection(usize),
+    /// Confirm stem link selection - link the stem to the currently selected track
+    ConfirmStemLink(usize),
+    /// Clear a stem link (Shift+click)
+    ClearStemLink(usize),
+
     // Zoomed Waveform
     /// Set zoom level for zoomed waveform (1-64 bars)
     SetZoomBars(u32),
@@ -552,6 +571,8 @@ pub struct MeshCueApp {
     delete_state: super::delete_modal::DeleteState,
     /// Context menu state
     context_menu_state: super::context_menu::ContextMenuState,
+    /// Stem link selection mode - Some(stem_index) when selecting a source track for linking
+    stem_link_selection: Option<usize>,
 }
 
 impl MeshCueApp {
@@ -629,6 +650,7 @@ impl MeshCueApp {
             import_state: ImportState::default(),
             delete_state: Default::default(),
             context_menu_state: Default::default(),
+            stem_link_selection: None,
         };
 
         // Initial collection scan and playlist refresh
@@ -669,6 +691,8 @@ impl MeshCueApp {
                         cue_points: cue_points.clone(),
                         saved_loops: saved_loops.clone(),
                         waveform_preview: None,
+                        drop_marker: state.drop_marker,
+                        stem_links: state.stem_links.clone(),
                     };
 
                     // Mark as saved to prevent re-saving
@@ -772,6 +796,8 @@ impl MeshCueApp {
                             beat_grid.clone(),
                             Vec::new(), // Cue markers will be added after duration is known
                         );
+                        // Set drop marker on zoomed view (overview gets it from from_metadata)
+                        combined_waveform.zoomed.set_drop_marker(metadata.drop_marker);
 
                         self.collection.loaded_track = Some(LoadedTrackState {
                             path: path.clone(),
@@ -782,6 +808,8 @@ impl MeshCueApp {
                             bpm,
                             key,
                             beat_grid,
+                            drop_marker: metadata.drop_marker,
+                            stem_links: metadata.stem_links.clone(),
                             duration_samples: 0, // Will be set when audio loads
                             modified: false,
                             combined_waveform,
@@ -843,6 +871,8 @@ impl MeshCueApp {
                                     cue_points: state.cue_points.clone(),
                                     saved_loops: state.saved_loops.clone(),
                                     waveform_preview: None, // Using live-generated waveform
+                                    drop_marker: state.drop_marker,
+                                    stem_links: state.stem_links.clone(),
                                 },
                                 duration_samples: duration_samples as usize,
                                 duration_seconds,
@@ -893,6 +923,7 @@ impl MeshCueApp {
                             Vec::new(),
                         );
                         combined_waveform.zoomed.set_duration(duration_samples);
+                        combined_waveform.zoomed.set_drop_marker(track.metadata.drop_marker);
                         combined_waveform.zoomed.compute_peaks(&stems, 0, 1600);
 
                         // Create Deck and load track using fast path (Shared for RT-safe dealloc)
@@ -917,6 +948,8 @@ impl MeshCueApp {
                             bpm,
                             key,
                             beat_grid,
+                            drop_marker: track.metadata.drop_marker,
+                            stem_links: track.metadata.stem_links.clone(),
                             duration_samples,
                             modified: false,
                             combined_waveform,
@@ -1015,6 +1048,8 @@ impl MeshCueApp {
                         cue_points: cue_points.clone(),
                         saved_loops: saved_loops.clone(),
                         waveform_preview: None, // Will be regenerated during save
+                        drop_marker: state.drop_marker,
+                        stem_links: state.stem_links.clone(),
                     };
 
                     return Task::perform(
@@ -1308,6 +1343,113 @@ impl MeshCueApp {
                     state.modified = true;
                     log::info!("Cleared saved loop {}", index);
                 }
+            }
+
+            // Drop Marker handling
+            Message::SetDropMarker => {
+                // Shift+click = clear drop marker
+                if self.shift_held {
+                    return self.update(Message::ClearDropMarker);
+                }
+
+                if let Some(ref mut state) = self.collection.loaded_track {
+                    let position = state.playhead_position();
+                    state.drop_marker = Some(position);
+                    state.modified = true;
+                    log::info!("Set drop marker at sample {}", position);
+
+                    // Update waveform with new drop marker
+                    state.combined_waveform.overview.set_drop_marker(Some(position));
+                    state.combined_waveform.zoomed.set_drop_marker(Some(position));
+                }
+            }
+
+            Message::ClearDropMarker => {
+                if let Some(ref mut state) = self.collection.loaded_track {
+                    state.drop_marker = None;
+                    state.modified = true;
+                    log::info!("Cleared drop marker");
+
+                    // Update waveform
+                    state.combined_waveform.overview.set_drop_marker(None);
+                    state.combined_waveform.zoomed.set_drop_marker(None);
+                }
+            }
+
+            // Stem Link handling (prepared mode)
+            Message::StartStemLinkSelection(stem_idx) => {
+                // Shift+click = clear stem link
+                if self.shift_held {
+                    return self.update(Message::ClearStemLink(stem_idx));
+                }
+
+                // Enter stem link selection mode
+                self.stem_link_selection = Some(stem_idx);
+                log::info!("Started stem link selection for stem {}", stem_idx);
+                // Focus the browser for track selection
+                // (browser will highlight when stem_link_selection is Some)
+            }
+
+            Message::ConfirmStemLink(stem_idx) => {
+                // Called when user confirms track selection in stem link mode
+                // Get the source track path from browser selection
+                let mut source_path: Option<std::path::PathBuf> = None;
+
+                // Check right browser for selection
+                if let Some(ref track_id) = self.collection.browser_right.table_state.last_selected {
+                    if let Some(ref storage) = self.collection.playlist_storage {
+                        if let Some(node) = storage.get_node(track_id) {
+                            source_path = node.track_path.clone();
+                        }
+                    }
+                }
+
+                // If no selection in right browser, check left browser
+                if source_path.is_none() {
+                    if let Some(ref track_id) = self.collection.browser_left.table_state.last_selected {
+                        if let Some(ref storage) = self.collection.playlist_storage {
+                            if let Some(node) = storage.get_node(track_id) {
+                                source_path = node.track_path.clone();
+                            }
+                        }
+                    }
+                }
+
+                // Create the stem link if we have a valid source path
+                if let Some(path) = source_path {
+                    if let Some(ref mut state) = self.collection.loaded_track {
+                        use mesh_core::audio_file::StemLinkReference;
+                        let link = StemLinkReference {
+                            stem_index: stem_idx as u8,
+                            source_path: path.clone(),
+                            source_stem: stem_idx as u8, // Same stem from source
+                            source_drop_marker: 0, // Will be filled when source is analyzed
+                        };
+
+                        // Remove any existing link for this stem
+                        state.stem_links.retain(|l| l.stem_index != stem_idx as u8);
+                        // Add new link
+                        state.stem_links.push(link);
+                        state.modified = true;
+
+                        log::info!("Linked stem {} to track {:?}", stem_idx, path);
+                    }
+                } else {
+                    log::warn!("ConfirmStemLink: No track selected in browser");
+                }
+
+                // Exit selection mode
+                self.stem_link_selection = None;
+            }
+
+            Message::ClearStemLink(stem_idx) => {
+                if let Some(ref mut state) = self.collection.loaded_track {
+                    state.stem_links.retain(|l| l.stem_index != stem_idx as u8);
+                    state.modified = true;
+                    log::info!("Cleared stem link for stem {}", stem_idx);
+                }
+                // Also exit selection mode if we were in it
+                self.stem_link_selection = None;
             }
 
             Message::HotCuePressed(index) => {
@@ -2890,7 +3032,7 @@ impl MeshCueApp {
     /// View for the collection browser and editor
     fn view_collection(&self) -> Element<Message> {
         // Modifier key handling is done in update() where current keyboard state is available
-        super::collection_browser::view(&self.collection, &self.import_state)
+        super::collection_browser::view(&self.collection, &self.import_state, self.stem_link_selection)
     }
 }
 

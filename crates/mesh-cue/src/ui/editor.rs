@@ -7,7 +7,11 @@ use iced::widget::{button, column, container, row, text, text_input, Space};
 use iced::{Alignment, Element, Length};
 
 /// Render the track editor
-pub fn view(state: &LoadedTrackState) -> Element<Message> {
+///
+/// # Arguments
+/// * `state` - The loaded track state
+/// * `stem_link_selection` - Which stem slot is being linked (if any)
+pub fn view(state: &LoadedTrackState, stem_link_selection: Option<usize>) -> Element<Message> {
     let header = view_header(state);
 
     // Player controls (vertical, left of waveforms)
@@ -31,6 +35,9 @@ pub fn view(state: &LoadedTrackState) -> Element<Message> {
     // Saved loop buttons (single row of 8) - below hot cues
     let loop_panel = saved_loop_buttons::view(state);
 
+    // Stem link buttons (4 buttons for prepared mode) - below saved loops
+    let stem_links_panel = cue_editor::view_stem_links(state, stem_link_selection);
+
     let save_section = view_save_section(state);
 
     container(
@@ -38,8 +45,9 @@ pub fn view(state: &LoadedTrackState) -> Element<Message> {
             header,
             Space::new().height(8.0),  // Explicit spacing after header
             main_row,
-            cue_panel,   // Hot cues - directly under waveforms
-            loop_panel,  // Saved loops - below hot cues
+            cue_panel,        // Hot cues - directly under waveforms
+            loop_panel,       // Saved loops - below hot cues
+            stem_links_panel, // Stem links - below saved loops
             // Spacer pushes save section to bottom
             Space::new().height(Length::Fill),
             save_section,

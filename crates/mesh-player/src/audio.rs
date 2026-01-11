@@ -36,7 +36,7 @@
 use std::sync::Arc;
 
 use jack::{AudioOut, Client, ClientOptions, Control, Port, ProcessScope};
-use mesh_core::engine::{command_channel, AudioEngine, DeckAtomics, EngineCommand, SlicerAtomics};
+use mesh_core::engine::{command_channel, AudioEngine, DeckAtomics, EngineCommand, LinkedStemAtomics, SlicerAtomics};
 use mesh_core::types::{StereoBuffer, NUM_DECKS};
 
 /// Maximum buffer size to pre-allocate (covers all JACK configurations)
@@ -212,7 +212,7 @@ impl std::error::Error for JackError {}
 /// and guarantees zero audio dropouts during track loading.
 pub fn start_jack_client(
     client_name: &str,
-) -> Result<(JackHandle, CommandSender, [Arc<DeckAtomics>; NUM_DECKS], [Arc<SlicerAtomics>; NUM_DECKS], u32), JackError> {
+) -> Result<(JackHandle, CommandSender, [Arc<DeckAtomics>; NUM_DECKS], [Arc<SlicerAtomics>; NUM_DECKS], [Arc<LinkedStemAtomics>; NUM_DECKS], u32), JackError> {
     // Create JACK client
     let (client, _status) = Client::new(client_name, ClientOptions::NO_START_SERVER)
         .map_err(|e| JackError::ClientCreation(e.to_string()))?;
@@ -246,6 +246,7 @@ pub fn start_jack_client(
     let engine = AudioEngine::new_with_sample_rate(jack_sample_rate);
     let deck_atomics = engine.deck_atomics();
     let slicer_atomics = engine.slicer_atomics();
+    let linked_stem_atomics = engine.linked_stem_atomics();
 
     // Create lock-free command channel
     let (command_tx, command_rx) = command_channel();
@@ -277,6 +278,7 @@ pub fn start_jack_client(
         CommandSender { producer: command_tx },
         deck_atomics,
         slicer_atomics,
+        linked_stem_atomics,
         jack_sample_rate,
     ))
 }

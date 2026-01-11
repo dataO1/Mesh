@@ -233,6 +233,45 @@ pub struct TrackMetadata {
     pub saved_loops: Vec<SavedLoop>,
     /// Pre-computed waveform preview (from wvfm chunk)
     pub waveform_preview: Option<WaveformPreview>,
+    /// Drop marker for structural alignment (sample position)
+    ///
+    /// Used for linked stems: when swapping stems between tracks,
+    /// the drop markers are aligned so that structural elements
+    /// (e.g., the drop) play at the same time.
+    pub drop_marker: Option<u64>,
+    /// Stem link references (prepared links stored in mslk chunk)
+    ///
+    /// These are pre-configured links to stems from other tracks.
+    /// When the track loads, these linked stems can be loaded in the background.
+    pub stem_links: Vec<StemLinkReference>,
+}
+
+/// Reference to a linked stem stored in a WAV file
+///
+/// This is stored in the `mslk` (Mesh Stem Links) chunk and allows
+/// tracks to specify which stems should be linked from other tracks.
+#[derive(Debug, Clone)]
+pub struct StemLinkReference {
+    /// Which stem slot this link applies to (0=Vocals, 1=Drums, 2=Bass, 3=Other)
+    pub stem_index: u8,
+    /// Path to the track containing the linked stem (relative or absolute)
+    pub source_path: std::path::PathBuf,
+    /// Which stem to extract from the source track
+    pub source_stem: u8,
+    /// Drop marker position in the source track (for alignment)
+    pub source_drop_marker: u64,
+}
+
+impl StemLinkReference {
+    /// Create a new stem link reference
+    pub fn new(stem_index: u8, source_path: std::path::PathBuf, source_stem: u8, source_drop_marker: u64) -> Self {
+        Self {
+            stem_index,
+            source_path,
+            source_stem,
+            source_drop_marker,
+        }
+    }
 }
 
 /// Quantized waveform peaks for a single stem
@@ -303,6 +342,25 @@ impl WaveformPreview {
     /// Check if the preview has data
     pub fn is_empty(&self) -> bool {
         self.width == 0 || self.stems[0].min.is_empty()
+    }
+
+    /// Extract a single stem's peaks, dequantized to f32
+    ///
+    /// Used for linked stem visualization - extract just the stem we need
+    /// from the source track's pre-computed waveform preview.
+    ///
+    /// Returns a Vec of (min, max) pairs ready for rendering.
+    /// Returns empty Vec if stem_idx is out of range.
+    pub fn extract_stem_peaks(&self, stem_idx: usize) -> Vec<(f32, f32)> {
+        if stem_idx >= 4 {
+            return Vec::new();
+        }
+        let stem = &self.stems[stem_idx];
+        stem.min
+            .iter()
+            .zip(stem.max.iter())
+            .map(|(&min, &max)| (dequantize_peak(min), dequantize_peak(max)))
+            .collect()
     }
 }
 
@@ -489,10 +547,114 @@ pub fn parse_mlop_chunk(data: &[u8]) -> Result<Vec<SavedLoop>, AudioFileError> {
     Ok(loops)
 }
 
+/// Parse a mslk (mesh stem links) chunk into a Vec<StemLinkReference>
+///
+/// Format:
+/// - version (1 byte, currently 1)
+/// - num_links (1 byte)
+/// - For each link:
+///   - stem_index (1 byte, 0=Vocals, 1=Drums, 2=Bass, 3=Other)
+///   - source_stem (1 byte)
+///   - source_drop_marker (8 bytes, u64 LE)
+///   - path_len (2 bytes, u16 LE)
+///   - path (path_len bytes, UTF-8)
+pub fn parse_mslk_chunk(data: &[u8]) -> Result<Vec<StemLinkReference>, AudioFileError> {
+    if data.len() < 2 {
+        return Err(AudioFileError::Corrupted("mslk chunk too small".into()));
+    }
+
+    let version = data[0];
+    if version != 1 {
+        return Err(AudioFileError::Corrupted(format!("Unknown mslk version: {}", version)));
+    }
+
+    let num_links = data[1] as usize;
+    let mut links = Vec::with_capacity(num_links);
+    let mut pos = 2;
+
+    for _ in 0..num_links {
+        // stem_index (1 byte)
+        if pos >= data.len() {
+            break;
+        }
+        let stem_index = data[pos];
+        pos += 1;
+
+        // source_stem (1 byte)
+        if pos >= data.len() {
+            break;
+        }
+        let source_stem = data[pos];
+        pos += 1;
+
+        // source_drop_marker (8 bytes)
+        if pos + 8 > data.len() {
+            break;
+        }
+        let source_drop_marker = u64::from_le_bytes([
+            data[pos], data[pos + 1], data[pos + 2], data[pos + 3],
+            data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7],
+        ]);
+        pos += 8;
+
+        // path_len (2 bytes)
+        if pos + 2 > data.len() {
+            break;
+        }
+        let path_len = u16::from_le_bytes([data[pos], data[pos + 1]]) as usize;
+        pos += 2;
+
+        // path
+        if pos + path_len > data.len() {
+            break;
+        }
+        let path_str = String::from_utf8_lossy(&data[pos..pos + path_len]).to_string();
+        let source_path = std::path::PathBuf::from(path_str);
+        pos += path_len;
+
+        links.push(StemLinkReference {
+            stem_index,
+            source_path,
+            source_stem,
+            source_drop_marker,
+        });
+    }
+
+    Ok(links)
+}
+
+/// Serialize stem links to bytes for storage in mslk chunk
+///
+/// Returns the raw bytes (without chunk ID and size header - caller adds those)
+pub fn serialize_mslk_chunk(links: &[StemLinkReference]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+
+    // Version
+    bytes.push(1);
+
+    // Number of links (max 255)
+    bytes.push(links.len().min(255) as u8);
+
+    // Each link
+    for link in links.iter().take(255) {
+        bytes.push(link.stem_index);
+        bytes.push(link.source_stem);
+        bytes.extend_from_slice(&link.source_drop_marker.to_le_bytes());
+
+        let path_str = link.source_path.to_string_lossy();
+        let path_bytes = path_str.as_bytes();
+        let path_len = path_bytes.len().min(65535) as u16;
+        bytes.extend_from_slice(&path_len.to_le_bytes());
+        bytes.extend_from_slice(&path_bytes[..path_len as usize]);
+    }
+
+    bytes
+}
+
 impl TrackMetadata {
     /// Parse metadata from bext description string
     ///
-    /// Format: `BPM:128.00|KEY:Am|FIRST_BEAT:14335|ORIGINAL_BPM:125.00`
+    /// Format: `BPM:128.00|KEY:Am|FIRST_BEAT:14335|DROP:1234567|ORIGINAL_BPM:125.00`
     /// Legacy: `BPM:128.00|KEY:Am|GRID:0,22050,44100,...|ORIGINAL_BPM:125.00`
     ///
     /// Note: FIRST_BEAT is preferred over GRID as it stores only the first beat position,
@@ -510,6 +672,7 @@ impl TrackMetadata {
                     "KEY" => metadata.key = Some(value.trim().to_string()),
                     "FIRST_BEAT" => first_beat = value.trim().parse().ok(),
                     "GRID" => metadata.beat_grid = BeatGrid::from_csv(value),
+                    "DROP" => metadata.drop_marker = value.trim().parse().ok(),
                     _ => {}
                 }
             }
@@ -547,7 +710,7 @@ impl TrackMetadata {
 
     /// Serialize metadata to bext description string
     ///
-    /// Format: `ARTIST:Name|BPM:128.00|KEY:Am|FIRST_BEAT:14335|ORIGINAL_BPM:125.00`
+    /// Format: `ARTIST:Name|BPM:128.00|KEY:Am|FIRST_BEAT:14335|DROP:1234567|ORIGINAL_BPM:125.00`
     ///
     /// Uses FIRST_BEAT instead of full GRID to fit in 256-byte bext description limit.
     /// The full beat grid is regenerated from BPM + FIRST_BEAT when loading.
@@ -568,6 +731,10 @@ impl TrackMetadata {
             .or_else(|| self.beat_grid.beats.first().copied());
         if let Some(fb) = first_beat {
             parts.push(format!("FIRST_BEAT:{}", fb));
+        }
+        // Drop marker for linked stem alignment
+        if let Some(drop_marker) = self.drop_marker {
+            parts.push(format!("DROP:{}", drop_marker));
         }
         if let Some(original) = self.original_bpm {
             parts.push(format!("ORIGINAL_BPM:{:.2}", original));
@@ -1261,6 +1428,7 @@ pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFile
     let mut cue_points: Vec<(u32, u64)> = Vec::new(); // id, position
     let mut bext_description: Option<String> = None;
     let mut saved_loops: Vec<SavedLoop> = Vec::new();
+    let mut stem_links: Vec<StemLinkReference> = Vec::new();
 
     // Track format info for duration calculation
     let mut channels: u16 = 8;
@@ -1430,6 +1598,22 @@ pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFile
                     }
                 }
             }
+            b"mslk" => {
+                // Mesh stem links chunk (prepared linked stems)
+                let mut mslk_data = vec![0u8; chunk_size as usize];
+                reader.read_exact(&mut mslk_data)
+                    .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+
+                match parse_mslk_chunk(&mslk_data) {
+                    Ok(links) => {
+                        log::trace!("Loaded {} stem link references", links.len());
+                        stem_links = links;
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to parse mslk chunk: {}", e);
+                    }
+                }
+            }
             _ => {
                 // Skip unknown chunks
                 reader.seek(SeekFrom::Current(chunk_size as i64))
@@ -1485,6 +1669,9 @@ pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFile
 
     // Attach saved loops if present
     metadata.saved_loops = saved_loops;
+
+    // Attach stem links if present
+    metadata.stem_links = stem_links;
 
     // Calculate and store duration in seconds at system sample rate
     if duration_samples > 0 {
@@ -1865,6 +2052,38 @@ mod tests {
     }
 
     #[test]
+    fn test_drop_marker_parsing() {
+        // Test parsing DROP marker from bext
+        let description = "BPM:128.00|KEY:Am|FIRST_BEAT:14335|DROP:1234567";
+        let metadata = TrackMetadata::parse_bext_description(description);
+
+        assert_eq!(metadata.bpm, Some(128.0));
+        assert_eq!(metadata.key, Some("Am".to_string()));
+        assert_eq!(metadata.drop_marker, Some(1234567));
+        assert_eq!(metadata.beat_grid.first_beat_sample, Some(14335));
+    }
+
+    #[test]
+    fn test_drop_marker_roundtrip() {
+        // Create metadata with drop marker
+        let mut original = TrackMetadata::default();
+        original.bpm = Some(174.5);
+        original.key = Some("Fm".to_string());
+        original.drop_marker = Some(5000000);
+        original.beat_grid.first_beat_sample = Some(1000);
+
+        // Serialize
+        let description = original.to_bext_description();
+        assert!(description.contains("DROP:5000000"));
+
+        // Parse back
+        let parsed = TrackMetadata::parse_bext_description(&description);
+        assert_eq!(parsed.drop_marker, Some(5000000));
+        assert_eq!(parsed.bpm, original.bpm);
+        assert_eq!(parsed.key, original.key);
+    }
+
+    #[test]
     fn test_metadata_roundtrip() {
         // Create metadata with first_beat_sample set
         let original = TrackMetadata {
@@ -1877,6 +2096,8 @@ mod tests {
             cue_points: Vec::new(),
             saved_loops: Vec::new(),
             waveform_preview: None,
+            drop_marker: None,
+            stem_links: Vec::new(),
         };
 
         // Serialize to bext description (now uses FIRST_BEAT format)
@@ -1912,6 +2133,8 @@ mod tests {
             cue_points: Vec::new(),
             saved_loops: Vec::new(),
             waveform_preview: None,
+            drop_marker: None,
+            stem_links: Vec::new(),
         };
 
         // Serialize to bext description
@@ -1945,5 +2168,53 @@ mod tests {
 
         stems.get_mut(Stem::Drums).scale(0.5);
         assert_eq!(stems.drums.len(), 100);
+    }
+
+    #[test]
+    fn test_mslk_chunk_roundtrip() {
+        use std::path::PathBuf;
+
+        // Create stem links
+        let original = vec![
+            StemLinkReference {
+                stem_index: 0, // Vocals
+                source_path: PathBuf::from("/music/linked_track.wav"),
+                source_stem: 1, // Drums from source
+                source_drop_marker: 1234567,
+            },
+            StemLinkReference {
+                stem_index: 2, // Bass
+                source_path: PathBuf::from("/music/another_track.wav"),
+                source_stem: 2, // Bass from source
+                source_drop_marker: 9876543,
+            },
+        ];
+
+        // Serialize to bytes
+        let bytes = serialize_mslk_chunk(&original);
+
+        // Parse back
+        let parsed = parse_mslk_chunk(&bytes).expect("Failed to parse mslk chunk");
+
+        // Verify roundtrip
+        assert_eq!(parsed.len(), 2);
+
+        assert_eq!(parsed[0].stem_index, 0);
+        assert_eq!(parsed[0].source_path, PathBuf::from("/music/linked_track.wav"));
+        assert_eq!(parsed[0].source_stem, 1);
+        assert_eq!(parsed[0].source_drop_marker, 1234567);
+
+        assert_eq!(parsed[1].stem_index, 2);
+        assert_eq!(parsed[1].source_path, PathBuf::from("/music/another_track.wav"));
+        assert_eq!(parsed[1].source_stem, 2);
+        assert_eq!(parsed[1].source_drop_marker, 9876543);
+    }
+
+    #[test]
+    fn test_mslk_chunk_empty() {
+        let empty: Vec<StemLinkReference> = Vec::new();
+        let bytes = serialize_mslk_chunk(&empty);
+        let parsed = parse_mslk_chunk(&bytes).expect("Failed to parse empty mslk chunk");
+        assert!(parsed.is_empty());
     }
 }

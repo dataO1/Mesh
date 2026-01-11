@@ -12,8 +12,9 @@ use mesh_widgets::playlist_browser;
 pub fn view<'a>(
     state: &'a CollectionState,
     _import_state: &'a ImportState,
+    stem_link_selection: Option<usize>,
 ) -> Element<'a, Message> {
-    let editor = view_editor(state);
+    let editor = view_editor(state, stem_link_selection);
     let browser_header = view_browser_header();
     let browsers = view_browsers(state);
 
@@ -50,9 +51,9 @@ fn view_browser_header() -> Element<'static, Message> {
 }
 
 /// Track editor (top section)
-fn view_editor(state: &CollectionState) -> Element<Message> {
+fn view_editor(state: &CollectionState, stem_link_selection: Option<usize>) -> Element<Message> {
     if let Some(ref loaded) = state.loaded_track {
-        editor::view(loaded)
+        editor::view(loaded, stem_link_selection)
     } else {
         container(
             column![

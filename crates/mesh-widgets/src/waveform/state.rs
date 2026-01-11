@@ -85,6 +85,11 @@ pub struct OverviewState {
     pub slicer_region: Option<(f64, f64)>,
     /// Current playing slice index (0-7), for highlighting in visualization
     pub slicer_current_slice: Option<u8>,
+    /// Drop marker position in samples (for linked stem alignment visualization)
+    pub drop_marker: Option<u64>,
+    /// Linked stem waveform peaks [stem_idx] - None if no linked stem for that slot
+    /// When a stem has a linked stem and is active, this provides the peaks to display
+    pub linked_stem_waveforms: [Option<Vec<(f32, f32)>>; 4],
 }
 
 impl OverviewState {
@@ -104,6 +109,8 @@ impl OverviewState {
             loop_region: None,
             slicer_region: None,
             slicer_current_slice: None,
+            drop_marker: None,
+            linked_stem_waveforms: [None, None, None, None],
         }
     }
 
@@ -130,6 +137,14 @@ impl OverviewState {
     pub fn set_slicer_region(&mut self, region: Option<(f64, f64)>, current_slice: Option<u8>) {
         self.slicer_region = region;
         self.slicer_current_slice = current_slice;
+    }
+
+    /// Set the drop marker position (in samples)
+    ///
+    /// The drop marker is used for linked stem alignment visualization.
+    /// Pass `None` to clear the drop marker.
+    pub fn set_drop_marker(&mut self, position: Option<u64>) {
+        self.drop_marker = position;
     }
 
     /// Create from a cached waveform preview
@@ -188,6 +203,8 @@ impl OverviewState {
             loop_region: None,
             slicer_region: None,
             slicer_current_slice: None,
+            drop_marker: None,
+            linked_stem_waveforms: [None, None, None, None],
         }
     }
 
@@ -211,6 +228,8 @@ impl OverviewState {
             loop_region: None,
             slicer_region: None,
             slicer_current_slice: None,
+            drop_marker: None,
+            linked_stem_waveforms: [None, None, None, None],
         }
     }
 
@@ -246,6 +265,8 @@ impl OverviewState {
             loop_region: None,
             slicer_region: None,
             slicer_current_slice: None,
+            drop_marker: metadata.drop_marker,
+            linked_stem_waveforms: [None, None, None, None],
         }
     }
 
@@ -321,6 +342,8 @@ impl OverviewState {
             loop_region: None,
             slicer_region: None,
             slicer_current_slice: None,
+            drop_marker: track.metadata.drop_marker,
+            linked_stem_waveforms: [None, None, None, None],
         }
     }
 
@@ -356,6 +379,30 @@ impl OverviewState {
                 }
             })
             .collect()
+    }
+
+    /// Set linked stem waveform peaks for a specific stem slot
+    ///
+    /// Called when a linked stem is loaded and its peaks are extracted from the source file.
+    /// The peaks should already be smoothed (Gaussian smoothing applied in extraction).
+    pub fn set_linked_stem_peaks(&mut self, stem_idx: usize, peaks: Vec<(f32, f32)>) {
+        if stem_idx < 4 {
+            self.linked_stem_waveforms[stem_idx] = Some(peaks);
+        }
+    }
+
+    /// Clear linked stem peaks for a specific stem slot
+    ///
+    /// Called when a linked stem is unloaded or the track is unloaded.
+    pub fn clear_linked_stem_peaks(&mut self, stem_idx: usize) {
+        if stem_idx < 4 {
+            self.linked_stem_waveforms[stem_idx] = None;
+        }
+    }
+
+    /// Clear all linked stem peaks (when track is unloaded)
+    pub fn clear_all_linked_stem_peaks(&mut self) {
+        self.linked_stem_waveforms = [None, None, None, None];
     }
 }
 
@@ -425,6 +472,11 @@ pub struct ZoomedState {
     cached_view_mode: ZoomedViewMode,
     /// Fixed buffer bounds in samples (for FixedBuffer mode)
     pub fixed_buffer_bounds: Option<(u64, u64)>,
+    /// Drop marker position in samples (for linked stem alignment visualization)
+    pub drop_marker: Option<u64>,
+    /// Linked stem cached peaks [stem_idx] - None if no linked stem for that slot
+    /// When a stem has a linked stem and is active, this provides the peaks to display
+    pub linked_cached_peaks: [Option<Vec<(f32, f32)>>; 4],
 }
 
 impl ZoomedState {
@@ -448,6 +500,8 @@ impl ZoomedState {
             view_mode: ZoomedViewMode::Scrolling,
             cached_view_mode: ZoomedViewMode::Scrolling,
             fixed_buffer_bounds: None,
+            drop_marker: None,
+            linked_cached_peaks: [None, None, None, None],
         }
     }
 
@@ -471,6 +525,8 @@ impl ZoomedState {
             view_mode: ZoomedViewMode::Scrolling,
             cached_view_mode: ZoomedViewMode::Scrolling,
             fixed_buffer_bounds: None,
+            drop_marker: None,
+            linked_cached_peaks: [None, None, None, None],
         }
     }
 
@@ -502,6 +558,14 @@ impl ZoomedState {
     pub fn set_slicer_region(&mut self, region: Option<(f64, f64)>, current_slice: Option<u8>) {
         self.slicer_region = region;
         self.slicer_current_slice = current_slice;
+    }
+
+    /// Set the drop marker position (in samples)
+    ///
+    /// The drop marker is used for linked stem alignment visualization.
+    /// Pass `None` to clear the drop marker.
+    pub fn set_drop_marker(&mut self, position: Option<u64>) {
+        self.drop_marker = position;
     }
 
     /// Set the view mode (scrolling or fixed buffer)
@@ -711,6 +775,27 @@ impl ZoomedState {
         // Track that this cache matches the current view mode
         self.cached_view_mode = self.view_mode;
     }
+
+    /// Set linked stem cached peaks for a specific stem slot
+    ///
+    /// Called when linked stem zoomed peaks are computed.
+    pub fn set_linked_cached_peaks(&mut self, stem_idx: usize, peaks: Vec<(f32, f32)>) {
+        if stem_idx < 4 {
+            self.linked_cached_peaks[stem_idx] = Some(peaks);
+        }
+    }
+
+    /// Clear linked stem cached peaks for a specific stem slot
+    pub fn clear_linked_cached_peaks(&mut self, stem_idx: usize) {
+        if stem_idx < 4 {
+            self.linked_cached_peaks[stem_idx] = None;
+        }
+    }
+
+    /// Clear all linked stem cached peaks (when track is unloaded)
+    pub fn clear_all_linked_cached_peaks(&mut self) {
+        self.linked_cached_peaks = [None, None, None, None];
+    }
 }
 
 impl Default for ZoomedState {
@@ -796,6 +881,12 @@ pub struct PlayerCanvasState {
     key_match_enabled: [bool; 4],
     /// Stem colors for waveform rendering [Vocals, Drums, Bass, Other]
     stem_colors: [Color; 4],
+    /// Linked stem status per deck [deck][stem] (4 decks × 4 stems)
+    /// true = stem has a linked stem from another track
+    linked_stems: [[bool; 4]; 4],
+    /// Whether linked stem is active per deck [deck][stem]
+    /// true = currently playing linked stem, false = playing original
+    linked_stems_active: [[bool; 4]; 4],
 }
 
 impl PlayerCanvasState {
@@ -829,6 +920,8 @@ impl PlayerCanvasState {
             current_transpose: [0; 4],
             key_match_enabled: [false; 4],
             stem_colors: STEM_COLORS,
+            linked_stems: [[false; 4]; 4],       // No linked stems by default
+            linked_stems_active: [[false; 4]; 4], // All using original stems
         }
     }
 
@@ -884,6 +977,23 @@ impl PlayerCanvasState {
             &self.stem_active[deck_idx]
         } else {
             &[true; 4]  // Default: all stems active
+        }
+    }
+
+    /// Set linked stem status for a deck (true = has linked stem, false = no link)
+    pub fn set_linked_stem(&mut self, deck_idx: usize, stem_idx: usize, has_linked: bool, is_active: bool) {
+        if deck_idx < 4 && stem_idx < 4 {
+            self.linked_stems[deck_idx][stem_idx] = has_linked;
+            self.linked_stems_active[deck_idx][stem_idx] = is_active;
+        }
+    }
+
+    /// Get linked stem status for a deck [stem_idx] -> (has_linked, is_active)
+    pub fn linked_stems(&self, deck_idx: usize) -> (&[bool; 4], &[bool; 4]) {
+        if deck_idx < 4 {
+            (&self.linked_stems[deck_idx], &self.linked_stems_active[deck_idx])
+        } else {
+            (&[false; 4], &[false; 4])
         }
     }
 

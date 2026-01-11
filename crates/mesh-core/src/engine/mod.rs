@@ -61,6 +61,7 @@ mod deck;
 mod engine;
 pub mod gc;
 mod latency;
+mod linked_stem;
 mod mixer;
 mod slicer;
 
@@ -68,5 +69,6 @@ pub use command::*;
 pub use deck::*;
 pub use engine::*;
 pub use latency::*;
+pub use linked_stem::*;
 pub use mixer::*;
 pub use slicer::*;
