@@ -516,6 +516,9 @@ pub struct ZoomedState {
     /// Linked stem cached peaks [stem_idx] - None if no linked stem for that slot
     /// When a stem has a linked stem and is active, this provides the peaks to display
     pub linked_cached_peaks: [Option<Vec<(f32, f32)>>; 4],
+    /// Which stems were linked-active when cached_peaks was computed
+    /// Used to detect when stem link status changes and force recompute
+    pub cached_linked_active: [bool; 4],
 }
 
 impl ZoomedState {
@@ -541,6 +544,7 @@ impl ZoomedState {
             fixed_buffer_bounds: None,
             drop_marker: None,
             linked_cached_peaks: [None, None, None, None],
+            cached_linked_active: [false, false, false, false],
         }
     }
 
@@ -566,6 +570,7 @@ impl ZoomedState {
             fixed_buffer_bounds: None,
             drop_marker: None,
             linked_cached_peaks: [None, None, None, None],
+            cached_linked_active: [false, false, false, false],
         }
     }
 
@@ -720,13 +725,23 @@ impl ZoomedState {
 
     /// Check if cache is valid for current playhead position
     /// Returns true if cache needs recomputation
-    pub fn needs_recompute(&self, playhead: u64) -> bool {
+    ///
+    /// The `linked_active` parameter indicates which stems are currently using
+    /// linked buffers. If this differs from when the cache was computed, forces
+    /// a recompute to show the correct waveform.
+    pub fn needs_recompute(&self, playhead: u64, linked_active: &[bool; 4]) -> bool {
         if self.cached_peaks[0].is_empty() {
             return true;
         }
 
         // Force recompute if view mode changed (resolution differs between modes)
         if self.view_mode != self.cached_view_mode {
+            return true;
+        }
+
+        // Force recompute if linked stem status changed
+        // This ensures the waveform immediately updates when user toggles a linked stem
+        if *linked_active != self.cached_linked_active {
             return true;
         }
 
@@ -805,7 +820,8 @@ impl ZoomedState {
 
     /// Apply peaks computed by the background PeaksComputer thread
     ///
-    /// Updates cached_peaks, cache_start, cache_end, cache_left_padding, and cached_view_mode.
+    /// Updates cached_peaks, cache_start, cache_end, cache_left_padding, cached_view_mode,
+    /// and cached_linked_active.
     pub fn apply_computed_peaks(&mut self, result: super::peaks_computer::PeaksComputeResult) {
         self.cached_peaks = result.cached_peaks;
         self.cache_start = result.cache_start;
@@ -813,6 +829,8 @@ impl ZoomedState {
         self.cache_left_padding = result.cache_left_padding;
         // Track that this cache matches the current view mode
         self.cached_view_mode = self.view_mode;
+        // Track which stems were linked-active when this cache was computed
+        self.cached_linked_active = result.linked_active;
     }
 
     /// Set linked stem cached peaks for a specific stem slot

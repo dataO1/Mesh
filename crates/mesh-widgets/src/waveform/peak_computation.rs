@@ -19,7 +19,7 @@
 //! - Peak generation with zero-padding for boundaries
 
 use mesh_core::audio_file::StemBuffers;
-use mesh_core::types::SAMPLE_RATE;
+use mesh_core::types::{StereoBuffer, SAMPLE_RATE};
 
 use super::state::ZoomedViewMode;
 use super::peaks::smooth_peaks_gaussian;
@@ -325,6 +325,89 @@ pub fn smooth_peaks(peaks: &mut [Vec<(f32, f32)>; 4]) {
             peaks[stem_idx] = smooth_peaks_gaussian(&peaks[stem_idx]);
         }
     }
+}
+
+/// Generate peaks with support for linked stem buffers
+///
+/// For stems where `linked_active[i]` is true and `linked_stems[i]` is Some,
+/// uses the linked buffer instead of the host buffer for peak generation.
+/// This allows the zoomed waveform to display the currently playing audio
+/// regardless of whether it's the original stem or a linked stem.
+pub fn generate_peaks_with_padding_and_linked(
+    stems: &StemBuffers,
+    window: &WindowInfo,
+    width: usize,
+    linked_stems: &[Option<&StereoBuffer>; 4],
+    linked_active: &[bool; 4],
+) -> [Vec<(f32, f32)>; 4] {
+    if window.total_samples == 0 || width == 0 {
+        return [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    }
+
+    let stem_len = stems.len();
+    let total_virtual_samples = window.total_samples as usize;
+
+    if total_virtual_samples < width {
+        return [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    }
+
+    let host_refs = [&stems.vocals, &stems.drums, &stems.bass, &stems.other];
+    let mut result: [Vec<(f32, f32)>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+
+    for stem_idx in 0..4 {
+        // Choose between linked and host buffer
+        let (buffer, buffer_len) = if linked_active[stem_idx] {
+            if let Some(linked_buffer) = linked_stems[stem_idx] {
+                (linked_buffer.as_slice(), linked_buffer.len())
+            } else {
+                (host_refs[stem_idx].as_slice(), stem_len)
+            }
+        } else {
+            (host_refs[stem_idx].as_slice(), stem_len)
+        };
+
+        result[stem_idx] = (0..width)
+            .map(|col| {
+                let virtual_col_start = col * total_virtual_samples / width;
+                let virtual_col_end = (col + 1) * total_virtual_samples / width;
+
+                // If entirely in left padding region, return silence
+                if virtual_col_end <= window.left_padding as usize {
+                    return (0.0, 0.0);
+                }
+
+                // Calculate actual sample positions (subtract padding)
+                let actual_col_start = virtual_col_start.saturating_sub(window.left_padding as usize);
+                let actual_col_end = virtual_col_end.saturating_sub(window.left_padding as usize);
+
+                // Map to buffer indices
+                let data_start = (window.start as usize + actual_col_start).min(buffer_len);
+                let data_end = (window.start as usize + actual_col_end).min(buffer_len);
+
+                // If entirely beyond track data, return silence
+                if data_start >= buffer_len || data_start >= data_end {
+                    return (0.0, 0.0);
+                }
+
+                let mut min = f32::INFINITY;
+                let mut max = f32::NEG_INFINITY;
+
+                for i in data_start..data_end {
+                    let sample = (buffer[i].left + buffer[i].right) / 2.0;
+                    min = min.min(sample);
+                    max = max.max(sample);
+                }
+
+                if min == f32::INFINITY {
+                    (0.0, 0.0)
+                } else {
+                    (min, max)
+                }
+            })
+            .collect();
+    }
+
+    result
 }
 
 // =============================================================================

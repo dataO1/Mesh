@@ -226,7 +226,8 @@ impl LoadedTrackState {
     /// (Seek, Stop, BeatJump, JumpToCue, etc.) to ensure the zoomed
     /// waveform displays correctly.
     pub fn update_zoomed_waveform_cache(&mut self, playhead: u64) {
-        if self.combined_waveform.zoomed.needs_recompute(playhead) {
+        // mesh-cue doesn't use linked stems, so pass all-false array
+        if self.combined_waveform.zoomed.needs_recompute(playhead, &[false; 4]) {
             if let Some(ref stems) = self.stems {
                 self.combined_waveform.zoomed.compute_peaks(stems, playhead, 1600);
             }
@@ -1534,7 +1535,8 @@ impl MeshCueApp {
                     }
 
                     // Update zoomed waveform peaks if playhead moved outside cache
-                    if state.combined_waveform.zoomed.needs_recompute(pos) {
+                    // mesh-cue doesn't use linked stems, so pass all-false array
+                    if state.combined_waveform.zoomed.needs_recompute(pos, &[false; 4]) {
                         if let Some(ref stems) = state.stems {
                             state.combined_waveform.zoomed.compute_peaks(stems, pos, 1600);
                         }

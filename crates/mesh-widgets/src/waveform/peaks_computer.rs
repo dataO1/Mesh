@@ -45,10 +45,11 @@ use std::thread::{self, JoinHandle};
 
 use basedrop::Shared;
 use mesh_core::audio_file::StemBuffers;
+use mesh_core::types::StereoBuffer;
 
 use super::peak_computation::{
     CacheInfo, WindowInfo, compute_effective_width,
-    generate_peaks_with_padding, smooth_peaks,
+    generate_peaks_with_padding, generate_peaks_with_padding_and_linked, smooth_peaks,
 };
 use super::state::ZoomedViewMode;
 
@@ -72,6 +73,12 @@ pub struct PeaksComputeRequest {
     pub view_mode: ZoomedViewMode,
     /// Fixed buffer bounds for FixedBuffer mode (start, end in samples)
     pub fixed_buffer_bounds: Option<(u64, u64)>,
+    /// Linked stem buffers [stem_idx] - None if no linked stem for that slot
+    /// When provided along with linked_active=true, peaks are computed from these instead
+    pub linked_stems: [Option<Shared<StereoBuffer>>; 4],
+    /// Which stems are currently using their linked buffer [stem_idx]
+    /// Only meaningful when linked_stems[idx] is Some
+    pub linked_active: [bool; 4],
 }
 
 impl std::fmt::Debug for PeaksComputeRequest {
@@ -105,6 +112,9 @@ pub struct PeaksComputeResult {
     pub cache_left_padding: u64,
     /// Zoom level used for computation
     pub zoom_bars: u32,
+    /// Which stems were linked-active when these peaks were computed
+    /// Used to detect when to invalidate cache on stem link toggle
+    pub linked_active: [bool; 4],
 }
 
 /// Background thread for computing waveform peaks
@@ -204,6 +214,7 @@ fn peaks_thread(rx: Receiver<PeaksComputeRequest>, tx: Sender<PeaksComputeResult
                 cache_end: 0,
                 cache_left_padding: 0,
                 zoom_bars: request.zoom_bars,
+                linked_active: request.linked_active,
             });
             continue;
         }
@@ -228,11 +239,23 @@ fn peaks_thread(rx: Receiver<PeaksComputeRequest>, tx: Sender<PeaksComputeResult
             total_samples: cache.end - cache.start + cache.left_padding,
         };
 
+        // Extract linked stem references for peak generation
+        // Convert Shared<StereoBuffer> to &StereoBuffer references
+        let linked_refs: [Option<&StereoBuffer>; 4] = [
+            request.linked_stems[0].as_ref().map(|s| &**s),
+            request.linked_stems[1].as_ref().map(|s| &**s),
+            request.linked_stems[2].as_ref().map(|s| &**s),
+            request.linked_stems[3].as_ref().map(|s| &**s),
+        ];
+
         // Generate peaks for cache window at effective resolution
-        let mut cached_peaks = generate_peaks_with_padding(
+        // Uses linked stems when linked_active[i] is true and a buffer exists
+        let mut cached_peaks = generate_peaks_with_padding_and_linked(
             &request.stems,
             &cache_window,
             effective_width,
+            &linked_refs,
+            &request.linked_active,
         );
 
         // Adaptive smoothing based on zoom level:
@@ -286,6 +309,7 @@ fn peaks_thread(rx: Receiver<PeaksComputeRequest>, tx: Sender<PeaksComputeResult
             cache_end: cache.end,
             cache_left_padding: cache.left_padding,
             zoom_bars: request.zoom_bars,
+            linked_active: request.linked_active,
         });
     }
 

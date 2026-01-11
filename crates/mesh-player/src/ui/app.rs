@@ -25,7 +25,7 @@ use crate::loader::{LoaderResult, TrackLoader};
 use mesh_midi::{MidiController, MidiMessage as MidiMsg, MidiInputEvent, DeckAction as MidiDeckAction, MixerAction as MidiMixerAction, BrowserAction as MidiBrowserAction};
 use mesh_core::audio_file::StemBuffers;
 use mesh_core::engine::{DeckAtomics, EngineCommand, LinkedStemAtomics, SlicerAtomics};
-use mesh_core::types::NUM_DECKS;
+use mesh_core::types::{StereoBuffer, NUM_DECKS};
 use mesh_widgets::{PeaksComputer, PeaksComputeRequest, ZoomedViewMode, TRACK_TABLE_SCROLLABLE_ID, TRACK_ROW_HEIGHT};
 use super::collection_browser::{CollectionBrowserState, CollectionBrowserMessage};
 use super::deck_view::{DeckView, DeckMessage};
@@ -95,6 +95,9 @@ pub struct MeshApp {
     player_canvas_state: PlayerCanvasState,
     /// Stem buffers for waveform recomputation (Shared for RT-safe deallocation)
     deck_stems: [Option<Shared<StemBuffers>>; 4],
+    /// Linked stem buffers per deck per stem [deck_idx][stem_idx]
+    /// Used for zoomed waveform visualization of active linked stems
+    deck_linked_stems: [[Option<Shared<StereoBuffer>>; 4]; 4],
     /// Local deck view states (controls only, waveform moved to player_canvas_state)
     deck_views: [DeckView; 4],
     /// Mixer view state
@@ -252,6 +255,7 @@ impl MeshApp {
                 state
             },
             deck_stems: [None, None, None, None],
+            deck_linked_stems: std::array::from_fn(|_| [None, None, None, None]),
             deck_views: [
                 DeckView::new(0),
                 DeckView::new(1),
@@ -441,6 +445,17 @@ impl MeshApp {
 
                             match linked_result.result {
                                 Ok(linked_data) => {
+                                    // Store shared buffer reference for zoomed waveform visualization
+                                    if let Some(shared_buffer) = linked_result.shared_buffer {
+                                        log::info!(
+                                            "[LINKED] Storing shared buffer for deck {} stem {} ({} samples)",
+                                            deck_idx,
+                                            stem_idx,
+                                            shared_buffer.len()
+                                        );
+                                        self.deck_linked_stems[deck_idx][stem_idx] = Some(shared_buffer);
+                                    }
+
                                     // Store linked stem overview peaks in waveform state for visualization
                                     if let Some(peaks) = linked_result.overview_peaks {
                                         log::info!(
@@ -785,9 +800,34 @@ impl MeshApp {
                 // This expensive operation (10-50ms) is fully async - UI never blocks
                 for i in 0..4 {
                     if let Some(position) = deck_positions[i] {
+                        // Get linked stem active state from atomics (needed for cache invalidation check)
+                        let linked_active = if let Some(ref linked_atomics) = self.linked_stem_atomics {
+                            let la = &linked_atomics[i];
+                            [
+                                la.has_linked[0].load(std::sync::atomic::Ordering::Relaxed)
+                                    && la.use_linked[0].load(std::sync::atomic::Ordering::Relaxed),
+                                la.has_linked[1].load(std::sync::atomic::Ordering::Relaxed)
+                                    && la.use_linked[1].load(std::sync::atomic::Ordering::Relaxed),
+                                la.has_linked[2].load(std::sync::atomic::Ordering::Relaxed)
+                                    && la.use_linked[2].load(std::sync::atomic::Ordering::Relaxed),
+                                la.has_linked[3].load(std::sync::atomic::Ordering::Relaxed)
+                                    && la.use_linked[3].load(std::sync::atomic::Ordering::Relaxed),
+                            ]
+                        } else {
+                            [false, false, false, false]
+                        };
+
                         let zoomed = &self.player_canvas_state.decks[i].zoomed;
-                        if zoomed.needs_recompute(position) && zoomed.has_track {
+                        if zoomed.needs_recompute(position, &linked_active) && zoomed.has_track {
                             if let Some(ref stems) = self.deck_stems[i] {
+                                // Clone linked stem buffer references (cheap Shared clone)
+                                let linked_stems = [
+                                    self.deck_linked_stems[i][0].clone(),
+                                    self.deck_linked_stems[i][1].clone(),
+                                    self.deck_linked_stems[i][2].clone(),
+                                    self.deck_linked_stems[i][3].clone(),
+                                ];
+
                                 let _ = self.peaks_computer.compute(PeaksComputeRequest {
                                     id: i,
                                     playhead: position,
@@ -798,6 +838,8 @@ impl MeshApp {
                                     bpm: zoomed.bpm,
                                     view_mode: zoomed.view_mode,
                                     fixed_buffer_bounds: zoomed.fixed_buffer_bounds,
+                                    linked_stems,
+                                    linked_active,
                                 });
                             }
                         }

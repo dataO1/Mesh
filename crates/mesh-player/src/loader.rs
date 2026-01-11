@@ -91,6 +91,10 @@ pub struct LinkedStemLoadResult {
     /// Duration of the linked stem buffer in samples (after stretching)
     /// None if load failed
     pub linked_duration: Option<u64>,
+    /// Shared buffer reference for UI waveform computation
+    /// This is the same buffer as in LinkedStemData, wrapped in Shared for
+    /// zero-copy access from both audio engine and UI peaks computation
+    pub shared_buffer: Option<Shared<StereoBuffer>>,
 }
 
 /// Unified loader request (track or linked stem)
@@ -589,13 +593,16 @@ fn handle_linked_stem_load(
                 );
             }
 
+            // Wrap aligned buffer in Shared for zero-copy access from both engine and UI
+            let shared_buffer = Shared::new(&mesh_core::engine::gc::gc_handle(), aligned_buffer);
+
             // Send result with aligned buffer
             // drop_marker is now 0 (alignment is baked into buffer position)
             let _ = tx.send(LoaderResult::LinkedStem(LinkedStemLoadResult {
                 host_deck_idx: request.host_deck_idx,
                 stem_idx: request.stem_idx,
                 result: Ok(LinkedStemData {
-                    buffer: aligned_buffer,
+                    buffer: shared_buffer.clone(),
                     original_bpm: source_bpm,
                     drop_marker: 0, // No longer needed - alignment is baked in
                     track_name,
@@ -603,6 +610,7 @@ fn handle_linked_stem_load(
                 }),
                 overview_peaks,
                 linked_duration: Some(linked_duration),
+                shared_buffer: Some(shared_buffer),
             }));
         }
         Err(e) => {
@@ -614,6 +622,7 @@ fn handle_linked_stem_load(
                 result: Err(e.to_string()),
                 overview_peaks: None,
                 linked_duration: None,
+                shared_buffer: None,
             }));
         }
     }
@@ -748,11 +757,14 @@ fn handle_linked_stem_load_parallel(
                 );
             }
 
+            // Wrap aligned buffer in Shared for zero-copy access from both engine and UI
+            let shared_buffer = Shared::new(&mesh_core::engine::gc::gc_handle(), aligned_buffer);
+
             let _ = tx.send(LoaderResult::LinkedStem(LinkedStemLoadResult {
                 host_deck_idx: request.host_deck_idx,
                 stem_idx: request.stem_idx,
                 result: Ok(LinkedStemData {
-                    buffer: aligned_buffer,
+                    buffer: shared_buffer.clone(),
                     original_bpm: source_bpm,
                     drop_marker: 0,
                     track_name,
@@ -760,6 +772,7 @@ fn handle_linked_stem_load_parallel(
                 }),
                 overview_peaks,
                 linked_duration: Some(linked_duration),
+                shared_buffer: Some(shared_buffer),
             }));
         }
         Err(e) => {
@@ -771,6 +784,7 @@ fn handle_linked_stem_load_parallel(
                 result: Err(e.to_string()),
                 overview_peaks: None,
                 linked_duration: None,
+                shared_buffer: None,
             }));
         }
     }

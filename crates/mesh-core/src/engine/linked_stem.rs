@@ -34,6 +34,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 
+use basedrop::Shared;
+
 use crate::timestretch::TimeStretcher;
 use crate::types::{StereoBuffer, StereoSample, NUM_STEMS, SAMPLE_RATE};
 
@@ -49,7 +51,8 @@ const MIN_PARALLEL_SEGMENT: usize = 2_000_000; // ~40 seconds at 48kHz
 #[derive(Clone)]
 pub struct LinkedStemInfo {
     /// Pre-stretched buffer of the linked stem (at host track's BPM)
-    pub buffer: StereoBuffer,
+    /// Wrapped in Shared for zero-copy access from both audio engine and UI
+    pub buffer: Shared<StereoBuffer>,
 
     /// Original BPM of the linked track (before stretching)
     pub original_bpm: f64,
@@ -67,7 +70,7 @@ pub struct LinkedStemInfo {
 impl LinkedStemInfo {
     /// Create new linked stem info
     pub fn new(
-        buffer: StereoBuffer,
+        buffer: Shared<StereoBuffer>,
         original_bpm: f64,
         drop_marker: u64,
         track_name: String,
@@ -515,7 +518,8 @@ pub fn read_from_linked_buffer(
 /// to the audio engine via the command queue.
 pub struct LinkedStemData {
     /// The stem audio buffer (pre-stretched to host BPM)
-    pub buffer: StereoBuffer,
+    /// Wrapped in Shared for zero-copy access from both audio engine and UI
+    pub buffer: Shared<StereoBuffer>,
 
     /// Original BPM of the source track
     pub original_bpm: f64,

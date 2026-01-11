@@ -1242,7 +1242,7 @@ impl Deck {
                 self.stem_links[i]
                     .linked
                     .as_ref()
-                    .map(|info| &info.buffer)
+                    .map(|info| &*info.buffer)  // Dereference Shared<StereoBuffer> to &StereoBuffer
             } else {
                 None
             }
