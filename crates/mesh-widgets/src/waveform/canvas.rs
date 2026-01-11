@@ -638,6 +638,290 @@ fn draw_stem_waveform_filled(
     frame.fill(&path, color);
 }
 
+/// Draw a linked stem waveform with alignment offset and duration scaling
+///
+/// This handles the case where the linked track has a different duration than the host.
+/// The waveform is scaled proportionally and offset so drop markers align.
+fn draw_stem_waveform_aligned(
+    frame: &mut Frame,
+    peaks: &[(f32, f32)],
+    base_x: f32,
+    x_offset: f32,
+    center_y: f32,
+    height_scale: f32,
+    color: Color,
+    visible_width: f32,
+    linked_duration: u64,
+    host_duration: u64,
+) {
+    if peaks.is_empty() || visible_width < 2.0 || host_duration == 0 {
+        return;
+    }
+
+    // Calculate how linked waveform scales relative to host
+    let duration_ratio = linked_duration as f64 / host_duration as f64;
+    let linked_render_width = (visible_width as f64 * duration_ratio) as f32;
+    let peaks_len = peaks.len() as f32;
+
+    let path = Path::new(|builder| {
+        let mut started = false;
+        let mut upper_points: Vec<Point> = Vec::new();
+        let mut lower_points: Vec<Point> = Vec::new();
+
+        // Collect visible points for upper and lower envelopes
+        for px in 0..(linked_render_width as usize) {
+            let actual_x = base_x + x_offset + px as f32;
+
+            // Skip if outside visible bounds
+            if actual_x < base_x || actual_x > base_x + visible_width {
+                continue;
+            }
+
+            let peak_idx = ((px as f32 / linked_render_width) * peaks_len) as usize;
+            if peak_idx >= peaks.len() {
+                break;
+            }
+
+            let (min, max) = peaks[peak_idx];
+            upper_points.push(Point::new(actual_x, center_y - (max * height_scale)));
+            lower_points.push(Point::new(actual_x, center_y - (min * height_scale)));
+        }
+
+        if upper_points.is_empty() {
+            return;
+        }
+
+        // Draw upper envelope
+        builder.move_to(upper_points[0]);
+        started = true;
+        for point in upper_points.iter().skip(1) {
+            builder.line_to(*point);
+        }
+
+        // Draw lower envelope in reverse
+        for point in lower_points.iter().rev() {
+            builder.line_to(*point);
+        }
+
+        if started {
+            builder.close();
+        }
+    });
+
+    frame.fill(&path, color);
+}
+
+/// Draw only the upper envelope (max values) of a waveform - for split view top half
+///
+/// Draws from center_y upward, creating a half-waveform that meets the bottom half at center_y
+fn draw_stem_waveform_upper(
+    frame: &mut Frame,
+    peaks: &[(f32, f32)],
+    x_offset: f32,
+    center_y: f32,
+    height_scale: f32,
+    color: Color,
+    width: f32,
+) {
+    if peaks.is_empty() || width < 2.0 {
+        return;
+    }
+
+    let peaks_len = peaks.len() as f32;
+
+    let path = Path::new(|builder| {
+        // Start at center line
+        builder.move_to(Point::new(x_offset, center_y));
+
+        // Draw upper envelope left to right (max values go UP from center)
+        for px in 0..(width as usize) {
+            let peak_idx = ((px as f32 / width) * peaks_len) as usize;
+            if peak_idx >= peaks.len() {
+                break;
+            }
+            let (_, max) = peaks[peak_idx];
+            let x = x_offset + px as f32;
+            let y = center_y - (max * height_scale);
+            builder.line_to(Point::new(x, y));
+        }
+
+        // Return along center line (right to left)
+        builder.line_to(Point::new(x_offset + width - 1.0, center_y));
+        builder.close();
+    });
+
+    frame.fill(&path, color);
+}
+
+/// Draw only the lower envelope (min values) of a waveform - for split view bottom half
+///
+/// Draws from center_y downward, creating a half-waveform that meets the top half at center_y
+fn draw_stem_waveform_lower(
+    frame: &mut Frame,
+    peaks: &[(f32, f32)],
+    x_offset: f32,
+    center_y: f32,
+    height_scale: f32,
+    color: Color,
+    width: f32,
+) {
+    if peaks.is_empty() || width < 2.0 {
+        return;
+    }
+
+    let peaks_len = peaks.len() as f32;
+
+    let path = Path::new(|builder| {
+        // Start at center line
+        builder.move_to(Point::new(x_offset, center_y));
+
+        // Draw lower envelope left to right (min values go DOWN from center)
+        for px in 0..(width as usize) {
+            let peak_idx = ((px as f32 / width) * peaks_len) as usize;
+            if peak_idx >= peaks.len() {
+                break;
+            }
+            let (min, _) = peaks[peak_idx];
+            let x = x_offset + px as f32;
+            let y = center_y - (min * height_scale); // min is negative, so this goes DOWN
+            builder.line_to(Point::new(x, y));
+        }
+
+        // Return along center line (right to left)
+        builder.line_to(Point::new(x_offset + width - 1.0, center_y));
+        builder.close();
+    });
+
+    frame.fill(&path, color);
+}
+
+/// Draw only upper envelope with alignment offset for linked stems
+fn draw_stem_waveform_upper_aligned(
+    frame: &mut Frame,
+    peaks: &[(f32, f32)],
+    base_x: f32,
+    x_offset: f32,
+    center_y: f32,
+    height_scale: f32,
+    color: Color,
+    visible_width: f32,
+    linked_duration: u64,
+    host_duration: u64,
+) {
+    if peaks.is_empty() || visible_width < 2.0 || host_duration == 0 {
+        return;
+    }
+
+    let duration_ratio = linked_duration as f64 / host_duration as f64;
+    let linked_render_width = (visible_width as f64 * duration_ratio) as f32;
+    let peaks_len = peaks.len() as f32;
+
+    let path = Path::new(|builder| {
+        let mut started = false;
+        let mut last_x = base_x;
+
+        // Draw upper envelope with clipping
+        for px in 0..(linked_render_width as usize) {
+            let actual_x = base_x + x_offset + px as f32;
+            if actual_x < base_x || actual_x > base_x + visible_width {
+                continue;
+            }
+
+            let peak_idx = ((px as f32 / linked_render_width) * peaks_len) as usize;
+            if peak_idx >= peaks.len() {
+                break;
+            }
+
+            let (_, max) = peaks[peak_idx];
+            let y = center_y - (max * height_scale);
+
+            if !started {
+                builder.move_to(Point::new(actual_x, center_y));
+                builder.line_to(Point::new(actual_x, y));
+                started = true;
+            } else {
+                builder.line_to(Point::new(actual_x, y));
+            }
+            last_x = actual_x;
+        }
+
+        if started {
+            builder.line_to(Point::new(last_x, center_y));
+            builder.close();
+        }
+    });
+
+    frame.fill(&path, color);
+}
+
+/// Draw only lower envelope with alignment offset for linked stems
+fn draw_stem_waveform_lower_aligned(
+    frame: &mut Frame,
+    peaks: &[(f32, f32)],
+    base_x: f32,
+    x_offset: f32,
+    center_y: f32,
+    height_scale: f32,
+    color: Color,
+    visible_width: f32,
+    linked_duration: u64,
+    host_duration: u64,
+) {
+    if peaks.is_empty() || visible_width < 2.0 || host_duration == 0 {
+        return;
+    }
+
+    let duration_ratio = linked_duration as f64 / host_duration as f64;
+    let linked_render_width = (visible_width as f64 * duration_ratio) as f32;
+
+    // Debug: log render parameters (once per session)
+    static LOGGED_LOWER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !LOGGED_LOWER.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        log::info!(
+            "[DRAW_LOWER] visible_width={}, linked_dur={}, host_dur={}, ratio={:.3}, render_width={:.1}, x_offset={:.1}, peaks={}",
+            visible_width, linked_duration, host_duration, duration_ratio, linked_render_width, x_offset, peaks.len()
+        );
+    }
+    let peaks_len = peaks.len() as f32;
+
+    let path = Path::new(|builder| {
+        let mut started = false;
+        let mut last_x = base_x;
+
+        // Draw lower envelope with clipping
+        for px in 0..(linked_render_width as usize) {
+            let actual_x = base_x + x_offset + px as f32;
+            if actual_x < base_x || actual_x > base_x + visible_width {
+                continue;
+            }
+
+            let peak_idx = ((px as f32 / linked_render_width) * peaks_len) as usize;
+            if peak_idx >= peaks.len() {
+                break;
+            }
+
+            let (min, _) = peaks[peak_idx];
+            let y = center_y - (min * height_scale);
+
+            if !started {
+                builder.move_to(Point::new(actual_x, center_y));
+                builder.line_to(Point::new(actual_x, y));
+                started = true;
+            } else {
+                builder.line_to(Point::new(actual_x, y));
+            }
+            last_x = actual_x;
+        }
+
+        if started {
+            builder.line_to(Point::new(last_x, center_y));
+            builder.close();
+        }
+    });
+
+    frame.fill(&path, color);
+}
+
 /// Draw stem waveforms from peak data using filled paths
 fn draw_stem_waveforms(
     frame: &mut Frame,
@@ -1766,6 +2050,7 @@ fn draw_deck_quadrant(
         width,
         stem_colors,
         stem_active,
+        linked_stems,
         linked_active,
     );
 }
@@ -2112,6 +2397,10 @@ fn draw_zoomed_at(
 }
 
 /// Draw an overview waveform at a specific position
+///
+/// When linked stems exist, renders as split-view:
+/// - Top half: Currently running stems (host or linked depending on toggle state)
+/// - Bottom half: Non-running alternative stems (with drop marker alignment)
 fn draw_overview_at(
     frame: &mut Frame,
     overview: &OverviewState,
@@ -2121,9 +2410,14 @@ fn draw_overview_at(
     width: f32,
     stem_colors: &[Color; 4],
     stem_active: &[bool; 4],
+    linked_stems: &[bool; 4],
     linked_active: &[bool; 4],
 ) {
     let height = WAVEFORM_HEIGHT;
+
+    // Check if any linked stems exist to determine split-view mode
+    let any_linked = linked_stems.iter().any(|&has| has);
+    // center_y is always at the middle - in split mode, top and bottom envelopes meet here
     let center_y = y + height / 2.0;
 
     // Background
@@ -2225,31 +2519,124 @@ fn draw_overview_at(
         );
     }
 
-    // Draw stem waveforms in layered order: Drums (back) → Bass → Vocals → Other (front)
-    let height_scale = height / 2.0 * 0.85;
-    for &stem_idx in STEM_RENDER_ORDER.iter() {
-        // Choose peaks source: use linked peaks if stem is linked-active and has linked peaks
-        let stem_peaks = if linked_active[stem_idx] {
-            overview.linked_stem_waveforms[stem_idx]
-                .as_ref()
-                .unwrap_or(&overview.stem_waveforms[stem_idx])
-        } else {
-            &overview.stem_waveforms[stem_idx]
-        };
-        if stem_peaks.is_empty() {
-            continue;
+    // Draw stem waveforms - split view when linked stems exist
+    if any_linked {
+        // --- SPLIT VIEW MODE ---
+        // Shared center line where top and bottom halves meet
+        let shared_center_y = y + height / 2.0;
+        // Height scale for half the waveform (each half uses full available space)
+        let half_height_scale = (height / 2.0) * 0.85;
+
+        // Draw stems in layered order
+        for &stem_idx in STEM_RENDER_ORDER.iter() {
+            let has_link = linked_stems[stem_idx];
+            let is_linked_active = linked_active[stem_idx];
+
+            // Get stem color
+            let active_color = if stem_active[stem_idx] {
+                let base = stem_colors[stem_idx];
+                Color::from_rgba(base.r, base.g, base.b, 0.6)
+            } else {
+                let gray = INACTIVE_STEM_GRAYS[stem_idx];
+                Color::from_rgba(gray.r, gray.g, gray.b, 0.4)
+            };
+            let inactive_color = if stem_active[stem_idx] {
+                let base = stem_colors[stem_idx];
+                Color::from_rgba(base.r, base.g, base.b, 0.3)
+            } else {
+                let gray = INACTIVE_STEM_GRAYS[stem_idx];
+                Color::from_rgba(gray.r, gray.g, gray.b, 0.25)
+            };
+
+            // --- TOP HALF: Upper envelope of currently running stem ---
+            let top_peaks = if is_linked_active && has_link {
+                // Linked is active: draw linked on top (with alignment)
+                overview.linked_stem_waveforms[stem_idx].as_ref()
+            } else {
+                // Host is active: draw host on top
+                Some(&overview.stem_waveforms[stem_idx])
+            };
+
+            if let Some(peaks) = top_peaks {
+                if !peaks.is_empty() {
+                    if is_linked_active && has_link {
+                        // Linked stem on top: peaks are pre-aligned in loader, no offset needed
+                        let linked_dur = overview.linked_durations[stem_idx].unwrap_or(overview.duration_samples);
+                        let x_offset = 0.0; // Pre-alignment baked into peaks
+                        draw_stem_waveform_upper_aligned(
+                            frame,
+                            peaks,
+                            x,
+                            x_offset,
+                            shared_center_y,
+                            half_height_scale,
+                            active_color,
+                            width,
+                            linked_dur,
+                            overview.duration_samples,
+                        );
+                    } else {
+                        // Host stem on top: draw upper envelope only
+                        draw_stem_waveform_upper(frame, peaks, x, shared_center_y, half_height_scale, active_color, width);
+                    }
+                }
+            }
+
+            // --- BOTTOM HALF: Lower envelope of non-running alternative ---
+            if has_link {
+                let bottom_peaks = if is_linked_active {
+                    // Linked is active: host goes to bottom
+                    Some(&overview.stem_waveforms[stem_idx])
+                } else {
+                    // Host is active: linked goes to bottom (with alignment)
+                    overview.linked_stem_waveforms[stem_idx].as_ref()
+                };
+
+                if let Some(peaks) = bottom_peaks {
+                    if !peaks.is_empty() {
+                        if !is_linked_active {
+                            // Linked stem on bottom: peaks are pre-aligned in loader, no offset needed
+                            let linked_dur = overview.linked_durations[stem_idx].unwrap_or(overview.duration_samples);
+                            let x_offset = 0.0; // Pre-alignment baked into peaks
+                            draw_stem_waveform_lower_aligned(
+                                frame,
+                                peaks,
+                                x,
+                                x_offset,
+                                shared_center_y,
+                                half_height_scale,
+                                inactive_color,
+                                width,
+                                linked_dur,
+                                overview.duration_samples,
+                            );
+                        } else {
+                            // Host stem on bottom: draw lower envelope only (dimmed)
+                            draw_stem_waveform_lower(frame, peaks, x, shared_center_y, half_height_scale, inactive_color, width);
+                        }
+                    }
+                }
+            }
         }
+    } else {
+        // --- SINGLE PANE MODE (no linked stems) ---
+        let height_scale = height / 2.0 * 0.85;
+        for &stem_idx in STEM_RENDER_ORDER.iter() {
+            let stem_peaks = &overview.stem_waveforms[stem_idx];
+            if stem_peaks.is_empty() {
+                continue;
+            }
 
-        // Use stem color if active, gray tone if inactive
-        let waveform_color = if stem_active[stem_idx] {
-            let base_color = stem_colors[stem_idx];
-            Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.6)
-        } else {
-            let gray = INACTIVE_STEM_GRAYS[stem_idx];
-            Color::from_rgba(gray.r, gray.g, gray.b, 0.4)
-        };
+            let waveform_color = if stem_active[stem_idx] {
+                let base_color = stem_colors[stem_idx];
+                Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.6)
+            } else {
+                let gray = INACTIVE_STEM_GRAYS[stem_idx];
+                Color::from_rgba(gray.r, gray.g, gray.b, 0.4)
+            };
 
-        draw_stem_waveform_filled(frame, stem_peaks, x, center_y, height_scale, waveform_color, width);
+            draw_stem_waveform_filled(frame, stem_peaks, x, center_y, height_scale, waveform_color, width);
+        }
     }
 
     // Draw cue markers

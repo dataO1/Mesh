@@ -12,9 +12,7 @@ use crate::types::{
     NUM_STEMS, SAMPLE_RATE,
 };
 
-use super::{
-    map_host_to_linked_position, LatencyCompensator, LinkedStemAtomics, StemLink, MAX_BUFFER_SIZE,
-};
+use super::{LatencyCompensator, LinkedStemAtomics, StemLink, MAX_BUFFER_SIZE};
 
 /// Number of hot cue slots per deck
 pub const HOT_CUE_SLOTS: usize = 8;
@@ -1238,13 +1236,13 @@ impl Deck {
 
         // Extract linked stem buffer references before parallel section
         // This avoids borrow checker issues with stem_links in the parallel closure
-        let host_drop_marker = self.drop_marker.unwrap_or(0);
-        let linked_stems: [Option<(&StereoBuffer, u64)>; NUM_STEMS] = std::array::from_fn(|i| {
+        // Note: Linked buffers are pre-aligned to host timeline, so no drop marker offset needed
+        let linked_stems: [Option<&StereoBuffer>; NUM_STEMS] = std::array::from_fn(|i| {
             if self.stem_links[i].is_linked_active() {
                 self.stem_links[i]
                     .linked
                     .as_ref()
-                    .map(|info| (&info.buffer, info.drop_marker))
+                    .map(|info| &info.buffer)
             } else {
                 None
             }
@@ -1279,21 +1277,17 @@ impl Deck {
                 let buf_slice = stem_buffer.as_mut_slice();
 
                 // Check for linked stem - read from linked buffer if active
-                if let Some((linked_buffer, linked_drop_marker)) = linked_stems[stem_idx] {
-                    // LINKED STEM PATH: Read from pre-stretched linked buffer
-                    // Uses drop marker alignment for structural synchronization
+                // Linked buffers are pre-aligned to host timeline (same length as host track)
+                // so we can read directly at host position without offset calculation
+                if let Some(linked_buffer) = linked_stems[stem_idx] {
+                    // LINKED STEM PATH: Read from pre-aligned linked buffer
                     let linked_len = linked_buffer.len();
                     let linked_slice = linked_buffer.as_slice();
 
                     for i in 0..samples_to_read {
-                        let host_pos = position + i;
-                        if let Some(linked_pos) = map_host_to_linked_position(
-                            host_pos,
-                            host_drop_marker,
-                            linked_drop_marker,
-                            linked_len,
-                        ) {
-                            buf_slice[i] = linked_slice[linked_pos];
+                        let read_pos = position + i;
+                        if read_pos < linked_len {
+                            buf_slice[i] = linked_slice[read_pos];
                         } else {
                             // Outside linked buffer bounds - output silence
                             buf_slice[i] = StereoSample::silence();
@@ -1315,7 +1309,7 @@ impl Deck {
                 // The slicer remaps sample positions through the playback queue
                 // Uses the appropriate buffer (linked or original) for slice lookup
                 if slicer_state.is_enabled() {
-                    if let Some((linked_buffer, _)) = linked_stems[stem_idx] {
+                    if let Some(linked_buffer) = linked_stems[stem_idx] {
                         // Slicer uses linked buffer when linked stem is active
                         slicer_state.process(
                             stem_buffer,

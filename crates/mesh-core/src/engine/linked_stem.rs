@@ -157,6 +157,10 @@ impl StemLink {
     /// 2. The global/host BPM changes
     ///
     /// Returns the stretched buffer.
+    ///
+    /// Uses chunked processing (256-sample output chunks) to match how the global
+    /// stretcher works during playback. This ensures identical quality between
+    /// pre-stretched linked stems and normally-played tracks.
     pub fn pre_stretch(
         &mut self,
         source: &StereoBuffer,
@@ -173,13 +177,67 @@ impl StemLink {
             return source.clone();
         }
 
-        // Calculate output length
-        let output_len = ((source.len() as f64) / ratio).ceil() as usize;
-        let mut output = StereoBuffer::silence(output_len);
+        // Process in chunks like the global stretcher does (256-sample output chunks)
+        // This matches the streaming behavior in engine.rs and produces identical quality
+        const OUTPUT_CHUNK_SIZE: usize = 256;
 
-        // Configure and run stretcher
+        let total_output_len = ((source.len() as f64) / ratio).ceil() as usize;
+        let mut output = StereoBuffer::silence(total_output_len);
+
         self.stretcher.set_ratio(ratio);
-        self.stretcher.process(source, &mut output);
+
+        let source_slice = source.as_slice();
+
+        let mut input_pos = 0usize;
+        let mut output_pos = 0usize;
+        let mut fractional_input = 0.0f64;
+
+        while output_pos < total_output_len && input_pos < source.len() {
+            // Fixed output chunk size (or remainder)
+            let output_chunk_len = OUTPUT_CHUNK_SIZE.min(total_output_len - output_pos);
+
+            // Calculate input samples needed (matching deck.rs logic)
+            // input_needed = output_chunk_len * ratio
+            fractional_input += (output_chunk_len as f64) * ratio;
+            let input_chunk_len = fractional_input.floor() as usize;
+            fractional_input -= input_chunk_len as f64;
+
+            let input_end = (input_pos + input_chunk_len).min(source.len());
+            let actual_input_len = input_end - input_pos;
+
+            if actual_input_len == 0 {
+                break;
+            }
+
+            // Create temporary buffers for this chunk
+            let mut input_chunk = StereoBuffer::silence(actual_input_len);
+            let mut output_chunk = StereoBuffer::silence(output_chunk_len);
+
+            // Copy input data
+            input_chunk
+                .as_mut_slice()
+                .copy_from_slice(&source_slice[input_pos..input_end]);
+
+            // Process chunk (ratio determined by size difference)
+            self.stretcher.process(&input_chunk, &mut output_chunk);
+
+            // Copy output data
+            let output_end = (output_pos + output_chunk_len).min(total_output_len);
+            output.as_mut_slice()[output_pos..output_end]
+                .copy_from_slice(&output_chunk.as_slice()[..output_end - output_pos]);
+
+            input_pos = input_end;
+            output_pos = output_end;
+        }
+
+        // Flush any remaining samples from the stretcher
+        if output_pos < total_output_len {
+            let remaining = total_output_len - output_pos;
+            let mut flush_buf = StereoBuffer::silence(remaining);
+            self.stretcher.flush(&mut flush_buf);
+            output.as_mut_slice()[output_pos..]
+                .copy_from_slice(&flush_buf.as_slice()[..remaining]);
+        }
 
         output
     }
@@ -199,6 +257,14 @@ impl StemLink {
             );
             // TODO: Store original unstretched buffer for quality re-stretching
         }
+    }
+
+    /// Get the stretcher's total latency in samples
+    ///
+    /// This latency is introduced during pre-stretching and shifts audio content
+    /// forward in the output buffer. Must be compensated for in drop marker calculation.
+    pub fn stretcher_latency(&self) -> usize {
+        self.stretcher.total_latency()
     }
 }
 

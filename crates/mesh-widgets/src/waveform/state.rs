@@ -90,6 +90,10 @@ pub struct OverviewState {
     /// Linked stem waveform peaks [stem_idx] - None if no linked stem for that slot
     /// When a stem has a linked stem and is active, this provides the peaks to display
     pub linked_stem_waveforms: [Option<Vec<(f32, f32)>>; 4],
+    /// Drop marker position of each linked stem (samples, for split-view alignment)
+    pub linked_drop_markers: [Option<u64>; 4],
+    /// Duration of each linked stem buffer (samples, for split-view alignment scaling)
+    pub linked_durations: [Option<u64>; 4],
 }
 
 impl OverviewState {
@@ -111,6 +115,8 @@ impl OverviewState {
             slicer_current_slice: None,
             drop_marker: None,
             linked_stem_waveforms: [None, None, None, None],
+            linked_drop_markers: [None, None, None, None],
+            linked_durations: [None, None, None, None],
         }
     }
 
@@ -205,6 +211,8 @@ impl OverviewState {
             slicer_current_slice: None,
             drop_marker: None,
             linked_stem_waveforms: [None, None, None, None],
+            linked_drop_markers: [None, None, None, None],
+            linked_durations: [None, None, None, None],
         }
     }
 
@@ -230,6 +238,8 @@ impl OverviewState {
             slicer_current_slice: None,
             drop_marker: None,
             linked_stem_waveforms: [None, None, None, None],
+            linked_drop_markers: [None, None, None, None],
+            linked_durations: [None, None, None, None],
         }
     }
 
@@ -267,6 +277,8 @@ impl OverviewState {
             slicer_current_slice: None,
             drop_marker: metadata.drop_marker,
             linked_stem_waveforms: [None, None, None, None],
+            linked_drop_markers: [None, None, None, None],
+            linked_durations: [None, None, None, None],
         }
     }
 
@@ -344,6 +356,8 @@ impl OverviewState {
             slicer_current_slice: None,
             drop_marker: track.metadata.drop_marker,
             linked_stem_waveforms: [None, None, None, None],
+            linked_drop_markers: [None, None, None, None],
+            linked_durations: [None, None, None, None],
         }
     }
 
@@ -403,6 +417,31 @@ impl OverviewState {
     /// Clear all linked stem peaks (when track is unloaded)
     pub fn clear_all_linked_stem_peaks(&mut self) {
         self.linked_stem_waveforms = [None, None, None, None];
+    }
+
+    /// Set linked stem metadata for alignment in split-view rendering
+    ///
+    /// Called when a linked stem is loaded. Drop marker and duration are used
+    /// to calculate the x-offset for aligning the linked waveform with the host.
+    pub fn set_linked_stem_metadata(&mut self, stem_idx: usize, drop_marker: u64, duration: u64) {
+        if stem_idx < 4 {
+            self.linked_drop_markers[stem_idx] = Some(drop_marker);
+            self.linked_durations[stem_idx] = Some(duration);
+        }
+    }
+
+    /// Clear linked stem metadata for a specific stem slot
+    pub fn clear_linked_stem_metadata(&mut self, stem_idx: usize) {
+        if stem_idx < 4 {
+            self.linked_drop_markers[stem_idx] = None;
+            self.linked_durations[stem_idx] = None;
+        }
+    }
+
+    /// Clear all linked stem metadata (when track is unloaded)
+    pub fn clear_all_linked_stem_metadata(&mut self) {
+        self.linked_drop_markers = [None, None, None, None];
+        self.linked_durations = [None, None, None, None];
     }
 }
 

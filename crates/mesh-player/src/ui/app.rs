@@ -312,9 +312,10 @@ impl MeshApp {
                                     let track_key = prepared.track.key().to_string();
                                     // Clone key for engine command (before moving to canvas state)
                                     let key_for_engine = if track_key.is_empty() { None } else { Some(track_key.clone()) };
-                                    // Clone stem links, drop marker, and track BPM for auto-loading (before moving prepared)
+                                    // Clone stem links, drop marker, duration, and track BPM for auto-loading (before moving prepared)
                                     let stem_links_to_load = prepared.track.metadata.stem_links.clone();
                                     let host_drop_marker = prepared.track.metadata.drop_marker.unwrap_or(0);
+                                    let host_duration = prepared.track.duration_samples as u64;
                                     let track_bpm = prepared.track.bpm();
                                     self.player_canvas_state.set_track_name(deck_idx, track_name);
                                     self.player_canvas_state.set_track_key(deck_idx, track_key);
@@ -408,6 +409,7 @@ impl MeshApp {
                                                     link.source_path.clone(),
                                                     track_bpm,
                                                     host_drop_marker,
+                                                    host_duration,
                                                 ) {
                                                     log::warn!(
                                                         "Failed to auto-load prepared stem link for stem {}: {}",
@@ -452,6 +454,35 @@ impl MeshApp {
                                             .overview
                                             .set_linked_stem_peaks(stem_idx, peaks);
                                     }
+
+                                    // Store linked stem metadata for split-view alignment
+                                    // Use STRETCHED values to match audio engine alignment
+                                    if let Some(stretched_duration) = linked_result.linked_duration {
+                                        let host_duration = self.player_canvas_state.decks[deck_idx].overview.duration_samples;
+                                        let host_drop = self.player_canvas_state.decks[deck_idx].overview.drop_marker;
+                                        log::info!(
+                                            "[LINKED] Visual alignment for deck {} stem {}: stretched_drop={}, stretched_dur={}, host_drop={:?}, host_dur={}, ratio={:.3}",
+                                            deck_idx,
+                                            stem_idx,
+                                            linked_data.drop_marker,  // Stretched drop marker (matches audio)
+                                            stretched_duration,
+                                            host_drop,
+                                            host_duration,
+                                            stretched_duration as f64 / host_duration as f64
+                                        );
+                                        self.player_canvas_state
+                                            .deck_mut(deck_idx)
+                                            .overview
+                                            .set_linked_stem_metadata(
+                                                stem_idx,
+                                                linked_data.drop_marker,  // Stretched drop marker (matches audio)
+                                                stretched_duration,        // Stretched duration
+                                            );
+                                    }
+
+                                    // Immediately mark stem as having a linked stem (enables split-view)
+                                    // Note: is_active is false initially; user must toggle to activate
+                                    self.player_canvas_state.set_linked_stem(deck_idx, stem_idx, true, false);
 
                                     // Send linked stem to audio engine
                                     if let Some(ref mut sender) = self.command_sender {
@@ -1463,7 +1494,7 @@ impl MeshApp {
         if let StemLinkState::Selecting { deck, stem } = self.stem_link_state.clone() {
             // Get selected track path from browser
             if let Some(path) = self.collection_browser.get_selected_track_path().cloned() {
-                // Get host deck's BPM and drop marker
+                // Get host deck's BPM, drop marker, and duration
                 let host_bpm = self.global_bpm;
                 // Get host track's drop marker from LinkedStemAtomics (set when track loads)
                 let host_drop_marker = self
@@ -1475,6 +1506,8 @@ impl MeshApp {
                             .load(std::sync::atomic::Ordering::Relaxed)
                     })
                     .unwrap_or(0);
+                // Get host track's duration from waveform state
+                let host_duration = self.player_canvas_state.decks[deck].overview.duration_samples;
 
                 // Request linked stem load
                 if let Err(e) = self.track_loader.load_linked_stem(
@@ -1483,6 +1516,7 @@ impl MeshApp {
                     path.clone(),
                     host_bpm,
                     host_drop_marker,
+                    host_duration,
                 ) {
                     self.status = format!("Failed to start linked stem load: {}", e);
                     self.stem_link_state = StemLinkState::Idle;

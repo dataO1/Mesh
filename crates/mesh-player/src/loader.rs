@@ -71,6 +71,8 @@ pub struct LinkedStemLoadRequest {
     pub host_bpm: f64,
     /// Host deck's drop marker position (for alignment)
     pub host_drop_marker: u64,
+    /// Host track's total duration in samples (for pre-aligned buffer)
+    pub host_duration: u64,
 }
 
 /// Result of a linked stem load
@@ -84,6 +86,9 @@ pub struct LinkedStemLoadResult {
     /// Pre-computed overview peaks from source track's wvfm chunk
     /// None if source track has no waveform preview, or if load failed
     pub overview_peaks: Option<Vec<(f32, f32)>>,
+    /// Duration of the linked stem buffer in samples (after stretching)
+    /// None if load failed
+    pub linked_duration: Option<u64>,
 }
 
 /// Unified loader request (track or linked stem)
@@ -156,7 +161,8 @@ impl TrackLoader {
     /// Request loading a linked stem from another track (non-blocking)
     ///
     /// The linked stem will be pre-stretched to match the host deck's BPM
-    /// and use drop markers for structural alignment.
+    /// and pre-aligned so drops line up. The resulting buffer has length = host_duration
+    /// and can be read directly at the host position (no runtime offset calculation).
     pub fn load_linked_stem(
         &self,
         host_deck_idx: usize,
@@ -164,6 +170,7 @@ impl TrackLoader {
         source_path: PathBuf,
         host_bpm: f64,
         host_drop_marker: u64,
+        host_duration: u64,
     ) -> Result<(), String> {
         self.tx
             .send(LoaderRequest::LinkedStem(LinkedStemLoadRequest {
@@ -172,6 +179,7 @@ impl TrackLoader {
                 source_path,
                 host_bpm,
                 host_drop_marker,
+                host_duration,
             }))
             .map_err(|e| format!("Loader thread disconnected: {}", e))
     }
@@ -279,6 +287,11 @@ fn handle_track_load(
 
             // Set drop marker if present in track metadata
             overview_state.set_drop_marker(track.metadata.drop_marker);
+            log::info!(
+                "[LOADER] Host track drop_marker={:?}, duration={}",
+                track.metadata.drop_marker,
+                duration
+            );
 
             // Pre-compute zoomed waveform state
             let mut zoomed_state = ZoomedState::from_metadata(
@@ -341,13 +354,91 @@ fn handle_track_load(
     }
 }
 
+/// Align overview peaks to the host timeline using drop marker alignment
+///
+/// Takes the 800-peak waveform from the stretched stem and maps it to the host timeline.
+/// The output peaks show where the linked stem's waveform appears relative to the host track.
+fn align_peaks_to_host(
+    peaks: &[(f32, f32)],
+    stretched_duration: usize,
+    host_duration: usize,
+    host_drop_marker: u64,
+    stretched_drop_marker: u64,
+) -> Vec<(f32, f32)> {
+    const PEAK_WIDTH: usize = 800;
+
+    let offset = host_drop_marker as i64 - stretched_drop_marker as i64;
+
+    let mut aligned_peaks = vec![(0.0f32, 0.0f32); PEAK_WIDTH];
+
+    for i in 0..PEAK_WIDTH {
+        // Host position in samples for this peak index
+        let host_sample = (i as f64 / PEAK_WIDTH as f64) * host_duration as f64;
+
+        // Map to linked buffer position (inverse of audio alignment)
+        let linked_sample = host_sample - offset as f64;
+
+        if linked_sample >= 0.0 && (linked_sample as usize) < stretched_duration {
+            // Find corresponding peak index in source peaks
+            let linked_peak_idx =
+                ((linked_sample / stretched_duration as f64) * peaks.len() as f64) as usize;
+            if linked_peak_idx < peaks.len() {
+                aligned_peaks[i] = peaks[linked_peak_idx];
+            }
+        }
+        // else: stays at (0.0, 0.0) - silence region
+    }
+
+    aligned_peaks
+}
+
+/// Align a stretched buffer to the host timeline using drop marker alignment
+///
+/// Creates a new buffer with length = host_duration where the linked stem is
+/// positioned so its drop marker aligns with the host's drop marker.
+/// - Pads with silence at start if linked starts after host drop
+/// - Trims start if linked starts before host drop
+/// - Pads with silence at end if linked ends before host
+///
+/// After alignment, the buffer can be read directly at host position (no offset calculation).
+fn align_buffer_to_host(
+    stretched: &StereoBuffer,
+    host_duration: usize,
+    host_drop_marker: u64,
+    stretched_drop_marker: u64,
+) -> StereoBuffer {
+    let mut aligned = StereoBuffer::silence(host_duration);
+
+    // Offset = how much to shift linked stem in the aligned buffer
+    // Positive: linked stem starts later (pad start with silence)
+    // Negative: linked stem starts earlier (trim start of linked)
+    let offset = host_drop_marker as i64 - stretched_drop_marker as i64;
+
+    let aligned_slice = aligned.as_mut_slice();
+    let stretched_slice = stretched.as_slice();
+    let stretched_len = stretched.len();
+
+    for i in 0..host_duration {
+        // Source position in stretched buffer
+        let src_pos = i as i64 - offset;
+
+        if src_pos >= 0 && (src_pos as usize) < stretched_len {
+            aligned_slice[i] = stretched_slice[src_pos as usize];
+        }
+        // else: already silence (from StereoBuffer::silence)
+    }
+
+    aligned
+}
+
 /// Handle a linked stem load request
 ///
 /// This function:
 /// 1. Loads the source track to get its metadata (BPM, drop marker)
 /// 2. Extracts the requested stem from the 8-channel file
 /// 3. Pre-stretches the stem to match the host deck's BPM
-/// 4. Sends the result back to the UI thread
+/// 4. Pre-aligns the buffer to host timeline (drops aligned, same length as host)
+/// 5. Sends the result back to the UI thread
 fn handle_linked_stem_load(
     request: LinkedStemLoadRequest,
     tx: &Sender<LoaderResult>,
@@ -393,12 +484,18 @@ fn handle_linked_stem_load(
             let stretched_buffer = stem_link.pre_stretch(&source_buffer, source_bpm, request.host_bpm);
 
             // Scale drop marker position by stretch ratio
+            // No latency compensation needed - chunked streaming handles timing internally
             let stretch_ratio = request.host_bpm / source_bpm;
             let stretched_drop_marker = if stretch_ratio > 0.0 {
-                ((source_drop_marker as f64) / stretch_ratio) as u64
+                ((source_drop_marker as f64) / stretch_ratio).round() as u64
             } else {
                 source_drop_marker
             };
+
+            log::info!(
+                "[STRETCH] ratio={:.4}, source_drop={}, stretched_drop={}",
+                stretch_ratio, source_drop_marker, stretched_drop_marker
+            );
 
             log::info!(
                 "[PERF] Loader: Pre-stretched stem {} from {:.1} BPM to {:.1} BPM ({} -> {} samples) in {:?}",
@@ -410,18 +507,59 @@ fn handle_linked_stem_load(
                 stretch_start.elapsed()
             );
 
+            // Capture stretched length before alignment (needed for peak alignment)
+            let stretched_len = stretched_buffer.len();
+
+            // Pre-align the buffer to host timeline
+            // After alignment: buffer length = host_duration, drops are aligned,
+            // and the buffer can be read directly at host position (no offset calc)
+            let align_start = std::time::Instant::now();
+            let aligned_buffer = align_buffer_to_host(
+                &stretched_buffer,
+                request.host_duration as usize,
+                request.host_drop_marker,
+                stretched_drop_marker,
+            );
+
+            log::info!(
+                "[ALIGN] host_drop={}, stretched_drop={}, offset={}, stretched_len={} -> aligned_len={}",
+                request.host_drop_marker,
+                stretched_drop_marker,
+                request.host_drop_marker as i64 - stretched_drop_marker as i64,
+                stretched_len,
+                aligned_buffer.len()
+            );
+
+            log::info!(
+                "[PERF] Loader: Pre-aligned buffer in {:?}",
+                align_start.elapsed()
+            );
+
             log::info!(
                 "[PERF] Loader: Total linked stem load time: {:?}",
                 total_start.elapsed()
             );
 
+            // After alignment, duration = host_duration
+            let linked_duration = aligned_buffer.len() as u64;
+
             // Extract overview peaks from source track's wvfm chunk (if available)
-            // These are pre-computed peaks, no generation needed!
+            // Then align them to host timeline (same alignment as audio buffer)
             let overview_peaks = source_track
                 .metadata
                 .waveform_preview
                 .as_ref()
-                .map(|preview| preview.extract_stem_peaks(request.stem_idx));
+                .map(|preview| {
+                    let raw_peaks = preview.extract_stem_peaks(request.stem_idx);
+                    // Align peaks to host timeline so waveform matches audio alignment
+                    align_peaks_to_host(
+                        &raw_peaks,
+                        stretched_len,
+                        request.host_duration as usize,
+                        request.host_drop_marker,
+                        stretched_drop_marker,
+                    )
+                });
 
             if overview_peaks.is_some() {
                 log::debug!(
@@ -436,18 +574,20 @@ fn handle_linked_stem_load(
                 );
             }
 
-            // Send result
+            // Send result with aligned buffer
+            // drop_marker is now 0 (alignment is baked into buffer position)
             let _ = tx.send(LoaderResult::LinkedStem(LinkedStemLoadResult {
                 host_deck_idx: request.host_deck_idx,
                 stem_idx: request.stem_idx,
                 result: Ok(LinkedStemData {
-                    buffer: stretched_buffer,
+                    buffer: aligned_buffer,
                     original_bpm: source_bpm,
-                    drop_marker: stretched_drop_marker,
+                    drop_marker: 0, // No longer needed - alignment is baked in
                     track_name,
                     track_path: Some(request.source_path),
                 }),
                 overview_peaks,
+                linked_duration: Some(linked_duration),
             }));
         }
         Err(e) => {
@@ -458,6 +598,7 @@ fn handle_linked_stem_load(
                 stem_idx: request.stem_idx,
                 result: Err(e.to_string()),
                 overview_peaks: None,
+                linked_duration: None,
             }));
         }
     }
