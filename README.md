@@ -604,6 +604,76 @@ With a 4-bar buffer at 174 BPM:
 
 ---
 
+## Stem Linking
+
+Mesh includes **Stem Linking** — a mashup feature that lets you swap individual stems between tracks. Replace the vocals from one track with vocals from another, keep the drums from your current track but bring in the bass from a different song, or create entirely new combinations on the fly.
+
+### What is Stem Linking?
+
+Traditional DJing mixes two tracks together. Stem linking goes further by letting you **mix individual stems** from different tracks:
+
+```
+Track A (Playing):        Track B (Linked):
+├── Vocals ◄──────────────── Vocals (swapped!)
+├── Drums  (original)
+├── Bass   (original)
+└── Other  (original)
+```
+
+When you toggle a linked stem active, the audio and waveform instantly swap to show the linked track's stem.
+
+### How It Works
+
+1. **Preparation in mesh-cue**: Open your host track and use the stem link buttons to assign stems from other tracks
+2. **Automatic loading**: When you load the track in mesh-player, linked stems are pre-loaded in the background
+3. **Toggle to swap**: Press **Shift + Stem Mute** button to swap between original and linked audio
+4. **Visual feedback**: The waveform updates to show the linked stem's peaks when active
+
+### Drop Marker Alignment
+
+Stem links use **drop markers** to align tracks structurally, not just by tempo:
+
+```
+Host Track:     [Intro]──────[Build]──────[DROP]──────[Break]
+                                             │
+Linked Track:   [Intro]──[Build]─────────[DROP]──────[Breakdown]
+                                             │
+                                    ← Aligned here
+```
+
+When you're at the drop in your host track, the linked stem plays from its drop — even if the tracks have different arrangements. This keeps the energy aligned.
+
+### Preparing Stem Links (mesh-cue)
+
+1. **Open your host track** in mesh-cue
+2. **Set a drop marker** (if not already set) — this is your alignment reference point
+3. **Click a stem link button** (below the hot cues) to enter selection mode
+4. **Browse and select** the source track for that stem
+5. **Save the track** — stem links are stored in the WAV file's `mslk` chunk
+
+### Using Stem Links (mesh-player)
+
+| Action | How To |
+|--------|--------|
+| **Toggle linked stem** | Shift + Stem Mute button |
+| **Visual indicator** | Waveform shows linked stem's peaks when active |
+| **Load prepared links** | Automatic — links load when the track loads |
+
+### Creative Possibilities
+
+- **Vocal swaps** — Put acapella vocals over any instrumental
+- **Drum replacements** — Swap in punchier drums from a different track
+- **Mashup construction** — Build unique stem combinations in mesh-cue, perform in mesh-player
+- **A/B comparison** — Toggle between original and linked to compare during prep
+
+### Technical Notes
+
+- **Pre-stretched**: Linked stems are time-stretched to match the host track's BPM when loaded
+- **Pre-computed waveforms**: Linked stem waveform peaks are extracted from the source track's metadata (no runtime computation)
+- **Memory efficient**: Only the stems you link are loaded, not the entire source track
+
+---
+
 ## MIDI Controller Support
 
 Mesh supports MIDI controllers for hands-on DJ performance. Controllers are configured via YAML profiles stored in `~/.config/mesh-player/midi.yaml`.
