@@ -188,6 +188,12 @@ impl StemLink {
 
         let source_slice = source.as_slice();
 
+        // Pre-allocate workspace buffers ONCE to avoid per-chunk allocation overhead.
+        // Max input chunk size is OUTPUT_CHUNK_SIZE * ratio, with margin for fractional accumulation.
+        let max_input_chunk = ((OUTPUT_CHUNK_SIZE as f64) * ratio * 2.0).ceil() as usize + 1;
+        let mut input_workspace = StereoBuffer::with_capacity(max_input_chunk);
+        let mut output_workspace = StereoBuffer::with_capacity(OUTPUT_CHUNK_SIZE);
+
         let mut input_pos = 0usize;
         let mut output_pos = 0usize;
         let mut fractional_input = 0.0f64;
@@ -209,22 +215,22 @@ impl StemLink {
                 break;
             }
 
-            // Create temporary buffers for this chunk
-            let mut input_chunk = StereoBuffer::silence(actual_input_len);
-            let mut output_chunk = StereoBuffer::silence(output_chunk_len);
+            // Resize workspace buffers (no allocation - just adjusts working length within capacity)
+            input_workspace.resize(actual_input_len);
+            output_workspace.resize(output_chunk_len);
 
-            // Copy input data
-            input_chunk
+            // Copy input data into workspace
+            input_workspace
                 .as_mut_slice()
                 .copy_from_slice(&source_slice[input_pos..input_end]);
 
             // Process chunk (ratio determined by size difference)
-            self.stretcher.process(&input_chunk, &mut output_chunk);
+            self.stretcher.process(&input_workspace, &mut output_workspace);
 
             // Copy output data
             let output_end = (output_pos + output_chunk_len).min(total_output_len);
             output.as_mut_slice()[output_pos..output_end]
-                .copy_from_slice(&output_chunk.as_slice()[..output_end - output_pos]);
+                .copy_from_slice(&output_workspace.as_slice()[..output_end - output_pos]);
 
             input_pos = input_end;
             output_pos = output_end;

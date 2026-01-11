@@ -19,6 +19,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread::{self, JoinHandle};
 
+use rayon;
+
 use basedrop::Shared;
 use mesh_core::audio_file::{LoadedTrack, StemBuffers};
 use mesh_core::engine::{LinkedStemData, PreparedTrack, StemLink};
@@ -210,10 +212,17 @@ fn loader_thread(
     while let Ok(request) = rx.recv() {
         match request {
             LoaderRequest::Track(req) => {
+                // Track loads stay on the loader thread (need to complete before playback)
                 handle_track_load(req, &tx, &target_sample_rate);
             }
             LoaderRequest::LinkedStem(req) => {
-                handle_linked_stem_load(req, &tx, &target_sample_rate);
+                // Spawn linked stem loads to rayon thread pool for parallel processing
+                let tx_clone = tx.clone();
+                let sample_rate = target_sample_rate.load(Ordering::SeqCst);
+
+                rayon::spawn(move || {
+                    handle_linked_stem_load_parallel(req, tx_clone, sample_rate);
+                });
             }
         }
     }
@@ -589,6 +598,163 @@ fn handle_linked_stem_load(
                     buffer: aligned_buffer,
                     original_bpm: source_bpm,
                     drop_marker: 0, // No longer needed - alignment is baked in
+                    track_name,
+                    track_path: Some(request.source_path),
+                }),
+                overview_peaks,
+                linked_duration: Some(linked_duration),
+            }));
+        }
+        Err(e) => {
+            log::error!("Failed to load source track for linked stem: {}", e);
+
+            let _ = tx.send(LoaderResult::LinkedStem(LinkedStemLoadResult {
+                host_deck_idx: request.host_deck_idx,
+                stem_idx: request.stem_idx,
+                result: Err(e.to_string()),
+                overview_peaks: None,
+                linked_duration: None,
+            }));
+        }
+    }
+}
+
+/// Parallel version of handle_linked_stem_load for rayon::spawn
+///
+/// Takes owned values instead of references since rayon::spawn requires 'static.
+fn handle_linked_stem_load_parallel(
+    request: LinkedStemLoadRequest,
+    tx: Sender<LoaderResult>,
+    sample_rate: u32,
+) {
+    log::info!(
+        "[PERF] Loader: Loading linked stem {} for deck {} from {:?} (parallel)",
+        request.stem_idx,
+        request.host_deck_idx,
+        request.source_path
+    );
+
+    let total_start = std::time::Instant::now();
+
+    // Load the source track (we need full track to get metadata and stems)
+    let load_result = LoadedTrack::load_to(&request.source_path, sample_rate);
+
+    match load_result {
+        Ok(source_track) => {
+            // Get source track metadata
+            let source_bpm = source_track.metadata.bpm.unwrap_or(120.0);
+            let source_drop_marker = source_track.metadata.drop_marker.unwrap_or(0);
+            let track_name = request
+                .source_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Unknown")
+                .to_string();
+
+            // Extract the requested stem
+            let stem = Stem::ALL.get(request.stem_idx).copied().unwrap_or(Stem::Vocals);
+            let stem_buffer = source_track.stems.get(stem);
+
+            // Convert stem slice to StereoBuffer for pre-stretching
+            let mut source_buffer = StereoBuffer::silence(stem_buffer.len());
+            source_buffer.as_mut_slice().copy_from_slice(stem_buffer.as_slice());
+
+            // Pre-stretch to host BPM
+            let stretch_start = std::time::Instant::now();
+            let mut stem_link = StemLink::new_with_sample_rate(sample_rate);
+            let stretched_buffer = stem_link.pre_stretch(&source_buffer, source_bpm, request.host_bpm);
+
+            // Scale drop marker position by stretch ratio and compensate for stretcher latency
+            let stretch_ratio = request.host_bpm / source_bpm;
+            let stretcher_latency = stem_link.stretcher_latency();
+
+            let stretched_drop_marker = if stretch_ratio > 0.0 && (stretch_ratio - 1.0).abs() >= 0.001 {
+                // Stretching occurred - compensate for stretcher latency
+                let scaled_drop = ((source_drop_marker as f64) / stretch_ratio).round() as u64;
+                scaled_drop + stretcher_latency as u64
+            } else {
+                source_drop_marker
+            };
+
+            log::info!(
+                "[STRETCH] ratio={:.4}, source_drop={}, stretched_drop={}, latency_comp={}",
+                stretch_ratio, source_drop_marker, stretched_drop_marker, stretcher_latency
+            );
+
+            log::info!(
+                "[PERF] Loader: Pre-stretched stem {} from {:.1} BPM to {:.1} BPM ({} -> {} samples) in {:?}",
+                request.stem_idx,
+                source_bpm,
+                request.host_bpm,
+                source_buffer.len(),
+                stretched_buffer.len(),
+                stretch_start.elapsed()
+            );
+
+            // Capture stretched length before alignment (needed for peak alignment)
+            let stretched_len = stretched_buffer.len();
+
+            // Pre-align the buffer to host timeline
+            let align_start = std::time::Instant::now();
+            let aligned_buffer = align_buffer_to_host(
+                &stretched_buffer,
+                request.host_duration as usize,
+                request.host_drop_marker,
+                stretched_drop_marker,
+            );
+
+            log::info!(
+                "[ALIGN] host_drop={}, stretched_drop={}, offset={}, stretched_len={} -> aligned_len={}",
+                request.host_drop_marker,
+                stretched_drop_marker,
+                request.host_drop_marker as i64 - stretched_drop_marker as i64,
+                stretched_len,
+                aligned_buffer.len()
+            );
+
+            log::info!(
+                "[PERF] Loader: Pre-aligned buffer in {:?}",
+                align_start.elapsed()
+            );
+
+            log::info!(
+                "[PERF] Loader: Total linked stem load time: {:?}",
+                total_start.elapsed()
+            );
+
+            let linked_duration = aligned_buffer.len() as u64;
+
+            // Extract overview peaks from source track's wvfm chunk (if available)
+            let overview_peaks = source_track
+                .metadata
+                .waveform_preview
+                .as_ref()
+                .map(|preview| {
+                    let raw_peaks = preview.extract_stem_peaks(request.stem_idx);
+                    align_peaks_to_host(
+                        &raw_peaks,
+                        stretched_len,
+                        request.host_duration as usize,
+                        request.host_drop_marker,
+                        stretched_drop_marker,
+                    )
+                });
+
+            if overview_peaks.is_some() {
+                log::debug!(
+                    "[LINKED] Extracted {} overview peaks for linked stem {} from source wvfm",
+                    overview_peaks.as_ref().map(|p| p.len()).unwrap_or(0),
+                    request.stem_idx
+                );
+            }
+
+            let _ = tx.send(LoaderResult::LinkedStem(LinkedStemLoadResult {
+                host_deck_idx: request.host_deck_idx,
+                stem_idx: request.stem_idx,
+                result: Ok(LinkedStemData {
+                    buffer: aligned_buffer,
+                    original_bpm: source_bpm,
+                    drop_marker: 0,
                     track_name,
                     track_path: Some(request.source_path),
                 }),
