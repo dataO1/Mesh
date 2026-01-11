@@ -47,7 +47,7 @@ pub use peak_computation::{
 pub use peaks::{
     generate_peaks, generate_peaks_for_range, generate_waveform_preview,
     smooth_peaks, smooth_peaks_gaussian,
-    DEFAULT_WIDTH, PEAK_SMOOTHING_WINDOW,
+    DEFAULT_WIDTH, HIGHRES_WIDTH, PEAK_SMOOTHING_WINDOW,
 };
 
 pub use peaks_computer::{PeaksComputer, PeaksComputeRequest, PeaksComputeResult};

@@ -602,14 +602,18 @@ fn draw_stem_waveform_filled(
 
     let peaks_len = peaks.len() as f32;
 
+    // Use step size to reduce line segments (2-3 pixels per segment looks smooth enough)
+    let step = 1.max((width as usize) / 800); // At most 800 segments per envelope
+
     let path = Path::new(|builder| {
         // Start at first point's max value (upper envelope)
         let (_, first_max) = peaks[0];
         let first_y = center_y - (first_max * height_scale);
         builder.move_to(Point::new(x_offset, first_y));
 
-        // Draw upper envelope left to right
-        for px in 1..(width as usize) {
+        // Draw upper envelope left to right (with step)
+        let mut px = step;
+        while px < width as usize {
             let peak_idx = ((px as f32 / width) * peaks_len) as usize;
             if peak_idx >= peaks.len() {
                 break;
@@ -618,19 +622,29 @@ fn draw_stem_waveform_filled(
             let x = x_offset + px as f32;
             let y = center_y - (max * height_scale);
             builder.line_to(Point::new(x, y));
+            px += step;
+        }
+        // Always include the last point
+        if peaks.len() > 1 {
+            let (_, last_max) = peaks[peaks.len() - 1];
+            builder.line_to(Point::new(x_offset + width - 1.0, center_y - (last_max * height_scale)));
         }
 
-        // Draw lower envelope right to left (closing the shape)
-        for px in (0..(width as usize)).rev() {
+        // Draw lower envelope right to left (with step)
+        let mut px = (width as usize).saturating_sub(1);
+        while px > 0 {
             let peak_idx = ((px as f32 / width) * peaks_len) as usize;
-            if peak_idx >= peaks.len() {
-                continue;
+            if peak_idx < peaks.len() {
+                let (min, _) = peaks[peak_idx];
+                let x = x_offset + px as f32;
+                let y = center_y - (min * height_scale);
+                builder.line_to(Point::new(x, y));
             }
-            let (min, _) = peaks[peak_idx];
-            let x = x_offset + px as f32;
-            let y = center_y - (min * height_scale);
-            builder.line_to(Point::new(x, y));
+            px = px.saturating_sub(step);
         }
+        // Close at start
+        let (first_min, _) = peaks[0];
+        builder.line_to(Point::new(x_offset, center_y - (first_min * height_scale)));
 
         builder.close();
     });
@@ -728,13 +742,15 @@ fn draw_stem_waveform_upper(
     }
 
     let peaks_len = peaks.len() as f32;
+    let step = 1.max((width as usize) / 800); // At most 800 segments
 
     let path = Path::new(|builder| {
         // Start at center line
         builder.move_to(Point::new(x_offset, center_y));
 
         // Draw upper envelope left to right (max values go UP from center)
-        for px in 0..(width as usize) {
+        let mut px = 0;
+        while px < width as usize {
             let peak_idx = ((px as f32 / width) * peaks_len) as usize;
             if peak_idx >= peaks.len() {
                 break;
@@ -743,6 +759,7 @@ fn draw_stem_waveform_upper(
             let x = x_offset + px as f32;
             let y = center_y - (max * height_scale);
             builder.line_to(Point::new(x, y));
+            px += step;
         }
 
         // Return along center line (right to left)
@@ -770,13 +787,15 @@ fn draw_stem_waveform_lower(
     }
 
     let peaks_len = peaks.len() as f32;
+    let step = 1.max((width as usize) / 800); // At most 800 segments
 
     let path = Path::new(|builder| {
         // Start at center line
         builder.move_to(Point::new(x_offset, center_y));
 
         // Draw lower envelope left to right (min values go DOWN from center)
-        for px in 0..(width as usize) {
+        let mut px = 0;
+        while px < width as usize {
             let peak_idx = ((px as f32 / width) * peaks_len) as usize;
             if peak_idx >= peaks.len() {
                 break;
@@ -785,6 +804,7 @@ fn draw_stem_waveform_lower(
             let x = x_offset + px as f32;
             let y = center_y - (min * height_scale); // min is negative, so this goes DOWN
             builder.line_to(Point::new(x, y));
+            px += step;
         }
 
         // Return along center line (right to left)
@@ -815,34 +835,33 @@ fn draw_stem_waveform_upper_aligned(
     let duration_ratio = linked_duration as f64 / host_duration as f64;
     let linked_render_width = (visible_width as f64 * duration_ratio) as f32;
     let peaks_len = peaks.len() as f32;
+    let step = 1.max((linked_render_width as usize) / 800); // At most 800 segments
 
     let path = Path::new(|builder| {
         let mut started = false;
         let mut last_x = base_x;
 
-        // Draw upper envelope with clipping
-        for px in 0..(linked_render_width as usize) {
+        // Draw upper envelope with clipping (with step)
+        let mut px = 0;
+        while px < linked_render_width as usize {
             let actual_x = base_x + x_offset + px as f32;
-            if actual_x < base_x || actual_x > base_x + visible_width {
-                continue;
-            }
+            if actual_x >= base_x && actual_x <= base_x + visible_width {
+                let peak_idx = ((px as f32 / linked_render_width) * peaks_len) as usize;
+                if peak_idx < peaks.len() {
+                    let (_, max) = peaks[peak_idx];
+                    let y = center_y - (max * height_scale);
 
-            let peak_idx = ((px as f32 / linked_render_width) * peaks_len) as usize;
-            if peak_idx >= peaks.len() {
-                break;
+                    if !started {
+                        builder.move_to(Point::new(actual_x, center_y));
+                        builder.line_to(Point::new(actual_x, y));
+                        started = true;
+                    } else {
+                        builder.line_to(Point::new(actual_x, y));
+                    }
+                    last_x = actual_x;
+                }
             }
-
-            let (_, max) = peaks[peak_idx];
-            let y = center_y - (max * height_scale);
-
-            if !started {
-                builder.move_to(Point::new(actual_x, center_y));
-                builder.line_to(Point::new(actual_x, y));
-                started = true;
-            } else {
-                builder.line_to(Point::new(actual_x, y));
-            }
-            last_x = actual_x;
+            px += step;
         }
 
         if started {
@@ -873,44 +892,34 @@ fn draw_stem_waveform_lower_aligned(
 
     let duration_ratio = linked_duration as f64 / host_duration as f64;
     let linked_render_width = (visible_width as f64 * duration_ratio) as f32;
-
-    // Debug: log render parameters (once per session)
-    static LOGGED_LOWER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if !LOGGED_LOWER.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        log::info!(
-            "[DRAW_LOWER] visible_width={}, linked_dur={}, host_dur={}, ratio={:.3}, render_width={:.1}, x_offset={:.1}, peaks={}",
-            visible_width, linked_duration, host_duration, duration_ratio, linked_render_width, x_offset, peaks.len()
-        );
-    }
     let peaks_len = peaks.len() as f32;
+    let step = 1.max((linked_render_width as usize) / 800); // At most 800 segments
 
     let path = Path::new(|builder| {
         let mut started = false;
         let mut last_x = base_x;
 
-        // Draw lower envelope with clipping
-        for px in 0..(linked_render_width as usize) {
+        // Draw lower envelope with clipping (with step)
+        let mut px = 0;
+        while px < linked_render_width as usize {
             let actual_x = base_x + x_offset + px as f32;
-            if actual_x < base_x || actual_x > base_x + visible_width {
-                continue;
-            }
+            if actual_x >= base_x && actual_x <= base_x + visible_width {
+                let peak_idx = ((px as f32 / linked_render_width) * peaks_len) as usize;
+                if peak_idx < peaks.len() {
+                    let (min, _) = peaks[peak_idx];
+                    let y = center_y - (min * height_scale);
 
-            let peak_idx = ((px as f32 / linked_render_width) * peaks_len) as usize;
-            if peak_idx >= peaks.len() {
-                break;
+                    if !started {
+                        builder.move_to(Point::new(actual_x, center_y));
+                        builder.line_to(Point::new(actual_x, y));
+                        started = true;
+                    } else {
+                        builder.line_to(Point::new(actual_x, y));
+                    }
+                    last_x = actual_x;
+                }
             }
-
-            let (min, _) = peaks[peak_idx];
-            let y = center_y - (min * height_scale);
-
-            if !started {
-                builder.move_to(Point::new(actual_x, center_y));
-                builder.line_to(Point::new(actual_x, y));
-                started = true;
-            } else {
-                builder.line_to(Point::new(actual_x, y));
-            }
-            last_x = actual_x;
+            px += step;
         }
 
         if started {
@@ -1118,14 +1127,16 @@ fn draw_cached_peaks(
         let peaks_len = peaks.len();
         let width_usize = width as usize;
         let total_samples = window.total_samples as usize;
+        let step = 1.max(width_usize / 800); // At most 800 segments
 
         // Build filled path for this stem
         let path = Path::new(|builder| {
             let mut first_point = true;
-            let mut upper_points: Vec<(f32, f32)> = Vec::with_capacity(width_usize);
-            let mut lower_points: Vec<(f32, f32)> = Vec::with_capacity(width_usize);
+            let mut upper_points: Vec<(f32, f32)> = Vec::with_capacity(width_usize / step + 2);
+            let mut lower_points: Vec<(f32, f32)> = Vec::with_capacity(width_usize / step + 2);
 
-            for x in 0..width_usize {
+            let mut x = 0;
+            while x < width_usize {
                 // Bresenham-style integer division: x * total_samples / width
                 // This distributes remainder evenly with no floating-point
                 let window_offset = x * total_samples / width_usize;
@@ -1138,6 +1149,10 @@ fn draw_cached_peaks(
                 // Convert actual sample to cache virtual offset
                 // Cache virtual offset = actual_sample - cache_start + cache_left_padding
                 let cache_virtual_offset = actual_sample - state.cache_start as i64 + state.cache_left_padding as i64;
+
+                // Increment before potential continue
+                let current_x = x;
+                x += step;
 
                 if cache_virtual_offset < 0 || cache_virtual_offset as usize >= cache_virtual_total {
                     continue;
@@ -1153,8 +1168,8 @@ fn draw_cached_peaks(
                 let y_max = center_y - (max * height_scale);
                 let y_min = center_y - (min * height_scale);
 
-                upper_points.push((x as f32, y_max));
-                lower_points.push((x as f32, y_min));
+                upper_points.push((current_x as f32, y_max));
+                lower_points.push((current_x as f32, y_min));
             }
 
             if upper_points.is_empty() {
@@ -1999,6 +2014,8 @@ fn draw_deck_quadrant(
     draw_zoomed_at(
         frame,
         &deck.zoomed,
+        &deck.overview.highres_peaks,
+        deck.overview.duration_samples,
         playhead,
         x,
         zoomed_y,
@@ -2056,9 +2073,14 @@ fn draw_deck_quadrant(
 }
 
 /// Draw a zoomed waveform at a specific position
+///
+/// Uses pre-computed high-resolution peaks when available for smooth playback
+/// without recomputation. Falls back to cached_peaks if highres_peaks is empty.
 fn draw_zoomed_at(
     frame: &mut Frame,
     zoomed: &ZoomedState,
+    highres_peaks: &[Vec<(f32, f32)>; 4],
+    duration_samples: u64,
     playhead: u64,
     x: f32,
     y: f32,
@@ -2221,24 +2243,41 @@ fn draw_zoomed_at(
             }
         }
 
-        // Draw cached peaks using filled paths (with padding support)
-        if !zoomed.cached_peaks[0].is_empty() && (zoomed.cache_end > zoomed.cache_start || zoomed.cache_left_padding > 0) {
-            // Cache includes left_padding worth of virtual samples (zeros before track start)
-            let cache_virtual_total = (zoomed.cache_end - zoomed.cache_start + zoomed.cache_left_padding) as usize;
+        // Draw peaks using filled paths
+        // Prefer pre-computed highres_peaks (computed once at track load) over cached_peaks
+        // This eliminates background recomputation during playback
+        let use_highres = !highres_peaks[0].is_empty() && duration_samples > 0;
+        let use_cached = !use_highres
+            && !zoomed.cached_peaks[0].is_empty()
+            && (zoomed.cache_end > zoomed.cache_start || zoomed.cache_left_padding > 0);
+
+        if use_highres || use_cached {
             let height_scale = height / 2.0 * 0.85;
-            let width_usize = width as usize;
-            let total_samples = window.total_samples as usize;
+
+            // For cached peaks fallback
+            let cache_virtual_total = if use_cached {
+                (zoomed.cache_end - zoomed.cache_start + zoomed.cache_left_padding) as usize
+            } else {
+                0
+            };
 
             // Draw stems in layered order: Drums (back) → Bass → Vocals → Other (front)
             for &stem_idx in STEM_RENDER_ORDER.iter() {
-                // Choose peaks source: use linked peaks if stem is linked-active and has linked peaks
-                let peaks = if linked_active[stem_idx] {
+                // Choose peaks source based on what's available
+                let peaks: &[(f32, f32)] = if use_highres {
+                    // Use highres_peaks directly - they cover the entire track
+                    // TODO: linked stems would need their own highres_peaks
+                    &highres_peaks[stem_idx]
+                } else if linked_active[stem_idx] {
+                    // Fallback: use linked cached peaks if available
                     zoomed.linked_cached_peaks[stem_idx]
                         .as_ref()
+                        .map(|v| v.as_slice())
                         .unwrap_or(&zoomed.cached_peaks[stem_idx])
                 } else {
                     &zoomed.cached_peaks[stem_idx]
                 };
+
                 if peaks.is_empty() {
                     continue;
                 }
@@ -2254,38 +2293,139 @@ fn draw_zoomed_at(
                 };
 
                 // Build filled path for this stem
+                // KEY FIX: Iterate over PEAK indices, not pixels
+                // This ensures each peak always displays its exact value - no jitter from
+                // pixel→sample→peak aliasing. The pixel position changes smoothly with playhead.
                 let path = Path::new(|builder| {
                     let mut first_point = true;
-                    let mut upper_points: Vec<(f32, f32)> = Vec::with_capacity(width_usize);
-                    let mut lower_points: Vec<(f32, f32)> = Vec::with_capacity(width_usize);
+                    let mut upper_points: Vec<(f32, f32)> = Vec::with_capacity(512);
+                    let mut lower_points: Vec<(f32, f32)> = Vec::with_capacity(512);
 
-                    for px in 0..width_usize {
-                        // Bresenham-style integer division: px * total_samples / width
-                        // This distributes remainder evenly with no floating-point
-                        let window_offset = px * total_samples / width_usize;
+                    if use_highres {
+                        // STABLE RENDERING: Direct peak-to-pixel mapping
+                        // Key insight: express pixel position as a simple linear function
+                        // of peak index relative to the center (playhead position)
+                        //
+                        // This eliminates floating-point accumulation errors from
+                        // sample→window→pixel conversions.
 
-                        // Convert window offset to actual sample position
-                        let actual_sample = window.start as i64 - window.left_padding as i64 + window_offset as i64;
+                        // IMPORTANT: Use integer division to match peak generation (peaks.rs)
+                        // Peak generation uses: samples_per_column = len / width (integer)
+                        // Using float here causes drift over the track length
+                        let samples_per_peak = (duration_samples / peaks_len as u64) as f64;
+                        let pixels_per_sample = width as f64 / window.total_samples as f64;
+                        let pixels_per_peak = samples_per_peak * pixels_per_sample;
 
-                        // Convert actual sample to cache virtual offset
-                        let cache_virtual_offset = actual_sample - zoomed.cache_start as i64 + zoomed.cache_left_padding as i64;
+                        // Center position (where playhead is, accounting for padding)
+                        let center_sample = window.start as f64 - window.left_padding as f64 + (window.total_samples as f64 / 2.0);
+                        let center_peak_f64 = center_sample / samples_per_peak;
+                        let center_x = x + width / 2.0;
 
-                        if cache_virtual_offset < 0 || cache_virtual_offset as usize >= cache_virtual_total {
-                            continue;
+                        // Calculate visible peak range with margin to prevent edge popping
+                        let half_width_in_peaks = (width as f64 / 2.0 / pixels_per_peak).ceil() as usize;
+                        let margin_peaks = half_width_in_peaks / 4 + 20; // 25% margin + buffer
+                        let half_visible_peaks = half_width_in_peaks + margin_peaks;
+
+                        // Calculate first and last peak to draw (with margin)
+                        let center_peak = center_peak_f64 as usize;
+                        let first_peak = center_peak.saturating_sub(half_visible_peaks);
+                        let last_peak = (center_peak + half_visible_peaks).min(peaks_len);
+
+                        // === JITTER PREVENTION ===
+                        // Jitter occurs when different peaks are sampled each frame.
+                        //
+                        // ROOT CAUSE: When `first_peak` changes by 1 (due to playhead movement),
+                        // and we use step > 1, the sampled peaks shift entirely:
+                        //   - Frame 1: first_peak=100, step=4 → sample 100, 104, 108...
+                        //   - Frame 2: first_peak=101, step=4 → sample 101, 105, 109...
+                        // Different peaks = different values = visual jitter.
+                        //
+                        // SOLUTION: Align to a fixed grid (multiples of step).
+                        // The grid is global (0, step, 2*step, ...), so the same peaks
+                        // are always sampled regardless of first_peak:
+                        //   - Frame 1: first_peak=100, aligned=100 → sample 100, 104, 108...
+                        //   - Frame 2: first_peak=101, aligned=100 → sample 100, 104, 108...
+                        // Same peaks = same values = no jitter.
+                        //
+                        // TRADE-OFF: Grid alignment introduces a small positional shift
+                        // (at most step/2 peaks when using round-to-nearest).
+
+                        // Adaptive subsampling: ~1 point every 2 pixels (lighter than before)
+                        let target_pixels_per_point = 2.0;
+                        let step = ((target_pixels_per_point / pixels_per_peak).round() as usize).max(1);
+                        // Very light smoothing
+                        let smooth_radius = step / 4;
+
+                        // Align to grid for stability (round to nearest)
+                        let first_peak_aligned = ((first_peak + step / 2) / step) * step;
+                        let mut peak_idx = first_peak_aligned;
+                        while peak_idx < last_peak {
+                            // SIMPLE LINEAR MAPPING: pixel position from peak index
+                            let relative_pos = peak_idx as f64 - center_peak_f64;
+                            let px = center_x + (relative_pos * pixels_per_peak) as f32;
+
+                            // Clip to canvas bounds (with small margin for line continuity)
+                            if px >= x - 5.0 && px <= x + width + 5.0 {
+                                let (min, max) = if smooth_radius > 0 {
+                                    // Apply local smoothing: average peaks in window
+                                    let window_start = peak_idx.saturating_sub(smooth_radius);
+                                    let window_end = (peak_idx + smooth_radius + 1).min(peaks_len);
+                                    let mut min_sum = 0.0f32;
+                                    let mut max_sum = 0.0f32;
+                                    for i in window_start..window_end {
+                                        min_sum += peaks[i].0;
+                                        max_sum += peaks[i].1;
+                                    }
+                                    let count = (window_end - window_start) as f32;
+                                    (min_sum / count, max_sum / count)
+                                } else {
+                                    peaks[peak_idx]
+                                };
+
+                                let y_max = center_y - (max * height_scale);
+                                let y_min = center_y - (min * height_scale);
+
+                                upper_points.push((px.max(x).min(x + width), y_max));
+                                lower_points.push((px.max(x).min(x + width), y_min));
+                            }
+
+                            peak_idx += step;
                         }
+                    } else {
+                        // Fallback: cached peaks - use old pixel-based iteration
+                        let width_usize = width as usize;
+                        let total_samples = window.total_samples as usize;
+                        let step = 1.max(width_usize / 800);
 
-                        // Bresenham-style cache index: offset * peaks_len / total
-                        let cache_idx = (cache_virtual_offset as usize * peaks_len) / cache_virtual_total;
-                        if cache_idx >= peaks.len() {
-                            continue;
+                        let mut px = 0;
+                        while px < width_usize {
+                            let window_offset = px * total_samples / width_usize;
+                            let actual_sample = window.start as i64 - window.left_padding as i64 + window_offset as i64;
+
+                            let current_px = px;
+                            px += step;
+
+                            if actual_sample < 0 || actual_sample >= duration_samples as i64 {
+                                continue;
+                            }
+
+                            let cache_virtual_offset = actual_sample - zoomed.cache_start as i64 + zoomed.cache_left_padding as i64;
+                            if cache_virtual_offset < 0 || cache_virtual_offset as usize >= cache_virtual_total {
+                                continue;
+                            }
+                            let peak_idx = (cache_virtual_offset as usize * peaks_len) / cache_virtual_total;
+
+                            if peak_idx >= peaks_len {
+                                continue;
+                            }
+
+                            let (min, max) = peaks[peak_idx];
+                            let y_max = center_y - (max * height_scale);
+                            let y_min = center_y - (min * height_scale);
+
+                            upper_points.push((x + current_px as f32, y_max));
+                            lower_points.push((x + current_px as f32, y_min));
                         }
-
-                        let (min, max) = peaks[cache_idx];
-                        let y_max = center_y - (max * height_scale);
-                        let y_min = center_y - (min * height_scale);
-
-                        upper_points.push((x + px as f32, y_max));
-                        lower_points.push((x + px as f32, y_min));
                     }
 
                     if upper_points.is_empty() {

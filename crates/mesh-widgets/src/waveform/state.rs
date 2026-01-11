@@ -14,7 +14,7 @@ use super::peak_computation::{
     CacheInfo, WindowInfo, compute_effective_width,
     generate_peaks_with_padding, samples_per_bar,
 };
-use super::{generate_peaks, smooth_peaks_gaussian, DEFAULT_WIDTH};
+use super::{generate_peaks, smooth_peaks_gaussian, DEFAULT_WIDTH, HIGHRES_WIDTH};
 
 // =============================================================================
 // Configuration Constants
@@ -59,8 +59,11 @@ pub const ZOOM_PIXELS_PER_LEVEL: f32 = 20.0;
 /// This is pure data with builder methods - rendering is handled by view functions.
 #[derive(Debug, Clone)]
 pub struct OverviewState {
-    /// Cached waveform data per stem (min/max pairs per column)
+    /// Cached waveform data per stem (min/max pairs per column) - for overview display
     pub stem_waveforms: [Vec<(f32, f32)>; 4],
+    /// High-resolution peaks for zoomed view (computed once at track load)
+    /// This eliminates the need for background peak recomputation
+    pub highres_peaks: [Vec<(f32, f32)>; 4],
     /// Current playhead position (0.0 to 1.0)
     pub position: f64,
     /// Current main cue point position (0.0 to 1.0), None if not set
@@ -101,6 +104,7 @@ impl OverviewState {
     pub fn new() -> Self {
         Self {
             stem_waveforms: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            highres_peaks: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             position: 0.0,
             cue_position: None,
             beat_markers: Vec::new(),
@@ -123,6 +127,18 @@ impl OverviewState {
     /// Set the main cue point position (normalized 0.0 to 1.0)
     pub fn set_cue_position(&mut self, position: Option<f64>) {
         self.cue_position = position;
+    }
+
+    /// Set high-resolution peaks for zoomed view
+    ///
+    /// Called after overview is created from preview, when stems become available.
+    /// This enables stable zoomed waveform rendering without recomputation.
+    pub fn set_highres_peaks(&mut self, peaks: [Vec<(f32, f32)>; 4]) {
+        self.highres_peaks = peaks;
+        log::debug!(
+            "Set highres_peaks: {} peaks per stem",
+            self.highres_peaks[0].len()
+        );
     }
 
     /// Set the grid density (bars between major grid lines)
@@ -197,6 +213,7 @@ impl OverviewState {
 
         Self {
             stem_waveforms,
+            highres_peaks: [Vec::new(), Vec::new(), Vec::new(), Vec::new()], // No stems available for highres
             position: 0.0,
             cue_position: None,
             beat_markers,
@@ -224,6 +241,7 @@ impl OverviewState {
 
         Self {
             stem_waveforms: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            highres_peaks: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             position: 0.0,
             cue_position: None,
             beat_markers: Vec::new(),
@@ -263,6 +281,7 @@ impl OverviewState {
 
         Self {
             stem_waveforms: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            highres_peaks: [Vec::new(), Vec::new(), Vec::new(), Vec::new()], // Will be populated when stems load
             position: 0.0,
             cue_position: None,
             beat_markers: Vec::new(),
@@ -293,8 +312,12 @@ impl OverviewState {
         self.duration_samples = duration_samples;
         self.loading = false;
 
-        // Generate peak data for each stem
+        // Generate peak data for each stem (overview resolution)
         self.stem_waveforms = generate_peaks(stems, DEFAULT_WIDTH);
+
+        // Generate high-resolution peaks for zoomed view (computed once, reused)
+        // HIGHRES_WIDTH (4000) gives ~6 peaks per bar for a 10-minute track at 128 BPM
+        self.highres_peaks = generate_peaks(stems, HIGHRES_WIDTH);
 
         // Apply Gaussian smoothing for smoother overview waveform
         for stem_idx in 0..4 {
@@ -302,6 +325,8 @@ impl OverviewState {
                 self.stem_waveforms[stem_idx] = smooth_peaks_gaussian(&self.stem_waveforms[stem_idx]);
             }
         }
+
+        // Note: highres_peaks are NOT smoothed - we want full detail for zoomed view
 
         // Convert beat grid to normalized positions
         if duration_samples > 0 {
@@ -313,14 +338,23 @@ impl OverviewState {
             // Update cue markers with correct normalized positions
             self.cue_markers = Self::cue_points_to_markers(cue_points, duration_samples);
         }
+
+        log::debug!(
+            "Generated waveform peaks: overview={}px, highres={}px",
+            self.stem_waveforms[0].len(),
+            self.highres_peaks[0].len()
+        );
     }
 
     /// Create from a loaded track
     pub fn from_track(track: &Arc<LoadedTrack>, cue_points: &[CuePoint]) -> Self {
         let duration_samples = track.duration_samples as u64;
 
-        // Generate peak data for each stem
+        // Generate peak data for each stem (overview resolution)
         let mut stem_waveforms = generate_peaks(&track.stems, DEFAULT_WIDTH);
+
+        // Generate high-resolution peaks for zoomed view (computed once, reused)
+        let highres_peaks = generate_peaks(&track.stems, HIGHRES_WIDTH);
 
         // Apply Gaussian smoothing for smoother overview waveform
         for stem_idx in 0..4 {
@@ -328,6 +362,8 @@ impl OverviewState {
                 stem_waveforms[stem_idx] = smooth_peaks_gaussian(&stem_waveforms[stem_idx]);
             }
         }
+
+        // Note: highres_peaks are NOT smoothed - we want full detail for zoomed view
 
         // Convert beat grid to normalized positions
         let beat_markers: Vec<f64> = track
@@ -340,8 +376,15 @@ impl OverviewState {
 
         let cue_markers = Self::cue_points_to_markers(cue_points, duration_samples);
 
+        log::debug!(
+            "Created OverviewState from track: overview={}px, highres={}px",
+            stem_waveforms[0].len(),
+            highres_peaks[0].len()
+        );
+
         Self {
             stem_waveforms,
+            highres_peaks,
             position: 0.0,
             cue_position: None,
             beat_markers,

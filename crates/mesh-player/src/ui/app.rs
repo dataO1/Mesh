@@ -309,6 +309,7 @@ impl MeshApp {
                                         track_result.overview_state;
                                     self.player_canvas_state.decks[deck_idx].zoomed =
                                         track_result.zoomed_state;
+
                                     self.deck_stems[deck_idx] = Some(track_result.stems);
 
                                     // Set track name and key for header display (before moving prepared)
@@ -1815,7 +1816,7 @@ impl MeshApp {
         .spacing(10)
         .width(Length::FillPortion(1));
 
-        // Center column: Waveform canvas only
+        // Center column: Waveform canvas
         let center_canvas = view_player_canvas(&self.player_canvas_state);
         let center_column = container(center_canvas)
             .width(Length::FillPortion(2));

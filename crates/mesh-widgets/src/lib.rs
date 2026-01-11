@@ -30,7 +30,6 @@ pub mod playlist_browser;
 pub mod rotary_knob;
 pub mod theme;
 pub mod track_table;
-pub mod traits;
 pub mod tree;
 pub mod waveform;
 
@@ -46,14 +45,10 @@ pub use button_styles::{
 // Rotary knob widget
 pub use rotary_knob::{rotary_knob, RotaryKnobState};
 
-// Deprecated: Use callback closures with view functions instead
-#[allow(deprecated)]
-pub use traits::WaveformEvents;
-
 // Peak generation utilities
 pub use waveform::{
     generate_peaks, generate_peaks_for_range, generate_waveform_preview, smooth_peaks,
-    DEFAULT_WIDTH, PEAK_SMOOTHING_WINDOW,
+    DEFAULT_WIDTH, HIGHRES_WIDTH, PEAK_SMOOTHING_WINDOW,
 };
 
 // Background peak computation

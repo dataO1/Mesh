@@ -25,7 +25,7 @@ use basedrop::Shared;
 use mesh_core::audio_file::{LoadedTrack, StemBuffers};
 use mesh_core::engine::{LinkedStemData, PreparedTrack, StemLink};
 use mesh_core::types::{Stem, StereoBuffer, SAMPLE_RATE};
-use mesh_widgets::{CueMarker, OverviewState, ZoomedState, CUE_COLORS};
+use mesh_widgets::{CueMarker, OverviewState, ZoomedState, CUE_COLORS, generate_peaks, HIGHRES_WIDTH};
 
 /// Request to load a track in the background
 #[derive(Debug)]
@@ -304,6 +304,17 @@ fn handle_track_load(
                 "[LOADER] Host track drop_marker={:?}, duration={}",
                 track.metadata.drop_marker,
                 duration
+            );
+
+            // Compute high-resolution peaks for stable zoomed waveform rendering
+            // This is done ONCE at track load, eliminating runtime recomputation
+            let highres_start = std::time::Instant::now();
+            let highres_peaks = generate_peaks(&track.stems, HIGHRES_WIDTH);
+            overview_state.set_highres_peaks(highres_peaks);
+            log::info!(
+                "[PERF] Loader: generate_peaks(HIGHRES_WIDTH={}) took {:?}",
+                HIGHRES_WIDTH,
+                highres_start.elapsed()
             );
 
             // Pre-compute zoomed waveform state

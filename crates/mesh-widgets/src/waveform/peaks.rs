@@ -5,8 +5,17 @@
 
 use mesh_core::audio_file::{quantize_peak, StemBuffers, StemPeaks, WaveformPreview};
 
-/// Default display width for peak computation
+/// Default display width for peak computation (overview display)
 pub const DEFAULT_WIDTH: usize = 800;
+
+/// High-resolution peaks for zoomed view (computed once at track load)
+///
+/// Resolution calculation:
+/// - 5-minute track = 13.2M samples at 44.1kHz
+/// - 65536 peaks = ~200 samples per peak
+/// - Good balance of detail vs memory (~2MB for 4 stems)
+/// - Power of 2 for efficient division
+pub const HIGHRES_WIDTH: usize = 65536;
 
 /// Smoothing window size for peaks (moving average)
 pub const PEAK_SMOOTHING_WINDOW: usize = 3;
