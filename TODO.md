@@ -100,10 +100,10 @@ and mesh-widget and only if necessary in the ui.
   example currently the stem for other is expecting a button , but i only have
   a poti knob, the midi mapper needs to understand this during midi
   exploration and corrrectly map this. here are some message types for my
-- [ ] hot swapping of stems in a loaded track with another tracks stem ( we
+- [x] hot swapping of stems in a loaded track with another tracks stem ( we
   should keep both options in memory, so the user can hot swap between them )
-  - [ ] several possibilities
-    - [ ] prepared in mesh-cue:  user can per track per stem define a linked
+  - [x] several possibilities
+    - [x] prepared in mesh-cue:  user can per track per stem define a linked
       other tracks stem by pressing one of four stem link buttons, then select a
       another track in the browser, which links the selected tracks stem to the
       track the dj is currently cueing (this does not copy the data over, but
@@ -125,7 +125,12 @@ and mesh-widget and only if necessary in the ui.
       prepared, not running yet, on pressing shift + stem button on a loaded
       linked stem toggle between original stem and buffered stem. this should
       happen all internally in the deck and be abstracted away from the ui and the ui should only send high level commands. waveform should also visually indicate linked stems and on toggle show the correct buffer info (i think what is being rendered is linked to what is played, so this should require no/minimal changes to the waveform canvas itself).
-    - [ ] if you still have questions let me know and lets design this together.
+    - [x] This needs to happen in the deck and before the slicer so switching to linked stem works woth slicer out of the box
+    - [x] How to handle synchronisation between original and linked stems with potentially different bpm, beatgrid and structure?
+        - [x] Maybe we need to actually have a pre-stretched stem in the wav file? I would like to avoid that. Maybe we need a prestretch phase reusing the timestretching architecture we already have only for linked stems in the deck. I prefer that.
+        - [x] I think we actually need to restrict linked stems to prepared mode, so we can define a link point which marks a common first beat, for example marking the drop. Or we have structural markers for tracks anyways, the we can use on the fly stem linking. We could use the hot cue marker for relative positioning, but how is the user interaction then and how does the system k or which hit cues match? I think I like the drop marker
+        - [x] How to visualise this? I think we can split the detailed waveform horizontally in half, the upper half represent the actively playing stems, the bottom half the linked stems (if there are any, otherwise keep full waveform). Same for overview waveform, so the dj has an overview of when stems have meaningful information (like a vocal stem which does not permanently have info, also the alignment becomes visual then).
+    - [x] if you still have questions let me know and lets design this together.
 
 # Changes
 - [x] The waveform indicators of hot cues use colors, but the hot cue buttons
@@ -160,6 +165,12 @@ and mesh-widget and only if necessary in the ui.
   the past, like ~10ms), so the transients of drums are captured properly, beat
   snapping etc should still work as before, just the playback should have a
   fixed "anti-delay"
+- [ ] mesh-cue needs to be able to toggle mute state of stems and also load
+  stem-links and be able to switch between stems (just like mesh-player, this
+  should reuse all the decks capabilities and not introduce duplicated code). we
+  already have 4 stem link button, when a stem link button is set with a stem
+  link pressing this should toggle between the stems.
+- [ ] double height of overview waveform
 
 
 
@@ -217,7 +228,7 @@ and mesh-widget and only if necessary in the ui.
 - [ ] it seems the deck virtual deck toggle buttons need similar logic like the
   action pad modes. on the ddj-sb2, the deck toggle buttons make the deck
   specific buttons have their own channel (action buttons, mode switches)
-- [ ] there is still problems with the interdeck syncing of two beats. when one
+- [x] there is still problems with the interdeck syncing of two beats. when one
   track is playing and i add another by pressing hot cue, play, then hot cue
   release, they are not synced. either
   the grids are not perfectly aligned (you should assume they are) or there is
@@ -228,6 +239,13 @@ and mesh-widget and only if necessary in the ui.
   drift. also validate the code quality and duplication of this. can we improve
   this, by making this better factored out, such that all the correction,
   playback logic etc happens at a central point like the deck/engine.
+- [x] stem linking visuals:
+  - [x] for overview wvaeform: always show on top half the currently running
+    stems together, on bottom half any non-running stems. this needs to be
+    aligned against the drop markers, not just rendered blindly. so when i have
+    a track where the vocal stem is stem linked to another vocal stem of another
+    track, show this vocal stem initially in the bottom half, as soon as i
+    switch, switch this stem to top and move the original stem to bottom half.
 
 # Performance
 - [ ] Can we optimize how stems are stored, this is currently roughly 200-300 mb
