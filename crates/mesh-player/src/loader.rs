@@ -483,18 +483,24 @@ fn handle_linked_stem_load(
             let mut stem_link = StemLink::new_with_sample_rate(sample_rate);
             let stretched_buffer = stem_link.pre_stretch(&source_buffer, source_bpm, request.host_bpm);
 
-            // Scale drop marker position by stretch ratio
-            // No latency compensation needed - chunked streaming handles timing internally
+            // Scale drop marker position by stretch ratio and compensate for stretcher latency
             let stretch_ratio = request.host_bpm / source_bpm;
-            let stretched_drop_marker = if stretch_ratio > 0.0 {
-                ((source_drop_marker as f64) / stretch_ratio).round() as u64
+            let stretcher_latency = stem_link.stretcher_latency();
+
+            let stretched_drop_marker = if stretch_ratio > 0.0 && (stretch_ratio - 1.0).abs() >= 0.001 {
+                // Stretching occurred - compensate for stretcher latency
+                // The stretcher shifts audio content FORWARD by latency samples,
+                // so we ADD latency to the drop marker to match where the audio actually is
+                let scaled_drop = ((source_drop_marker as f64) / stretch_ratio).round() as u64;
+                scaled_drop + stretcher_latency as u64
             } else {
+                // No stretching (same BPM) - no latency to compensate
                 source_drop_marker
             };
 
             log::info!(
-                "[STRETCH] ratio={:.4}, source_drop={}, stretched_drop={}",
-                stretch_ratio, source_drop_marker, stretched_drop_marker
+                "[STRETCH] ratio={:.4}, source_drop={}, stretched_drop={}, latency_comp={}",
+                stretch_ratio, source_drop_marker, stretched_drop_marker, stretcher_latency
             );
 
             log::info!(
