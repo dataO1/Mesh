@@ -200,6 +200,11 @@ impl StereoBuffer {
         Self { samples }
     }
 
+    /// Create a buffer from an existing Vec of StereoSamples
+    pub fn from_vec(samples: Vec<StereoSample>) -> Self {
+        Self { samples }
+    }
+
     /// Get the number of stereo samples in the buffer
     #[inline]
     pub fn len(&self) -> usize {

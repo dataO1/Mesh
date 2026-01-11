@@ -32,9 +32,18 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::thread;
 
 use crate::timestretch::TimeStretcher;
 use crate::types::{StereoBuffer, StereoSample, NUM_STEMS, SAMPLE_RATE};
+
+/// Maximum threads to use for parallel stretching
+/// Keep low to avoid starving the audio thread
+const MAX_STRETCH_THREADS: usize = 2;
+
+/// Minimum segment size for parallel stretching (in samples)
+/// Below this, single-threaded is faster due to overhead
+const MIN_PARALLEL_SEGMENT: usize = 2_000_000; // ~40 seconds at 48kHz
 
 /// Information about a linked stem from another track
 #[derive(Clone)]
@@ -108,11 +117,15 @@ impl StemLink {
     }
 
     /// Create a new stem link with specified sample rate
+    ///
+    /// Uses the cheaper time stretcher preset since linked stems are
+    /// pre-stretched in the background where speed matters more than
+    /// maximum quality.
     pub fn new_with_sample_rate(sample_rate: u32) -> Self {
         Self {
             linked: None,
             use_linked: false,
-            stretcher: TimeStretcher::new_with_sample_rate(sample_rate),
+            stretcher: TimeStretcher::new_cheaper(sample_rate),
         }
     }
 
@@ -158,9 +171,8 @@ impl StemLink {
     ///
     /// Returns the stretched buffer.
     ///
-    /// Uses chunked processing (256-sample output chunks) to match how the global
-    /// stretcher works during playback. This ensures identical quality between
-    /// pre-stretched linked stems and normally-played tracks.
+    /// Uses parallel processing - splits the buffer into segments and processes
+    /// them concurrently across multiple CPU cores for maximum throughput.
     pub fn pre_stretch(
         &mut self,
         source: &StereoBuffer,
@@ -177,19 +189,101 @@ impl StemLink {
             return source.clone();
         }
 
-        // Process in chunks like the global stretcher does (256-sample output chunks)
-        // This matches the streaming behavior in engine.rs and produces identical quality
-        const OUTPUT_CHUNK_SIZE: usize = 256;
+        // Use parallel stretching for large buffers, but limit threads to avoid
+        // starving the audio thread. Use std::thread instead of rayon to avoid
+        // contention with rayon's global pool (which may be used for other work).
+        if source.len() >= MIN_PARALLEL_SEGMENT && MAX_STRETCH_THREADS > 1 {
+            return Self::pre_stretch_parallel(source, ratio);
+        }
+
+        // For smaller buffers, use single-threaded chunked processing
+        Self::pre_stretch_chunked(&mut self.stretcher, source, ratio)
+    }
+
+    /// Parallel pre-stretching using dedicated threads (not rayon)
+    ///
+    /// Uses std::thread to avoid starving rayon's global pool and the audio thread.
+    /// Limits parallelism to MAX_STRETCH_THREADS to leave CPU headroom.
+    fn pre_stretch_parallel(source: &StereoBuffer, ratio: f64) -> StereoBuffer {
+        let source_len = source.len();
+        let total_output_len = ((source_len as f64) / ratio).ceil() as usize;
+
+        // Use at most MAX_STRETCH_THREADS segments
+        let num_segments = MAX_STRETCH_THREADS.min(source_len / MIN_PARALLEL_SEGMENT).max(1);
+
+        if num_segments == 1 {
+            // Fall back to single-threaded
+            let mut stretcher = TimeStretcher::new_cheaper(SAMPLE_RATE);
+            return Self::pre_stretch_chunked(&mut stretcher, source, ratio);
+        }
+
+        let segment_input_size = source_len / num_segments;
+
+        // Clone source data for thread safety (each thread gets its own segment)
+        let source_data: Vec<StereoSample> = source.as_slice().to_vec();
+
+        // Spawn threads for each segment
+        let handles: Vec<_> = (0..num_segments)
+            .map(|i| {
+                let start = i * segment_input_size;
+                let end = if i == num_segments - 1 {
+                    source_len
+                } else {
+                    (i + 1) * segment_input_size
+                };
+
+                // Clone segment data for this thread
+                let segment_data: Vec<StereoSample> = source_data[start..end].to_vec();
+                let segment_ratio = ratio;
+
+                thread::spawn(move || {
+                    let mut stretcher = TimeStretcher::new_cheaper(SAMPLE_RATE);
+                    let segment = StereoBuffer::from_vec(segment_data);
+                    Self::pre_stretch_chunked(&mut stretcher, &segment, segment_ratio)
+                })
+            })
+            .collect();
+
+        // Wait for all threads and collect results
+        let stretched_segments: Vec<StereoBuffer> = handles
+            .into_iter()
+            .map(|h| h.join().expect("Stretch thread panicked"))
+            .collect();
+
+        // Combine segments (simple concatenation - no overlap needed since each
+        // segment processes independently from clean boundaries)
+        let mut output = StereoBuffer::silence(total_output_len);
+        let output_slice = output.as_mut_slice();
+
+        let mut output_pos = 0usize;
+        for stretched in stretched_segments.iter() {
+            let stretched_slice = stretched.as_slice();
+            let copy_len = stretched_slice.len().min(total_output_len - output_pos);
+            if copy_len > 0 {
+                output_slice[output_pos..output_pos + copy_len]
+                    .copy_from_slice(&stretched_slice[..copy_len]);
+                output_pos += copy_len;
+            }
+        }
+
+        output
+    }
+
+    /// Single-threaded chunked pre-stretching
+    fn pre_stretch_chunked(
+        stretcher: &mut TimeStretcher,
+        source: &StereoBuffer,
+        ratio: f64,
+    ) -> StereoBuffer {
+        const OUTPUT_CHUNK_SIZE: usize = 4096;
 
         let total_output_len = ((source.len() as f64) / ratio).ceil() as usize;
         let mut output = StereoBuffer::silence(total_output_len);
 
-        self.stretcher.set_ratio(ratio);
-
+        stretcher.set_ratio(ratio);
         let source_slice = source.as_slice();
 
-        // Pre-allocate workspace buffers ONCE to avoid per-chunk allocation overhead.
-        // Max input chunk size is OUTPUT_CHUNK_SIZE * ratio, with margin for fractional accumulation.
+        // Pre-allocate workspace buffers
         let max_input_chunk = ((OUTPUT_CHUNK_SIZE as f64) * ratio * 2.0).ceil() as usize + 1;
         let mut input_workspace = StereoBuffer::with_capacity(max_input_chunk);
         let mut output_workspace = StereoBuffer::with_capacity(OUTPUT_CHUNK_SIZE);
@@ -199,11 +293,8 @@ impl StemLink {
         let mut fractional_input = 0.0f64;
 
         while output_pos < total_output_len && input_pos < source.len() {
-            // Fixed output chunk size (or remainder)
             let output_chunk_len = OUTPUT_CHUNK_SIZE.min(total_output_len - output_pos);
 
-            // Calculate input samples needed (matching deck.rs logic)
-            // input_needed = output_chunk_len * ratio
             fractional_input += (output_chunk_len as f64) * ratio;
             let input_chunk_len = fractional_input.floor() as usize;
             fractional_input -= input_chunk_len as f64;
@@ -215,19 +306,15 @@ impl StemLink {
                 break;
             }
 
-            // Resize workspace buffers (no allocation - just adjusts working length within capacity)
             input_workspace.resize(actual_input_len);
             output_workspace.resize(output_chunk_len);
 
-            // Copy input data into workspace
             input_workspace
                 .as_mut_slice()
                 .copy_from_slice(&source_slice[input_pos..input_end]);
 
-            // Process chunk (ratio determined by size difference)
-            self.stretcher.process(&input_workspace, &mut output_workspace);
+            stretcher.process(&input_workspace, &mut output_workspace);
 
-            // Copy output data
             let output_end = (output_pos + output_chunk_len).min(total_output_len);
             output.as_mut_slice()[output_pos..output_end]
                 .copy_from_slice(&output_workspace.as_slice()[..output_end - output_pos]);
@@ -236,11 +323,11 @@ impl StemLink {
             output_pos = output_end;
         }
 
-        // Flush any remaining samples from the stretcher
+        // Flush remaining samples
         if output_pos < total_output_len {
             let remaining = total_output_len - output_pos;
             let mut flush_buf = StereoBuffer::silence(remaining);
-            self.stretcher.flush(&mut flush_buf);
+            stretcher.flush(&mut flush_buf);
             output.as_mut_slice()[output_pos..]
                 .copy_from_slice(&flush_buf.as_slice()[..remaining]);
         }

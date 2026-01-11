@@ -44,6 +44,22 @@ impl TimeStretcher {
         Self::new_with_sample_rate(SAMPLE_RATE)
     }
 
+    /// Create a faster time stretcher with reduced quality
+    ///
+    /// Uses signalsmith-stretch's `preset_cheaper` which is 30-50% faster
+    /// but with slightly lower audio quality. Ideal for background operations
+    /// like pre-stretching linked stems where speed matters more than
+    /// maximum quality.
+    pub fn new_cheaper(sample_rate: u32) -> Self {
+        let stretcher = Stretch::preset_cheaper(CHANNELS, sample_rate);
+
+        Self {
+            stretcher,
+            ratio: 1.0,
+            pitch_semitones: 0.0,
+        }
+    }
+
     /// Set the stretch ratio (output_bpm / input_bpm)
     ///
     /// ratio > 1.0: speed up (fewer output samples per input)
