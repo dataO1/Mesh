@@ -2015,6 +2015,7 @@ fn draw_deck_quadrant(
         frame,
         &deck.zoomed,
         &deck.overview.highres_peaks,
+        &deck.overview.linked_highres_peaks,
         deck.overview.duration_samples,
         playhead,
         x,
@@ -2076,10 +2077,12 @@ fn draw_deck_quadrant(
 ///
 /// Uses pre-computed high-resolution peaks when available for smooth playback
 /// without recomputation. Falls back to cached_peaks if highres_peaks is empty.
+/// When a linked stem is active, uses linked_highres_peaks for that stem.
 fn draw_zoomed_at(
     frame: &mut Frame,
     zoomed: &ZoomedState,
     highres_peaks: &[Vec<(f32, f32)>; 4],
+    linked_highres_peaks: &[Option<Vec<(f32, f32)>>; 4],
     duration_samples: u64,
     playhead: u64,
     x: f32,
@@ -2264,16 +2267,24 @@ fn draw_zoomed_at(
             // Draw stems in layered order: Drums (back) → Bass → Vocals → Other (front)
             for &stem_idx in STEM_RENDER_ORDER.iter() {
                 // Choose peaks source based on what's available
-                let peaks: &[(f32, f32)] = if use_highres {
-                    // Use highres_peaks directly - they cover the entire track
-                    // TODO: linked stems would need their own highres_peaks
+                // Priority: linked_highres_peaks > highres_peaks > linked_cached_peaks > cached_peaks
+                let peaks: &[(f32, f32)] = if linked_active[stem_idx] {
+                    // Linked stem is active - prefer linked highres peaks
+                    if use_highres {
+                        linked_highres_peaks[stem_idx]
+                            .as_ref()
+                            .map(|v| v.as_slice())
+                            .unwrap_or(&highres_peaks[stem_idx])
+                    } else {
+                        // Fallback: use linked cached peaks if available
+                        zoomed.linked_cached_peaks[stem_idx]
+                            .as_ref()
+                            .map(|v| v.as_slice())
+                            .unwrap_or(&zoomed.cached_peaks[stem_idx])
+                    }
+                } else if use_highres {
+                    // Host track - use host highres_peaks
                     &highres_peaks[stem_idx]
-                } else if linked_active[stem_idx] {
-                    // Fallback: use linked cached peaks if available
-                    zoomed.linked_cached_peaks[stem_idx]
-                        .as_ref()
-                        .map(|v| v.as_slice())
-                        .unwrap_or(&zoomed.cached_peaks[stem_idx])
                 } else {
                     &zoomed.cached_peaks[stem_idx]
                 };

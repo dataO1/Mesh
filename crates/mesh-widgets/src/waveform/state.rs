@@ -97,6 +97,9 @@ pub struct OverviewState {
     pub linked_drop_markers: [Option<u64>; 4],
     /// Duration of each linked stem buffer (samples, for split-view alignment scaling)
     pub linked_durations: [Option<u64>; 4],
+    /// High-resolution peaks for linked stems (for stable zoomed view rendering)
+    /// Computed once when linked stem is loaded, avoids recomputation during playback
+    pub linked_highres_peaks: [Option<Vec<(f32, f32)>>; 4],
 }
 
 impl OverviewState {
@@ -121,6 +124,7 @@ impl OverviewState {
             linked_stem_waveforms: [None, None, None, None],
             linked_drop_markers: [None, None, None, None],
             linked_durations: [None, None, None, None],
+            linked_highres_peaks: [None, None, None, None],
         }
     }
 
@@ -230,6 +234,7 @@ impl OverviewState {
             linked_stem_waveforms: [None, None, None, None],
             linked_drop_markers: [None, None, None, None],
             linked_durations: [None, None, None, None],
+            linked_highres_peaks: [None, None, None, None],
         }
     }
 
@@ -258,6 +263,7 @@ impl OverviewState {
             linked_stem_waveforms: [None, None, None, None],
             linked_drop_markers: [None, None, None, None],
             linked_durations: [None, None, None, None],
+            linked_highres_peaks: [None, None, None, None],
         }
     }
 
@@ -298,6 +304,7 @@ impl OverviewState {
             linked_stem_waveforms: [None, None, None, None],
             linked_drop_markers: [None, None, None, None],
             linked_durations: [None, None, None, None],
+            linked_highres_peaks: [None, None, None, None],
         }
     }
 
@@ -401,6 +408,7 @@ impl OverviewState {
             linked_stem_waveforms: [None, None, None, None],
             linked_drop_markers: [None, None, None, None],
             linked_durations: [None, None, None, None],
+            linked_highres_peaks: [None, None, None, None],
         }
     }
 
@@ -460,6 +468,28 @@ impl OverviewState {
     /// Clear all linked stem peaks (when track is unloaded)
     pub fn clear_all_linked_stem_peaks(&mut self) {
         self.linked_stem_waveforms = [None, None, None, None];
+    }
+
+    /// Set linked stem high-resolution peaks for stable zoomed view rendering
+    ///
+    /// Called when a linked stem is loaded. These peaks are computed once and reused
+    /// to avoid recomputation during playback.
+    pub fn set_linked_highres_peaks(&mut self, stem_idx: usize, peaks: Vec<(f32, f32)>) {
+        if stem_idx < 4 {
+            self.linked_highres_peaks[stem_idx] = Some(peaks);
+        }
+    }
+
+    /// Clear linked stem high-resolution peaks for a specific stem slot
+    pub fn clear_linked_highres_peaks(&mut self, stem_idx: usize) {
+        if stem_idx < 4 {
+            self.linked_highres_peaks[stem_idx] = None;
+        }
+    }
+
+    /// Clear all linked stem high-resolution peaks (when track is unloaded)
+    pub fn clear_all_linked_highres_peaks(&mut self) {
+        self.linked_highres_peaks = [None, None, None, None];
     }
 
     /// Set linked stem metadata for alignment in split-view rendering

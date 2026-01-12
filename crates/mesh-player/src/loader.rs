@@ -88,6 +88,9 @@ pub struct LinkedStemLoadResult {
     /// Pre-computed overview peaks from source track's wvfm chunk
     /// None if source track has no waveform preview, or if load failed
     pub overview_peaks: Option<Vec<(f32, f32)>>,
+    /// High-resolution peaks for stable zoomed view rendering
+    /// Computed from the audio buffer at HIGHRES_WIDTH resolution
+    pub highres_peaks: Option<Vec<(f32, f32)>>,
     /// Duration of the linked stem buffer in samples (after stretching)
     /// None if load failed
     pub linked_duration: Option<u64>,
@@ -107,6 +110,42 @@ enum LoaderRequest {
 pub enum LoaderResult {
     Track(TrackLoadResult),
     LinkedStem(LinkedStemLoadResult),
+}
+
+/// Generate peaks from a single StereoBuffer at the specified resolution
+///
+/// Used for linked stem highres peaks computation.
+fn generate_single_stem_peaks(buffer: &StereoBuffer, width: usize) -> Vec<(f32, f32)> {
+    let len = buffer.len();
+    if len == 0 || width == 0 {
+        return Vec::new();
+    }
+
+    let samples_per_column = len / width;
+    if samples_per_column == 0 {
+        return Vec::new();
+    }
+
+    (0..width)
+        .map(|col| {
+            let start = col * samples_per_column;
+            let end = ((col + 1) * samples_per_column).min(len);
+
+            let mut min = f32::INFINITY;
+            let mut max = f32::NEG_INFINITY;
+
+            for i in start..end {
+                let sample = (buffer[i].left + buffer[i].right) / 2.0;
+                min = min.min(sample);
+                max = max.max(sample);
+            }
+
+            if min.is_infinite() { min = 0.0; }
+            if max.is_infinite() { max = 0.0; }
+
+            (min, max)
+        })
+        .collect()
 }
 
 /// Handle to the background loader thread
@@ -310,11 +349,22 @@ fn handle_track_load(
             // This is done ONCE at track load, eliminating runtime recomputation
             let highres_start = std::time::Instant::now();
             let highres_peaks = generate_peaks(&track.stems, HIGHRES_WIDTH);
+            let highres_elapsed = highres_start.elapsed();
             overview_state.set_highres_peaks(highres_peaks);
+
+            // Performance logging for evaluation - can we eliminate stored grid?
+            let total_samples = track.stems.len();
+            let samples_per_ms = if highres_elapsed.as_micros() > 0 {
+                (total_samples as f64 * 1000.0) / highres_elapsed.as_micros() as f64
+            } else {
+                0.0
+            };
             log::info!(
-                "[PERF] Loader: generate_peaks(HIGHRES_WIDTH={}) took {:?}",
+                "[PERF] Highres peaks (4 stems): {} samples → {} peaks in {:?} ({:.1}M samples/sec)",
+                total_samples,
                 HIGHRES_WIDTH,
-                highres_start.elapsed()
+                highres_elapsed,
+                samples_per_ms / 1000.0
             );
 
             // Pre-compute zoomed waveform state
@@ -604,6 +654,25 @@ fn handle_linked_stem_load(
                 );
             }
 
+            // Compute high-resolution peaks for stable zoomed view rendering
+            let highres_start = std::time::Instant::now();
+            let highres_peaks = generate_single_stem_peaks(&aligned_buffer, HIGHRES_WIDTH);
+            let highres_elapsed = highres_start.elapsed();
+            let total_samples = aligned_buffer.len();
+            let samples_per_ms = if highres_elapsed.as_micros() > 0 {
+                (total_samples as f64 * 1000.0) / highres_elapsed.as_micros() as f64
+            } else {
+                0.0
+            };
+            log::info!(
+                "[PERF] Linked stem {} highres peaks: {} samples → {} peaks in {:?} ({:.1}M samples/sec)",
+                request.stem_idx,
+                total_samples,
+                highres_peaks.len(),
+                highres_elapsed,
+                samples_per_ms / 1000.0
+            );
+
             // Wrap aligned buffer in Shared for zero-copy access from both engine and UI
             let shared_buffer = Shared::new(&mesh_core::engine::gc::gc_handle(), aligned_buffer);
 
@@ -620,6 +689,7 @@ fn handle_linked_stem_load(
                     track_path: Some(request.source_path),
                 }),
                 overview_peaks,
+                highres_peaks: Some(highres_peaks),
                 linked_duration: Some(linked_duration),
                 shared_buffer: Some(shared_buffer),
             }));
@@ -632,6 +702,7 @@ fn handle_linked_stem_load(
                 stem_idx: request.stem_idx,
                 result: Err(e.to_string()),
                 overview_peaks: None,
+                highres_peaks: None,
                 linked_duration: None,
                 shared_buffer: None,
             }));
@@ -768,6 +839,25 @@ fn handle_linked_stem_load_parallel(
                 );
             }
 
+            // Compute high-resolution peaks for stable zoomed view rendering
+            let highres_start = std::time::Instant::now();
+            let highres_peaks = generate_single_stem_peaks(&aligned_buffer, HIGHRES_WIDTH);
+            let highres_elapsed = highres_start.elapsed();
+            let total_samples = aligned_buffer.len();
+            let samples_per_ms = if highres_elapsed.as_micros() > 0 {
+                (total_samples as f64 * 1000.0) / highres_elapsed.as_micros() as f64
+            } else {
+                0.0
+            };
+            log::info!(
+                "[PERF] Linked stem {} highres peaks (parallel): {} samples → {} peaks in {:?} ({:.1}M samples/sec)",
+                request.stem_idx,
+                total_samples,
+                highres_peaks.len(),
+                highres_elapsed,
+                samples_per_ms / 1000.0
+            );
+
             // Wrap aligned buffer in Shared for zero-copy access from both engine and UI
             let shared_buffer = Shared::new(&mesh_core::engine::gc::gc_handle(), aligned_buffer);
 
@@ -782,6 +872,7 @@ fn handle_linked_stem_load_parallel(
                     track_path: Some(request.source_path),
                 }),
                 overview_peaks,
+                highres_peaks: Some(highres_peaks),
                 linked_duration: Some(linked_duration),
                 shared_buffer: Some(shared_buffer),
             }));
@@ -794,6 +885,7 @@ fn handle_linked_stem_load_parallel(
                 stem_idx: request.stem_idx,
                 result: Err(e.to_string()),
                 overview_peaks: None,
+                highres_peaks: None,
                 linked_duration: None,
                 shared_buffer: None,
             }));

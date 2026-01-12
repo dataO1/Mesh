@@ -471,6 +471,20 @@ impl MeshApp {
                                             .set_linked_stem_peaks(stem_idx, peaks);
                                     }
 
+                                    // Store linked stem highres peaks for stable zoomed view rendering
+                                    if let Some(peaks) = linked_result.highres_peaks {
+                                        log::info!(
+                                            "[LINKED] Storing {} highres peaks for deck {} stem {}",
+                                            peaks.len(),
+                                            deck_idx,
+                                            stem_idx
+                                        );
+                                        self.player_canvas_state
+                                            .deck_mut(deck_idx)
+                                            .overview
+                                            .set_linked_highres_peaks(stem_idx, peaks);
+                                    }
+
                                     // Store linked stem metadata for split-view alignment
                                     // Use STRETCHED values to match audio engine alignment
                                     if let Some(stretched_duration) = linked_result.linked_duration {
