@@ -4,8 +4,64 @@
 //! Default location: ~/.config/mesh-player/config.yaml
 
 use anyhow::{Context, Result};
+use iced::Color;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+
+/// Stem color palette selection
+///
+/// Maps to predefined palettes in mesh-widgets/src/theme.rs
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StemColorPalette {
+    /// Natural/Organic - soft, muted tones for extended viewing comfort
+    #[default]
+    Natural,
+    /// Cool-to-Warm Depth - uses color temperature for natural depth perception
+    CoolWarm,
+    /// High Contrast - maximum hue separation for clarity
+    HighContrast,
+    /// Synthwave - modern DJ aesthetic with neon-inspired colors
+    Synthwave,
+    /// Gruvbox - retro warm palette with earthy, vintage tones
+    Gruvbox,
+}
+
+impl StemColorPalette {
+    /// Get all available palettes for UI selection
+    pub const ALL: [StemColorPalette; 5] = [
+        StemColorPalette::Natural,
+        StemColorPalette::CoolWarm,
+        StemColorPalette::HighContrast,
+        StemColorPalette::Synthwave,
+        StemColorPalette::Gruvbox,
+    ];
+
+    /// Get the display name for this palette
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            StemColorPalette::Natural => "Natural",
+            StemColorPalette::CoolWarm => "Cool-Warm",
+            StemColorPalette::HighContrast => "High Contrast",
+            StemColorPalette::Synthwave => "Synthwave",
+            StemColorPalette::Gruvbox => "Gruvbox",
+        }
+    }
+
+    /// Get the color array for this palette
+    ///
+    /// Order: [Vocals, Drums, Bass, Other]
+    pub fn colors(&self) -> [Color; 4] {
+        use mesh_widgets::theme::stem_palettes;
+        match self {
+            StemColorPalette::Natural => stem_palettes::NATURAL,
+            StemColorPalette::CoolWarm => stem_palettes::COOL_WARM,
+            StemColorPalette::HighContrast => stem_palettes::HIGH_CONTRAST,
+            StemColorPalette::Synthwave => stem_palettes::SYNTHWAVE,
+            StemColorPalette::Gruvbox => stem_palettes::GRUVBOX,
+        }
+    }
+}
 
 /// Root configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,6 +126,8 @@ pub struct DisplayConfig {
     pub default_zoom_bars: u32,
     /// Overview waveform grid density (4, 8, 16, or 32 bars)
     pub grid_bars: u32,
+    /// Stem color palette for waveform display
+    pub stem_color_palette: StemColorPalette,
 }
 
 /// Loop length options in beats (matches mesh-core/deck.rs LOOP_LENGTHS)
@@ -82,6 +140,7 @@ impl Default for DisplayConfig {
             default_loop_length_index: 2, // Default to 4 beats (index 2 in LOOP_LENGTH_OPTIONS)
             default_zoom_bars: 8,         // Default zoomed waveform to 8 bars
             grid_bars: 8,                 // Default grid density to 8 bars
+            stem_color_palette: StemColorPalette::default(), // Natural palette
         }
     }
 }

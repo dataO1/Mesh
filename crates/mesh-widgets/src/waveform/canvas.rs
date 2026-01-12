@@ -26,12 +26,12 @@ const STEM_RENDER_ORDER: [usize; 4] = [1, 2, 0, 3];
 /// (bottom indicator = back layer, top indicator = front layer)
 const STEM_INDICATOR_ORDER: [usize; 4] = [3, 0, 2, 1];
 
-/// Gray colors for inactive stems (different brightness per stem type)
-/// Index: 0=Vocals (middle), 1=Drums (darkest), 2=Bass (dark), 3=Other (lightest)
+/// Gray colors for inactive stems (brightness matches Natural palette relationships)
+/// Index: 0=Vocals, 1=Drums, 2=Bass, 3=Other
 const INACTIVE_STEM_GRAYS: [Color; 4] = [
-    Color::from_rgb(0.35, 0.35, 0.35), // Vocals - middle gray
-    Color::from_rgb(0.20, 0.20, 0.20), // Drums - darkest gray
-    Color::from_rgb(0.25, 0.25, 0.25), // Bass - dark gray
+    Color::from_rgb(0.40, 0.40, 0.40), // Vocals - medium-bright gray
+    Color::from_rgb(0.30, 0.30, 0.30), // Drums - medium gray
+    Color::from_rgb(0.35, 0.35, 0.35), // Bass - medium gray
     Color::from_rgb(0.45, 0.45, 0.45), // Other - lightest gray
 ];
 
@@ -76,6 +76,11 @@ const SMOOTH_RADIUS_MULTIPLIER: [f64; 4] = [
     0.4,  // Bass - more smoothing
     0.4,  // Other - more smoothing
 ];
+
+/// Waveform alpha (opacity) values
+/// Higher values = more opaque/solid waveforms
+const OVERVIEW_WAVEFORM_ALPHA: f32 = 0.85;
+const ZOOMED_WAVEFORM_ALPHA: f32 = 0.9;
 
 /// Get step size for overview waveform given stem index and width
 #[inline]
@@ -346,7 +351,7 @@ where
         }
 
         // Draw all 4 stem waveforms overlapped
-        draw_stem_waveforms(&mut frame, &self.state.stem_waveforms, width, height, center_y, 0.6);
+        draw_stem_waveforms(&mut frame, &self.state.stem_waveforms, width, height, center_y, OVERVIEW_WAVEFORM_ALPHA);
 
         // Draw cue markers
         draw_cue_markers(&mut frame, &self.state.cue_markers, width, height, 0.0);
@@ -1240,7 +1245,7 @@ fn draw_cached_peaks(
         }
 
         let base_color = STEM_COLORS[stem_idx];
-        let waveform_color = Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.7);
+        let waveform_color = Color::from_rgba(base_color.r, base_color.g, base_color.b, ZOOMED_WAVEFORM_ALPHA);
         let peaks_len = peaks.len();
         let width_usize = width as usize;
         let total_samples = window.total_samples as usize;
@@ -1342,7 +1347,7 @@ fn draw_highres_peaks_section(
         let peaks_len = peaks.len();
 
         let base_color = STEM_COLORS[stem_idx];
-        let waveform_color = Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.7);
+        let waveform_color = Color::from_rgba(base_color.r, base_color.g, base_color.b, ZOOMED_WAVEFORM_ALPHA);
 
         // Build filled path for this stem
         let path = Path::new(|builder| {
@@ -1733,7 +1738,7 @@ fn draw_overview_section(
         }
 
         let base_color = STEM_COLORS[stem_idx];
-        let waveform_color = Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.6);
+        let waveform_color = Color::from_rgba(base_color.r, base_color.g, base_color.b, OVERVIEW_WAVEFORM_ALPHA);
 
         draw_stem_waveform_filled(frame, stem_peaks, 0.0, overview_center_y, height_scale, waveform_color, width, stem_idx);
     }
@@ -2540,7 +2545,7 @@ fn draw_zoomed_at(
                 // Use stem color if active, gray tone if inactive
                 let waveform_color = if stem_active[stem_idx] {
                     let base_color = stem_colors[stem_idx];
-                    Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.7)
+                    Color::from_rgba(base_color.r, base_color.g, base_color.b, ZOOMED_WAVEFORM_ALPHA)
                 } else {
                     let gray = INACTIVE_STEM_GRAYS[stem_idx];
                     Color::from_rgba(gray.r, gray.g, gray.b, 0.5)
@@ -2894,7 +2899,7 @@ fn draw_overview_at(
             // Get stem color
             let active_color = if stem_active[stem_idx] {
                 let base = stem_colors[stem_idx];
-                Color::from_rgba(base.r, base.g, base.b, 0.6)
+                Color::from_rgba(base.r, base.g, base.b, OVERVIEW_WAVEFORM_ALPHA)
             } else {
                 let gray = INACTIVE_STEM_GRAYS[stem_idx];
                 Color::from_rgba(gray.r, gray.g, gray.b, 0.4)
@@ -2990,7 +2995,7 @@ fn draw_overview_at(
 
             let waveform_color = if stem_active[stem_idx] {
                 let base_color = stem_colors[stem_idx];
-                Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.6)
+                Color::from_rgba(base_color.r, base_color.g, base_color.b, OVERVIEW_WAVEFORM_ALPHA)
             } else {
                 let gray = INACTIVE_STEM_GRAYS[stem_idx];
                 Color::from_rgba(gray.r, gray.g, gray.b, 0.4)

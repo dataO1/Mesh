@@ -4,8 +4,8 @@
 
 use super::app::Message;
 use super::midi_learn::MidiLearnMessage;
-use crate::config::LOOP_LENGTH_OPTIONS;
-use iced::widget::{button, column, container, row, text, toggler, Space};
+use crate::config::{LOOP_LENGTH_OPTIONS, StemColorPalette};
+use iced::widget::{button, column, container, row, scrollable, text, toggler, Space};
 use iced::{Alignment, Element, Length};
 
 /// Settings state for the modal
@@ -19,6 +19,8 @@ pub struct SettingsState {
     pub draft_zoom_bars: u32,
     /// Draft grid bars
     pub draft_grid_bars: u32,
+    /// Draft stem color palette
+    pub draft_stem_color_palette: StemColorPalette,
     /// Draft phase sync enabled
     pub draft_phase_sync: bool,
     /// Draft slicer buffer bars (4, 8, or 16)
@@ -37,6 +39,7 @@ impl SettingsState {
             draft_loop_length_index: config.display.default_loop_length_index,
             draft_zoom_bars: config.display.default_zoom_bars,
             draft_grid_bars: config.display.grid_bars,
+            draft_stem_color_palette: config.display.stem_color_palette,
             draft_phase_sync: config.audio.phase_sync,
             draft_slicer_buffer_bars: config.slicer.default_buffer_bars,
             draft_slicer_affected_stems: config.slicer.affected_stems,
@@ -51,6 +54,7 @@ impl SettingsState {
             draft_loop_length_index: 2, // 4 beats (index 2 in new array)
             draft_zoom_bars: 8,
             draft_grid_bars: 8,
+            draft_stem_color_palette: StemColorPalette::default(),
             draft_phase_sync: true, // Enabled by default
             draft_slicer_buffer_bars: 4, // 4 bars = 16 slices
             draft_slicer_affected_stems: [false, true, false, false], // Only Drums by default
@@ -88,6 +92,14 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
     // MIDI settings section
     let midi_section = view_midi_section();
 
+    // Scrollable content area for all sections
+    let scrollable_content = scrollable(
+        column![loop_section, display_section, slicer_section, midi_section]
+            .spacing(15)
+            .width(Length::Fill)
+    )
+    .height(Length::Fill);
+
     // Status message (for save feedback)
     let status: Element<Message> = if !state.status.is_empty() {
         text(&state.status).size(14).into()
@@ -108,9 +120,11 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
         .spacing(10)
         .width(Length::Fill);
 
-    let content = column![header, loop_section, display_section, slicer_section, midi_section, status, actions]
-        .spacing(20)
-        .width(Length::Fixed(450.0));
+    // Layout: fixed header, scrollable middle, fixed footer
+    let content = column![header, scrollable_content, status, actions]
+        .spacing(15)
+        .width(Length::Fixed(450.0))
+        .height(Length::Fixed(600.0)); // Max height for modal
 
     container(content)
         .padding(30)
@@ -252,6 +266,29 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
     .spacing(10)
     .align_y(Alignment::Center);
 
+    // Stem color palette section
+    let palette_subsection = text("Stem Color Palette").size(14);
+    let palette_hint = text("Color scheme for waveform stem visualization")
+        .size(12);
+
+    let palette_buttons: Vec<Element<Message>> = StemColorPalette::ALL
+        .iter()
+        .map(|&palette| {
+            let is_selected = state.draft_stem_color_palette == palette;
+            let btn = button(text(palette.display_name()).size(11))
+                .on_press(Message::UpdateSettingsStemColorPalette(palette))
+                .style(if is_selected {
+                    iced::widget::button::primary
+                } else {
+                    iced::widget::button::secondary
+                })
+                .width(Length::Fixed(75.0));
+            btn.into()
+        })
+        .collect();
+
+    let palette_row = row(palette_buttons).spacing(4).align_y(Alignment::Center);
+
     container(
         column![
             section_title,
@@ -262,6 +299,10 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
             grid_subsection,
             grid_hint,
             grid_row,
+            Space::new().height(10),
+            palette_subsection,
+            palette_hint,
+            palette_row,
         ]
         .spacing(8),
     )

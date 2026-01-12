@@ -20,7 +20,7 @@ use iced::{Center as CenterAlign, Color, Element, Fill, Length, Subscription, Ta
 use iced::time;
 
 use crate::audio::CommandSender;
-use crate::config::{self, PlayerConfig};
+use crate::config::{self, PlayerConfig, StemColorPalette};
 use crate::loader::{LoaderResult, TrackLoader};
 use mesh_midi::{MidiController, MidiMessage as MidiMsg, MidiInputEvent, DeckAction as MidiDeckAction, MixerAction as MidiMixerAction, BrowserAction as MidiBrowserAction};
 use mesh_core::audio_file::StemBuffers;
@@ -157,6 +157,8 @@ pub enum Message {
     UpdateSettingsZoomBars(u32),
     /// Update settings: grid bars
     UpdateSettingsGridBars(u32),
+    /// Update settings: stem color palette
+    UpdateSettingsStemColorPalette(StemColorPalette),
     /// Update settings: phase sync enabled
     UpdateSettingsPhaseSync(bool),
     /// Update settings: slicer buffer bars (4, 8, or 16)
@@ -251,7 +253,7 @@ impl MeshApp {
             peaks_computer: PeaksComputer::spawn(),
             player_canvas_state: {
                 let mut state = PlayerCanvasState::new();
-                state.set_stem_colors(super::theme::stem_colors());
+                state.set_stem_colors(config.display.stem_color_palette.colors());
                 state
             },
             deck_stems: [None, None, None, None],
@@ -1273,6 +1275,10 @@ impl MeshApp {
                 self.settings.draft_grid_bars = bars;
                 Task::none()
             }
+            Message::UpdateSettingsStemColorPalette(palette) => {
+                self.settings.draft_stem_color_palette = palette;
+                Task::none()
+            }
             Message::UpdateSettingsPhaseSync(enabled) => {
                 self.settings.draft_phase_sync = enabled;
                 Task::none()
@@ -1293,6 +1299,7 @@ impl MeshApp {
                 new_config.display.default_loop_length_index = self.settings.draft_loop_length_index;
                 new_config.display.default_zoom_bars = self.settings.draft_zoom_bars;
                 new_config.display.grid_bars = self.settings.draft_grid_bars;
+                new_config.display.stem_color_palette = self.settings.draft_stem_color_palette;
                 // Save global BPM from current state
                 new_config.audio.global_bpm = self.global_bpm;
                 // Save phase sync setting
@@ -1302,6 +1309,11 @@ impl MeshApp {
                 new_config.slicer.affected_stems = self.settings.draft_slicer_affected_stems;
 
                 self.config = Arc::new(new_config.clone());
+
+                // Apply stem color palette to waveform display immediately
+                self.player_canvas_state.set_stem_colors(
+                    self.settings.draft_stem_color_palette.colors()
+                );
 
                 // Send settings to audio engine immediately
                 if let Some(ref mut sender) = self.command_sender {
