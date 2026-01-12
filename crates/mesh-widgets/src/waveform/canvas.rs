@@ -562,7 +562,7 @@ where
         // =====================================================================
         // ZOOMED WAVEFORM (top section)
         // =====================================================================
-        draw_zoomed_section(&mut frame, &self.state.zoomed, self.playhead, width);
+        draw_zoomed_section(&mut frame, &self.state.zoomed, &self.state.overview, self.playhead, width);
 
         // =====================================================================
         // OVERVIEW WAVEFORM (bottom section)
@@ -1198,6 +1198,127 @@ fn draw_cached_peaks(
     }
 }
 
+/// Draw highres peaks for zoomed section (CombinedCanvas)
+///
+/// Uses pre-computed highres_peaks for smooth, jitter-free rendering.
+/// Includes adaptive subsampling and grid alignment for stable visuals.
+fn draw_highres_peaks_section(
+    frame: &mut Frame,
+    highres_peaks: &[Vec<(f32, f32)>; 4],
+    duration_samples: u64,
+    window: &WindowInfo,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+) {
+    let center_y = y + height / 2.0;
+    let height_scale = height / 2.0 * 0.85;
+
+    // Draw stems in layered order: Drums (back) → Bass → Vocals → Other (front)
+    for &stem_idx in STEM_RENDER_ORDER.iter() {
+        let peaks = &highres_peaks[stem_idx];
+        if peaks.is_empty() {
+            continue;
+        }
+        let peaks_len = peaks.len();
+
+        let base_color = STEM_COLORS[stem_idx];
+        let waveform_color = Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.7);
+
+        // Build filled path for this stem
+        let path = Path::new(|builder| {
+            let mut upper_points: Vec<(f32, f32)> = Vec::with_capacity(512);
+            let mut lower_points: Vec<(f32, f32)> = Vec::with_capacity(512);
+
+            // STABLE RENDERING: Direct peak-to-pixel mapping
+            // IMPORTANT: Use integer division to match peak generation (peaks.rs)
+            let samples_per_peak = (duration_samples / peaks_len as u64) as f64;
+            let pixels_per_sample = width as f64 / window.total_samples as f64;
+            let pixels_per_peak = samples_per_peak * pixels_per_sample;
+
+            // Center position (where playhead is, accounting for padding)
+            let center_sample = window.start as f64 - window.left_padding as f64
+                + (window.total_samples as f64 / 2.0);
+            let center_peak_f64 = center_sample / samples_per_peak;
+            let center_x = x + width / 2.0;
+
+            // Calculate visible peak range with margin to prevent edge popping
+            let half_width_in_peaks = (width as f64 / 2.0 / pixels_per_peak).ceil() as usize;
+            let margin_peaks = half_width_in_peaks / 4 + 20;
+            let half_visible_peaks = half_width_in_peaks + margin_peaks;
+
+            // Calculate first and last peak to draw (with margin)
+            let center_peak = center_peak_f64 as usize;
+            let first_peak = center_peak.saturating_sub(half_visible_peaks);
+            let last_peak = (center_peak + half_visible_peaks).min(peaks_len);
+
+            // Adaptive subsampling: ~1 point every 2 pixels
+            let target_pixels_per_point = 2.0;
+            let step = ((target_pixels_per_point / pixels_per_peak).round() as usize).max(1);
+            // Very light smoothing
+            let smooth_radius = step / 4;
+
+            // Align to grid for stability (round to nearest)
+            let first_peak_aligned = ((first_peak + step / 2) / step) * step;
+            let mut peak_idx = first_peak_aligned;
+
+            while peak_idx < last_peak {
+                // SIMPLE LINEAR MAPPING: pixel position from peak index
+                let relative_pos = peak_idx as f64 - center_peak_f64;
+                let px = center_x + (relative_pos * pixels_per_peak) as f32;
+
+                // Clip to canvas bounds (with small margin for line continuity)
+                if px >= x - 5.0 && px <= x + width + 5.0 {
+                    let (min, max) = if smooth_radius > 0 {
+                        // Apply local smoothing: average peaks in window
+                        let window_start = peak_idx.saturating_sub(smooth_radius);
+                        let window_end = (peak_idx + smooth_radius + 1).min(peaks_len);
+                        let mut min_sum = 0.0f32;
+                        let mut max_sum = 0.0f32;
+                        for i in window_start..window_end {
+                            min_sum += peaks[i].0;
+                            max_sum += peaks[i].1;
+                        }
+                        let count = (window_end - window_start) as f32;
+                        (min_sum / count, max_sum / count)
+                    } else {
+                        peaks[peak_idx]
+                    };
+
+                    let y_max = center_y - (max * height_scale);
+                    let y_min = center_y - (min * height_scale);
+
+                    upper_points.push((px.max(x).min(x + width), y_max));
+                    lower_points.push((px.max(x).min(x + width), y_min));
+                }
+
+                peak_idx += step;
+            }
+
+            if upper_points.is_empty() {
+                return;
+            }
+
+            // Draw upper envelope left to right
+            let (first_x, first_y) = upper_points[0];
+            builder.move_to(Point::new(first_x, first_y));
+            for &(px, py) in &upper_points[1..] {
+                builder.line_to(Point::new(px, py));
+            }
+
+            // Draw lower envelope right to left
+            for &(px, py) in lower_points.iter().rev() {
+                builder.line_to(Point::new(px, py));
+            }
+
+            builder.close();
+        });
+
+        frame.fill(&path, waveform_color);
+    }
+}
+
 /// Draw cue markers for zoomed view
 fn draw_cue_markers_zoomed(
     frame: &mut Frame,
@@ -1236,9 +1357,13 @@ fn draw_cue_markers_zoomed(
 }
 
 /// Draw the zoomed waveform section of the combined view
+///
+/// Uses pre-computed highres_peaks when available for smooth, jitter-free rendering.
+/// Falls back to cached_peaks if highres_peaks is empty (for backwards compatibility).
 fn draw_zoomed_section(
     frame: &mut Frame,
     zoomed: &ZoomedState,
+    overview: &OverviewState,
     playhead: u64,
     width: f32,
 ) {
@@ -1321,8 +1446,23 @@ fn draw_zoomed_section(
         // Draw beat markers (uses WindowInfo for proper positioning)
         draw_beat_markers_zoomed(frame, &zoomed.beat_grid, &window, width, zoomed_height);
 
-        // Draw stem waveforms (uses WindowInfo for padding)
-        draw_cached_peaks(frame, zoomed, &window, width, zoomed_center_y);
+        // Draw stem waveforms - prefer highres_peaks if available
+        let use_highres = !overview.highres_peaks[0].is_empty() && overview.duration_samples > 0;
+        if use_highres {
+            draw_highres_peaks_section(
+                frame,
+                &overview.highres_peaks,
+                overview.duration_samples,
+                &window,
+                0.0,
+                0.0,
+                width,
+                zoomed_height,
+            );
+        } else {
+            // Fallback to cached_peaks for backwards compatibility
+            draw_cached_peaks(frame, zoomed, &window, width, zoomed_center_y);
+        }
 
         // Draw cue markers (uses WindowInfo for proper positioning)
         draw_cue_markers_zoomed(frame, &zoomed.cue_markers, zoomed.duration_samples, &window, width, zoomed_height);

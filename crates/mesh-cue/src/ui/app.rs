@@ -6,7 +6,8 @@ use crate::collection::Collection;
 use crate::config::{self, BpmSource, Config};
 use crate::export;
 use crate::keybindings::{self, KeybindingsConfig};
-use super::waveform::{CombinedWaveformView, WaveformView, ZoomedWaveformView};
+use super::waveform::{CombinedWaveformView, WaveformView, ZoomedWaveformView, generate_peaks};
+use mesh_widgets::HIGHRES_WIDTH;
 use iced::widget::{button, center, column, container, mouse_area, opaque, row, stack, text, Space};
 use iced::{Color, Element, Length, Task, Theme};
 use basedrop::Shared;
@@ -845,6 +846,17 @@ impl MeshCueApp {
                             // Generate waveform from loaded stems (overview)
                             state.combined_waveform.overview.set_stems(&stems, &state.cue_points, &state.beat_grid);
 
+                            // Compute high-resolution peaks for stable zoomed waveform rendering
+                            let highres_start = std::time::Instant::now();
+                            let highres_peaks = generate_peaks(&stems, HIGHRES_WIDTH);
+                            log::info!(
+                                "[PERF] mesh-cue highres peaks: {} samples → {} peaks in {:?}",
+                                duration_samples,
+                                HIGHRES_WIDTH,
+                                highres_start.elapsed()
+                            );
+                            state.combined_waveform.overview.set_highres_peaks(highres_peaks);
+
                             // Initialize zoomed waveform with stem data
                             state.combined_waveform.zoomed.set_duration(duration_samples);
                             state.combined_waveform.zoomed.update_cue_markers(&state.cue_points);
@@ -918,6 +930,18 @@ impl MeshCueApp {
                         combined_waveform.overview = WaveformView::from_track(&track, &cue_points);
                         // Apply grid density from config
                         combined_waveform.overview.set_grid_bars(self.config.display.grid_bars);
+
+                        // Compute high-resolution peaks for stable zoomed waveform rendering
+                        let highres_start = std::time::Instant::now();
+                        let highres_peaks = generate_peaks(&stems, HIGHRES_WIDTH);
+                        log::info!(
+                            "[PERF] mesh-cue highres peaks: {} samples → {} peaks in {:?}",
+                            duration_samples,
+                            HIGHRES_WIDTH,
+                            highres_start.elapsed()
+                        );
+                        combined_waveform.overview.set_highres_peaks(highres_peaks);
+
                         combined_waveform.zoomed = ZoomedWaveformView::from_metadata(
                             bpm,
                             beat_grid.clone(),
