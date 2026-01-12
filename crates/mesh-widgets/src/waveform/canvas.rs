@@ -36,6 +36,116 @@ const INACTIVE_STEM_GRAYS: [Color; 4] = [
 ];
 
 // =============================================================================
+// Stem-Specific Subsampling Configuration
+// =============================================================================
+// Drums need most detail (transients), Bass needs least (smooth low freq),
+// Vocals and Other in between.
+// Index: 0=Vocals, 1=Drums, 2=Bass, 3=Other
+
+/// Max segments for overview waveform per stem type
+/// Lower = more subsampling (coarser), Higher = less subsampling (finer detail)
+const OVERVIEW_MAX_SEGMENTS: [usize; 4] = [
+    400,  // Vocals - medium
+    600,  // Drums - most detail (transients)
+    250,  // Bass - most subsampling (smooth)
+    400,  // Other - medium
+];
+
+/// Max segments for zoomed waveform (cached peaks) per stem type
+const ZOOMED_MAX_SEGMENTS: [usize; 4] = [
+    50000, // Vocals - no subsampling
+    50000, // Drums - no subsampling
+    800,   // Bass - light subsampling
+    50000, // Other - no subsampling
+];
+
+/// Target pixels per point for highres zoomed rendering per stem type
+/// Lower = more detail, Higher = more subsampling
+const HIGHRES_PIXELS_PER_POINT: [f64; 4] = [
+    1.0, // Vocals - no subsampling
+    1.0, // Drums - no subsampling
+    2.5, // Bass - light subsampling
+    1.0, // Other - no subsampling
+];
+
+/// Gaussian smoothing radius multiplier per stem
+/// Index: 0=Vocals, 1=Drums, 2=Bass, 3=Other
+const SMOOTH_RADIUS_MULTIPLIER: [f64; 4] = [
+    0.25, // Vocals
+    0.1,  // Drums - light smoothing
+    0.4,  // Bass - more smoothing
+    0.4,  // Other - more smoothing
+];
+
+/// Get step size for overview waveform given stem index and width
+#[inline]
+fn overview_step(stem_idx: usize, width: usize) -> usize {
+    1.max(width / OVERVIEW_MAX_SEGMENTS[stem_idx])
+}
+
+/// Get step size for zoomed waveform given stem index and width
+#[inline]
+fn zoomed_step(stem_idx: usize, width: usize) -> usize {
+    1.max(width / ZOOMED_MAX_SEGMENTS[stem_idx])
+}
+
+/// Get target pixels per point for highres rendering given stem index
+#[inline]
+fn highres_target_pixels(stem_idx: usize) -> f64 {
+    HIGHRES_PIXELS_PER_POINT[stem_idx]
+}
+
+/// Get smoothing radius for a given stem and step size
+#[inline]
+fn smooth_radius_for_stem(stem_idx: usize, step: usize) -> usize {
+    (step as f64 * SMOOTH_RADIUS_MULTIPLIER[stem_idx]).round() as usize
+}
+
+/// Compute Gaussian weight for distance from center
+/// Uses sigma = radius / 2 for good falloff within the window
+#[inline]
+fn gaussian_weight(distance: f32, sigma: f32) -> f32 {
+    (-0.5 * (distance / sigma).powi(2)).exp()
+}
+
+/// Sample a peak with Gaussian smoothing
+///
+/// Applies Gaussian-weighted average over the smoothing window.
+/// Center samples contribute more than edge samples, giving smooth
+/// results while preserving peak character better than box averaging.
+#[inline]
+fn sample_peak_smoothed(
+    peaks: &[(f32, f32)],
+    peak_idx: usize,
+    smooth_radius: usize,
+    _stem_idx: usize,
+) -> (f32, f32) {
+    if smooth_radius == 0 {
+        return peaks[peak_idx];
+    }
+
+    let peaks_len = peaks.len();
+    let window_start = peak_idx.saturating_sub(smooth_radius);
+    let window_end = (peak_idx + smooth_radius + 1).min(peaks_len);
+
+    // Gaussian blur: weight samples by distance from center
+    let sigma = (smooth_radius as f32) / 2.0;
+    let mut min_sum = 0.0f32;
+    let mut max_sum = 0.0f32;
+    let mut weight_sum = 0.0f32;
+
+    for i in window_start..window_end {
+        let distance = (i as i32 - peak_idx as i32).abs() as f32;
+        let weight = gaussian_weight(distance, sigma);
+        min_sum += peaks[i].0 * weight;
+        max_sum += peaks[i].1 * weight;
+        weight_sum += weight;
+    }
+
+    (min_sum / weight_sum, max_sum / weight_sum)
+}
+
+// =============================================================================
 // Canvas Interaction States
 // =============================================================================
 
@@ -595,6 +705,7 @@ fn draw_stem_waveform_filled(
     height_scale: f32,
     color: Color,
     width: f32,
+    stem_idx: usize,
 ) {
     if peaks.is_empty() || width < 2.0 {
         return;
@@ -602,8 +713,8 @@ fn draw_stem_waveform_filled(
 
     let peaks_len = peaks.len() as f32;
 
-    // Use step size to reduce line segments (2-3 pixels per segment looks smooth enough)
-    let step = 1.max((width as usize) / 800); // At most 800 segments per envelope
+    // Stem-specific subsampling (drums=detail, bass=smooth)
+    let step = overview_step(stem_idx, width as usize);
 
     let path = Path::new(|builder| {
         // Start at first point's max value (upper envelope)
@@ -667,6 +778,7 @@ fn draw_stem_waveform_aligned(
     visible_width: f32,
     linked_duration: u64,
     host_duration: u64,
+    stem_idx: usize,
 ) {
     if peaks.is_empty() || visible_width < 2.0 || host_duration == 0 {
         return;
@@ -676,29 +788,30 @@ fn draw_stem_waveform_aligned(
     let duration_ratio = linked_duration as f64 / host_duration as f64;
     let linked_render_width = (visible_width as f64 * duration_ratio) as f32;
     let peaks_len = peaks.len() as f32;
+    let step = overview_step(stem_idx, linked_render_width as usize);
 
     let path = Path::new(|builder| {
         let mut started = false;
         let mut upper_points: Vec<Point> = Vec::new();
         let mut lower_points: Vec<Point> = Vec::new();
 
-        // Collect visible points for upper and lower envelopes
-        for px in 0..(linked_render_width as usize) {
+        // Collect visible points for upper and lower envelopes (with step)
+        let mut px = 0;
+        while px < linked_render_width as usize {
             let actual_x = base_x + x_offset + px as f32;
 
             // Skip if outside visible bounds
-            if actual_x < base_x || actual_x > base_x + visible_width {
-                continue;
-            }
+            if actual_x >= base_x && actual_x <= base_x + visible_width {
+                let peak_idx = ((px as f32 / linked_render_width) * peaks_len) as usize;
+                if peak_idx >= peaks.len() {
+                    break;
+                }
 
-            let peak_idx = ((px as f32 / linked_render_width) * peaks_len) as usize;
-            if peak_idx >= peaks.len() {
-                break;
+                let (min, max) = peaks[peak_idx];
+                upper_points.push(Point::new(actual_x, center_y - (max * height_scale)));
+                lower_points.push(Point::new(actual_x, center_y - (min * height_scale)));
             }
-
-            let (min, max) = peaks[peak_idx];
-            upper_points.push(Point::new(actual_x, center_y - (max * height_scale)));
-            lower_points.push(Point::new(actual_x, center_y - (min * height_scale)));
+            px += step;
         }
 
         if upper_points.is_empty() {
@@ -736,13 +849,14 @@ fn draw_stem_waveform_upper(
     height_scale: f32,
     color: Color,
     width: f32,
+    stem_idx: usize,
 ) {
     if peaks.is_empty() || width < 2.0 {
         return;
     }
 
     let peaks_len = peaks.len() as f32;
-    let step = 1.max((width as usize) / 800); // At most 800 segments
+    let step = overview_step(stem_idx, width as usize);
 
     let path = Path::new(|builder| {
         // Start at center line
@@ -781,13 +895,14 @@ fn draw_stem_waveform_lower(
     height_scale: f32,
     color: Color,
     width: f32,
+    stem_idx: usize,
 ) {
     if peaks.is_empty() || width < 2.0 {
         return;
     }
 
     let peaks_len = peaks.len() as f32;
-    let step = 1.max((width as usize) / 800); // At most 800 segments
+    let step = overview_step(stem_idx, width as usize);
 
     let path = Path::new(|builder| {
         // Start at center line
@@ -827,6 +942,7 @@ fn draw_stem_waveform_upper_aligned(
     visible_width: f32,
     linked_duration: u64,
     host_duration: u64,
+    stem_idx: usize,
 ) {
     if peaks.is_empty() || visible_width < 2.0 || host_duration == 0 {
         return;
@@ -835,7 +951,7 @@ fn draw_stem_waveform_upper_aligned(
     let duration_ratio = linked_duration as f64 / host_duration as f64;
     let linked_render_width = (visible_width as f64 * duration_ratio) as f32;
     let peaks_len = peaks.len() as f32;
-    let step = 1.max((linked_render_width as usize) / 800); // At most 800 segments
+    let step = overview_step(stem_idx, linked_render_width as usize);
 
     let path = Path::new(|builder| {
         let mut started = false;
@@ -885,6 +1001,7 @@ fn draw_stem_waveform_lower_aligned(
     visible_width: f32,
     linked_duration: u64,
     host_duration: u64,
+    stem_idx: usize,
 ) {
     if peaks.is_empty() || visible_width < 2.0 || host_duration == 0 {
         return;
@@ -893,7 +1010,7 @@ fn draw_stem_waveform_lower_aligned(
     let duration_ratio = linked_duration as f64 / host_duration as f64;
     let linked_render_width = (visible_width as f64 * duration_ratio) as f32;
     let peaks_len = peaks.len() as f32;
-    let step = 1.max((linked_render_width as usize) / 800); // At most 800 segments
+    let step = overview_step(stem_idx, linked_render_width as usize);
 
     let path = Path::new(|builder| {
         let mut started = false;
@@ -951,7 +1068,7 @@ fn draw_stem_waveforms(
         let waveform_color = Color::from_rgba(base_color.r, base_color.g, base_color.b, alpha);
         let height_scale = center_y * 0.9;
 
-        draw_stem_waveform_filled(frame, waveform_data, 0.0, center_y, height_scale, waveform_color, width);
+        draw_stem_waveform_filled(frame, waveform_data, 0.0, center_y, height_scale, waveform_color, width, stem_idx);
     }
 }
 
@@ -1127,7 +1244,8 @@ fn draw_cached_peaks(
         let peaks_len = peaks.len();
         let width_usize = width as usize;
         let total_samples = window.total_samples as usize;
-        let step = 1.max(width_usize / 800); // At most 800 segments
+        let step = zoomed_step(stem_idx, width_usize);
+        let smooth_radius = smooth_radius_for_stem(stem_idx, step);
 
         // Build filled path for this stem
         let path = Path::new(|builder| {
@@ -1164,7 +1282,7 @@ fn draw_cached_peaks(
                     continue;
                 }
 
-                let (min, max) = peaks[cache_idx];
+                let (min, max) = sample_peak_smoothed(peaks, cache_idx, smooth_radius, stem_idx);
                 let y_max = center_y - (max * height_scale);
                 let y_min = center_y - (min * height_scale);
 
@@ -1253,11 +1371,10 @@ fn draw_highres_peaks_section(
             let first_peak = center_peak.saturating_sub(half_visible_peaks);
             let last_peak = (center_peak + half_visible_peaks).min(peaks_len);
 
-            // Adaptive subsampling: ~1 point every 2 pixels
-            let target_pixels_per_point = 2.0;
+            // Stem-specific subsampling (drums=detail, bass=smooth)
+            let target_pixels_per_point = highres_target_pixels(stem_idx);
             let step = ((target_pixels_per_point / pixels_per_peak).round() as usize).max(1);
-            // Very light smoothing
-            let smooth_radius = step / 4;
+            let smooth_radius = smooth_radius_for_stem(stem_idx, step);
 
             // Align to grid for stability (round to nearest)
             let first_peak_aligned = ((first_peak + step / 2) / step) * step;
@@ -1270,21 +1387,7 @@ fn draw_highres_peaks_section(
 
                 // Clip to canvas bounds (with small margin for line continuity)
                 if px >= x - 5.0 && px <= x + width + 5.0 {
-                    let (min, max) = if smooth_radius > 0 {
-                        // Apply local smoothing: average peaks in window
-                        let window_start = peak_idx.saturating_sub(smooth_radius);
-                        let window_end = (peak_idx + smooth_radius + 1).min(peaks_len);
-                        let mut min_sum = 0.0f32;
-                        let mut max_sum = 0.0f32;
-                        for i in window_start..window_end {
-                            min_sum += peaks[i].0;
-                            max_sum += peaks[i].1;
-                        }
-                        let count = (window_end - window_start) as f32;
-                        (min_sum / count, max_sum / count)
-                    } else {
-                        peaks[peak_idx]
-                    };
+                    let (min, max) = sample_peak_smoothed(peaks, peak_idx, smooth_radius, stem_idx);
 
                     let y_max = center_y - (max * height_scale);
                     let y_min = center_y - (min * height_scale);
@@ -1632,7 +1735,7 @@ fn draw_overview_section(
         let base_color = STEM_COLORS[stem_idx];
         let waveform_color = Color::from_rgba(base_color.r, base_color.g, base_color.b, 0.6);
 
-        draw_stem_waveform_filled(frame, stem_peaks, 0.0, overview_center_y, height_scale, waveform_color, width);
+        draw_stem_waveform_filled(frame, stem_peaks, 0.0, overview_center_y, height_scale, waveform_color, width, stem_idx);
     }
 
     // Draw cue markers
@@ -2501,11 +2604,10 @@ fn draw_zoomed_at(
                         // TRADE-OFF: Grid alignment introduces a small positional shift
                         // (at most step/2 peaks when using round-to-nearest).
 
-                        // Adaptive subsampling: ~1 point every 2 pixels (lighter than before)
-                        let target_pixels_per_point = 2.0;
+                        // Stem-specific subsampling (drums=detail, bass=smooth)
+                        let target_pixels_per_point = highres_target_pixels(stem_idx);
                         let step = ((target_pixels_per_point / pixels_per_peak).round() as usize).max(1);
-                        // Very light smoothing
-                        let smooth_radius = step / 4;
+                        let smooth_radius = smooth_radius_for_stem(stem_idx, step);
 
                         // Align to grid for stability (round to nearest)
                         let first_peak_aligned = ((first_peak + step / 2) / step) * step;
@@ -2517,21 +2619,7 @@ fn draw_zoomed_at(
 
                             // Clip to canvas bounds (with small margin for line continuity)
                             if px >= x - 5.0 && px <= x + width + 5.0 {
-                                let (min, max) = if smooth_radius > 0 {
-                                    // Apply local smoothing: average peaks in window
-                                    let window_start = peak_idx.saturating_sub(smooth_radius);
-                                    let window_end = (peak_idx + smooth_radius + 1).min(peaks_len);
-                                    let mut min_sum = 0.0f32;
-                                    let mut max_sum = 0.0f32;
-                                    for i in window_start..window_end {
-                                        min_sum += peaks[i].0;
-                                        max_sum += peaks[i].1;
-                                    }
-                                    let count = (window_end - window_start) as f32;
-                                    (min_sum / count, max_sum / count)
-                                } else {
-                                    peaks[peak_idx]
-                                };
+                                let (min, max) = sample_peak_smoothed(peaks, peak_idx, smooth_radius, stem_idx);
 
                                 let y_max = center_y - (max * height_scale);
                                 let y_min = center_y - (min * height_scale);
@@ -2546,7 +2634,8 @@ fn draw_zoomed_at(
                         // Fallback: cached peaks - use old pixel-based iteration
                         let width_usize = width as usize;
                         let total_samples = window.total_samples as usize;
-                        let step = 1.max(width_usize / 800);
+                        let step = zoomed_step(stem_idx, width_usize);
+                        let smooth_radius = smooth_radius_for_stem(stem_idx, step);
 
                         let mut px = 0;
                         while px < width_usize {
@@ -2570,7 +2659,7 @@ fn draw_zoomed_at(
                                 continue;
                             }
 
-                            let (min, max) = peaks[peak_idx];
+                            let (min, max) = sample_peak_smoothed(peaks, peak_idx, smooth_radius, stem_idx);
                             let y_max = center_y - (max * height_scale);
                             let y_min = center_y - (min * height_scale);
 
@@ -2789,27 +2878,6 @@ fn draw_overview_at(
         }
     }
 
-    // Draw beat markers with configurable density
-    let step = (overview.grid_bars * 4) as usize;
-    for (i, &beat_pos) in overview.beat_markers.iter().enumerate() {
-        if i % step != 0 {
-            continue;
-        }
-        let beat_x = x + (beat_pos * width as f64) as f32;
-        let (color, line_height) = if (i / step) % 4 == 0 {
-            (Color::from_rgba(1.0, 0.3, 0.3, 0.6), height)
-        } else {
-            (Color::from_rgba(0.5, 0.5, 0.5, 0.4), height * 0.5)
-        };
-        frame.stroke(
-            &Path::line(
-                Point::new(beat_x, y + (height - line_height) / 2.0),
-                Point::new(beat_x, y + (height + line_height) / 2.0),
-            ),
-            Stroke::default().with_color(color).with_width(1.0),
-        );
-    }
-
     // Draw stem waveforms - split view when linked stems exist
     if any_linked {
         // --- SPLIT VIEW MODE ---
@@ -2865,10 +2933,11 @@ fn draw_overview_at(
                             width,
                             linked_dur,
                             overview.duration_samples,
+                            stem_idx,
                         );
                     } else {
                         // Host stem on top: draw upper envelope only
-                        draw_stem_waveform_upper(frame, peaks, x, shared_center_y, half_height_scale, active_color, width);
+                        draw_stem_waveform_upper(frame, peaks, x, shared_center_y, half_height_scale, active_color, width, stem_idx);
                     }
                 }
             }
@@ -2900,10 +2969,11 @@ fn draw_overview_at(
                                 width,
                                 linked_dur,
                                 overview.duration_samples,
+                                stem_idx,
                             );
                         } else {
                             // Host stem on bottom: draw lower envelope only (dimmed)
-                            draw_stem_waveform_lower(frame, peaks, x, shared_center_y, half_height_scale, inactive_color, width);
+                            draw_stem_waveform_lower(frame, peaks, x, shared_center_y, half_height_scale, inactive_color, width, stem_idx);
                         }
                     }
                 }
@@ -2926,8 +2996,26 @@ fn draw_overview_at(
                 Color::from_rgba(gray.r, gray.g, gray.b, 0.4)
             };
 
-            draw_stem_waveform_filled(frame, stem_peaks, x, center_y, height_scale, waveform_color, width);
+            draw_stem_waveform_filled(frame, stem_peaks, x, center_y, height_scale, waveform_color, width, stem_idx);
         }
+    }
+
+    // Draw beat markers with configurable density (on top of waveforms)
+    let step = (overview.grid_bars * 4) as usize;
+    for (i, &beat_pos) in overview.beat_markers.iter().enumerate() {
+        if i % step != 0 {
+            continue;
+        }
+        let beat_x = x + (beat_pos * width as f64) as f32;
+        let color = if (i / step) % 4 == 0 {
+            Color::from_rgba(1.0, 0.3, 0.3, 0.6)
+        } else {
+            Color::from_rgba(0.5, 0.5, 0.5, 0.4)
+        };
+        frame.stroke(
+            &Path::line(Point::new(beat_x, y), Point::new(beat_x, y + height)),
+            Stroke::default().with_color(color).with_width(1.0),
+        );
     }
 
     // Draw cue markers
