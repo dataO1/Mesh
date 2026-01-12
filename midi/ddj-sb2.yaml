@@ -4,10 +4,10 @@ devices:
   deck_target:
     type: Direct
     channel_to_deck:
-      3: 3
-      0: 0
       1: 1
+      3: 3
       2: 2
+      0: 0
   pad_mode_source: controller
   shift:
     type: Note
@@ -173,81 +173,9 @@ devices:
   - control:
       type: Note
       channel: 1
-      note: 63
-    action: deck.beat_jump_forward
-    physical_deck: 1
-    deck_index: null
-    params: {}
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 2
-      note: 11
-    action: deck.play
-    physical_deck: 2
-    deck_index: null
-    params: {}
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 2
-      note: 12
-    action: deck.cue_press
-    physical_deck: 2
-    deck_index: null
-    params: {}
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 2
-      note: 26
-    action: deck.toggle_loop
-    physical_deck: 2
-    deck_index: null
-    params: {}
-    behavior: toggle
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: ControlChange
-      channel: 2
-      cc: 0
-    action: deck.loop_halve
-    physical_deck: 2
-    deck_index: null
-    params: {}
-    behavior: momentary
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: knob
-  - control:
-      type: ControlChange
-      channel: 2
-      cc: 0
-    action: deck.loop_double
-    physical_deck: 2
-    deck_index: null
-    params: {}
-    behavior: momentary
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
-  - control:
-      type: Note
-      channel: 2
       note: 88
     action: deck.beat_jump_backward
-    physical_deck: 2
+    physical_deck: 1
     deck_index: null
     params: {}
     behavior: momentary
@@ -256,94 +184,10 @@ devices:
     hardware_type: button
   - control:
       type: Note
-      channel: 2
+      channel: 1
       note: 63
     action: deck.beat_jump_forward
-    physical_deck: 2
-    deck_index: null
-    params: {}
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 3
-      note: 11
-    action: deck.play
-    physical_deck: 3
-    deck_index: null
-    params: {}
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 3
-      note: 12
-    action: deck.cue_press
-    physical_deck: 3
-    deck_index: null
-    params: {}
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 3
-      note: 26
-    action: deck.toggle_loop
-    physical_deck: 3
-    deck_index: null
-    params: {}
-    behavior: toggle
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: ControlChange
-      channel: 3
-      cc: 0
-    action: deck.loop_halve
-    physical_deck: 3
-    deck_index: null
-    params: {}
-    behavior: momentary
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: knob
-  - control:
-      type: ControlChange
-      channel: 3
-      cc: 0
-    action: deck.loop_double
-    physical_deck: 3
-    deck_index: null
-    params: {}
-    behavior: momentary
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
-  - control:
-      type: Note
-      channel: 3
-      note: 88
-    action: deck.beat_jump_backward
-    physical_deck: 3
-    deck_index: null
-    params: {}
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 3
-      note: 63
-    action: deck.beat_jump_forward
-    physical_deck: 3
+    physical_deck: 1
     deck_index: null
     params: {}
     behavior: momentary
@@ -608,262 +452,6 @@ devices:
     hardware_type: button
   - control:
       type: Note
-      channel: 2
-      note: 27
-    action: deck.hot_cue_mode
-    physical_deck: 2
-    deck_index: null
-    params: {}
-    behavior: toggle
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 9
-      note: 0
-    action: deck.hot_cue_press
-    physical_deck: 2
-    deck_index: null
-    params:
-      slot: 0
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 9
-      note: 1
-    action: deck.hot_cue_press
-    physical_deck: 2
-    deck_index: null
-    params:
-      slot: 1
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 9
-      note: 2
-    action: deck.hot_cue_press
-    physical_deck: 2
-    deck_index: null
-    params:
-      slot: 2
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 9
-      note: 3
-    action: deck.hot_cue_press
-    physical_deck: 2
-    deck_index: null
-    params:
-      slot: 3
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 2
-      note: 30
-    action: deck.slicer_mode
-    physical_deck: 2
-    deck_index: null
-    params: {}
-    behavior: toggle
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 9
-      note: 16
-    action: deck.slicer_trigger
-    physical_deck: 2
-    deck_index: null
-    params:
-      pad: 0
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 9
-      note: 17
-    action: deck.slicer_trigger
-    physical_deck: 2
-    deck_index: null
-    params:
-      pad: 1
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 9
-      note: 18
-    action: deck.slicer_trigger
-    physical_deck: 2
-    deck_index: null
-    params:
-      pad: 2
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 9
-      note: 19
-    action: deck.slicer_trigger
-    physical_deck: 2
-    deck_index: null
-    params:
-      pad: 3
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 3
-      note: 27
-    action: deck.hot_cue_mode
-    physical_deck: 3
-    deck_index: null
-    params: {}
-    behavior: toggle
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 10
-      note: 0
-    action: deck.hot_cue_press
-    physical_deck: 3
-    deck_index: null
-    params:
-      slot: 0
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 10
-      note: 1
-    action: deck.hot_cue_press
-    physical_deck: 3
-    deck_index: null
-    params:
-      slot: 1
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 10
-      note: 2
-    action: deck.hot_cue_press
-    physical_deck: 3
-    deck_index: null
-    params:
-      slot: 2
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 10
-      note: 3
-    action: deck.hot_cue_press
-    physical_deck: 3
-    deck_index: null
-    params:
-      slot: 3
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 3
-      note: 30
-    action: deck.slicer_mode
-    physical_deck: 3
-    deck_index: null
-    params: {}
-    behavior: toggle
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 10
-      note: 16
-    action: deck.slicer_trigger
-    physical_deck: 3
-    deck_index: null
-    params:
-      pad: 0
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 10
-      note: 17
-    action: deck.slicer_trigger
-    physical_deck: 3
-    deck_index: null
-    params:
-      pad: 1
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 10
-      note: 18
-    action: deck.slicer_trigger
-    physical_deck: 3
-    deck_index: null
-    params:
-      pad: 2
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 10
-      note: 19
-    action: deck.slicer_trigger
-    physical_deck: 3
-    deck_index: null
-    params:
-      pad: 3
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
       channel: 4
       note: 73
     action: deck.stem_mute
@@ -965,111 +553,19 @@ devices:
     behavior: continuous
     shift_action: null
     encoder_mode: absolute
-    hardware_type: fader14_bit
-  - control:
-      type: Note
-      channel: 4
-      note: 73
-    action: deck.stem_mute
-    physical_deck: 2
-    deck_index: null
-    params:
-      stem: 0
-    behavior: toggle
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 4
-      note: 71
-    action: deck.stem_mute
-    physical_deck: 2
-    deck_index: null
-    params:
-      stem: 1
-    behavior: toggle
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 4
-      note: 72
-    action: deck.stem_mute
-    physical_deck: 2
-    deck_index: null
-    params:
-      stem: 2
-    behavior: toggle
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: ControlChange
-      channel: 4
-      cc: 2
-    action: deck.stem_mute
-    physical_deck: 2
-    deck_index: null
-    params:
-      stem: 3
-    behavior: continuous
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
-  - control:
-      type: Note
-      channel: 5
-      note: 73
-    action: deck.stem_mute
-    physical_deck: 3
-    deck_index: null
-    params:
-      stem: 0
-    behavior: toggle
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 5
-      note: 71
-    action: deck.stem_mute
-    physical_deck: 3
-    deck_index: null
-    params:
-      stem: 1
-    behavior: toggle
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 5
-      note: 72
-    action: deck.stem_mute
-    physical_deck: 3
-    deck_index: null
-    params:
-      stem: 2
-    behavior: toggle
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
+    hardware_type: knob
   - control:
       type: ControlChange
       channel: 5
       cc: 2
-    action: deck.stem_mute
-    physical_deck: 3
-    deck_index: null
-    params:
-      stem: 3
+    action: mixer.volume
+    physical_deck: null
+    deck_index: 0
+    params: {}
     behavior: continuous
     shift_action: null
     encoder_mode: absolute
-    hardware_type: fader14_bit
+    hardware_type: knob
   - control:
       type: ControlChange
       channel: 0
@@ -1080,8 +576,8 @@ devices:
     params: {}
     behavior: continuous
     shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
+    encoder_mode: null
+    hardware_type: unknown
   - control:
       type: ControlChange
       channel: 0
@@ -1093,7 +589,7 @@ devices:
     behavior: continuous
     shift_action: null
     encoder_mode: absolute
-    hardware_type: fader14_bit
+    hardware_type: knob
   - control:
       type: ControlChange
       channel: 0
@@ -1117,7 +613,7 @@ devices:
     behavior: continuous
     shift_action: null
     encoder_mode: absolute
-    hardware_type: fader14_bit
+    hardware_type: knob
   - control:
       type: ControlChange
       channel: 0
@@ -1129,19 +625,7 @@ devices:
     behavior: continuous
     shift_action: null
     encoder_mode: absolute
-    hardware_type: fader14_bit
-  - control:
-      type: Note
-      channel: 0
-      note: 84
-    action: mixer.cue
-    physical_deck: null
-    deck_index: 0
-    params: {}
-    behavior: toggle
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
+    hardware_type: knob
   - control:
       type: ControlChange
       channel: 1
@@ -1152,8 +636,8 @@ devices:
     params: {}
     behavior: continuous
     shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
+    encoder_mode: null
+    hardware_type: unknown
   - control:
       type: ControlChange
       channel: 1
@@ -1165,7 +649,7 @@ devices:
     behavior: continuous
     shift_action: null
     encoder_mode: absolute
-    hardware_type: fader14_bit
+    hardware_type: knob
   - control:
       type: ControlChange
       channel: 1
@@ -1177,7 +661,7 @@ devices:
     behavior: continuous
     shift_action: null
     encoder_mode: absolute
-    hardware_type: fader14_bit
+    hardware_type: knob
   - control:
       type: ControlChange
       channel: 1
@@ -1188,8 +672,8 @@ devices:
     params: {}
     behavior: continuous
     shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
+    encoder_mode: relative
+    hardware_type: encoder
   - control:
       type: ControlChange
       channel: 1
@@ -1200,164 +684,8 @@ devices:
     params: {}
     behavior: continuous
     shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
-  - control:
-      type: Note
-      channel: 1
-      note: 84
-    action: mixer.cue
-    physical_deck: null
-    deck_index: 1
-    params: {}
-    behavior: toggle
-    shift_action: null
     encoder_mode: null
-    hardware_type: button
-  - control:
-      type: ControlChange
-      channel: 2
-      cc: 19
-    action: mixer.volume
-    physical_deck: null
-    deck_index: 2
-    params: {}
-    behavior: continuous
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
-  - control:
-      type: ControlChange
-      channel: 2
-      cc: 4
-    action: mixer.filter
-    physical_deck: null
-    deck_index: 2
-    params: {}
-    behavior: continuous
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
-  - control:
-      type: ControlChange
-      channel: 2
-      cc: 7
-    action: mixer.eq_hi
-    physical_deck: null
-    deck_index: 2
-    params: {}
-    behavior: continuous
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: knob
-  - control:
-      type: ControlChange
-      channel: 2
-      cc: 11
-    action: mixer.eq_mid
-    physical_deck: null
-    deck_index: 2
-    params: {}
-    behavior: continuous
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: knob
-  - control:
-      type: ControlChange
-      channel: 2
-      cc: 15
-    action: mixer.eq_lo
-    physical_deck: null
-    deck_index: 2
-    params: {}
-    behavior: continuous
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
-  - control:
-      type: Note
-      channel: 2
-      note: 84
-    action: mixer.cue
-    physical_deck: null
-    deck_index: 2
-    params: {}
-    behavior: toggle
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: ControlChange
-      channel: 3
-      cc: 19
-    action: mixer.volume
-    physical_deck: null
-    deck_index: 3
-    params: {}
-    behavior: continuous
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
-  - control:
-      type: ControlChange
-      channel: 3
-      cc: 4
-    action: mixer.filter
-    physical_deck: null
-    deck_index: 3
-    params: {}
-    behavior: continuous
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
-  - control:
-      type: ControlChange
-      channel: 3
-      cc: 7
-    action: mixer.eq_hi
-    physical_deck: null
-    deck_index: 3
-    params: {}
-    behavior: continuous
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: knob
-  - control:
-      type: ControlChange
-      channel: 3
-      cc: 11
-    action: mixer.eq_mid
-    physical_deck: null
-    deck_index: 3
-    params: {}
-    behavior: continuous
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
-  - control:
-      type: ControlChange
-      channel: 3
-      cc: 15
-    action: mixer.eq_lo
-    physical_deck: null
-    deck_index: 3
-    params: {}
-    behavior: continuous
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: knob
-  - control:
-      type: Note
-      channel: 3
-      note: 84
-    action: mixer.cue
-    physical_deck: null
-    deck_index: 3
-    params: {}
-    behavior: toggle
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
+    hardware_type: unknown
   - control:
       type: ControlChange
       channel: 6
@@ -1368,8 +696,8 @@ devices:
     params: {}
     behavior: continuous
     shift_action: null
-    encoder_mode: absolute
-    hardware_type: knob
+    encoder_mode: null
+    hardware_type: unknown
   - control:
       type: Note
       channel: 6
@@ -1392,8 +720,8 @@ devices:
     params: {}
     behavior: continuous
     shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
+    encoder_mode: relative
+    hardware_type: encoder
   - control:
       type: Note
       channel: 6
@@ -1412,90 +740,6 @@ devices:
       note: 71
     action: deck.load_selected
     physical_deck: 1
-    deck_index: null
-    params: {}
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 6
-      note: 72
-    action: deck.load_selected
-    physical_deck: 2
-    deck_index: null
-    params: {}
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 3
-      note: 114
-    action: deck.load_selected
-    physical_deck: 3
-    deck_index: null
-    params: {}
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: ControlChange
-      channel: 6
-      cc: 64
-    action: browser.scroll
-    physical_deck: null
-    deck_index: null
-    params: {}
-    behavior: continuous
-    shift_action: null
-    encoder_mode: null
-    hardware_type: unknown
-  - control:
-      type: Note
-      channel: 6
-      note: 70
-    action: deck.load_selected
-    physical_deck: 0
-    deck_index: null
-    params: {}
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 6
-      note: 71
-    action: deck.load_selected
-    physical_deck: 1
-    deck_index: null
-    params: {}
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 6
-      note: 72
-    action: deck.load_selected
-    physical_deck: 2
-    deck_index: null
-    params: {}
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 6
-      note: 73
-    action: deck.load_selected
-    physical_deck: 3
     deck_index: null
     params: {}
     behavior: momentary
@@ -1569,72 +813,6 @@ devices:
     on_value: 127
     off_value: 0
     layer: null
-  - state: deck.is_playing
-    physical_deck: 2
-    deck_index: null
-    params: {}
-    output:
-      type: Note
-      channel: 2
-      note: 11
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.is_cueing
-    physical_deck: 2
-    deck_index: null
-    params: {}
-    output:
-      type: Note
-      channel: 2
-      note: 12
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.loop_active
-    physical_deck: 2
-    deck_index: null
-    params: {}
-    output:
-      type: Note
-      channel: 2
-      note: 26
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.is_playing
-    physical_deck: 3
-    deck_index: null
-    params: {}
-    output:
-      type: Note
-      channel: 3
-      note: 11
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.is_cueing
-    physical_deck: 3
-    deck_index: null
-    params: {}
-    output:
-      type: Note
-      channel: 3
-      note: 12
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.loop_active
-    physical_deck: 3
-    deck_index: null
-    params: {}
-    output:
-      type: Note
-      channel: 3
-      note: 26
-    on_value: 127
-    off_value: 0
-    layer: null
   - state: deck.hot_cue_mode
     physical_deck: 0
     deck_index: null
@@ -1871,242 +1049,6 @@ devices:
     on_value: 127
     off_value: 0
     layer: null
-  - state: deck.hot_cue_mode
-    physical_deck: 2
-    deck_index: null
-    params: {}
-    output:
-      type: Note
-      channel: 2
-      note: 27
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.hot_cue_set
-    physical_deck: 2
-    deck_index: null
-    params:
-      slot: 0
-    output:
-      type: Note
-      channel: 9
-      note: 0
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.hot_cue_set
-    physical_deck: 2
-    deck_index: null
-    params:
-      slot: 1
-    output:
-      type: Note
-      channel: 9
-      note: 1
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.hot_cue_set
-    physical_deck: 2
-    deck_index: null
-    params:
-      slot: 2
-    output:
-      type: Note
-      channel: 9
-      note: 2
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.hot_cue_set
-    physical_deck: 2
-    deck_index: null
-    params:
-      slot: 3
-    output:
-      type: Note
-      channel: 9
-      note: 3
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.slicer_mode
-    physical_deck: 2
-    deck_index: null
-    params: {}
-    output:
-      type: Note
-      channel: 2
-      note: 30
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.slicer_slice_active
-    physical_deck: 2
-    deck_index: null
-    params:
-      pad: 0
-    output:
-      type: Note
-      channel: 9
-      note: 16
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.slicer_slice_active
-    physical_deck: 2
-    deck_index: null
-    params:
-      pad: 1
-    output:
-      type: Note
-      channel: 9
-      note: 17
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.slicer_slice_active
-    physical_deck: 2
-    deck_index: null
-    params:
-      pad: 2
-    output:
-      type: Note
-      channel: 9
-      note: 18
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.slicer_slice_active
-    physical_deck: 2
-    deck_index: null
-    params:
-      pad: 3
-    output:
-      type: Note
-      channel: 9
-      note: 19
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.hot_cue_mode
-    physical_deck: 3
-    deck_index: null
-    params: {}
-    output:
-      type: Note
-      channel: 3
-      note: 27
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.hot_cue_set
-    physical_deck: 3
-    deck_index: null
-    params:
-      slot: 0
-    output:
-      type: Note
-      channel: 10
-      note: 0
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.hot_cue_set
-    physical_deck: 3
-    deck_index: null
-    params:
-      slot: 1
-    output:
-      type: Note
-      channel: 10
-      note: 1
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.hot_cue_set
-    physical_deck: 3
-    deck_index: null
-    params:
-      slot: 2
-    output:
-      type: Note
-      channel: 10
-      note: 2
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.hot_cue_set
-    physical_deck: 3
-    deck_index: null
-    params:
-      slot: 3
-    output:
-      type: Note
-      channel: 10
-      note: 3
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.slicer_mode
-    physical_deck: 3
-    deck_index: null
-    params: {}
-    output:
-      type: Note
-      channel: 3
-      note: 30
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.slicer_slice_active
-    physical_deck: 3
-    deck_index: null
-    params:
-      pad: 0
-    output:
-      type: Note
-      channel: 10
-      note: 16
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.slicer_slice_active
-    physical_deck: 3
-    deck_index: null
-    params:
-      pad: 1
-    output:
-      type: Note
-      channel: 10
-      note: 17
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.slicer_slice_active
-    physical_deck: 3
-    deck_index: null
-    params:
-      pad: 2
-    output:
-      type: Note
-      channel: 10
-      note: 18
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.slicer_slice_active
-    physical_deck: 3
-    deck_index: null
-    params:
-      pad: 3
-    output:
-      type: Note
-      channel: 10
-      note: 19
-    on_value: 127
-    off_value: 0
-    layer: null
   - state: deck.stem_muted
     physical_deck: 0
     deck_index: null
@@ -2176,122 +1118,6 @@ devices:
       type: Note
       channel: 5
       note: 72
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.stem_muted
-    physical_deck: 2
-    deck_index: null
-    params:
-      stem: 0
-    output:
-      type: Note
-      channel: 4
-      note: 73
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.stem_muted
-    physical_deck: 2
-    deck_index: null
-    params:
-      stem: 1
-    output:
-      type: Note
-      channel: 4
-      note: 71
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.stem_muted
-    physical_deck: 2
-    deck_index: null
-    params:
-      stem: 2
-    output:
-      type: Note
-      channel: 4
-      note: 72
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.stem_muted
-    physical_deck: 3
-    deck_index: null
-    params:
-      stem: 0
-    output:
-      type: Note
-      channel: 5
-      note: 73
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.stem_muted
-    physical_deck: 3
-    deck_index: null
-    params:
-      stem: 1
-    output:
-      type: Note
-      channel: 5
-      note: 71
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.stem_muted
-    physical_deck: 3
-    deck_index: null
-    params:
-      stem: 2
-    output:
-      type: Note
-      channel: 5
-      note: 72
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: mixer.cue_enabled
-    physical_deck: null
-    deck_index: 0
-    params: {}
-    output:
-      type: Note
-      channel: 0
-      note: 84
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: mixer.cue_enabled
-    physical_deck: null
-    deck_index: 1
-    params: {}
-    output:
-      type: Note
-      channel: 1
-      note: 84
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: mixer.cue_enabled
-    physical_deck: null
-    deck_index: 2
-    params: {}
-    output:
-      type: Note
-      channel: 2
-      note: 84
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: mixer.cue_enabled
-    physical_deck: null
-    deck_index: 3
-    params: {}
-    output:
-      type: Note
-      channel: 3
-      note: 84
     on_value: 127
     off_value: 0
     layer: null

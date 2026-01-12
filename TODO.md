@@ -250,6 +250,10 @@ and mesh-widget and only if necessary in the ui.
 # Performance
 - [ ] Can we optimize how stems are stored, this is currently roughly 200-300 mb
   per multi-track file.
+- [ ] we can probably compute the high resolution peaks during cueing and store
+  them in the wav file instead of computing them on the fly (~30ms per stem).
+  this only works for stems of the original file not for linked stems, since
+  they need to be prestretched, then the peaks get computed.
 
 # Future fields
 - [ ] automatic gain staging for optimal headroom and that the dj doesnt
