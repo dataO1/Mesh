@@ -20,7 +20,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-use crate::ui::waveform::generate_waveform_preview;
+use crate::ui::waveform::{generate_waveform_preview, generate_waveform_preview_with_gain};
 
 /// Export stem buffers to an 8-channel WAV file with metadata
 ///
@@ -34,6 +34,8 @@ use crate::ui::waveform::generate_waveform_preview;
 ///
 /// If `source_sample_rate` differs from SAMPLE_RATE (48000 Hz), the audio is
 /// automatically resampled to ensure correct playback speed.
+///
+/// Note: For gain-scaled waveform previews, use `export_stem_file_with_gain`.
 pub fn export_stem_file(
     path: &Path,
     buffers: &StemBuffers,
@@ -41,6 +43,34 @@ pub fn export_stem_file(
     metadata: &TrackMetadata,
     cue_points: &[CuePoint],
     saved_loops: &[SavedLoop],
+) -> Result<()> {
+    export_stem_file_with_gain(path, buffers, source_sample_rate, metadata, cue_points, saved_loops, 1.0)
+}
+
+/// Export stem buffers to an 8-channel WAV file with LUFS-compensated waveform preview
+///
+/// Same as `export_stem_file`, but with an additional `waveform_gain` parameter
+/// that scales the waveform preview for loudness-normalized display.
+///
+/// # Arguments
+/// * `path` - Output file path
+/// * `buffers` - Source stem buffers
+/// * `source_sample_rate` - Sample rate of the source buffers (e.g., 44100 Hz from demucs)
+/// * `metadata` - Track metadata (BPM, key, beat grid at TARGET sample rate)
+/// * `cue_points` - Cue point markers
+/// * `saved_loops` - Saved loop regions
+/// * `waveform_gain` - Linear gain multiplier for waveform preview (1.0 = unity)
+///
+/// The waveform_gain should be calculated from:
+/// `10^((target_lufs - track_lufs) / 20)`
+pub fn export_stem_file_with_gain(
+    path: &Path,
+    buffers: &StemBuffers,
+    source_sample_rate: u32,
+    metadata: &TrackMetadata,
+    cue_points: &[CuePoint],
+    saved_loops: &[SavedLoop],
+    waveform_gain: f32,
 ) -> Result<()> {
     log::info!("export_stem_file: Starting export to {:?}", path);
     log::info!("  Buffer length: {} samples @ {} Hz", buffers.len(), source_sample_rate);
@@ -94,8 +124,9 @@ pub fn export_stem_file(
     }
 
     // Generate waveform preview and build wvfm chunk
-    log::info!("  Generating waveform preview...");
-    let waveform_preview = generate_waveform_preview(&buffers);
+    // Use gain-scaled version if gain != 1.0 (for LUFS normalization)
+    log::info!("  Generating waveform preview (gain={:.3})...", waveform_gain);
+    let waveform_preview = generate_waveform_preview_with_gain(&buffers, waveform_gain);
     let wvfm_data = serialize_wvfm_chunk(&waveform_preview);
     // WAV chunks must be word-aligned (2 bytes). Add padding if data length is odd.
     let wvfm_padding = if wvfm_data.len() % 2 != 0 { 1u32 } else { 0u32 };

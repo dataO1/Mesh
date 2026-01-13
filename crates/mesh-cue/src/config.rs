@@ -78,6 +78,8 @@ impl DisplayConfig {
 pub struct AnalysisConfig {
     /// BPM detection settings
     pub bpm: BpmConfig,
+    /// Loudness normalization settings (for export-time waveform scaling)
+    pub loudness: LoudnessConfig,
     /// Number of parallel analysis processes (1-16)
     ///
     /// Each track is analyzed in a separate subprocess (procspawn) because
@@ -90,6 +92,7 @@ impl Default for AnalysisConfig {
     fn default() -> Self {
         Self {
             bpm: BpmConfig::default(),
+            loudness: LoudnessConfig::default(),
             parallel_processes: 4,
         }
     }
@@ -100,6 +103,45 @@ impl AnalysisConfig {
     pub fn validate(&mut self) {
         self.parallel_processes = self.parallel_processes.clamp(1, 16);
         self.bpm.validate();
+    }
+}
+
+/// Loudness normalization configuration
+///
+/// Controls automatic gain compensation for track normalization.
+/// LUFS is measured during analysis, and gain is calculated at export/playback time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LoudnessConfig {
+    /// Target loudness in LUFS for waveform preview scaling
+    /// Default: -6.0 LUFS (loud DJ standard)
+    pub target_lufs: f32,
+    /// Maximum boost in dB (safety limit for very quiet tracks)
+    pub max_gain_db: f32,
+    /// Maximum cut in dB (safety limit for very loud tracks)
+    pub min_gain_db: f32,
+}
+
+impl Default for LoudnessConfig {
+    fn default() -> Self {
+        Self {
+            target_lufs: -6.0,
+            max_gain_db: 12.0,
+            min_gain_db: -24.0,
+        }
+    }
+}
+
+impl LoudnessConfig {
+    /// Calculate gain compensation in dB for a track
+    pub fn calculate_gain_db(&self, track_lufs: f32) -> f32 {
+        (self.target_lufs - track_lufs).clamp(self.min_gain_db, self.max_gain_db)
+    }
+
+    /// Calculate linear gain multiplier for a track
+    pub fn calculate_gain_linear(&self, track_lufs: f32) -> f32 {
+        let db = self.calculate_gain_db(track_lufs);
+        10.0_f32.powf(db / 20.0)
     }
 }
 
@@ -292,6 +334,7 @@ mod tests {
                     max_tempo: 190,
                     source: BpmSource::Drums,
                 },
+                loudness: LoudnessConfig::default(),
                 parallel_processes: 4,
             },
             display: DisplayConfig::default(),

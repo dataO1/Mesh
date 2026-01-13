@@ -29,6 +29,7 @@ rtrb = "0.3"
 
 # Audio analysis - Essentia bindings
 essentia = "0.1.5"
+essentia-sys = "0.1.5"  # For StereoSample type in LUFS measurement
 
 # Configuration
 serde = { version = "1.0", features = ["derive"] }

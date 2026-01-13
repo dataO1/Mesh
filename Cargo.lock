@@ -2624,6 +2624,7 @@ dependencies = [
  "dirs",
  "env_logger",
  "essentia",
+ "essentia-sys",
  "iced",
  "jack",
  "log",

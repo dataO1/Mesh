@@ -31,8 +31,8 @@
 //! ```
 
 use crate::analysis::{analyze_audio, AnalysisResult};
-use crate::config::{BpmConfig, BpmSource};
-use crate::export::export_stem_file;
+use crate::config::{BpmConfig, BpmSource, LoudnessConfig};
+use crate::export::export_stem_file_with_gain;
 use crate::import::StemImporter;
 use anyhow::{Context, Result};
 use mesh_core::audio_file::{BeatGrid, CuePoint, SavedLoop, TrackMetadata};
@@ -253,6 +253,8 @@ pub struct ImportConfig {
     pub collection_path: PathBuf,
     /// BPM detection configuration
     pub bpm_config: BpmConfig,
+    /// Loudness normalization configuration
+    pub loudness_config: LoudnessConfig,
     /// Number of parallel analysis processes (1-16)
     pub parallel_processes: u8,
 }
@@ -476,6 +478,7 @@ fn process_single_track(group: &StemGroup, config: &ImportConfig) -> TrackImport
         bpm: Some(analysis.bpm),
         original_bpm: Some(analysis.original_bpm),
         key: Some(analysis.key),
+        lufs: analysis.lufs, // Integrated loudness for gain compensation
         beat_grid: BeatGrid::regenerate(first_beat, analysis.bpm, duration_samples),
         ..Default::default()
     };
@@ -488,7 +491,12 @@ fn process_single_track(group: &StemGroup, config: &ImportConfig) -> TrackImport
     let empty_cues: Vec<CuePoint> = Vec::new();
     let empty_loops: Vec<SavedLoop> = Vec::new();
 
-    if let Err(e) = export_stem_file(&temp_path, &buffers, source_sample_rate, &metadata, &empty_cues, &empty_loops) {
+    // Calculate waveform gain from LUFS for loudness-normalized preview
+    let waveform_gain = analysis.lufs
+        .map(|lufs| config.loudness_config.calculate_gain_linear(lufs))
+        .unwrap_or(1.0);
+
+    if let Err(e) = export_stem_file_with_gain(&temp_path, &buffers, source_sample_rate, &metadata, &empty_cues, &empty_loops, waveform_gain) {
         return TrackImportResult {
             base_name,
             success: false,
