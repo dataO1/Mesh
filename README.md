@@ -185,6 +185,7 @@ Mesh implements a fully real-time safe architecture:
 - Trim, filter, and volume per channel
 - Cue/headphone routing per channel
 - Master and cue volume controls
+- **Auto-gain based on LUFS** — Tracks are loudness-normalized during import to -14 LUFS (configurable), so all tracks play at consistent volume without manual trim adjustment
 
 **Effects**
 - DJ Filter (combined high-pass/low-pass on single knob)
