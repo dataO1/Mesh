@@ -3177,9 +3177,10 @@ impl MeshCueApp {
                         self.reanalysis_state.total_tracks = total_tracks;
                         self.reanalysis_state.analysis_type = Some(analysis_type);
                     }
-                    ReanalysisProgress::TrackStarted { track_name, index, .. } => {
+                    ReanalysisProgress::TrackStarted { track_name, .. } => {
+                        // Only update the display name, not the counter
+                        // (counter is updated by TrackCompleted)
                         self.reanalysis_state.current_track = Some(track_name);
-                        self.reanalysis_state.completed_tracks = index;
                     }
                     ReanalysisProgress::TrackCompleted { success, .. } => {
                         if success {
