@@ -1,0 +1,640 @@
+presets:
+- stems:
+  - steps:
+    - muted: true
+      slices:
+      - 0
+    - muted: true
+      slices:
+      - 1
+    - muted: true
+      slices:
+      - 2
+    - muted: true
+      slices:
+      - 3
+    - muted: false
+      slices:
+      - 4
+    - muted: false
+      slices:
+      - 5
+    - muted: false
+      slices:
+      - 6
+    - muted: false
+      slices:
+      - 7
+    - muted: false
+      slices:
+      - 8
+    - muted: false
+      slices:
+      - 9
+    - muted: false
+      slices:
+      - 10
+    - muted: false
+      slices:
+      - 11
+    - muted: true
+      slices:
+      - 12
+    - muted: true
+      slices:
+      - 13
+    - muted: true
+      slices:
+      - 14
+    - muted: true
+      slices: []
+  - steps:
+    - muted: false
+      slices:
+      - 0
+    - muted: false
+      slices:
+      - 1
+    - muted: false
+      slices: []
+    - muted: false
+      slices: []
+    - muted: false
+      slices:
+      - 4
+    - muted: false
+      slices:
+      - 5
+    - muted: false
+      slices: []
+    - muted: false
+      slices: []
+    - muted: false
+      slices: []
+    - muted: false
+      slices:
+      - 9
+    - muted: false
+      slices:
+      - 10
+    - muted: false
+      slices: []
+    - muted: false
+      slices:
+      - 12
+    - muted: false
+      slices:
+      - 13
+    - muted: false
+      slices:
+      - 1
+    - muted: false
+      slices: []
+  - steps:
+    - muted: true
+      slices:
+      - 0
+    - muted: true
+      slices:
+      - 1
+    - muted: false
+      slices:
+      - 2
+    - muted: false
+      slices:
+      - 3
+    - muted: false
+      slices:
+      - 4
+    - muted: false
+      slices:
+      - 5
+    - muted: false
+      slices:
+      - 6
+    - muted: false
+      slices:
+      - 7
+    - muted: false
+      slices:
+      - 8
+    - muted: false
+      slices:
+      - 9
+    - muted: false
+      slices:
+      - 10
+    - muted: false
+      slices:
+      - 11
+    - muted: false
+      slices:
+      - 12
+    - muted: false
+      slices:
+      - 13
+    - muted: true
+      slices:
+      - 14
+    - muted: true
+      slices:
+      - 15
+  - steps:
+    - muted: false
+      slices:
+      - 0
+      - 15
+    - muted: false
+      slices:
+      - 1
+    - muted: true
+      slices:
+      - 2
+    - muted: true
+      slices:
+      - 3
+    - muted: true
+      slices:
+      - 4
+    - muted: true
+      slices:
+      - 5
+    - muted: false
+      slices:
+      - 6
+    - muted: false
+      slices:
+      - 7
+    - muted: false
+      slices:
+      - 8
+    - muted: true
+      slices:
+      - 9
+    - muted: true
+      slices:
+      - 10
+    - muted: true
+      slices:
+      - 11
+    - muted: false
+      slices:
+      - 12
+    - muted: false
+      slices:
+      - 13
+    - muted: false
+      slices:
+      - 14
+    - muted: false
+      slices:
+      - 15
+- stems:
+  - null
+  - steps:
+    - muted: false
+      slices:
+      - 0
+    - muted: false
+      slices:
+      - 1
+    - muted: false
+      slices:
+      - 2
+    - muted: false
+      slices: []
+    - muted: false
+      slices:
+      - 4
+    - muted: false
+      slices:
+      - 5
+    - muted: false
+      slices:
+      - 6
+    - muted: false
+      slices:
+      - 7
+    - muted: false
+      slices:
+      - 8
+    - muted: false
+      slices:
+      - 12
+    - muted: false
+      slices:
+      - 10
+    - muted: false
+      slices: []
+    - muted: false
+      slices:
+      - 4
+    - muted: false
+      slices:
+      - 13
+    - muted: false
+      slices:
+      - 9
+    - muted: false
+      slices:
+      - 15
+  - steps:
+    - muted: false
+      slices:
+      - 0
+    - muted: false
+      slices:
+      - 1
+    - muted: false
+      slices:
+      - 2
+    - muted: false
+      slices: []
+    - muted: false
+      slices: []
+    - muted: false
+      slices: []
+    - muted: false
+      slices: []
+    - muted: false
+      slices: []
+    - muted: false
+      slices:
+      - 8
+    - muted: false
+      slices:
+      - 9
+    - muted: false
+      slices:
+      - 10
+    - muted: false
+      slices: []
+    - muted: false
+      slices: []
+    - muted: false
+      slices:
+      - 13
+    - muted: false
+      slices:
+      - 14
+    - muted: false
+      slices:
+      - 15
+  - null
+- stems:
+  - null
+  - steps:
+    - muted: false
+      slices:
+      - 0
+    - muted: false
+      slices:
+      - 1
+    - muted: false
+      slices:
+      - 0
+    - muted: false
+      slices: []
+    - muted: false
+      slices:
+      - 4
+    - muted: false
+      slices:
+      - 5
+      - 9
+    - muted: false
+      slices:
+      - 6
+    - muted: false
+      slices: []
+    - muted: false
+      slices:
+      - 8
+    - muted: false
+      slices:
+      - 9
+      - 12
+    - muted: false
+      slices:
+      - 10
+    - muted: false
+      slices: []
+    - muted: false
+      slices:
+      - 12
+    - muted: false
+      slices:
+      - 13
+    - muted: false
+      slices:
+      - 14
+    - muted: false
+      slices:
+      - 15
+  - null
+  - null
+- stems:
+  - null
+  - steps:
+    - muted: false
+      slices:
+      - 0
+    - muted: false
+      slices:
+      - 1
+    - muted: false
+      slices:
+      - 2
+    - muted: false
+      slices:
+      - 3
+    - muted: false
+      slices:
+      - 4
+    - muted: false
+      slices:
+      - 5
+      - 1
+    - muted: false
+      slices:
+      - 6
+      - 0
+    - muted: false
+      slices:
+      - 7
+    - muted: false
+      slices:
+      - 8
+    - muted: false
+      slices:
+      - 9
+      - 1
+    - muted: false
+      slices:
+      - 10
+    - muted: false
+      slices:
+      - 11
+    - muted: false
+      slices:
+      - 12
+    - muted: false
+      slices:
+      - 13
+      - 1
+    - muted: false
+      slices:
+      - 14
+    - muted: false
+      slices:
+      - 15
+  - null
+  - null
+- stems:
+  - null
+  - steps:
+    - muted: false
+      slices:
+      - 0
+    - muted: false
+      slices:
+      - 1
+    - muted: false
+      slices:
+      - 2
+    - muted: false
+      slices:
+      - 3
+      - 0
+    - muted: false
+      slices:
+      - 4
+      - 2
+    - muted: false
+      slices:
+      - 5
+    - muted: false
+      slices:
+      - 6
+      - 0
+    - muted: false
+      slices:
+      - 7
+      - 11
+    - muted: false
+      slices:
+      - 8
+    - muted: false
+      slices:
+      - 9
+      - 13
+    - muted: false
+      slices:
+      - 10
+    - muted: false
+      slices:
+      - 11
+    - muted: false
+      slices:
+      - 12
+      - 7
+    - muted: false
+      slices:
+      - 13
+      - 8
+    - muted: false
+      slices:
+      - 14
+    - muted: false
+      slices:
+      - 15
+      - 0
+  - null
+  - null
+- stems:
+  - null
+  - steps:
+    - muted: false
+      slices:
+      - 0
+    - muted: false
+      slices:
+      - 1
+    - muted: false
+      slices:
+      - 2
+    - muted: false
+      slices:
+      - 3
+      - 0
+    - muted: false
+      slices:
+      - 4
+      - 1
+    - muted: false
+      slices:
+      - 5
+      - 10
+    - muted: false
+      slices:
+      - 6
+      - 2
+    - muted: false
+      slices:
+      - 7
+      - 1
+    - muted: false
+      slices:
+      - 8
+      - 2
+    - muted: false
+      slices:
+      - 9
+      - 2
+    - muted: false
+      slices:
+      - 10
+    - muted: false
+      slices:
+      - 11
+      - 0
+    - muted: false
+      slices:
+      - 12
+    - muted: false
+      slices:
+      - 13
+    - muted: false
+      slices:
+      - 14
+    - muted: false
+      slices:
+      - 15
+  - null
+  - null
+- stems:
+  - null
+  - steps:
+    - muted: false
+      slices:
+      - 0
+    - muted: false
+      slices:
+      - 1
+    - muted: false
+      slices:
+      - 2
+    - muted: false
+      slices:
+      - 3
+      - 0
+    - muted: false
+      slices:
+      - 4
+      - 2
+    - muted: false
+      slices:
+      - 5
+    - muted: false
+      slices:
+      - 6
+      - 2
+    - muted: false
+      slices:
+      - 7
+      - 0
+    - muted: false
+      slices:
+      - 8
+    - muted: false
+      slices:
+      - 9
+    - muted: false
+      slices:
+      - 10
+    - muted: false
+      slices:
+      - 11
+      - 0
+    - muted: false
+      slices:
+      - 12
+      - 2
+    - muted: false
+      slices:
+      - 13
+    - muted: false
+      slices:
+      - 14
+      - 2
+    - muted: false
+      slices:
+      - 15
+      - 0
+  - null
+  - null
+- stems:
+  - null
+  - steps:
+    - muted: false
+      slices:
+      - 0
+    - muted: false
+      slices:
+      - 1
+    - muted: false
+      slices:
+      - 2
+      - 0
+    - muted: false
+      slices:
+      - 3
+      - 10
+    - muted: false
+      slices:
+      - 4
+      - 2
+    - muted: false
+      slices:
+      - 5
+    - muted: false
+      slices:
+      - 6
+      - 10
+    - muted: false
+      slices:
+      - 7
+    - muted: false
+      slices:
+      - 8
+      - 2
+    - muted: false
+      slices:
+      - 9
+      - 10
+    - muted: false
+      slices:
+      - 10
+      - 2
+    - muted: false
+      slices:
+      - 11
+      - 0
+    - muted: false
+      slices:
+      - 12
+      - 2
+    - muted: false
+      slices:
+      - 13
+    - muted: false
+      slices:
+      - 14
+      - 8
+    - muted: false
+      slices:
+      - 15
+      - 0
+  - null
+  - null
+buffer_bars: 1

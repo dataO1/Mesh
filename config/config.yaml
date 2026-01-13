@@ -1,0 +1,278 @@
+analysis:
+  bpm:
+    min_tempo: 160
+    max_tempo: 200
+    source: drums
+  loudness:
+    target_lufs: -6.0
+    max_gain_db: 12.0
+    min_gain_db: -24.0
+  parallel_processes: 12
+display:
+  grid_bars: 4
+  zoom_bars: 4
+  global_bpm: 178.0
+  default_loop_length_index: 4
+track_name_format: '{artist} - {name}'
+slicer:
+  presets:
+  - stems:
+    - steps:
+      - muted: false
+        slices:
+        - 0
+        - 8
+      - muted: false
+        slices:
+        - 1
+      - muted: false
+        slices:
+        - 2
+      - muted: false
+        slices:
+        - 3
+        - 9
+      - muted: false
+        slices:
+        - 4
+      - muted: false
+        slices:
+        - 5
+      - muted: false
+        slices:
+        - 6
+        - 12
+      - muted: false
+        slices:
+        - 7
+      - muted: false
+        slices:
+        - 8
+        - 3
+      - muted: false
+        slices:
+        - 9
+        - 1
+      - muted: false
+        slices:
+        - 10
+      - muted: false
+        slices:
+        - 11
+      - muted: false
+        slices:
+        - 12
+      - muted: false
+        slices:
+        - 13
+        - 8
+      - muted: false
+        slices:
+        - 14
+      - muted: false
+        slices:
+        - 15
+    - steps:
+      - muted: false
+        slices:
+        - 0
+      - muted: false
+        slices:
+        - 1
+      - muted: false
+        slices:
+        - 0
+      - muted: false
+        slices:
+        - 3
+      - muted: false
+        slices:
+        - 4
+      - muted: false
+        slices:
+        - 5
+        - 0
+      - muted: false
+        slices:
+        - 6
+      - muted: false
+        slices:
+        - 0
+      - muted: false
+        slices:
+        - 8
+      - muted: false
+        slices:
+        - 9
+        - 4
+      - muted: false
+        slices:
+        - 10
+      - muted: false
+        slices:
+        - 0
+      - muted: false
+        slices:
+        - 12
+      - muted: false
+        slices:
+        - 13
+      - muted: false
+        slices:
+        - 0
+      - muted: false
+        slices:
+        - 15
+    - steps:
+      - muted: false
+        slices:
+        - 0
+      - muted: false
+        slices:
+        - 1
+        - 5
+      - muted: false
+        slices:
+        - 2
+        - 0
+      - muted: false
+        slices:
+        - 3
+        - 11
+      - muted: false
+        slices:
+        - 4
+        - 10
+      - muted: false
+        slices:
+        - 5
+      - muted: false
+        slices:
+        - 6
+        - 10
+      - muted: false
+        slices:
+        - 7
+      - muted: false
+        slices:
+        - 8
+        - 3
+      - muted: false
+        slices:
+        - 9
+      - muted: false
+        slices:
+        - 10
+        - 14
+      - muted: false
+        slices:
+        - 11
+      - muted: false
+        slices:
+        - 12
+      - muted: false
+        slices:
+        - 13
+        - 6
+      - muted: false
+        slices:
+        - 14
+      - muted: false
+        slices:
+        - 15
+        - 10
+    - steps:
+      - muted: false
+        slices:
+        - 0
+        - 14
+      - muted: false
+        slices:
+        - 1
+        - 11
+      - muted: false
+        slices:
+        - 2
+        - 10
+      - muted: false
+        slices:
+        - 3
+        - 9
+      - muted: false
+        slices:
+        - 4
+      - muted: false
+        slices:
+        - 5
+      - muted: false
+        slices:
+        - 6
+        - 13
+      - muted: false
+        slices:
+        - 7
+        - 2
+      - muted: false
+        slices:
+        - 8
+      - muted: false
+        slices:
+        - 9
+        - 2
+      - muted: false
+        slices:
+        - 10
+      - muted: false
+        slices:
+        - 11
+        - 15
+      - muted: false
+        slices:
+        - 12
+        - 2
+      - muted: false
+        slices:
+        - 13
+      - muted: false
+        slices:
+        - 14
+      - muted: false
+        slices:
+        - 15
+        - 6
+  - stems:
+    - null
+    - null
+    - null
+    - null
+  - stems:
+    - null
+    - null
+    - null
+    - null
+  - stems:
+    - null
+    - null
+    - null
+    - null
+  - stems:
+    - null
+    - null
+    - null
+    - null
+  - stems:
+    - null
+    - null
+    - null
+    - null
+  - stems:
+    - null
+    - null
+    - null
+    - null
+  - stems:
+    - null
+    - null
+    - null
+    - null
+  buffer_bars: 1

@@ -1600,14 +1600,32 @@ impl MeshCueApp {
                 }
             }
             Message::SliceEditorPresetSelect(preset_idx) => {
-                // Select preset and get all presets for sync
-                let presets = self.collection.loaded_track.as_mut().map(|state| {
+                // Select preset and get preset data for activation
+                let preset_data = self.collection.loaded_track.as_mut().map(|state| {
                     state.slice_editor.select_preset(preset_idx);
-                    state.slice_editor.to_engine_presets()
+                    let presets = state.slice_editor.to_engine_presets();
+                    // Clone the selected preset's stem configuration for activation
+                    let stem_has_pattern: [bool; 4] = std::array::from_fn(|i| {
+                        state.slice_editor.presets[preset_idx].stems[i].is_some()
+                    });
+                    (presets, stem_has_pattern)
                 });
-                // Sync to audio engine (after releasing borrow)
-                if let Some(presets) = presets {
+
+                // Sync presets and activate slicer for stems with patterns
+                if let Some((presets, stem_has_pattern)) = preset_data {
+                    use mesh_core::types::Stem;
+                    let stems = [Stem::Vocals, Stem::Drums, Stem::Bass, Stem::Other];
+
+                    // Send preset data to engine
                     self.audio.set_slicer_presets(presets);
+
+                    // Activate slicer for each stem that has a pattern in this preset
+                    // shift_held=false means "select preset" mode (enables slicer + loads pattern)
+                    for (idx, &stem) in stems.iter().enumerate() {
+                        if stem_has_pattern[idx] {
+                            self.audio.slicer_button_action(stem, preset_idx as u8, false);
+                        }
+                    }
                 }
             }
             Message::SaveSlicerPresets => {

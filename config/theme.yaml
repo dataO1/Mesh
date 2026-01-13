@@ -1,0 +1,8 @@
+# Mesh Player Theme Configuration
+# Stem colors for waveform display
+
+stems:
+  vocals: "#33CC66"   # Green
+  drums: "#CC3333"    # Dark Red
+  bass: "#E6604D"     # Orange-Red
+  other: "#00CCCC"    # Cyan

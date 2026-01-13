@@ -1,0 +1,57 @@
+audio:
+  global_bpm: 174.0
+  phase_sync: true
+  loudness:
+    target_lufs: -9.0
+    auto_gain_enabled: true
+    max_gain_db: 12.0
+    min_gain_db: -24.0
+display:
+  default_loop_length_index: 2
+  default_zoom_bars: 4
+  grid_bars: 4
+  stem_color_palette: cool_warm
+slicer:
+  presets:
+  - stems:
+    - null
+    - null
+    - null
+    - null
+  - stems:
+    - null
+    - null
+    - null
+    - null
+  - stems:
+    - null
+    - null
+    - null
+    - null
+  - stems:
+    - null
+    - null
+    - null
+    - null
+  - stems:
+    - null
+    - null
+    - null
+    - null
+  - stems:
+    - null
+    - null
+    - null
+    - null
+  - stems:
+    - null
+    - null
+    - null
+    - null
+  - stems:
+    - null
+    - null
+    - null
+    - null
+  buffer_bars: 1
+collection_path: /home/data01/Music/mesh-collection
