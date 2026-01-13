@@ -100,6 +100,11 @@ pub struct OverviewState {
     /// High-resolution peaks for linked stems (for stable zoomed view rendering)
     /// Computed once when linked stem is loaded, avoids recomputation during playback
     pub linked_highres_peaks: [Option<Vec<(f32, f32)>>; 4],
+
+    /// Pre-computed gain correction for each linked stem (linear multiplier)
+    /// Calculated from: 10^((target_lufs - linked_lufs) / 20)
+    /// Scales linked stem amplitude to target LUFS for consistent visual display
+    pub linked_lufs_gains: [f32; 4],
 }
 
 impl OverviewState {
@@ -125,6 +130,7 @@ impl OverviewState {
             linked_drop_markers: [None, None, None, None],
             linked_durations: [None, None, None, None],
             linked_highres_peaks: [None, None, None, None],
+            linked_lufs_gains: [1.0, 1.0, 1.0, 1.0], // Unity gain (no correction)
         }
     }
 
@@ -235,6 +241,7 @@ impl OverviewState {
             linked_drop_markers: [None, None, None, None],
             linked_durations: [None, None, None, None],
             linked_highres_peaks: [None, None, None, None],
+            linked_lufs_gains: [1.0, 1.0, 1.0, 1.0],
         }
     }
 
@@ -264,6 +271,7 @@ impl OverviewState {
             linked_drop_markers: [None, None, None, None],
             linked_durations: [None, None, None, None],
             linked_highres_peaks: [None, None, None, None],
+            linked_lufs_gains: [1.0, 1.0, 1.0, 1.0],
         }
     }
 
@@ -305,6 +313,7 @@ impl OverviewState {
             linked_drop_markers: [None, None, None, None],
             linked_durations: [None, None, None, None],
             linked_highres_peaks: [None, None, None, None],
+            linked_lufs_gains: [1.0, 1.0, 1.0, 1.0],
         }
     }
 
@@ -409,6 +418,7 @@ impl OverviewState {
             linked_drop_markers: [None, None, None, None],
             linked_durations: [None, None, None, None],
             linked_highres_peaks: [None, None, None, None],
+            linked_lufs_gains: [1.0, 1.0, 1.0, 1.0],
         }
     }
 
@@ -477,6 +487,27 @@ impl OverviewState {
     pub fn set_linked_highres_peaks(&mut self, stem_idx: usize, peaks: Vec<(f32, f32)>) {
         if stem_idx < 4 {
             self.linked_highres_peaks[stem_idx] = Some(peaks);
+        }
+    }
+
+    /// Set the LUFS-based gain correction for a linked stem
+    ///
+    /// The gain should be calculated as: 10^((target_lufs - linked_lufs) / 20)
+    /// This scales the linked stem's visual amplitude to match the target LUFS.
+    pub fn set_linked_lufs_gain(&mut self, stem_idx: usize, gain: f32) {
+        if stem_idx < 4 {
+            self.linked_lufs_gains[stem_idx] = gain;
+            log::debug!(
+                "Linked stem {} LUFS gain set to {:.3} ({:+.1} dB)",
+                stem_idx, gain, 20.0 * gain.log10()
+            );
+        }
+    }
+
+    /// Clear linked stem LUFS gain (reset to unity)
+    pub fn clear_linked_lufs_gain(&mut self, stem_idx: usize) {
+        if stem_idx < 4 {
+            self.linked_lufs_gains[stem_idx] = 1.0;
         }
     }
 
@@ -592,6 +623,10 @@ pub struct ZoomedState {
     /// Which stems were linked-active when cached_peaks was computed
     /// Used to detect when stem link status changes and force recompute
     pub cached_linked_active: [bool; 4],
+    /// LUFS-based gain for waveform amplitude scaling (linear multiplier)
+    /// Quieter tracks are boosted to match the visual amplitude of louder tracks.
+    /// 1.0 = unity (no scaling), >1.0 = boost for quiet tracks
+    pub lufs_gain: f32,
 }
 
 impl ZoomedState {
@@ -618,6 +653,7 @@ impl ZoomedState {
             drop_marker: None,
             linked_cached_peaks: [None, None, None, None],
             cached_linked_active: [false, false, false, false],
+            lufs_gain: 1.0,
         }
     }
 
@@ -644,6 +680,7 @@ impl ZoomedState {
             drop_marker: None,
             linked_cached_peaks: [None, None, None, None],
             cached_linked_active: [false, false, false, false],
+            lufs_gain: 1.0,
         }
     }
 
@@ -683,6 +720,17 @@ impl ZoomedState {
     /// Pass `None` to clear the drop marker.
     pub fn set_drop_marker(&mut self, position: Option<u64>) {
         self.drop_marker = position;
+    }
+
+    /// Set LUFS-based gain for waveform amplitude scaling
+    ///
+    /// Quieter tracks are visually boosted to match the amplitude of louder tracks.
+    /// The gain is a linear multiplier applied to all peak values before smoothing.
+    ///
+    /// # Arguments
+    /// * `gain` - Linear gain multiplier (1.0 = unity, >1.0 = boost for quiet tracks)
+    pub fn set_lufs_gain(&mut self, gain: f32) {
+        self.lufs_gain = gain;
     }
 
     /// Set the view mode (scrolling or fixed buffer)
@@ -880,6 +928,17 @@ impl ZoomedState {
             self.cached_peaks[0].len(), cache.start, cache.end, cache.left_padding
         );
 
+        // Apply LUFS gain scaling for consistent visual amplitude
+        // Quieter tracks are boosted to match the visual amplitude of louder tracks
+        if self.lufs_gain != 1.0 {
+            for stem_idx in 0..4 {
+                for peak in &mut self.cached_peaks[stem_idx] {
+                    peak.0 *= self.lufs_gain;
+                    peak.1 *= self.lufs_gain;
+                }
+            }
+        }
+
         // Apply Gaussian smoothing for smoother waveform display
         for stem_idx in 0..4 {
             if self.cached_peaks[stem_idx].len() >= 5 {
@@ -904,6 +963,17 @@ impl ZoomedState {
         self.cached_view_mode = self.view_mode;
         // Track which stems were linked-active when this cache was computed
         self.cached_linked_active = result.linked_active;
+
+        // Apply LUFS gain scaling for consistent visual amplitude
+        // (Linear scaling commutes with Gaussian smoothing, so applying after is equivalent)
+        if self.lufs_gain != 1.0 {
+            for stem_idx in 0..4 {
+                for peak in &mut self.cached_peaks[stem_idx] {
+                    peak.0 *= self.lufs_gain;
+                    peak.1 *= self.lufs_gain;
+                }
+            }
+        }
     }
 
     /// Set linked stem cached peaks for a specific stem slot

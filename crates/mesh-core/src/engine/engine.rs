@@ -808,9 +808,9 @@ impl AudioEngine {
                 }
 
                 // Loudness Compensation
-                EngineCommand::SetLufsGain { deck, gain } => {
+                EngineCommand::SetLufsGain { deck, gain, host_lufs } => {
                     if let Some(d) = self.decks.get_mut(deck) {
-                        d.set_lufs_gain(gain);
+                        d.set_lufs_gain(gain, host_lufs);
                     }
                 }
 

@@ -207,10 +207,13 @@ pub enum EngineCommand {
     /// The gain is a linear multiplier calculated from:
     /// `gain = 10^((target_lufs - track_lufs) / 20)`
     ///
+    /// The `host_lufs` is used to calculate gain correction for linked stems,
+    /// so they match the host track's level before deck-wide compensation.
+    ///
     /// This is sent when:
     /// - A track is loaded (calculated from track's measured LUFS)
     /// - Target LUFS setting changes (recalculated for all loaded tracks)
-    SetLufsGain { deck: usize, gain: f32 },
+    SetLufsGain { deck: usize, gain: f32, host_lufs: Option<f32> },
 
     // ─────────────────────────────────────────────────────────────
     // Global

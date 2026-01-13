@@ -537,6 +537,7 @@ fn handle_linked_stem_load(
             // Get source track metadata
             let source_bpm = source_track.metadata.bpm.unwrap_or(120.0);
             let source_drop_marker = source_track.metadata.drop_marker.unwrap_or(0);
+            let source_lufs = source_track.metadata.lufs; // For LUFS-based gain matching
             let track_name = request
                 .source_path
                 .file_stem()
@@ -687,6 +688,7 @@ fn handle_linked_stem_load(
                     drop_marker: 0, // No longer needed - alignment is baked in
                     track_name,
                     track_path: Some(request.source_path),
+                    lufs: source_lufs, // For LUFS-based gain matching with host
                 }),
                 overview_peaks,
                 highres_peaks: Some(highres_peaks),
@@ -735,6 +737,7 @@ fn handle_linked_stem_load_parallel(
             // Get source track metadata
             let source_bpm = source_track.metadata.bpm.unwrap_or(120.0);
             let source_drop_marker = source_track.metadata.drop_marker.unwrap_or(0);
+            let source_lufs = source_track.metadata.lufs; // For LUFS-based gain matching
             let track_name = request
                 .source_path
                 .file_stem()
@@ -870,6 +873,7 @@ fn handle_linked_stem_load_parallel(
                     drop_marker: 0,
                     track_name,
                     track_path: Some(request.source_path),
+                    lufs: source_lufs, // For LUFS-based gain matching with host
                 }),
                 overview_peaks,
                 highres_peaks: Some(highres_peaks),

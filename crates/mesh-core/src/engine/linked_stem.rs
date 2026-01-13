@@ -65,6 +65,10 @@ pub struct LinkedStemInfo {
 
     /// Track path for prepared mode persistence
     pub track_path: Option<PathBuf>,
+
+    /// Source track's integrated LUFS (from WAV file bext chunk)
+    /// Used to calculate gain correction when mixing with host track
+    pub lufs: Option<f32>,
 }
 
 impl LinkedStemInfo {
@@ -75,6 +79,7 @@ impl LinkedStemInfo {
         drop_marker: u64,
         track_name: String,
         track_path: Option<PathBuf>,
+        lufs: Option<f32>,
     ) -> Self {
         Self {
             buffer,
@@ -82,6 +87,7 @@ impl LinkedStemInfo {
             drop_marker,
             track_name,
             track_path,
+            lufs,
         }
     }
 
@@ -108,6 +114,11 @@ pub struct StemLink {
     /// Only meaningful when `linked` is Some
     pub use_linked: bool,
 
+    /// Pre-computed gain correction for linked stem (linear multiplier)
+    /// Calculated from: 10^((host_lufs - linked_lufs) / 20)
+    /// Brings the linked stem to the host track's level before deck LUFS compensation
+    pub gain: f32,
+
     /// Time stretcher for pre-stretching linked stems
     /// Used when linking and when host BPM changes
     stretcher: TimeStretcher,
@@ -128,6 +139,7 @@ impl StemLink {
         Self {
             linked: None,
             use_linked: false,
+            gain: 1.0, // Unity gain (no correction)
             stretcher: TimeStretcher::new_cheaper(sample_rate),
         }
     }
@@ -164,6 +176,30 @@ impl StemLink {
     pub fn clear(&mut self) {
         self.linked = None;
         self.use_linked = false;
+        self.gain = 1.0; // Reset to unity gain
+    }
+
+    /// Calculate and update gain correction based on host and linked LUFS
+    ///
+    /// The gain brings the linked stem to the host track's level:
+    /// - If linked is louder than host: gain < 1.0 (attenuate)
+    /// - If linked is quieter than host: gain > 1.0 (boost)
+    /// - If either LUFS is missing: gain = 1.0 (no correction)
+    ///
+    /// After this correction, the deck's overall `lufs_gain` will bring
+    /// everything to the target LUFS level.
+    pub fn update_gain(&mut self, host_lufs: Option<f32>) {
+        self.gain = match (host_lufs, self.linked.as_ref().and_then(|l| l.lufs)) {
+            (Some(host), Some(linked)) => {
+                let gain = 10.0_f32.powf((host - linked) / 20.0);
+                log::debug!(
+                    "Linked stem gain: host={:.1} LUFS, linked={:.1} LUFS → gain={:.3} ({:+.1} dB)",
+                    host, linked, gain, host - linked
+                );
+                gain
+            }
+            _ => 1.0, // No correction if either LUFS is missing
+        };
     }
 
     /// Pre-stretch a source buffer to match target BPM
@@ -532,6 +568,10 @@ pub struct LinkedStemData {
 
     /// Track path for prepared mode persistence
     pub track_path: Option<PathBuf>,
+
+    /// Source track's integrated LUFS (from WAV file bext chunk)
+    /// Used to calculate gain correction when mixing with host track
+    pub lufs: Option<f32>,
 }
 
 impl LinkedStemData {
@@ -543,6 +583,7 @@ impl LinkedStemData {
             self.drop_marker,
             self.track_name,
             self.track_path,
+            self.lufs,
         )
     }
 }

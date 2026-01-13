@@ -345,6 +345,10 @@ pub struct Deck {
     /// 1.0 = unity (no compensation), <1.0 = cut, >1.0 = boost.
     /// Applied after stem summing but before time stretching.
     lufs_gain: f32,
+
+    /// Host track's measured LUFS (from WAV file bext chunk)
+    /// Used to calculate gain correction for linked stems
+    host_lufs: Option<f32>,
 }
 
 impl Deck {
@@ -376,6 +380,7 @@ impl Deck {
             linked_stem_atomics: Arc::new(LinkedStemAtomics::new()),
             drop_marker: None,
             lufs_gain: 1.0, // Unity gain (no compensation)
+            host_lufs: None,
         }
     }
 
@@ -788,10 +793,18 @@ impl Deck {
     /// - 1.0 = unity (no compensation)
     /// - >1.0 = boost (track quieter than target)
     /// - <1.0 = cut (track louder than target)
-    pub fn set_lufs_gain(&mut self, gain: f32) {
+    ///
+    /// Also stores the host LUFS and recalculates all linked stem gains.
+    pub fn set_lufs_gain(&mut self, gain: f32, host_lufs: Option<f32>) {
         self.lufs_gain = gain;
-        log::debug!("Deck {}: LUFS gain set to {:.3} ({:+.1} dB)",
-            self.id.0, gain, 20.0 * gain.log10());
+        self.host_lufs = host_lufs;
+        log::debug!("Deck {}: LUFS gain set to {:.3} ({:+.1} dB), host_lufs={:?}",
+            self.id.0, gain, 20.0 * gain.log10(), host_lufs);
+
+        // Recalculate all linked stem gains based on new host LUFS
+        for link in &mut self.stem_links {
+            link.update_gain(host_lufs);
+        }
     }
 
     // --- Slicer ---
@@ -1260,7 +1273,7 @@ impl Deck {
         let duration_samples = track.duration_samples;
         let samples_per_beat = track.samples_per_beat();
 
-        // Extract linked stem buffer references before parallel section
+        // Extract linked stem buffer references and gains before parallel section
         // This avoids borrow checker issues with stem_links in the parallel closure
         // Note: Linked buffers are pre-aligned to host timeline, so no drop marker offset needed
         let linked_stems: [Option<&StereoBuffer>; NUM_STEMS] = std::array::from_fn(|i| {
@@ -1273,6 +1286,10 @@ impl Deck {
                 None
             }
         });
+
+        // Extract linked stem gains for LUFS-based level matching
+        // Each gain brings the linked stem to the host track's level
+        let linked_gains: [f32; NUM_STEMS] = std::array::from_fn(|i| self.stem_links[i].gain);
 
         // Set working length of all pre-allocated stem buffers (real-time safe: no allocation)
         // Capacity remains at MAX_BUFFER_SIZE, only the length field changes
@@ -1307,6 +1324,7 @@ impl Deck {
                 // so we can read directly at host position without offset calculation
                 if let Some(linked_buffer) = linked_stems[stem_idx] {
                     // LINKED STEM PATH: Read from pre-aligned linked buffer
+                    // Note: Gain is applied AFTER slicer processing to avoid double-gain
                     let linked_len = linked_buffer.len();
                     let linked_slice = linked_buffer.as_slice();
 
@@ -1353,6 +1371,19 @@ impl Deck {
                             stem_data.as_slice(),
                             duration_samples,
                         );
+                    }
+                }
+
+                // Apply LUFS-based gain correction for linked stems
+                // This is done AFTER slicer processing to avoid double-gain issues
+                // (slicer reads from raw buffer, so we apply gain once at the end)
+                if linked_stems[stem_idx].is_some() {
+                    let gain = linked_gains[stem_idx];
+                    if gain != 1.0 {
+                        for sample in stem_buffer.as_mut_slice() {
+                            sample.left *= gain;
+                            sample.right *= gain;
+                        }
                     }
                 }
 
@@ -1446,6 +1477,8 @@ impl Deck {
             return;
         }
         self.stem_links[stem_idx].set_linked(info);
+        // Calculate gain correction based on host and linked LUFS
+        self.stem_links[stem_idx].update_gain(self.host_lufs);
         self.linked_stem_atomics.sync_from_stem_link(stem_idx, &self.stem_links[stem_idx]);
     }
 

@@ -128,7 +128,7 @@ impl Default for AudioConfig {
 pub struct LoudnessConfig {
     /// Target loudness in LUFS
     /// Tracks are gain-compensated to reach this level.
-    /// Default: -6.0 LUFS (loud DJ standard)
+    /// Default: -9.0 LUFS (balanced loudness)
     pub target_lufs: f32,
     /// Enable automatic gain compensation based on track LUFS
     pub auto_gain_enabled: bool,
@@ -143,7 +143,7 @@ pub struct LoudnessConfig {
 impl Default for LoudnessConfig {
     fn default() -> Self {
         Self {
-            target_lufs: -6.0,      // Loud DJ standard
+            target_lufs: -9.0,      // Balanced loudness
             auto_gain_enabled: true,
             max_gain_db: 12.0,      // Safety: max boost
             min_gain_db: -24.0,     // Safety: max cut
@@ -398,17 +398,17 @@ mod tests {
     #[test]
     fn test_loudness_config() {
         let config = LoudnessConfig::default();
-        assert_eq!(config.target_lufs, -6.0);
+        assert_eq!(config.target_lufs, -9.0);
         assert!(config.auto_gain_enabled);
 
         // Test gain calculation
-        // Track at -10 LUFS, target -6 LUFS = +4 dB boost
-        let gain_db = config.calculate_gain_db(Some(-10.0)).unwrap();
-        assert!((gain_db - 4.0).abs() < 0.001);
+        // Track at -12 LUFS, target -9 LUFS = +3 dB boost
+        let gain_db = config.calculate_gain_db(Some(-12.0)).unwrap();
+        assert!((gain_db - 3.0).abs() < 0.001);
 
-        // Track at -4 LUFS, target -6 LUFS = -2 dB cut
+        // Track at -4 LUFS, target -9 LUFS = -5 dB cut
         let gain_db = config.calculate_gain_db(Some(-4.0)).unwrap();
-        assert!((gain_db - (-2.0)).abs() < 0.001);
+        assert!((gain_db - (-5.0)).abs() < 0.001);
 
         // No LUFS = no gain
         assert!(config.calculate_gain_db(None).is_none());

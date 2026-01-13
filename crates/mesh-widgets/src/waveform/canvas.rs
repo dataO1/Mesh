@@ -2337,6 +2337,8 @@ fn draw_deck_quadrant(
         &deck.zoomed,
         &deck.overview.highres_peaks,
         &deck.overview.linked_highres_peaks,
+        deck.zoomed.lufs_gain,
+        &deck.overview.linked_lufs_gains,
         deck.overview.duration_samples,
         playhead,
         x,
@@ -2404,6 +2406,8 @@ fn draw_zoomed_at(
     zoomed: &ZoomedState,
     highres_peaks: &[Vec<(f32, f32)>; 4],
     linked_highres_peaks: &[Option<Vec<(f32, f32)>>; 4],
+    host_lufs_gain: f32,
+    linked_lufs_gains: &[f32; 4],
     duration_samples: u64,
     playhead: u64,
     x: f32,
@@ -2699,6 +2703,16 @@ fn draw_zoomed_at(
                             if px >= x - 5.0 && px <= x + width + 5.0 {
                                 let (min, max) = sample_peak_smoothed(peaks, peak_idx, smooth_radius, stem_idx);
 
+                                // Apply LUFS gain correction:
+                                // - Host stems: scale by target-to-host LUFS difference
+                                // - Linked stems: scale by target-to-linked LUFS difference
+                                let gain = if linked_active[stem_idx] {
+                                    linked_lufs_gains[stem_idx]
+                                } else {
+                                    host_lufs_gain
+                                };
+                                let (min, max) = (min * gain, max * gain);
+
                                 let y_max = center_y - (max * height_scale);
                                 let y_min = center_y - (min * height_scale);
 
@@ -2738,6 +2752,17 @@ fn draw_zoomed_at(
                             }
 
                             let (min, max) = sample_peak_smoothed(peaks, peak_idx, smooth_radius, stem_idx);
+
+                            // Apply LUFS gain correction:
+                            // - Host stems: scale by target-to-host LUFS difference
+                            // - Linked stems: scale by target-to-linked LUFS difference
+                            let gain = if linked_active[stem_idx] {
+                                linked_lufs_gains[stem_idx]
+                            } else {
+                                host_lufs_gain
+                            };
+                            let (min, max) = (min * gain, max * gain);
+
                             let y_max = center_y - (max * height_scale);
                             let y_min = center_y - (min * height_scale);
 

@@ -114,7 +114,7 @@ impl AnalysisConfig {
 #[serde(default)]
 pub struct LoudnessConfig {
     /// Target loudness in LUFS for waveform preview scaling
-    /// Default: -6.0 LUFS (loud DJ standard)
+    /// Default: -9.0 LUFS (balanced loudness)
     pub target_lufs: f32,
     /// Maximum boost in dB (safety limit for very quiet tracks)
     pub max_gain_db: f32,
@@ -125,7 +125,7 @@ pub struct LoudnessConfig {
 impl Default for LoudnessConfig {
     fn default() -> Self {
         Self {
-            target_lufs: -6.0,
+            target_lufs: -9.0,
             max_gain_db: 12.0,
             min_gain_db: -24.0,
         }

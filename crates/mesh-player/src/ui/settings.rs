@@ -87,7 +87,7 @@ impl SettingsState {
             draft_slicer_buffer_bars: 4, // 4 bars = 16 slices
             draft_slicer_affected_stems: [false, true, false, false], // Only Drums by default
             draft_auto_gain_enabled: true, // Auto-gain on by default
-            draft_target_lufs_index: 0, // -6 LUFS (loud)
+            draft_target_lufs_index: 1, // -9 LUFS (balanced)
             status: String::new(),
         }
     }
@@ -96,7 +96,7 @@ impl SettingsState {
     pub fn target_lufs(&self) -> f32 {
         TARGET_LUFS_OPTIONS.get(self.draft_target_lufs_index)
             .copied()
-            .unwrap_or(-6.0)
+            .unwrap_or(-9.0)
     }
 }
 

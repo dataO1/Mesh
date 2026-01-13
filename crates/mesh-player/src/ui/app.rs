@@ -343,6 +343,11 @@ impl MeshApp {
                                     };
                                     self.player_canvas_state.set_lufs_gain_db(deck_idx, lufs_gain_db);
 
+                                    // Set LUFS gain for waveform amplitude scaling
+                                    // Quieter tracks are visually boosted to match the amplitude of louder tracks
+                                    let waveform_lufs_gain = self.config.audio.loudness.calculate_gain_linear(track_lufs);
+                                    self.player_canvas_state.decks[deck_idx].zoomed.set_lufs_gain(waveform_lufs_gain);
+
                                     // Sync hot cue positions from track metadata for button colors
                                     // First clear all slots
                                     for slot in 0..8 {
@@ -359,11 +364,14 @@ impl MeshApp {
                                     }
 
                                     // Reset stem states for new track (all stems active, none muted/soloed)
-                                    // Update UI state
+                                    // Update UI state and clear any linked stems from previous track
                                     for stem_idx in 0..4 {
                                         self.deck_views[deck_idx].set_stem_muted(stem_idx, false);
                                         self.deck_views[deck_idx].set_stem_soloed(stem_idx, false);
                                         self.player_canvas_state.set_stem_active(deck_idx, stem_idx, true);
+                                        // Clear linked stem state (buffer, LUFS gain, peaks)
+                                        self.deck_linked_stems[deck_idx][stem_idx] = None;
+                                        self.player_canvas_state.decks[deck_idx].overview.clear_linked_lufs_gain(stem_idx);
                                     }
 
                                     // Send track to audio engine via lock-free queue (~50ns, never blocks!)
@@ -409,10 +417,12 @@ impl MeshApp {
                                         });
 
                                         // Send LUFS gain compensation to audio engine
+                                        // Also pass host track's LUFS for linked stem gain matching
                                         let lufs_gain_linear = self.config.audio.loudness.calculate_gain_linear(track_lufs);
                                         let _ = sender.send(EngineCommand::SetLufsGain {
                                             deck: deck_idx,
                                             gain: lufs_gain_linear,
+                                            host_lufs: track_lufs,
                                         });
 
                                         self.status = format!("Loaded track to deck {}", deck_idx + 1);
@@ -534,6 +544,22 @@ impl MeshApp {
                                                 stretched_duration,        // Stretched duration
                                             );
                                     }
+
+                                    // Calculate LUFS gain for linked stem waveform (target - linked_lufs)
+                                    // Uses the same calculation as host stems: scale to target LUFS
+                                    let linked_gain = self.config.audio.loudness.calculate_gain_linear(linked_data.lufs);
+                                    self.player_canvas_state
+                                        .deck_mut(deck_idx)
+                                        .overview
+                                        .set_linked_lufs_gain(stem_idx, linked_gain);
+                                    log::info!(
+                                        "[LINKED] Set LUFS gain for deck {} stem {}: linked_lufs={:?}, gain={:.3} ({:+.1}dB)",
+                                        deck_idx,
+                                        stem_idx,
+                                        linked_data.lufs,
+                                        linked_gain,
+                                        20.0 * linked_gain.log10()
+                                    );
 
                                     // Immediately mark stem as having a linked stem (enables split-view)
                                     // Note: is_active is false initially; user must toggle to activate
