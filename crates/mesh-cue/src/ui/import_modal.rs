@@ -313,44 +313,58 @@ pub fn view_progress_bar(state: &ImportState) -> Option<Element<'static, Message
                 current_track.clone()
             };
 
-            // Small cancel button for status bar
-            let cancel_btn = button(text("×").size(14))
-                .on_press(Message::CancelImport)
-                .style(button::secondary)
-                .padding([2, 6]);
-
-            let bar = container(
-                row![
-                    text(format!("Importing: {}", display_name)).size(12),
-                    Space::new().width(Length::Fill),
-                    text(eta_text).size(12),
-                    cancel_btn,
-                ]
-                .spacing(10)
-                .align_y(Alignment::Center)
-                .padding([4, 8]),
-            )
-            .width(Length::Fill);
-
-            let progress_row = column![bar, container(progress_bar(0.0..=1.0, progress)).width(Length::Fill)]
-                .spacing(2);
-
-            Some(
-                container(progress_row)
-                    .width(Length::Fill)
-                    .padding(8)
-                    .style(|theme: &iced::Theme| {
-                        let palette = theme.extended_palette();
-                        container::Style {
-                            background: Some(iced::Background::Color(
-                                palette.background.strong.color,
-                            )),
-                            ..Default::default()
-                        }
-                    })
-                    .into(),
-            )
+            Some(build_status_bar(
+                format!("Importing: {}", display_name),
+                eta_text,
+                progress,
+                Message::CancelImport,
+            ))
         }
         _ => None,
     }
+}
+
+/// Build a generic status bar with progress indicator
+///
+/// Reusable for import, re-analysis, and other long-running operations.
+pub fn build_status_bar<M: Clone + 'static>(
+    label: String,
+    progress_text: String,
+    progress: f32,
+    cancel_message: M,
+) -> Element<'static, M> {
+    let cancel_btn = button(text("×").size(14))
+        .on_press(cancel_message)
+        .style(button::secondary)
+        .padding([2, 6]);
+
+    let bar = container(
+        row![
+            text(label).size(12),
+            Space::new().width(Length::Fill),
+            text(progress_text).size(12),
+            cancel_btn,
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center)
+        .padding([4, 8]),
+    )
+    .width(Length::Fill);
+
+    let progress_row = column![bar, container(progress_bar(0.0..=1.0, progress)).width(Length::Fill)]
+        .spacing(2);
+
+    container(progress_row)
+        .width(Length::Fill)
+        .padding(8)
+        .style(|theme: &iced::Theme| {
+            let palette = theme.extended_palette();
+            container::Style {
+                background: Some(iced::Background::Color(
+                    palette.background.strong.color,
+                )),
+                ..Default::default()
+            }
+        })
+        .into()
 }

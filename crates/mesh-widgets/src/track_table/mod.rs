@@ -14,7 +14,7 @@
 //! ```
 
 use iced::widget::{button, column, container, mouse_area, row, scrollable, text, text_input, Id};
-use iced::{Background, Border, Color, Element, Length, Padding, Theme};
+use iced::{Background, Border, Color, Element, Length, Padding, Point, Theme};
 use std::collections::HashSet;
 use std::hash::Hash;
 use std::sync::LazyLock;
@@ -181,6 +181,8 @@ pub struct TrackTableState<Id: Clone + Eq + Hash> {
     pub editing: Option<(Id, TrackColumn)>,
     /// Buffer for the value being edited
     pub edit_buffer: String,
+    /// Last known mouse position (for context menu placement)
+    pub last_mouse_position: Point,
 }
 
 impl<Id: Clone + Eq + Hash> Default for TrackTableState<Id> {
@@ -201,7 +203,13 @@ impl<Id: Clone + Eq + Hash> TrackTableState<Id> {
             sort_ascending: true,
             editing: None,
             edit_buffer: String::new(),
+            last_mouse_position: Point::ORIGIN,
         }
+    }
+
+    /// Update the last known mouse position
+    pub fn set_mouse_position(&mut self, position: Point) {
+        self.last_mouse_position = position;
     }
 
     /// Set the search query
@@ -353,6 +361,12 @@ pub enum TrackTableMessage<Id> {
     /// Mouse released over track row (for drop detection)
     /// Used to detect when dragged tracks are dropped onto this track/folder
     DropReceived(Id),
+    /// Right-click on a track (for context menu)
+    /// Contains the track ID and cursor position for menu placement
+    RightClick(Id, Point),
+    /// Mouse moved over a track row (for tracking cursor position)
+    /// Used internally to cache position for right-click context menus
+    MouseMoved(Point),
 }
 
 /// Build a track table view
@@ -625,18 +639,28 @@ where
     if is_row_editing {
         row_button.into()
     } else {
-        // Clone id for drop detection
+        // Clone id for drop detection and right-click
         let id_drop = track.id.clone();
+        let id_right_click = track.id.clone();
         let on_msg_drop = on_message.clone();
+        let on_msg_right = on_message.clone();
+        let on_msg_move = on_message.clone();
+
+        // Use cached mouse position for right-click menu placement
+        let cached_position = state.last_mouse_position;
 
         // mouse_area handles all mouse events:
         // - on_press: Select track (modifier handling is in app's update())
         // - on_double_click: Activate/load track
         // - on_release: Drop detection (when drag ends over this row)
+        // - on_move: Track cursor position for context menu placement
+        // - on_right_press: Show context menu
         mouse_area(row_button)
             .on_press(on_msg(TrackTableMessage::Select(id)))
             .on_double_click(on_msg_activate(TrackTableMessage::Activate(id_activate)))
             .on_release(on_msg_drop(TrackTableMessage::DropReceived(id_drop)))
+            .on_move(move |point| on_msg_move(TrackTableMessage::MouseMoved(point)))
+            .on_right_press(on_msg_right(TrackTableMessage::RightClick(id_right_click, cached_position)))
             .into()
     }
 }

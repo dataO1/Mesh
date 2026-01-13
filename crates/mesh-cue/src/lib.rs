@@ -16,4 +16,5 @@ pub mod config;
 pub mod export;
 pub mod import;
 pub mod keybindings;
+pub mod reanalysis;
 pub mod ui;

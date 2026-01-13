@@ -19,7 +19,7 @@ use crate::track_table::{
 };
 use crate::tree::{tree_view, TreeMessage, TreeNode, TreeState};
 use iced::widget::{container, row, rule};
-use iced::{Background, Element, Length, Theme};
+use iced::{Background, Element, Length, Point, Theme};
 use std::hash::Hash;
 
 /// State for the combined playlist browser widget
@@ -89,12 +89,17 @@ where
                 self.tree_state.edit_buffer = text.clone();
                 false
             }
+            TreeMessage::MouseMoved(point) => {
+                self.tree_state.set_mouse_position(*point);
+                false
+            }
             // These are passed through to app layer for storage operations
             TreeMessage::CreateChild(_)
             | TreeMessage::StartEdit(_)
             | TreeMessage::CommitEdit
             | TreeMessage::CancelEdit
-            | TreeMessage::DropReceived(_) => false,
+            | TreeMessage::DropReceived(_)
+            | TreeMessage::RightClick(_, _) => false,
         }
     }
 
@@ -149,6 +154,14 @@ where
             }
             TrackTableMessage::DropReceived(_) => {
                 // Drop handling is done by the app layer (needs access to drag state)
+                None
+            }
+            TrackTableMessage::MouseMoved(point) => {
+                self.table_state.set_mouse_position(*point);
+                None
+            }
+            TrackTableMessage::RightClick(_, _) => {
+                // Right-click handling is done by the app layer (context menu)
                 None
             }
         }

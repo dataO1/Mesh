@@ -471,6 +471,8 @@ pub enum Message {
     KeyReleased(iced::keyboard::Key, iced::keyboard::Modifiers),
     /// Modifier keys changed (Shift/Ctrl pressed/released without another key)
     ModifiersChanged(iced::keyboard::Modifiers),
+    /// Global mouse position updated (for context menu placement)
+    GlobalMouseMoved(iced::Point),
 
     // Playlist Browsers
     /// Message from left playlist browser
@@ -534,10 +536,19 @@ pub enum Message {
     CloseContextMenu,
 
     // Track operations
-    /// Re-analyze a track (recalculate BPM/key)
-    ReanalyzeTrack(NodeId),
     /// Start renaming a playlist
     StartRenamePlaylist(NodeId),
+
+    // Re-analysis
+    /// Start re-analysis of tracks with specified type and scope
+    StartReanalysis {
+        analysis_type: crate::analysis::AnalysisType,
+        scope: crate::analysis::ReanalysisScope,
+    },
+    /// Progress update from re-analysis worker thread
+    ReanalysisProgress(crate::analysis::ReanalysisProgress),
+    /// Cancel the current re-analysis
+    CancelReanalysis,
 }
 
 /// Main application
@@ -573,8 +584,35 @@ pub struct MeshCueApp {
     delete_state: super::delete_modal::DeleteState,
     /// Context menu state
     context_menu_state: super::context_menu::ContextMenuState,
+    /// Global mouse position (window coordinates) for context menu placement
+    global_mouse_position: iced::Point,
     /// Stem link selection mode - Some(stem_index) when selecting a source track for linking
     stem_link_selection: Option<usize>,
+    /// Re-analysis state
+    reanalysis_state: ReanalysisState,
+}
+
+/// State for re-analysis operations
+#[derive(Debug, Default)]
+pub struct ReanalysisState {
+    /// Whether re-analysis is in progress
+    pub is_running: bool,
+    /// Analysis type being performed
+    pub analysis_type: Option<crate::analysis::AnalysisType>,
+    /// Total tracks to process
+    pub total_tracks: usize,
+    /// Tracks completed so far
+    pub completed_tracks: usize,
+    /// Currently processing track name
+    pub current_track: Option<String>,
+    /// Number of successful completions
+    pub succeeded: usize,
+    /// Number of failed completions
+    pub failed: usize,
+    /// Cancel flag (shared with worker thread)
+    pub cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Channel to receive progress updates from worker thread
+    pub progress_rx: Option<std::sync::mpsc::Receiver<crate::analysis::ReanalysisProgress>>,
 }
 
 impl MeshCueApp {
@@ -652,7 +690,9 @@ impl MeshCueApp {
             import_state: ImportState::default(),
             delete_state: Default::default(),
             context_menu_state: Default::default(),
+            global_mouse_position: iced::Point::ORIGIN,
             stem_link_selection: None,
+            reanalysis_state: ReanalysisState::default(),
         };
 
         // Initial collection scan and playlist refresh
@@ -695,6 +735,7 @@ impl MeshCueApp {
                         waveform_preview: None,
                         drop_marker: state.drop_marker,
                         stem_links: state.stem_links.clone(),
+                        lufs: None, // Preserve existing LUFS (not re-measured on save)
                     };
 
                     // Mark as saved to prevent re-saving
@@ -886,6 +927,7 @@ impl MeshCueApp {
                                     waveform_preview: None, // Using live-generated waveform
                                     drop_marker: state.drop_marker,
                                     stem_links: state.stem_links.clone(),
+                                    lufs: None, // LUFS read from track, passed to Deck separately
                                 },
                                 duration_samples: duration_samples as usize,
                                 duration_seconds,
@@ -1075,6 +1117,7 @@ impl MeshCueApp {
                         waveform_preview: None, // Will be regenerated during save
                         drop_marker: state.drop_marker,
                         stem_links: state.stem_links.clone(),
+                        lufs: None, // Preserve existing LUFS (not re-measured on save)
                     };
 
                     return Task::perform(
@@ -1585,6 +1628,25 @@ impl MeshCueApp {
                 for progress in progress_messages {
                     let _ = self.update(Message::ImportProgressUpdate(progress));
                 }
+
+                // Poll re-analysis progress channel (same pattern as import)
+                let reanalysis_messages: Vec<_> = self
+                    .reanalysis_state
+                    .progress_rx
+                    .as_ref()
+                    .map(|rx| {
+                        let mut msgs = Vec::new();
+                        while let Ok(progress) = rx.try_recv() {
+                            msgs.push(progress);
+                        }
+                        msgs
+                    })
+                    .unwrap_or_default();
+
+                // Process collected re-analysis messages
+                for progress in reanalysis_messages {
+                    let _ = self.update(Message::ReanalysisProgress(progress));
+                }
             }
 
             // Zoomed Waveform
@@ -1912,6 +1974,9 @@ impl MeshCueApp {
                     self.ctrl_held
                 );
             }
+            Message::GlobalMouseMoved(position) => {
+                self.global_mouse_position = position;
+            }
 
             // Playlist Browsers
             Message::BrowserLeft(browser_msg) => {
@@ -1993,6 +2058,34 @@ impl MeshCueApp {
                                 }
                                 // Always end drag on mouse release
                                 return self.update(Message::DragTrackEnd);
+                            }
+                            TreeMessage::RightClick(id, _widget_position) => {
+                                // Use global mouse position for accurate menu placement
+                                let position = self.global_mouse_position;
+                                log::info!("[LEFT TREE] RightClick received: id={:?}, global_position={:?}", id, position);
+                                // Show context menu for the tree node
+                                if let Some(ref storage) = self.collection.playlist_storage {
+                                    if let Some(node) = storage.get_node(id) {
+                                        log::info!("[LEFT TREE] Node found: kind={:?}, name={}", node.kind, node.name);
+                                        let menu_kind = if node.kind == NodeKind::Collection {
+                                            super::context_menu::ContextMenuKind::Collection
+                                        } else {
+                                            super::context_menu::ContextMenuKind::Playlist {
+                                                playlist_id: id.clone(),
+                                                playlist_name: node.name.clone(),
+                                            }
+                                        };
+                                        log::info!("[LEFT TREE] Showing context menu: {:?}", menu_kind);
+                                        return self.update(Message::ShowContextMenu(menu_kind, position));
+                                    } else {
+                                        log::warn!("[LEFT TREE] Node not found in storage: {:?}", id);
+                                    }
+                                } else {
+                                    log::warn!("[LEFT TREE] No playlist storage");
+                                }
+                            }
+                            TreeMessage::MouseMoved(_) => {
+                                // Widget-relative position, not used (we track global position via subscription)
                             }
                             _ => {
                                 // Handle Toggle, Select, EditChanged via the standard handler
@@ -2172,6 +2265,50 @@ impl MeshCueApp {
                             // End drag on mouse release
                             return self.update(Message::DragTrackEnd);
                         }
+                        // Handle right-click on track
+                        if let TrackTableMessage::RightClick(track_id, _widget_position) = &table_msg {
+                            // Use global mouse position for accurate menu placement
+                            let position = self.global_mouse_position;
+                            log::info!("[LEFT TABLE] RightClick received: track_id={:?}, global_position={:?}", track_id, position);
+                            if let Some(ref storage) = self.collection.playlist_storage {
+                                if let Some(node) = storage.get_node(track_id) {
+                                    log::info!("[LEFT TABLE] Track found: name={}", node.name);
+                                    // Determine if we're in collection or playlist view
+                                    let is_playlist_view = self.collection.browser_left.current_folder.as_ref()
+                                        .and_then(|f| storage.get_node(f))
+                                        .map(|n| n.kind == NodeKind::Playlist || n.kind == NodeKind::PlaylistsRoot)
+                                        .unwrap_or(false);
+
+                                    // Get currently selected tracks for batch operations
+                                    let selected_tracks: Vec<NodeId> = self.collection.browser_left.table_state
+                                        .selected
+                                        .iter()
+                                        .filter(|id| *id != track_id)
+                                        .cloned()
+                                        .collect();
+
+                                    let menu_kind = if is_playlist_view {
+                                        super::context_menu::ContextMenuKind::PlaylistTrack {
+                                            track_id: track_id.clone(),
+                                            track_name: node.name.clone(),
+                                            selected_tracks,
+                                        }
+                                    } else {
+                                        super::context_menu::ContextMenuKind::CollectionTrack {
+                                            track_id: track_id.clone(),
+                                            track_name: node.name.clone(),
+                                            selected_tracks,
+                                        }
+                                    };
+                                    log::info!("[LEFT TABLE] Showing context menu: is_playlist={}", is_playlist_view);
+                                    return self.update(Message::ShowContextMenu(menu_kind, position));
+                                } else {
+                                    log::warn!("[LEFT TABLE] Track not found in storage: {:?}", track_id);
+                                }
+                            } else {
+                                log::warn!("[LEFT TABLE] No playlist storage");
+                            }
+                        }
                     }
                 }
             }
@@ -2254,6 +2391,27 @@ impl MeshCueApp {
                                 }
                                 // Always end drag on mouse release
                                 return self.update(Message::DragTrackEnd);
+                            }
+                            TreeMessage::RightClick(id, _widget_position) => {
+                                // Use global mouse position for accurate menu placement
+                                let position = self.global_mouse_position;
+                                // Show context menu for the tree node
+                                if let Some(ref storage) = self.collection.playlist_storage {
+                                    if let Some(node) = storage.get_node(id) {
+                                        let menu_kind = if node.kind == NodeKind::Collection {
+                                            super::context_menu::ContextMenuKind::Collection
+                                        } else {
+                                            super::context_menu::ContextMenuKind::Playlist {
+                                                playlist_id: id.clone(),
+                                                playlist_name: node.name.clone(),
+                                            }
+                                        };
+                                        return self.update(Message::ShowContextMenu(menu_kind, position));
+                                    }
+                                }
+                            }
+                            TreeMessage::MouseMoved(_) => {
+                                // Widget-relative position, not used (we track global position via subscription)
                             }
                             _ => {
                                 // Handle Toggle, Select, EditChanged via the standard handler
@@ -2421,6 +2579,43 @@ impl MeshCueApp {
                             // End drag on mouse release
                             return self.update(Message::DragTrackEnd);
                         }
+                        // Handle right-click on track
+                        if let TrackTableMessage::RightClick(track_id, _widget_position) = &table_msg {
+                            // Use global mouse position for accurate menu placement
+                            let position = self.global_mouse_position;
+                            if let Some(ref storage) = self.collection.playlist_storage {
+                                if let Some(node) = storage.get_node(track_id) {
+                                    // Determine if we're in collection or playlist view
+                                    let is_playlist_view = self.collection.browser_right.current_folder.as_ref()
+                                        .and_then(|f| storage.get_node(f))
+                                        .map(|n| n.kind == NodeKind::Playlist || n.kind == NodeKind::PlaylistsRoot)
+                                        .unwrap_or(false);
+
+                                    // Get currently selected tracks for batch operations
+                                    let selected_tracks: Vec<NodeId> = self.collection.browser_right.table_state
+                                        .selected
+                                        .iter()
+                                        .filter(|id| *id != track_id)
+                                        .cloned()
+                                        .collect();
+
+                                    let menu_kind = if is_playlist_view {
+                                        super::context_menu::ContextMenuKind::PlaylistTrack {
+                                            track_id: track_id.clone(),
+                                            track_name: node.name.clone(),
+                                            selected_tracks,
+                                        }
+                                    } else {
+                                        super::context_menu::ContextMenuKind::CollectionTrack {
+                                            track_id: track_id.clone(),
+                                            track_name: node.name.clone(),
+                                            selected_tracks,
+                                        }
+                                    };
+                                    return self.update(Message::ShowContextMenu(menu_kind, position));
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -2580,6 +2775,7 @@ impl MeshCueApp {
                     import_folder: self.import_state.import_folder.clone(),
                     collection_path: self.collection.collection.path().to_path_buf(),
                     bpm_config: self.config.analysis.bpm.clone(),
+                    loudness_config: self.config.analysis.loudness.clone(),
                     parallel_processes: self.config.analysis.parallel_processes,
                 };
 
@@ -2860,27 +3056,162 @@ impl MeshCueApp {
                 });
             }
             Message::ShowContextMenu(kind, position) => {
+                log::info!("[CONTEXT MENU] ShowContextMenu called: position={:?}, is_open will be: true", position);
                 self.context_menu_state.show(kind, position);
+                log::info!("[CONTEXT MENU] After show: is_open={}, position={:?}", self.context_menu_state.is_open, self.context_menu_state.position);
             }
             Message::CloseContextMenu => {
                 self.context_menu_state.close();
             }
-            Message::ReanalyzeTrack(track_id) => {
+            Message::StartReanalysis { analysis_type, scope } => {
+                use crate::analysis::{AnalysisType, ReanalysisProgress, ReanalysisScope};
+                use crate::reanalysis::run_batch_reanalysis;
+                use std::sync::atomic::AtomicBool;
+                use std::sync::mpsc;
+
                 self.context_menu_state.close();
 
-                // Get track path
-                let track_path = self
-                    .collection
-                    .playlist_storage
-                    .as_ref()
-                    .and_then(|s| s.get_node(&track_id))
-                    .and_then(|n| n.track_path.clone());
+                // Don't start if already running
+                if self.reanalysis_state.is_running {
+                    log::warn!("Re-analysis already in progress, ignoring request");
+                    return Task::none();
+                }
 
-                if let Some(path) = track_path {
-                    log::info!("Re-analyzing track: {:?}", path);
-                    // TODO: Spawn async analysis task
-                    // For now, just log - full implementation would run BPM/key analysis
-                    // and update the file metadata
+                // Resolve scope to list of file paths
+                let tracks: Vec<PathBuf> = match &scope {
+                    ReanalysisScope::SingleTrack(track_id) => {
+                        self.collection
+                            .playlist_storage
+                            .as_ref()
+                            .and_then(|s| s.get_node(track_id))
+                            .and_then(|n| n.track_path.clone())
+                            .map(|p| vec![p])
+                            .unwrap_or_default()
+                    }
+                    ReanalysisScope::SelectedTracks(track_ids) => {
+                        track_ids
+                            .iter()
+                            .filter_map(|id| {
+                                self.collection
+                                    .playlist_storage
+                                    .as_ref()
+                                    .and_then(|s| s.get_node(id))
+                                    .and_then(|n| n.track_path.clone())
+                            })
+                            .collect()
+                    }
+                    ReanalysisScope::PlaylistFolder(playlist_id) => {
+                        // Get all tracks in the playlist
+                        self.collection
+                            .playlist_storage
+                            .as_ref()
+                            .map(|s| {
+                                s.get_children(playlist_id)
+                                    .into_iter()
+                                    .filter_map(|node| node.track_path)
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    }
+                    ReanalysisScope::EntireCollection => {
+                        // Get all tracks from collection
+                        self.collection
+                            .collection
+                            .tracks()
+                            .iter()
+                            .map(|t| t.path.clone())
+                            .collect()
+                    }
+                };
+
+                if tracks.is_empty() {
+                    log::warn!("No tracks to re-analyze");
+                    return Task::none();
+                }
+
+                log::info!(
+                    "Starting {} re-analysis for {} tracks",
+                    analysis_type.display_name(),
+                    tracks.len()
+                );
+
+                // Set up state
+                self.reanalysis_state.is_running = true;
+                self.reanalysis_state.analysis_type = Some(analysis_type);
+                self.reanalysis_state.total_tracks = tracks.len();
+                self.reanalysis_state.completed_tracks = 0;
+                self.reanalysis_state.succeeded = 0;
+                self.reanalysis_state.failed = 0;
+                self.reanalysis_state.current_track = None;
+
+                // Create cancel flag and progress channel
+                let cancel_flag = Arc::new(AtomicBool::new(false));
+                self.reanalysis_state.cancel_flag = Some(cancel_flag.clone());
+
+                let (progress_tx, progress_rx) = mpsc::channel();
+                let bpm_config = self.config.analysis.bpm.clone();
+                let loudness_config = self.config.analysis.loudness.clone();
+                let parallel_processes = self.config.analysis.parallel_processes;
+
+                // Store receiver for polling in Tick handler (same pattern as import)
+                self.reanalysis_state.progress_rx = Some(progress_rx);
+
+                // Spawn worker thread
+                std::thread::spawn(move || {
+                    run_batch_reanalysis(
+                        tracks,
+                        analysis_type,
+                        bpm_config,
+                        loudness_config,
+                        parallel_processes,
+                        progress_tx,
+                        cancel_flag,
+                    );
+                });
+            }
+            Message::ReanalysisProgress(progress) => {
+                use crate::analysis::ReanalysisProgress;
+
+                match progress {
+                    ReanalysisProgress::Started { total_tracks, analysis_type } => {
+                        self.reanalysis_state.total_tracks = total_tracks;
+                        self.reanalysis_state.analysis_type = Some(analysis_type);
+                    }
+                    ReanalysisProgress::TrackStarted { track_name, index, .. } => {
+                        self.reanalysis_state.current_track = Some(track_name);
+                        self.reanalysis_state.completed_tracks = index;
+                    }
+                    ReanalysisProgress::TrackCompleted { success, .. } => {
+                        if success {
+                            self.reanalysis_state.succeeded += 1;
+                        } else {
+                            self.reanalysis_state.failed += 1;
+                        }
+                        self.reanalysis_state.completed_tracks += 1;
+                    }
+                    ReanalysisProgress::AllComplete { succeeded, failed, .. } => {
+                        self.reanalysis_state.is_running = false;
+                        self.reanalysis_state.succeeded = succeeded;
+                        self.reanalysis_state.failed = failed;
+                        self.reanalysis_state.current_track = None;
+                        self.reanalysis_state.cancel_flag = None;
+                        self.reanalysis_state.progress_rx = None;
+
+                        log::info!(
+                            "Re-analysis complete: {} succeeded, {} failed",
+                            succeeded,
+                            failed
+                        );
+
+                        // Refresh collection to show updated metadata
+                        return Task::perform(async {}, |_| Message::RefreshCollection);
+                    }
+                }
+            }
+            Message::CancelReanalysis => {
+                if let Some(ref flag) = self.reanalysis_state.cancel_flag {
+                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                    log::info!("Re-analysis cancellation requested");
                 }
             }
             Message::StartRenamePlaylist(playlist_id) => {
@@ -2922,11 +3253,15 @@ impl MeshCueApp {
             View::Collection => self.view_collection(),
         };
 
-        // Global status bar at bottom (visible when import is active)
-        let status_bar = super::import_modal::view_progress_bar(&self.import_state);
+        // Global status bars at bottom (visible when import or re-analysis is active)
+        let import_bar = super::import_modal::view_progress_bar(&self.import_state);
+        let reanalysis_bar = self.view_reanalysis_progress_bar();
 
         let mut main = column![header, content].spacing(10);
-        if let Some(bar) = status_bar {
+        if let Some(bar) = import_bar {
+            main = main.push(bar);
+        }
+        if let Some(bar) = reanalysis_bar {
             main = main.push(bar);
         }
 
@@ -2988,6 +3323,30 @@ impl MeshCueApp {
                 .height(Length::Fill);
 
             stack![base, backdrop, modal].into()
+        } else if self.context_menu_state.is_open {
+            // Context menu overlay - transparent backdrop + positioned menu
+            let backdrop = mouse_area(
+                container(Space::new())
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+            )
+            .on_press(Message::CloseContextMenu);
+
+            if let Some(menu) = super::context_menu::view(&self.context_menu_state) {
+                // Position the menu at the click location using spacers
+                let pos = self.context_menu_state.position;
+                let positioned_menu = column![
+                    Space::new().height(Length::Fixed(pos.y)),
+                    row![
+                        Space::new().width(Length::Fixed(pos.x)),
+                        menu,
+                    ]
+                ];
+
+                stack![base, backdrop, positioned_menu].into()
+            } else {
+                base
+            }
         } else {
             base
         }
@@ -3000,7 +3359,7 @@ impl MeshCueApp {
 
     /// Subscription for periodic UI updates during playback and keyboard events
     pub fn subscription(&self) -> iced::Subscription<Message> {
-        use iced::{keyboard, time};
+        use iced::{event, keyboard, mouse, time, Event};
         use std::time::Duration;
 
         // Keyboard events for keybindings and modifier tracking
@@ -3018,6 +3377,16 @@ impl MeshCueApp {
             }
         });
 
+        // Window events for tracking global mouse position (used for context menu placement)
+        let mouse_sub = event::listen().map(|event| {
+            match event {
+                Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                    Message::GlobalMouseMoved(position)
+                }
+                _ => Message::Tick, // Ignore other events
+            }
+        });
+
         // Update waveform playhead 60 times per second when playing
         let is_playing = self
             .collection
@@ -3032,11 +3401,54 @@ impl MeshCueApp {
         if is_playing || self.audio.is_playing() || import_active {
             iced::Subscription::batch([
                 keyboard_sub,
+                mouse_sub,
                 time::every(Duration::from_millis(16)).map(|_| Message::Tick),
             ])
         } else {
-            keyboard_sub
+            iced::Subscription::batch([keyboard_sub, mouse_sub])
         }
+    }
+
+    /// Render a progress bar for re-analysis operations
+    fn view_reanalysis_progress_bar(&self) -> Option<Element<Message>> {
+        if !self.reanalysis_state.is_running {
+            return None;
+        }
+
+        let progress = if self.reanalysis_state.total_tracks > 0 {
+            self.reanalysis_state.completed_tracks as f32 / self.reanalysis_state.total_tracks as f32
+        } else {
+            0.0
+        };
+
+        let analysis_name = self.reanalysis_state.analysis_type
+            .map(|t| t.display_name())
+            .unwrap_or("Analysis");
+
+        let track_info = self.reanalysis_state.current_track
+            .as_ref()
+            .map(|name| {
+                if name.len() > 40 {
+                    format!("{}...", &name[..37])
+                } else {
+                    name.clone()
+                }
+            })
+            .unwrap_or_default();
+
+        let label = format!("Re-analysing {}: {}", analysis_name, track_info);
+        let progress_text = format!(
+            "{}/{}",
+            self.reanalysis_state.completed_tracks,
+            self.reanalysis_state.total_tracks
+        );
+
+        Some(super::import_modal::build_status_bar(
+            label,
+            progress_text,
+            progress,
+            Message::CancelReanalysis,
+        ))
     }
 
     /// View header with app title and settings

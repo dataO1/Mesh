@@ -94,14 +94,16 @@ impl CollectionBrowserState {
                                     self.selected_track_path = None;
                                 }
                             }
-                            // Ignore all write operations
+                            // Ignore all write operations and context menu
                             TreeMessage::CreateChild(_)
                             | TreeMessage::StartEdit(_)
                             | TreeMessage::EditChanged(_)
                             | TreeMessage::CommitEdit
                             | TreeMessage::CancelEdit
-                            | TreeMessage::DropReceived(_) => {
-                                // Silently ignore write operations
+                            | TreeMessage::DropReceived(_)
+                            | TreeMessage::RightClick(_, _)
+                            | TreeMessage::MouseMoved(_) => {
+                                // Silently ignore write operations and context menu
                             }
                         }
                     }
@@ -123,13 +125,15 @@ impl CollectionBrowserState {
                                     return Some((0, path));
                                 }
                             }
-                            // Ignore all edit and drop operations (mesh-player is read-only)
+                            // Ignore all edit, drop, and context menu operations (mesh-player is read-only)
                             TrackTableMessage::StartEdit(_, _, _)
                             | TrackTableMessage::EditChanged(_)
                             | TrackTableMessage::CommitEdit
                             | TrackTableMessage::CancelEdit
-                            | TrackTableMessage::DropReceived(_) => {
-                                // Silently ignore edit and drop operations
+                            | TrackTableMessage::DropReceived(_)
+                            | TrackTableMessage::RightClick(_, _)
+                            | TrackTableMessage::MouseMoved(_) => {
+                                // Silently ignore edit, drop, and context menu operations
                             }
                         }
                     }

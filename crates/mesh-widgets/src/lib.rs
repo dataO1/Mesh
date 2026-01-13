@@ -47,7 +47,8 @@ pub use rotary_knob::{rotary_knob, RotaryKnobState};
 
 // Peak generation utilities
 pub use waveform::{
-    generate_peaks, generate_peaks_for_range, generate_waveform_preview, smooth_peaks,
+    generate_peaks, generate_peaks_for_range, generate_waveform_preview,
+    generate_waveform_preview_with_gain, smooth_peaks,
     DEFAULT_WIDTH, HIGHRES_WIDTH, PEAK_SMOOTHING_WINDOW,
 };
 

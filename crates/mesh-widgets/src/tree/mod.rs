@@ -14,7 +14,7 @@
 //! ```
 
 use iced::widget::{button, column, mouse_area, row, scrollable, text, text_input, Space};
-use iced::{Background, Border, Color, Element, Length, Padding, Theme};
+use iced::{Background, Border, Color, Element, Length, Padding, Point, Theme};
 use std::collections::HashSet;
 use std::hash::Hash;
 
@@ -123,6 +123,8 @@ pub struct TreeState<Id: Clone + Eq + Hash> {
     pub editing: Option<Id>,
     /// Buffer for the edited name
     pub edit_buffer: String,
+    /// Last known mouse position (for context menu placement)
+    pub last_mouse_position: Point,
 }
 
 impl<Id: Clone + Eq + Hash> Default for TreeState<Id> {
@@ -139,7 +141,13 @@ impl<Id: Clone + Eq + Hash> TreeState<Id> {
             selected: None,
             editing: None,
             edit_buffer: String::new(),
+            last_mouse_position: Point::ORIGIN,
         }
+    }
+
+    /// Update the last known mouse position
+    pub fn set_mouse_position(&mut self, position: Point) {
+        self.last_mouse_position = position;
     }
 
     /// Toggle the expanded state of a node
@@ -228,6 +236,11 @@ pub enum TreeMessage<Id> {
     CancelEdit,
     /// Mouse released over node (for drop detection)
     DropReceived(Id),
+    /// Right-click on a node (for context menu)
+    /// Contains the node ID and cursor position for menu placement
+    RightClick(Id, Point),
+    /// Mouse moved over a node (for tracking cursor position)
+    MouseMoved(Point),
 }
 
 /// Build a tree view from nodes
@@ -419,13 +432,26 @@ where
                 .align_y(iced::Alignment::Center)
         };
 
-        // Wrap row in mouse_area to detect drops (mouse release over this node)
+        // Wrap row in mouse_area for various mouse events
         let id_drop = node.id.clone();
+        let id_right_click = node.id.clone();
         let on_msg_drop = on_message.clone();
-        let row_with_drop = mouse_area(row_content)
-            .on_release(on_msg_drop(TreeMessage::DropReceived(id_drop)));
+        let on_msg_move = on_message.clone();
+        let on_msg_right = on_message.clone();
 
-        elements.push(row_with_drop.into());
+        // Use cached mouse position for right-click menu placement
+        let cached_position = state.last_mouse_position;
+
+        // mouse_area handles:
+        // - on_release: Drop detection (when drag ends over this node)
+        // - on_move: Track cursor position for context menu placement
+        // - on_right_press: Show context menu
+        let row_with_events = mouse_area(row_content)
+            .on_release(on_msg_drop(TreeMessage::DropReceived(id_drop)))
+            .on_move(move |point| on_msg_move(TreeMessage::MouseMoved(point)))
+            .on_right_press(on_msg_right(TreeMessage::RightClick(id_right_click, cached_position)));
+
+        elements.push(row_with_events.into());
 
         // Recursively add children if expanded
         if is_expanded && node.has_children() {
