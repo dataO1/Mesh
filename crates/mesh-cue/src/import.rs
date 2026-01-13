@@ -210,8 +210,8 @@ impl StemImporter {
                 let bass_mono = (buffers.bass[i].left + buffers.bass[i].right) * 0.5;
                 let other_mono = (buffers.other[i].left + buffers.other[i].right) * 0.5;
 
-                // Mix all stems (with some headroom)
-                (vocals_mono + drums_mono + bass_mono + other_mono) * 0.25
+                // Sum all stems at full level (no attenuation for accurate LUFS)
+                vocals_mono + drums_mono + bass_mono + other_mono
             })
             .collect();
 

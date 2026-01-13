@@ -104,13 +104,14 @@ fn create_mono_mix(stems: &mesh_core::audio_file::StemBuffers) -> Vec<f32> {
     let mut mono = Vec::with_capacity(len);
 
     for i in 0..len {
-        // Sum all stems and average (use .left and .right fields)
-        let vocals = (stems.vocals[i].left + stems.vocals[i].right) / 2.0;
-        let drums = (stems.drums[i].left + stems.drums[i].right) / 2.0;
-        let bass = (stems.bass[i].left + stems.bass[i].right) / 2.0;
-        let other = (stems.other[i].left + stems.other[i].right) / 2.0;
+        // Convert each stem to mono (average L+R)
+        let vocals = (stems.vocals[i].left + stems.vocals[i].right) * 0.5;
+        let drums = (stems.drums[i].left + stems.drums[i].right) * 0.5;
+        let bass = (stems.bass[i].left + stems.bass[i].right) * 0.5;
+        let other = (stems.other[i].left + stems.other[i].right) * 0.5;
 
-        mono.push((vocals + drums + bass + other) / 4.0);
+        // Sum all stems at full level (no attenuation for accurate LUFS)
+        mono.push(vocals + drums + bass + other);
     }
 
     mono
