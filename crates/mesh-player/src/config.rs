@@ -1,7 +1,7 @@
 //! Player configuration for mesh-player
 //!
-//! Configuration is stored as YAML in the user's config directory.
-//! Default location: ~/.config/mesh-player/config.yaml
+//! Configuration is stored as YAML in the mesh collection folder.
+//! Default location: ~/Music/mesh-collection/player-config.yaml
 
 use anyhow::{Context, Result};
 use iced::Color;
@@ -213,97 +213,70 @@ impl DisplayConfig {
     }
 }
 
-/// Slicer configuration section
+// Re-export shared slicer config types from mesh-widgets
+pub use mesh_widgets::{SlicerConfig, SlicerPresetConfig, SlicerSequenceConfig, SlicerStepConfig};
+
+/// Convert mesh-widgets SlicerConfig to engine SlicerPreset array
 ///
-/// Controls the stem slicer feature that allows real-time remixing
-/// by rearranging slice playback order.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct SlicerConfig {
-    /// Default buffer size in bars (1, 4, 8, or 16)
-    /// Smaller = more responsive, larger = more material to work with
-    pub default_buffer_bars: u32,
-    /// Which stems are affected by the slicer [Vocals, Drums, Bass, Other]
-    /// Default: only Drums enabled
-    pub affected_stems: [bool; 4],
-    /// 8 preset patterns for breakbeat manipulation (sorted sparse → busy)
-    /// Button 0-7 loads preset. Each pattern has 16 steps (slice indices 0-15).
-    pub presets: [[u8; 16]; 8],
-}
+/// This converts the rich per-stem pattern format (with muting, layering)
+/// into the engine's runtime format.
+pub fn slicer_config_to_engine_presets(
+    config: &SlicerConfig,
+) -> [mesh_core::engine::SlicerPreset; 8] {
+    use mesh_core::engine::{SliceStep, SlicerPreset, StepSequence, MAX_SLICE_LAYERS, MUTED_SLICE};
 
-impl Default for SlicerConfig {
-    fn default() -> Self {
-        Self {
-            default_buffer_bars: 4, // 4 bars = 16 slices (one per 16th note)
-            affected_stems: [false, true, false, false], // Only Drums by default
-            // Breakbeat presets: all use all 16 slices for full variety
-            // Each preset is a permutation ensuring all beats are heard
-            presets: [
-                // Preset 1: Sequential (default/reset)
-                [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
-                // Preset 2: Bar swap (play bar 3-4 then bar 1-2)
-                [8, 9, 10, 11, 12, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7],
-                // Preset 3: Reverse full
-                [15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
-                // Preset 4: Reverse per bar
-                [3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12],
-                // Preset 5: Interleave (zip bar1+bar3, bar2+bar4)
-                [0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15],
-                // Preset 6: Funky shuffle
-                [0, 5, 2, 7, 4, 1, 6, 3, 8, 13, 10, 15, 12, 9, 14, 11],
-                // Preset 7: Evens then odds (skip shuffle)
-                [0, 2, 4, 6, 8, 10, 12, 14, 1, 3, 5, 7, 9, 11, 13, 15],
-                // Preset 8: Adjacent swap (pair flip)
-                [1, 0, 3, 2, 5, 4, 7, 6, 9, 8, 11, 10, 13, 12, 15, 14],
-            ],
-        }
-    }
-}
+    std::array::from_fn(|preset_idx| {
+        let preset_config = &config.presets[preset_idx];
+        SlicerPreset {
+            stems: std::array::from_fn(|stem_idx| {
+                preset_config.stems[stem_idx].as_ref().map(|seq_config| {
+                    StepSequence {
+                        steps: std::array::from_fn(|step_idx| {
+                            let step_config = &seq_config.steps[step_idx];
 
-impl SlicerConfig {
-    /// Get buffer bars clamped to valid range
-    pub fn buffer_bars(&self) -> u32 {
-        match self.default_buffer_bars {
-            1 | 4 | 8 | 16 => self.default_buffer_bars,
-            _ => 4, // Default to 4 if invalid
-        }
-    }
+                            if step_config.muted || step_config.slices.is_empty() {
+                                // Muted step: all layers silent
+                                SliceStep {
+                                    slices: [MUTED_SLICE; MAX_SLICE_LAYERS],
+                                    velocities: [0.0; MAX_SLICE_LAYERS],
+                                }
+                            } else {
+                                // Active step: convert Vec<u8> to fixed array
+                                let mut slices = [MUTED_SLICE; MAX_SLICE_LAYERS];
+                                let mut velocities = [0.0; MAX_SLICE_LAYERS];
 
-    /// Get a preset pattern by index (0-7)
-    pub fn preset(&self, index: usize) -> Option<[u8; 16]> {
-        self.presets.get(index).copied()
-    }
+                                for (layer, &slice_idx) in
+                                    step_config.slices.iter().take(MAX_SLICE_LAYERS).enumerate()
+                                {
+                                    slices[layer] = slice_idx;
+                                    velocities[layer] = 1.0; // Full velocity
+                                }
 
-    /// Convert config presets to engine SlicerPreset format
-    ///
-    /// Uses `affected_stems` to determine which stems get patterns.
-    /// Stems not in `affected_stems` will have `None` (bypass).
-    pub fn to_engine_presets(&self) -> [mesh_core::engine::SlicerPreset; 8] {
-        use mesh_core::engine::{SlicerPreset, StepSequence};
-
-        std::array::from_fn(|preset_idx| {
-            let pattern = &self.presets[preset_idx];
-            SlicerPreset {
-                stems: std::array::from_fn(|stem_idx| {
-                    if self.affected_stems[stem_idx] {
-                        Some(StepSequence::from_slice_array(pattern))
-                    } else {
-                        None // Bypass this stem
+                                SliceStep { slices, velocities }
+                            }
+                        }),
                     }
-                }),
-            }
-        })
-    }
+                })
+            }),
+        }
+    })
+}
+
+/// Get the default collection path
+///
+/// Returns: ~/Music/mesh-collection
+pub fn default_collection_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Music")
+        .join("mesh-collection")
 }
 
 /// Get the default config file path
 ///
-/// Returns: ~/.config/mesh-player/config.yaml
+/// Returns: ~/Music/mesh-collection/player-config.yaml
 pub fn default_config_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
-        .join("mesh-player")
-        .join("config.yaml")
+    default_collection_path().join("player-config.yaml")
 }
 
 /// Load configuration from a YAML file
@@ -401,7 +374,7 @@ mod tests {
                 ..Default::default()
             },
             slicer: SlicerConfig {
-                default_buffer_bars: 8,
+                buffer_bars: 8,
                 ..Default::default()
             },
             collection_path: PathBuf::from("/tmp/test-collection"),

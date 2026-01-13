@@ -82,7 +82,7 @@ fn main() -> iced::Result {
     println!();
     println!("Starting Mesh DJ Player GUI...");
 
-    // Initialize theme from ~/.config/mesh-player/theme.yaml
+    // Initialize theme from ~/Music/mesh-collection/theme.yaml
     theme::init_theme();
 
     // Wrap command_sender in a cell so the boot closure can be Fn (required by iced)

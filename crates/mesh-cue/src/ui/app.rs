@@ -12,12 +12,13 @@ use iced::widget::{button, center, column, container, mouse_area, opaque, row, s
 use iced::{Color, Element, Length, Task, Theme};
 use basedrop::Shared;
 use mesh_core::audio_file::{BeatGrid, CuePoint, LoadedTrack, MetadataField, StemBuffers, TrackMetadata, update_metadata_in_file};
-use mesh_core::engine::{Deck, PreparedTrack};
+use mesh_core::engine::{DeckAtomics, LOOP_LENGTHS};
 use mesh_core::playlist::{FilesystemStorage, NodeId, NodeKind, PlaylistNode, PlaylistStorage};
-use mesh_core::types::{DeckId, PlayState};
+use mesh_core::types::{PlayState, Stem};
 use mesh_widgets::{
     PlaylistBrowserMessage, PlaylistBrowserState, TreeIcon, TreeNode,
     TrackColumn, TrackRow, TrackTableMessage,
+    SliceEditorState, ZoomedViewMode,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -163,17 +164,19 @@ pub struct LoadedTrackState {
     pub combined_waveform: CombinedWaveformView,
     /// Whether audio is currently loading in the background
     pub loading_audio: bool,
-    /// Player deck for transport and hot cue state (created when stems load)
-    /// Uses Deck's state for: is_playing, position, beat_jump_size, cue_point, hot_cue_preview
-    pub deck: Option<Deck>,
+    /// Atomics for reading deck state from audio engine (position, play state, loop state)
+    /// These are cloned from AudioState when track is loaded
+    pub deck_atomics: Arc<DeckAtomics>,
     /// Last time the playhead position was updated (for smooth interpolation)
     pub last_playhead_update: std::time::Instant,
+    /// Slice editor state for editing slicer presets
+    pub slice_editor: SliceEditorState,
 }
 
 impl LoadedTrackState {
-    /// Get current playhead position (from deck if loaded, otherwise 0)
+    /// Get current playhead position (from deck atomics)
     pub fn playhead_position(&self) -> u64 {
-        self.deck.as_ref().map(|d| d.position()).unwrap_or(0)
+        self.deck_atomics.position()
     }
 
     /// Get interpolated playhead position for smooth waveform rendering
@@ -185,8 +188,8 @@ impl LoadedTrackState {
     pub fn interpolated_playhead_position(&self) -> u64 {
         let base_position = self.playhead_position();
 
-        // Only interpolate when playing
-        if !self.is_playing() {
+        // Only interpolate when audio is active (playing or cueing)
+        if !self.is_audio_active() {
             return base_position;
         }
 
@@ -205,20 +208,48 @@ impl LoadedTrackState {
 
     /// Check if audio is currently playing
     pub fn is_playing(&self) -> bool {
-        self.deck
-            .as_ref()
-            .map(|d| d.state() == PlayState::Playing)
-            .unwrap_or(false)
+        self.deck_atomics.play_state() == PlayState::Playing
     }
 
-    /// Get beat jump size (from deck if loaded, default 4)
+    /// Check if audio is cueing (hot cue/cue preview)
+    pub fn is_cueing(&self) -> bool {
+        self.deck_atomics.play_state() == PlayState::Cueing
+    }
+
+    /// Check if audio is active (playing or cueing) - used for waveform animation
+    pub fn is_audio_active(&self) -> bool {
+        matches!(self.deck_atomics.play_state(), PlayState::Playing | PlayState::Cueing)
+    }
+
+    /// Get play state
+    pub fn play_state(&self) -> PlayState {
+        self.deck_atomics.play_state()
+    }
+
+    /// Check if loop is active
+    pub fn is_loop_active(&self) -> bool {
+        self.deck_atomics.loop_active.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Get cue point position
+    pub fn cue_point(&self) -> u64 {
+        self.deck_atomics.cue_point()
+    }
+
+    /// Get beat jump size (same as loop length in beats, minimum 1)
     pub fn beat_jump_size(&self) -> i32 {
-        self.deck.as_ref().map(|d| d.beat_jump_size()).unwrap_or(4)
+        self.loop_length_beats().max(1.0) as i32
     }
 
-    /// Get loop length in beats (from deck if loaded, default 4.0)
+    /// Get loop length in beats (from loop_length_index atomic)
     pub fn loop_length_beats(&self) -> f64 {
-        self.deck.as_ref().map(|d| d.loop_state().length_beats()).unwrap_or(4.0)
+        let index = self.deck_atomics.loop_length_index() as usize;
+        LOOP_LENGTHS.get(index).copied().unwrap_or(4.0)
+    }
+
+    /// Get loop bounds (start, end) in samples
+    pub fn loop_bounds(&self) -> (u64, u64) {
+        (self.deck_atomics.loop_start(), self.deck_atomics.loop_end())
     }
 
     /// Update zoomed waveform cache if needed for new playhead position
@@ -246,7 +277,7 @@ impl std::fmt::Debug for LoadedTrackState {
             .field("duration_samples", &self.duration_samples)
             .field("modified", &self.modified)
             .field("loading_audio", &self.loading_audio)
-            .field("has_deck", &self.deck.is_some())
+            .field("position", &self.deck_atomics.position())
             .finish_non_exhaustive()
     }
 }
@@ -268,6 +299,8 @@ pub struct SettingsState {
     pub draft_grid_bars: u32,
     /// Draft BPM source for analysis (drums-only or full mix)
     pub draft_bpm_source: BpmSource,
+    /// Draft slicer buffer bars (1, 4, 8, or 16)
+    pub draft_slicer_buffer_bars: u32,
     /// Status message for save feedback
     pub status: String,
 }
@@ -283,6 +316,7 @@ impl SettingsState {
             draft_track_name_format: config.track_name_format.clone(),
             draft_grid_bars: config.display.grid_bars,
             draft_bpm_source: config.analysis.bpm.source,
+            draft_slicer_buffer_bars: config.slicer.validated_buffer_bars(),
             status: String::new(),
         }
     }
@@ -402,6 +436,10 @@ pub enum Message {
     BeatJump(i32),
     /// Set overview waveform grid density (4, 8, 16, 32 bars)
     SetOverviewGridBars(u32),
+    /// Toggle loop on/off
+    ToggleLoop,
+    /// Adjust loop length (+1 = double, -1 = halve)
+    AdjustLoopLength(i32),
 
     // Hot Cues (8 action buttons)
     /// Jump to hot cue at index (0-7)
@@ -438,6 +476,18 @@ pub enum Message {
     /// Clear a stem link (Shift+click)
     ClearStemLink(usize),
 
+    // Slice Editor
+    /// Toggle a cell in the slice editor grid (step 0-15, slice 0-15)
+    SliceEditorCellToggle { step: usize, slice: u8 },
+    /// Toggle mute for a step
+    SliceEditorMuteToggle(usize),
+    /// Click stem button (toggles enabled + selects for editing)
+    SliceEditorStemClick(usize),
+    /// Select a preset tab (0-7)
+    SliceEditorPresetSelect(usize),
+    /// Save slicer presets to config file
+    SaveSlicerPresets,
+
     // Zoomed Waveform
     /// Set zoom level for zoomed waveform (1-64 bars)
     SetZoomBars(u32),
@@ -460,6 +510,7 @@ pub enum Message {
     UpdateSettingsTrackNameFormat(String),
     UpdateSettingsGridBars(u32),
     UpdateSettingsBpmSource(BpmSource),
+    UpdateSettingsSlicerBufferBars(u32),
     SaveSettings,
     SaveSettingsComplete(Result<(), String>),
 
@@ -857,8 +908,16 @@ impl MeshCueApp {
                             modified: false,
                             combined_waveform,
                             loading_audio: true,
-                            deck: None, // Created when stems load
+                            deck_atomics: self.audio.deck_atomics().clone(),
                             last_playhead_update: std::time::Instant::now(),
+                            slice_editor: {
+                                // Load presets from dedicated file (shared with mesh-player)
+                                let collection_path = self.collection.collection.path();
+                                let slicer_config = mesh_widgets::load_slicer_presets(collection_path);
+                                let mut editor = SliceEditorState::new();
+                                slicer_config.apply_to_editor_state(&mut editor);
+                                editor
+                            },
                         });
 
                         // Phase 2: Load audio stems in background (slow, ~3s)
@@ -907,7 +966,7 @@ impl MeshCueApp {
 
                             state.stems = Some(stems.clone());
 
-                            // Create LoadedTrack from metadata + stems for Deck (Shared for RT-safe drop)
+                            // Create LoadedTrack from metadata + stems for audio engine
                             let duration_seconds = duration_samples as f64 / mesh_core::types::SAMPLE_RATE as f64;
                             let loaded_track = LoadedTrack {
                                 path: state.path.clone(),
@@ -933,15 +992,12 @@ impl MeshCueApp {
                                 duration_seconds,
                             };
 
-                            // Create Deck and load track into it using fast path
-                            let mut deck = Deck::new(DeckId::new(0));
-                            deck.set_loop_length_index(self.config.display.default_loop_length_index);
-                            let prepared = PreparedTrack::prepare(loaded_track);
-                            deck.apply_prepared_track(prepared);
-                            state.deck = Some(deck);
-
-                            // Set up audio playback
-                            self.audio.set_track(stems, duration_samples);
+                            // Load track into audio engine (creates PreparedTrack internally)
+                            self.audio.load_track(loaded_track);
+                            // Set global BPM to track's BPM for original-speed playback (no time-stretching)
+                            self.audio.set_global_bpm(state.bpm);
+                            // Set default loop length from config
+                            self.audio.set_loop_length_index(self.config.display.default_loop_length_index);
                         }
                     }
                     Err(e) => {
@@ -962,10 +1018,7 @@ impl MeshCueApp {
                         let cue_points = track.metadata.cue_points.clone();
                         let beat_grid = track.metadata.beat_grid.beats.clone();
                         let duration_samples = track.duration_samples as u64;
-
-                        // Set up audio playback with the track stems (zero-copy via Shared)
                         let stems = track.stems.clone();
-                        self.audio.set_track(stems.clone(), duration_samples);
 
                         // Create combined waveform with full track data
                         let mut combined_waveform = CombinedWaveformView::new();
@@ -993,18 +1046,18 @@ impl MeshCueApp {
                         combined_waveform.zoomed.set_drop_marker(track.metadata.drop_marker);
                         combined_waveform.zoomed.compute_peaks(&stems, 0, 1600);
 
-                        // Create Deck and load track using fast path (Shared for RT-safe dealloc)
-                        let mut deck = Deck::new(DeckId::new(0));
-                        deck.set_loop_length_index(self.config.display.default_loop_length_index);
-                        let track_for_deck = LoadedTrack {
+                        // Load track into audio engine (creates PreparedTrack internally)
+                        let track_for_audio = LoadedTrack {
                             path: track.path.clone(),
                             stems: track.stems.clone(),
                             metadata: track.metadata.clone(),
                             duration_samples: track.duration_samples,
                             duration_seconds: track.duration_seconds,
                         };
-                        let prepared = PreparedTrack::prepare(track_for_deck);
-                        deck.apply_prepared_track(prepared);
+                        self.audio.load_track(track_for_audio);
+                        // Set global BPM to track's BPM for original-speed playback (no time-stretching)
+                        self.audio.set_global_bpm(bpm);
+                        self.audio.set_loop_length_index(self.config.display.default_loop_length_index);
 
                         self.collection.loaded_track = Some(LoadedTrackState {
                             path,
@@ -1021,8 +1074,16 @@ impl MeshCueApp {
                             modified: false,
                             combined_waveform,
                             loading_audio: false,
-                            deck: Some(deck),
+                            deck_atomics: self.audio.deck_atomics().clone(),
                             last_playhead_update: std::time::Instant::now(),
+                            slice_editor: {
+                                // Load presets from dedicated file (shared with mesh-player)
+                                let collection_path = self.collection.collection.path();
+                                let slicer_config = mesh_widgets::load_slicer_presets(collection_path);
+                                let mut editor = SliceEditorState::new();
+                                slicer_config.apply_to_editor_state(&mut editor);
+                                editor
+                            },
                         });
                     }
                     Err(e) => {
@@ -1043,10 +1104,7 @@ impl MeshCueApp {
                         state.beat_grid = regenerate_beat_grid(first_beat, bpm, state.duration_samples);
                         update_waveform_beat_grid(state);
 
-                        // Sync beat grid to deck so beat jump uses updated grid
-                        if let Some(ref mut deck) = state.deck {
-                            deck.set_beat_grid(state.beat_grid.clone());
-                        }
+                        // Note: Beat grid changes are saved to file and applied on next track load
                     }
 
                     state.modified = true;
@@ -1145,45 +1203,40 @@ impl MeshCueApp {
 
             // Transport
             Message::Play => {
-                if let Some(ref mut state) = self.collection.loaded_track {
-                    if let Some(ref mut deck) = state.deck {
-                        // Clear preview return so release doesn't jump back
-                        deck.clear_preview_return();
-                        deck.play();
-                        self.audio.play();
-                    }
+                if self.collection.loaded_track.is_some() {
+                    self.audio.play();
                 }
                 // Clear pressed hot cue keys to prevent spurious release events
                 self.pressed_hot_cue_keys.clear();
             }
             Message::Pause => {
-                if let Some(ref mut state) = self.collection.loaded_track {
-                    if let Some(ref mut deck) = state.deck {
-                        deck.pause();
-                        self.audio.pause();
-                    }
+                if self.collection.loaded_track.is_some() {
+                    self.audio.pause();
                 }
             }
             Message::Stop => {
                 if let Some(ref mut state) = self.collection.loaded_track {
-                    if let Some(ref mut deck) = state.deck {
-                        deck.pause();
-                        deck.seek(0);
-                        self.audio.pause();
-                        self.audio.seek(0);
-                    }
+                    self.audio.pause();
+                    self.audio.seek(0);
                     state.update_zoomed_waveform_cache(0);
                 }
             }
             Message::Seek(position) => {
-                let seek_pos = (position * self.audio.length() as f64) as u64;
                 if let Some(ref mut state) = self.collection.loaded_track {
-                    if let Some(ref mut deck) = state.deck {
-                        deck.seek(seek_pos as usize);
-                    }
+                    let seek_pos = (position * state.duration_samples as f64) as u64;
                     self.audio.seek(seek_pos);
                     state.combined_waveform.overview.set_position(position);
                     state.update_zoomed_waveform_cache(seek_pos);
+                }
+            }
+            Message::ToggleLoop => {
+                if self.collection.loaded_track.is_some() {
+                    self.audio.toggle_loop();
+                }
+            }
+            Message::AdjustLoopLength(delta) => {
+                if self.collection.loaded_track.is_some() {
+                    self.audio.adjust_loop_length(delta);
                 }
             }
             Message::Cue => {
@@ -1196,78 +1249,55 @@ impl MeshCueApp {
                         return Task::none();
                     }
 
-                    let mut update_pos = None;
-                    if let Some(ref mut deck) = state.deck {
-                        // Snap to nearest beat using UI's current beat grid (not Deck's stale copy)
-                        let current_pos = deck.position();
-                        let snapped_pos = snap_to_nearest_beat(current_pos as u64, &state.beat_grid) as usize;
+                    // Snap to nearest beat using UI's current beat grid
+                    let current_pos = state.playhead_position();
+                    let snapped_pos = snap_to_nearest_beat(current_pos, &state.beat_grid);
 
-                        // Seek to snapped position and set as cue point
-                        deck.seek(snapped_pos);
-                        deck.set_cue_point_position(snapped_pos);
-                        deck.play(); // Start preview
-                        self.audio.seek(snapped_pos as u64);
-                        self.audio.play();
-                        update_pos = Some(snapped_pos as u64);
+                    // Seek to snapped position, set cue point, and start preview
+                    self.audio.seek(snapped_pos);
+                    self.audio.set_cue_point();
+                    self.audio.play();
 
-                        // Update waveform and cue marker
-                        if self.audio.length() > 0 {
-                            let normalized = snapped_pos as f64 / self.audio.length() as f64;
-                            state.combined_waveform.overview.set_position(normalized);
-                            state.combined_waveform.overview.set_cue_position(Some(normalized));
-                        }
+                    // Update waveform and cue marker
+                    if state.duration_samples > 0 {
+                        let normalized = snapped_pos as f64 / state.duration_samples as f64;
+                        state.combined_waveform.overview.set_position(normalized);
+                        state.combined_waveform.overview.set_cue_position(Some(normalized));
                     }
-                    if let Some(pos) = update_pos {
-                        state.update_zoomed_waveform_cache(pos);
-                    }
+                    state.update_zoomed_waveform_cache(snapped_pos);
                 }
             }
             Message::CueReleased => {
                 // CDJ-style cue release: stop preview, return to cue point
                 if let Some(ref mut state) = self.collection.loaded_track {
-                    let mut update_pos = None;
-                    if let Some(ref mut deck) = state.deck {
-                        let cue_pos = deck.cue_point();
-                        deck.pause();
-                        deck.seek(cue_pos);
-                        self.audio.pause();
-                        self.audio.seek(cue_pos as u64);
-                        update_pos = Some(cue_pos as u64);
+                    let cue_pos = state.cue_point();
+                    self.audio.pause();
+                    self.audio.seek(cue_pos);
 
-                        // Update waveform
-                        if self.audio.length() > 0 {
-                            let normalized = cue_pos as f64 / self.audio.length() as f64;
-                            state.combined_waveform.overview.set_position(normalized);
-                        }
+                    // Update waveform
+                    if state.duration_samples > 0 {
+                        let normalized = cue_pos as f64 / state.duration_samples as f64;
+                        state.combined_waveform.overview.set_position(normalized);
                     }
-                    if let Some(pos) = update_pos {
-                        state.update_zoomed_waveform_cache(pos);
-                    }
+                    state.update_zoomed_waveform_cache(cue_pos);
                 }
             }
             Message::BeatJump(beats) => {
-                // Use Deck's beat jump methods
+                // Use audio engine's beat jump
                 if let Some(ref mut state) = self.collection.loaded_track {
-                    let mut update_pos = None;
-                    if let Some(ref mut deck) = state.deck {
-                        if beats > 0 {
-                            deck.beat_jump_forward();
-                        } else {
-                            deck.beat_jump_backward();
-                        }
-                        let pos = deck.position();
-                        self.audio.seek(pos);
-                        update_pos = Some(pos);
-
-                        // Update waveform
-                        if self.audio.length() > 0 {
-                            let normalized = pos as f64 / self.audio.length() as f64;
-                            state.combined_waveform.overview.set_position(normalized);
-                        }
+                    if beats > 0 {
+                        self.audio.beat_jump_forward();
+                    } else {
+                        self.audio.beat_jump_backward();
                     }
-                    if let Some(pos) = update_pos {
-                        state.update_zoomed_waveform_cache(pos);
+                    // Position will be updated on next tick via atomics
+                    // Trigger waveform update
+                    let pos = state.playhead_position();
+                    if state.duration_samples > 0 {
+                        let normalized = pos as f64 / state.duration_samples as f64;
+                        state.combined_waveform.overview.set_position(normalized);
                     }
+                    state.update_zoomed_waveform_cache(pos);
                 }
             }
             Message::SetOverviewGridBars(bars) => {
@@ -1279,14 +1309,11 @@ impl MeshCueApp {
                 if let Some(ref mut state) = self.collection.loaded_track {
                     if let Some(cue) = state.cue_points.iter().find(|c| c.index == index as u8) {
                         let pos = cue.sample_position;
-                        if let Some(ref mut deck) = state.deck {
-                            deck.seek(pos as usize);
-                        }
                         self.audio.seek(pos);
 
                         // Update waveform
-                        if self.audio.length() > 0 {
-                            let normalized = pos as f64 / self.audio.length() as f64;
+                        if state.duration_samples > 0 {
+                            let normalized = pos as f64 / state.duration_samples as f64;
                             state.combined_waveform.overview.set_position(normalized);
                         }
                         state.update_zoomed_waveform_cache(pos);
@@ -1294,7 +1321,7 @@ impl MeshCueApp {
                 }
             }
             Message::SetCuePoint(index) => {
-                // Snap to beat using UI's current beat grid (not Deck's stale copy)
+                // Snap to beat using UI's current beat grid
                 if let Some(ref mut state) = self.collection.loaded_track {
                     let current_pos = state.playhead_position();
                     let snapped_pos = snap_to_nearest_beat(current_pos, &state.beat_grid);
@@ -1320,7 +1347,7 @@ impl MeshCueApp {
                         return Task::none();
                     }
 
-                    // Store in cue_points (metadata)
+                    // Store in cue_points (metadata) - will sync to audio on next track load
                     state.cue_points.retain(|c| c.index != index as u8);
                     state.cue_points.push(CuePoint {
                         index: index as u8,
@@ -1330,11 +1357,6 @@ impl MeshCueApp {
                     });
                     state.cue_points.sort_by_key(|c| c.index);
 
-                    // Update deck's hot cue (without re-snapping)
-                    if let Some(ref mut deck) = state.deck {
-                        deck.set_hot_cue_position(index, snapped_pos as usize);
-                    }
-
                     // Update waveform markers (both overview and zoomed)
                     state.combined_waveform.overview.update_cue_markers(&state.cue_points);
                     state.combined_waveform.zoomed.update_cue_markers(&state.cue_points);
@@ -1343,9 +1365,7 @@ impl MeshCueApp {
             }
             Message::ClearCuePoint(index) => {
                 if let Some(ref mut state) = self.collection.loaded_track {
-                    if let Some(ref mut deck) = state.deck {
-                        deck.clear_hot_cue(index);
-                    }
+                    self.audio.clear_hot_cue(index);
                     state.cue_points.retain(|c| c.index != index as u8);
                     state.combined_waveform.overview.update_cue_markers(&state.cue_points);
                     state.combined_waveform.zoomed.update_cue_markers(&state.cue_points);
@@ -1356,23 +1376,21 @@ impl MeshCueApp {
             // Saved Loops
             Message::SaveLoop(index) => {
                 if let Some(ref mut state) = self.collection.loaded_track {
-                    if let Some(ref deck) = state.deck {
-                        // Only save if loop is active
-                        if deck.is_loop_active() {
-                            let (start, end) = deck.loop_bounds();
-                            let saved_loop = mesh_core::audio_file::SavedLoop {
-                                index: index as u8,
-                                start_sample: start as u64,
-                                end_sample: end as u64,
-                                label: String::new(),
-                                color: None,
-                            };
-                            // Remove any existing loop at this index
-                            state.saved_loops.retain(|l| l.index != index as u8);
-                            state.saved_loops.push(saved_loop);
-                            state.modified = true;
-                            log::info!("Saved loop {} at {} - {} samples", index, start, end);
-                        }
+                    // Only save if loop is active (read from atomics)
+                    if state.is_loop_active() {
+                        let (start, end) = state.loop_bounds();
+                        let saved_loop = mesh_core::audio_file::SavedLoop {
+                            index: index as u8,
+                            start_sample: start,
+                            end_sample: end,
+                            label: String::new(),
+                            color: None,
+                        };
+                        // Remove any existing loop at this index
+                        state.saved_loops.retain(|l| l.index != index as u8);
+                        state.saved_loops.push(saved_loop);
+                        state.modified = true;
+                        log::info!("Saved loop {} at {} - {} samples", index, start, end);
                     }
                 }
             }
@@ -1386,22 +1404,18 @@ impl MeshCueApp {
                     let loop_data = state.saved_loops.iter().find(|l| l.index == index as u8).cloned();
 
                     if let Some(saved_loop) = loop_data {
-                        if let Some(ref mut deck) = state.deck {
-                            // Set loop bounds and activate
-                            deck.set_loop(saved_loop.start_sample as usize, saved_loop.end_sample as usize);
-                            // Seek to loop start
-                            deck.seek(saved_loop.start_sample as usize);
-                            self.audio.seek(saved_loop.start_sample);
+                        // Seek to loop start and activate loop via toggle
+                        self.audio.seek(saved_loop.start_sample);
+                        self.audio.toggle_loop();
 
-                            // Update waveform positions
-                            if self.audio.length() > 0 {
-                                let normalized = saved_loop.start_sample as f64 / self.audio.length() as f64;
-                                state.combined_waveform.overview.set_position(normalized);
-                            }
-                            state.update_zoomed_waveform_cache(saved_loop.start_sample);
-
-                            log::info!("Jumped to saved loop {} at {} - {}", index, saved_loop.start_sample, saved_loop.end_sample);
+                        // Update waveform positions
+                        if state.duration_samples > 0 {
+                            let normalized = saved_loop.start_sample as f64 / state.duration_samples as f64;
+                            state.combined_waveform.overview.set_position(normalized);
                         }
+                        state.update_zoomed_waveform_cache(saved_loop.start_sample);
+
+                        log::info!("Jumped to saved loop {} at {} - {}", index, saved_loop.start_sample, saved_loop.end_sample);
                     }
                 }
             }
@@ -1520,85 +1534,177 @@ impl MeshCueApp {
                 self.stem_link_selection = None;
             }
 
+            // Slice Editor
+            Message::SliceEditorCellToggle { step, slice } => {
+                // Toggle cell and get sync data if changed
+                let sync_data = self.collection.loaded_track.as_mut().and_then(|state| {
+                    if state.slice_editor.toggle_cell(step, slice) {
+                        // Extract data for audio sync
+                        state.slice_editor.selected_stem.and_then(|stem_idx| {
+                            state.slice_editor.current_sequence().map(|seq| {
+                                (stem_idx, seq.to_engine_sequence())
+                            })
+                        })
+                    } else {
+                        None
+                    }
+                });
+                // Sync to audio engine (after releasing borrow)
+                if let Some((stem_idx, engine_sequence)) = sync_data {
+                    if let Some(stem) = Stem::from_index(stem_idx) {
+                        self.audio.slicer_load_sequence(stem, engine_sequence);
+                    }
+                }
+            }
+            Message::SliceEditorMuteToggle(step) => {
+                // Toggle mute and get sync data if changed
+                let sync_data = self.collection.loaded_track.as_mut().and_then(|state| {
+                    if state.slice_editor.toggle_mute(step) {
+                        // Extract data for audio sync
+                        state.slice_editor.selected_stem.and_then(|stem_idx| {
+                            state.slice_editor.current_sequence().map(|seq| {
+                                (stem_idx, seq.to_engine_sequence())
+                            })
+                        })
+                    } else {
+                        None
+                    }
+                });
+                // Sync to audio engine (after releasing borrow)
+                if let Some((stem_idx, engine_sequence)) = sync_data {
+                    if let Some(stem) = Stem::from_index(stem_idx) {
+                        self.audio.slicer_load_sequence(stem, engine_sequence);
+                    }
+                }
+            }
+            Message::SliceEditorStemClick(stem_idx) => {
+                // Toggle stem and get the new enabled state
+                let enabled_change = self.collection.loaded_track.as_mut().map(|state| {
+                    let was_enabled = state.slice_editor.stem_enabled[stem_idx];
+                    state.slice_editor.click_stem(stem_idx);
+                    let now_enabled = state.slice_editor.stem_enabled[stem_idx];
+                    (was_enabled, now_enabled)
+                });
+                // Sync to audio engine (after releasing borrow)
+                if let Some((was_enabled, now_enabled)) = enabled_change {
+                    if now_enabled != was_enabled {
+                        if let Some(stem) = Stem::from_index(stem_idx) {
+                            // Set buffer bars before enabling (use config value)
+                            if now_enabled {
+                                let buffer_bars = self.config.slicer.validated_buffer_bars();
+                                self.audio.set_slicer_buffer_bars(stem, buffer_bars);
+                            }
+                            self.audio.set_slicer_enabled(stem, now_enabled);
+                        }
+                    }
+                }
+            }
+            Message::SliceEditorPresetSelect(preset_idx) => {
+                // Select preset and get all presets for sync
+                let presets = self.collection.loaded_track.as_mut().map(|state| {
+                    state.slice_editor.select_preset(preset_idx);
+                    state.slice_editor.to_engine_presets()
+                });
+                // Sync to audio engine (after releasing borrow)
+                if let Some(presets) = presets {
+                    self.audio.set_slicer_presets(presets);
+                }
+            }
+            Message::SaveSlicerPresets => {
+                // Save current slice editor presets to dedicated slicer-presets.yaml file
+                if let Some(ref state) = self.collection.loaded_track {
+                    // Preserve existing buffer_bars when saving presets
+                    let buffer_bars = self.config.slicer.validated_buffer_bars();
+                    let slicer_config = crate::config::SlicerConfig::from_editor_state_with_buffer(
+                        &state.slice_editor,
+                        buffer_bars,
+                    );
+
+                    // Update in-memory config as well
+                    let mut new_config = (*self.config).clone();
+                    new_config.slicer = slicer_config.clone();
+                    self.config = Arc::new(new_config);
+
+                    // Save to dedicated presets file (shared with mesh-player)
+                    let collection_path = self.collection.collection.path().to_path_buf();
+                    return Task::perform(
+                        async move {
+                            mesh_widgets::save_slicer_presets(&slicer_config, &collection_path).ok()
+                        },
+                        |_| Message::Tick,
+                    );
+                }
+            }
+
             Message::HotCuePressed(index) => {
                 // Shift+click = delete cue point
                 if self.shift_held {
                     return self.update(Message::ClearCuePoint(index));
                 }
 
-                // CDJ-style hot cue press (cue point handling done by Deck internally)
+                // CDJ-style hot cue press - use audio engine
                 if let Some(ref mut state) = self.collection.loaded_track {
-                    let mut update_pos = None;
+                    self.audio.hot_cue_press(index);
+                    // Position and state will update via atomics on next tick
+                    let pos = state.playhead_position();
+                    let cue_pos = state.cue_point();
 
-                    if let Some(ref mut deck) = state.deck {
-                        deck.hot_cue_press(index);
-                        let pos = deck.position();
-                        let cue_pos = deck.cue_point(); // Deck sets this internally
-
-                        self.audio.seek(pos);
-                        // Start audio if playing OR if we just entered Cueing (preview) mode
-                        if deck.state() == PlayState::Playing || deck.state() == PlayState::Cueing {
-                            self.audio.play();
-                        }
-                        update_pos = Some(pos);
-
-                        // Update waveform positions and cue marker
-                        if self.audio.length() > 0 {
-                            let normalized = pos as f64 / self.audio.length() as f64;
-                            let cue_normalized = cue_pos as f64 / self.audio.length() as f64;
-                            state.combined_waveform.overview.set_position(normalized);
-                            state.combined_waveform.overview.set_cue_position(Some(cue_normalized));
-                        }
+                    // Update waveform positions and cue marker
+                    if state.duration_samples > 0 {
+                        let normalized = pos as f64 / state.duration_samples as f64;
+                        let cue_normalized = cue_pos as f64 / state.duration_samples as f64;
+                        state.combined_waveform.overview.set_position(normalized);
+                        state.combined_waveform.overview.set_cue_position(Some(cue_normalized));
                     }
-                    if let Some(pos) = update_pos {
-                        state.update_zoomed_waveform_cache(pos);
-                    }
+                    state.update_zoomed_waveform_cache(pos);
                 }
             }
             Message::HotCueReleased(_index) => {
-                // Use Deck's hot_cue_release for CDJ-style return
+                // Use audio engine for CDJ-style hot cue release
                 if let Some(ref mut state) = self.collection.loaded_track {
-                    let mut update_pos = None;
-                    if let Some(ref mut deck) = state.deck {
-                        // Check if we were in preview mode BEFORE releasing
-                        let was_previewing = deck.state() == PlayState::Cueing;
+                    // Check if we were in preview mode BEFORE releasing
+                    let was_previewing = state.play_state() == PlayState::Cueing;
 
-                        deck.hot_cue_release();
-                        let pos = deck.position();
-                        self.audio.seek(pos);
+                    self.audio.hot_cue_release();
 
-                        // Always pause audio when releasing from preview mode
-                        if was_previewing {
-                            self.audio.pause();
-                        }
-                        update_pos = Some(pos);
-
-                        // Update waveform positions
-                        if self.audio.length() > 0 {
-                            let normalized = pos as f64 / self.audio.length() as f64;
-                            state.combined_waveform.overview.set_position(normalized);
-                        }
+                    // Always pause audio when releasing from preview mode
+                    if was_previewing {
+                        self.audio.pause();
                     }
-                    if let Some(pos) = update_pos {
-                        state.update_zoomed_waveform_cache(pos);
+
+                    let pos = state.playhead_position();
+                    // Update waveform positions
+                    if state.duration_samples > 0 {
+                        let normalized = pos as f64 / state.duration_samples as f64;
+                        state.combined_waveform.overview.set_position(normalized);
                     }
+                    state.update_zoomed_waveform_cache(pos);
                 }
             }
 
             // Misc
             Message::Tick => {
-                // Sync deck position from audio (JACK drives the position)
+                // Update UI from audio engine state (atomics)
                 if let Some(ref mut state) = self.collection.loaded_track {
                     let pos = self.audio.position();
-                    if let Some(ref mut deck) = state.deck {
-                        deck.seek(pos as usize);
-                    }
                     // Update playhead timestamp for smooth interpolation
                     state.touch_playhead();
 
-                    if self.audio.length() > 0 {
-                        let normalized = pos as f64 / self.audio.length() as f64;
+                    if state.duration_samples > 0 {
+                        let normalized = pos as f64 / state.duration_samples as f64;
                         state.combined_waveform.overview.set_position(normalized);
+
+                        // Update loop region overlay (green overlay when loop is active)
+                        if state.is_loop_active() {
+                            let (loop_start, loop_end) = state.loop_bounds();
+                            let start_norm = loop_start as f64 / state.duration_samples as f64;
+                            let end_norm = loop_end as f64 / state.duration_samples as f64;
+                            state.combined_waveform.overview.set_loop_region(Some((start_norm, end_norm)));
+                            state.combined_waveform.zoomed.set_loop_region(Some((start_norm, end_norm)));
+                        } else {
+                            state.combined_waveform.overview.set_loop_region(None);
+                            state.combined_waveform.zoomed.set_loop_region(None);
+                        }
                     }
 
                     // Update zoomed waveform peaks if playhead moved outside cache
@@ -1607,6 +1713,56 @@ impl MeshCueApp {
                         if let Some(ref stems) = state.stems {
                             state.combined_waveform.zoomed.compute_peaks(stems, pos, 1600);
                         }
+                    }
+
+                    // Sync slicer state from atomics for waveform overlay
+                    // Check all 4 stems for active slicer
+                    let slicer_atomics = self.audio.slicer_atomics();
+                    let duration = state.duration_samples as u64;
+                    let mut any_active = false;
+
+                    for stem_idx in 0..4 {
+                        let sa = &slicer_atomics[stem_idx];
+                        let active = sa.active.load(std::sync::atomic::Ordering::Relaxed);
+                        if active && duration > 0 {
+                            let buffer_start = sa.buffer_start.load(std::sync::atomic::Ordering::Relaxed);
+                            let buffer_end = sa.buffer_end.load(std::sync::atomic::Ordering::Relaxed);
+                            let current_slice = sa.current_slice.load(std::sync::atomic::Ordering::Relaxed);
+
+                            // Convert to normalized positions
+                            let start_norm = buffer_start as f64 / duration as f64;
+                            let end_norm = buffer_end as f64 / duration as f64;
+
+                            // Set slicer overlay on both waveform views
+                            state.combined_waveform.overview.set_slicer_region(
+                                Some((start_norm, end_norm)),
+                                Some(current_slice),
+                            );
+                            state.combined_waveform.zoomed.set_slicer_region(
+                                Some((start_norm, end_norm)),
+                                Some(current_slice),
+                            );
+
+                            // Set fixed buffer view mode (waveform moves, playhead stays centered)
+                            state.combined_waveform.zoomed.set_fixed_buffer_bounds(
+                                Some((buffer_start as u64, buffer_end as u64))
+                            );
+                            state.combined_waveform.zoomed.set_view_mode(ZoomedViewMode::FixedBuffer);
+                            // Set zoom level based on slicer buffer size
+                            let buffer_bars = self.config.slicer.validated_buffer_bars();
+                            state.combined_waveform.zoomed.set_fixed_buffer_zoom(buffer_bars);
+
+                            any_active = true;
+                            break; // Only show overlay for first active stem
+                        }
+                    }
+
+                    // Clear slicer overlay and restore scrolling mode if no stems are active
+                    if !any_active {
+                        state.combined_waveform.overview.set_slicer_region(None, None);
+                        state.combined_waveform.zoomed.set_slicer_region(None, None);
+                        state.combined_waveform.zoomed.set_fixed_buffer_bounds(None);
+                        state.combined_waveform.zoomed.set_view_mode(ZoomedViewMode::Scrolling);
                     }
                 }
 
@@ -1709,6 +1865,9 @@ impl MeshCueApp {
             Message::UpdateSettingsBpmSource(source) => {
                 self.settings.draft_bpm_source = source;
             }
+            Message::UpdateSettingsSlicerBufferBars(bars) => {
+                self.settings.draft_slicer_buffer_bars = bars;
+            }
             Message::SaveSettings => {
                 // Parse and validate values
                 let min = self.settings.draft_min_tempo.parse::<i32>().unwrap_or(40);
@@ -1727,6 +1886,9 @@ impl MeshCueApp {
 
                 // Update display settings (grid bars)
                 new_config.display.grid_bars = self.settings.draft_grid_bars;
+
+                // Update slicer buffer bars
+                new_config.slicer.buffer_bars = self.settings.draft_slicer_buffer_bars;
 
                 // Update drafts to show validated values
                 self.settings.draft_min_tempo = new_config.analysis.bpm.min_tempo.to_string();
@@ -1868,18 +2030,14 @@ impl MeshCueApp {
 
                 // Increase/decrease loop length (also affects beat jump size, ignore repeat)
                 if !repeat && bindings.increase_jump_size.iter().any(|b| b == &key_str) {
-                    if let Some(ref mut state) = self.collection.loaded_track {
-                        if let Some(ref mut deck) = state.deck {
-                            deck.adjust_loop_length(1); // Double
-                        }
+                    if self.collection.loaded_track.is_some() {
+                        self.audio.adjust_loop_length(1); // Double
                     }
                     return Task::none();
                 }
                 if !repeat && bindings.decrease_jump_size.iter().any(|b| b == &key_str) {
-                    if let Some(ref mut state) = self.collection.loaded_track {
-                        if let Some(ref mut deck) = state.deck {
-                            deck.adjust_loop_length(-1); // Halve
-                        }
+                    if self.collection.loaded_track.is_some() {
+                        self.audio.adjust_loop_length(-1); // Halve
                     }
                     return Task::none();
                 }
@@ -3358,7 +3516,7 @@ impl MeshCueApp {
         Theme::Dark
     }
 
-    /// Subscription for periodic UI updates during playback and keyboard events
+    /// Subscription for periodic UI updates and keyboard/mouse events
     pub fn subscription(&self) -> iced::Subscription<Message> {
         use iced::{event, keyboard, mouse, time, Event};
         use std::time::Duration;
@@ -3388,26 +3546,13 @@ impl MeshCueApp {
             }
         });
 
-        // Update waveform playhead 60 times per second when playing
-        let is_playing = self
-            .collection
-            .loaded_track
-            .as_ref()
-            .map(|t| t.is_playing())
-            .unwrap_or(false);
-
-        // Also need Tick during import to poll progress channel
-        let import_active = self.import_state.phase.is_some();
-
-        if is_playing || self.audio.is_playing() || import_active {
-            iced::Subscription::batch([
-                keyboard_sub,
-                mouse_sub,
-                time::every(Duration::from_millis(16)).map(|_| Message::Tick),
-            ])
-        } else {
-            iced::Subscription::batch([keyboard_sub, mouse_sub])
-        }
+        // Always run tick at 60fps for smooth waveform animation
+        // This matches mesh-player's approach and ensures cueing/preview states work correctly
+        iced::Subscription::batch([
+            keyboard_sub,
+            mouse_sub,
+            time::every(Duration::from_millis(16)).map(|_| Message::Tick),
+        ])
     }
 
     /// Render a progress bar for re-analysis operations
@@ -3515,10 +3660,8 @@ fn nudge_beat_grid(state: &mut LoadedTrackState, delta_samples: i64) {
     // Update waveform displays
     update_waveform_beat_grid(state);
 
-    // Sync beat grid to deck so beat jump uses updated grid
-    if let Some(ref mut deck) = state.deck {
-        deck.set_beat_grid(state.beat_grid.clone());
-    }
+    // Note: Beat grid changes are saved to file and applied on next track load.
+    // There's no EngineCommand to dynamically update beat grid on running deck.
 
     // Mark as modified for save
     state.modified = true;

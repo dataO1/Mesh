@@ -26,7 +26,7 @@ const LOOP_COLORS: [Color; 8] = [
 /// Render the saved loop buttons (single row of 8 action buttons)
 pub fn view(state: &LoadedTrackState) -> Element<Message> {
     // Check if loop is currently active (for save action)
-    let loop_active = state.deck.as_ref().map_or(false, |d| d.is_loop_active());
+    let loop_active = state.is_loop_active();
 
     // Create all 8 saved loop buttons in a single row
     let buttons: Vec<Element<Message>> = (0..8)

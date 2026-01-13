@@ -23,6 +23,8 @@ pub struct Config {
     ///
     /// Example: "{artist} - {name}" produces "Daft Punk - One More Time"
     pub track_name_format: String,
+    /// Slicer presets (8 presets, each with 4 stem patterns)
+    pub slicer: SlicerConfig,
 }
 
 impl Default for Config {
@@ -31,6 +33,7 @@ impl Default for Config {
             analysis: AnalysisConfig::default(),
             display: DisplayConfig::default(),
             track_name_format: String::from("{artist} - {name}"),
+            slicer: SlicerConfig::default(),
         }
     }
 }
@@ -71,6 +74,12 @@ impl DisplayConfig {
             .unwrap_or(4.0)
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Slicer Configuration (re-exported from mesh-widgets)
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub use mesh_widgets::{SlicerConfig, SlicerPresetConfig, SlicerSequenceConfig, SlicerStepConfig};
 
 /// Analysis configuration section
 #[derive(Debug, Clone, Serialize, Deserialize)]

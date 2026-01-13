@@ -207,7 +207,8 @@ and mesh-widget and only if necessary in the ui.
     - [ ] the mesh-cue waveform should also show the slice mode like in the
       mesh-player, make sure to reuse existing code for this/factor this out
       for common use ,make sure to not duplicate code and the logic should
-      resign in the widget, not in the uis.
+      resign in the widget, not in the uis, the ui just sends commands with
+      necessary information.
     - [ ] the stem linking buttons should be moved to a column with 4 rows for
       each button right to the waveforms canvas, fitting the height.
     - [ ] now the slice widget lives underneight the queue and loop buttons.

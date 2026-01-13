@@ -1,8 +1,8 @@
 //! Theme configuration for mesh-player
 //!
 //! Provides configurable colors for stems, cues, and other visual elements.
-//! Configuration is stored as YAML in the user's config directory.
-//! Default location: ~/.config/mesh-player/theme.yaml
+//! Configuration is stored as YAML in the mesh collection folder.
+//! Default location: ~/Music/mesh-collection/theme.yaml
 
 use iced::Color;
 use serde::{Deserialize, Serialize};
@@ -96,12 +96,9 @@ pub const DEFAULT_STEM_COLORS: [Color; 4] = [
 
 /// Get the default theme file path
 ///
-/// Returns: ~/.config/mesh-player/theme.yaml
+/// Returns: ~/Music/mesh-collection/theme.yaml
 pub fn default_theme_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
-        .join("mesh-player")
-        .join("theme.yaml")
+    crate::config::default_collection_path().join("theme.yaml")
 }
 
 /// Load theme configuration from a YAML file

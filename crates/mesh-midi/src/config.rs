@@ -1,7 +1,7 @@
 //! MIDI configuration schema and loader
 //!
-//! Configuration is stored as YAML in the user's config directory.
-//! Default location: ~/.config/mesh-player/midi.yaml
+//! Configuration is stored as YAML in the mesh collection folder.
+//! Default location: ~/Music/mesh-collection/midi.yaml
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -281,11 +281,12 @@ pub struct FeedbackMapping {
 
 /// Get the default MIDI config file path
 ///
-/// Returns: ~/.config/mesh-player/midi.yaml
+/// Returns: ~/Music/mesh-collection/midi.yaml
 pub fn default_midi_config_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
-        .join("mesh-player")
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Music")
+        .join("mesh-collection")
         .join("midi.yaml")
 }
 

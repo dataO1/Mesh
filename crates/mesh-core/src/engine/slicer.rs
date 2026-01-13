@@ -858,6 +858,8 @@ impl SlicerState {
                 // Beat boundary crossed - activate now
                 self.enabled = true;
                 self.pending_enable = false;
+                // Sync active state to atomics for UI overlay
+                self.atomics.active.store(true, Ordering::Relaxed);
                 log::info!("slicer: ACTIVATED at beat {} boundary", current_beat);
             }
             self.last_beat_index = current_beat;

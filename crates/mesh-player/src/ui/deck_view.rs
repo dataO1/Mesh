@@ -136,9 +136,11 @@ pub enum DeckMessage {
     ToggleEffectBypass(usize, usize),
     /// Set action button mode (HotCue or Slicer)
     SetActionMode(ActionButtonMode),
-    /// Slicer button pressed (0-7) - queues slice for playback
+    /// Select slicer preset (0-7) - normal click on slicer pad
+    SlicerPresetSelect(usize),
+    /// Slicer trigger (0-7) - shift+click queues slice for live adjustment
     SlicerTrigger(usize),
-    /// Reset slicer pattern to default [0,1,2,3,4,5,6,7] (Shift+Slicer)
+    /// Reset slicer pattern to default [0,1,2,3,4,5,6,7]
     ResetSlicerPattern,
     /// Shift button pressed
     ShiftPressed,
@@ -472,6 +474,9 @@ impl DeckView {
             }
             DeckMessage::SetActionMode(mode) => {
                 self.action_mode = mode;
+            }
+            DeckMessage::SlicerPresetSelect(_idx) => {
+                // Handled at app level - selects preset and enables slicer
             }
             DeckMessage::SlicerTrigger(_idx) => {
                 // Handled at app level via EngineCommand
@@ -1146,8 +1151,14 @@ impl DeckView {
             };
 
             let label = format!("{}", i + 1);
+            // Normal click = select preset, Shift+click = trigger slice for live adjustment
+            let msg = if self.shift_held {
+                DeckMessage::SlicerTrigger(i)
+            } else {
+                DeckMessage::SlicerPresetSelect(i)
+            };
             let btn = button(text(label).size(14))
-                .on_press(DeckMessage::SlicerTrigger(i))
+                .on_press(msg)
                 .padding([12, 0])
                 .width(Length::Fill)
                 .style(move |_, _| btn_style);

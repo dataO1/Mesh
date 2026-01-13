@@ -132,6 +132,20 @@ impl AudioEngine {
         std::array::from_fn(|i| self.decks[i].slicer_atomics(Stem::Drums))
     }
 
+    /// Get slicer atomics for all 4 stems on a specific deck
+    ///
+    /// Returns Arc references to each stem's slicer atomics for the specified deck.
+    /// Used by mesh-cue which has a single deck but may enable slicer on any stem.
+    pub fn slicer_atomics_for_deck(&self, deck: usize) -> [std::sync::Arc<super::slicer::SlicerAtomics>; 4] {
+        use crate::types::Stem;
+        [
+            self.decks[deck].slicer_atomics(Stem::Vocals),
+            self.decks[deck].slicer_atomics(Stem::Drums),
+            self.decks[deck].slicer_atomics(Stem::Bass),
+            self.decks[deck].slicer_atomics(Stem::Other),
+        ]
+    }
+
     /// Get linked stem atomics for all decks
     ///
     /// Returns Arc references to each deck's linked stem atomics.

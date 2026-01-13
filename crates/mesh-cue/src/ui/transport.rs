@@ -1,6 +1,7 @@
 //! Player controls component (vertical layout)
 //!
 //! CDJ-style player controls positioned to the left of waveforms:
+//! - Loop toggle button
 //! - Beat jump label (shows current loop/jump length)
 //! - Beat jump buttons (◄◄ / ►►) side by side
 //! - Cue button (CDJ-style: set + preview while held)
@@ -8,24 +9,63 @@
 
 use super::app::{LoadedTrackState, Message};
 use iced::widget::{button, column, container, mouse_area, row, text};
-use iced::{Alignment, Element, Length};
+use iced::{Alignment, Background, Border, Color, Element, Length};
 
 /// Render vertical player controls (left of waveform)
 pub fn view(state: &LoadedTrackState) -> Element<Message> {
     let beat_jump_size = state.beat_jump_size();
     let is_playing = state.is_playing();
+    let loop_active = state.is_loop_active();
 
     // Disable controls while loading
     let controls_enabled = !state.loading_audio && state.stems.is_some();
 
-    // Beat jump size label (controlled by Up/Down keys to adjust loop length)
+    // Loop toggle button (green when active)
+    let loop_btn = button(text("LOOP").size(14))
+        .on_press_maybe(controls_enabled.then_some(Message::ToggleLoop))
+        .width(Length::Fixed(104.0))
+        .height(Length::Fixed(32.0))
+        .style(move |theme, status| {
+            if loop_active {
+                // Green style when loop is active
+                button::Style {
+                    background: Some(Background::Color(Color::from_rgb(0.2, 0.7, 0.3))),
+                    text_color: Color::WHITE,
+                    border: Border {
+                        color: Color::from_rgb(0.1, 0.5, 0.2),
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
+                    ..button::primary(theme, status)
+                }
+            } else {
+                button::secondary(theme, status)
+            }
+        });
+
+    // Loop length controls: [-] [N beats] [+]
     let loop_length_beats = state.loop_length_beats();
-    let beat_jump_label = container(
-        text(format!("{} beat{}", loop_length_beats, if loop_length_beats == 1.0 { "" } else { "s" }))
-            .size(12)
-    )
-    .width(Length::Fixed(104.0))
-    .center_x(Length::Fill);
+
+    // Halve loop length button
+    let halve_btn = button(text("−").size(14))
+        .on_press_maybe(controls_enabled.then_some(Message::AdjustLoopLength(-1)))
+        .width(Length::Fixed(28.0))
+        .height(Length::Fixed(24.0))
+        .padding(0);
+
+    // Loop length label
+    let beat_label = text(format!("{}", loop_length_beats)).size(12);
+
+    // Double loop length button
+    let double_btn = button(text("+").size(14))
+        .on_press_maybe(controls_enabled.then_some(Message::AdjustLoopLength(1)))
+        .width(Length::Fixed(28.0))
+        .height(Length::Fixed(24.0))
+        .padding(0);
+
+    let loop_length_row = row![halve_btn, beat_label, double_btn]
+        .spacing(4)
+        .align_y(Alignment::Center);
 
     // Beat jump buttons (side by side)
     let jump_back = button(text("◄◄").size(14))
@@ -78,11 +118,12 @@ pub fn view(state: &LoadedTrackState) -> Element<Message> {
             .height(Length::Fixed(60.0))
     };
 
-    // Vertical layout: beat jump label → jump buttons → cue → play/pause
+    // Vertical layout: loop → loop length controls → jump buttons → cue → play/pause
     // No center_y - align to top with parent row's align_y(Start)
     container(
         column![
-            beat_jump_label,
+            loop_btn,
+            loop_length_row,
             jump_buttons,
             cue,
             play_pause,

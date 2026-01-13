@@ -1,310 +1,97 @@
-//! JACK audio playback for mesh-cue
+//! JACK audio client for mesh-cue
 //!
-//! Lock-free architecture for RT-safe audio preview:
-//! - Commands sent via `rtrb` SPSC ringbuffer (UI → Audio)
+//! Uses the shared AudioEngine from mesh-core with a single deck (deck 0)
+//! for preview playback. This gives mesh-cue full access to:
+//! - Slicer with presets and per-stem patterns
+//! - Hot cue preview
+//! - Loop preview
+//! - Effect chains
+//! - Time stretching
+//!
+//! # Lock-Free Architecture
+//!
+//! Same architecture as mesh-player:
+//! - Commands sent via lock-free ringbuffer (UI → Audio)
 //! - State read via atomics (Audio → UI)
-//! - Audio thread owns the stems data exclusively
+//! - Audio thread owns the engine exclusively
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use basedrop::Shared;
 use jack::{AudioOut, Client, ClientOptions, Control, Port, ProcessScope};
-use mesh_core::audio_file::StemBuffers;
+use mesh_core::audio_file::LoadedTrack;
+use mesh_core::engine::{
+    command_channel, AudioEngine, DeckAtomics, EngineCommand, LinkedStemAtomics, PreparedTrack,
+    SlicerAtomics,
+};
+use mesh_core::types::StereoBuffer;
 
-/// Commands sent from UI to audio thread
-pub enum PreviewCommand {
-    /// Load new stems for playback
-    LoadStems(Box<Shared<StemBuffers>>, u64), // stems, length
-    /// Unload current stems
-    UnloadStems,
-    /// Start playback
-    Play,
-    /// Pause playback
-    Pause,
-    /// Seek to position (samples)
-    Seek(u64),
-}
+// Re-export for convenience
+pub use mesh_core::engine::{SlicerPreset, StepSequence};
 
-/// Create a preview command channel
-///
-/// Returns (sender, receiver) pair with 64-command capacity
-pub fn preview_command_channel() -> (rtrb::Producer<PreviewCommand>, rtrb::Consumer<PreviewCommand>)
-{
-    rtrb::RingBuffer::new(64)
+/// Maximum buffer size to pre-allocate
+const MAX_BUFFER_SIZE: usize = 8192;
+
+/// The deck index used for preview (always deck 0)
+pub const PREVIEW_DECK: usize = 0;
+
+/// Handle to the active JACK client
+pub struct JackHandle {
+    _async_client: jack::AsyncClient<JackNotifications, JackProcessor>,
 }
 
 /// Command sender for UI thread
+///
+/// Wraps the lock-free producer for sending EngineCommand to the audio thread.
 pub struct CommandSender {
-    producer: rtrb::Producer<PreviewCommand>,
+    producer: rtrb::Producer<EngineCommand>,
 }
 
 impl CommandSender {
-    /// Send a command to the audio thread
-    ///
-    /// Returns Err if the queue is full (command dropped)
-    pub fn send(&mut self, cmd: PreviewCommand) -> Result<(), PreviewCommand> {
+    /// Send a command to the audio engine (non-blocking)
+    pub fn send(&mut self, cmd: EngineCommand) -> Result<(), EngineCommand> {
         self.producer.push(cmd).map_err(|e| match e {
             rtrb::PushError::Full(value) => value,
         })
     }
-
-    /// Check if there's space in the queue
-    #[allow(dead_code)]
-    pub fn has_space(&self) -> bool {
-        self.producer.slots() > 0
-    }
 }
 
-/// Lock-free atomics for UI to read audio state
-pub struct PreviewAtomics {
-    /// Current playback position in samples
-    pub position: AtomicU64,
-    /// Whether audio is currently playing
-    pub playing: AtomicBool,
-    /// Total track length in samples
-    pub length: AtomicU64,
-}
-
-impl PreviewAtomics {
-    fn new() -> Self {
-        Self {
-            position: AtomicU64::new(0),
-            playing: AtomicBool::new(false),
-            length: AtomicU64::new(0),
-        }
-    }
-
-    /// Get current playback position
-    pub fn position(&self) -> u64 {
-        self.position.load(Ordering::Relaxed)
-    }
-
-    /// Check if playing
-    pub fn is_playing(&self) -> bool {
-        self.playing.load(Ordering::Relaxed)
-    }
-
-    /// Get track length
-    pub fn length(&self) -> u64 {
-        self.length.load(Ordering::Relaxed)
-    }
-}
-
-/// Audio playback state for UI interaction
-///
-/// Holds command sender and atomic state references
-pub struct AudioState {
-    /// Command sender for audio thread (None if disconnected)
-    command_sender: Option<CommandSender>,
-    /// Atomics for reading current state
-    atomics: Arc<PreviewAtomics>,
-}
-
-impl AudioState {
-    /// Create new audio state with command channel
-    fn new(
-        producer: rtrb::Producer<PreviewCommand>,
-        atomics: Arc<PreviewAtomics>,
-    ) -> Self {
-        Self {
-            command_sender: Some(CommandSender { producer }),
-            atomics,
-        }
-    }
-
-    /// Create a disconnected audio state (for when JACK is unavailable)
-    pub fn disconnected() -> Self {
-        Self {
-            command_sender: None,
-            atomics: Arc::new(PreviewAtomics::new()),
-        }
-    }
-
-    /// Get current playback position
-    pub fn position(&self) -> u64 {
-        self.atomics.position()
-    }
-
-    /// Check if playing
-    pub fn is_playing(&self) -> bool {
-        self.atomics.is_playing()
-    }
-
-    /// Get track length
-    #[allow(dead_code)]
-    pub fn length(&self) -> u64 {
-        self.atomics.length()
-    }
-
-    /// Seek to position
-    pub fn seek(&mut self, position: u64) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(PreviewCommand::Seek(position));
-        }
-    }
-
-    /// Start playback
-    pub fn play(&mut self) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(PreviewCommand::Play);
-        }
-    }
-
-    /// Pause playback
-    pub fn pause(&mut self) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(PreviewCommand::Pause);
-        }
-    }
-
-    /// Toggle play/pause
-    pub fn toggle(&mut self) {
-        if self.is_playing() {
-            self.pause();
-        } else {
-            self.play();
-        }
-    }
-
-    /// Set the current track for playback
-    pub fn set_track(&mut self, stems: Shared<StemBuffers>, length: u64) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(PreviewCommand::LoadStems(Box::new(stems), length));
-            log::info!("AudioState: Track load command sent, {} samples", length);
-        }
-    }
-
-    /// Clear the current track
-    #[allow(dead_code)]
-    pub fn clear_track(&mut self) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(PreviewCommand::UnloadStems);
-        }
-    }
-}
-
-/// JACK process handler for audio preview
-///
-/// Owns all audio data exclusively - no sharing with UI thread
-pub struct JackProcessor {
-    /// Output ports
+/// JACK process handler - owns the AudioEngine exclusively
+struct JackProcessor {
+    /// Output ports (stereo only - no separate cue for editor)
     left: Port<AudioOut>,
     right: Port<AudioOut>,
+    /// The audio engine (OWNED, not shared)
+    engine: AudioEngine,
     /// Command receiver from UI
-    command_rx: rtrb::Consumer<PreviewCommand>,
-    /// Atomics for UI to read state
-    atomics: Arc<PreviewAtomics>,
-    /// Current stems (owned by audio thread)
-    stems: Option<Shared<StemBuffers>>,
-    /// Current playback position
-    position: usize,
-    /// Track length
-    length: usize,
-    /// Playing flag
-    playing: bool,
-}
-
-impl JackProcessor {
-    /// Process pending commands from UI
-    fn process_commands(&mut self) {
-        while let Ok(cmd) = self.command_rx.pop() {
-            match cmd {
-                PreviewCommand::LoadStems(stems, length) => {
-                    self.stems = Some(*stems);
-                    self.length = length as usize;
-                    self.position = 0;
-                    self.playing = false;
-                    // Update atomics
-                    self.atomics.length.store(length, Ordering::Relaxed);
-                    self.atomics.position.store(0, Ordering::Relaxed);
-                    self.atomics.playing.store(false, Ordering::Relaxed);
-                }
-                PreviewCommand::UnloadStems => {
-                    self.stems = None;
-                    self.length = 0;
-                    self.position = 0;
-                    self.playing = false;
-                    self.atomics.length.store(0, Ordering::Relaxed);
-                    self.atomics.position.store(0, Ordering::Relaxed);
-                    self.atomics.playing.store(false, Ordering::Relaxed);
-                }
-                PreviewCommand::Play => {
-                    if self.stems.is_some() && self.position < self.length {
-                        self.playing = true;
-                        self.atomics.playing.store(true, Ordering::Relaxed);
-                    }
-                }
-                PreviewCommand::Pause => {
-                    self.playing = false;
-                    self.atomics.playing.store(false, Ordering::Relaxed);
-                }
-                PreviewCommand::Seek(pos) => {
-                    self.position = (pos as usize).min(self.length);
-                    self.atomics
-                        .position
-                        .store(self.position as u64, Ordering::Relaxed);
-                }
-            }
-        }
-    }
+    command_rx: rtrb::Consumer<EngineCommand>,
+    /// Pre-allocated output buffer
+    master_buffer: StereoBuffer,
+    /// Cue buffer (required by engine, but we don't output it)
+    cue_buffer: StereoBuffer,
 }
 
 impl jack::ProcessHandler for JackProcessor {
     fn process(&mut self, _client: &Client, ps: &ProcessScope) -> Control {
-        // Process commands first (lock-free)
-        self.process_commands();
-
         let n_frames = ps.n_frames() as usize;
+
+        // Set working buffer length (RT-safe: no allocation)
+        self.master_buffer.set_len_from_capacity(n_frames);
+        self.cue_buffer.set_len_from_capacity(n_frames);
+
+        // Process commands from UI (lock-free)
+        self.engine.process_commands(&mut self.command_rx);
+
+        // Process audio through the engine
+        self.engine.process(&mut self.master_buffer, &mut self.cue_buffer);
+
+        // Copy master output to JACK ports
         let out_left = self.left.as_mut_slice(ps);
         let out_right = self.right.as_mut_slice(ps);
 
-        // Check if playing and have stems
-        if !self.playing {
-            out_left.fill(0.0);
-            out_right.fill(0.0);
-            return Control::Continue;
-        }
-
-        let stems = match self.stems.as_ref() {
-            Some(s) => s,
-            None => {
-                out_left.fill(0.0);
-                out_right.fill(0.0);
-                return Control::Continue;
-            }
-        };
-
-        let len = stems.len();
-
-        // Sum all 4 stems and output
         for i in 0..n_frames {
-            let idx = self.position + i;
-            if idx >= len {
-                out_left[i] = 0.0;
-                out_right[i] = 0.0;
-            } else {
-                // Sum all stems (vocals + drums + bass + other)
-                let v = &stems.vocals[idx];
-                let d = &stems.drums[idx];
-                let b = &stems.bass[idx];
-                let o = &stems.other[idx];
-                out_left[i] = v.left + d.left + b.left + o.left;
-                out_right[i] = v.right + d.right + b.right + o.right;
-            }
-        }
-
-        // Advance position
-        let new_pos = (self.position + n_frames).min(len);
-        self.position = new_pos;
-        self.atomics
-            .position
-            .store(new_pos as u64, Ordering::Relaxed);
-
-        // Stop at end of track
-        if new_pos >= len {
-            self.playing = false;
-            self.atomics.playing.store(false, Ordering::Relaxed);
+            let sample = self.master_buffer[i];
+            out_left[i] = sample.left;
+            out_right[i] = sample.right;
         }
 
         Control::Continue
@@ -333,11 +120,8 @@ impl jack::NotificationHandler for JackNotifications {
 /// Error type for JACK operations
 #[derive(Debug)]
 pub enum JackError {
-    /// Failed to create JACK client
     ClientCreation(String),
-    /// Failed to register port
     PortRegistration(String),
-    /// Failed to activate client
     Activation(String),
 }
 
@@ -353,24 +137,343 @@ impl std::fmt::Display for JackError {
 
 impl std::error::Error for JackError {}
 
-/// Handle to the active JACK client
-pub struct JackHandle {
-    /// The async client (keeps JACK running until dropped)
-    _async_client: jack::AsyncClient<JackNotifications, JackProcessor>,
+/// Audio state for UI interaction
+///
+/// Provides high-level API for preview playback using deck 0.
+/// All operations are lock-free via command queue and atomics.
+pub struct AudioState {
+    /// Command sender (None if JACK unavailable)
+    command_sender: Option<CommandSender>,
+    /// Deck atomics for reading playback state
+    deck_atomics: Arc<DeckAtomics>,
+    /// Slicer atomics for reading slicer state (one per stem: VOC, DRM, BAS, OTH)
+    slicer_atomics: [Arc<SlicerAtomics>; 4],
+    /// Linked stem atomics
+    linked_stem_atomics: Arc<LinkedStemAtomics>,
+    /// JACK sample rate
+    sample_rate: u32,
 }
 
-/// Start the JACK audio client for preview playback
+impl AudioState {
+    /// Create audio state from JACK startup results
+    fn new(
+        command_sender: CommandSender,
+        deck_atomics: Arc<DeckAtomics>,
+        slicer_atomics: [Arc<SlicerAtomics>; 4],
+        linked_stem_atomics: Arc<LinkedStemAtomics>,
+        sample_rate: u32,
+    ) -> Self {
+        Self {
+            command_sender: Some(command_sender),
+            deck_atomics,
+            slicer_atomics,
+            linked_stem_atomics,
+            sample_rate,
+        }
+    }
+
+    /// Create a disconnected audio state (when JACK is unavailable)
+    pub fn disconnected() -> Self {
+        Self {
+            command_sender: None,
+            deck_atomics: Arc::new(DeckAtomics::new()),
+            slicer_atomics: [
+                Arc::new(SlicerAtomics::new()),
+                Arc::new(SlicerAtomics::new()),
+                Arc::new(SlicerAtomics::new()),
+                Arc::new(SlicerAtomics::new()),
+            ],
+            linked_stem_atomics: Arc::new(LinkedStemAtomics::new()),
+            sample_rate: 44100,
+        }
+    }
+
+    /// Send a command to the audio engine
+    fn send(&mut self, cmd: EngineCommand) {
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(cmd);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Playback state (read via atomics)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Get current playback position in samples
+    pub fn position(&self) -> u64 {
+        self.deck_atomics.position()
+    }
+
+    /// Check if playing
+    pub fn is_playing(&self) -> bool {
+        self.deck_atomics.is_playing()
+    }
+
+    /// Get sample rate
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    /// Get deck atomics for direct access
+    pub fn deck_atomics(&self) -> &Arc<DeckAtomics> {
+        &self.deck_atomics
+    }
+
+    /// Get slicer atomics for all 4 stems (VOC, DRM, BAS, OTH)
+    ///
+    /// Used for waveform slicer overlay visualization.
+    pub fn slicer_atomics(&self) -> &[Arc<SlicerAtomics>; 4] {
+        &self.slicer_atomics
+    }
+
+    /// Get linked stem atomics
+    pub fn linked_stem_atomics(&self) -> &Arc<LinkedStemAtomics> {
+        &self.linked_stem_atomics
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Playback control
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Start playback
+    pub fn play(&mut self) {
+        self.send(EngineCommand::Play { deck: PREVIEW_DECK });
+    }
+
+    /// Pause playback
+    pub fn pause(&mut self) {
+        self.send(EngineCommand::Pause { deck: PREVIEW_DECK });
+    }
+
+    /// Toggle play/pause
+    pub fn toggle(&mut self) {
+        self.send(EngineCommand::TogglePlay { deck: PREVIEW_DECK });
+    }
+
+    /// Seek to position in samples
+    pub fn seek(&mut self, position: u64) {
+        self.send(EngineCommand::Seek {
+            deck: PREVIEW_DECK,
+            position: position as usize,
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Track loading
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Load a track for preview
+    ///
+    /// Creates a PreparedTrack from the LoadedTrack (pre-computes hot cues).
+    pub fn load_track(&mut self, track: LoadedTrack) {
+        let prepared = PreparedTrack::prepare(track);
+        self.send(EngineCommand::LoadTrack {
+            deck: PREVIEW_DECK,
+            track: Box::new(prepared),
+        });
+    }
+
+    /// Unload current track
+    pub fn unload_track(&mut self) {
+        self.send(EngineCommand::UnloadTrack { deck: PREVIEW_DECK });
+    }
+
+    /// Set global BPM (affects time-stretching ratio for all decks)
+    ///
+    /// For mesh-cue, we set this to the track's analyzed BPM so playback
+    /// is at original speed (no time-stretching).
+    pub fn set_global_bpm(&mut self, bpm: f64) {
+        self.send(EngineCommand::SetGlobalBpm(bpm));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CDJ-Style Cueing
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// CDJ-style cue button press
+    pub fn cue_press(&mut self) {
+        self.send(EngineCommand::CuePress { deck: PREVIEW_DECK });
+    }
+
+    /// CDJ-style cue button release
+    pub fn cue_release(&mut self) {
+        self.send(EngineCommand::CueRelease { deck: PREVIEW_DECK });
+    }
+
+    /// Set cue point at current position
+    pub fn set_cue_point(&mut self) {
+        self.send(EngineCommand::SetCuePoint { deck: PREVIEW_DECK });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Hot Cues
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Hot cue button press
+    pub fn hot_cue_press(&mut self, slot: usize) {
+        self.send(EngineCommand::HotCuePress {
+            deck: PREVIEW_DECK,
+            slot,
+        });
+    }
+
+    /// Hot cue button release
+    pub fn hot_cue_release(&mut self) {
+        self.send(EngineCommand::HotCueRelease { deck: PREVIEW_DECK });
+    }
+
+    /// Clear a hot cue slot
+    pub fn clear_hot_cue(&mut self, slot: usize) {
+        self.send(EngineCommand::ClearHotCue {
+            deck: PREVIEW_DECK,
+            slot,
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Loop Control
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Toggle loop on/off
+    pub fn toggle_loop(&mut self) {
+        self.send(EngineCommand::ToggleLoop { deck: PREVIEW_DECK });
+    }
+
+    /// Set loop in point
+    pub fn loop_in(&mut self) {
+        self.send(EngineCommand::LoopIn { deck: PREVIEW_DECK });
+    }
+
+    /// Set loop out point and activate
+    pub fn loop_out(&mut self) {
+        self.send(EngineCommand::LoopOut { deck: PREVIEW_DECK });
+    }
+
+    /// Turn off loop
+    pub fn loop_off(&mut self) {
+        self.send(EngineCommand::LoopOff { deck: PREVIEW_DECK });
+    }
+
+    /// Adjust loop length
+    pub fn adjust_loop_length(&mut self, direction: i32) {
+        self.send(EngineCommand::AdjustLoopLength {
+            deck: PREVIEW_DECK,
+            direction,
+        });
+    }
+
+    /// Set loop length index
+    pub fn set_loop_length_index(&mut self, index: usize) {
+        self.send(EngineCommand::SetLoopLengthIndex {
+            deck: PREVIEW_DECK,
+            index,
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Beat Jump
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Jump forward by loop length beats
+    pub fn beat_jump_forward(&mut self) {
+        self.send(EngineCommand::BeatJumpForward { deck: PREVIEW_DECK });
+    }
+
+    /// Jump backward by loop length beats
+    pub fn beat_jump_backward(&mut self) {
+        self.send(EngineCommand::BeatJumpBackward { deck: PREVIEW_DECK });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Slicer control
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Enable/disable slicer for a stem
+    pub fn set_slicer_enabled(&mut self, stem: mesh_core::types::Stem, enabled: bool) {
+        self.send(EngineCommand::SetSlicerEnabled {
+            deck: PREVIEW_DECK,
+            stem,
+            enabled,
+        });
+    }
+
+    /// Set slicer buffer bars (1, 4, 8, or 16)
+    pub fn set_slicer_buffer_bars(&mut self, stem: mesh_core::types::Stem, bars: u32) {
+        self.send(EngineCommand::SetSlicerBufferBars {
+            deck: PREVIEW_DECK,
+            stem,
+            bars,
+        });
+    }
+
+    /// Load slicer presets (8 presets with per-stem patterns)
+    pub fn set_slicer_presets(&mut self, presets: [mesh_core::engine::SlicerPreset; 8]) {
+        self.send(EngineCommand::SetSlicerPresets {
+            presets: Box::new(presets),
+        });
+    }
+
+    /// Trigger slicer button action (for manual slice triggering)
+    pub fn slicer_button_action(
+        &mut self,
+        stem: mesh_core::types::Stem,
+        button_idx: u8,
+        shift_held: bool,
+    ) {
+        self.send(EngineCommand::SlicerButtonAction {
+            deck: PREVIEW_DECK,
+            stem,
+            button_idx: button_idx as usize,
+            shift_held,
+        });
+    }
+
+    /// Reset slicer queue to default pattern
+    pub fn slicer_reset_queue(&mut self, stem: mesh_core::types::Stem) {
+        self.send(EngineCommand::SlicerResetQueue {
+            deck: PREVIEW_DECK,
+            stem,
+        });
+    }
+
+    /// Load a specific sequence into a stem's slicer
+    pub fn slicer_load_sequence(
+        &mut self,
+        stem: mesh_core::types::Stem,
+        sequence: mesh_core::engine::StepSequence,
+    ) {
+        self.send(EngineCommand::SlicerLoadSequence {
+            deck: PREVIEW_DECK,
+            stem,
+            sequence: Box::new(sequence),
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Volume control (for preview)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Set deck volume (0.0 - 1.0)
+    pub fn set_volume(&mut self, volume: f32) {
+        self.send(EngineCommand::SetVolume {
+            deck: PREVIEW_DECK,
+            volume,
+        });
+    }
+}
+
+/// Start the JACK audio client for mesh-cue
 ///
-/// Returns the audio state for UI interaction and JACK handle to keep client alive.
-/// Uses lock-free command queue - no Mutex in audio path.
+/// Returns AudioState for UI interaction and JackHandle to keep client alive.
 pub fn start_jack_client() -> Result<(AudioState, JackHandle), JackError> {
-    // Create JACK client (don't start server if not running)
     let (client, _status) = Client::new("mesh-cue", ClientOptions::NO_START_SERVER)
         .map_err(|e| JackError::ClientCreation(e.to_string()))?;
 
+    let sample_rate = client.sample_rate() as u32;
+
     log::info!(
         "JACK client 'mesh-cue' created (sample rate: {}, buffer size: {})",
-        client.sample_rate(),
+        sample_rate,
         client.buffer_size()
     );
 
@@ -383,38 +486,47 @@ pub fn start_jack_client() -> Result<(AudioState, JackHandle), JackError> {
         .register_port("out_right", AudioOut::default())
         .map_err(|e| JackError::PortRegistration(e.to_string()))?;
 
+    // Create engine and extract atomics before moving to processor
+    let engine = AudioEngine::new_with_sample_rate(sample_rate);
+    let deck_atomics = engine.deck_atomics()[PREVIEW_DECK].clone();
+    // Get slicer atomics for all 4 stems on preview deck
+    let slicer_atomics = engine.slicer_atomics_for_deck(PREVIEW_DECK);
+    let linked_stem_atomics = engine.linked_stem_atomics()[PREVIEW_DECK].clone();
+
     // Create lock-free command channel
-    let (producer, consumer) = preview_command_channel();
+    let (command_tx, command_rx) = command_channel();
 
-    // Create shared atomics for state
-    let atomics = Arc::new(PreviewAtomics::new());
-
-    // Create processor with owned state
+    // Create processor with engine (OWNED, not shared)
     let processor = JackProcessor {
         left,
         right,
-        command_rx: consumer,
-        atomics: atomics.clone(),
-        stems: None,
-        position: 0,
-        length: 0,
-        playing: false,
+        engine,
+        command_rx,
+        master_buffer: StereoBuffer::silence(MAX_BUFFER_SIZE),
+        cue_buffer: StereoBuffer::silence(MAX_BUFFER_SIZE),
     };
 
-    // Create audio state for UI
-    let audio_state = AudioState::new(producer, atomics);
-
-    // Activate the client
+    // Activate client
     let async_client = client
         .activate_async(JackNotifications, processor)
         .map_err(|e| JackError::Activation(e.to_string()))?;
 
-    log::info!("JACK client activated - lock-free audio preview ready");
+    log::info!("JACK client activated - full AudioEngine ready");
 
-    // Try to auto-connect to system playback
+    // Auto-connect to system playback
     if let Err(e) = auto_connect_ports() {
         log::warn!("Could not auto-connect to system playback: {}", e);
     }
+
+    // Set deck 0 volume to 1.0 (master) for preview
+    let mut audio_state = AudioState::new(
+        CommandSender { producer: command_tx },
+        deck_atomics,
+        slicer_atomics,
+        linked_stem_atomics,
+        sample_rate,
+    );
+    audio_state.set_volume(1.0);
 
     Ok((
         audio_state,
@@ -424,13 +536,11 @@ pub fn start_jack_client() -> Result<(AudioState, JackHandle), JackError> {
     ))
 }
 
-/// Try to auto-connect mesh-cue outputs to system playback ports
+/// Auto-connect mesh-cue outputs to system playback
 fn auto_connect_ports() -> Result<(), JackError> {
-    // Create a temporary client just for connecting
     let (client, _) = Client::new("mesh-cue_connect", ClientOptions::NO_START_SERVER)
         .map_err(|e| JackError::ClientCreation(e.to_string()))?;
 
-    // Find system playback ports
     let playback_ports = client.ports(
         Some("system:playback_.*"),
         None,
@@ -438,21 +548,17 @@ fn auto_connect_ports() -> Result<(), JackError> {
     );
 
     if playback_ports.len() >= 2 {
-        // Connect outputs to system playback
         if let Err(e) = client.connect_ports_by_name("mesh-cue:out_left", &playback_ports[0]) {
             log::warn!("Could not connect left output: {}", e);
         }
         if let Err(e) = client.connect_ports_by_name("mesh-cue:out_right", &playback_ports[1]) {
             log::warn!("Could not connect right output: {}", e);
         }
-
         log::info!(
             "Connected outputs to {} and {}",
             playback_ports[0],
             playback_ports[1]
         );
-    } else {
-        log::warn!("No system playback ports found for auto-connect");
     }
 
     Ok(())

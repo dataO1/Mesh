@@ -28,6 +28,7 @@
 pub mod button_styles;
 pub mod playlist_browser;
 pub mod rotary_knob;
+pub mod slice_editor;
 pub mod theme;
 pub mod track_table;
 pub mod tree;
@@ -88,3 +89,15 @@ pub use playlist_browser::{
     playlist_browser, table_browser, tree_browser, PlaylistBrowserMessage, PlaylistBrowserState,
     TREE_PANEL_WIDTH,
 };
+
+// Slice editor widget for slicer preset editing
+pub use slice_editor::{
+    slice_editor, SliceEditPreset, SliceEditSequence, SliceEditStep, SliceEditorState,
+    SlicerConfig, SlicerPresetConfig, SlicerSequenceConfig, SlicerStepConfig,
+    NUM_PRESETS, NUM_SLICES, NUM_STEMS, NUM_STEPS,
+    // Shared presets file I/O
+    load_slicer_presets, save_slicer_presets, slicer_presets_path, SLICER_PRESETS_FILENAME,
+};
+
+// Slicer overlay drawing utilities
+pub use waveform::{draw_slicer_overlay, draw_slicer_overlay_zoomed};

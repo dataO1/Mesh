@@ -9,5 +9,7 @@ description = "Shared UI widgets for mesh audio applications"
 [dependencies]
 iced.workspace = true
 mesh-core.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
 basedrop = "0.1"
 log = "0.4"

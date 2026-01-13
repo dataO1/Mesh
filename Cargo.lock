@@ -2687,6 +2687,8 @@ dependencies = [
  "iced",
  "log",
  "mesh-core",
+ "serde",
+ "serde_yaml",
 ]
 
 [[package]]

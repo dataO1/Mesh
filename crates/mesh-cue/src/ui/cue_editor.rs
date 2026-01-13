@@ -8,10 +8,11 @@
 //! Plus a DROP button for setting the drop marker (used for linked stem alignment).
 
 use super::app::{LoadedTrackState, Message};
-use iced::widget::{button, container, mouse_area, row, text};
+use iced::widget::{button, column, container, mouse_area, row, text};
 use iced::{Alignment, Color, Element, Length, Theme};
 use mesh_core::types::SAMPLE_RATE;
 use mesh_widgets::CUE_COLORS;
+use mesh_widgets::{COMBINED_WAVEFORM_GAP, WAVEFORM_HEIGHT, ZOOMED_WAVEFORM_HEIGHT};
 
 /// Drop marker color (orange - same as used in waveform visualization)
 const DROP_MARKER_COLOR: Color = Color::from_rgb(1.0, 0.5, 0.0);
@@ -204,6 +205,91 @@ pub fn view_stem_links(
         .width(Length::Fill)
         .center_x(Length::Fill)
         .into()
+}
+
+/// Render the stem link buttons as a vertical column (for right of waveforms)
+///
+/// Each button shows the stem name and the linked track (if any).
+/// Click to start link selection, Shift+click to clear.
+/// The column height matches the combined waveform height.
+pub fn view_stem_links_column(
+    state: &LoadedTrackState,
+    stem_link_selection: Option<usize>,
+) -> Element<Message> {
+    use mesh_core::audio_file::StemLinkReference;
+
+    // Total waveform height
+    let total_height = ZOOMED_WAVEFORM_HEIGHT + COMBINED_WAVEFORM_GAP + WAVEFORM_HEIGHT;
+    let button_height = total_height / 4.0;
+
+    let buttons: Vec<Element<Message>> = (0..4)
+        .map(|stem_idx| {
+            // Find if this stem has a link
+            let link: Option<&StemLinkReference> = state
+                .stem_links
+                .iter()
+                .find(|l| l.stem_index == stem_idx as u8);
+
+            create_stem_link_button_vertical(stem_idx, link, stem_link_selection, button_height)
+        })
+        .collect();
+
+    column(buttons)
+        .spacing(0)
+        .width(Length::Fixed(50.0))
+        .height(Length::Fixed(total_height))
+        .into()
+}
+
+/// Create a single stem link button for vertical column layout
+fn create_stem_link_button_vertical(
+    stem_idx: usize,
+    link: Option<&mesh_core::audio_file::StemLinkReference>,
+    stem_link_selection: Option<usize>,
+    height: f32,
+) -> Element<'static, Message> {
+    let stem_name = STEM_NAMES[stem_idx];
+    let color = STEM_COLORS[stem_idx];
+    let is_selecting = stem_link_selection == Some(stem_idx);
+
+    // Shorter labels for vertical layout
+    let label_text = if link.is_some() {
+        stem_name.to_string()
+    } else if is_selecting {
+        format!("{}...", stem_name)
+    } else {
+        stem_name.to_string()
+    };
+
+    let btn = button(text(label_text).size(10).center())
+        .width(Length::Fill)
+        .height(Length::Fixed(height));
+
+    if link.is_some() {
+        // Has link - show in stem color
+        btn.on_press(Message::StartStemLinkSelection(stem_idx))
+            .style(move |theme: &Theme, status| {
+                colored_button_style(theme, status, color)
+            })
+            .into()
+    } else if is_selecting {
+        // Currently selecting - highlight
+        btn.on_press(Message::ConfirmStemLink(stem_idx))
+            .style(move |theme: &Theme, status| {
+                let bright_color = Color::from_rgb(
+                    (color.r + 0.3).min(1.0),
+                    (color.g + 0.3).min(1.0),
+                    (color.b + 0.3).min(1.0),
+                );
+                colored_button_style(theme, status, bright_color)
+            })
+            .into()
+    } else {
+        // No link - secondary style
+        btn.on_press(Message::StartStemLinkSelection(stem_idx))
+            .style(iced::widget::button::secondary)
+            .into()
+    }
 }
 
 /// Create a single stem link button

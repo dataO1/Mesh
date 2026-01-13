@@ -188,8 +188,51 @@ fn view_display_section(state: &SettingsState) -> Element<Message> {
     .spacing(10)
     .align_y(Alignment::Center);
 
+    // Slicer buffer size section
+    let slicer_title = text("Slicer Buffer Size").size(14);
+    let slicer_hint = text("How many beats the 16 slices span (1 bar = 4 beats)")
+        .size(12);
+
+    // Slicer buffer buttons (1, 4, 8, 16 bars)
+    let slicer_sizes: [u32; 4] = [1, 4, 8, 16];
+    let slicer_labels = ["4 beats", "16 beats", "32 beats", "64 beats"];
+    let slicer_buttons: Vec<Element<Message>> = slicer_sizes
+        .iter()
+        .zip(slicer_labels.iter())
+        .map(|(&size, &label)| {
+            let is_selected = state.draft_slicer_buffer_bars == size;
+            let btn = button(text(label).size(12))
+                .on_press(Message::UpdateSettingsSlicerBufferBars(size))
+                .style(if is_selected {
+                    iced::widget::button::primary
+                } else {
+                    iced::widget::button::secondary
+                })
+                .width(Length::Fixed(70.0));
+            btn.into()
+        })
+        .collect();
+
+    let slicer_label = text("Buffer:").size(14);
+    let slicer_row = row![
+        slicer_label,
+        row(slicer_buttons).spacing(4).align_y(Alignment::Center),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+
     container(
-        column![section_title, subsection_title, hint, grid_row].spacing(10),
+        column![
+            section_title,
+            subsection_title,
+            hint,
+            grid_row,
+            Space::new().height(10),
+            slicer_title,
+            slicer_hint,
+            slicer_row,
+        ]
+        .spacing(10),
     )
     .padding(15)
     .width(Length::Fill)

@@ -35,6 +35,7 @@ mod canvas;
 mod peak_computation;
 mod peaks;
 mod peaks_computer;
+mod slicer_overlay;
 mod state;
 mod view;
 
@@ -69,6 +70,9 @@ pub use canvas::{
     // Legacy constants (for backwards compatibility)
     OVERVIEW_STACK_GAP, PLAYER_SECTION_GAP, ZOOMED_GRID_GAP,
 };
+
+// Slicer overlay drawing utilities (reusable across mesh-player and mesh-cue)
+pub use slicer_overlay::{draw_slicer_overlay, draw_slicer_overlay_zoomed};
 
 use iced::Color;
 

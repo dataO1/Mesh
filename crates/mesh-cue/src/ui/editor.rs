@@ -2,9 +2,10 @@
 
 use super::app::{LoadedTrackState, Message};
 use super::waveform::view_combined_waveform;
-use super::{cue_editor, saved_loop_buttons, transport};
+use super::{cue_editor, transport};
 use iced::widget::{button, column, container, row, text, text_input, Space};
 use iced::{Alignment, Element, Length};
+use mesh_widgets::slice_editor;
 
 /// Render the track editor
 ///
@@ -23,20 +24,35 @@ pub fn view(state: &LoadedTrackState, stem_link_selection: Option<usize>) -> Ele
     // Use interpolated position for smooth waveform animation during playback
     let waveforms = view_combined_waveform(&state.combined_waveform, state.interpolated_playhead_position());
 
-    // Layout: player controls on left, waveforms take remaining width
+    // Stem link buttons as vertical column (right of waveforms)
+    let stem_links_column = cue_editor::view_stem_links_column(state, stem_link_selection);
+
+    // Layout: player controls on left, waveforms center, stem links right
     // Align to top (Start) so content doesn't float in the middle
-    let main_row = row![player_controls, waveforms]
-        .spacing(10)
+    let main_row = row![player_controls, waveforms, stem_links_column]
+        .spacing(6)
         .align_y(Alignment::Start);
 
     // Hot cue buttons (single row of 8) - directly under waveforms
     let cue_panel = cue_editor::view(state);
 
-    // Saved loop buttons (single row of 8) - below hot cues
-    let loop_panel = saved_loop_buttons::view(state);
+    // Slice editor - below hot cues
+    let slice_editor_widget = slice_editor(
+        &state.slice_editor,
+        |step, slice| Message::SliceEditorCellToggle { step, slice },
+        Message::SliceEditorMuteToggle,
+        Message::SliceEditorStemClick,
+        Message::SliceEditorPresetSelect,
+    );
 
-    // Stem link buttons (4 buttons for prepared mode) - below saved loops
-    let stem_links_panel = cue_editor::view_stem_links(state, stem_link_selection);
+    // Save presets button (next to slice editor)
+    let save_presets_btn = button(text("Save Presets").size(11))
+        .padding([4, 8])
+        .on_press(Message::SaveSlicerPresets);
+
+    let slice_editor_view = row![slice_editor_widget, save_presets_btn]
+        .spacing(8)
+        .align_y(Alignment::End);
 
     let save_section = view_save_section(state);
 
@@ -45,9 +61,8 @@ pub fn view(state: &LoadedTrackState, stem_link_selection: Option<usize>) -> Ele
             header,
             Space::new().height(8.0),  // Explicit spacing after header
             main_row,
-            cue_panel,        // Hot cues - directly under waveforms
-            loop_panel,       // Saved loops - below hot cues
-            stem_links_panel, // Stem links - below saved loops
+            cue_panel,         // Hot cues - directly under waveforms
+            slice_editor_view, // Slice editor - below hot cues
             // Spacer pushes save section to bottom
             Space::new().height(Length::Fill),
             save_section,
