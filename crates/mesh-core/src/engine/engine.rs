@@ -4,6 +4,7 @@ use crate::music::semitones_to_match;
 use crate::timestretch::TimeStretcher;
 use crate::types::{DeckId, PlayState, Stem, StereoBuffer, NUM_DECKS};
 
+use super::slicer::SlicerPreset;
 use super::{Deck, DeckAtomics, EngineCommand, LatencyCompensator, Mixer, PreparedTrack};
 
 /// Global BPM range
@@ -52,9 +53,10 @@ pub struct AudioEngine {
     frame_counter: u64,
     /// Whether phase sync is enabled (can be toggled via config)
     phase_sync_enabled: bool,
-    /// Slicer preset patterns (8 patterns of 16 steps each)
-    /// Used by SlicerButtonAction for preset loading
-    slicer_presets: [[u8; 16]; 8],
+    /// Slicer presets (8 presets, each with per-stem patterns)
+    /// When a preset button is pressed, patterns are loaded to all stems that have
+    /// a defined pattern in the preset (others are bypassed).
+    slicer_presets: [SlicerPreset; 8],
 }
 
 impl AudioEngine {
@@ -78,15 +80,16 @@ impl AudioEngine {
             frame_counter: 0,
             phase_sync_enabled: true, // Enabled by default
             // Default slicer presets (can be overwritten via SetSlicerPresets command)
+            // These defaults apply patterns to drums only (for backward compatibility)
             slicer_presets: [
-                [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], // Sequential
-                [0, 0, 2, 2, 4, 4, 6, 6, 8, 8, 10, 10, 12, 12, 14, 14], // Half-time
-                [0, 1, 0, 3, 4, 5, 4, 7, 8, 9, 8, 11, 12, 13, 12, 15],  // Kick emphasis
-                [0, 1, 2, 2, 4, 5, 6, 6, 8, 9, 6, 6, 12, 6, 6, 6],      // Snare roll
-                [0, 1, 2, 3, 4, 4, 6, 7, 8, 9, 10, 11, 12, 12, 14, 15], // Shuffle
-                [3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12], // Reverse
-                [0, 0, 2, 2, 4, 4, 6, 6, 0, 0, 2, 2, 4, 4, 6, 6],       // Stutter
-                [0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6],       // Rapid fire
+                SlicerPreset::drums_only(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]), // Sequential
+                SlicerPreset::drums_only(&[0, 0, 2, 2, 4, 4, 6, 6, 8, 8, 10, 10, 12, 12, 14, 14]), // Half-time
+                SlicerPreset::drums_only(&[0, 1, 0, 3, 4, 5, 4, 7, 8, 9, 8, 11, 12, 13, 12, 15]),  // Kick emphasis
+                SlicerPreset::drums_only(&[0, 1, 2, 2, 4, 5, 6, 6, 8, 9, 6, 6, 12, 6, 6, 6]),      // Snare roll
+                SlicerPreset::drums_only(&[0, 1, 2, 3, 4, 4, 6, 7, 8, 9, 10, 11, 12, 12, 14, 15]), // Shuffle
+                SlicerPreset::drums_only(&[15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]), // Full reverse
+                SlicerPreset::drums_only(&[0, 0, 2, 2, 4, 4, 6, 6, 0, 0, 2, 2, 4, 4, 6, 6]),       // Stutter
+                SlicerPreset::drums_only(&[0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6]),       // Rapid fire
             ],
         }
     }
@@ -717,10 +720,28 @@ impl AudioEngine {
                     }
                 }
                 EngineCommand::SlicerButtonAction { deck, stem, button_idx, shift_held } => {
-                    // Unified button action - slicer handles all behavior internally
                     if let Some(d) = self.decks.get_mut(deck) {
-                        let current_pos = d.position() as usize;
-                        d.slicer_handle_button_action(stem, button_idx, shift_held, current_pos, &self.slicer_presets);
+                        if shift_held {
+                            // Shift+button: slice assignment on single stem (existing behavior)
+                            let current_pos = d.position() as usize;
+                            d.slicer_handle_shift_button(stem, button_idx, current_pos);
+                        } else {
+                            // Normal button: load preset for ALL stems (per-stem patterns)
+                            if button_idx < 8 {
+                                let preset = &self.slicer_presets[button_idx];
+                                for (stem_idx, stem) in Stem::ALL.iter().enumerate() {
+                                    if let Some(seq) = &preset.stems[stem_idx] {
+                                        // Load sequence and enable slicer for this stem
+                                        d.slicer_load_sequence(stem_idx, seq.clone());
+                                        d.set_slicer_enabled(*stem, true);
+                                    } else {
+                                        // No pattern defined - disable slicer for this stem
+                                        d.set_slicer_enabled(*stem, false);
+                                    }
+                                }
+                                log::debug!("slicer: loaded preset {} for all stems on deck {}", button_idx, deck);
+                            }
+                        }
                     }
                 }
                 EngineCommand::SlicerResetQueue { deck, stem } => {
@@ -735,6 +756,11 @@ impl AudioEngine {
                 }
                 EngineCommand::SetSlicerPresets { presets } => {
                     self.slicer_presets = *presets;
+                }
+                EngineCommand::SlicerLoadSequence { deck, stem, sequence } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        d.slicer_load_sequence(stem as usize, *sequence);
+                    }
                 }
 
                 // Linked Stems

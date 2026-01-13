@@ -161,19 +161,59 @@ and mesh-widget and only if necessary in the ui.
   logic should be not in the ui itself, but factored out if necessary (like
   engine behaviour and interaction handlers etc) and the layout should reuse the
   existing components.
-- [ ] in the slicer the pad slices should actually be offset a few samples (to
-  the past, like ~10ms), so the transients of drums are captured properly, beat
-  snapping etc should still work as before, just the playback should have a
-  fixed "anti-delay"
 - [ ] mesh-cue needs to be able to toggle mute state of stems and also load
   stem-links and be able to switch between stems (just like mesh-player, this
   should reuse all the decks capabilities and not introduce duplicated code). we
   already have 4 stem link button, when a stem link button is set with a stem
   link pressing this should toggle between the stems.
-- [ ] add auto gained db difference to the decks header (for example +2dB or
+- [x] add auto gained db difference to the decks header (for example +2dB or
   -3dB)
-- [ ] for the auto gain, should we have a clipper on the master for safe
-  playback??
+- [x] for the auto gain, should we have a clipper on the master for safe
+  playback?? no just use a sane lufs target so tracks dont get boosted too much!
+- [ ] Slicer rework/update (all of the logic needs to be in the slicer
+  module/file and reuse or adapt existing code patterns to avoid duplicate code
+  and multiple code paths):
+  - [ ] We need more features and possibilities:
+    - [x] Velocity per step (for ghost snares)
+    - [x] optionally multiple layered slices on a slice pad/buffer (up to 2 for
+      now, but add a const value, which can be changed later)
+    - [x] currently we have a single preset/buffer for the whole track and
+      control which stems are sliced via config. we want a potential per stem
+      preset buffer (so each stem has its own queue/arrangement, but the user
+      just needs to press a single preset button in any slice, that way the user
+      can build coherently working presets for bass/drums etc). If a preset does
+      not set a stems behaviour bypass slicer for this stem (ie. if the preset is set
+      for drums only, only slice the drums, if the preset defines different
+      queue for drums and bass, slice them each with their own arrangement and
+      bypass the rest).
+    - [x] slices can be "muted" (set to 0), which enables us to have slower
+      feeling beats like 1,0,2,0,3,0,4,0,5,0,6,0,7,0,8,0 . slices that have a
+      muted slice afterwards should have a release fade off to avoid
+      clickiness.
+  - [ ] Then with the new slicing features we need a slice preset editor in the
+    mesh-cue software, where users can prepare slice presets based on a loaded
+    track.
+    - [ ] Slices are still stored in the config, not per track, the track is
+      just there for reference of the beat, so the user can interactively create
+      presets.
+    - [ ] We need a slice edit widget (this should be its own widget/file in the
+      shared widgets and hide logic from the outside and the ui should just
+      communicate with it). for the overall layout: 2 colums, the left colum has
+      4 rows/buttons for the stems, then in the second column a 16 by 16 grid
+      (0,0 is bottom left) which should look similar to a midi editor in a daw. the x axis represents
+      the queue slot to be filled, the y axis represents the possible slices to
+      set. clicking one of the buttons should toggle the slot on or off, for now no velocity, we will add this later. for example
+      pressing button 4x1 (x axis 3 y axis 1) and button 4x8 assigns two slices (1 and 8) of the original buffer to the queue slot 4. so on position 4 there will be two slices playing at the same time. toggled on buttons should be black, others white if default queue position (so x=y) or gray if the column is muted. the buttons of the grid should be flush next to each other, not padding and the buttons should not be rounded, but rectangular. also the buttons should be wider than high and fixed size. there should be a header row with a button for each column, which on press toggles the whole column muted or not.
+    - [ ] the mesh-cue waveform should also show the slice mode like in the
+      mesh-player, make sure to reuse existing code for this/factor this out
+      for common use ,make sure to not duplicate code and the logic should
+      resign in the widget, not in the uis.
+    - [ ] the stem linking buttons should be moved to a column with 4 rows for
+      each button right to the waveforms canvas, fitting the height.
+    - [ ] now the slice widget lives underneight the queue and loop buttons.
+
+- [ ] a single morph knob for slicer per deck. this should scroll through a
+      presets preset banks. preset banks have up to 8 presets
 
 
 
@@ -201,12 +241,7 @@ and mesh-widget and only if necessary in the ui.
   or 178 which is wrong pretty sure, they should be in range 170 - 180 somewhere
   but more spread i think. check if this is a problem with the rounding, min and
   max bpm for detection or a tuning issue in essentia (can we somehow improve this?). We should try to also just do bpm detection on the drums track, since we have the stems.
-- [ ] The tracks still dont directly come up in the collection (mesh-cue) right after they
-  are done with analysis. i can see them finished in the status bar and written
-  as a file but not directly in the collection list in the file browser.
-- [ ] On resize the last state of the canvas is imprinted and does not go away.
-  the actual canvas is still working normally.
-- [ ] detailed zoomed waveform zoom behaviour is weird, at start and eend of the
+- [x] detailed zoomed waveform zoom behaviour is weird, at start and eend of the
   track, when there is not enough buffer information, we need to pad
   beginning/end of the buffer with zeroes (only in the waveform internally for
   visual computation)
@@ -249,14 +284,20 @@ and mesh-widget and only if necessary in the ui.
     a track where the vocal stem is stem linked to another vocal stem of another
     track, show this vocal stem initially in the bottom half, as soon as i
     switch, switch this stem to top and move the original stem to bottom half.
+- [ ] The tracks still dont directly come up in the collection (mesh-cue) right after they
+  are done with analysis. i can see them finished in the status bar and written
+  as a file but not directly in the collection list in the file browser.
+- [ ] On resize the last state of the canvas is imprinted and does not go away.
+  the actual canvas is still working normally.
 
 # Performance
 - [ ] Can we optimize how stems are stored, this is currently roughly 200-300 mb
   per multi-track file.
-- [ ] we can probably compute the high resolution peaks during cueing and store
+- [x] we can probably compute the high resolution peaks during cueing and store
   them in the wav file instead of computing them on the fly (~30ms per stem).
   this only works for stems of the original file not for linked stems, since
-  they need to be prestretched, then the peaks get computed.
+  they need to be prestretched, then the peaks get computed. NO WE CANT DUE TO
+  GAIN STAGING.
 
 # Future fields
 - [x] automatic gain staging for optimal headroom and that the dj doesnt

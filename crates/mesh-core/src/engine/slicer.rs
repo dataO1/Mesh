@@ -42,6 +42,175 @@ pub const SLICER_DEFAULT_BARS: u32 = 4;
 /// 16 bars * 4 beats/bar * 60/200 sec/beat * 48000 samples/sec ≈ 460800 samples
 pub const SLICER_MAX_BUFFER_SAMPLES: usize = 500_000;
 
+/// Maximum number of simultaneous slices per step (polyphonic layers)
+pub const MAX_SLICE_LAYERS: usize = 2;
+
+/// Special slice value indicating muted/silent step
+pub const MUTED_SLICE: u8 = 255;
+
+/// Number of stems
+pub const NUM_STEMS: usize = 4;
+
+// =============================================================================
+// Step and Sequence Types
+// =============================================================================
+
+/// A single step in the slicer sequence
+///
+/// Each step can play up to MAX_SLICE_LAYERS slices simultaneously (polyphonic),
+/// with independent velocity control per layer. This enables:
+/// - Ghost notes (low velocity hits)
+/// - Layered sounds (kick + hi-hat on same step)
+/// - Muted steps for rhythmic gaps (with release fade)
+#[derive(Debug, Clone, Copy)]
+pub struct SliceStep {
+    /// Slice indices for each layer (MUTED_SLICE = muted/unused)
+    /// Layer 0 is primary, additional layers are optional polyphonic overlays
+    pub slices: [u8; MAX_SLICE_LAYERS],
+    /// Velocity for each layer (0.0-1.0, linear amplitude multiplier)
+    /// 1.0 = full velocity, 0.0 = silent
+    pub velocities: [f32; MAX_SLICE_LAYERS],
+}
+
+impl Default for SliceStep {
+    fn default() -> Self {
+        Self {
+            slices: [MUTED_SLICE; MAX_SLICE_LAYERS],
+            velocities: [0.0; MAX_SLICE_LAYERS],
+        }
+    }
+}
+
+impl SliceStep {
+    /// Create a simple step with a single slice at full velocity
+    pub fn single(slice: u8) -> Self {
+        Self {
+            slices: [slice, MUTED_SLICE],
+            velocities: [1.0, 0.0],
+        }
+    }
+
+    /// Create a step with a single slice at specified velocity
+    pub fn with_velocity(slice: u8, velocity: f32) -> Self {
+        Self {
+            slices: [slice, MUTED_SLICE],
+            velocities: [velocity, 0.0],
+        }
+    }
+
+    /// Create a muted step (silence)
+    pub fn muted() -> Self {
+        Self::default()
+    }
+
+    /// Check if this step is completely muted (no audible layers)
+    #[inline]
+    pub fn is_muted(&self) -> bool {
+        for i in 0..MAX_SLICE_LAYERS {
+            if self.slices[i] != MUTED_SLICE && self.velocities[i] > 0.0 {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// 16-step pattern for a single stem
+///
+/// Contains all step information including layers and velocities.
+/// Used both for runtime state and preset storage.
+#[derive(Debug, Clone)]
+pub struct StepSequence {
+    /// The 16 steps in this sequence
+    pub steps: [SliceStep; SLICER_NUM_SLICES],
+}
+
+impl Default for StepSequence {
+    fn default() -> Self {
+        Self::sequential()
+    }
+}
+
+impl StepSequence {
+    /// Create a sequential sequence [0,1,2,...,15] at full velocity
+    pub fn sequential() -> Self {
+        let mut steps = [SliceStep::default(); SLICER_NUM_SLICES];
+        for i in 0..SLICER_NUM_SLICES {
+            steps[i] = SliceStep::single(i as u8);
+        }
+        Self { steps }
+    }
+
+    /// Create from a simple slice array (legacy format, full velocity)
+    pub fn from_slice_array(slices: &[u8; SLICER_NUM_SLICES]) -> Self {
+        let mut steps = [SliceStep::default(); SLICER_NUM_SLICES];
+        for i in 0..SLICER_NUM_SLICES {
+            steps[i] = SliceStep::single(slices[i]);
+        }
+        Self { steps }
+    }
+
+    /// Get slice indices as simple array (for atomics packing)
+    pub fn to_slice_array(&self) -> [u8; SLICER_NUM_SLICES] {
+        let mut result = [0u8; SLICER_NUM_SLICES];
+        for i in 0..SLICER_NUM_SLICES {
+            result[i] = self.steps[i].slices[0];
+        }
+        result
+    }
+}
+
+/// A slicer preset that defines patterns for all stems
+///
+/// When loaded via preset button, each stem gets its own pattern (or bypass).
+/// This enables coherent drum+bass combos in a single preset button.
+///
+/// Example: Preset 1 might have:
+/// - Drums: half-time pattern with ghost notes
+/// - Bass: complementary bass line
+/// - Vocals: None (bypass - plays original)
+/// - Other: None (bypass)
+#[derive(Debug, Clone)]
+pub struct SlicerPreset {
+    /// Per-stem patterns (None = bypass slicer for this stem)
+    /// Index order: [Vocals, Drums, Bass, Other]
+    pub stems: [Option<StepSequence>; NUM_STEMS],
+}
+
+impl Default for SlicerPreset {
+    fn default() -> Self {
+        Self {
+            stems: [None, None, None, None],
+        }
+    }
+}
+
+impl SlicerPreset {
+    /// Create a preset that applies the same pattern to specified stems
+    pub fn for_stems(sequence: StepSequence, stem_mask: [bool; NUM_STEMS]) -> Self {
+        Self {
+            stems: [
+                if stem_mask[0] { Some(sequence.clone()) } else { None },
+                if stem_mask[1] { Some(sequence.clone()) } else { None },
+                if stem_mask[2] { Some(sequence.clone()) } else { None },
+                if stem_mask[3] { Some(sequence) } else { None },
+            ],
+        }
+    }
+
+    /// Create from legacy format: simple slice array applied to drums only
+    pub fn drums_only(slices: &[u8; SLICER_NUM_SLICES]) -> Self {
+        Self {
+            stems: [
+                None,
+                Some(StepSequence::from_slice_array(slices)),
+                None,
+                None,
+            ],
+        }
+    }
+}
+
 /// Lock-free slicer state for UI access
 ///
 /// This struct contains atomic fields that can be read by the UI thread
@@ -141,9 +310,9 @@ impl Default for SlicerAtomics {
 
 /// Per-stem slicer state
 ///
-/// Manages the slicer buffer window, playback queue, and audio processing
-/// for a single stem. The slicer remaps sample positions through the queue
-/// to create rearranged playback order.
+/// Manages the slicer buffer window, step sequence, and audio processing
+/// for a single stem. The slicer remaps sample positions through the sequence
+/// to create rearranged playback with velocity and layer support.
 pub struct SlicerState {
     /// Whether the slicer is enabled
     enabled: bool,
@@ -151,16 +320,16 @@ pub struct SlicerState {
     buffer_start: usize,
     /// Current buffer window end position in samples
     buffer_end: usize,
-    /// Samples per slice (buffer_length / 8)
+    /// Samples per slice (buffer_length / 16)
     samples_per_slice: usize,
-    /// Playback queue - indices 0-15 in each slot determine which slice plays
-    queue: [u8; SLICER_NUM_SLICES],
+    /// Step sequence with layers and velocities
+    sequence: StepSequence,
     /// Buffer size in bars (1, 4, 8, or 16)
     buffer_bars: u32,
     /// Lock-free atomics for UI access
     atomics: Arc<SlicerAtomics>,
     /// Pre-allocated cache for the full slicer buffer window
-    /// Enables backward slice jumps when queue reorders earlier slices to play later
+    /// Enables backward slice jumps when sequence reorders earlier slices to play later
     buffer_cache: Vec<StereoSample>,
     /// Whether the buffer cache contains valid data
     buffer_cache_valid: bool,
@@ -172,7 +341,7 @@ pub struct SlicerState {
     pending_enable: bool,
     /// Last beat index for detecting beat boundary crossings
     last_beat_index: usize,
-    /// One-shot override: play this slice content instead of queue lookup
+    /// One-shot override: play this slice content instead of sequence lookup
     one_shot_content: Option<u8>,
     /// The timing slot when one-shot was triggered
     one_shot_slot: usize,
@@ -188,7 +357,7 @@ impl SlicerState {
             buffer_start: 0,
             buffer_end: 0,
             samples_per_slice: 0,
-            queue: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+            sequence: StepSequence::sequential(),
             buffer_bars: SLICER_DEFAULT_BARS,
             atomics: Arc::new(SlicerAtomics::new()),
             buffer_cache: vec![StereoSample::silence(); SLICER_MAX_BUFFER_SAMPLES],
@@ -281,19 +450,28 @@ impl SlicerState {
         self.buffer_cache_valid = false;
     }
 
-    /// Reset the queue to default order [0, 1, 2, ..., 15]
+    /// Reset the sequence to default order [0, 1, 2, ..., 15] at full velocity
     pub fn reset_queue(&mut self) {
-        log::debug!("slicer: queue reset to [0..15]");
-        self.queue = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        log::debug!("slicer: sequence reset to sequential [0..15]");
+        self.sequence = StepSequence::sequential();
         self.sync_atomics();
     }
 
-    /// Load a preset pattern into the queue
+    /// Load a step sequence
     ///
-    /// Replaces the entire queue with the provided 16-step pattern.
+    /// Replaces the entire sequence with the provided pattern.
+    pub fn load_sequence(&mut self, sequence: StepSequence) {
+        log::debug!("slicer: loading sequence");
+        self.sequence = sequence;
+        self.sync_atomics();
+    }
+
+    /// Load from a simple slice array (legacy format, full velocity)
+    ///
+    /// Replaces the entire sequence with the provided 16-step pattern at full velocity.
     pub fn load_preset(&mut self, preset: [u8; 16]) {
         log::debug!("slicer: loading preset {:?}", &preset[..]);
-        self.queue = preset;
+        self.sequence = StepSequence::from_slice_array(&preset);
         self.sync_atomics();
     }
 
@@ -343,18 +521,55 @@ impl SlicerState {
         }
     }
 
-    /// Set a specific slot in the queue to a slice index
+    /// Set a specific slot in the sequence to a slice index (layer 0, full velocity)
     ///
     /// Directly sets a specific slot to a slice index.
     /// Used by handle_button_action for shift+button slice assignment.
     pub fn set_slot(&mut self, slot: usize, slice_idx: usize) {
         if slot < SLICER_NUM_SLICES && slice_idx < SLICER_NUM_SLICES {
-            self.queue[slot] = slice_idx as u8;
+            self.sequence.steps[slot] = SliceStep::single(slice_idx as u8);
             log::debug!(
                 "slicer: set slot {} = slice {} -> queue={:?}",
                 slot, slice_idx,
-                &self.queue[..]
+                self.sequence.to_slice_array()
             );
+            self.sync_atomics();
+        }
+    }
+
+    /// Set a specific step with full control over layers and velocities
+    pub fn set_step(&mut self, slot: usize, step: SliceStep) {
+        if slot < SLICER_NUM_SLICES {
+            self.sequence.steps[slot] = step;
+            self.sync_atomics();
+        }
+    }
+
+    /// Set velocity for a specific layer of a step
+    pub fn set_step_velocity(&mut self, slot: usize, layer: usize, velocity: f32) {
+        if slot < SLICER_NUM_SLICES && layer < MAX_SLICE_LAYERS {
+            self.sequence.steps[slot].velocities[layer] = velocity.clamp(0.0, 1.0);
+            self.sync_atomics();
+        }
+    }
+
+    /// Set slice index for a specific layer of a step
+    pub fn set_step_slice(&mut self, slot: usize, layer: usize, slice_idx: u8) {
+        if slot < SLICER_NUM_SLICES && layer < MAX_SLICE_LAYERS {
+            self.sequence.steps[slot].slices[layer] = slice_idx;
+            self.sync_atomics();
+        }
+    }
+
+    /// Set a step as muted
+    pub fn set_step_muted(&mut self, slot: usize, muted: bool) {
+        if slot < SLICER_NUM_SLICES {
+            if muted {
+                self.sequence.steps[slot] = SliceStep::muted();
+            } else {
+                // Restore to sequential default if unmuting
+                self.sequence.steps[slot] = SliceStep::single(slot as u8);
+            }
             self.sync_atomics();
         }
     }
@@ -487,11 +702,97 @@ impl SlicerState {
         );
     }
 
-    /// Remap a position through the queue (with one-shot override support)
+    /// Get the mixed sample at a position with layered playback, velocity, and release fade
     ///
-    /// Given an original position within the buffer, returns the remapped position
-    /// based on the queue order. If a one-shot override is active for the current
-    /// timing slot, plays that slice's content from the beginning instead.
+    /// Mixes all active layers at the current timing slot, applying velocity to each.
+    /// Supports one-shot override for immediate slice triggering.
+    ///
+    /// **Release fade**: When the current step is audible and the next step is muted,
+    /// applies a linear fade out over the last 1/4 of the slice to avoid clicks.
+    ///
+    /// Returns None if the position is outside the slicer buffer window.
+    #[inline]
+    fn get_sample_at_position(&self, original_pos: usize) -> Option<StereoSample> {
+        if original_pos < self.buffer_start || original_pos >= self.buffer_end {
+            return None;
+        }
+
+        if self.samples_per_slice == 0 {
+            return None;
+        }
+
+        let relative = original_pos - self.buffer_start;
+        let timing_slot = (relative / self.samples_per_slice).min(SLICER_NUM_SLICES - 1);
+        let pos_within_slot = relative % self.samples_per_slice;
+
+        // Check for one-shot override
+        if let Some(content) = self.one_shot_content {
+            if timing_slot == self.one_shot_slot {
+                // One-shot active: play triggered content from beginning (full velocity, single layer)
+                let adjusted_pos = pos_within_slot.saturating_sub(self.one_shot_start_offset);
+                let cache_pos = (content as usize) * self.samples_per_slice + adjusted_pos;
+                return self.buffer_cache.get(cache_pos).copied();
+            }
+        }
+
+        // Normal sequence lookup - mix all layers with velocities
+        let step = &self.sequence.steps[timing_slot];
+
+        // Fast path: if step is completely muted, return silence
+        if step.is_muted() {
+            return Some(StereoSample::silence());
+        }
+
+        let mut result = StereoSample::silence();
+
+        for layer in 0..MAX_SLICE_LAYERS {
+            let slice_idx = step.slices[layer];
+            let velocity = step.velocities[layer];
+
+            // Skip muted or zero-velocity layers
+            if slice_idx == MUTED_SLICE || velocity <= 0.0 {
+                continue;
+            }
+
+            // Skip invalid slice indices
+            if slice_idx as usize >= SLICER_NUM_SLICES {
+                continue;
+            }
+
+            // Calculate cache position for this slice
+            let cache_pos = (slice_idx as usize) * self.samples_per_slice + pos_within_slot;
+
+            if let Some(sample) = self.buffer_cache.get(cache_pos) {
+                // Mix with velocity
+                result.left += sample.left * velocity;
+                result.right += sample.right * velocity;
+            }
+        }
+
+        // Apply release fade if next step is muted (to avoid clicks)
+        // Fade starts at 3/4 into the slice, ends at slice boundary
+        let fade_length = self.samples_per_slice / 4;
+        let fade_start = self.samples_per_slice - fade_length;
+
+        if pos_within_slot >= fade_start {
+            // Check if next step is muted
+            let next_slot = (timing_slot + 1) % SLICER_NUM_SLICES;
+            let next_step = &self.sequence.steps[next_slot];
+
+            if next_step.is_muted() {
+                // Apply linear fade out
+                let fade_pos = pos_within_slot - fade_start;
+                let fade = 1.0 - (fade_pos as f32 / fade_length as f32);
+                result.left *= fade;
+                result.right *= fade;
+            }
+        }
+
+        Some(result)
+    }
+
+    /// Legacy position remap (for UI indication and tests - returns layer 0 slice index)
+    #[allow(dead_code)]
     #[inline]
     fn remap_position(&self, original_pos: usize) -> usize {
         if original_pos < self.buffer_start || original_pos >= self.buffer_end {
@@ -509,15 +810,19 @@ impl SlicerState {
         // Check for one-shot override
         if let Some(content) = self.one_shot_content {
             if timing_slot == self.one_shot_slot {
-                // One-shot active: play triggered content from beginning
-                // Subtract the start offset to make playback start from slice beginning
                 let adjusted_pos = pos_within_slot.saturating_sub(self.one_shot_start_offset);
                 return (content as usize) * self.samples_per_slice + adjusted_pos;
             }
         }
 
-        // Normal queue lookup
-        let remapped_slice_idx = self.queue[timing_slot] as usize;
+        // Return layer 0 position (for backwards compat with tests)
+        let step = &self.sequence.steps[timing_slot];
+        let remapped_slice_idx = step.slices[0] as usize;
+
+        if remapped_slice_idx >= SLICER_NUM_SLICES {
+            return timing_slot * self.samples_per_slice + pos_within_slot;
+        }
+
         remapped_slice_idx * self.samples_per_slice + pos_within_slot
     }
 
@@ -589,18 +894,15 @@ impl SlicerState {
             return;
         }
 
-        // Process each sample through remapping
+        // Process each sample through layered mixing with velocities
         // No crossfade - slicer creates intentional rhythmic chops (like Serato/Traktor)
         let buffer_slice = buffer.as_mut_slice();
         for (i, sample) in buffer_slice.iter_mut().enumerate() {
             let original_pos = playhead + i;
 
-            // Only remap positions within the slicer buffer window
-            if original_pos >= self.buffer_start && original_pos < self.buffer_end {
-                let cache_pos = self.remap_position(original_pos);
-                if cache_pos < self.buffer_cache.len() {
-                    *sample = self.buffer_cache[cache_pos];
-                }
+            // Get mixed sample (layers + velocities) for positions within slicer window
+            if let Some(mixed) = self.get_sample_at_position(original_pos) {
+                *sample = mixed;
             }
             // Positions outside the window keep their original samples (already in buffer)
         }
@@ -620,11 +922,11 @@ impl SlicerState {
             }
         }
 
-        // Determine content slice - use one-shot if active, otherwise queue
+        // Determine content slice - use one-shot if active, otherwise sequence (layer 0)
         let content_slice = if let Some(content) = self.one_shot_content {
             content
         } else {
-            self.queue[timing_slice as usize]
+            self.sequence.steps[timing_slice as usize].slices[0]
         };
 
         let prev_content = self.atomics.current_slice.load(Ordering::Relaxed);
@@ -654,9 +956,16 @@ impl SlicerState {
         self.atomics
             .buffer_end
             .store(self.buffer_end as u64, Ordering::Relaxed);
-        let (low, high) = SlicerAtomics::pack_queue(&self.queue);
+        // Pack layer 0 slice indices for atomics (UI compatibility)
+        let slice_array = self.sequence.to_slice_array();
+        let (low, high) = SlicerAtomics::pack_queue(&slice_array);
         self.atomics.queue_low.store(low, Ordering::Relaxed);
         self.atomics.queue_high.store(high, Ordering::Relaxed);
+    }
+
+    /// Get the current sequence
+    pub fn sequence(&self) -> &StepSequence {
+        &self.sequence
     }
 }
 
@@ -687,13 +996,14 @@ mod tests {
     fn test_load_preset() {
         let mut slicer = SlicerState::new();
 
-        // Initial queue: [0..15]
-        assert_eq!(slicer.queue, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+        // Initial sequence: [0..15] at full velocity
+        let slice_array = slicer.sequence().to_slice_array();
+        assert_eq!(slice_array, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
 
         // Load a preset pattern
         let preset = [0, 0, 2, 2, 4, 4, 6, 6, 8, 8, 10, 10, 12, 12, 14, 14];
         slicer.load_preset(preset);
-        assert_eq!(slicer.queue, preset);
+        assert_eq!(slicer.sequence().to_slice_array(), preset);
     }
 
     #[test]
@@ -703,21 +1013,24 @@ mod tests {
         // Set specific slots
         slicer.set_slot(0, 5);
         slicer.set_slot(3, 7);
-        assert_eq!(slicer.queue[0], 5);
-        assert_eq!(slicer.queue[3], 7);
+        assert_eq!(slicer.sequence().steps[0].slices[0], 5);
+        assert_eq!(slicer.sequence().steps[3].slices[0], 7);
         // Other slots unchanged
-        assert_eq!(slicer.queue[1], 1);
+        assert_eq!(slicer.sequence().steps[1].slices[0], 1);
     }
 
     #[test]
     fn test_reset_queue() {
         let mut slicer = SlicerState::new();
 
-        // Modify the queue
+        // Modify the sequence
         slicer.load_preset([15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]);
 
         slicer.reset_queue();
-        assert_eq!(slicer.queue, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+        assert_eq!(
+            slicer.sequence().to_slice_array(),
+            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        );
     }
 
     #[test]
@@ -728,20 +1041,20 @@ mod tests {
         slicer.samples_per_slice = 1000;
         slicer.enabled = true;
 
-        // Default queue [0..15] - no remapping
+        // Default sequence [0..15] - no remapping
         assert_eq!(slicer.remap_position(0), 0);
         assert_eq!(slicer.remap_position(500), 500);
         assert_eq!(slicer.remap_position(1000), 1000);
 
-        // Swap queue: slice 0 plays slice 1's content, slice 1 plays slice 0's content
-        slicer.queue = [1, 0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        // Swap sequence: slot 0 plays slice 1's content, slot 1 plays slice 0's content
+        slicer.load_preset([1, 0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
 
-        // Position 0-999 (originally slice 0) should now play from slice 1 (1000-1999)
+        // Position 0-999 (timing slot 0) should now play from slice 1 (1000-1999)
         assert_eq!(slicer.remap_position(0), 1000);
         assert_eq!(slicer.remap_position(500), 1500);
         assert_eq!(slicer.remap_position(999), 1999);
 
-        // Position 1000-1999 (originally slice 1) should now play from slice 0 (0-999)
+        // Position 1000-1999 (timing slot 1) should now play from slice 0 (0-999)
         assert_eq!(slicer.remap_position(1000), 0);
         assert_eq!(slicer.remap_position(1500), 500);
     }
@@ -760,5 +1073,133 @@ mod tests {
         assert_eq!(slicer.slice_for_position(7000), 7);
         assert_eq!(slicer.slice_for_position(15000), 15);
         assert_eq!(slicer.slice_for_position(15999), 15);
+    }
+
+    #[test]
+    fn test_slice_step_muted() {
+        let muted = SliceStep::muted();
+        assert!(muted.is_muted());
+
+        let audible = SliceStep::single(5);
+        assert!(!audible.is_muted());
+
+        let ghost = SliceStep::with_velocity(3, 0.3);
+        assert!(!ghost.is_muted());
+
+        // Zero velocity is effectively muted
+        let zero_vel = SliceStep::with_velocity(3, 0.0);
+        assert!(zero_vel.is_muted());
+    }
+
+    #[test]
+    fn test_step_sequence_from_slice_array() {
+        let slices = [0, 0, 2, 2, 4, 4, 6, 6, 8, 8, 10, 10, 12, 12, 14, 14];
+        let seq = StepSequence::from_slice_array(&slices);
+
+        // Check that slices are preserved in layer 0
+        assert_eq!(seq.to_slice_array(), slices);
+
+        // Check that velocities are 1.0 (full)
+        for step in &seq.steps {
+            assert_eq!(step.velocities[0], 1.0);
+        }
+    }
+
+    #[test]
+    fn test_layered_playback_mixing() {
+        let mut slicer = SlicerState::new();
+        slicer.buffer_start = 0;
+        slicer.buffer_end = 16000;
+        slicer.samples_per_slice = 1000;
+        slicer.enabled = true;
+
+        // Fill cache with test data: each slice has a distinct value
+        for i in 0..16 {
+            let value = (i + 1) as f32 * 0.1; // 0.1, 0.2, 0.3, etc.
+            for j in 0..1000 {
+                let cache_idx = i * 1000 + j;
+                if cache_idx < slicer.buffer_cache.len() {
+                    slicer.buffer_cache[cache_idx] = StereoSample { left: value, right: value };
+                }
+            }
+        }
+        slicer.buffer_cache_valid = true;
+
+        // Test single layer at full velocity
+        slicer.sequence.steps[0] = SliceStep::single(0); // Slice 0 = value 0.1
+        let sample = slicer.get_sample_at_position(0).unwrap();
+        assert!((sample.left - 0.1).abs() < 0.001);
+
+        // Test single layer at half velocity
+        slicer.sequence.steps[0] = SliceStep::with_velocity(0, 0.5); // Slice 0 at 50%
+        let sample = slicer.get_sample_at_position(0).unwrap();
+        assert!((sample.left - 0.05).abs() < 0.001); // 0.1 * 0.5 = 0.05
+
+        // Test two layers mixed
+        slicer.sequence.steps[0] = SliceStep {
+            slices: [0, 1],      // Slice 0 (0.1) + Slice 1 (0.2)
+            velocities: [1.0, 1.0],
+        };
+        let sample = slicer.get_sample_at_position(0).unwrap();
+        assert!((sample.left - 0.3).abs() < 0.001); // 0.1 + 0.2 = 0.3
+
+        // Test two layers with different velocities
+        slicer.sequence.steps[0] = SliceStep {
+            slices: [2, 3],      // Slice 2 (0.3) + Slice 3 (0.4)
+            velocities: [0.5, 0.25],
+        };
+        let sample = slicer.get_sample_at_position(0).unwrap();
+        // 0.3 * 0.5 + 0.4 * 0.25 = 0.15 + 0.1 = 0.25
+        assert!((sample.left - 0.25).abs() < 0.001);
+
+        // Test muted step returns silence
+        slicer.sequence.steps[1] = SliceStep::muted();
+        let sample = slicer.get_sample_at_position(1000).unwrap(); // Position in slot 1
+        assert_eq!(sample.left, 0.0);
+        assert_eq!(sample.right, 0.0);
+    }
+
+    #[test]
+    fn test_release_fade_before_muted() {
+        let mut slicer = SlicerState::new();
+        slicer.buffer_start = 0;
+        slicer.buffer_end = 16000;
+        slicer.samples_per_slice = 1000;
+        slicer.enabled = true;
+
+        // Fill cache: slice 0 has constant value 1.0
+        for i in 0..1000 {
+            slicer.buffer_cache[i] = StereoSample { left: 1.0, right: 1.0 };
+        }
+        slicer.buffer_cache_valid = true;
+
+        // Set slot 0 = audible (slice 0), slot 1 = muted
+        slicer.sequence.steps[0] = SliceStep::single(0);
+        slicer.sequence.steps[1] = SliceStep::muted();
+
+        // Fade region: last 1/4 of slice (samples 750-999)
+        // Fade length = 1000 / 4 = 250 samples
+        // Fade start = 1000 - 250 = 750
+
+        // Before fade region (sample 500) - full amplitude
+        let sample = slicer.get_sample_at_position(500).unwrap();
+        assert!((sample.left - 1.0).abs() < 0.001);
+
+        // At fade start (sample 750) - still full (fade = 1.0 - 0/250 = 1.0)
+        let sample = slicer.get_sample_at_position(750).unwrap();
+        assert!((sample.left - 1.0).abs() < 0.01);
+
+        // Middle of fade (sample 875) - half amplitude (fade = 1.0 - 125/250 = 0.5)
+        let sample = slicer.get_sample_at_position(875).unwrap();
+        assert!((sample.left - 0.5).abs() < 0.01);
+
+        // End of fade (sample 999) - near zero (fade = 1.0 - 249/250 ≈ 0.004)
+        let sample = slicer.get_sample_at_position(999).unwrap();
+        assert!(sample.left < 0.01);
+
+        // No fade when next slot is NOT muted
+        slicer.sequence.steps[1] = SliceStep::single(1);
+        let sample = slicer.get_sample_at_position(875).unwrap();
+        assert!((sample.left - 1.0).abs() < 0.001); // Full amplitude, no fade
     }
 }

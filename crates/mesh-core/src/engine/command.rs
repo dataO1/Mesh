@@ -37,6 +37,7 @@
 //! ```
 
 use super::{LinkedStemData, PreparedTrack};
+use super::slicer::{SlicerPreset, StepSequence};
 use crate::types::Stem;
 
 /// Commands sent from UI thread to audio thread
@@ -158,8 +159,15 @@ pub enum EngineCommand {
     /// Set slicer buffer size in bars (1, 4, 8, or 16)
     SetSlicerBufferBars { deck: usize, stem: Stem, bars: u32 },
     /// Set slicer preset patterns (loaded from config)
-    /// Boxed because the 8×16 array is large (128 bytes)
-    SetSlicerPresets { presets: Box<[[u8; 16]; 8]> },
+    /// Each preset defines per-stem patterns for coordinated multi-stem slicing.
+    /// Boxed because the 8 presets with 4 stems each is large.
+    SetSlicerPresets { presets: Box<[SlicerPreset; 8]> },
+    /// Load a step sequence directly onto a stem's slicer
+    SlicerLoadSequence {
+        deck: usize,
+        stem: Stem,
+        sequence: Box<StepSequence>,
+    },
 
     // ─────────────────────────────────────────────────────────────
     // Linked Stems (Hot-Swappable)

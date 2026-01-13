@@ -542,38 +542,47 @@ Key matching uses [signalsmith-stretch](https://signalsmith-audio.co.uk/code/str
 
 ## Stem Slicer
 
-Mesh includes a **Stem Slicer** — a real-time remixing tool that divides stems into slices and lets you rearrange their playback order on the fly.
+Mesh includes a **Stem Slicer** — a real-time remixing tool that divides stems into slices and lets you rearrange their playback order on the fly. Features include velocity control for ghost notes, layered slices, per-stem presets, and smooth muted transitions.
 
 ### How It Works
 
 1. **Buffer Window**: A configurable window (1/4/8/16 bars) is divided into **16 equal slices**
-2. **Playback Queue**: A 16-slot queue determines which slice content plays at each timing position
+2. **Step Sequence**: Each step can play up to 2 slices simultaneously with independent velocities
 3. **Beat-Aligned**: Slices snap to the track's beat grid for musical timing
-4. **Per-Stem Control**: Choose which stems (Vocals, Drums, Bass, Other) are affected
-5. **All Slices Used**: Every preset uses all 16 slices — no audio material is lost
+4. **Per-Stem Presets**: Each preset defines different patterns per stem — one button, coordinated remix
+5. **Muted Steps**: Steps can be silent with automatic release fade to avoid clicks
 
 ### Using the Slicer
 
 1. Click **SLICER** button on a deck to enter slicer mode (activates on next beat)
-2. **Button 1-8**: Load preset pattern (1 = sequential, 2-8 = remixed patterns)
+2. **Button 1-8**: Load preset pattern for all affected stems simultaneously
 3. **Shift + Button**: Assign slice to current timing slot + preview it immediately
 4. **Shift + Slicer**: Reset queue to default [0,1,2...15]
 5. Click **HOTCUE** to exit slicer mode
 
+### New Features
+
+| Feature | Description |
+|---------|-------------|
+| **Velocity per step** | Control dynamics — full hits at 100%, ghost notes at 30% |
+| **Layered slices** | Play 2 slices simultaneously (e.g., kick + hi-hat on same beat) |
+| **Per-stem presets** | One button loads different patterns per stem (drums get half-time, bass gets stutter) |
+| **Muted steps** | Create rhythmic gaps with smooth 1/4-slice release fade |
+
 ### Presets
 
-All 8 presets are **permutations** of the 16 slices — every beat is heard exactly once per cycle:
+Default presets apply patterns to drums only. Custom presets can define different patterns per stem:
 
-| Button | Name | Pattern | Effect |
-|--------|------|---------|--------|
-| 1 | Sequential | `[0,1,2,3...15]` | Normal playback (reset) |
-| 2 | Bar Swap | `[8-15, 0-7]` | Play second half first |
-| 3 | Reverse Full | `[15,14,13...0]` | Backwards playback |
-| 4 | Reverse Per Bar | `[3,2,1,0,7,6,5,4...]` | Each bar reversed |
-| 5 | Interleave | `[0,8,1,9,2,10...]` | Zip bars 1+3 and 2+4 |
-| 6 | Funky Shuffle | Complex permutation | Syncopated feel |
-| 7 | Evens Then Odds | `[0,2,4,6...1,3,5,7]` | Skip shuffle |
-| 8 | Adjacent Swap | `[1,0,3,2,5,4...]` | Flip each pair |
+| Button | Name | Effect |
+|--------|------|--------|
+| 1 | Sequential | Normal playback (reset) |
+| 2 | Half-time | Double each slice |
+| 3 | Kick Emphasis | Repeat kick hits |
+| 4 | Snare Roll | Snare stutters |
+| 5 | Shuffle | Syncopated pattern |
+| 6 | Full Reverse | Backwards playback |
+| 7 | Stutter | Rapid repeats |
+| 8 | Rapid Fire | Quarter-note jumps |
 
 Presets are configurable in `~/.config/mesh-player/config.yaml`.
 
@@ -584,24 +593,24 @@ In **Settings → Slicer**:
 | Setting | Options | Description |
 |---------|---------|-------------|
 | Buffer Size | 1, 4, 8, 16 bars | Size of the sliced window (always 16 slices) |
-| Affected Stems | Vocals, Drums, Bass, Other | Which stems are sliced (toggle each) |
+| Affected Stems | Vocals, Drums, Bass, Other | Which stems receive preset patterns |
 
 ### Example
 
 With a 4-bar buffer at 174 BPM:
 - Each slice = 1 beat (4 bars ÷ 16 slices)
-- **Button 3**: Load "Reverse Full" preset — drums play backwards
+- **Button 2**: Load "Half-time" — drums play half-speed pattern, other stems bypass
 - **Shift + Button 5**: Assign slice 5 to current timing position + hear it immediately
 - **Shift + Slicer**: Reset everything back to normal sequential playback
 
 ### What This Means for DJing
 
+- **Ghost notes** — Add subtle snare hits at low velocity for groove variation
+- **Layered hits** — Stack kick + percussion on the same step for impact
+- **Coordinated presets** — One button activates drums half-time + bass stutter together
+- **Clean gaps** — Muted steps fade out smoothly instead of clicking
 - **Create live remixes** — Rearrange drum patterns, vocal phrases, or bass lines
-- **Instant preset effects** — One button press for complex remix patterns
-- **Build tension** — Use reverse or interleave presets for buildups
-- **Glitch effects** — Shift+button for rapid slice triggering
-- **Multi-stem control** — Slice drums independently or lock all stems together
-- **Full audio coverage** — Every preset plays all 16 beats, just reordered
+- **Build tension** — Use reverse or stutter presets for buildups
 
 ---
 

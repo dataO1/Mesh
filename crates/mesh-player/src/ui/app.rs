@@ -208,9 +208,9 @@ impl MeshApp {
             let _ = sender.send(EngineCommand::SetGlobalBpm(config.audio.global_bpm));
             // Initialize phase sync setting
             let _ = sender.send(EngineCommand::SetPhaseSync(config.audio.phase_sync));
-            // Initialize slicer presets from config
+            // Initialize slicer presets from config (converted to per-stem format)
             let _ = sender.send(EngineCommand::SetSlicerPresets {
-                presets: Box::new(config.slicer.presets),
+                presets: Box::new(config.slicer.to_engine_presets()),
             });
             // Initialize slicer buffer size for all decks and stems
             let buffer_bars = config.slicer.buffer_bars();

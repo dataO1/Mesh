@@ -824,19 +824,27 @@ impl Deck {
         self.slicer_states[stem as usize].set_enabled(enabled);
     }
 
-    /// Handle a slicer button action (unified API from UI)
+    /// Handle shift+button for slice assignment on a single stem
     ///
-    /// The UI just reports which button was pressed and whether shift was held.
-    /// All behavior logic is handled by the slicer internally.
-    pub fn slicer_handle_button_action(
+    /// Assigns a slice to the current timing slot and triggers one-shot preview.
+    pub fn slicer_handle_shift_button(
         &mut self,
         stem: Stem,
         button_idx: usize,
-        shift_held: bool,
         current_pos: usize,
-        presets: &[[u8; 16]; 8],
     ) {
-        self.slicer_states[stem as usize].handle_button_action(button_idx, shift_held, current_pos, presets);
+        // Use existing trigger_slice for shift+button behavior
+        self.slicer_states[stem as usize].trigger_slice(current_pos, button_idx);
+    }
+
+    /// Load a step sequence onto a stem's slicer
+    ///
+    /// Replaces the entire sequence for this stem. Called by engine when
+    /// loading per-stem presets.
+    pub fn slicer_load_sequence(&mut self, stem_idx: usize, sequence: super::slicer::StepSequence) {
+        if stem_idx < self.slicer_states.len() {
+            self.slicer_states[stem_idx].load_sequence(sequence);
+        }
     }
 
     /// Reset the slicer queue to default order

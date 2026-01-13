@@ -2229,6 +2229,7 @@ mod tests {
             bpm: Some(174.5),
             original_bpm: Some(172.0),
             key: Some("Dm".to_string()),
+            lufs: Some(-9.5),
             duration_seconds: None, // Not serialized to bext
             beat_grid: BeatGrid::from_csv("0,11025,22050"),
             cue_points: Vec::new(),
@@ -2266,6 +2267,7 @@ mod tests {
             bpm: Some(120.0), // 120 BPM = 22050 samples per beat at 44100
             original_bpm: Some(120.0),
             key: Some("Am".to_string()),
+            lufs: Some(-8.0),
             duration_seconds: None, // Not serialized to bext
             beat_grid: BeatGrid::from_csv("0,22050,44100,66150"),
             cue_points: Vec::new(),

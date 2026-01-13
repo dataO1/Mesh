@@ -273,6 +273,27 @@ impl SlicerConfig {
     pub fn preset(&self, index: usize) -> Option<[u8; 16]> {
         self.presets.get(index).copied()
     }
+
+    /// Convert config presets to engine SlicerPreset format
+    ///
+    /// Uses `affected_stems` to determine which stems get patterns.
+    /// Stems not in `affected_stems` will have `None` (bypass).
+    pub fn to_engine_presets(&self) -> [mesh_core::engine::SlicerPreset; 8] {
+        use mesh_core::engine::{SlicerPreset, StepSequence};
+
+        std::array::from_fn(|preset_idx| {
+            let pattern = &self.presets[preset_idx];
+            SlicerPreset {
+                stems: std::array::from_fn(|stem_idx| {
+                    if self.affected_stems[stem_idx] {
+                        Some(StepSequence::from_slice_array(pattern))
+                    } else {
+                        None // Bypass this stem
+                    }
+                }),
+            }
+        })
+    }
 }
 
 /// Get the default config file path

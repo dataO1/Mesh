@@ -637,11 +637,12 @@ mod tests {
 
         // Add linked stem
         let info = LinkedStemInfo::new(
-            StereoBuffer::silence(1000),
+            Shared::new(&crate::engine::gc::gc_handle(), StereoBuffer::silence(1000)),
             128.0,
             500,
             "Test".to_string(),
             None,
+            None, // lufs
         );
         link.set_linked(info);
 
