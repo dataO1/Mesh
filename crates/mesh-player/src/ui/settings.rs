@@ -8,6 +8,28 @@ use crate::config::{LOOP_LENGTH_OPTIONS, StemColorPalette};
 use iced::widget::{button, column, container, row, scrollable, text, toggler, Space};
 use iced::{Alignment, Element, Length};
 
+/// Target LUFS presets for loudness normalization
+/// Index 0 = loudest (DJ standard), Index 3 = quietest (broadcast safe)
+pub const TARGET_LUFS_OPTIONS: [f32; 4] = [-6.0, -9.0, -14.0, -16.0];
+
+/// Get the display name for a LUFS target
+fn lufs_preset_name(index: usize) -> &'static str {
+    match index {
+        0 => "-6 LUFS (Loud)",
+        1 => "-9 LUFS (Medium)",
+        2 => "-14 LUFS (Streaming)",
+        3 => "-16 LUFS (Broadcast)",
+        _ => "-6 LUFS (Loud)",
+    }
+}
+
+/// Find the index of a LUFS value in the presets (or default to 0)
+fn lufs_to_index(lufs: f32) -> usize {
+    TARGET_LUFS_OPTIONS.iter()
+        .position(|&v| (v - lufs).abs() < 0.1)
+        .unwrap_or(0)
+}
+
 /// Settings state for the modal
 #[derive(Debug, Clone)]
 pub struct SettingsState {
@@ -27,6 +49,10 @@ pub struct SettingsState {
     pub draft_slicer_buffer_bars: u32,
     /// Draft slicer affected stems [Vocals, Drums, Bass, Other]
     pub draft_slicer_affected_stems: [bool; 4],
+    /// Draft auto-gain enabled
+    pub draft_auto_gain_enabled: bool,
+    /// Draft target LUFS (index into preset values)
+    pub draft_target_lufs_index: usize,
     /// Status message (for save feedback)
     pub status: String,
 }
@@ -43,6 +69,8 @@ impl SettingsState {
             draft_phase_sync: config.audio.phase_sync,
             draft_slicer_buffer_bars: config.slicer.default_buffer_bars,
             draft_slicer_affected_stems: config.slicer.affected_stems,
+            draft_auto_gain_enabled: config.audio.loudness.auto_gain_enabled,
+            draft_target_lufs_index: lufs_to_index(config.audio.loudness.target_lufs),
             status: String::new(),
         }
     }
@@ -58,8 +86,17 @@ impl SettingsState {
             draft_phase_sync: true, // Enabled by default
             draft_slicer_buffer_bars: 4, // 4 bars = 16 slices
             draft_slicer_affected_stems: [false, true, false, false], // Only Drums by default
+            draft_auto_gain_enabled: true, // Auto-gain on by default
+            draft_target_lufs_index: 0, // -6 LUFS (loud)
             status: String::new(),
         }
+    }
+
+    /// Get the target LUFS value from the current index
+    pub fn target_lufs(&self) -> f32 {
+        TARGET_LUFS_OPTIONS.get(self.draft_target_lufs_index)
+            .copied()
+            .unwrap_or(-6.0)
     }
 }
 
@@ -86,6 +123,9 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
     // Display settings section
     let display_section = view_display_section(state);
 
+    // Loudness normalization section
+    let loudness_section = view_loudness_section(state);
+
     // Slicer settings section
     let slicer_section = view_slicer_section(state);
 
@@ -94,7 +134,7 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
 
     // Scrollable content area for all sections
     let scrollable_content = scrollable(
-        column![loop_section, display_section, slicer_section, midi_section]
+        column![loop_section, display_section, loudness_section, slicer_section, midi_section]
             .spacing(15)
             .width(Length::Fill)
     )
@@ -303,6 +343,75 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
             palette_subsection,
             palette_hint,
             palette_row,
+        ]
+        .spacing(8),
+    )
+    .padding(15)
+    .width(Length::Fill)
+    .into()
+}
+
+/// Loudness normalization settings (auto-gain, target LUFS)
+fn view_loudness_section(state: &SettingsState) -> Element<'_, Message> {
+    let section_title = text("Loudness").size(18);
+
+    // Auto-gain toggle
+    let auto_gain_label = text("Auto-Gain Normalization").size(14);
+    let auto_gain_hint = text("Automatically adjust track volume to match target loudness")
+        .size(12);
+    let auto_gain_toggle = toggler(state.draft_auto_gain_enabled)
+        .on_toggle(Message::UpdateSettingsAutoGainEnabled);
+    let auto_gain_row = row![
+        column![auto_gain_label, auto_gain_hint].spacing(4),
+        Space::new().width(Length::Fill),
+        auto_gain_toggle,
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+
+    // Target LUFS section
+    let target_subsection = text("Target Loudness").size(14);
+    let target_hint = text("Tracks will be gain-compensated to reach this level")
+        .size(12);
+
+    let target_buttons: Vec<Element<Message>> = TARGET_LUFS_OPTIONS
+        .iter()
+        .enumerate()
+        .map(|(idx, &lufs)| {
+            let is_selected = state.draft_target_lufs_index == idx;
+            let label = format!("{:.0}", lufs);
+            let btn = button(text(label).size(11))
+                .on_press(Message::UpdateSettingsTargetLufs(idx))
+                .style(if is_selected {
+                    iced::widget::button::primary
+                } else {
+                    iced::widget::button::secondary
+                })
+                .width(Length::Fixed(50.0));
+            btn.into()
+        })
+        .collect();
+
+    let target_label = text("LUFS:").size(14);
+    let target_row = row![
+        target_label,
+        row(target_buttons).spacing(4).align_y(Alignment::Center),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+
+    // Current preset description
+    let preset_desc = text(lufs_preset_name(state.draft_target_lufs_index)).size(12);
+
+    container(
+        column![
+            section_title,
+            auto_gain_row,
+            Space::new().height(10),
+            target_subsection,
+            target_hint,
+            target_row,
+            preset_desc,
         ]
         .spacing(8),
     )

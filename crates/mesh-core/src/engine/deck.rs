@@ -339,6 +339,12 @@ pub struct Deck {
     linked_stem_atomics: Arc<LinkedStemAtomics>,
     /// Drop marker position for this track (for linked stem alignment)
     drop_marker: Option<u64>,
+    /// LUFS-based loudness compensation gain (linear multiplier)
+    ///
+    /// Calculated from track's measured LUFS and configured target LUFS.
+    /// 1.0 = unity (no compensation), <1.0 = cut, >1.0 = boost.
+    /// Applied after stem summing but before time stretching.
+    lufs_gain: f32,
 }
 
 impl Deck {
@@ -369,6 +375,7 @@ impl Deck {
             stem_links: std::array::from_fn(|_| StemLink::new()),
             linked_stem_atomics: Arc::new(LinkedStemAtomics::new()),
             drop_marker: None,
+            lufs_gain: 1.0, // Unity gain (no compensation)
         }
     }
 
@@ -766,6 +773,25 @@ impl Deck {
     /// Set the track's musical key (parsed from metadata)
     pub fn set_track_key(&mut self, key: Option<crate::music::MusicalKey>) {
         self.track_key = key;
+    }
+
+    // --- Loudness Compensation ---
+
+    /// Get the current LUFS gain compensation (linear multiplier)
+    pub fn lufs_gain(&self) -> f32 {
+        self.lufs_gain
+    }
+
+    /// Set the LUFS gain compensation (linear multiplier)
+    ///
+    /// This is calculated from: `10^((target_lufs - track_lufs) / 20)`
+    /// - 1.0 = unity (no compensation)
+    /// - >1.0 = boost (track quieter than target)
+    /// - <1.0 = cut (track louder than target)
+    pub fn set_lufs_gain(&mut self, gain: f32) {
+        self.lufs_gain = gain;
+        log::debug!("Deck {}: LUFS gain set to {:.3} ({:+.1} dB)",
+            self.id.0, gain, 20.0 * gain.log10());
     }
 
     // --- Slicer ---
@@ -1346,6 +1372,12 @@ impl Deck {
         // This happens after parallel processing and compensation
         for stem_buffer in &self.stem_buffers {
             stretch_input.add_buffer(stem_buffer);
+        }
+
+        // Apply LUFS-based gain compensation (if not unity)
+        // This normalizes tracks to the configured target loudness
+        if self.lufs_gain != 1.0 {
+            stretch_input.scale(self.lufs_gain);
         }
 
         // Advance playhead by samples actually read (not output_len!)

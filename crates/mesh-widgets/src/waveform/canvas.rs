@@ -2030,6 +2030,9 @@ where
             let key_match_enabled = self.state.key_match_enabled(deck_idx);
             let (linked_stems, linked_active) = self.state.linked_stems(deck_idx);
 
+            let lufs_gain_db = self.state.lufs_gain_db(deck_idx);
+            let track_bpm = self.state.track_bpm(deck_idx);
+
             draw_deck_quadrant(
                 &mut frame,
                 &self.state.decks[deck_idx],
@@ -2047,6 +2050,8 @@ where
                 self.state.stem_colors(),
                 linked_stems,
                 linked_active,
+                lufs_gain_db,
+                track_bpm,
             );
         }
 
@@ -2089,6 +2094,8 @@ fn draw_deck_quadrant(
     stem_colors: &[Color; 4],
     linked_stems: &[bool; 4],
     linked_active: &[bool; 4],
+    lufs_gain_db: Option<f32>,
+    track_bpm: Option<f64>,
 ) {
     use iced::widget::canvas::Text;
     use iced::alignment::{Horizontal, Vertical};
@@ -2145,6 +2152,73 @@ fn draw_deck_quadrant(
         align_y: Vertical::Center.into(),
         ..Text::default()
     });
+
+    // Calculate reserved space for right-side elements (Key, LUFS, BPM)
+    let key_space = if deck.overview.has_track && !track_key.is_empty() { 80.0 } else { 0.0 };
+    let lufs_space = if deck.overview.has_track && lufs_gain_db.is_some() { 50.0 } else { 0.0 };
+    let bpm_space = if deck.overview.has_track && track_bpm.is_some() { 55.0 } else { 0.0 };
+
+    // Draw BPM indicator (to the left of LUFS gain)
+    // Format: "128.0" with "BPM" label
+    let bpm_display_width = if deck.overview.has_track {
+        if let Some(bpm) = track_bpm {
+            let bpm_text = format!("{:.1}", bpm);
+
+            // Position to the left of LUFS gain (which is left of key)
+            let bpm_x = x + width - key_space - lufs_space - 8.0;
+            frame.fill_text(Text {
+                content: bpm_text,
+                position: Point::new(bpm_x, y + DECK_HEADER_HEIGHT / 2.0),
+                size: 10.0.into(),
+                color: Color::from_rgb(0.7, 0.7, 0.8), // Light blue-gray
+                align_x: Horizontal::Right.into(),
+                align_y: Vertical::Center.into(),
+                ..Text::default()
+            });
+            bpm_space
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
+    // Draw LUFS gain compensation indicator (to the left of key)
+    // Format: "+2.1dB" (boost for quiet track) or "-3.5dB" (cut for loud track)
+    let gain_display_width = if deck.overview.has_track {
+        if let Some(gain_db) = lufs_gain_db {
+            let gain_text = if gain_db >= 0.0 {
+                format!("+{:.1}dB", gain_db)
+            } else {
+                format!("{:.1}dB", gain_db)
+            };
+
+            // Color: cyan for boost, orange for cut, gray for near-unity
+            let gain_color = if gain_db.abs() < 0.5 {
+                Color::from_rgb(0.5, 0.5, 0.5) // Gray for negligible gain
+            } else if gain_db > 0.0 {
+                Color::from_rgb(0.5, 0.8, 0.9) // Cyan for boost (quiet track)
+            } else {
+                Color::from_rgb(0.9, 0.7, 0.5) // Orange for cut (loud track)
+            };
+
+            // Position to the left of the key display
+            frame.fill_text(Text {
+                content: gain_text,
+                position: Point::new(x + width - key_space - 8.0, y + DECK_HEADER_HEIGHT / 2.0),
+                size: 10.0.into(),
+                color: gain_color,
+                align_x: Horizontal::Right.into(),
+                align_y: Vertical::Center.into(),
+                ..Text::default()
+            });
+            lufs_space
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
 
     // Draw track key in top right corner (if loaded)
     // Format: "Am" (normal), "Am → +2" (transposing), "Am ✓" (compatible/no transpose)
@@ -2219,12 +2293,11 @@ fn draw_deck_quadrant(
         }
     }
 
-    // Draw track name text (if loaded) - leave space for key on right and linked indicators
+    // Draw track name text (if loaded) - leave space for right-side indicators and linked indicators
     let linked_indicator_space = if has_any_links { 48.0 } else { 0.0 }; // ~4 diamonds + gaps
     let name_x = x + badge_margin + badge_width + 8.0 + linked_indicator_space;
-    // More space needed when showing transpose info (e.g. "Am → +2")
-    let key_space = if !track_key.is_empty() { 80.0 } else { 0.0 };
-    let max_name_width = width - badge_width - badge_margin * 2.0 - 16.0 - key_space - linked_indicator_space;
+    // Reserve space for BPM, LUFS gain, and key displays on the right
+    let max_name_width = width - badge_width - badge_margin * 2.0 - 16.0 - key_space - linked_indicator_space - gain_display_width - bpm_display_width;
 
     if deck.overview.has_track && !track_name.is_empty() {
         // Truncate track name if too long (rough estimate: ~7px per char)

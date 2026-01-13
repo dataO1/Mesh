@@ -165,6 +165,10 @@ pub enum Message {
     UpdateSettingsSlicerBufferBars(u32),
     /// Update settings: toggle slicer affected stem (stem_index, enabled)
     UpdateSettingsSlicerAffectedStem(usize, bool),
+    /// Update settings: auto-gain enabled
+    UpdateSettingsAutoGainEnabled(bool),
+    /// Update settings: target LUFS index (0-3)
+    UpdateSettingsTargetLufs(usize),
     /// Save settings to disk
     SaveSettings,
     /// Settings save complete
@@ -324,8 +328,20 @@ impl MeshApp {
                                     let host_drop_marker = prepared.track.metadata.drop_marker.unwrap_or(0);
                                     let host_duration = prepared.track.duration_samples as u64;
                                     let track_bpm = prepared.track.bpm();
+                                    // Get LUFS for gain compensation (before moving prepared)
+                                    let track_lufs = prepared.track.metadata.lufs;
                                     self.player_canvas_state.set_track_name(deck_idx, track_name);
                                     self.player_canvas_state.set_track_key(deck_idx, track_key);
+                                    self.player_canvas_state.set_track_bpm(deck_idx, Some(track_bpm));
+
+                                    // Calculate and display LUFS gain compensation
+                                    let lufs_gain_db = if self.config.audio.loudness.auto_gain_enabled {
+                                        track_lufs.map(|lufs| self.config.audio.loudness.calculate_gain_db(Some(lufs)))
+                                            .flatten()
+                                    } else {
+                                        None
+                                    };
+                                    self.player_canvas_state.set_lufs_gain_db(deck_idx, lufs_gain_db);
 
                                     // Sync hot cue positions from track metadata for button colors
                                     // First clear all slots
@@ -390,6 +406,13 @@ impl MeshApp {
                                         let _ = sender.send(EngineCommand::SetTrackKey {
                                             deck: deck_idx,
                                             key: key_for_engine.clone(),
+                                        });
+
+                                        // Send LUFS gain compensation to audio engine
+                                        let lufs_gain_linear = self.config.audio.loudness.calculate_gain_linear(track_lufs);
+                                        let _ = sender.send(EngineCommand::SetLufsGain {
+                                            deck: deck_idx,
+                                            gain: lufs_gain_linear,
                                         });
 
                                         self.status = format!("Loaded track to deck {}", deck_idx + 1);
@@ -1293,6 +1316,14 @@ impl MeshApp {
                 }
                 Task::none()
             }
+            Message::UpdateSettingsAutoGainEnabled(enabled) => {
+                self.settings.draft_auto_gain_enabled = enabled;
+                Task::none()
+            }
+            Message::UpdateSettingsTargetLufs(index) => {
+                self.settings.draft_target_lufs_index = index;
+                Task::none()
+            }
             Message::SaveSettings => {
                 // Apply draft settings to config
                 let mut new_config = (*self.config).clone();
@@ -1307,6 +1338,9 @@ impl MeshApp {
                 // Save slicer settings
                 new_config.slicer.default_buffer_bars = self.settings.draft_slicer_buffer_bars;
                 new_config.slicer.affected_stems = self.settings.draft_slicer_affected_stems;
+                // Save loudness settings
+                new_config.audio.loudness.auto_gain_enabled = self.settings.draft_auto_gain_enabled;
+                new_config.audio.loudness.target_lufs = self.settings.target_lufs();
 
                 self.config = Arc::new(new_config.clone());
 

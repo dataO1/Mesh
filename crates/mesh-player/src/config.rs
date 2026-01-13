@@ -105,6 +105,8 @@ pub struct AudioConfig {
     /// When enabled, pressing play or hot cues automatically aligns
     /// to the master deck's beat phase
     pub phase_sync: bool,
+    /// Loudness normalization settings
+    pub loudness: LoudnessConfig,
 }
 
 impl Default for AudioConfig {
@@ -112,7 +114,63 @@ impl Default for AudioConfig {
         Self {
             global_bpm: 128.0, // Standard house/techno BPM
             phase_sync: true,  // Automatic beat sync enabled by default
+            loudness: LoudnessConfig::default(),
         }
+    }
+}
+
+/// Loudness normalization configuration
+///
+/// Controls automatic gain compensation to normalize tracks to a target loudness.
+/// Uses LUFS values measured during import (EBU R128 integrated loudness).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LoudnessConfig {
+    /// Target loudness in LUFS
+    /// Tracks are gain-compensated to reach this level.
+    /// Default: -6.0 LUFS (loud DJ standard)
+    pub target_lufs: f32,
+    /// Enable automatic gain compensation based on track LUFS
+    pub auto_gain_enabled: bool,
+    /// Maximum boost in dB (safety limit for very quiet tracks)
+    /// Default: 12.0 dB
+    pub max_gain_db: f32,
+    /// Maximum cut in dB (safety limit for very loud tracks)
+    /// Default: -24.0 dB
+    pub min_gain_db: f32,
+}
+
+impl Default for LoudnessConfig {
+    fn default() -> Self {
+        Self {
+            target_lufs: -6.0,      // Loud DJ standard
+            auto_gain_enabled: true,
+            max_gain_db: 12.0,      // Safety: max boost
+            min_gain_db: -24.0,     // Safety: max cut
+        }
+    }
+}
+
+impl LoudnessConfig {
+    /// Calculate gain compensation in dB for a track
+    ///
+    /// Returns None if LUFS is not available or auto-gain is disabled.
+    pub fn calculate_gain_db(&self, track_lufs: Option<f32>) -> Option<f32> {
+        if !self.auto_gain_enabled {
+            return None;
+        }
+        track_lufs.map(|lufs| {
+            (self.target_lufs - lufs).clamp(self.min_gain_db, self.max_gain_db)
+        })
+    }
+
+    /// Calculate linear gain multiplier for a track
+    ///
+    /// Returns 1.0 (unity gain) if LUFS is not available or auto-gain is disabled.
+    pub fn calculate_gain_linear(&self, track_lufs: Option<f32>) -> f32 {
+        self.calculate_gain_db(track_lufs)
+            .map(|db| 10.0_f32.powf(db / 20.0))
+            .unwrap_or(1.0)
     }
 }
 
@@ -313,11 +371,13 @@ mod tests {
             audio: AudioConfig {
                 global_bpm: 140.0,
                 phase_sync: false,
+                ..Default::default()
             },
             display: DisplayConfig {
                 default_loop_length_index: 5, // 8 beats
                 default_zoom_bars: 4,
                 grid_bars: 16,
+                ..Default::default()
             },
             slicer: SlicerConfig {
                 default_buffer_bars: 8,
@@ -333,5 +393,25 @@ mod tests {
         assert!(!parsed.audio.phase_sync);
         assert_eq!(parsed.display.default_loop_length_index, 5);
         assert_eq!(parsed.display.default_zoom_bars, 4);
+    }
+
+    #[test]
+    fn test_loudness_config() {
+        let config = LoudnessConfig::default();
+        assert_eq!(config.target_lufs, -6.0);
+        assert!(config.auto_gain_enabled);
+
+        // Test gain calculation
+        // Track at -10 LUFS, target -6 LUFS = +4 dB boost
+        let gain_db = config.calculate_gain_db(Some(-10.0)).unwrap();
+        assert!((gain_db - 4.0).abs() < 0.001);
+
+        // Track at -4 LUFS, target -6 LUFS = -2 dB cut
+        let gain_db = config.calculate_gain_db(Some(-4.0)).unwrap();
+        assert!((gain_db - (-2.0)).abs() < 0.001);
+
+        // No LUFS = no gain
+        assert!(config.calculate_gain_db(None).is_none());
+        assert_eq!(config.calculate_gain_linear(None), 1.0);
     }
 }

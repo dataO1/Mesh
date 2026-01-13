@@ -421,6 +421,34 @@ pub fn samples_per_bar(bpm: f64) -> u64 {
     samples_per_beat * beats_per_bar
 }
 
+/// Scale peaks by gain compensation (for LUFS-normalized zoomed waveform display)
+///
+/// Applies a linear gain multiplier to all peak values in the array.
+/// Used at runtime to match the zoomed waveform display to the current target LUFS.
+///
+/// # Arguments
+/// * `peaks` - Mutable peak arrays for all 4 stems [Vocals, Drums, Bass, Other]
+/// * `gain_linear` - Linear gain multiplier (1.0 = unity, calculated from LUFS)
+///
+/// # Example
+/// ```ignore
+/// let gain = config.loudness.calculate_gain_linear(track_lufs);
+/// scale_peaks_by_gain(&mut peaks, gain);
+/// ```
+pub fn scale_peaks_by_gain(peaks: &mut [Vec<(f32, f32)>; 4], gain_linear: f32) {
+    // Skip if unity gain (avoid unnecessary multiplication)
+    if (gain_linear - 1.0).abs() < 0.001 {
+        return;
+    }
+
+    for stem_peaks in peaks.iter_mut() {
+        for (min, max) in stem_peaks.iter_mut() {
+            *min = (*min * gain_linear).clamp(-1.0, 1.0);
+            *max = (*max * gain_linear).clamp(-1.0, 1.0);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

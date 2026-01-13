@@ -170,7 +170,10 @@ and mesh-widget and only if necessary in the ui.
   should reuse all the decks capabilities and not introduce duplicated code). we
   already have 4 stem link button, when a stem link button is set with a stem
   link pressing this should toggle between the stems.
-- [ ] double height of overview waveform
+- [ ] add auto gained db difference to the decks header (for example +2dB or
+  -3dB)
+- [ ] for the auto gain, should we have a clipper on the master for safe
+  playback??
 
 
 
@@ -256,10 +259,19 @@ and mesh-widget and only if necessary in the ui.
   they need to be prestretched, then the peaks get computed.
 
 # Future fields
-- [ ] automatic gain staging for optimal headroom and that the dj doesnt
+- [x] automatic gain staging for optimal headroom and that the dj doesnt
   manually need to configure the trim knob for each track( some older tracks are
   very much not loud, while modern tracks are mastered very loud, we need to
-  "normalize them" in the analysis step.).
+  "normalize them" in the analysis step.). So while analysing the track measure
+  the integrated lufs loudness of the whole track summed (all 4 stems together)
+  using essentia library (which we already have as a dependency, research the
+  api and how to do lufs analysis). then store the integrated lufs value in the
+  tracks tags. then later in the player the player should automatically
+  compensate the gain of the track to a specific target (which is configurable
+  in the configuration ui, default -6 LUFS). so tracks that have a higher lufs
+  value (like -3 LUFS) should get turned down 3 db, tracks which are less loud
+  should be turned up. importantly the waveform needs to reflect this, so the
+  computed peaks height need to be scaled for diplay.
 - [ ] real-time short-term lufs normalisation (that introduces no latency) per
   stem using essentia or ebur128 or lufs crate ( i want stems after processing to be
   relatively comparable loudness as input stem loudness, since rave processing can either

@@ -996,6 +996,8 @@ pub struct PlayerCanvasState {
     track_names: [String; 4],
     /// Track keys for each deck (displayed in header, e.g. "Am", "C#m")
     track_keys: [String; 4],
+    /// Track BPM for each deck (original analyzed BPM, displayed in header)
+    track_bpm: [Option<f64>; 4],
     /// Stem active status per deck [deck][stem] (4 decks × 4 stems)
     /// true = stem is playing, false = stem is bypassed/muted
     stem_active: [[bool; 4]; 4],
@@ -1017,6 +1019,9 @@ pub struct PlayerCanvasState {
     /// Whether linked stem is active per deck [deck][stem]
     /// true = currently playing linked stem, false = playing original
     linked_stems_active: [[bool; 4]; 4],
+    /// LUFS gain compensation in dB per deck (None if no track or no LUFS data)
+    /// Positive = boost (quiet track), Negative = cut (loud track)
+    lufs_gain_db: [Option<f32>; 4],
 }
 
 impl PlayerCanvasState {
@@ -1043,6 +1048,7 @@ impl PlayerCanvasState {
                 String::new(),
                 String::new(),
             ],
+            track_bpm: [None; 4],        // No BPM data initially
             stem_active: [[true; 4]; 4], // All stems active by default
             last_update_time: [now, now, now, now],
             is_playing: [false, false, false, false],
@@ -1052,6 +1058,7 @@ impl PlayerCanvasState {
             stem_colors: STEM_COLORS,
             linked_stems: [[false; 4]; 4],       // No linked stems by default
             linked_stems_active: [[false; 4]; 4], // All using original stems
+            lufs_gain_db: [None; 4],             // No LUFS data initially
         }
     }
 
@@ -1091,6 +1098,22 @@ impl PlayerCanvasState {
             &self.track_keys[idx]
         } else {
             ""
+        }
+    }
+
+    /// Set the track BPM for a deck (displayed in header)
+    pub fn set_track_bpm(&mut self, idx: usize, bpm: Option<f64>) {
+        if idx < 4 {
+            self.track_bpm[idx] = bpm;
+        }
+    }
+
+    /// Get the track BPM for a deck
+    pub fn track_bpm(&self, idx: usize) -> Option<f64> {
+        if idx < 4 {
+            self.track_bpm[idx]
+        } else {
+            None
         }
     }
 
@@ -1172,6 +1195,24 @@ impl PlayerCanvasState {
             self.key_match_enabled[idx]
         } else {
             false
+        }
+    }
+
+    /// Set LUFS gain compensation in dB for a deck
+    ///
+    /// Display in header: "+2.1dB" (boost) or "-3.5dB" (cut)
+    pub fn set_lufs_gain_db(&mut self, idx: usize, gain_db: Option<f32>) {
+        if idx < 4 {
+            self.lufs_gain_db[idx] = gain_db;
+        }
+    }
+
+    /// Get LUFS gain compensation in dB for a deck
+    pub fn lufs_gain_db(&self, idx: usize) -> Option<f32> {
+        if idx < 4 {
+            self.lufs_gain_db[idx]
+        } else {
+            None
         }
     }
 

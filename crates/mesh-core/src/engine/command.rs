@@ -200,6 +200,19 @@ pub enum EngineCommand {
     SetFilter { deck: usize, value: f32 },
 
     // ─────────────────────────────────────────────────────────────
+    // Loudness Compensation
+    // ─────────────────────────────────────────────────────────────
+    /// Set LUFS-based gain compensation for a deck
+    ///
+    /// The gain is a linear multiplier calculated from:
+    /// `gain = 10^((target_lufs - track_lufs) / 20)`
+    ///
+    /// This is sent when:
+    /// - A track is loaded (calculated from track's measured LUFS)
+    /// - Target LUFS setting changes (recalculated for all loaded tracks)
+    SetLufsGain { deck: usize, gain: f32 },
+
+    // ─────────────────────────────────────────────────────────────
     // Global
     // ─────────────────────────────────────────────────────────────
     /// Set global BPM (affects time-stretching on all decks)

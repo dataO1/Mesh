@@ -223,6 +223,11 @@ pub struct TrackMetadata {
     pub original_bpm: Option<f64>,
     /// Musical key (e.g., "Am", "C#m")
     pub key: Option<String>,
+    /// Integrated LUFS loudness (EBU R128)
+    ///
+    /// Measured once during import. Used for automatic gain compensation
+    /// to reach the configured target loudness level.
+    pub lufs: Option<f32>,
     /// Duration in seconds (calculated from file header)
     pub duration_seconds: Option<f64>,
     /// Beat grid
@@ -670,6 +675,7 @@ impl TrackMetadata {
                     "BPM" => metadata.bpm = value.trim().parse().ok(),
                     "ORIGINAL_BPM" => metadata.original_bpm = value.trim().parse().ok(),
                     "KEY" => metadata.key = Some(value.trim().to_string()),
+                    "LUFS" => metadata.lufs = value.trim().parse().ok(),
                     "FIRST_BEAT" => first_beat = value.trim().parse().ok(),
                     "GRID" => metadata.beat_grid = BeatGrid::from_csv(value),
                     "DROP" => metadata.drop_marker = value.trim().parse().ok(),
@@ -725,6 +731,9 @@ impl TrackMetadata {
         }
         if let Some(ref key) = self.key {
             parts.push(format!("KEY:{}", key));
+        }
+        if let Some(lufs) = self.lufs {
+            parts.push(format!("LUFS:{:.2}", lufs));
         }
         // Store only FIRST_BEAT (fits in 256 bytes, grid regenerated on load)
         let first_beat = self.beat_grid.first_beat_sample
@@ -1690,6 +1699,10 @@ pub enum MetadataField {
     Bpm,
     /// Musical key
     Key,
+    /// LUFS integrated loudness
+    Lufs,
+    /// First beat sample position
+    FirstBeat,
 }
 
 /// Update a single metadata field in a WAV file's bext chunk
@@ -1777,6 +1790,14 @@ pub fn update_metadata_in_file<P: AsRef<Path>>(
                 Some(value.to_string())
             };
         }
+        MetadataField::Lufs => {
+            metadata.lufs = value.parse().ok();
+        }
+        MetadataField::FirstBeat => {
+            if let Ok(sample) = value.parse::<u64>() {
+                metadata.beat_grid.first_beat_sample = Some(sample);
+            }
+        }
     }
 
     // Generate new bext description (256 bytes, null-padded)
@@ -1803,6 +1824,123 @@ pub fn update_metadata_in_file<P: AsRef<Path>>(
         value,
         path
     );
+
+    Ok(metadata)
+}
+
+/// Partial metadata update for re-analysis operations
+///
+/// Contains only the fields that may need to be updated during re-analysis.
+/// Any `Some` value will be written; `None` values are preserved from the file.
+#[derive(Debug, Clone, Default)]
+pub struct PartialMetadataUpdate {
+    /// New BPM value
+    pub bpm: Option<f64>,
+    /// New first beat position (if beat grid changes)
+    pub first_beat: Option<u64>,
+    /// New key detection
+    pub key: Option<String>,
+    /// New LUFS measurement
+    pub lufs: Option<f32>,
+}
+
+/// Update multiple metadata fields in a WAV file's bext chunk at once
+///
+/// This is more efficient than calling `update_metadata_in_file` multiple times
+/// as it only opens the file once.
+///
+/// # Arguments
+///
+/// * `path` - Path to the WAV file
+/// * `updates` - Partial metadata updates (only Some fields are updated)
+///
+/// # Returns
+///
+/// The updated metadata after the changes
+pub fn update_metadata_bulk<P: AsRef<Path>>(
+    path: P,
+    updates: &PartialMetadataUpdate,
+) -> Result<TrackMetadata, AudioFileError> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let path = path.as_ref();
+
+    // Open file for reading to find bext chunk
+    let mut file = File::open(path).map_err(|e| AudioFileError::IoError(e.to_string()))?;
+
+    // Use riff crate to parse the chunk structure efficiently
+    let chunk = riff::Chunk::read(&mut file, 0)
+        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+
+    // Find bext chunk and its offset, plus read current description
+    let mut bext_offset: Option<u64> = None;
+    let mut current_description = String::new();
+
+    for child in chunk.iter(&mut file) {
+        let child = child.map_err(|e| AudioFileError::IoError(e.to_string()))?;
+        if child.id().as_str() == "bext" {
+            // Offset is: chunk start + 8 bytes (id + size header)
+            bext_offset = Some(child.offset() + 8);
+
+            // Read current description (first 256 bytes of bext data)
+            let content = child
+                .read_contents(&mut file)
+                .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+            if content.len() >= 256 {
+                current_description = String::from_utf8_lossy(&content[..256])
+                    .trim_end_matches('\0')
+                    .to_string();
+            }
+            break;
+        }
+    }
+
+    // Close the read handle
+    drop(file);
+
+    let bext_offset = bext_offset.ok_or_else(|| {
+        AudioFileError::InvalidFormat("No bext chunk found in file".to_string())
+    })?;
+
+    // Parse current metadata and apply updates
+    let mut metadata = TrackMetadata::parse_bext_description(&current_description);
+
+    if let Some(bpm) = updates.bpm {
+        metadata.bpm = Some(bpm);
+        if metadata.original_bpm.is_none() {
+            metadata.original_bpm = Some(bpm);
+        }
+    }
+    if let Some(first_beat) = updates.first_beat {
+        metadata.beat_grid.first_beat_sample = Some(first_beat);
+    }
+    if let Some(ref key) = updates.key {
+        metadata.key = Some(key.clone());
+    }
+    if let Some(lufs) = updates.lufs {
+        metadata.lufs = Some(lufs);
+    }
+
+    // Generate new bext description (256 bytes, null-padded)
+    let new_description = metadata.to_bext_description();
+    let mut description_bytes = [0u8; 256];
+    let desc_data = new_description.as_bytes();
+    let copy_len = desc_data.len().min(255);
+    description_bytes[..copy_len].copy_from_slice(&desc_data[..copy_len]);
+
+    // Write only the 256-byte description in-place
+    let mut file = OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+
+    file.seek(SeekFrom::Start(bext_offset))
+        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+    file.write_all(&description_bytes)
+        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+
+    log::info!("Updated metadata bulk in {:?}: {:?}", path, updates);
 
     Ok(metadata)
 }

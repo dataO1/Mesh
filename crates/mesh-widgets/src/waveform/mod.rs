@@ -41,12 +41,12 @@ mod view;
 pub use peak_computation::{
     CacheInfo, WindowInfo,
     compute_effective_width, generate_peaks_for_cache, generate_peaks_with_padding,
-    samples_per_bar, smooth_peaks as smooth_peaks_array,
+    samples_per_bar, scale_peaks_by_gain, smooth_peaks as smooth_peaks_array,
 };
 
 pub use peaks::{
     generate_peaks, generate_peaks_for_range, generate_waveform_preview,
-    smooth_peaks, smooth_peaks_gaussian,
+    generate_waveform_preview_with_gain, smooth_peaks, smooth_peaks_gaussian,
     DEFAULT_WIDTH, HIGHRES_WIDTH, PEAK_SMOOTHING_WINDOW,
 };
 

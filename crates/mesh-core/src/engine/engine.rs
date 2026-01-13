@@ -807,6 +807,13 @@ impl AudioEngine {
                     }
                 }
 
+                // Loudness Compensation
+                EngineCommand::SetLufsGain { deck, gain } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        d.set_lufs_gain(gain);
+                    }
+                }
+
                 // Global
                 EngineCommand::SetGlobalBpm(bpm) => {
                     self.set_global_bpm(bpm);

@@ -267,3 +267,62 @@ pub fn generate_waveform_preview(stems: &StemBuffers) -> WaveformPreview {
 
     preview
 }
+
+/// Generate a waveform preview with gain compensation applied
+///
+/// Same as `generate_waveform_preview`, but scales all peaks by the given gain factor.
+/// Used for LUFS-normalized waveform previews stored in WAV files at export time.
+///
+/// # Arguments
+/// * `stems` - Stem audio buffers
+/// * `gain_linear` - Linear gain multiplier (1.0 = unity, calculated from LUFS)
+///
+/// # Example
+/// ```ignore
+/// let gain = 10.0_f32.powf((target_lufs - measured_lufs) / 20.0);
+/// let preview = generate_waveform_preview_with_gain(&stems, gain);
+/// ```
+pub fn generate_waveform_preview_with_gain(stems: &StemBuffers, gain_linear: f32) -> WaveformPreview {
+    // If unity gain, use the regular function (avoid unnecessary multiplication)
+    if (gain_linear - 1.0).abs() < 0.001 {
+        return generate_waveform_preview(stems);
+    }
+
+    let width = WaveformPreview::STANDARD_WIDTH as usize;
+
+    // Generate peaks without smoothing (same as regular function)
+    let peaks = generate_peaks(stems, width);
+
+    // Convert to quantized StemPeaks with gain applied
+    let mut preview = WaveformPreview {
+        width: width as u16,
+        stems: Default::default(),
+    };
+
+    for (stem_idx, stem_peaks) in peaks.iter().enumerate() {
+        let mut min_values = Vec::with_capacity(stem_peaks.len());
+        let mut max_values = Vec::with_capacity(stem_peaks.len());
+
+        for &(min, max) in stem_peaks {
+            // Apply gain and clamp to valid range
+            let scaled_min = (min * gain_linear).clamp(-1.0, 1.0);
+            let scaled_max = (max * gain_linear).clamp(-1.0, 1.0);
+            min_values.push(quantize_peak(scaled_min));
+            max_values.push(quantize_peak(scaled_max));
+        }
+
+        preview.stems[stem_idx] = StemPeaks {
+            min: min_values,
+            max: max_values,
+        };
+    }
+
+    log::debug!(
+        "Generated gain-scaled waveform preview: {}px width, gain={:.3} ({:+.1} dB)",
+        preview.width,
+        gain_linear,
+        20.0 * gain_linear.log10()
+    );
+
+    preview
+}

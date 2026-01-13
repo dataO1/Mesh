@@ -23,7 +23,8 @@ pub use mesh_widgets::{
     CombinedState as CombinedWaveformView,
     // Other exports
     CueMarker,
-    generate_peaks, generate_peaks_for_range, generate_waveform_preview, smooth_peaks,
+    generate_peaks, generate_peaks_for_range, generate_waveform_preview,
+    generate_waveform_preview_with_gain, smooth_peaks,
     CUE_COLORS, STEM_COLORS, DEFAULT_WIDTH, PEAK_SMOOTHING_WINDOW,
     WAVEFORM_HEIGHT, ZOOMED_WAVEFORM_HEIGHT, COMBINED_WAVEFORM_GAP,
     MIN_ZOOM_BARS, MAX_ZOOM_BARS, DEFAULT_ZOOM_BARS, ZOOM_PIXELS_PER_LEVEL,
