@@ -20,7 +20,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-use crate::ui::waveform::{generate_waveform_preview, generate_waveform_preview_with_gain};
+use crate::ui::waveform::generate_waveform_preview_with_gain;
 
 /// Export stem buffers to an 8-channel WAV file with metadata
 ///

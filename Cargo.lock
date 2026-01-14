@@ -2603,14 +2603,18 @@ dependencies = [
 name = "mesh-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "basedrop",
  "bytemuck",
+ "dirs",
  "libpd-rs",
  "log",
  "rayon",
  "riff",
  "rtrb",
  "rubato",
+ "serde",
+ "serde_yaml",
  "signalsmith-stretch",
  "tempfile",
 ]
@@ -2689,6 +2693,7 @@ dependencies = [
  "mesh-core",
  "serde",
  "serde_yaml",
+ "tokio",
 ]
 
 [[package]]

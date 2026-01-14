@@ -51,7 +51,7 @@ pub use peaks::{
     DEFAULT_WIDTH, HIGHRES_WIDTH, PEAK_SMOOTHING_WINDOW,
 };
 
-pub use peaks_computer::{PeaksComputer, PeaksComputeRequest, PeaksComputeResult};
+pub use peaks_computer::{PeaksComputer, PeaksComputeRequest, PeaksComputeResult, PeaksResultReceiver};
 
 pub use state::{
     CombinedState, OverviewState, PlayerCanvasState, ZoomedState, ZoomedViewMode,

@@ -18,7 +18,7 @@ use mesh_widgets::{COMBINED_WAVEFORM_GAP, WAVEFORM_HEIGHT, ZOOMED_WAVEFORM_HEIGH
 const DROP_MARKER_COLOR: Color = Color::from_rgb(1.0, 0.5, 0.0);
 
 /// Render the hot cue buttons (single row of 8 action buttons + DROP button)
-pub fn view(state: &LoadedTrackState) -> Element<Message> {
+pub fn view(state: &LoadedTrackState) -> Element<'_, Message> {
     // Create all 8 hot cue buttons
     let mut buttons: Vec<Element<Message>> = (0..8)
         .map(|i| {
@@ -183,7 +183,7 @@ const STEM_COLORS: [Color; 4] = [
 pub fn view_stem_links(
     state: &LoadedTrackState,
     stem_link_selection: Option<usize>,
-) -> Element<Message> {
+) -> Element<'_, Message> {
     use mesh_core::audio_file::StemLinkReference;
 
     let buttons: Vec<Element<Message>> = (0..4)
@@ -215,7 +215,7 @@ pub fn view_stem_links(
 pub fn view_stem_links_column(
     state: &LoadedTrackState,
     stem_link_selection: Option<usize>,
-) -> Element<Message> {
+) -> Element<'_, Message> {
     use mesh_core::audio_file::StemLinkReference;
 
     // Total waveform height
@@ -266,8 +266,9 @@ fn create_stem_link_button_vertical(
         .height(Length::Fixed(height));
 
     if link.is_some() {
-        // Has link - show in stem color
-        btn.on_press(Message::StartStemLinkSelection(stem_idx))
+        // Has link - click to toggle between original and linked stem
+        // (Shift+click to re-select is handled via context menu or separate action)
+        btn.on_press(Message::ToggleStemLinkActive(stem_idx))
             .style(move |theme: &Theme, status| {
                 colored_button_style(theme, status, color)
             })
@@ -325,8 +326,8 @@ fn create_stem_link_button(
         .height(Length::Fixed(40.0));
 
     if link.is_some() {
-        // Has link - show in stem color
-        btn.on_press(Message::StartStemLinkSelection(stem_idx))
+        // Has link - click to toggle between original and linked stem
+        btn.on_press(Message::ToggleStemLinkActive(stem_idx))
             .style(move |theme: &Theme, status| {
                 colored_button_style(theme, status, color)
             })

@@ -1,9 +1,8 @@
 //! Main application state and iced implementation
 
 use crate::audio::{AudioState, JackHandle, start_jack_client};
-use crate::batch_import::{self, ImportConfig, ImportProgress, StemGroup, TrackImportResult};
-use crate::collection::Collection;
-use crate::config::{self, BpmSource, Config};
+use crate::batch_import::{self, ImportConfig, ImportProgress};
+use crate::config::{self, Config};
 use crate::export;
 use crate::keybindings::{self, KeybindingsConfig};
 use super::waveform::{CombinedWaveformView, WaveformView, ZoomedWaveformView, generate_peaks};
@@ -11,596 +10,34 @@ use mesh_widgets::HIGHRES_WIDTH;
 use iced::widget::{button, center, column, container, mouse_area, opaque, row, stack, text, Space};
 use iced::{Color, Element, Length, Task, Theme};
 use basedrop::Shared;
-use mesh_core::audio_file::{BeatGrid, CuePoint, LoadedTrack, MetadataField, StemBuffers, TrackMetadata, update_metadata_in_file};
-use mesh_core::engine::{DeckAtomics, LOOP_LENGTHS};
-use mesh_core::playlist::{FilesystemStorage, NodeId, NodeKind, PlaylistNode, PlaylistStorage};
+use mesh_core::audio_file::{BeatGrid, CuePoint, LoadedTrack, MetadataField, TrackMetadata, update_metadata_in_file};
+use mesh_core::playlist::{FilesystemStorage, NodeId, NodeKind, PlaylistStorage};
 use mesh_core::types::{PlayState, Stem};
 use mesh_widgets::{
-    PlaylistBrowserMessage, PlaylistBrowserState, TreeIcon, TreeNode,
-    TrackColumn, TrackRow, TrackTableMessage,
+    mpsc_subscription,
+    PlaylistBrowserMessage,
+    TrackColumn, TrackTableMessage,
     SliceEditorState, ZoomedViewMode,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// Current view in the application
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum View {
-    /// Collection browser and track editor (with batch import)
-    #[default]
-    Collection,
-}
+// Re-export extracted modules for use by other UI modules
+pub use super::message::Message;
+pub use super::state::{
+    BrowserSide, CollectionState, DragState, ImportPhase, ImportState,
+    LinkedStemLoadedMsg, LoadedTrackState, ReanalysisState, SettingsState,
+    StemsLoadResult, View,
+};
+pub use super::utils::{
+    build_tree_nodes, get_tracks_for_folder, nudge_beat_grid, regenerate_beat_grid,
+    snap_to_nearest_beat, update_waveform_beat_grid, BEAT_GRID_NUDGE_SAMPLES,
+};
 
-/// Which browser panel a drag operation originated from
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BrowserSide {
-    Left,
-    Right,
-}
+// State types imported from super::state
 
-/// State for an in-progress drag operation (supports multi-track drag)
-#[derive(Debug, Clone)]
-pub struct DragState {
-    /// The tracks being dragged (supports multi-selection)
-    pub track_ids: Vec<NodeId>,
-    /// Display names of the tracks (for status display)
-    pub track_names: Vec<String>,
-    /// Which browser the drag started from
-    pub source_browser: BrowserSide,
-}
-
-impl DragState {
-    /// Create a new drag state for a single track
-    pub fn single(track_id: NodeId, track_name: String, source_browser: BrowserSide) -> Self {
-        Self {
-            track_ids: vec![track_id],
-            track_names: vec![track_name],
-            source_browser,
-        }
-    }
-
-    /// Create a new drag state for multiple tracks
-    pub fn multiple(
-        track_ids: Vec<NodeId>,
-        track_names: Vec<String>,
-        source_browser: BrowserSide,
-    ) -> Self {
-        Self { track_ids, track_names, source_browser }
-    }
-
-    /// Get display text for the drag operation
-    pub fn display_text(&self) -> String {
-        match self.track_names.len() {
-            0 => String::new(),
-            1 => self.track_names[0].clone(),
-            n => format!("{} tracks", n),
-        }
-    }
-}
-
-/// State for the collection view
-pub struct CollectionState {
-    /// Collection manager (legacy - kept for track scanning)
-    pub collection: Collection,
-    /// Currently selected track index (legacy)
-    pub selected_track: Option<usize>,
-    /// Currently loaded track for editing
-    pub loaded_track: Option<LoadedTrackState>,
-    /// Playlist storage backend
-    pub playlist_storage: Option<Box<FilesystemStorage>>,
-    /// Left browser state
-    pub browser_left: PlaylistBrowserState<NodeId, NodeId>,
-    /// Right browser state
-    pub browser_right: PlaylistBrowserState<NodeId, NodeId>,
-    /// Cached tree nodes for display (rebuilt when storage changes)
-    pub tree_nodes: Vec<TreeNode<NodeId>>,
-    /// Cached tracks for left browser (updated when folder changes)
-    pub left_tracks: Vec<TrackRow<NodeId>>,
-    /// Cached tracks for right browser (updated when folder changes)
-    pub right_tracks: Vec<TrackRow<NodeId>>,
-    /// Track currently being dragged (if any)
-    pub dragging_track: Option<DragState>,
-}
-
-impl std::fmt::Debug for CollectionState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CollectionState")
-            .field("collection", &self.collection)
-            .field("selected_track", &self.selected_track)
-            .field("loaded_track", &self.loaded_track)
-            .field("has_playlist_storage", &self.playlist_storage.is_some())
-            .finish_non_exhaustive()
-    }
-}
-
-impl Default for CollectionState {
-    fn default() -> Self {
-        Self {
-            collection: Collection::default(),
-            selected_track: None,
-            loaded_track: None,
-            playlist_storage: None,
-            browser_left: PlaylistBrowserState::new(),
-            browser_right: PlaylistBrowserState::new(),
-            tree_nodes: Vec::new(),
-            left_tracks: Vec::new(),
-            right_tracks: Vec::new(),
-            dragging_track: None,
-        }
-    }
-}
-
-/// State for a loaded track being edited
-///
-/// Note: Manual Debug impl because Deck doesn't implement Debug
-pub struct LoadedTrackState {
-    /// Path to the track file
-    pub path: PathBuf,
-    /// Loaded audio data (wrapped in Arc for efficient cloning in messages)
-    /// None while audio is loading asynchronously
-    pub track: Option<Arc<LoadedTrack>>,
-    /// Loaded stems (Shared for RT-safe deallocation)
-    pub stems: Option<Shared<StemBuffers>>,
-    /// Current cue points (may be modified)
-    pub cue_points: Vec<CuePoint>,
-    /// Saved loops (up to 8 loop slots)
-    pub saved_loops: Vec<mesh_core::audio_file::SavedLoop>,
-    /// Modified BPM (user override)
-    pub bpm: f64,
-    /// Modified key (user override)
-    pub key: String,
-    /// Beat grid from metadata
-    pub beat_grid: Vec<u64>,
-    /// Drop marker sample position (for linked stem alignment)
-    pub drop_marker: Option<u64>,
-    /// Stem links for prepared mode (stored in mslk chunk)
-    pub stem_links: Vec<mesh_core::audio_file::StemLinkReference>,
-    /// Duration in samples (from metadata or computed)
-    pub duration_samples: u64,
-    /// Whether there are unsaved changes
-    pub modified: bool,
-    /// Combined waveform display (both zoomed detail and full overview in one canvas)
-    /// This works around iced bug #3040 where multiple Canvas widgets don't render properly
-    pub combined_waveform: CombinedWaveformView,
-    /// Whether audio is currently loading in the background
-    pub loading_audio: bool,
-    /// Atomics for reading deck state from audio engine (position, play state, loop state)
-    /// These are cloned from AudioState when track is loaded
-    pub deck_atomics: Arc<DeckAtomics>,
-    /// Last time the playhead position was updated (for smooth interpolation)
-    pub last_playhead_update: std::time::Instant,
-    /// Slice editor state for editing slicer presets
-    pub slice_editor: SliceEditorState,
-}
-
-impl LoadedTrackState {
-    /// Get current playhead position (from deck atomics)
-    pub fn playhead_position(&self) -> u64 {
-        self.deck_atomics.position()
-    }
-
-    /// Get interpolated playhead position for smooth waveform rendering
-    ///
-    /// When playing, this estimates the current position based on elapsed time
-    /// since the last update. This eliminates visible "chunking" in waveform
-    /// movement caused by the UI polling rate (16ms) being different from
-    /// the audio buffer rate (5.8ms).
-    pub fn interpolated_playhead_position(&self) -> u64 {
-        let base_position = self.playhead_position();
-
-        // Only interpolate when audio is active (playing or cueing)
-        if !self.is_audio_active() {
-            return base_position;
-        }
-
-        // Calculate samples elapsed since last update
-        let elapsed = self.last_playhead_update.elapsed();
-        let samples_elapsed = (elapsed.as_secs_f64() * mesh_core::types::SAMPLE_RATE as f64) as u64;
-
-        // Return interpolated position (clamped to duration)
-        base_position.saturating_add(samples_elapsed).min(self.duration_samples)
-    }
-
-    /// Update the playhead timestamp (call this when position is updated from audio thread)
-    pub fn touch_playhead(&mut self) {
-        self.last_playhead_update = std::time::Instant::now();
-    }
-
-    /// Check if audio is currently playing
-    pub fn is_playing(&self) -> bool {
-        self.deck_atomics.play_state() == PlayState::Playing
-    }
-
-    /// Check if audio is cueing (hot cue/cue preview)
-    pub fn is_cueing(&self) -> bool {
-        self.deck_atomics.play_state() == PlayState::Cueing
-    }
-
-    /// Check if audio is active (playing or cueing) - used for waveform animation
-    pub fn is_audio_active(&self) -> bool {
-        matches!(self.deck_atomics.play_state(), PlayState::Playing | PlayState::Cueing)
-    }
-
-    /// Get play state
-    pub fn play_state(&self) -> PlayState {
-        self.deck_atomics.play_state()
-    }
-
-    /// Check if loop is active
-    pub fn is_loop_active(&self) -> bool {
-        self.deck_atomics.loop_active.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Get cue point position
-    pub fn cue_point(&self) -> u64 {
-        self.deck_atomics.cue_point()
-    }
-
-    /// Get beat jump size (same as loop length in beats, minimum 1)
-    pub fn beat_jump_size(&self) -> i32 {
-        self.loop_length_beats().max(1.0) as i32
-    }
-
-    /// Get loop length in beats (from loop_length_index atomic)
-    pub fn loop_length_beats(&self) -> f64 {
-        let index = self.deck_atomics.loop_length_index() as usize;
-        LOOP_LENGTHS.get(index).copied().unwrap_or(4.0)
-    }
-
-    /// Get loop bounds (start, end) in samples
-    pub fn loop_bounds(&self) -> (u64, u64) {
-        (self.deck_atomics.loop_start(), self.deck_atomics.loop_end())
-    }
-
-    /// Update zoomed waveform cache if needed for new playhead position
-    ///
-    /// Call this after any operation that changes the playhead position
-    /// (Seek, Stop, BeatJump, JumpToCue, etc.) to ensure the zoomed
-    /// waveform displays correctly.
-    pub fn update_zoomed_waveform_cache(&mut self, playhead: u64) {
-        // mesh-cue doesn't use linked stems, so pass all-false array
-        if self.combined_waveform.zoomed.needs_recompute(playhead, &[false; 4]) {
-            if let Some(ref stems) = self.stems {
-                self.combined_waveform.zoomed.compute_peaks(stems, playhead, 1600);
-            }
-        }
-    }
-}
-
-impl std::fmt::Debug for LoadedTrackState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LoadedTrackState")
-            .field("path", &self.path)
-            .field("cue_points", &self.cue_points)
-            .field("bpm", &self.bpm)
-            .field("key", &self.key)
-            .field("duration_samples", &self.duration_samples)
-            .field("modified", &self.modified)
-            .field("loading_audio", &self.loading_audio)
-            .field("position", &self.deck_atomics.position())
-            .finish_non_exhaustive()
-    }
-}
-
-/// State for the settings modal
-#[derive(Debug, Default)]
-pub struct SettingsState {
-    /// Whether the settings modal is open
-    pub is_open: bool,
-    /// Draft min tempo value (text input)
-    pub draft_min_tempo: String,
-    /// Draft max tempo value (text input)
-    pub draft_max_tempo: String,
-    /// Draft parallel processes value (text input, 1-16)
-    pub draft_parallel_processes: String,
-    /// Draft track name format template
-    pub draft_track_name_format: String,
-    /// Draft grid bars value (4, 8, 16, 32)
-    pub draft_grid_bars: u32,
-    /// Draft BPM source for analysis (drums-only or full mix)
-    pub draft_bpm_source: BpmSource,
-    /// Draft slicer buffer bars (1, 4, 8, or 16)
-    pub draft_slicer_buffer_bars: u32,
-    /// Status message for save feedback
-    pub status: String,
-}
-
-impl SettingsState {
-    /// Initialize from current config
-    pub fn from_config(config: &Config) -> Self {
-        Self {
-            is_open: false,
-            draft_min_tempo: config.analysis.bpm.min_tempo.to_string(),
-            draft_max_tempo: config.analysis.bpm.max_tempo.to_string(),
-            draft_parallel_processes: config.analysis.parallel_processes.to_string(),
-            draft_track_name_format: config.track_name_format.clone(),
-            draft_grid_bars: config.display.grid_bars,
-            draft_bpm_source: config.analysis.bpm.source,
-            draft_slicer_buffer_bars: config.slicer.validated_buffer_bars(),
-            status: String::new(),
-        }
-    }
-}
-
-/// Phase of the batch import process
-#[derive(Debug, Clone)]
-pub enum ImportPhase {
-    /// Scanning import folder for stems
-    Scanning,
-    /// Processing tracks in parallel
-    Processing {
-        /// Currently processing track name
-        current_track: String,
-        /// Number of completed tracks
-        completed: usize,
-        /// Total tracks to process
-        total: usize,
-        /// Time import started (for ETA calculation)
-        start_time: std::time::Instant,
-    },
-    /// Import complete
-    Complete {
-        /// How long the import took
-        duration: std::time::Duration,
-    },
-}
-
-/// State for the batch import modal and progress
-#[derive(Debug)]
-pub struct ImportState {
-    /// Whether the import modal is open
-    pub is_open: bool,
-    /// Path to the import folder
-    pub import_folder: std::path::PathBuf,
-    /// Detected stem groups from scan
-    pub detected_groups: Vec<StemGroup>,
-    /// Current import phase (None if not importing)
-    pub phase: Option<ImportPhase>,
-    /// Results from completed import (for final popup)
-    pub results: Vec<TrackImportResult>,
-    /// Show results popup after completion
-    pub show_results: bool,
-    /// Channel to receive progress updates from import thread
-    pub progress_rx: Option<std::sync::mpsc::Receiver<ImportProgress>>,
-    /// Atomic flag to signal cancellation to import thread
-    pub cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-}
-
-impl Default for ImportState {
-    fn default() -> Self {
-        Self {
-            is_open: false,
-            import_folder: batch_import::default_import_folder(),
-            detected_groups: Vec::new(),
-            phase: None,
-            results: Vec::new(),
-            show_results: false,
-            progress_rx: None,
-            cancel_flag: None,
-        }
-    }
-}
-
-/// Wrapper for stems load result - provides Debug impl for Shared<StemBuffers>
-///
-/// basedrop::Shared doesn't implement Debug, so we need this wrapper
-/// for the Message enum to derive Debug.
-#[derive(Clone)]
-pub struct StemsLoadResult(pub Result<Shared<StemBuffers>, String>);
-
-impl std::fmt::Debug for StemsLoadResult {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.0 {
-            Ok(stems) => write!(f, "StemsLoadResult(Ok(<{} frames>))", stems.len()),
-            Err(e) => write!(f, "StemsLoadResult(Err({}))", e),
-        }
-    }
-}
-
-/// Application messages
-#[derive(Debug, Clone)]
-pub enum Message {
-    // Navigation
-    SwitchView(View),
-
-    // Collection: Browser
-    RefreshCollection,
-    SelectTrack(usize),
-    LoadTrack(usize),
-    /// Phase 1: Metadata loaded (fast), now show UI
-    TrackMetadataLoaded(Result<(PathBuf, TrackMetadata), String>),
-    /// Phase 2: Audio stems loaded (slow), now enable playback (Shared for RT-safe drop)
-    TrackStemsLoaded(StemsLoadResult),
-    /// Legacy: full track loaded (kept for compatibility)
-    TrackLoaded(Result<Arc<LoadedTrack>, String>),
-
-    // Collection: Editor
-    SetBpm(f64),
-    SetKey(String),
-    AddCuePoint(u64),
-    DeleteCuePoint(usize),
-    SetCueLabel(usize, String),
-    SaveTrack,
-    SaveComplete(Result<(), String>),
-
-    // Transport
-    Play,
-    Pause,
-    Stop,
-    Seek(f64),
-    /// CDJ-style cue button pressed (set cue point, start preview)
-    Cue,
-    /// CDJ-style cue button released (stop preview, return to cue point)
-    CueReleased,
-    /// Beat jump by N beats (positive = forward, negative = backward)
-    BeatJump(i32),
-    /// Set overview waveform grid density (4, 8, 16, 32 bars)
-    SetOverviewGridBars(u32),
-    /// Toggle loop on/off
-    ToggleLoop,
-    /// Adjust loop length (+1 = double, -1 = halve)
-    AdjustLoopLength(i32),
-
-    // Hot Cues (8 action buttons)
-    /// Jump to hot cue at index (0-7)
-    JumpToCue(usize),
-    /// Set hot cue at index to current playhead position
-    SetCuePoint(usize),
-    /// Clear hot cue at index (Shift+click)
-    ClearCuePoint(usize),
-    /// Hot cue button pressed - start preview from this cue point (CDJ-style)
-    HotCuePressed(usize),
-    /// Hot cue button released - stop preview and return to cue point
-    HotCueReleased(usize),
-
-    // Saved Loops (8 loop buttons)
-    /// Save current loop to slot index (0-7)
-    SaveLoop(usize),
-    /// Jump to and activate saved loop at index
-    JumpToSavedLoop(usize),
-    /// Clear saved loop at index (Shift+click)
-    ClearSavedLoop(usize),
-
-    // Drop Marker (for linked stem alignment)
-    /// Set drop marker at current playhead position
-    SetDropMarker,
-    /// Clear drop marker (Shift+click)
-    ClearDropMarker,
-
-    // Stem Links (for prepared mode - stored in mslk chunk)
-    /// Start stem link selection for a stem slot (0=Vocals, 1=Drums, 2=Bass, 3=Other)
-    /// This focuses the browser for track selection
-    StartStemLinkSelection(usize),
-    /// Confirm stem link selection - link the stem to the currently selected track
-    ConfirmStemLink(usize),
-    /// Clear a stem link (Shift+click)
-    ClearStemLink(usize),
-
-    // Slice Editor
-    /// Toggle a cell in the slice editor grid (step 0-15, slice 0-15)
-    SliceEditorCellToggle { step: usize, slice: u8 },
-    /// Toggle mute for a step
-    SliceEditorMuteToggle(usize),
-    /// Click stem button (toggles enabled + selects for editing)
-    SliceEditorStemClick(usize),
-    /// Select a preset tab (0-7)
-    SliceEditorPresetSelect(usize),
-    /// Save slicer presets to config file
-    SaveSlicerPresets,
-
-    // Zoomed Waveform
-    /// Set zoom level for zoomed waveform (1-64 bars)
-    SetZoomBars(u32),
-
-    // Misc
-    Tick,
-
-    // Beat Grid
-    /// Nudge beat grid left (earlier) by small increment
-    NudgeBeatGridLeft,
-    /// Nudge beat grid right (later) by small increment
-    NudgeBeatGridRight,
-
-    // Settings
-    OpenSettings,
-    CloseSettings,
-    UpdateSettingsMinTempo(String),
-    UpdateSettingsMaxTempo(String),
-    UpdateSettingsParallelProcesses(String),
-    UpdateSettingsTrackNameFormat(String),
-    UpdateSettingsGridBars(u32),
-    UpdateSettingsBpmSource(BpmSource),
-    UpdateSettingsSlicerBufferBars(u32),
-    SaveSettings,
-    SaveSettingsComplete(Result<(), String>),
-
-    // Keyboard
-    /// Key pressed with modifiers (for keybindings and shift tracking)
-    /// The bool indicates if this is a repeat event (key held down)
-    KeyPressed(iced::keyboard::Key, iced::keyboard::Modifiers, bool),
-    /// Key released (for hot cue preview release)
-    KeyReleased(iced::keyboard::Key, iced::keyboard::Modifiers),
-    /// Modifier keys changed (Shift/Ctrl pressed/released without another key)
-    ModifiersChanged(iced::keyboard::Modifiers),
-    /// Global mouse position updated (for context menu placement)
-    GlobalMouseMoved(iced::Point),
-
-    // Playlist Browsers
-    /// Message from left playlist browser
-    BrowserLeft(PlaylistBrowserMessage<NodeId, NodeId>),
-    /// Message from right playlist browser
-    BrowserRight(PlaylistBrowserMessage<NodeId, NodeId>),
-    /// Refresh playlist storage and tree
-    RefreshPlaylists,
-    /// Load track from playlist by path
-    LoadTrackByPath(PathBuf),
-
-    // Drag and Drop
-    /// Start dragging track(s) from a browser (supports multi-selection)
-    DragTrackStart {
-        track_ids: Vec<NodeId>,
-        track_names: Vec<String>,
-        browser: BrowserSide,
-    },
-    /// Cancel/end drag operation (mouse released without valid drop)
-    DragTrackEnd,
-    /// Drop track(s) onto a playlist folder
-    DropTracksOnPlaylist {
-        track_ids: Vec<NodeId>,
-        target_playlist: NodeId,
-    },
-
-    // Batch Import
-    /// Open the import modal
-    OpenImport,
-    /// Close the import modal
-    CloseImport,
-    /// Scan the import folder for stem groups
-    ScanImportFolder,
-    /// Import folder scan complete
-    ImportFolderScanned(Vec<StemGroup>),
-    /// Start the batch import process
-    StartBatchImport,
-    /// Progress update from import thread
-    ImportProgressUpdate(ImportProgress),
-    /// Cancel the current import
-    CancelImport,
-    /// Dismiss the import results popup
-    DismissImportResults,
-
-    // Delete confirmation
-    /// Request deletion (shows confirmation modal)
-    RequestDelete(BrowserSide),
-    /// Request deletion by track/playlist ID (from context menu)
-    RequestDeleteById(NodeId),
-    /// Request deletion of a playlist
-    RequestDeletePlaylist(NodeId),
-    /// Cancel the delete operation
-    CancelDelete,
-    /// Confirm and execute the delete
-    ConfirmDelete,
-
-    // Context menu
-    /// Show context menu at position
-    ShowContextMenu(super::context_menu::ContextMenuKind, iced::Point),
-    /// Close context menu
-    CloseContextMenu,
-
-    // Track operations
-    /// Start renaming a playlist
-    StartRenamePlaylist(NodeId),
-
-    // Re-analysis
-    /// Start re-analysis of tracks with specified type and scope
-    StartReanalysis {
-        analysis_type: crate::analysis::AnalysisType,
-        scope: crate::analysis::ReanalysisScope,
-    },
-    /// Progress update from re-analysis worker thread
-    ReanalysisProgress(crate::analysis::ReanalysisProgress),
-    /// Cancel the current re-analysis
-    CancelReanalysis,
-}
+// State types (LoadedTrackState, SettingsState, ImportState, etc.) are now in state/ module
+// Message enum is now in message.rs
 
 /// Main application
 pub struct MeshCueApp {
@@ -641,29 +78,6 @@ pub struct MeshCueApp {
     stem_link_selection: Option<usize>,
     /// Re-analysis state
     reanalysis_state: ReanalysisState,
-}
-
-/// State for re-analysis operations
-#[derive(Debug, Default)]
-pub struct ReanalysisState {
-    /// Whether re-analysis is in progress
-    pub is_running: bool,
-    /// Analysis type being performed
-    pub analysis_type: Option<crate::analysis::AnalysisType>,
-    /// Total tracks to process
-    pub total_tracks: usize,
-    /// Tracks completed so far
-    pub completed_tracks: usize,
-    /// Currently processing track name
-    pub current_track: Option<String>,
-    /// Number of successful completions
-    pub succeeded: usize,
-    /// Number of failed completions
-    pub failed: usize,
-    /// Cancel flag (shared with worker thread)
-    pub cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    /// Channel to receive progress updates from worker thread
-    pub progress_rx: Option<std::sync::mpsc::Receiver<crate::analysis::ReanalysisProgress>>,
 }
 
 impl MeshCueApp {
@@ -998,6 +412,7 @@ impl MeshCueApp {
                             self.audio.set_global_bpm(state.bpm);
                             // Set default loop length from config
                             self.audio.set_loop_length_index(self.config.display.default_loop_length_index);
+                            // Linked stems are auto-loaded by engine from track metadata
                         }
                     }
                     Err(e) => {
@@ -1005,6 +420,54 @@ impl MeshCueApp {
                         if let Some(ref mut state) = self.collection.loaded_track {
                             state.loading_audio = false;
                         }
+                    }
+                }
+            }
+            Message::LinkedStemLoaded(msg) => {
+                // Extract the result from Arc wrapper
+                let result = match Arc::try_unwrap(msg.0) {
+                    Ok(r) => r,
+                    Err(_) => {
+                        log::warn!("LinkedStemLoadResult Arc still shared, skipping");
+                        return Task::none();
+                    }
+                };
+
+                match result.result {
+                    Ok(linked_data) => {
+                        log::info!(
+                            "Linked stem {} loaded: {}",
+                            result.stem_idx,
+                            linked_data.track_name
+                        );
+
+                        // Store peaks for waveform display
+                        if let Some(ref mut state) = self.collection.loaded_track {
+                            if let Some(peaks) = result.overview_peaks {
+                                state.combined_waveform.overview.set_linked_stem_peaks(
+                                    result.stem_idx,
+                                    peaks,
+                                );
+                            }
+                            if let Some(peaks) = result.highres_peaks {
+                                state.combined_waveform.overview.set_linked_highres_peaks(
+                                    result.stem_idx,
+                                    peaks,
+                                );
+                            }
+                        }
+
+                        // Send LinkStem command to engine
+                        if let Some(stem) = Stem::from_index(result.stem_idx) {
+                            self.audio.link_stem(stem, linked_data);
+                        }
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "Failed to load linked stem {}: {}",
+                            result.stem_idx,
+                            e
+                        );
                     }
                 }
             }
@@ -1534,6 +997,15 @@ impl MeshCueApp {
                 self.stem_link_selection = None;
             }
 
+            Message::ToggleStemLinkActive(stem_idx) => {
+                // Toggle between original and linked stem for playback
+                // The audio engine handles the actual toggling
+                if let Some(stem) = Stem::from_index(stem_idx) {
+                    self.audio.toggle_linked_stem(stem);
+                    log::info!("Toggled linked stem active for stem {}", stem_idx);
+                }
+            }
+
             // Slice Editor
             Message::SliceEditorCellToggle { step, slice } => {
                 // Toggle cell and get sync data if changed
@@ -1725,9 +1197,25 @@ impl MeshCueApp {
                         }
                     }
 
+                    // Sync linked stem state from atomics for waveform display
+                    let linked_atomics = self.audio.linked_stem_atomics();
+                    for stem_idx in 0..4 {
+                        let has_linked = linked_atomics.has_linked[stem_idx]
+                            .load(std::sync::atomic::Ordering::Relaxed);
+                        let is_active = linked_atomics.use_linked[stem_idx]
+                            .load(std::sync::atomic::Ordering::Relaxed);
+                        state.combined_waveform.set_linked_stem(stem_idx, has_linked, is_active);
+                    }
+
+                    // Sync LUFS gain from engine for waveform scaling (single source of truth)
+                    let lufs_gain = self.audio.lufs_gain();
+                    state.combined_waveform.zoomed.set_lufs_gain(lufs_gain);
+                }
+
+                if let Some(ref mut state) = self.collection.loaded_track {
                     // Update zoomed waveform peaks if playhead moved outside cache
-                    // mesh-cue doesn't use linked stems, so pass all-false array
-                    if state.combined_waveform.zoomed.needs_recompute(pos, &[false; 4]) {
+                    let pos = self.audio.position();
+                    if state.combined_waveform.zoomed.needs_recompute(pos, &state.combined_waveform.linked_active) {
                         if let Some(ref stems) = state.stems {
                             state.combined_waveform.zoomed.compute_peaks(stems, pos, 1600);
                         }
@@ -3240,7 +2728,7 @@ impl MeshCueApp {
                 self.context_menu_state.close();
             }
             Message::StartReanalysis { analysis_type, scope } => {
-                use crate::analysis::{AnalysisType, ReanalysisProgress, ReanalysisScope};
+                use crate::analysis::ReanalysisScope;
                 use crate::reanalysis::run_batch_reanalysis;
                 use std::sync::atomic::AtomicBool;
                 use std::sync::mpsc;
@@ -3423,7 +2911,7 @@ impl MeshCueApp {
     }
 
     /// Render the UI
-    pub fn view(&self) -> Element<Message> {
+    pub fn view(&self) -> Element<'_, Message> {
         let header = self.view_header();
 
         let content: Element<Message> = match self.current_view {
@@ -3564,17 +3052,26 @@ impl MeshCueApp {
             }
         });
 
+        // Linked stem result subscription (engine owns the loader, we receive results)
+        let linked_stem_sub = if let Some(receiver) = self.audio.linked_stem_receiver() {
+            mpsc_subscription(receiver)
+                .map(|result| Message::LinkedStemLoaded(LinkedStemLoadedMsg(Arc::new(result))))
+        } else {
+            iced::Subscription::none()
+        };
+
         // Always run tick at 60fps for smooth waveform animation
         // This matches mesh-player's approach and ensures cueing/preview states work correctly
         iced::Subscription::batch([
             keyboard_sub,
             mouse_sub,
             time::every(Duration::from_millis(16)).map(|_| Message::Tick),
+            linked_stem_sub,
         ])
     }
 
     /// Render a progress bar for re-analysis operations
-    fn view_reanalysis_progress_bar(&self) -> Option<Element<Message>> {
+    fn view_reanalysis_progress_bar(&self) -> Option<Element<'_, Message>> {
         if !self.reanalysis_state.is_running {
             return None;
         }
@@ -3616,7 +3113,7 @@ impl MeshCueApp {
     }
 
     /// View header with app title and settings
-    fn view_header(&self) -> Element<Message> {
+    fn view_header(&self) -> Element<'_, Message> {
         // Settings gear icon (⚙ U+2699)
         let settings_btn = button(text("⚙").size(20))
             .on_press(Message::OpenSettings)
@@ -3632,161 +3129,10 @@ impl MeshCueApp {
     }
 
     /// View for the collection browser and editor
-    fn view_collection(&self) -> Element<Message> {
+    fn view_collection(&self) -> Element<'_, Message> {
         // Modifier key handling is done in update() where current keyboard state is available
         super::collection_browser::view(&self.collection, &self.import_state, self.stem_link_selection)
     }
 }
 
-/// Nudge amount in samples (~10ms at 48kHz for fine-grained control)
-const BEAT_GRID_NUDGE_SAMPLES: i64 = 480;
-
-/// Sample rate constant (matches mesh_core::types::SAMPLE_RATE)
-const SAMPLE_RATE_F64: f64 = mesh_core::types::SAMPLE_RATE as f64;
-
-/// Nudge the beat grid by a delta amount of samples
-///
-/// The grid is shifted by moving the first beat position, then regenerating
-/// all subsequent beats. If the first beat would go negative or beyond one bar,
-/// it wraps around to stay within a single bar range.
-fn nudge_beat_grid(state: &mut LoadedTrackState, delta_samples: i64) {
-    if state.beat_grid.is_empty() || state.bpm <= 0.0 {
-        return;
-    }
-
-    // Calculate samples per bar (4 beats)
-    let samples_per_beat = (SAMPLE_RATE_F64 * 60.0 / state.bpm) as i64;
-    let samples_per_bar = samples_per_beat * 4;
-
-    // Get current first beat
-    let first_beat = state.beat_grid[0] as i64;
-
-    // Apply delta
-    let mut new_first_beat = first_beat + delta_samples;
-
-    // Wrap around one bar if out of bounds
-    if new_first_beat < 0 {
-        new_first_beat += samples_per_bar;
-    } else if new_first_beat >= samples_per_bar {
-        new_first_beat -= samples_per_bar;
-    }
-
-    // Regenerate beat grid from new first beat
-    let new_first_beat = new_first_beat as u64;
-    state.beat_grid = regenerate_beat_grid(new_first_beat, state.bpm, state.duration_samples);
-
-    // Update waveform displays
-    update_waveform_beat_grid(state);
-
-    // Note: Beat grid changes are saved to file and applied on next track load.
-    // There's no EngineCommand to dynamically update beat grid on running deck.
-
-    // Mark as modified for save
-    state.modified = true;
-}
-
-/// Regenerate beat grid from a first beat position, BPM, and track duration
-fn regenerate_beat_grid(first_beat: u64, bpm: f64, duration_samples: u64) -> Vec<u64> {
-    if bpm <= 0.0 || duration_samples == 0 {
-        return Vec::new();
-    }
-
-    let samples_per_beat = (SAMPLE_RATE_F64 * 60.0 / bpm) as u64;
-    let mut beats = Vec::new();
-    let mut pos = first_beat;
-
-    while pos < duration_samples {
-        beats.push(pos);
-        pos += samples_per_beat;
-    }
-
-    beats
-}
-
-/// Update waveform beat grid markers after grid modification
-fn update_waveform_beat_grid(state: &mut LoadedTrackState) {
-    // Update zoomed view (uses sample positions directly)
-    state.combined_waveform.zoomed.set_beat_grid(state.beat_grid.clone());
-
-    // Update overview (uses normalized positions 0.0-1.0)
-    if state.duration_samples > 0 {
-        state.combined_waveform.overview.beat_markers = state.beat_grid
-            .iter()
-            .map(|&pos| pos as f64 / state.duration_samples as f64)
-            .collect();
-    }
-}
-
-/// Snap a position to the nearest beat in the beat grid
-fn snap_to_nearest_beat(position: u64, beat_grid: &[u64]) -> u64 {
-    if beat_grid.is_empty() {
-        return position;
-    }
-    beat_grid
-        .iter()
-        .min_by_key(|&&b| (b as i64 - position as i64).unsigned_abs())
-        .copied()
-        .unwrap_or(position)
-}
-
-/// Build tree nodes from playlist storage
-fn build_tree_nodes(storage: &FilesystemStorage) -> Vec<TreeNode<NodeId>> {
-    let root = storage.root();
-    build_node_children(storage, &root)
-}
-
-/// Recursively build tree node children
-fn build_node_children(storage: &FilesystemStorage, parent: &PlaylistNode) -> Vec<TreeNode<NodeId>> {
-    storage
-        .get_children(&parent.id)
-        .into_iter()
-        .filter(|node| node.kind != NodeKind::Track) // Only folders in tree
-        .map(|node| {
-            let icon = match node.kind {
-                NodeKind::Collection => TreeIcon::Collection,
-                NodeKind::CollectionFolder => TreeIcon::Folder,
-                NodeKind::PlaylistsRoot => TreeIcon::Folder,
-                NodeKind::Playlist => TreeIcon::Playlist,
-                _ => TreeIcon::Folder,
-            };
-
-            // Allow creating children in playlists root and playlist folders
-            let allow_create = matches!(node.kind, NodeKind::PlaylistsRoot | NodeKind::Playlist);
-            // Allow renaming only playlist folders (not collection, not playlists root)
-            let allow_rename = matches!(node.kind, NodeKind::Playlist);
-
-            TreeNode::with_children(
-                node.id.clone(),
-                node.name.clone(),
-                icon,
-                build_node_children(storage, &node),
-            )
-            .with_create_child(allow_create)
-            .with_rename(allow_rename)
-        })
-        .collect()
-}
-
-/// Get tracks for a folder as TrackRow items for display
-pub fn get_tracks_for_folder(storage: &FilesystemStorage, folder_id: &NodeId) -> Vec<TrackRow<NodeId>> {
-    storage
-        .get_tracks(folder_id)
-        .into_iter()
-        .map(|info| {
-            let mut row = TrackRow::new(info.id, info.name);
-            if let Some(artist) = info.artist {
-                row = row.with_artist(artist);
-            }
-            if let Some(bpm) = info.bpm {
-                row = row.with_bpm(bpm);
-            }
-            if let Some(key) = info.key {
-                row = row.with_key(key);
-            }
-            if let Some(duration) = info.duration {
-                row = row.with_duration(duration);
-            }
-            row
-        })
-        .collect()
-}
+// Helper functions (nudge_beat_grid, regenerate_beat_grid, etc.) moved to utils/ module

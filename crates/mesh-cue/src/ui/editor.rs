@@ -12,7 +12,7 @@ use mesh_widgets::slice_editor;
 /// # Arguments
 /// * `state` - The loaded track state
 /// * `stem_link_selection` - Which stem slot is being linked (if any)
-pub fn view(state: &LoadedTrackState, stem_link_selection: Option<usize>) -> Element<Message> {
+pub fn view(state: &LoadedTrackState, stem_link_selection: Option<usize>) -> Element<'_, Message> {
     let header = view_header(state);
 
     // Player controls (vertical, left of waveforms)
@@ -76,7 +76,7 @@ pub fn view(state: &LoadedTrackState, stem_link_selection: Option<usize>) -> Ele
 }
 
 /// Header with track info and editable BPM/key
-fn view_header(state: &LoadedTrackState) -> Element<Message> {
+fn view_header(state: &LoadedTrackState) -> Element<'_, Message> {
     let track_name = state
         .path
         .file_stem()
@@ -132,7 +132,7 @@ fn view_header(state: &LoadedTrackState) -> Element<Message> {
 }
 
 /// Save section
-fn view_save_section(state: &LoadedTrackState) -> Element<Message> {
+fn view_save_section(state: &LoadedTrackState) -> Element<'_, Message> {
     let save_btn = button(text("Save Changes"))
         .on_press_maybe(state.modified.then_some(Message::SaveTrack));
 

@@ -2,7 +2,7 @@
 //!
 //! Maps MIDI events to application actions based on the device profile configuration.
 
-use crate::config::{ControlBehavior, ControlMapping, DeviceProfile, EncoderMode, HardwareType, MidiControlConfig};
+use crate::config::{ControlBehavior, ControlMapping, DeviceProfile, EncoderMode, MidiControlConfig};
 use crate::deck_target::DeckTargetState;
 use crate::input::MidiInputEvent;
 use crate::messages::{BrowserAction, DeckAction, GlobalAction, MidiMessage, MixerAction};
@@ -318,7 +318,7 @@ impl MappingEngine {
         };
 
         // Check for edge transition
-        let (is_press_edge, is_release_edge) = if is_pressed && !was_pressed {
+        let (is_press_edge, _is_release_edge) = if is_pressed && !was_pressed {
             // Rising edge: knob crossed above threshold
             (true, false)
         } else if !is_pressed && was_pressed {

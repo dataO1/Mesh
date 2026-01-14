@@ -246,7 +246,7 @@ impl CollectionBrowserState {
     }
 
     /// Build the view with deck load buttons at top (centered)
-    pub fn view(&self) -> Element<CollectionBrowserMessage> {
+    pub fn view(&self) -> Element<'_, CollectionBrowserMessage> {
         // mesh-player uses simple single-selection (no Shift/Ctrl modifier tracking)
         let browser_element = playlist_browser(
             &self.tree_nodes,
@@ -289,7 +289,7 @@ impl CollectionBrowserState {
     }
 
     /// Compact view without load buttons (for performance mode)
-    pub fn view_compact(&self) -> Element<CollectionBrowserMessage> {
+    pub fn view_compact(&self) -> Element<'_, CollectionBrowserMessage> {
         playlist_browser(
             &self.tree_nodes,
             &self.tracks,

@@ -3,7 +3,7 @@
 //! Uses native iced buttons instead of Canvas to avoid iced bug #3040
 //! where multiple Canvas widgets don't render properly together.
 
-use super::state::{SliceEditorState, NUM_PRESETS, NUM_SLICES, NUM_STEMS, NUM_STEPS, STEM_NAMES};
+use super::state::{SliceEditorState, NUM_PRESETS, NUM_SLICES, NUM_STEPS, STEM_NAMES};
 use crate::theme::STEM_COLORS;
 use iced::widget::{button, column, row, text, Row};
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding};

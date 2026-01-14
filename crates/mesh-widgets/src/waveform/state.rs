@@ -1019,6 +1019,12 @@ pub struct CombinedState {
     pub zoomed: ZoomedState,
     /// Overview waveform state (full track)
     pub overview: OverviewState,
+    /// Whether each stem has a linked stem from another track [4 stems]
+    pub linked_stems: [bool; 4],
+    /// Whether the linked stem is currently active (vs playing original) [4 stems]
+    pub linked_active: [bool; 4],
+    /// Which stems are muted [4 stems]
+    pub stem_active: [bool; 4],
 }
 
 impl CombinedState {
@@ -1027,6 +1033,33 @@ impl CombinedState {
         Self {
             zoomed: ZoomedState::new(),
             overview: OverviewState::new(),
+            linked_stems: [false; 4],
+            linked_active: [false; 4],
+            stem_active: [true; 4], // All stems active by default
+        }
+    }
+
+    /// Set linked stem status for a specific stem
+    ///
+    /// `has_linked` indicates whether a linked stem exists
+    /// `is_active` indicates whether the linked stem is currently playing
+    pub fn set_linked_stem(&mut self, stem_idx: usize, has_linked: bool, is_active: bool) {
+        if stem_idx < 4 {
+            self.linked_stems[stem_idx] = has_linked;
+            self.linked_active[stem_idx] = is_active;
+        }
+    }
+
+    /// Clear all linked stem status (when track is unloaded)
+    pub fn clear_linked_stems(&mut self) {
+        self.linked_stems = [false; 4];
+        self.linked_active = [false; 4];
+    }
+
+    /// Set stem active state (mute/unmute)
+    pub fn set_stem_active(&mut self, stem_idx: usize, active: bool) {
+        if stem_idx < 4 {
+            self.stem_active[stem_idx] = active;
         }
     }
 }

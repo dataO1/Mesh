@@ -40,7 +40,8 @@
 //! }
 //! ```
 
-use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use basedrop::Shared;
@@ -48,8 +49,7 @@ use mesh_core::audio_file::StemBuffers;
 use mesh_core::types::StereoBuffer;
 
 use super::peak_computation::{
-    CacheInfo, WindowInfo, compute_effective_width,
-    generate_peaks_with_padding, generate_peaks_with_padding_and_linked, smooth_peaks,
+    CacheInfo, WindowInfo, compute_effective_width, generate_peaks_with_padding_and_linked, smooth_peaks,
 };
 use super::state::ZoomedViewMode;
 
@@ -117,6 +117,9 @@ pub struct PeaksComputeResult {
     pub linked_active: [bool; 4],
 }
 
+/// Type alias for the peaks result receiver (for subscription support)
+pub type PeaksResultReceiver = Arc<Mutex<Receiver<PeaksComputeResult>>>;
+
 /// Background thread for computing waveform peaks
 ///
 /// Prevents UI thread blocking during expensive peak generation.
@@ -124,8 +127,8 @@ pub struct PeaksComputeResult {
 pub struct PeaksComputer {
     /// Channel to send compute requests
     tx: Sender<PeaksComputeRequest>,
-    /// Channel to receive compute results
-    rx: Receiver<PeaksComputeResult>,
+    /// Channel to receive compute results (wrapped for subscription support)
+    rx: PeaksResultReceiver,
     /// Thread handle (for graceful shutdown)
     _handle: JoinHandle<()>,
 }
@@ -147,7 +150,7 @@ impl PeaksComputer {
 
         Self {
             tx: request_tx,
-            rx: result_rx,
+            rx: Arc::new(Mutex::new(result_rx)),
             _handle: handle,
         }
     }
@@ -167,14 +170,26 @@ impl PeaksComputer {
     /// Returns `Some(result)` if a computation has completed, `None` otherwise.
     /// Call this in your tick handler to poll for completed work.
     pub fn try_recv(&self) -> Option<PeaksComputeResult> {
-        match self.rx.try_recv() {
-            Ok(result) => Some(result),
-            Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => {
-                log::error!("Peaks computer thread disconnected unexpectedly");
-                None
-            }
+        match self.rx.lock().ok().and_then(|rx| rx.try_recv().ok()) {
+            Some(result) => Some(result),
+            None => None,
         }
+    }
+
+    /// Get the result receiver for subscription-based message handling
+    ///
+    /// Use with `mesh_widgets::mpsc_subscription` to receive peak computation results
+    /// via iced subscription instead of polling in Tick handler.
+    ///
+    /// # Example
+    /// ```ignore
+    /// fn subscription(&self) -> Subscription<Message> {
+    ///     mpsc_subscription(self.peaks_computer.result_receiver())
+    ///         .map(Message::PeaksComputed)
+    /// }
+    /// ```
+    pub fn result_receiver(&self) -> PeaksResultReceiver {
+        self.rx.clone()
     }
 }
 

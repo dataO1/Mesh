@@ -12,7 +12,7 @@ use iced::widget::{button, column, container, mouse_area, row, text};
 use iced::{Alignment, Background, Border, Color, Element, Length};
 
 /// Render vertical player controls (left of waveform)
-pub fn view(state: &LoadedTrackState) -> Element<Message> {
+pub fn view(state: &LoadedTrackState) -> Element<'_, Message> {
     let beat_jump_size = state.beat_jump_size();
     let is_playing = state.is_playing();
     let loop_active = state.is_loop_active();

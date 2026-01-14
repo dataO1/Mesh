@@ -8,7 +8,7 @@ use iced::widget::{button, column, container, row, text, text_input, Space};
 use iced::{Alignment, Element, Length};
 
 /// Render the settings modal content
-pub fn view(state: &SettingsState) -> Element<Message> {
+pub fn view(state: &SettingsState) -> Element<'_, Message> {
     let title = text("Settings").size(24);
     let close_btn = button(text("×").size(20))
         .on_press(Message::CloseSettings)
@@ -58,7 +58,7 @@ pub fn view(state: &SettingsState) -> Element<Message> {
 }
 
 /// BPM detection range settings
-fn view_bpm_section(state: &SettingsState) -> Element<Message> {
+fn view_bpm_section(state: &SettingsState) -> Element<'_, Message> {
     let section_title = text("Analysis").size(18);
 
     let subsection_title = text("BPM Detection Range").size(14);
@@ -155,7 +155,7 @@ fn view_bpm_section(state: &SettingsState) -> Element<Message> {
 }
 
 /// Display settings (waveform grid density)
-fn view_display_section(state: &SettingsState) -> Element<Message> {
+fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
     let section_title = text("Display").size(18);
 
     let subsection_title = text("Overview Grid Density").size(14);
@@ -240,7 +240,7 @@ fn view_display_section(state: &SettingsState) -> Element<Message> {
 }
 
 /// Track name format template settings
-fn view_track_name_format_section(state: &SettingsState) -> Element<Message> {
+fn view_track_name_format_section(state: &SettingsState) -> Element<'_, Message> {
     let section_title = text("Import").size(18);
 
     let subsection_title = text("Track Name Format").size(14);

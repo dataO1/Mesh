@@ -1,5 +1,7 @@
 //! Main audio engine - ties together decks, mixer, and time-stretching
 
+use crate::config::LoudnessConfig;
+use crate::loader::{HostTrackParams, LinkedStemLoader, LinkedStemResultReceiver};
 use crate::music::semitones_to_match;
 use crate::timestretch::TimeStretcher;
 use crate::types::{DeckId, PlayState, Stem, StereoBuffer, NUM_DECKS};
@@ -57,6 +59,19 @@ pub struct AudioEngine {
     /// When a preset button is pressed, patterns are loaded to all stems that have
     /// a defined pattern in the preset (others are bypassed).
     slicer_presets: [SlicerPreset; 8],
+
+    // ─────────────────────────────────────────────────────────────
+    // Loudness normalization
+    // ─────────────────────────────────────────────────────────────
+    /// Loudness configuration for automatic gain compensation
+    /// Engine calculates LUFS gain when tracks are loaded
+    loudness_config: LoudnessConfig,
+
+    // ─────────────────────────────────────────────────────────────
+    // Linked stem loading
+    // ─────────────────────────────────────────────────────────────
+    /// Background loader for linked stems (auto-loads from track metadata)
+    linked_stem_loader: LinkedStemLoader,
 }
 
 impl AudioEngine {
@@ -91,6 +106,10 @@ impl AudioEngine {
                 SlicerPreset::drums_only(&[0, 0, 2, 2, 4, 4, 6, 6, 0, 0, 2, 2, 4, 4, 6, 6]),       // Stutter
                 SlicerPreset::drums_only(&[0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6]),       // Rapid fire
             ],
+            // Loudness normalization (config sent via SetLoudnessConfig command)
+            loudness_config: LoudnessConfig::default(),
+            // Linked stem loader (auto-loads stems from track metadata)
+            linked_stem_loader: LinkedStemLoader::new(output_sample_rate),
         }
     }
 
@@ -152,6 +171,14 @@ impl AudioEngine {
     /// The UI can read linked stem state (has_linked, use_linked) without blocking.
     pub fn linked_stem_atomics(&self) -> [std::sync::Arc<super::LinkedStemAtomics>; NUM_DECKS] {
         std::array::from_fn(|i| self.decks[i].linked_stem_atomics())
+    }
+
+    /// Get the linked stem result receiver for UI subscriptions
+    ///
+    /// The UI needs to receive linked stem load results to update waveform peaks.
+    /// This provides a clonable receiver that can be used with iced subscriptions.
+    pub fn linked_stem_result_receiver(&self) -> LinkedStemResultReceiver {
+        self.linked_stem_loader.result_receiver()
     }
 
     /// Get a reference to the mixer
@@ -334,8 +361,12 @@ impl AudioEngine {
             return;
         }
 
-        // Extract BPM before consuming prepared track
+        // Extract metadata before consuming prepared track
         let track_bpm = prepared.track.bpm();
+        let track_lufs = prepared.track.metadata.lufs;
+        let stem_links = prepared.track.metadata.stem_links.clone();
+        let drop_marker = prepared.track.metadata.drop_marker;
+        let duration_samples = prepared.track.duration_samples as u64;
 
         // Fast track application - only assignments and atomic stores
         if let Some(d) = self.decks.get_mut(deck) {
@@ -348,6 +379,18 @@ impl AudioEngine {
                 deck, track_bpm, self.global_bpm, ratio
             );
             d.set_stretch_ratio(ratio);
+
+            // ─────────────────────────────────────────────────────────────
+            // Auto-apply LUFS gain compensation
+            // ─────────────────────────────────────────────────────────────
+            let lufs_gain = self.loudness_config.calculate_gain_linear(track_lufs);
+            d.set_lufs_gain(lufs_gain, track_lufs);
+            if let Some(lufs) = track_lufs {
+                log::info!(
+                    "Deck {}: LUFS auto-gain applied: {:.3}x ({:+.1} dB), track={:.1} LUFS, target={:.1} LUFS",
+                    deck, lufs_gain, self.loudness_config.target_lufs - lufs, lufs, self.loudness_config.target_lufs
+                );
+            }
         }
 
         // Update time stretcher for this deck's BPM
@@ -358,6 +401,24 @@ impl AudioEngine {
 
         // Update stem latencies for this deck
         self.update_deck_latencies(deck);
+
+        // ─────────────────────────────────────────────────────────────
+        // Auto-load linked stems from track metadata
+        // ─────────────────────────────────────────────────────────────
+        if !stem_links.is_empty() {
+            log::info!(
+                "Auto-loading {} linked stem(s) for deck {} from track metadata",
+                stem_links.len(), deck
+            );
+            let host = HostTrackParams {
+                deck_idx: deck,
+                bpm: track_bpm,
+                drop_marker,
+                duration_samples,
+                lufs: track_lufs,
+            };
+            self.linked_stem_loader.load_from_metadata(&stem_links, host);
+        }
     }
 
     /// Unload a track from a deck
@@ -811,6 +872,23 @@ impl AudioEngine {
                         log::warn!("[STEM_TOGGLE] Deck {} not found!", deck);
                     }
                 }
+                EngineCommand::LoadLinkedStem { deck, stem_idx, path, host_bpm, host_drop_marker, host_duration } => {
+                    // Manual stem linking request from UI - route through our loader
+                    log::info!(
+                        "Engine received LoadLinkedStem: deck={}, stem={}, path={:?}",
+                        deck, stem_idx, path.file_name()
+                    );
+                    if let Err(e) = self.linked_stem_loader.load_linked_stem(
+                        deck,
+                        stem_idx,
+                        path,
+                        host_bpm,
+                        host_drop_marker,
+                        host_duration,
+                    ) {
+                        log::error!("Failed to queue linked stem load: {}", e);
+                    }
+                }
 
                 // Mixer Control
                 EngineCommand::SetVolume { deck, volume } => {
@@ -851,6 +929,21 @@ impl AudioEngine {
                 EngineCommand::SetLufsGain { deck, gain, host_lufs } => {
                     if let Some(d) = self.decks.get_mut(deck) {
                         d.set_lufs_gain(gain, host_lufs);
+                    }
+                }
+                EngineCommand::SetLoudnessConfig(config) => {
+                    log::info!(
+                        "Loudness config updated: auto_gain={}, target={:.1} LUFS",
+                        config.auto_gain_enabled,
+                        config.target_lufs
+                    );
+                    self.loudness_config = config;
+                    // Recalculate LUFS gain for all loaded decks
+                    for deck in &mut self.decks {
+                        if let Some(lufs) = deck.track_lufs() {
+                            let gain = self.loudness_config.calculate_gain_linear(Some(lufs));
+                            deck.set_lufs_gain(gain, Some(lufs));
+                        }
                     }
                 }
 

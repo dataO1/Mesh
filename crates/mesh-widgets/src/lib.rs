@@ -29,6 +29,7 @@ pub mod button_styles;
 pub mod playlist_browser;
 pub mod rotary_knob;
 pub mod slice_editor;
+pub mod subscription;
 pub mod theme;
 pub mod track_table;
 pub mod tree;
@@ -54,7 +55,7 @@ pub use waveform::{
 };
 
 // Background peak computation
-pub use waveform::{PeaksComputer, PeaksComputeRequest, PeaksComputeResult};
+pub use waveform::{PeaksComputer, PeaksComputeRequest, PeaksComputeResult, PeaksResultReceiver};
 
 // Waveform state structures
 pub use waveform::{
@@ -101,3 +102,6 @@ pub use slice_editor::{
 
 // Slicer overlay drawing utilities
 pub use waveform::{draw_slicer_overlay, draw_slicer_overlay_zoomed};
+
+// Subscription helpers for message-driven architecture
+pub use subscription::{mpsc_subscription, mpsc_subscription_owned};

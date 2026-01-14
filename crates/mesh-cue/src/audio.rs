@@ -23,6 +23,7 @@ use mesh_core::engine::{
     command_channel, AudioEngine, DeckAtomics, EngineCommand, LinkedStemAtomics, PreparedTrack,
     SlicerAtomics,
 };
+use mesh_core::loader::LinkedStemResultReceiver;
 use mesh_core::types::StereoBuffer;
 
 // Re-export for convenience
@@ -152,6 +153,8 @@ pub struct AudioState {
     linked_stem_atomics: Arc<LinkedStemAtomics>,
     /// JACK sample rate
     sample_rate: u32,
+    /// Linked stem result receiver (engine owns the loader)
+    linked_stem_receiver: Option<LinkedStemResultReceiver>,
 }
 
 impl AudioState {
@@ -161,6 +164,7 @@ impl AudioState {
         deck_atomics: Arc<DeckAtomics>,
         slicer_atomics: [Arc<SlicerAtomics>; 4],
         linked_stem_atomics: Arc<LinkedStemAtomics>,
+        linked_stem_receiver: LinkedStemResultReceiver,
         sample_rate: u32,
     ) -> Self {
         Self {
@@ -169,6 +173,7 @@ impl AudioState {
             slicer_atomics,
             linked_stem_atomics,
             sample_rate,
+            linked_stem_receiver: Some(linked_stem_receiver),
         }
     }
 
@@ -185,6 +190,7 @@ impl AudioState {
             ],
             linked_stem_atomics: Arc::new(LinkedStemAtomics::new()),
             sample_rate: 44100,
+            linked_stem_receiver: None,
         }
     }
 
@@ -229,6 +235,44 @@ impl AudioState {
     /// Get linked stem atomics
     pub fn linked_stem_atomics(&self) -> &Arc<LinkedStemAtomics> {
         &self.linked_stem_atomics
+    }
+
+    /// Get linked stem result receiver (for subscription)
+    pub fn linked_stem_receiver(&self) -> Option<LinkedStemResultReceiver> {
+        self.linked_stem_receiver.clone()
+    }
+
+    /// Get LUFS gain from atomics (single source of truth from engine)
+    pub fn lufs_gain(&self) -> f32 {
+        self.deck_atomics.lufs_gain()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Configuration commands (engine calculates internally)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Set loudness configuration (engine calculates LUFS gain for loaded tracks)
+    pub fn set_loudness_config(&mut self, config: mesh_core::config::LoudnessConfig) {
+        self.send(EngineCommand::SetLoudnessConfig(config));
+    }
+
+    /// Request linked stem load (engine owns the loader)
+    pub fn load_linked_stem(
+        &mut self,
+        stem_idx: usize,
+        path: std::path::PathBuf,
+        host_bpm: f64,
+        host_drop_marker: u64,
+        host_duration: u64,
+    ) {
+        self.send(EngineCommand::LoadLinkedStem {
+            deck: PREVIEW_DECK,
+            stem_idx,
+            path,
+            host_bpm,
+            host_drop_marker,
+            host_duration,
+        });
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -450,6 +494,35 @@ impl AudioState {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Linked Stem Control
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Toggle between original and linked stem for playback
+    ///
+    /// Only has effect if a linked stem exists for this stem slot.
+    pub fn toggle_linked_stem(&mut self, stem: mesh_core::types::Stem) {
+        self.send(EngineCommand::ToggleLinkedStem {
+            deck: PREVIEW_DECK,
+            stem,
+        });
+    }
+
+    /// Link a stem from another track
+    ///
+    /// The linked stem should be pre-stretched to match the host track's BPM.
+    pub fn link_stem(
+        &mut self,
+        stem: mesh_core::types::Stem,
+        linked_data: mesh_core::engine::LinkedStemData,
+    ) {
+        self.send(EngineCommand::LinkStem {
+            deck: PREVIEW_DECK,
+            stem,
+            linked_stem: Box::new(linked_data),
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // Volume control (for preview)
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -492,6 +565,8 @@ pub fn start_jack_client() -> Result<(AudioState, JackHandle), JackError> {
     // Get slicer atomics for all 4 stems on preview deck
     let slicer_atomics = engine.slicer_atomics_for_deck(PREVIEW_DECK);
     let linked_stem_atomics = engine.linked_stem_atomics()[PREVIEW_DECK].clone();
+    // Get linked stem result receiver before engine is moved to processor
+    let linked_stem_receiver = engine.linked_stem_result_receiver();
 
     // Create lock-free command channel
     let (command_tx, command_rx) = command_channel();
@@ -524,6 +599,7 @@ pub fn start_jack_client() -> Result<(AudioState, JackHandle), JackError> {
         deck_atomics,
         slicer_atomics,
         linked_stem_atomics,
+        linked_stem_receiver,
         sample_rate,
     );
     audio_state.set_volume(1.0);

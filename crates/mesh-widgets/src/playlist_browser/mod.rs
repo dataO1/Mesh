@@ -19,7 +19,7 @@ use crate::track_table::{
 };
 use crate::tree::{tree_view, TreeMessage, TreeNode, TreeState};
 use iced::widget::{container, row, rule};
-use iced::{Background, Element, Length, Point, Theme};
+use iced::{Background, Element, Length, Theme};
 use std::hash::Hash;
 
 /// State for the combined playlist browser widget

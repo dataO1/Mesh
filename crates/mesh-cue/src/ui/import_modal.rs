@@ -9,7 +9,7 @@ use iced::widget::{button, column, container, progress_bar, row, scrollable, tex
 use iced::{Alignment, Element, Length};
 
 /// Render the import modal content
-pub fn view(state: &ImportState) -> Element<Message> {
+pub fn view(state: &ImportState) -> Element<'_, Message> {
     let title = text("Import Stems").size(24);
     let close_btn = button(text("×").size(20))
         .on_press(Message::CloseImport)
@@ -46,7 +46,7 @@ pub fn view(state: &ImportState) -> Element<Message> {
 }
 
 /// View when not importing - show scan results and action buttons
-fn view_scan_results(state: &ImportState) -> Element<Message> {
+fn view_scan_results(state: &ImportState) -> Element<'_, Message> {
     let groups = &state.detected_groups;
 
     // Groups list
@@ -113,7 +113,7 @@ fn view_scan_results(state: &ImportState) -> Element<Message> {
 }
 
 /// View a single stem group
-fn view_stem_group(group: &StemGroup) -> Element<Message> {
+fn view_stem_group(group: &StemGroup) -> Element<'_, Message> {
     let name = text(&group.base_name).size(14);
     let status_icon = if group.is_complete() {
         text("✓").size(14).color(iced::Color::from_rgb(0.2, 0.8, 0.2))

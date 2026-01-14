@@ -26,7 +26,7 @@ pub use mesh_widgets::PlayerCanvasState;
 /// # Returns
 ///
 /// An `Element<Message>` that renders the unified waveform canvas
-pub fn view_player_canvas(state: &PlayerCanvasState) -> Element<Message> {
+pub fn view_player_canvas(state: &PlayerCanvasState) -> Element<'_, Message> {
     mesh_widgets::waveform_player(
         state,
         |deck_idx, pos| Message::DeckSeek(deck_idx, pos),

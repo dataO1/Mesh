@@ -492,9 +492,8 @@ fn process_single_track(group: &StemGroup, config: &ImportConfig) -> TrackImport
     let empty_loops: Vec<SavedLoop> = Vec::new();
 
     // Calculate waveform gain from LUFS for loudness-normalized preview
-    let waveform_gain = analysis.lufs
-        .map(|lufs| config.loudness_config.calculate_gain_linear(lufs))
-        .unwrap_or(1.0);
+    // The new LoudnessConfig API handles Option<f32> directly and returns 1.0 if None
+    let waveform_gain = config.loudness_config.calculate_gain_linear(analysis.lufs);
 
     if let Err(e) = export_stem_file_with_gain(&temp_path, &buffers, source_sample_rate, &metadata, &empty_cues, &empty_loops, waveform_gain) {
         return TrackImportResult {

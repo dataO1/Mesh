@@ -505,7 +505,7 @@ impl DeckView {
     /// │ Transport: [◀◀][CUE][▶][▶▶] [÷2][4][×2][LOOP] │
     /// │ Pitch slider                                   │
     /// └────────────────────────────────────────────────┘
-    pub fn view(&self) -> Element<DeckMessage> {
+    pub fn view(&self) -> Element<'_, DeckMessage> {
         // Top: Deck label + track info
         let deck_label = text(format!("DECK {}", self.deck_idx + 1))
             .size(16);
@@ -552,7 +552,7 @@ impl DeckView {
     }
 
     /// Transport controls view
-    fn view_transport(&self) -> Element<DeckMessage> {
+    fn view_transport(&self) -> Element<'_, DeckMessage> {
         // Beat jump buttons
         let jump_back = button(text("◀◀").size(14))
             .on_press(DeckMessage::BeatJumpBack)
@@ -676,7 +676,7 @@ impl DeckView {
     }
 
     /// Hot cue buttons view (CDJ-style with press/release for preview)
-    fn view_hot_cues(&self) -> Element<DeckMessage> {
+    fn view_hot_cues(&self) -> Element<'_, DeckMessage> {
         let buttons: Vec<Element<DeckMessage>> = (0..8)
             .map(|i| {
                 let is_set = self.hot_cue_positions[i].is_some();
@@ -728,7 +728,7 @@ impl DeckView {
     }
 
     /// Stem effect chain view with tabs
-    fn view_stems(&self) -> Element<DeckMessage> {
+    fn view_stems(&self) -> Element<'_, DeckMessage> {
         // Tab buttons for selecting stem
         let tabs: Vec<Element<DeckMessage>> = (0..4)
             .map(|i| {
@@ -779,7 +779,7 @@ impl DeckView {
     }
 
     /// View the effect chain for a stem
-    fn view_effect_chain(&self, stem_idx: usize) -> Element<DeckMessage> {
+    fn view_effect_chain(&self, stem_idx: usize) -> Element<'_, DeckMessage> {
         let effects = &self.stem_effect_names[stem_idx];
         let bypassed = &self.stem_effect_bypassed[stem_idx];
 
@@ -829,7 +829,7 @@ impl DeckView {
     }
 
     /// View the 8 mappable knobs for the stem's effect chain
-    fn view_chain_knobs(&self, stem_idx: usize) -> Element<DeckMessage> {
+    fn view_chain_knobs(&self, stem_idx: usize) -> Element<'_, DeckMessage> {
         let knobs: Vec<Element<DeckMessage>> = (0..8)
             .map(|k| {
                 let value = self.stem_knobs[stem_idx][k];
@@ -860,7 +860,7 @@ impl DeckView {
     /// - Beat jump row: [◀◀] [▶▶]
     /// - Cue button
     /// - Play button
-    fn view_transport_vertical(&self) -> Element<DeckMessage> {
+    fn view_transport_vertical(&self) -> Element<'_, DeckMessage> {
         // Play button (large, at bottom of stack but rendered last)
         let is_playing = matches!(self.state, PlayState::Playing);
         let play_icon = if is_playing { "⏸" } else { "▶" };
@@ -985,7 +985,7 @@ impl DeckView {
     }
 
     /// Hot cue buttons in 2x4 grid layout (fills available width)
-    fn view_hot_cues_grid(&self) -> Element<DeckMessage> {
+    fn view_hot_cues_grid(&self) -> Element<'_, DeckMessage> {
         use iced::Length;
 
         let deck_idx = self.deck_idx;
@@ -1075,7 +1075,7 @@ impl DeckView {
     }
 
     /// Action buttons grid - displays either hot cues or slicer based on mode
-    fn view_action_buttons_grid(&self) -> Element<DeckMessage> {
+    fn view_action_buttons_grid(&self) -> Element<'_, DeckMessage> {
         match self.action_mode {
             ActionButtonMode::HotCue => self.view_hot_cues_grid(),
             ActionButtonMode::Slicer => self.view_slicer_grid(),
@@ -1086,7 +1086,7 @@ impl DeckView {
     ///
     /// Each button represents a slice (0-7) and queues it for playback when pressed.
     /// Visual feedback shows which slice is currently playing and the queue state.
-    fn view_slicer_grid(&self) -> Element<DeckMessage> {
+    fn view_slicer_grid(&self) -> Element<'_, DeckMessage> {
         use iced::Length;
 
         // Slicer color scheme - orange gradient for slices
@@ -1218,7 +1218,7 @@ impl DeckView {
     /// │            │  └─────┴─────┴─────┴─────┘            │
     /// └────────────┴─────────────────────────────────────────┘
     /// ```
-    pub fn view_compact(&self) -> Element<DeckMessage> {
+    pub fn view_compact(&self) -> Element<'_, DeckMessage> {
         use iced::Length;
 
         // Top: Stem section (full width)
@@ -1258,7 +1258,7 @@ impl DeckView {
     /// │  rotary knobs for effect chain parameters                   │
     /// └─────────────────────────────────────────────────────────────┘
     /// ```
-    fn view_stem_section_compact(&self) -> Element<DeckMessage> {
+    fn view_stem_section_compact(&self) -> Element<'_, DeckMessage> {
         use iced::Length;
 
         let stem_idx = self.selected_stem;
@@ -1355,7 +1355,7 @@ impl DeckView {
     }
 
     /// Compact effect chain view
-    fn view_effect_chain_compact(&self, stem_idx: usize) -> Element<DeckMessage> {
+    fn view_effect_chain_compact(&self, stem_idx: usize) -> Element<'_, DeckMessage> {
         let effects = &self.stem_effect_names[stem_idx];
         let bypassed = &self.stem_effect_bypassed[stem_idx];
 
@@ -1391,7 +1391,7 @@ impl DeckView {
     }
 
     /// Compact knob row using rotary knobs
-    fn view_chain_knobs_compact(&self, stem_idx: usize) -> Element<DeckMessage> {
+    fn view_chain_knobs_compact(&self, stem_idx: usize) -> Element<'_, DeckMessage> {
         const KNOB_SIZE: f32 = 32.0;
         const KNOB_LABELS: [&str; 8] = ["1", "2", "3", "4", "5", "6", "7", "8"];
 
@@ -1415,7 +1415,7 @@ impl DeckView {
     }
 
     /// Horizontal control row: Loop/Slip, Loop size, Beat jump
-    fn view_control_row_compact(&self) -> Element<DeckMessage> {
+    fn view_control_row_compact(&self) -> Element<'_, DeckMessage> {
         use iced::Length;
 
         // Loop button with optional MIDI learn highlight
@@ -1535,7 +1535,7 @@ impl DeckView {
     /// Mode selection row: [SHIFT] [HOTCUE] [SLICER]
     ///
     /// Determines the behavior of the 8 action buttons below
-    fn view_mode_row(&self) -> Element<DeckMessage> {
+    fn view_mode_row(&self) -> Element<'_, DeckMessage> {
         use iced::Length;
 
         // Shift button - same width as CUE button for alignment
@@ -1691,7 +1691,7 @@ impl DeckView {
     }
 
     /// CUE and PLAY buttons column (fixed width, left-aligned)
-    fn view_cue_play_compact(&self) -> Element<DeckMessage> {
+    fn view_cue_play_compact(&self) -> Element<'_, DeckMessage> {
         use iced::Length;
 
         const BUTTON_WIDTH: f32 = 70.0;

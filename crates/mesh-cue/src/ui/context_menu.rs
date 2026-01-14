@@ -331,7 +331,7 @@ fn menu_item_danger(label: impl ToString, message: Message) -> Element<'static, 
         .width(Length::Fill)
         .padding([6, 12])
         .style(|theme: &iced::Theme, status| {
-            let palette = theme.extended_palette();
+            let _palette = theme.extended_palette();
             let bg = match status {
                 button::Status::Hovered => iced::Color::from_rgba(0.9, 0.3, 0.3, 0.2),
                 _ => iced::Color::TRANSPARENT,

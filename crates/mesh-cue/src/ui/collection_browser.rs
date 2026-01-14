@@ -51,7 +51,7 @@ fn view_browser_header() -> Element<'static, Message> {
 }
 
 /// Track editor (top section)
-fn view_editor(state: &CollectionState, stem_link_selection: Option<usize>) -> Element<Message> {
+fn view_editor(state: &CollectionState, stem_link_selection: Option<usize>) -> Element<'_, Message> {
     if let Some(ref loaded) = state.loaded_track {
         editor::view(loaded, stem_link_selection)
     } else {
@@ -73,7 +73,7 @@ fn view_editor(state: &CollectionState, stem_link_selection: Option<usize>) -> E
 }
 
 /// Dual playlist browsers (bottom section)
-fn view_browsers(state: &CollectionState) -> Element<Message> {
+fn view_browsers(state: &CollectionState) -> Element<'_, Message> {
     // Use cached tracks from state (updated when folder changes in message handlers)
     // Note: Modifier key handling (Shift/Ctrl) is done in app's update() handler
     let left_browser = playlist_browser(

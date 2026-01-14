@@ -1,6 +1,6 @@
 //! Deck - Individual track player with stems and effect chains
 
-use std::sync::atomic::{AtomicBool, AtomicI8, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI8, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 
 use rayon::prelude::*;
@@ -128,6 +128,9 @@ pub struct DeckAtomics {
     pub current_transpose: AtomicI8,
     /// Whether keys are compatible (no transpose needed even with key match on)
     pub keys_compatible: AtomicBool,
+    /// LUFS-based gain compensation (f32 stored as bits)
+    /// 1.0 = unity gain, calculated from target_lufs - track_lufs
+    pub lufs_gain: AtomicU32,
 }
 
 impl DeckAtomics {
@@ -145,6 +148,7 @@ impl DeckAtomics {
             key_match_enabled: AtomicBool::new(false),
             current_transpose: AtomicI8::new(0),
             keys_compatible: AtomicBool::new(true),
+            lufs_gain: AtomicU32::new(1.0_f32.to_bits()), // Unity gain by default
         }
     }
 
@@ -211,6 +215,21 @@ impl DeckAtomics {
     #[inline]
     pub fn is_master(&self) -> bool {
         self.is_master.load(Ordering::Relaxed)
+    }
+
+    /// Get LUFS-based gain compensation (lock-free)
+    ///
+    /// Returns the linear gain multiplier for loudness normalization.
+    /// 1.0 = unity, >1.0 = boost quiet tracks, <1.0 = cut loud tracks
+    #[inline]
+    pub fn lufs_gain(&self) -> f32 {
+        f32::from_bits(self.lufs_gain.load(Ordering::Relaxed))
+    }
+
+    /// Set LUFS-based gain compensation (called from audio thread)
+    #[inline]
+    pub fn set_lufs_gain(&self, gain: f32) {
+        self.lufs_gain.store(gain.to_bits(), Ordering::Relaxed);
     }
 }
 
@@ -514,6 +533,10 @@ impl Deck {
             self.linked_stem_atomics.set_host_drop_marker(dm);
         }
 
+        // Reset transient playback state (mutes, solos, slicers, key match)
+        // Preserves slip mode and loop length
+        self.reset_playback_state();
+
         // Sync atomics for lock-free UI reads (fast atomic stores)
         self.sync_position_atomic();
         self.sync_state_atomic();
@@ -529,6 +552,39 @@ impl Deck {
         for stem in &mut self.stems {
             stem.chain.reset();
         }
+    }
+
+    /// Reset playback state for a new track
+    ///
+    /// Resets transient playback state that shouldn't persist between tracks:
+    /// - Stem mute/solo states (all unmuted, none soloed)
+    /// - Slicer enabled states (all disabled)
+    /// - Key matching (disabled, transpose reset)
+    ///
+    /// Preserves user preferences:
+    /// - Slip mode (on/off)
+    /// - Loop length index
+    fn reset_playback_state(&mut self) {
+        // Reset stem mute/solo states
+        for stem in &mut self.stems {
+            stem.muted = false;
+            stem.soloed = false;
+        }
+
+        // Disable all slicers
+        for slicer in &mut self.slicer_states {
+            slicer.set_enabled(false);
+        }
+
+        // Reset key matching
+        self.key_match_enabled = false;
+        self.current_transpose = 0;
+        self.track_key = None;
+        self.atomics.key_match_enabled.store(false, Ordering::Relaxed);
+        self.atomics.current_transpose.store(0, Ordering::Relaxed);
+
+        // Clear slip position (but preserve slip_enabled)
+        self.slip_position = None;
     }
 
     /// Unload the current track
@@ -787,6 +843,14 @@ impl Deck {
         self.lufs_gain
     }
 
+    /// Get the track's measured LUFS (from metadata)
+    ///
+    /// Returns the track's integrated loudness in LUFS. Used to calculate
+    /// gain compensation and for recalculating when target LUFS changes.
+    pub fn track_lufs(&self) -> Option<f32> {
+        self.host_lufs
+    }
+
     /// Set the LUFS gain compensation (linear multiplier)
     ///
     /// This is calculated from: `10^((target_lufs - track_lufs) / 20)`
@@ -798,6 +862,10 @@ impl Deck {
     pub fn set_lufs_gain(&mut self, gain: f32, host_lufs: Option<f32>) {
         self.lufs_gain = gain;
         self.host_lufs = host_lufs;
+
+        // Update atomics for UI access
+        self.atomics.set_lufs_gain(gain);
+
         log::debug!("Deck {}: LUFS gain set to {:.3} ({:+.1} dB), host_lufs={:?}",
             self.id.0, gain, 20.0 * gain.log10(), host_lufs);
 

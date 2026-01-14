@@ -3,10 +3,14 @@
 //! Configuration is stored as YAML in the mesh collection folder.
 //! Default location: ~/Music/mesh-collection/player-config.yaml
 
-use anyhow::{Context, Result};
 use iced::Color;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+// Re-export shared config utilities from mesh-core
+pub use mesh_core::config::{
+    default_collection_path, load_config, save_config, LoudnessConfig,
+};
 
 /// Stem color palette selection
 ///
@@ -119,60 +123,7 @@ impl Default for AudioConfig {
     }
 }
 
-/// Loudness normalization configuration
-///
-/// Controls automatic gain compensation to normalize tracks to a target loudness.
-/// Uses LUFS values measured during import (EBU R128 integrated loudness).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct LoudnessConfig {
-    /// Target loudness in LUFS
-    /// Tracks are gain-compensated to reach this level.
-    /// Default: -9.0 LUFS (balanced loudness)
-    pub target_lufs: f32,
-    /// Enable automatic gain compensation based on track LUFS
-    pub auto_gain_enabled: bool,
-    /// Maximum boost in dB (safety limit for very quiet tracks)
-    /// Default: 12.0 dB
-    pub max_gain_db: f32,
-    /// Maximum cut in dB (safety limit for very loud tracks)
-    /// Default: -24.0 dB
-    pub min_gain_db: f32,
-}
-
-impl Default for LoudnessConfig {
-    fn default() -> Self {
-        Self {
-            target_lufs: -9.0,      // Balanced loudness
-            auto_gain_enabled: true,
-            max_gain_db: 12.0,      // Safety: max boost
-            min_gain_db: -24.0,     // Safety: max cut
-        }
-    }
-}
-
-impl LoudnessConfig {
-    /// Calculate gain compensation in dB for a track
-    ///
-    /// Returns None if LUFS is not available or auto-gain is disabled.
-    pub fn calculate_gain_db(&self, track_lufs: Option<f32>) -> Option<f32> {
-        if !self.auto_gain_enabled {
-            return None;
-        }
-        track_lufs.map(|lufs| {
-            (self.target_lufs - lufs).clamp(self.min_gain_db, self.max_gain_db)
-        })
-    }
-
-    /// Calculate linear gain multiplier for a track
-    ///
-    /// Returns 1.0 (unity gain) if LUFS is not available or auto-gain is disabled.
-    pub fn calculate_gain_linear(&self, track_lufs: Option<f32>) -> f32 {
-        self.calculate_gain_db(track_lufs)
-            .map(|db| 10.0_f32.powf(db / 20.0))
-            .unwrap_or(1.0)
-    }
-}
+// LoudnessConfig is re-exported from mesh_core::config
 
 /// Display configuration section
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,7 +165,7 @@ impl DisplayConfig {
 }
 
 // Re-export shared slicer config types from mesh-widgets
-pub use mesh_widgets::{SlicerConfig, SlicerPresetConfig, SlicerSequenceConfig, SlicerStepConfig};
+pub use mesh_widgets::SlicerConfig;
 
 /// Convert mesh-widgets SlicerConfig to engine SlicerPreset array
 ///
@@ -262,84 +213,20 @@ pub fn slicer_config_to_engine_presets(
     })
 }
 
-/// Get the default collection path
-///
-/// Returns: ~/Music/mesh-collection
-pub fn default_collection_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("Music")
-        .join("mesh-collection")
-}
+// default_collection_path is re-exported from mesh_core::config
+
+/// Config filename for mesh-player
+pub const CONFIG_FILENAME: &str = "player-config.yaml";
 
 /// Get the default config file path
 ///
 /// Returns: ~/Music/mesh-collection/player-config.yaml
 pub fn default_config_path() -> PathBuf {
-    default_collection_path().join("player-config.yaml")
+    mesh_core::config::default_config_path(CONFIG_FILENAME)
 }
 
-/// Load configuration from a YAML file
-///
-/// If the file doesn't exist, returns default config.
-/// If the file exists but is invalid, logs a warning and returns default config.
-pub fn load_config(path: &Path) -> PlayerConfig {
-    log::info!("load_config: Loading from {:?}", path);
-
-    if !path.exists() {
-        log::info!("load_config: Config file doesn't exist, using defaults");
-        return PlayerConfig::default();
-    }
-
-    match std::fs::read_to_string(path) {
-        Ok(contents) => match serde_yaml::from_str::<PlayerConfig>(&contents) {
-            Ok(config) => {
-                log::info!(
-                    "load_config: Loaded config - Global BPM: {:.1}, Phase sync: {}, Loop length idx: {}",
-                    config.audio.global_bpm,
-                    config.audio.phase_sync,
-                    config.display.default_loop_length_index
-                );
-                config
-            }
-            Err(e) => {
-                log::warn!("load_config: Failed to parse config: {}, using defaults", e);
-                PlayerConfig::default()
-            }
-        },
-        Err(e) => {
-            log::warn!(
-                "load_config: Failed to read config file: {}, using defaults",
-                e
-            );
-            PlayerConfig::default()
-        }
-    }
-}
-
-/// Save configuration to a YAML file
-///
-/// Creates parent directories if they don't exist.
-pub fn save_config(config: &PlayerConfig, path: &Path) -> Result<()> {
-    log::info!("save_config: Saving to {:?}", path);
-
-    // Ensure parent directory exists
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create config directory: {:?}", parent))?;
-    }
-
-    // Serialize to YAML
-    let yaml =
-        serde_yaml::to_string(config).context("Failed to serialize config to YAML")?;
-
-    // Write to file
-    std::fs::write(path, yaml)
-        .with_context(|| format!("Failed to write config file: {:?}", path))?;
-
-    log::info!("save_config: Config saved successfully");
-    Ok(())
-}
+// load_config and save_config are re-exported from mesh_core::config
+// Usage: load_config::<PlayerConfig>(&path) and save_config(&config, &path)
 
 #[cfg(test)]
 mod tests {

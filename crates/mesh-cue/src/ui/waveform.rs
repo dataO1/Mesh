@@ -37,7 +37,7 @@ use mesh_widgets::waveform_combined;
 ///
 /// This is a convenience function that wraps the mesh_widgets view function
 /// with mesh-cue's specific Message type.
-pub fn view_combined_waveform(state: &CombinedWaveformView, playhead: u64) -> Element<Message> {
+pub fn view_combined_waveform(state: &CombinedWaveformView, playhead: u64) -> Element<'_, Message> {
     waveform_combined(
         state,
         playhead,

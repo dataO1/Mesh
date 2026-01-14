@@ -20,14 +20,15 @@ use iced::{Center as CenterAlign, Color, Element, Fill, Length, Subscription, Ta
 use iced::time;
 
 use crate::audio::CommandSender;
-use crate::config::{self, PlayerConfig, StemColorPalette};
-use crate::loader::{LoaderResult, TrackLoader};
+use crate::config::{self, PlayerConfig};
+use crate::loader::TrackLoader;
+
 use mesh_midi::{MidiController, MidiMessage as MidiMsg, MidiInputEvent, DeckAction as MidiDeckAction, MixerAction as MidiMixerAction, BrowserAction as MidiBrowserAction};
 use mesh_core::audio_file::StemBuffers;
 use mesh_core::engine::{DeckAtomics, EngineCommand, LinkedStemAtomics, SlicerAtomics};
 use mesh_core::types::{StereoBuffer, NUM_DECKS};
 use mesh_widgets::{
-    PeaksComputer, PeaksComputeRequest, SliceEditorState, ZoomedViewMode,
+    mpsc_subscription, PeaksComputer, PeaksComputeRequest, SliceEditorState, ZoomedViewMode,
     TRACK_ROW_HEIGHT, TRACK_TABLE_SCROLLABLE_ID,
 };
 use super::collection_browser::{CollectionBrowserState, CollectionBrowserMessage};
@@ -37,46 +38,9 @@ use super::mixer_view::{MixerView, MixerMessage};
 use super::player_canvas::{view_player_canvas, PlayerCanvasState};
 use super::settings::SettingsState;
 
-/// UI display mode - affects layout only, not engine behavior
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum AppMode {
-    /// Simplified layout: waveform canvas + browser only (for live performance)
-    #[default]
-    Performance,
-    /// Full layout with deck controls and mixer (for MIDI mapping/configuration)
-    Mapping,
-}
-
-/// State machine for linked stem selection workflow
-///
-/// Workflow:
-/// 1. Shift+Stem → Enter Selecting (browser highlights with stem color)
-/// 2. Encoder rotate → Navigate browser
-/// 3. Encoder press → Load linked stem in background
-/// 4. Load completes → Ready for toggle
-/// 5. Shift+Stem again → Toggle between original/linked
-#[derive(Debug, Clone, Default)]
-pub enum StemLinkState {
-    /// No linked stem operation in progress
-    #[default]
-    Idle,
-    /// Shift+stem pressed, waiting for track selection from browser
-    Selecting {
-        /// Host deck that will receive the linked stem
-        deck: usize,
-        /// Which stem slot to link (0-3)
-        stem: usize,
-    },
-    /// Track selected, loading linked stem in background
-    Loading {
-        /// Host deck that will receive the linked stem
-        deck: usize,
-        /// Which stem slot to link
-        stem: usize,
-        /// Path to the source track being loaded
-        path: std::path::PathBuf,
-    },
-}
+// Re-export extracted modules for use by other UI modules
+pub use super::message::Message;
+pub use super::state::{AppMode, LinkedStemLoadedMsg, StemLinkState, TrackLoadedMsg};
 
 /// Application state
 pub struct MeshApp {
@@ -129,58 +93,11 @@ pub struct MeshApp {
     stem_link_state: StemLinkState,
     /// Slice editor state (shared presets and per-stem patterns)
     slice_editor: SliceEditorState,
+    /// Linked stem result receiver (engine owns the loader, we just receive results)
+    linked_stem_receiver: Option<mesh_core::loader::LinkedStemResultReceiver>,
 }
 
-/// Messages that can be sent to the application
-#[derive(Debug, Clone)]
-pub enum Message {
-    /// Tick for periodic UI updates
-    Tick,
-    /// Deck-specific message
-    Deck(usize, DeckMessage),
-    /// Mixer message
-    Mixer(MixerMessage),
-    /// Collection browser message
-    CollectionBrowser(CollectionBrowserMessage),
-    /// Set global BPM
-    SetGlobalBpm(f64),
-    /// Load track to deck
-    LoadTrack(usize, String),
-    /// Seek on a deck (deck_idx, normalized position 0.0-1.0)
-    DeckSeek(usize, f64),
-    /// Set zoom level on a deck (deck_idx, zoom in bars)
-    DeckSetZoom(usize, u32),
-
-    // Settings
-    /// Open settings modal
-    OpenSettings,
-    /// Close settings modal
-    CloseSettings,
-    /// Update settings: loop length index
-    UpdateSettingsLoopLength(usize),
-    /// Update settings: zoom bars
-    UpdateSettingsZoomBars(u32),
-    /// Update settings: grid bars
-    UpdateSettingsGridBars(u32),
-    /// Update settings: stem color palette
-    UpdateSettingsStemColorPalette(StemColorPalette),
-    /// Update settings: phase sync enabled
-    UpdateSettingsPhaseSync(bool),
-    /// Update settings: slicer buffer bars (1, 4, 8, or 16)
-    UpdateSettingsSlicerBufferBars(u32),
-    /// Update settings: auto-gain enabled
-    UpdateSettingsAutoGainEnabled(bool),
-    /// Update settings: target LUFS index (0-3)
-    UpdateSettingsTargetLufs(usize),
-    /// Save settings to disk
-    SaveSettings,
-    /// Settings save complete
-    SaveSettingsComplete(Result<(), String>),
-
-    // MIDI Learn
-    /// MIDI learn mode message
-    MidiLearn(MidiLearnMessage),
-}
+// Message enum moved to message.rs
 
 impl MeshApp {
     /// Create a new application instance
@@ -191,12 +108,14 @@ impl MeshApp {
     /// - `deck_atomics`: Lock-free position/state for UI reads (None for offline mode)
     /// - `slicer_atomics`: Lock-free slicer state for UI reads (None for offline mode)
     /// - `linked_stem_atomics`: Lock-free linked stem state for UI reads (None for offline mode)
+    /// - `linked_stem_receiver`: Receiver for linked stem load results (engine owns the loader)
     /// - `jack_sample_rate`: JACK's sample rate for track loading (e.g., 48000 or 44100)
     pub fn new(
         mut command_sender: Option<CommandSender>,
         deck_atomics: Option<[Arc<DeckAtomics>; NUM_DECKS]>,
         slicer_atomics: Option<[Arc<SlicerAtomics>; NUM_DECKS]>,
         linked_stem_atomics: Option<[Arc<LinkedStemAtomics>; NUM_DECKS]>,
+        linked_stem_receiver: Option<mesh_core::loader::LinkedStemResultReceiver>,
         jack_sample_rate: u32,
         mapping_mode: bool,
     ) -> Self {
@@ -233,6 +152,8 @@ impl MeshApp {
                     });
                 }
             }
+            // Initialize loudness config (engine calculates LUFS gain automatically)
+            let _ = sender.send(EngineCommand::SetLoudnessConfig(config.audio.loudness.clone()));
         }
 
         let audio_connected = command_sender.is_some();
@@ -291,6 +212,7 @@ impl MeshApp {
             midi_learn: MidiLearnState::new(),
             app_mode: if mapping_mode { AppMode::Mapping } else { AppMode::Performance },
             stem_link_state: StemLinkState::Idle,
+            linked_stem_receiver,
         }
     }
 
@@ -312,321 +234,6 @@ impl MeshApp {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Tick => {
-                // Poll for completed background track/linked stem loads (non-blocking)
-                // With lock-free architecture, there's no contention - commands always succeed
-                while let Some(load_result) = self.track_loader.try_recv() {
-                    match load_result {
-                        LoaderResult::Track(track_result) => {
-                            let deck_idx = track_result.deck_idx;
-
-                            match track_result.result {
-                                Ok(prepared) => {
-                                    // Update waveform state (UI-only)
-                                    self.player_canvas_state.decks[deck_idx].overview =
-                                        track_result.overview_state;
-                                    self.player_canvas_state.decks[deck_idx].zoomed =
-                                        track_result.zoomed_state;
-
-                                    self.deck_stems[deck_idx] = Some(track_result.stems);
-
-                                    // Set track name and key for header display (before moving prepared)
-                                    let track_name = prepared.track.filename().to_string();
-                                    let track_key = prepared.track.key().to_string();
-                                    // Clone key for engine command (before moving to canvas state)
-                                    let key_for_engine = if track_key.is_empty() { None } else { Some(track_key.clone()) };
-                                    // Clone stem links, drop marker, duration, and track BPM for auto-loading (before moving prepared)
-                                    let stem_links_to_load = prepared.track.metadata.stem_links.clone();
-                                    let host_drop_marker = prepared.track.metadata.drop_marker.unwrap_or(0);
-                                    let host_duration = prepared.track.duration_samples as u64;
-                                    let track_bpm = prepared.track.bpm();
-                                    // Get LUFS for gain compensation (before moving prepared)
-                                    let track_lufs = prepared.track.metadata.lufs;
-                                    self.player_canvas_state.set_track_name(deck_idx, track_name);
-                                    self.player_canvas_state.set_track_key(deck_idx, track_key);
-                                    self.player_canvas_state.set_track_bpm(deck_idx, Some(track_bpm));
-
-                                    // Calculate and display LUFS gain compensation
-                                    let lufs_gain_db = if self.config.audio.loudness.auto_gain_enabled {
-                                        track_lufs.map(|lufs| self.config.audio.loudness.calculate_gain_db(Some(lufs)))
-                                            .flatten()
-                                    } else {
-                                        None
-                                    };
-                                    self.player_canvas_state.set_lufs_gain_db(deck_idx, lufs_gain_db);
-
-                                    // Set LUFS gain for waveform amplitude scaling
-                                    // Quieter tracks are visually boosted to match the amplitude of louder tracks
-                                    let waveform_lufs_gain = self.config.audio.loudness.calculate_gain_linear(track_lufs);
-                                    self.player_canvas_state.decks[deck_idx].zoomed.set_lufs_gain(waveform_lufs_gain);
-
-                                    // Sync hot cue positions from track metadata for button colors
-                                    // First clear all slots
-                                    for slot in 0..8 {
-                                        self.deck_views[deck_idx].set_hot_cue_position(slot, None);
-                                    }
-                                    // Then set positions from cue points (indexed by their slot/index field)
-                                    for i in 0..prepared.track.cue_count() {
-                                        if let Some(cue) = prepared.track.get_cue(i) {
-                                            let slot = cue.index as usize;
-                                            if slot < 8 {
-                                                self.deck_views[deck_idx].set_hot_cue_position(slot, Some(cue.sample_position));
-                                            }
-                                        }
-                                    }
-
-                                    // Reset stem states for new track (all stems active, none muted/soloed)
-                                    // Update UI state and clear any linked stems from previous track
-                                    for stem_idx in 0..4 {
-                                        self.deck_views[deck_idx].set_stem_muted(stem_idx, false);
-                                        self.deck_views[deck_idx].set_stem_soloed(stem_idx, false);
-                                        self.player_canvas_state.set_stem_active(deck_idx, stem_idx, true);
-                                        // Clear linked stem state (buffer, LUFS gain, peaks)
-                                        self.deck_linked_stems[deck_idx][stem_idx] = None;
-                                        self.player_canvas_state.decks[deck_idx].overview.clear_linked_lufs_gain(stem_idx);
-                                    }
-
-                                    // Send track to audio engine via lock-free queue (~50ns, never blocks!)
-                                    if let Some(ref mut sender) = self.command_sender {
-                                        log::debug!("[PERF] UI: Sending LoadTrack command for deck {}", deck_idx);
-                                        let send_start = std::time::Instant::now();
-                                        let result = sender.send(EngineCommand::LoadTrack {
-                                            deck: deck_idx,
-                                            track: Box::new(prepared),
-                                        });
-                                        log::debug!(
-                                            "[PERF] UI: LoadTrack command sent in {:?} (success: {})",
-                                            send_start.elapsed(),
-                                            result.is_ok()
-                                        );
-
-                                        // Set default loop length from config
-                                        let _ = sender.send(EngineCommand::SetLoopLengthIndex {
-                                            deck: deck_idx,
-                                            index: self.config.display.default_loop_length_index,
-                                        });
-
-                                        // Reset all stems to unmuted/un-soloed in the engine
-                                        for stem_idx in 0..4 {
-                                            if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
-                                                let _ = sender.send(EngineCommand::SetStemMute {
-                                                    deck: deck_idx,
-                                                    stem,
-                                                    muted: false,
-                                                });
-                                                let _ = sender.send(EngineCommand::SetStemSolo {
-                                                    deck: deck_idx,
-                                                    stem,
-                                                    soloed: false,
-                                                });
-                                            }
-                                        }
-
-                                        // Send track key to engine for key matching
-                                        let _ = sender.send(EngineCommand::SetTrackKey {
-                                            deck: deck_idx,
-                                            key: key_for_engine.clone(),
-                                        });
-
-                                        // Send LUFS gain compensation to audio engine
-                                        // Also pass host track's LUFS for linked stem gain matching
-                                        let lufs_gain_linear = self.config.audio.loudness.calculate_gain_linear(track_lufs);
-                                        let _ = sender.send(EngineCommand::SetLufsGain {
-                                            deck: deck_idx,
-                                            gain: lufs_gain_linear,
-                                            host_lufs: track_lufs,
-                                        });
-
-                                        self.status = format!("Loaded track to deck {}", deck_idx + 1);
-                                    } else {
-                                        self.status = format!("Loaded track to deck {} (no audio)", deck_idx + 1);
-                                    }
-
-                                    // Auto-load prepared stem links from track metadata (mslk chunk)
-                                    // This happens outside the command_sender block to avoid borrow issues
-                                    if !stem_links_to_load.is_empty() {
-                                        log::info!(
-                                            "Auto-loading {} prepared stem link(s) for deck {}",
-                                            stem_links_to_load.len(),
-                                            deck_idx + 1
-                                        );
-                                        for link in stem_links_to_load {
-                                            let stem_idx = link.stem_index as usize;
-                                            if stem_idx < 4 {
-                                                // Use track's BPM for pre-stretching (not global BPM)
-                                                // Linked stems were prepared against the host track's BPM
-                                                if let Err(e) = self.track_loader.load_linked_stem(
-                                                    deck_idx,
-                                                    stem_idx,
-                                                    link.source_path.clone(),
-                                                    track_bpm,
-                                                    host_drop_marker,
-                                                    host_duration,
-                                                ) {
-                                                    log::warn!(
-                                                        "Failed to auto-load prepared stem link for stem {}: {}",
-                                                        stem_idx,
-                                                        e
-                                                    );
-                                                } else {
-                                                    log::info!(
-                                                        "  Queued stem {} from {:?}",
-                                                        mesh_core::types::Stem::from_index(stem_idx)
-                                                            .map(|s| s.name())
-                                                            .unwrap_or("?"),
-                                                        link.source_path.file_name()
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    self.status = format!("Error loading track: {}", e);
-                                }
-                            }
-                        }
-                        LoaderResult::LinkedStem(linked_result) => {
-                            // Handle linked stem load completion
-                            let deck_idx = linked_result.host_deck_idx;
-                            let stem_idx = linked_result.stem_idx;
-
-                            match linked_result.result {
-                                Ok(linked_data) => {
-                                    // Store shared buffer reference for zoomed waveform visualization
-                                    if let Some(shared_buffer) = linked_result.shared_buffer {
-                                        log::info!(
-                                            "[LINKED] Storing shared buffer for deck {} stem {} ({} samples)",
-                                            deck_idx,
-                                            stem_idx,
-                                            shared_buffer.len()
-                                        );
-                                        self.deck_linked_stems[deck_idx][stem_idx] = Some(shared_buffer);
-                                    }
-
-                                    // Store linked stem overview peaks in waveform state for visualization
-                                    if let Some(peaks) = linked_result.overview_peaks {
-                                        log::info!(
-                                            "[LINKED] Storing {} overview peaks for deck {} stem {}",
-                                            peaks.len(),
-                                            deck_idx,
-                                            stem_idx
-                                        );
-                                        self.player_canvas_state
-                                            .deck_mut(deck_idx)
-                                            .overview
-                                            .set_linked_stem_peaks(stem_idx, peaks);
-                                    }
-
-                                    // Store linked stem highres peaks for stable zoomed view rendering
-                                    if let Some(peaks) = linked_result.highres_peaks {
-                                        log::info!(
-                                            "[LINKED] Storing {} highres peaks for deck {} stem {}",
-                                            peaks.len(),
-                                            deck_idx,
-                                            stem_idx
-                                        );
-                                        self.player_canvas_state
-                                            .deck_mut(deck_idx)
-                                            .overview
-                                            .set_linked_highres_peaks(stem_idx, peaks);
-                                    }
-
-                                    // Store linked stem metadata for split-view alignment
-                                    // Use STRETCHED values to match audio engine alignment
-                                    if let Some(stretched_duration) = linked_result.linked_duration {
-                                        let host_duration = self.player_canvas_state.decks[deck_idx].overview.duration_samples;
-                                        let host_drop = self.player_canvas_state.decks[deck_idx].overview.drop_marker;
-                                        log::info!(
-                                            "[LINKED] Visual alignment for deck {} stem {}: stretched_drop={}, stretched_dur={}, host_drop={:?}, host_dur={}, ratio={:.3}",
-                                            deck_idx,
-                                            stem_idx,
-                                            linked_data.drop_marker,  // Stretched drop marker (matches audio)
-                                            stretched_duration,
-                                            host_drop,
-                                            host_duration,
-                                            stretched_duration as f64 / host_duration as f64
-                                        );
-                                        self.player_canvas_state
-                                            .deck_mut(deck_idx)
-                                            .overview
-                                            .set_linked_stem_metadata(
-                                                stem_idx,
-                                                linked_data.drop_marker,  // Stretched drop marker (matches audio)
-                                                stretched_duration,        // Stretched duration
-                                            );
-                                    }
-
-                                    // Calculate LUFS gain for linked stem waveform (target - linked_lufs)
-                                    // Uses the same calculation as host stems: scale to target LUFS
-                                    let linked_gain = self.config.audio.loudness.calculate_gain_linear(linked_data.lufs);
-                                    self.player_canvas_state
-                                        .deck_mut(deck_idx)
-                                        .overview
-                                        .set_linked_lufs_gain(stem_idx, linked_gain);
-                                    log::info!(
-                                        "[LINKED] Set LUFS gain for deck {} stem {}: linked_lufs={:?}, gain={:.3} ({:+.1}dB)",
-                                        deck_idx,
-                                        stem_idx,
-                                        linked_data.lufs,
-                                        linked_gain,
-                                        20.0 * linked_gain.log10()
-                                    );
-
-                                    // Immediately mark stem as having a linked stem (enables split-view)
-                                    // Note: is_active is false initially; user must toggle to activate
-                                    self.player_canvas_state.set_linked_stem(deck_idx, stem_idx, true, false);
-
-                                    // Send linked stem to audio engine
-                                    if let Some(ref mut sender) = self.command_sender {
-                                        if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
-                                            let track_name = linked_data.track_name.clone();
-                                            let _ = sender.send(EngineCommand::LinkStem {
-                                                deck: deck_idx,
-                                                stem,
-                                                linked_stem: Box::new(linked_data),
-                                            });
-                                            self.status = format!(
-                                                "Linked {} stem on deck {} from {}",
-                                                stem.name(),
-                                                deck_idx + 1,
-                                                track_name
-                                            );
-                                        }
-                                    }
-
-                                    // Transition from Loading to Idle - linked stem is ready
-                                    if matches!(
-                                        self.stem_link_state,
-                                        StemLinkState::Loading { deck, stem, .. }
-                                        if deck == deck_idx && stem == stem_idx
-                                    ) {
-                                        self.stem_link_state = StemLinkState::Idle;
-                                        log::info!(
-                                            "Linked stem ready: deck={}, stem={} - shift+stem to toggle",
-                                            deck_idx,
-                                            stem_idx
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    self.status = format!("Error loading linked stem: {}", e);
-                                    // Also reset state on error
-                                    self.stem_link_state = StemLinkState::Idle;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Poll for completed background peak computations (non-blocking)
-                // Results from peaks_computer are applied to ZoomedState
-                while let Some(result) = self.peaks_computer.try_recv() {
-                    if result.id < 4 {
-                        let zoomed = &mut self.player_canvas_state.decks[result.id].zoomed;
-                        zoomed.apply_computed_peaks(result);
-                    }
-                }
-
                 // Poll MIDI input (non-blocking)
                 // MIDI messages are processed at 60fps, providing ~16ms latency
                 // Collect first to release borrow before calling handle_midi_message
@@ -753,6 +360,10 @@ impl MeshApp {
                         let current_transpose = atomics[i].current_transpose.load(std::sync::atomic::Ordering::Relaxed);
                         self.player_canvas_state.set_key_match_enabled(i, key_match_enabled);
                         self.player_canvas_state.set_transpose(i, current_transpose);
+
+                        // Sync LUFS gain from engine for waveform scaling (single source of truth)
+                        let lufs_gain = atomics[i].lufs_gain();
+                        self.player_canvas_state.decks[i].zoomed.set_lufs_gain(lufs_gain);
 
                         // Update deck view state from atomics
                         self.deck_views[i].sync_play_state(atomics[i].play_state());
@@ -961,6 +572,237 @@ impl MeshApp {
                     }
 
                     controller.update_feedback(&feedback);
+                }
+
+                Task::none()
+            }
+
+            Message::TrackLoaded(msg) => {
+                // Extract the result from Arc wrapper
+                // We use Arc::try_unwrap to get ownership if we're the sole owner,
+                // otherwise we need to handle the shared case
+                let result = match Arc::try_unwrap(msg.0) {
+                    Ok(r) => r,
+                    Err(_arc) => {
+                        // Still shared - this shouldn't happen in practice since
+                        // subscriptions deliver to one handler, but handle gracefully
+                        log::warn!("TrackLoadResult Arc still shared, skipping");
+                        return Task::none();
+                    }
+                };
+
+                let deck_idx = result.deck_idx;
+
+                match result.result {
+                    Ok(prepared) => {
+                        let track = &prepared.track;
+                        let filename = track.path.file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("Unknown")
+                            .to_string();
+
+                        log::info!(
+                            "[TRACK] Loaded {} to deck {} ({} samples)",
+                            filename,
+                            deck_idx + 1,
+                            track.duration_samples
+                        );
+
+                        // Apply pre-computed waveform states (expensive work already done in loader)
+                        self.player_canvas_state.decks[deck_idx].overview = result.overview_state;
+                        self.player_canvas_state.decks[deck_idx].zoomed = result.zoomed_state;
+
+                        // Store stem buffers for potential waveform recomputation
+                        self.deck_stems[deck_idx] = Some(result.stems);
+
+                        // Set track info on player canvas state (for header display)
+                        self.player_canvas_state.set_track_name(deck_idx, filename.clone());
+                        self.player_canvas_state.set_track_key(
+                            deck_idx,
+                            track.metadata.key.clone().unwrap_or_default()
+                        );
+                        self.player_canvas_state.set_track_bpm(deck_idx, track.metadata.bpm);
+                        // LUFS gain is calculated by engine and synced via atomics in Tick
+
+                        // Sync hot cues to deck view for display
+                        for (slot, hot_cue) in prepared.hot_cues.iter().enumerate() {
+                            self.deck_views[deck_idx].set_hot_cue_position(
+                                slot,
+                                hot_cue.as_ref().map(|hc| hc.position as u64)
+                            );
+                        }
+
+                        // Reset stem mute/solo state for the deck (all stems active)
+                        for stem_idx in 0..4 {
+                            self.deck_views[deck_idx].set_stem_muted(stem_idx, false);
+                            self.deck_views[deck_idx].set_stem_soloed(stem_idx, false);
+                            self.player_canvas_state.set_stem_active(deck_idx, stem_idx, true);
+                            // Clear any linked stems from previous track
+                            self.player_canvas_state.set_linked_stem(deck_idx, stem_idx, false, false);
+                            self.deck_linked_stems[deck_idx][stem_idx] = None;
+                        }
+
+                        // Send prepared track to audio engine via lock-free command
+                        if let Some(ref mut sender) = self.command_sender {
+                            let _ = sender.send(EngineCommand::LoadTrack {
+                                deck: deck_idx,
+                                track: Box::new(prepared),
+                            });
+                        }
+
+                        self.status = format!("Loaded {} to deck {}", filename, deck_idx + 1);
+                    }
+                    Err(e) => {
+                        log::error!("Failed to load track to deck {}: {}", deck_idx + 1, e);
+                        self.status = format!("Error loading track: {}", e);
+                    }
+                }
+
+                Task::none()
+            }
+
+            Message::PeaksComputed(result) => {
+                // Apply computed peaks to the appropriate deck's zoomed waveform state
+                if result.id < 4 {
+                    let zoomed = &mut self.player_canvas_state.decks[result.id].zoomed;
+                    zoomed.apply_computed_peaks(result);
+                }
+                Task::none()
+            }
+
+            Message::LinkedStemLoaded(msg) => {
+                // Extract the result from Arc wrapper
+                let linked_result = match Arc::try_unwrap(msg.0) {
+                    Ok(r) => r,
+                    Err(_) => {
+                        log::warn!("LinkedStemLoadResult Arc still shared, skipping");
+                        return Task::none();
+                    }
+                };
+
+                let deck_idx = linked_result.host_deck_idx;
+                let stem_idx = linked_result.stem_idx;
+
+                match linked_result.result {
+                    Ok(linked_data) => {
+                        // Store shared buffer reference for zoomed waveform visualization
+                        if let Some(shared_buffer) = linked_result.shared_buffer {
+                            log::info!(
+                                "[LINKED] Storing shared buffer for deck {} stem {} ({} samples)",
+                                deck_idx,
+                                stem_idx,
+                                shared_buffer.len()
+                            );
+                            self.deck_linked_stems[deck_idx][stem_idx] = Some(shared_buffer);
+                        }
+
+                        // Store linked stem overview peaks in waveform state for visualization
+                        if let Some(peaks) = linked_result.overview_peaks {
+                            log::info!(
+                                "[LINKED] Storing {} overview peaks for deck {} stem {}",
+                                peaks.len(),
+                                deck_idx,
+                                stem_idx
+                            );
+                            self.player_canvas_state
+                                .deck_mut(deck_idx)
+                                .overview
+                                .set_linked_stem_peaks(stem_idx, peaks);
+                        }
+
+                        // Store linked stem highres peaks for stable zoomed view rendering
+                        if let Some(peaks) = linked_result.highres_peaks {
+                            log::info!(
+                                "[LINKED] Storing {} highres peaks for deck {} stem {}",
+                                peaks.len(),
+                                deck_idx,
+                                stem_idx
+                            );
+                            self.player_canvas_state
+                                .deck_mut(deck_idx)
+                                .overview
+                                .set_linked_highres_peaks(stem_idx, peaks);
+                        }
+
+                        // Store linked stem metadata for split-view alignment
+                        // Use STRETCHED values to match audio engine alignment
+                        if let Some(stretched_duration) = linked_result.linked_duration {
+                            let host_duration = self.player_canvas_state.decks[deck_idx].overview.duration_samples;
+                            let host_drop = self.player_canvas_state.decks[deck_idx].overview.drop_marker;
+                            log::info!(
+                                "[LINKED] Visual alignment for deck {} stem {}: stretched_drop={}, stretched_dur={}, host_drop={:?}, host_dur={}, ratio={:.3}",
+                                deck_idx,
+                                stem_idx,
+                                linked_data.drop_marker,
+                                stretched_duration,
+                                host_drop,
+                                host_duration,
+                                stretched_duration as f64 / host_duration as f64
+                            );
+                            self.player_canvas_state
+                                .deck_mut(deck_idx)
+                                .overview
+                                .set_linked_stem_metadata(
+                                    stem_idx,
+                                    linked_data.drop_marker,
+                                    stretched_duration,
+                                );
+                        }
+
+                        // Calculate LUFS gain for linked stem waveform
+                        let linked_gain = self.config.audio.loudness.calculate_gain_linear(linked_data.lufs);
+                        self.player_canvas_state
+                            .deck_mut(deck_idx)
+                            .overview
+                            .set_linked_lufs_gain(stem_idx, linked_gain);
+                        log::info!(
+                            "[LINKED] Set LUFS gain for deck {} stem {}: linked_lufs={:?}, gain={:.3} ({:+.1}dB)",
+                            deck_idx,
+                            stem_idx,
+                            linked_data.lufs,
+                            linked_gain,
+                            20.0 * linked_gain.log10()
+                        );
+
+                        // Mark stem as having a linked stem (enables split-view)
+                        self.player_canvas_state.set_linked_stem(deck_idx, stem_idx, true, false);
+
+                        // Send linked stem to audio engine
+                        if let Some(ref mut sender) = self.command_sender {
+                            if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
+                                let track_name = linked_data.track_name.clone();
+                                let _ = sender.send(EngineCommand::LinkStem {
+                                    deck: deck_idx,
+                                    stem,
+                                    linked_stem: Box::new(linked_data),
+                                });
+                                self.status = format!(
+                                    "Linked {} stem on deck {} from {}",
+                                    stem.name(),
+                                    deck_idx + 1,
+                                    track_name
+                                );
+                            }
+                        }
+
+                        // Transition from Loading to Idle - linked stem is ready
+                        if matches!(
+                            self.stem_link_state,
+                            StemLinkState::Loading { deck, stem, .. }
+                            if deck == deck_idx && stem == stem_idx
+                        ) {
+                            self.stem_link_state = StemLinkState::Idle;
+                            log::info!(
+                                "Linked stem ready: deck={}, stem={} - shift+stem to toggle",
+                                deck_idx,
+                                stem_idx
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        self.status = format!("Error loading linked stem: {}", e);
+                        self.stem_link_state = StemLinkState::Idle;
+                    }
                 }
 
                 Task::none()
@@ -1404,6 +1246,10 @@ impl MeshApp {
                 // Send settings to audio engine immediately
                 if let Some(ref mut sender) = self.command_sender {
                     let _ = sender.send(EngineCommand::SetPhaseSync(self.settings.draft_phase_sync));
+                    // Send loudness config to engine (triggers recalculation for all loaded decks)
+                    let _ = sender.send(EngineCommand::SetLoudnessConfig(
+                        self.config.audio.loudness.clone()
+                    ));
                     // Send slicer buffer bars to audio engine for all decks and stems
                     let buffer_bars = new_config.slicer.validated_buffer_bars();
                     let stems = [
@@ -1664,18 +1510,16 @@ impl MeshApp {
                 // Get host track's duration from waveform state
                 let host_duration = self.player_canvas_state.decks[deck].overview.duration_samples;
 
-                // Request linked stem load
-                if let Err(e) = self.track_loader.load_linked_stem(
-                    deck,
-                    stem,
-                    path.clone(),
-                    host_bpm,
-                    host_drop_marker,
-                    host_duration,
-                ) {
-                    self.status = format!("Failed to start linked stem load: {}", e);
-                    self.stem_link_state = StemLinkState::Idle;
-                } else {
+                // Send command to engine (single source of truth for stem loading)
+                if let Some(ref mut sender) = self.command_sender {
+                    let _ = sender.send(EngineCommand::LoadLinkedStem {
+                        deck,
+                        stem_idx: stem,
+                        path: path.clone(),
+                        host_bpm,
+                        host_drop_marker,
+                        host_duration,
+                    });
                     self.stem_link_state = StemLinkState::Loading {
                         deck,
                         stem,
@@ -1690,6 +1534,9 @@ impl MeshApp {
                             .and_then(|n| n.to_str())
                             .unwrap_or("track")
                     );
+                } else {
+                    self.status = "Audio not connected".to_string();
+                    self.stem_link_state = StemLinkState::Idle;
                 }
             } else {
                 self.status = "No track selected in browser".to_string();
@@ -1863,14 +1710,32 @@ impl MeshApp {
         }
     }
 
-    /// Subscribe to periodic updates
+    /// Subscribe to periodic updates and async results
     pub fn subscription(&self) -> Subscription<Message> {
-        // Update UI at ~60fps for smooth waveform animation
-        time::every(std::time::Duration::from_millis(16)).map(|_| Message::Tick)
+        // Linked stem subscription (engine owns the loader, we receive results)
+        let linked_stem_sub = if let Some(ref receiver) = self.linked_stem_receiver {
+            mpsc_subscription(receiver.clone())
+                .map(|result| Message::LinkedStemLoaded(LinkedStemLoadedMsg(Arc::new(result))))
+        } else {
+            Subscription::none()
+        };
+
+        Subscription::batch([
+            // Update UI at ~60fps for smooth waveform animation
+            time::every(std::time::Duration::from_millis(16)).map(|_| Message::Tick),
+            // Background track load results (delivered as messages, no polling needed)
+            mpsc_subscription(self.track_loader.result_receiver())
+                .map(|result| Message::TrackLoaded(TrackLoadedMsg(Arc::new(result)))),
+            // Background peak computation results
+            mpsc_subscription(self.peaks_computer.result_receiver())
+                .map(Message::PeaksComputed),
+            // Background linked stem load results (from engine's loader)
+            linked_stem_sub,
+        ])
     }
 
     /// Build the view
-    pub fn view(&self) -> Element<Message> {
+    pub fn view(&self) -> Element<'_, Message> {
         // Build base content based on app mode
         let base = match self.app_mode {
             AppMode::Performance => self.view_performance_mode(),
@@ -1884,7 +1749,7 @@ impl MeshApp {
     /// Performance mode: simplified layout with canvas (~60%) + browser (~40%)
     /// Waveform heights are fractional for clean display on Full HD and UHD screens
     /// For live performance with MIDI controller - no load buttons
-    fn view_performance_mode(&self) -> Element<Message> {
+    fn view_performance_mode(&self) -> Element<'_, Message> {
         let header = self.view_header();
         let canvas = view_player_canvas(&self.player_canvas_state);
         // Use compact browser (no load buttons) for performance mode
@@ -1911,7 +1776,7 @@ impl MeshApp {
 
     /// Mapping mode: full 3-column layout with deck controls and mixer
     /// For MIDI mapping/configuration
-    fn view_mapping_mode(&self) -> Element<Message> {
+    fn view_mapping_mode(&self) -> Element<'_, Message> {
         // Header with global controls
         let header = self.view_header();
 
@@ -2027,7 +1892,7 @@ impl MeshApp {
     }
 
     /// View for the header/global controls
-    fn view_header(&self) -> Element<Message> {
+    fn view_header(&self) -> Element<'_, Message> {
         let title = text("MESH DJ PLAYER")
             .size(24);
 
@@ -2072,8 +1937,8 @@ impl MeshApp {
 impl Default for MeshApp {
     fn default() -> Self {
         // Default to 48kHz when no JACK rate is available (matches SAMPLE_RATE constant)
-        // Default to performance mode
-        Self::new(None, None, None, None, 48000, false)
+        // Default to performance mode (no linked_stem_receiver in offline mode)
+        Self::new(None, None, None, None, None, 48000, false)
     }
 }
 

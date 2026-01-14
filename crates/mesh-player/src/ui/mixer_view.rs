@@ -222,7 +222,7 @@ impl MixerView {
     /// │ ~75%                           │ ~25%            │
     /// └────────────────────────────────┴─────────────────┘
     /// ```
-    pub fn view(&self) -> Element<MixerMessage> {
+    pub fn view(&self) -> Element<'_, MixerMessage> {
         use iced::Length;
 
         // Channel strips column (~75%)

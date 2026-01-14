@@ -10,7 +10,7 @@ use crate::analysis::{
 use crate::config::{BpmConfig, LoudnessConfig};
 use anyhow::{Context, Result};
 use mesh_core::audio_file::{
-    read_metadata, update_metadata_bulk, AudioFileReader, PartialMetadataUpdate,
+    update_metadata_bulk, AudioFileReader, PartialMetadataUpdate,
 };
 use mesh_core::types::SAMPLE_RATE;
 use std::path::{Path, PathBuf};
@@ -156,10 +156,8 @@ fn reexport_with_new_waveform(
     }
 
     // Calculate new waveform gain from LUFS
-    let waveform_gain = metadata
-        .lufs
-        .map(|lufs| loudness_config.calculate_gain_linear(lufs))
-        .unwrap_or(1.0);
+    // The new LoudnessConfig API handles Option<f32> directly and returns 1.0 if None
+    let waveform_gain = loudness_config.calculate_gain_linear(metadata.lufs);
 
     log::info!(
         "reexport_with_new_waveform: LUFS={:?}, waveform_gain={:.3}",

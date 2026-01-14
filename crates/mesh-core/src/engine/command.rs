@@ -188,6 +188,21 @@ pub enum EngineCommand {
     /// Only has effect if a linked stem exists for this slot.
     /// Returns immediately without blocking.
     ToggleLinkedStem { deck: usize, stem: Stem },
+    /// Request loading a linked stem from a file path
+    ///
+    /// This is the command version of manual stem linking from the UI.
+    /// The engine owns the LinkedStemLoader and handles all stem loading
+    /// (both automatic from metadata and manual from this command).
+    ///
+    /// Results are delivered via the LinkedStemResultReceiver.
+    LoadLinkedStem {
+        deck: usize,
+        stem_idx: usize,
+        path: std::path::PathBuf,
+        host_bpm: f64,
+        host_drop_marker: u64,
+        host_duration: u64,
+    },
 
     // ─────────────────────────────────────────────────────────────
     // Mixer Control
@@ -222,6 +237,15 @@ pub enum EngineCommand {
     /// - A track is loaded (calculated from track's measured LUFS)
     /// - Target LUFS setting changes (recalculated for all loaded tracks)
     SetLufsGain { deck: usize, gain: f32, host_lufs: Option<f32> },
+    /// Update the loudness configuration
+    ///
+    /// The engine uses this to calculate LUFS gain automatically when tracks load.
+    /// When the config changes, all loaded decks have their LUFS gain recalculated.
+    ///
+    /// Sent when:
+    /// - App starts (initial config from saved settings)
+    /// - User changes auto-gain enabled or target LUFS in settings
+    SetLoudnessConfig(crate::config::LoudnessConfig),
 
     // ─────────────────────────────────────────────────────────────
     // Global

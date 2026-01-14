@@ -93,10 +93,11 @@ pub fn measure_lufs(samples: &[f32], sample_rate: f32) -> Result<f32> {
 ///
 /// # Example
 /// ```
+/// use mesh_cue::analysis::calculate_gain_compensation;
 /// let measured = -10.0; // Track is at -10 LUFS
 /// let target = -6.0;    // Target is -6 LUFS (loud DJ standard)
 /// let gain_db = calculate_gain_compensation(measured, target);
-/// // gain_db = 4.0 dB boost needed
+/// assert!((gain_db - 4.0).abs() < 0.001); // 4.0 dB boost needed
 /// ```
 #[inline]
 pub fn calculate_gain_compensation(measured_lufs: f32, target_lufs: f32) -> f32 {
@@ -192,9 +193,9 @@ mod tests {
             (calculate_gain_compensation_clamped(-30.0, -6.0, -24.0, 12.0) - 12.0).abs() < 0.001
         );
 
-        // Very loud track - clamp cut
+        // Very loud track - clamp cut (track at +20 LUFS needs -26 dB, clamped to -24)
         assert!(
-            (calculate_gain_compensation_clamped(10.0, -6.0, -24.0, 12.0) - (-24.0)).abs() < 0.001
+            (calculate_gain_compensation_clamped(20.0, -6.0, -24.0, 12.0) - (-24.0)).abs() < 0.001
         );
     }
 

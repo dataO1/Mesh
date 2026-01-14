@@ -11,5 +11,6 @@ iced.workspace = true
 mesh-core.workspace = true
 serde.workspace = true
 serde_yaml.workspace = true
+tokio.workspace = true
 basedrop = "0.1"
 log = "0.4"

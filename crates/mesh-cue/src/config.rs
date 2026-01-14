@@ -3,9 +3,15 @@
 //! Configuration is stored as YAML alongside the collection folder.
 //! Default location: ~/Music/mesh-collection/config.yaml
 
-use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+
+// Re-export shared config utilities from mesh-core
+// Note: load_config is NOT re-exported - we have a local wrapper that validates
+pub use mesh_core::config::{
+    default_collection_path, save_config,
+    LoudnessConfig as CoreLoudnessConfig,
+};
 
 /// Root configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,44 +121,13 @@ impl AnalysisConfig {
     }
 }
 
-/// Loudness normalization configuration
+/// Loudness normalization configuration (re-exported from mesh-core)
 ///
 /// Controls automatic gain compensation for track normalization.
 /// LUFS is measured during analysis, and gain is calculated at export/playback time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct LoudnessConfig {
-    /// Target loudness in LUFS for waveform preview scaling
-    /// Default: -9.0 LUFS (balanced loudness)
-    pub target_lufs: f32,
-    /// Maximum boost in dB (safety limit for very quiet tracks)
-    pub max_gain_db: f32,
-    /// Maximum cut in dB (safety limit for very loud tracks)
-    pub min_gain_db: f32,
-}
-
-impl Default for LoudnessConfig {
-    fn default() -> Self {
-        Self {
-            target_lufs: -9.0,
-            max_gain_db: 12.0,
-            min_gain_db: -24.0,
-        }
-    }
-}
-
-impl LoudnessConfig {
-    /// Calculate gain compensation in dB for a track
-    pub fn calculate_gain_db(&self, track_lufs: f32) -> f32 {
-        (self.target_lufs - track_lufs).clamp(self.min_gain_db, self.max_gain_db)
-    }
-
-    /// Calculate linear gain multiplier for a track
-    pub fn calculate_gain_linear(&self, track_lufs: f32) -> f32 {
-        let db = self.calculate_gain_db(track_lufs);
-        10.0_f32.powf(db / 20.0)
-    }
-}
+///
+/// Note: Use `calculate_gain_db_direct(lufs)` for non-optional gain calculation.
+pub type LoudnessConfig = CoreLoudnessConfig;
 
 /// Source audio for BPM detection
 ///
@@ -229,76 +204,33 @@ impl BpmConfig {
     }
 }
 
+/// Config filename for mesh-cue
+pub const CONFIG_FILENAME: &str = "config.yaml";
+
 /// Get the default config file path
 ///
 /// Returns: ~/Music/mesh-collection/config.yaml
 pub fn default_config_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("Music")
-        .join("mesh-collection")
-        .join("config.yaml")
+    mesh_core::config::default_config_path(CONFIG_FILENAME)
 }
 
-/// Load configuration from a YAML file
+/// Load configuration from a YAML file with validation
 ///
-/// If the file doesn't exist, returns default config.
-/// If the file exists but is invalid, logs a warning and returns default config.
+/// Uses the generic loader from mesh-core, then validates analysis settings.
+/// If the file doesn't exist or is invalid, returns default config.
 pub fn load_config(path: &Path) -> Config {
-    log::info!("load_config: Loading from {:?}", path);
-
-    if !path.exists() {
-        log::info!("load_config: Config file doesn't exist, using defaults");
-        return Config::default();
-    }
-
-    match std::fs::read_to_string(path) {
-        Ok(contents) => match serde_yaml::from_str::<Config>(&contents) {
-            Ok(mut config) => {
-                config.analysis.validate();
-                log::info!(
-                    "load_config: Loaded config - BPM range: {}-{}, parallel: {}",
-                    config.analysis.bpm.min_tempo,
-                    config.analysis.bpm.max_tempo,
-                    config.analysis.parallel_processes
-                );
-                config
-            }
-            Err(e) => {
-                log::warn!("load_config: Failed to parse config: {}, using defaults", e);
-                Config::default()
-            }
-        },
-        Err(e) => {
-            log::warn!("load_config: Failed to read config file: {}, using defaults", e);
-            Config::default()
-        }
-    }
+    let mut config: Config = mesh_core::config::load_config(path);
+    config.analysis.validate();
+    log::info!(
+        "load_config: Loaded config - BPM range: {}-{}, parallel: {}",
+        config.analysis.bpm.min_tempo,
+        config.analysis.bpm.max_tempo,
+        config.analysis.parallel_processes
+    );
+    config
 }
 
-/// Save configuration to a YAML file
-///
-/// Creates parent directories if they don't exist.
-pub fn save_config(config: &Config, path: &Path) -> Result<()> {
-    log::info!("save_config: Saving to {:?}", path);
-
-    // Ensure parent directory exists
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create config directory: {:?}", parent))?;
-    }
-
-    // Serialize to YAML
-    let yaml = serde_yaml::to_string(config)
-        .context("Failed to serialize config to YAML")?;
-
-    // Write to file
-    std::fs::write(path, yaml)
-        .with_context(|| format!("Failed to write config file: {:?}", path))?;
-
-    log::info!("save_config: Config saved successfully");
-    Ok(())
-}
+// save_config is re-exported from mesh_core::config
 
 #[cfg(test)]
 mod tests {
@@ -348,6 +280,7 @@ mod tests {
             },
             display: DisplayConfig::default(),
             track_name_format: String::from("{artist} - {name}"),
+            slicer: SlicerConfig::default(),
         };
 
         let yaml = serde_yaml::to_string(&config).unwrap();
