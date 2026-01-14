@@ -374,6 +374,18 @@ impl AudioState {
         });
     }
 
+    /// Set a hot cue at a specific position (for editor metadata sync)
+    ///
+    /// This propagates cue point changes to the deck so hot cue playback
+    /// uses the updated positions immediately without requiring a track reload.
+    pub fn set_hot_cue(&mut self, slot: usize, position: usize) {
+        self.send(EngineCommand::SetHotCue {
+            deck: PREVIEW_DECK,
+            slot,
+            position,
+        });
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Loop Control
     // ─────────────────────────────────────────────────────────────────────────
@@ -523,6 +535,17 @@ impl AudioState {
             stem,
             linked_stem: Box::new(linked_data),
             host_lufs,
+        });
+    }
+
+    /// Update beat grid on the preview deck (for live beatgrid nudging)
+    ///
+    /// This propagates beatgrid changes to the engine so snapping operations
+    /// use the updated grid immediately without requiring a track reload.
+    pub fn set_beat_grid(&mut self, beats: Vec<u64>) {
+        self.send(EngineCommand::SetBeatGrid {
+            deck: PREVIEW_DECK,
+            beats,
         });
     }
 

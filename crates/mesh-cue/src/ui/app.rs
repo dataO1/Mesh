@@ -582,7 +582,8 @@ impl MeshCueApp {
                         state.beat_grid = regenerate_beat_grid(first_beat, bpm, state.duration_samples);
                         update_waveform_beat_grid(state);
 
-                        // Note: Beat grid changes are saved to file and applied on next track load
+                        // Propagate to deck so snapping uses updated grid
+                        self.audio.set_beat_grid(state.beat_grid.clone());
                     }
 
                     state.modified = true;
@@ -825,7 +826,7 @@ impl MeshCueApp {
                         return Task::none();
                     }
 
-                    // Store in cue_points (metadata) - will sync to audio on next track load
+                    // Store in cue_points (metadata)
                     state.cue_points.retain(|c| c.index != index as u8);
                     state.cue_points.push(CuePoint {
                         index: index as u8,
@@ -834,6 +835,9 @@ impl MeshCueApp {
                         color: None,
                     });
                     state.cue_points.sort_by_key(|c| c.index);
+
+                    // Sync to deck so hot cue playback uses updated position immediately
+                    self.audio.set_hot_cue(index, snapped_pos as usize);
 
                     // Update waveform markers (both overview and zoomed)
                     state.combined_waveform.overview.update_cue_markers(&state.cue_points);
@@ -1350,11 +1354,15 @@ impl MeshCueApp {
             Message::NudgeBeatGridLeft => {
                 if let Some(ref mut state) = self.collection.loaded_track {
                     nudge_beat_grid(state, -BEAT_GRID_NUDGE_SAMPLES);
+                    // Propagate to deck so snapping uses updated grid
+                    self.audio.set_beat_grid(state.beat_grid.clone());
                 }
             }
             Message::NudgeBeatGridRight => {
                 if let Some(ref mut state) = self.collection.loaded_track {
                     nudge_beat_grid(state, BEAT_GRID_NUDGE_SAMPLES);
+                    // Propagate to deck so snapping uses updated grid
+                    self.audio.set_beat_grid(state.beat_grid.clone());
                 }
             }
 

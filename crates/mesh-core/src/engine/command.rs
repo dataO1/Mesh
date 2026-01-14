@@ -91,6 +91,11 @@ pub enum EngineCommand {
     HotCueRelease { deck: usize },
     /// Clear a hot cue slot
     ClearHotCue { deck: usize, slot: usize },
+    /// Set a hot cue at a specific position (for editor metadata sync)
+    ///
+    /// Unlike HotCuePress which sets at current playhead, this sets at an
+    /// explicit position. Used when UI sets cue points in track metadata.
+    SetHotCue { deck: usize, slot: usize, position: usize },
     /// Set shift state (for alternate button functions)
     SetShift { deck: usize, held: bool },
 
@@ -119,6 +124,11 @@ pub enum EngineCommand {
     BeatJumpForward { deck: usize },
     /// Jump backward by beat_jump_size beats (equals loop length)
     BeatJumpBackward { deck: usize },
+    /// Update beat grid on a deck (for live beatgrid nudging in editors)
+    ///
+    /// This allows the beat grid to be updated without reloading the track,
+    /// so snapping operations use the updated grid immediately.
+    SetBeatGrid { deck: usize, beats: Vec<u64> },
 
     // ─────────────────────────────────────────────────────────────
     // Stem Control

@@ -687,6 +687,11 @@ impl AudioEngine {
                         d.clear_hot_cue(slot);
                     }
                 }
+                EngineCommand::SetHotCue { deck, slot, position } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        d.set_hot_cue_position(slot, position);
+                    }
+                }
                 EngineCommand::SetShift { deck, held } => {
                     if let Some(d) = self.decks.get_mut(deck) {
                         d.set_shift(held);
@@ -751,6 +756,11 @@ impl AudioEngine {
                         if let Some(synced_pos) = self.apply_post_jump_phase_sync(deck) {
                             self.decks[deck].seek(synced_pos);
                         }
+                    }
+                }
+                EngineCommand::SetBeatGrid { deck, beats } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        d.set_beat_grid(beats);
                     }
                 }
                 // Stem Control

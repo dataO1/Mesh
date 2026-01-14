@@ -4,8 +4,8 @@
 
 use crate::ui::state::LoadedTrackState;
 
-/// Nudge amount in samples (~10ms at 48kHz for fine-grained control)
-pub const BEAT_GRID_NUDGE_SAMPLES: i64 = 480;
+/// Nudge amount in samples (~2.5ms at 48kHz for fine-grained control)
+pub const BEAT_GRID_NUDGE_SAMPLES: i64 = 120;
 
 /// Sample rate constant (matches mesh_core::types::SAMPLE_RATE)
 const SAMPLE_RATE_F64: f64 = mesh_core::types::SAMPLE_RATE as f64;
@@ -44,8 +44,8 @@ pub fn nudge_beat_grid(state: &mut LoadedTrackState, delta_samples: i64) {
     // Update waveform displays
     update_waveform_beat_grid(state);
 
-    // Note: Beat grid changes are saved to file and applied on next track load.
-    // There's no EngineCommand to dynamically update beat grid on running deck.
+    // Note: Caller is responsible for propagating beat grid to deck via
+    // audio.set_beat_grid() so snapping operations use the updated grid.
 
     // Mark as modified for save
     state.modified = true;
