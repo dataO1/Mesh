@@ -65,6 +65,9 @@ pub struct MeshApp {
     /// Linked stem buffers per deck per stem [deck_idx][stem_idx]
     /// Used for zoomed waveform visualization of active linked stems
     deck_linked_stems: [[Option<Shared<StereoBuffer>>; 4]; 4],
+    /// Track LUFS per deck (cached from TrackLoaded for LinkedStemLoaded)
+    /// Used to avoid race conditions when passing host_lufs to LinkStem command
+    track_lufs_per_deck: [Option<f32>; 4],
     /// Local deck view states (controls only, waveform moved to player_canvas_state)
     deck_views: [DeckView; 4],
     /// Mixer view state
@@ -187,6 +190,7 @@ impl MeshApp {
             },
             deck_stems: [None, None, None, None],
             deck_linked_stems: std::array::from_fn(|_| [None, None, None, None]),
+            track_lufs_per_deck: [None, None, None, None],
             deck_views: [
                 DeckView::new(0),
                 DeckView::new(1),
@@ -364,6 +368,14 @@ impl MeshApp {
                         // Sync LUFS gain from engine for waveform scaling (single source of truth)
                         let lufs_gain = atomics[i].lufs_gain();
                         self.player_canvas_state.decks[i].zoomed.set_lufs_gain(lufs_gain);
+
+                        // Update gain display in deck header (dB)
+                        let lufs_gain_db = if (lufs_gain - 1.0).abs() < 0.001 {
+                            None // No gain compensation (unity or disabled)
+                        } else {
+                            Some(20.0 * lufs_gain.log10())
+                        };
+                        self.player_canvas_state.set_lufs_gain_db(i, lufs_gain_db);
 
                         // Update deck view state from atomics
                         self.deck_views[i].sync_play_state(atomics[i].play_state());
@@ -622,6 +634,8 @@ impl MeshApp {
                             track.metadata.key.clone().unwrap_or_default()
                         );
                         self.player_canvas_state.set_track_bpm(deck_idx, track.metadata.bpm);
+                        // Store track LUFS for use in LinkedStemLoaded (avoids race conditions)
+                        self.track_lufs_per_deck[deck_idx] = track.metadata.lufs;
                         // LUFS gain is calculated by engine and synced via atomics in Tick
 
                         // Sync hot cues to deck view for display
@@ -771,10 +785,14 @@ impl MeshApp {
                         if let Some(ref mut sender) = self.command_sender {
                             if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
                                 let track_name = linked_data.track_name.clone();
+                                // Pass host_lufs explicitly to avoid race conditions
+                                // (deck.host_lufs in engine might be stale)
+                                let host_lufs = self.track_lufs_per_deck[deck_idx];
                                 let _ = sender.send(EngineCommand::LinkStem {
                                     deck: deck_idx,
                                     stem,
                                     linked_stem: Box::new(linked_data),
+                                    host_lufs,
                                 });
                                 self.status = format!(
                                     "Linked {} stem on deck {} from {}",

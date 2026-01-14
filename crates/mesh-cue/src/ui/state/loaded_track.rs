@@ -34,6 +34,8 @@ pub struct LoadedTrackState {
     pub beat_grid: Vec<u64>,
     /// Drop marker sample position (for linked stem alignment)
     pub drop_marker: Option<u64>,
+    /// Track's integrated LUFS (for gain matching with linked stems)
+    pub lufs: Option<f32>,
     /// Stem links for prepared mode (stored in mslk chunk)
     pub stem_links: Vec<StemLinkReference>,
     /// Duration in samples (from metadata or computed)

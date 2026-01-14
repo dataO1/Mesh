@@ -177,11 +177,18 @@ pub enum EngineCommand {
     /// The linked stem should be pre-stretched to match the host deck's BPM.
     /// Drop markers are used for structural alignment during playback.
     ///
+    /// `host_lufs` is passed explicitly to avoid race conditions - the deck's stored
+    /// host_lufs might be stale if another track loaded between the host load and
+    /// the linked stem load completing.
+    ///
     /// Boxed because LinkedStemData contains large pre-stretched buffer.
     LinkStem {
         deck: usize,
         stem: Stem,
         linked_stem: Box<LinkedStemData>,
+        /// Host track's LUFS at the time the linked stem was requested
+        /// Used to calculate gain matching between host and linked stem
+        host_lufs: Option<f32>,
     },
     /// Toggle between original and linked stem
     ///

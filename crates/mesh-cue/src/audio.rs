@@ -510,15 +510,19 @@ impl AudioState {
     /// Link a stem from another track
     ///
     /// The linked stem should be pre-stretched to match the host track's BPM.
+    /// `host_lufs` is passed explicitly to avoid race conditions when the linked
+    /// stem loads asynchronously after the host track.
     pub fn link_stem(
         &mut self,
         stem: mesh_core::types::Stem,
         linked_data: mesh_core::engine::LinkedStemData,
+        host_lufs: Option<f32>,
     ) {
         self.send(EngineCommand::LinkStem {
             deck: PREVIEW_DECK,
             stem,
             linked_stem: Box::new(linked_data),
+            host_lufs,
         });
     }
 

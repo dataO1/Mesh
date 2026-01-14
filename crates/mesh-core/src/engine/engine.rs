@@ -839,14 +839,16 @@ impl AudioEngine {
                 }
 
                 // Linked Stems
-                EngineCommand::LinkStem { deck, stem, linked_stem } => {
+                EngineCommand::LinkStem { deck, stem, linked_stem, host_lufs } => {
                     if let Some(d) = self.decks.get_mut(deck) {
                         let stem_idx = stem as usize;
                         let info = linked_stem.into_info();
-                        d.set_linked_stem(stem_idx, info);
+                        // Use explicitly passed host_lufs to avoid race conditions
+                        // (deck.host_lufs might be stale if another track loaded in between)
+                        d.set_linked_stem_with_host_lufs(stem_idx, info, host_lufs);
                         log::info!(
-                            "Linked stem {} on deck {} from external track",
-                            stem_idx, deck
+                            "Linked stem {} on deck {} from external track (host_lufs={:?})",
+                            stem_idx, deck, host_lufs
                         );
                     }
                 }

@@ -317,6 +317,7 @@ impl MeshCueApp {
                             key,
                             beat_grid,
                             drop_marker: metadata.drop_marker,
+                            lufs: metadata.lufs,
                             stem_links: metadata.stem_links.clone(),
                             duration_samples: 0, // Will be set when audio loads
                             modified: false,
@@ -455,11 +456,24 @@ impl MeshCueApp {
                                     peaks,
                                 );
                             }
+
+                            // Calculate and set LUFS gain for linked stem waveform
+                            // This matches what mesh-player does to ensure visual consistency
+                            let linked_gain = self.config.analysis.loudness.calculate_gain_linear(linked_data.lufs);
+                            state.combined_waveform.overview.set_linked_lufs_gain(result.stem_idx, linked_gain);
+                            log::info!(
+                                "[LINKED] Set LUFS gain for stem {}: linked_lufs={:?}, gain={:.3} ({:+.1}dB)",
+                                result.stem_idx,
+                                linked_data.lufs,
+                                linked_gain,
+                                20.0 * linked_gain.log10()
+                            );
                         }
 
-                        // Send LinkStem command to engine
+                        // Send LinkStem command to engine with host LUFS to avoid race conditions
                         if let Some(stem) = Stem::from_index(result.stem_idx) {
-                            self.audio.link_stem(stem, linked_data);
+                            let host_lufs = self.collection.loaded_track.as_ref().and_then(|t| t.lufs);
+                            self.audio.link_stem(stem, linked_data, host_lufs);
                         }
                     }
                     Err(e) => {
@@ -532,6 +546,7 @@ impl MeshCueApp {
                             key,
                             beat_grid,
                             drop_marker: track.metadata.drop_marker,
+                            lufs: track.metadata.lufs,
                             stem_links: track.metadata.stem_links.clone(),
                             duration_samples,
                             modified: false,

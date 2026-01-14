@@ -1548,6 +1548,9 @@ impl Deck {
     ///
     /// The linked stem info should already be pre-stretched to match
     /// this deck's BPM when this is called.
+    ///
+    /// Note: Uses `self.host_lufs` which may be stale in async contexts.
+    /// Prefer `set_linked_stem_with_host_lufs()` when the host LUFS is known.
     pub fn set_linked_stem(&mut self, stem_idx: usize, info: super::LinkedStemInfo) {
         if stem_idx >= NUM_STEMS {
             return;
@@ -1555,6 +1558,29 @@ impl Deck {
         self.stem_links[stem_idx].set_linked(info);
         // Calculate gain correction based on host and linked LUFS
         self.stem_links[stem_idx].update_gain(self.host_lufs);
+        self.linked_stem_atomics.sync_from_stem_link(stem_idx, &self.stem_links[stem_idx]);
+    }
+
+    /// Set a linked stem with explicit host LUFS (avoids race conditions)
+    ///
+    /// This variant uses an explicitly passed host_lufs value instead of
+    /// `self.host_lufs`, which avoids race conditions when the linked stem
+    /// loads asynchronously after the host track.
+    ///
+    /// The linked stem info should already be pre-stretched to match
+    /// this deck's BPM when this is called.
+    pub fn set_linked_stem_with_host_lufs(
+        &mut self,
+        stem_idx: usize,
+        info: super::LinkedStemInfo,
+        host_lufs: Option<f32>,
+    ) {
+        if stem_idx >= NUM_STEMS {
+            return;
+        }
+        self.stem_links[stem_idx].set_linked(info);
+        // Calculate gain correction using explicitly passed host LUFS
+        self.stem_links[stem_idx].update_gain(host_lufs);
         self.linked_stem_atomics.sync_from_stem_link(stem_idx, &self.stem_links[stem_idx]);
     }
 

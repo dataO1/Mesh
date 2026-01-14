@@ -24,8 +24,8 @@ use crate::audio_file::{LoadedTrack, StemLinkReference};
 use crate::engine::{gc::gc_handle, LinkedStemData, StemLink};
 use crate::types::{Stem, StereoBuffer};
 
-/// Width for high-resolution peaks (matches mesh-widgets HIGHRES_WIDTH)
-const HIGHRES_WIDTH: usize = 8000;
+/// Width for high-resolution peaks (must match mesh-widgets HIGHRES_WIDTH = 65536)
+const HIGHRES_WIDTH: usize = 65536;
 
 /// Width for overview peaks
 const OVERVIEW_PEAK_WIDTH: usize = 800;

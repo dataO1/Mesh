@@ -928,16 +928,9 @@ impl ZoomedState {
             self.cached_peaks[0].len(), cache.start, cache.end, cache.left_padding
         );
 
-        // Apply LUFS gain scaling for consistent visual amplitude
-        // Quieter tracks are boosted to match the visual amplitude of louder tracks
-        if self.lufs_gain != 1.0 {
-            for stem_idx in 0..4 {
-                for peak in &mut self.cached_peaks[stem_idx] {
-                    peak.0 *= self.lufs_gain;
-                    peak.1 *= self.lufs_gain;
-                }
-            }
-        }
+        // NOTE: LUFS gain is applied at render time, not here.
+        // Baking gain into cached_peaks would cause double-scaling since
+        // the renderer also applies host_lufs_gain/linked_lufs_gains.
 
         // Apply Gaussian smoothing for smoother waveform display
         for stem_idx in 0..4 {
@@ -964,16 +957,9 @@ impl ZoomedState {
         // Track which stems were linked-active when this cache was computed
         self.cached_linked_active = result.linked_active;
 
-        // Apply LUFS gain scaling for consistent visual amplitude
-        // (Linear scaling commutes with Gaussian smoothing, so applying after is equivalent)
-        if self.lufs_gain != 1.0 {
-            for stem_idx in 0..4 {
-                for peak in &mut self.cached_peaks[stem_idx] {
-                    peak.0 *= self.lufs_gain;
-                    peak.1 *= self.lufs_gain;
-                }
-            }
-        }
+        // NOTE: LUFS gain is applied at render time, not here.
+        // Baking gain into cached_peaks would cause double-scaling since
+        // the renderer also applies host_lufs_gain/linked_lufs_gains.
     }
 
     /// Set linked stem cached peaks for a specific stem slot
