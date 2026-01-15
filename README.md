@@ -962,6 +962,94 @@ You can continue browsing your collection while the import runs in the backgroun
 
 ---
 
+## USB Export
+
+Mesh supports exporting your playlists to USB drives for portable DJ setups. Export from mesh-cue, then browse and play from mesh-player — no laptop needed at the venue.
+
+### Supported Filesystems
+
+| Filesystem | Symlinks | Notes |
+|------------|----------|-------|
+| **ext4** | ✓ | Recommended for Linux-only setups. Space-efficient symlink playlists |
+| **exFAT** | ✗ | Cross-platform. Tracks are copied to playlists |
+| **FAT32** | ✗ | Maximum compatibility. 4GB file size limit |
+
+### USB Directory Structure
+
+When you export to a USB drive, Mesh creates this structure:
+
+```
+<usb_mount>/mesh-collection/
+├── tracks/                    # Audio files
+│   └── Artist - Track.wav
+├── playlists/                 # Playlist folders
+│   └── Live Set/
+│       └── Artist - Track.wav   # Symlink (ext4) or copy (FAT/exFAT)
+├── mesh-manifest.yaml         # SHA256 hashes for incremental sync
+└── player-config.yaml         # Exported settings (optional)
+```
+
+### Exporting Playlists (mesh-cue)
+
+1. **Connect your USB drive** — It will be detected automatically
+2. **Click Export** (next to Import button in the collection browser header)
+3. **Select your USB device** from the dropdown
+4. **Check the playlists** you want to export
+5. **Optionally enable "Include settings"** to export your audio/display configuration
+6. **Click "Calculate Changes"** — Mesh computes which files need copying using SHA256 hashes
+7. **Review the sync plan** — Shows files to copy, delete, and skip
+8. **Click "Start Export"** — Files are copied with verification
+
+### Incremental Sync
+
+Mesh uses **SHA256 content hashing** for efficient sync:
+
+- **First export**: All tracks are copied
+- **Subsequent exports**: Only new/changed files are copied
+- **Removed tracks**: Optionally deleted from USB
+- **Unchanged files**: Skipped (instant)
+
+The hash manifest (`mesh-manifest.yaml`) is stored on the USB drive.
+
+### ext4 Permission Fix
+
+If you're using an **ext4-formatted USB drive** and see "Permission denied", the drive's root directory is owned by root. Fix with:
+
+```bash
+sudo chown -R $USER /run/media/$USER/<your-usb-label>
+```
+
+This only needs to be done once per drive — the ownership is stored on the USB filesystem.
+
+**Why does this happen?** ext4 stores Unix permissions. When you format a drive as ext4, the root directory is created as root. FAT32 and exFAT don't have this issue because they use mount options for access control.
+
+### Browsing USB in mesh-player
+
+mesh-player automatically detects connected USB drives with a `mesh-collection` folder:
+
+1. **Connect your USB** — It appears in the browser tree under "USB Devices"
+2. **Browse playlists** — Navigate just like local playlists
+3. **Load tracks** — Double-click to load onto a deck
+4. **Hot-plug support** — USB devices can be connected/disconnected while running
+
+### Exporting Settings
+
+When "Include settings" is enabled, these settings are exported:
+
+| Setting | Included |
+|---------|----------|
+| Global BPM | ✓ |
+| Phase sync enabled | ✓ |
+| Loudness normalization | ✓ |
+| Default loop length | ✓ |
+| Zoom/grid bars | ✓ |
+| Slicer buffer size | ✓ |
+| MIDI mappings | ✗ (hardware-specific) |
+
+Settings are stored in `player-config.yaml` on the USB and can be loaded by mesh-player.
+
+---
+
 ## Contributing
 
 Contributions are welcome! Areas where help is especially appreciated:
