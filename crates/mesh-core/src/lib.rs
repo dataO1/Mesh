@@ -10,5 +10,6 @@ pub mod engine;
 pub mod playlist;
 pub mod music;
 pub mod loader;
+pub mod usb;
 
 pub use types::*;

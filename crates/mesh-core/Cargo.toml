@@ -18,5 +18,12 @@ bytemuck = { version = "1.21", features = ["derive"] }
 rubato = "0.16"   # High-quality sample rate conversion
 log = "0.4"
 
+# USB device support
+sha2 = "0.10"       # SHA256 hashing for change detection
+hex = "0.4"         # Hex encoding for hash display
+libc = "0.2"        # System calls for statvfs
+pathdiff = "0.2"    # Relative path computation for symlinks
+inotify = "0.11"    # File system event monitoring (for hot-plug)
+
 [dev-dependencies]
 tempfile = "3.15"
