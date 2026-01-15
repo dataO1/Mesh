@@ -14,6 +14,7 @@ use mesh_widgets::PlaylistBrowserMessage;
 use crate::analysis::{AnalysisType, ReanalysisProgress, ReanalysisScope};
 use crate::batch_import::{ImportProgress, StemGroup};
 use crate::config::BpmSource;
+use mesh_core::usb::UsbMessage;
 use super::context_menu::ContextMenuKind;
 use super::state::{BrowserSide, LinkedStemLoadedMsg, StemsLoadResult, View};
 
@@ -224,4 +225,26 @@ pub enum Message {
     ReanalysisProgress(ReanalysisProgress),
     /// Cancel the current re-analysis
     CancelReanalysis,
+
+    // USB Export
+    /// Open the USB export modal
+    OpenExport,
+    /// Close the USB export modal
+    CloseExport,
+    /// Select a USB device by index
+    SelectExportDevice(usize),
+    /// Toggle playlist selection for export
+    ToggleExportPlaylist(NodeId),
+    /// Toggle whether to include config in export
+    ToggleExportConfig,
+    /// Start building sync plan
+    BuildSyncPlan,
+    /// Start the export process
+    StartExport,
+    /// Cancel the current export
+    CancelExport,
+    /// USB manager message received
+    UsbMessage(UsbMessage),
+    /// Dismiss export results
+    DismissExportResults,
 }

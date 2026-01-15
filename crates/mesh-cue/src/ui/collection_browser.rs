@@ -30,10 +30,15 @@ pub fn view<'a>(
     .into()
 }
 
-/// Header row above the browsers with Import button
+/// Header row above the browsers with Import and Export buttons
 fn view_browser_header() -> Element<'static, Message> {
     let import_btn = button(text("Import").size(14))
         .on_press(Message::OpenImport)
+        .style(button::secondary)
+        .padding([4, 12]);
+
+    let export_btn = button(text("Export").size(14))
+        .on_press(Message::OpenExport)
         .style(button::secondary)
         .padding([4, 12]);
 
@@ -42,7 +47,9 @@ fn view_browser_header() -> Element<'static, Message> {
             text("Playlists").size(16),
             Space::new().width(Length::Fill),
             import_btn,
+            export_btn,
         ]
+        .spacing(8)
         .align_y(Alignment::Center)
         .padding([0, 8]),
     )

@@ -25,9 +25,9 @@ use std::sync::Arc;
 // Re-export extracted modules for use by other UI modules
 pub use super::message::Message;
 pub use super::state::{
-    BrowserSide, CollectionState, DragState, ImportPhase, ImportState,
-    LinkedStemLoadedMsg, LoadedTrackState, ReanalysisState, SettingsState,
-    StemsLoadResult, View,
+    BrowserSide, CollectionState, DragState, ExportPhase, ExportState,
+    ImportPhase, ImportState, LinkedStemLoadedMsg, LoadedTrackState,
+    ReanalysisState, SettingsState, StemsLoadResult, View,
 };
 pub use super::utils::{
     build_tree_nodes, get_tracks_for_folder, nudge_beat_grid, regenerate_beat_grid,
@@ -78,6 +78,10 @@ pub struct MeshCueApp {
     stem_link_selection: Option<usize>,
     /// Re-analysis state
     reanalysis_state: ReanalysisState,
+    /// USB export state
+    export_state: ExportState,
+    /// USB manager for device detection and export operations
+    usb_manager: mesh_core::usb::UsbManager,
 }
 
 impl MeshCueApp {
@@ -158,6 +162,8 @@ impl MeshCueApp {
             global_mouse_position: iced::Point::ORIGIN,
             stem_link_selection: None,
             reanalysis_state: ReanalysisState::default(),
+            export_state: ExportState::default(),
+            usb_manager: mesh_core::usb::UsbManager::spawn(),
         };
 
         // Initial collection scan and playlist refresh
@@ -2551,6 +2557,202 @@ impl MeshCueApp {
                 self.import_state.is_open = false;
             }
 
+            // USB Export
+            Message::OpenExport => {
+                log::info!("Opening USB export modal");
+                self.export_state.is_open = true;
+                self.export_state.reset();
+                // Request fresh device list from UsbManager
+                self.usb_manager.refresh_devices();
+            }
+            Message::CloseExport => {
+                // Just close the modal - don't cancel export in progress
+                self.export_state.is_open = false;
+            }
+            Message::SelectExportDevice(idx) => {
+                self.export_state.selected_device = Some(idx);
+                // If the device isn't mounted yet, request mount
+                if let Some(device) = self.export_state.devices.get(idx) {
+                    if device.mount_point.is_none() {
+                        self.export_state.phase = ExportPhase::Mounting {
+                            device_label: device.label.clone(),
+                        };
+                        self.usb_manager.mount(device.device_path.clone());
+                    }
+                }
+            }
+            Message::ToggleExportPlaylist(id) => {
+                self.export_state.toggle_playlist(id);
+            }
+            Message::ToggleExportConfig => {
+                self.export_state.export_config = !self.export_state.export_config;
+            }
+            Message::BuildSyncPlan => {
+                log::info!("Building sync plan for USB export");
+                if let Some(idx) = self.export_state.selected_device {
+                    if let Some(device) = self.export_state.devices.get(idx) {
+                        let playlists: Vec<_> = self.export_state.selected_playlists.iter().cloned().collect();
+                        let collection_root = self.collection.collection.path().to_path_buf();
+                        let _ = self.usb_manager.send(mesh_core::usb::UsbCommand::BuildSyncPlan {
+                            device_path: device.device_path.clone(),
+                            playlists,
+                            local_collection_root: collection_root,
+                        });
+                        self.export_state.phase = ExportPhase::BuildingSyncPlan {
+                            files_hashed: 0,
+                            total_files: 0,
+                        };
+                    }
+                }
+            }
+            Message::StartExport => {
+                log::info!("Starting USB export");
+                if let Some(idx) = self.export_state.selected_device {
+                    if let Some(device) = self.export_state.devices.get(idx) {
+                        if let ExportPhase::ReadyToSync { ref plan } = self.export_state.phase {
+                            let config = if self.export_state.export_config {
+                                // Build ExportableConfig from mesh-cue's Config
+                                use mesh_core::usb::{
+                                    ExportableConfig, ExportableAudioConfig,
+                                    ExportableDisplayConfig, ExportableSlicerConfig,
+                                };
+                                Some(ExportableConfig {
+                                    audio: ExportableAudioConfig {
+                                        global_bpm: self.config.display.global_bpm,
+                                        phase_sync: true, // Default to true for mesh-cue
+                                        loudness: self.config.analysis.loudness.clone(),
+                                    },
+                                    display: ExportableDisplayConfig {
+                                        default_loop_length_index: self.config.display.default_loop_length_index,
+                                        default_zoom_bars: self.config.display.zoom_bars,
+                                        grid_bars: self.config.display.grid_bars,
+                                        stem_color_palette: "natural".to_string(),
+                                    },
+                                    slicer: ExportableSlicerConfig {
+                                        buffer_bars: self.config.slicer.validated_buffer_bars(),
+                                        presets: Vec::new(), // Presets handled separately
+                                    },
+                                })
+                            } else {
+                                None
+                            };
+                            let _ = self.usb_manager.send(mesh_core::usb::UsbCommand::StartExport {
+                                device_path: device.device_path.clone(),
+                                plan: plan.clone(),
+                                include_config: self.export_state.export_config,
+                                config,
+                            });
+                        }
+                    }
+                }
+            }
+            Message::CancelExport => {
+                log::info!("Cancelling USB export");
+                let _ = self.usb_manager.send(mesh_core::usb::UsbCommand::CancelExport);
+                self.export_state.phase = ExportPhase::SelectDevice;
+            }
+            Message::UsbMessage(usb_msg) => {
+                // Handle USB manager messages
+                use mesh_core::usb::UsbMessage as UsbMsg;
+                match usb_msg {
+                    UsbMsg::DevicesRefreshed(devices) => {
+                        self.export_state.devices = devices;
+                    }
+                    UsbMsg::DeviceConnected(device) => {
+                        log::info!("USB device connected: {}", device.label);
+                        self.export_state.devices.push(device);
+                    }
+                    UsbMsg::DeviceDisconnected { device_path } => {
+                        log::info!("USB device disconnected: {:?}", device_path);
+                        self.export_state.devices.retain(|d| d.device_path != device_path);
+                        // Clear selection if the disconnected device was selected
+                        if let Some(idx) = self.export_state.selected_device {
+                            if self.export_state.devices.get(idx).map(|d| &d.device_path) == Some(&device_path) {
+                                self.export_state.selected_device = None;
+                            }
+                        }
+                    }
+                    UsbMsg::MountComplete { result } => {
+                        match result {
+                            Ok(dev) => {
+                                log::info!("Device mounted at {:?}", dev.mount_point);
+                                // Update device in list
+                                if let Some(existing) = self.export_state.devices.iter_mut()
+                                    .find(|d| d.device_path == dev.device_path)
+                                {
+                                    *existing = dev;
+                                }
+                                self.export_state.phase = ExportPhase::ScanningUsb;
+                            }
+                            Err(e) => {
+                                log::error!("Mount failed: {}", e);
+                                self.export_state.phase = ExportPhase::Error(e.to_string());
+                            }
+                        }
+                    }
+                    UsbMsg::SyncPlanProgress { files_hashed, total_files } => {
+                        self.export_state.phase = ExportPhase::BuildingSyncPlan {
+                            files_hashed,
+                            total_files,
+                        };
+                    }
+                    UsbMsg::SyncPlanReady(plan) => {
+                        self.export_state.phase = ExportPhase::ReadyToSync { plan };
+                    }
+                    UsbMsg::ExportStarted { total_files, total_bytes } => {
+                        self.export_state.phase = ExportPhase::Exporting {
+                            current_file: String::new(),
+                            files_complete: 0,
+                            bytes_complete: 0,
+                            total_files,
+                            total_bytes,
+                            start_time: std::time::Instant::now(),
+                        };
+                    }
+                    UsbMsg::ExportProgress {
+                        current_file,
+                        files_complete,
+                        bytes_complete,
+                        total_files,
+                        total_bytes,
+                    } => {
+                        if let ExportPhase::Exporting { start_time, .. } = &self.export_state.phase {
+                            let start = *start_time;
+                            self.export_state.phase = ExportPhase::Exporting {
+                                current_file,
+                                files_complete,
+                                bytes_complete,
+                                total_files,
+                                total_bytes,
+                                start_time: start,
+                            };
+                        }
+                    }
+                    UsbMsg::ExportComplete { duration, files_exported, failed_files } => {
+                        self.export_state.phase = ExportPhase::Complete {
+                            duration,
+                            files_exported,
+                            failed_files,
+                        };
+                        self.export_state.show_results = true;
+                    }
+                    UsbMsg::ExportError(err) => {
+                        self.export_state.phase = ExportPhase::Error(err.to_string());
+                    }
+                    UsbMsg::ExportCancelled => {
+                        self.export_state.phase = ExportPhase::SelectDevice;
+                    }
+                    _ => {
+                        // Handle other messages as needed
+                    }
+                }
+            }
+            Message::DismissExportResults => {
+                self.export_state.phase = ExportPhase::SelectDevice;
+                self.export_state.show_results = false;
+                self.export_state.is_open = false;
+            }
+
             // Delete confirmation
             Message::RequestDelete(browser_side) => {
                 use super::delete_modal::DeleteTarget;
@@ -2941,12 +3143,16 @@ impl MeshCueApp {
             View::Collection => self.view_collection(),
         };
 
-        // Global status bars at bottom (visible when import or re-analysis is active)
+        // Global status bars at bottom (visible when import, export, or re-analysis is active)
         let import_bar = super::import_modal::view_progress_bar(&self.import_state);
+        let export_bar = super::export_modal::view_progress_bar(&self.export_state);
         let reanalysis_bar = self.view_reanalysis_progress_bar();
 
         let mut main = column![header, content].spacing(10);
         if let Some(bar) = import_bar {
+            main = main.push(bar);
+        }
+        if let Some(bar) = export_bar {
             main = main.push(bar);
         }
         if let Some(bar) = reanalysis_bar {
@@ -2959,8 +3165,37 @@ impl MeshCueApp {
             .padding(20)
             .into();
 
-        // Overlay modals if open (import > delete > settings)
-        if self.import_state.is_open {
+        // Overlay modals if open (export > import > delete > settings)
+        if self.export_state.is_open {
+            let backdrop = mouse_area(
+                container(Space::new())
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .style(|_theme| container::Style {
+                        background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.6).into()),
+                        ..Default::default()
+                    }),
+            )
+            .on_press(Message::CloseExport);
+
+            // Build playlist list for export modal (flatten tree to find playlist nodes)
+            fn collect_playlists(nodes: &[mesh_widgets::TreeNode<mesh_core::playlist::NodeId>], result: &mut Vec<(mesh_core::playlist::NodeId, String)>) {
+                for node in nodes {
+                    if node.id.0.starts_with("playlists/") && !node.id.0.ends_with("/playlists") {
+                        result.push((node.id.clone(), node.label.clone()));
+                    }
+                    collect_playlists(&node.children, result);
+                }
+            }
+            let mut playlists = Vec::new();
+            collect_playlists(&self.collection.tree_nodes, &mut playlists);
+
+            let modal = center(opaque(super::export_modal::view(&self.export_state, playlists)))
+                .width(Length::Fill)
+                .height(Length::Fill);
+
+            stack![base, backdrop, modal].into()
+        } else if self.import_state.is_open {
             let backdrop = mouse_area(
                 container(Space::new())
                     .width(Length::Fill)
@@ -3083,6 +3318,10 @@ impl MeshCueApp {
             iced::Subscription::none()
         };
 
+        // USB manager subscription (event-driven device detection and export progress)
+        let usb_sub = mpsc_subscription(self.usb_manager.message_receiver())
+            .map(Message::UsbMessage);
+
         // Always run tick at 60fps for smooth waveform animation
         // This matches mesh-player's approach and ensures cueing/preview states work correctly
         iced::Subscription::batch([
@@ -3090,6 +3329,7 @@ impl MeshCueApp {
             mouse_sub,
             time::every(Duration::from_millis(16)).map(|_| Message::Tick),
             linked_stem_sub,
+            usb_sub,
         ])
     }
 

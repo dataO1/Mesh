@@ -6,6 +6,7 @@ pub mod context_menu;
 pub mod cue_editor;
 pub mod delete_modal;
 pub mod editor;
+pub mod export_modal;
 pub mod import_modal;
 pub mod message;
 pub mod saved_loop_buttons;
