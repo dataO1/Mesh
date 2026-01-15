@@ -10,6 +10,7 @@ use super::deck_view::DeckMessage;
 use super::midi_learn::MidiLearnMessage;
 use super::mixer_view::MixerMessage;
 use super::state::{LinkedStemLoadedMsg, TrackLoadedMsg};
+use mesh_core::usb::UsbMessage;
 
 /// Messages that can be sent to the application
 #[derive(Debug, Clone)]
@@ -66,4 +67,8 @@ pub enum Message {
     // MIDI Learn
     /// MIDI learn mode message
     MidiLearn(MidiLearnMessage),
+
+    // USB
+    /// USB manager message received
+    Usb(UsbMessage),
 }

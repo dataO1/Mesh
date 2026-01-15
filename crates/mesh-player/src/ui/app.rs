@@ -98,6 +98,8 @@ pub struct MeshApp {
     slice_editor: SliceEditorState,
     /// Linked stem result receiver (engine owns the loader, we just receive results)
     linked_stem_receiver: Option<mesh_core::loader::LinkedStemResultReceiver>,
+    /// USB manager for device detection and browsing
+    usb_manager: mesh_core::usb::UsbManager,
 }
 
 // Message enum moved to message.rs
@@ -217,6 +219,7 @@ impl MeshApp {
             app_mode: if mapping_mode { AppMode::Mapping } else { AppMode::Performance },
             stem_link_state: StemLinkState::Idle,
             linked_stem_receiver,
+            usb_manager: mesh_core::usb::UsbManager::spawn(),
         }
     }
 
@@ -1414,6 +1417,52 @@ impl MeshApp {
                 }
                 Task::none()
             }
+
+            // USB device messages
+            Message::Usb(usb_msg) => {
+                use mesh_core::usb::UsbMessage as UsbMsg;
+                match usb_msg {
+                    UsbMsg::DevicesRefreshed(devices) => {
+                        log::info!("USB: {} devices detected", devices.len());
+                        self.collection_browser.update_usb_devices(devices.clone());
+                        // Initialize storages for mounted devices
+                        for device in &devices {
+                            if device.mount_point.is_some() && device.has_mesh_collection {
+                                self.collection_browser.init_usb_storage(device);
+                            }
+                        }
+                    }
+                    UsbMsg::DeviceConnected(device) => {
+                        self.collection_browser.add_usb_device(device.clone());
+                        if device.mount_point.is_some() && device.has_mesh_collection {
+                            self.collection_browser.init_usb_storage(&device);
+                        }
+                        self.status = format!("USB: {} connected", device.label);
+                    }
+                    UsbMsg::DeviceDisconnected { device_path } => {
+                        self.collection_browser.remove_usb_device(&device_path);
+                        self.status = "USB: Device disconnected".to_string();
+                    }
+                    UsbMsg::MountComplete { result } => {
+                        match result {
+                            Ok(device) => {
+                                // Update device in browser and init storage if it has mesh collection
+                                self.collection_browser.add_usb_device(device.clone());
+                                if device.has_mesh_collection {
+                                    self.collection_browser.init_usb_storage(&device);
+                                }
+                            }
+                            Err(e) => {
+                                log::warn!("USB mount failed: {}", e);
+                            }
+                        }
+                    }
+                    _ => {
+                        // Ignore export-related messages in mesh-player (read-only)
+                    }
+                }
+                Task::none()
+            }
         }
     }
 
@@ -1738,6 +1787,10 @@ impl MeshApp {
             Subscription::none()
         };
 
+        // USB manager subscription (event-driven device detection)
+        let usb_sub = mpsc_subscription(self.usb_manager.message_receiver())
+            .map(Message::Usb);
+
         Subscription::batch([
             // Update UI at ~60fps for smooth waveform animation
             time::every(std::time::Duration::from_millis(16)).map(|_| Message::Tick),
@@ -1749,6 +1802,8 @@ impl MeshApp {
                 .map(Message::PeaksComputed),
             // Background linked stem load results (from engine's loader)
             linked_stem_sub,
+            // USB device events (connect, disconnect, mount complete)
+            usb_sub,
         ])
     }
 
@@ -1956,6 +2011,7 @@ impl Default for MeshApp {
     fn default() -> Self {
         // Default to 48kHz when no JACK rate is available (matches SAMPLE_RATE constant)
         // Default to performance mode (no linked_stem_receiver in offline mode)
+        // Note: USB manager is spawned by new(), not created separately
         Self::new(None, None, None, None, None, 48000, false)
     }
 }

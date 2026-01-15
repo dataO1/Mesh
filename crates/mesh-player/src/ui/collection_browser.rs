@@ -4,6 +4,7 @@
 //! - Navigating the collection tree
 //! - Searching and sorting tracks
 //! - Loading tracks to one of 4 decks
+//! - Browsing USB devices with exported playlists
 //!
 //! Unlike mesh-cue's browser, this is READ-ONLY:
 //! - No playlist creation/rename/delete
@@ -13,6 +14,7 @@
 use iced::widget::{button, column, container, row, text};
 use iced::{Element, Length};
 use mesh_core::playlist::{FilesystemStorage, NodeId, NodeKind, PlaylistNode, PlaylistStorage};
+use mesh_core::usb::{UsbDevice, UsbStorage};
 use mesh_widgets::{
     playlist_browser, PlaylistBrowserMessage, PlaylistBrowserState, TrackRow,
     TrackTableMessage, TreeIcon, TreeMessage, TreeNode,
@@ -21,16 +23,22 @@ use std::path::PathBuf;
 
 /// State for the collection browser
 pub struct CollectionBrowserState {
-    /// Playlist storage backend (shared with mesh-cue)
+    /// Local playlist storage backend (shared with mesh-cue)
     pub storage: Option<Box<FilesystemStorage>>,
     /// Browser widget state (single browser, not dual)
     pub browser: PlaylistBrowserState<NodeId, NodeId>,
-    /// Cached tree nodes for display
+    /// Cached tree nodes for display (includes USB devices)
     pub tree_nodes: Vec<TreeNode<NodeId>>,
     /// Cached tracks for current folder
     pub tracks: Vec<TrackRow<NodeId>>,
     /// Currently selected track path (for deck load buttons)
     selected_track_path: Option<PathBuf>,
+    /// Connected USB devices
+    pub usb_devices: Vec<UsbDevice>,
+    /// USB storage instances (one per mounted device)
+    pub usb_storages: Vec<(PathBuf, UsbStorage)>,
+    /// Currently active source: None = local, Some(idx) = USB device
+    active_usb_idx: Option<usize>,
 }
 
 /// Messages from the collection browser
@@ -70,7 +78,116 @@ impl CollectionBrowserState {
             tree_nodes,
             tracks: Vec::new(),
             selected_track_path: None,
+            usb_devices: Vec::new(),
+            usb_storages: Vec::new(),
+            active_usb_idx: None,
         }
+    }
+
+    /// Update USB devices list and rebuild tree
+    pub fn update_usb_devices(&mut self, devices: Vec<UsbDevice>) {
+        self.usb_devices = devices;
+        self.rebuild_tree();
+    }
+
+    /// Add a connected USB device
+    pub fn add_usb_device(&mut self, device: UsbDevice) {
+        // Avoid duplicates
+        if !self.usb_devices.iter().any(|d| d.device_path == device.device_path) {
+            log::info!("USB device connected: {} ({:?})", device.label, device.device_path);
+            self.usb_devices.push(device);
+            self.rebuild_tree();
+        }
+    }
+
+    /// Remove a disconnected USB device
+    pub fn remove_usb_device(&mut self, device_path: &PathBuf) {
+        log::info!("USB device disconnected: {:?}", device_path);
+        self.usb_devices.retain(|d| &d.device_path != device_path);
+        self.usb_storages.retain(|(path, _)| path != device_path);
+
+        // If we were browsing this device, switch back to local
+        if let Some(idx) = self.active_usb_idx {
+            if self.usb_devices.get(idx).map(|d| &d.device_path) == Some(device_path) {
+                self.active_usb_idx = None;
+                self.tracks.clear();
+                self.selected_track_path = None;
+            }
+        }
+        self.rebuild_tree();
+    }
+
+    /// Initialize USB storage for a mounted device
+    pub fn init_usb_storage(&mut self, device: &UsbDevice) {
+        // Check if already initialized
+        if self.usb_storages.iter().any(|(path, _)| path == &device.device_path) {
+            return;
+        }
+
+        // Device must be mounted
+        if device.mount_point.is_none() {
+            log::warn!("Cannot init USB storage for {}: not mounted", device.label);
+            return;
+        }
+
+        match UsbStorage::for_browsing(device.clone()) {
+            Ok(storage) => {
+                log::info!("USB storage initialized for {}", device.label);
+                self.usb_storages.push((device.device_path.clone(), storage));
+                self.rebuild_tree();
+            }
+            Err(e) => {
+                log::warn!("Failed to initialize USB storage for {}: {}", device.label, e);
+            }
+        }
+    }
+
+    /// Rebuild tree nodes (local + USB devices)
+    fn rebuild_tree(&mut self) {
+        let mut nodes = Vec::new();
+
+        // Local collection
+        if let Some(ref storage) = self.storage {
+            nodes.extend(build_tree_nodes(storage));
+        }
+
+        // USB devices section (if any devices connected)
+        if !self.usb_devices.is_empty() {
+            let mut usb_children = Vec::new();
+
+            for device in &self.usb_devices {
+                let device_id = NodeId(format!("usb:{}", device.device_path.display()));
+
+                // Build children from USB storage if available
+                let children = self.usb_storages
+                    .iter()
+                    .find(|(path, _)| path == &device.device_path)
+                    .map(|(_, storage)| build_usb_tree_nodes(storage, &device.device_path))
+                    .unwrap_or_default();
+
+                let mut device_node = TreeNode::with_children(
+                    device_id,
+                    device.label.clone(),
+                    TreeIcon::Collection,
+                    children,
+                );
+                device_node = device_node.with_create_child(false).with_rename(false);
+                usb_children.push(device_node);
+            }
+
+            let usb_root = TreeNode::with_children(
+                NodeId("usb_devices".to_string()),
+                "USB Devices".to_string(),
+                TreeIcon::Folder,
+                usb_children,
+            )
+            .with_create_child(false)
+            .with_rename(false);
+
+            nodes.push(usb_root);
+        }
+
+        self.tree_nodes = nodes;
     }
 
     /// Handle a browser message (filters out write operations)
@@ -86,8 +203,17 @@ impl CollectionBrowserState {
                                 let folder_changed = self.browser.handle_tree_message(tree_msg);
                                 if folder_changed {
                                     if let Some(ref folder) = self.browser.current_folder {
-                                        if let Some(ref storage) = self.storage {
-                                            self.tracks = get_tracks_for_folder(storage, folder);
+                                        // Check if this is a USB folder
+                                        if folder.0.starts_with("usb:") {
+                                            // Load tracks from USB storage
+                                            self.tracks = self.get_usb_tracks_for_folder(folder);
+                                            self.active_usb_idx = self.find_usb_idx_for_folder(folder);
+                                        } else {
+                                            // Local storage
+                                            if let Some(ref storage) = self.storage {
+                                                self.tracks = get_tracks_for_folder(storage, folder);
+                                            }
+                                            self.active_usb_idx = None;
                                         }
                                     }
                                     // Clear track selection when folder changes
@@ -216,8 +342,20 @@ impl CollectionBrowserState {
         }
     }
 
-    /// Get track path by ID from storage
+    /// Get track path by ID from storage (local or USB)
     fn get_track_path(&self, track_id: &NodeId) -> Option<PathBuf> {
+        // Check if this is a USB track (ID starts with "usb:")
+        if track_id.0.starts_with("usb:") {
+            // Extract device path from the track ID and find the USB storage
+            for (device_path, usb_storage) in &self.usb_storages {
+                if let Some(node) = usb_storage.get_node(track_id) {
+                    return node.track_path;
+                }
+            }
+            return None;
+        }
+
+        // Local storage
         self.storage
             .as_ref()
             .and_then(|s| s.get_node(track_id))
@@ -346,6 +484,49 @@ impl CollectionBrowserState {
         }
     }
 
+    /// Get tracks from USB storage for a given folder
+    fn get_usb_tracks_for_folder(&self, folder_id: &NodeId) -> Vec<TrackRow<NodeId>> {
+        // Find the USB storage that contains this folder
+        for (_, usb_storage) in &self.usb_storages {
+            let tracks = usb_storage.get_tracks(folder_id);
+            if !tracks.is_empty() || usb_storage.get_node(folder_id).is_some() {
+                return tracks
+                    .into_iter()
+                    .map(|info| {
+                        let mut row = TrackRow::new(info.id, info.name);
+                        if let Some(artist) = info.artist {
+                            row = row.with_artist(artist);
+                        }
+                        if let Some(bpm) = info.bpm {
+                            row = row.with_bpm(bpm);
+                        }
+                        if let Some(key) = info.key {
+                            row = row.with_key(key);
+                        }
+                        if let Some(duration) = info.duration {
+                            row = row.with_duration(duration);
+                        }
+                        row
+                    })
+                    .collect();
+            }
+        }
+        Vec::new()
+    }
+
+    /// Find USB device index for a given folder
+    fn find_usb_idx_for_folder(&self, folder_id: &NodeId) -> Option<usize> {
+        // Extract device path from folder ID (format: "usb:/dev/sdXN/...")
+        let id_str = &folder_id.0;
+        if !id_str.starts_with("usb:") {
+            return None;
+        }
+
+        self.usb_devices.iter().position(|device| {
+            let device_prefix = format!("usb:{}", device.device_path.display());
+            id_str.starts_with(&device_prefix) || id_str == &device_prefix
+        })
+    }
 }
 
 /// Build tree nodes from storage (read-only: no create/rename allowed)
@@ -402,6 +583,47 @@ fn get_tracks_for_folder(storage: &FilesystemStorage, folder_id: &NodeId) -> Vec
                 row = row.with_duration(duration);
             }
             row
+        })
+        .collect()
+}
+
+/// Build tree nodes from USB storage (read-only)
+fn build_usb_tree_nodes(storage: &UsbStorage, device_path: &PathBuf) -> Vec<TreeNode<NodeId>> {
+    let root = storage.root();
+    build_usb_node_children(storage, &root, device_path)
+}
+
+/// Recursively build USB tree node children
+fn build_usb_node_children(
+    storage: &UsbStorage,
+    parent: &PlaylistNode,
+    device_path: &PathBuf,
+) -> Vec<TreeNode<NodeId>> {
+    storage
+        .get_children(&parent.id)
+        .into_iter()
+        .filter(|node| node.kind != NodeKind::Track) // Only folders in tree
+        .map(|node| {
+            // Prefix node IDs with usb:device_path to distinguish from local
+            let prefixed_id = NodeId(format!("usb:{}/{}", device_path.display(), &node.id.0));
+
+            let icon = match node.kind {
+                NodeKind::Collection => TreeIcon::Collection,
+                NodeKind::CollectionFolder => TreeIcon::Folder,
+                NodeKind::PlaylistsRoot => TreeIcon::Folder,
+                NodeKind::Playlist => TreeIcon::Playlist,
+                _ => TreeIcon::Folder,
+            };
+
+            // READ-ONLY: Never allow create or rename
+            TreeNode::with_children(
+                prefixed_id,
+                node.name.clone(),
+                icon,
+                build_usb_node_children(storage, &node, device_path),
+            )
+            .with_create_child(false)
+            .with_rename(false)
         })
         .collect()
 }
