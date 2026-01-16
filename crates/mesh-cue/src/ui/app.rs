@@ -2610,6 +2610,68 @@ impl MeshCueApp {
                     if let Some(device) = self.export_state.devices.get(idx) {
                         // Use the cached sync plan
                         if let Some(ref plan) = self.export_state.sync_plan {
+                            // Use pre-computed LUFS check from sync plan (already computed in background)
+                            let tracks_missing_lufs = plan.tracks_missing_lufs.clone();
+
+                            if !tracks_missing_lufs.is_empty() {
+                                // Need to analyze LUFS first before export
+                                log::info!(
+                                    "[LUFS] {} tracks missing LUFS, starting analysis before export",
+                                    tracks_missing_lufs.len()
+                                );
+
+                                // Use existing reanalysis infrastructure
+                                use crate::analysis::AnalysisType;
+                                use crate::reanalysis::run_batch_reanalysis;
+                                use std::sync::atomic::AtomicBool;
+                                use std::sync::mpsc;
+
+                                // Don't start if reanalysis is already running
+                                if self.reanalysis_state.is_running {
+                                    log::warn!("Re-analysis already in progress, cannot analyze LUFS for export");
+                                    return Task::none();
+                                }
+
+                                // Set up reanalysis state
+                                self.reanalysis_state.is_running = true;
+                                self.reanalysis_state.analysis_type = Some(AnalysisType::Loudness);
+                                self.reanalysis_state.total_tracks = tracks_missing_lufs.len();
+                                self.reanalysis_state.completed_tracks = 0;
+                                self.reanalysis_state.succeeded = 0;
+                                self.reanalysis_state.failed = 0;
+                                self.reanalysis_state.current_track = None;
+
+                                // Mark that export should start after analysis
+                                self.export_state.pending_lufs_analysis = true;
+
+                                // Create cancel flag and progress channel
+                                let cancel_flag = std::sync::Arc::new(AtomicBool::new(false));
+                                self.reanalysis_state.cancel_flag = Some(cancel_flag.clone());
+
+                                let (progress_tx, progress_rx) = mpsc::channel();
+                                let bpm_config = self.config.analysis.bpm.clone();
+                                let loudness_config = self.config.analysis.loudness.clone();
+                                let parallel_processes = self.config.analysis.parallel_processes;
+
+                                self.reanalysis_state.progress_rx = Some(progress_rx);
+
+                                // Spawn worker thread for LUFS analysis
+                                std::thread::spawn(move || {
+                                    run_batch_reanalysis(
+                                        tracks_missing_lufs,
+                                        AnalysisType::Loudness,
+                                        bpm_config,
+                                        loudness_config,
+                                        parallel_processes,
+                                        progress_tx,
+                                        cancel_flag,
+                                    );
+                                });
+
+                                return Task::none();
+                            }
+
+                            // No tracks missing LUFS, proceed with export directly
                             let config = if self.export_state.export_config {
                                 // Build ExportableConfig from mesh-cue's Config
                                 use mesh_core::usb::{
@@ -2698,7 +2760,7 @@ impl MeshCueApp {
                             }
                         }
                     }
-                    UsbMsg::SyncPlanProgress { files_hashed: _, total_files: _ } => {
+                    UsbMsg::SyncPlanProgress { files_scanned: _, total_files: _ } => {
                         // Sync plan computation in progress (background, don't change phase)
                         self.export_state.sync_plan_computing = true;
                     }
@@ -3105,6 +3167,15 @@ impl MeshCueApp {
                             failed
                         );
 
+                        // Check if export was pending LUFS analysis
+                        if self.export_state.pending_lufs_analysis {
+                            self.export_state.pending_lufs_analysis = false;
+                            log::info!("[LUFS] LUFS analysis complete, now starting USB export");
+
+                            // Directly trigger export (can't return Task from here when called via Tick)
+                            self.trigger_usb_export_after_lufs();
+                        }
+
                         // Refresh collection to show updated metadata
                         return Task::perform(async {}, |_| Message::RefreshCollection);
                     }
@@ -3348,6 +3419,50 @@ impl MeshCueApp {
             linked_stem_sub,
             usb_sub,
         ])
+    }
+
+    /// Trigger USB export after LUFS analysis completes
+    ///
+    /// This is called from AllComplete handler when pending_lufs_analysis was set.
+    /// It directly sends the export command without going through the message system.
+    fn trigger_usb_export_after_lufs(&mut self) {
+        if let Some(idx) = self.export_state.selected_device {
+            if let Some(device) = self.export_state.devices.get(idx) {
+                if let Some(ref plan) = self.export_state.sync_plan {
+                    let config = if self.export_state.export_config {
+                        use mesh_core::usb::{
+                            ExportableConfig, ExportableAudioConfig,
+                            ExportableDisplayConfig, ExportableSlicerConfig,
+                        };
+                        Some(ExportableConfig {
+                            audio: ExportableAudioConfig {
+                                global_bpm: self.config.display.global_bpm,
+                                phase_sync: true,
+                                loudness: self.config.analysis.loudness.clone(),
+                            },
+                            display: ExportableDisplayConfig {
+                                default_loop_length_index: self.config.display.default_loop_length_index,
+                                default_zoom_bars: self.config.display.zoom_bars,
+                                grid_bars: self.config.display.grid_bars,
+                                stem_color_palette: "natural".to_string(),
+                            },
+                            slicer: ExportableSlicerConfig {
+                                buffer_bars: self.config.slicer.validated_buffer_bars(),
+                                presets: Vec::new(),
+                            },
+                        })
+                    } else {
+                        None
+                    };
+                    let _ = self.usb_manager.send(mesh_core::usb::UsbCommand::StartExport {
+                        device_path: device.device_path.clone(),
+                        plan: plan.clone(),
+                        include_config: self.export_state.export_config,
+                        config,
+                    });
+                }
+            }
+        }
     }
 
     /// Trigger background sync plan computation for USB export

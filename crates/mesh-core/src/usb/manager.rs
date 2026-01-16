@@ -420,7 +420,7 @@ fn handle_build_sync_plan(
     let local_progress: super::sync::ProgressCallback =
         Box::new(move |current: usize, total: usize| {
             let _ = tx_local.send(UsbMessage::SyncPlanProgress {
-                files_hashed: current,
+                files_scanned: current,
                 total_files: total,
             });
         });
@@ -446,7 +446,7 @@ fn handle_build_sync_plan(
             let usb_progress: super::sync::ProgressCallback =
                 Box::new(move |current: usize, total: usize| {
                     let _ = tx_usb.send(UsbMessage::SyncPlanProgress {
-                        files_hashed: current,
+                        files_scanned: current,
                         total_files: total,
                     });
                 });
@@ -753,6 +753,7 @@ fn handle_preload_metadata(tracks_dir: PathBuf, device_path: PathBuf, tx: Sender
                     key: meta.key,
                     duration_seconds: meta.duration_seconds,
                     cue_count: meta.cue_points.len() as u8,
+                    lufs: meta.lufs,
                 };
                 metadata.insert(filename.to_string(), cached);
             }

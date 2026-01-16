@@ -73,6 +73,8 @@ pub struct SyncPlan {
     pub dirs_to_delete: Vec<String>,
     /// Total bytes to transfer
     pub total_bytes: u64,
+    /// Tracks missing LUFS analysis (need to analyze before export)
+    pub tracks_missing_lufs: Vec<PathBuf>,
 }
 
 impl SyncPlan {
@@ -389,6 +391,25 @@ pub fn build_sync_plan(local: &CollectionState, usb: &CollectionState) -> SyncPl
         if !local.playlist_names.contains(name) {
             plan.dirs_to_delete.push(name.clone());
         }
+    }
+
+    // Check which tracks are missing LUFS (for auto-analysis before export)
+    plan.tracks_missing_lufs = plan
+        .tracks_to_copy
+        .iter()
+        .filter(|track| {
+            crate::audio_file::read_metadata(&track.source)
+                .map(|m| m.lufs.is_none())
+                .unwrap_or(false)
+        })
+        .map(|track| track.source.clone())
+        .collect();
+
+    if !plan.tracks_missing_lufs.is_empty() {
+        log::info!(
+            "[LUFS] {} tracks missing LUFS analysis",
+            plan.tracks_missing_lufs.len()
+        );
     }
 
     plan

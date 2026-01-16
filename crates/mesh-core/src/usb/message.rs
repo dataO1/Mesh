@@ -145,14 +145,14 @@ pub enum UsbMessage {
     // ─────────────────────────────────────────────────────────────────
     // Sync Planning
     // ─────────────────────────────────────────────────────────────────
-    /// Sync plan calculation started (hashing files)
+    /// Sync plan calculation started (scanning files)
     SyncPlanStarted,
 
-    /// Progress during sync planning (hashing local files)
+    /// Progress during sync planning (scanning local files)
     SyncPlanProgress {
-        /// Files hashed so far
-        files_hashed: usize,
-        /// Total files to hash
+        /// Files scanned so far
+        files_scanned: usize,
+        /// Total files to scan
         total_files: usize,
     },
 
@@ -263,8 +263,8 @@ impl UsbMessage {
                 format!("Preloaded {} tracks", metadata.len())
             }
             UsbMessage::SyncPlanStarted => "Calculating sync plan...".to_string(),
-            UsbMessage::SyncPlanProgress { files_hashed, total_files } => {
-                format!("Hashing files: {}/{}", files_hashed, total_files)
+            UsbMessage::SyncPlanProgress { files_scanned, total_files } => {
+                format!("Scanning files: {}/{}", files_scanned, total_files)
             }
             UsbMessage::SyncPlanReady(plan) => {
                 plan.summary()

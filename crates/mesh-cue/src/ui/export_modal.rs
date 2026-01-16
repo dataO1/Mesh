@@ -30,9 +30,9 @@ pub fn view(state: &ExportState, playlist_tree: Vec<TreeNode<NodeId>>) -> Elemen
         ExportPhase::Mounting { device_label } => view_mounting(device_label),
         ExportPhase::ScanningUsb => view_scanning_usb(),
         ExportPhase::BuildingSyncPlan {
-            files_hashed,
+            files_scanned,
             total_files,
-        } => view_building_plan(*files_hashed, *total_files),
+        } => view_building_plan(*files_scanned, *total_files),
         ExportPhase::ReadyToSync { plan } => view_ready_to_sync(state, &playlist_tree, plan),
         ExportPhase::Exporting {
             current_file,
@@ -287,9 +287,9 @@ fn view_scanning_usb() -> Element<'static, Message> {
 }
 
 /// View while building sync plan
-fn view_building_plan(files_hashed: usize, total_files: usize) -> Element<'static, Message> {
+fn view_building_plan(files_scanned: usize, total_files: usize) -> Element<'static, Message> {
     let progress = if total_files > 0 {
-        files_hashed as f32 / total_files as f32
+        files_scanned as f32 / total_files as f32
     } else {
         0.0
     };
@@ -301,7 +301,7 @@ fn view_building_plan(files_hashed: usize, total_files: usize) -> Element<'stati
     column![
         text(format!(
             "Calculating changes: {}/{} files hashed",
-            files_hashed, total_files
+            files_scanned, total_files
         ))
         .size(16),
         container(progress_bar(0.0..=1.0, progress)).width(Length::Fill),
@@ -690,18 +690,18 @@ pub fn view_progress_bar(state: &ExportState) -> Option<Element<'static, Message
             ))
         }
         ExportPhase::BuildingSyncPlan {
-            files_hashed,
+            files_scanned,
             total_files,
         } => {
             let progress = if *total_files > 0 {
-                *files_hashed as f32 / *total_files as f32
+                *files_scanned as f32 / *total_files as f32
             } else {
                 0.0
             };
 
             Some(super::import_modal::build_status_bar(
                 "Calculating changes...".to_string(),
-                format!("{}/{} files", files_hashed, total_files),
+                format!("{}/{} files", files_scanned, total_files),
                 progress,
                 Message::CancelExport,
             ))

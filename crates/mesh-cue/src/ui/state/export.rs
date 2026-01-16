@@ -25,7 +25,7 @@ pub enum ExportPhase {
 
     /// Building sync plan (hashing local files)
     BuildingSyncPlan {
-        files_hashed: usize,
+        files_scanned: usize,
         total_files: usize,
     },
 
@@ -78,8 +78,8 @@ impl ExportPhase {
             ExportPhase::SelectDevice => "Select a device and playlists to export".to_string(),
             ExportPhase::Mounting { device_label } => format!("Mounting {}...", device_label),
             ExportPhase::ScanningUsb => "Scanning USB playlists...".to_string(),
-            ExportPhase::BuildingSyncPlan { files_hashed, total_files } => {
-                format!("Calculating changes: {}/{} files", files_hashed, total_files)
+            ExportPhase::BuildingSyncPlan { files_scanned, total_files } => {
+                format!("Calculating changes: {}/{} files", files_scanned, total_files)
             }
             ExportPhase::ReadyToSync { plan } => plan.summary(),
             ExportPhase::Exporting { files_complete, total_files, .. } => {
@@ -138,6 +138,10 @@ pub struct ExportState {
 
     /// Whether a sync plan computation is in progress
     pub sync_plan_computing: bool,
+
+    /// Whether export is pending LUFS analysis completion
+    /// When true, export will auto-start after reanalysis finishes
+    pub pending_lufs_analysis: bool,
 }
 
 impl Default for ExportState {
@@ -154,6 +158,7 @@ impl Default for ExportState {
             show_results: false,
             sync_plan: None,
             sync_plan_computing: false,
+            pending_lufs_analysis: false,
         }
     }
 }
@@ -289,9 +294,9 @@ impl ExportState {
     /// Get export progress (0.0 - 1.0)
     pub fn progress(&self) -> Option<f32> {
         match &self.phase {
-            ExportPhase::BuildingSyncPlan { files_hashed, total_files } => {
+            ExportPhase::BuildingSyncPlan { files_scanned, total_files } => {
                 if *total_files > 0 {
-                    Some(*files_hashed as f32 / *total_files as f32)
+                    Some(*files_scanned as f32 / *total_files as f32)
                 } else {
                     None
                 }
@@ -366,7 +371,7 @@ mod tests {
     #[test]
     fn test_phase_status() {
         let phase = ExportPhase::BuildingSyncPlan {
-            files_hashed: 5,
+            files_scanned: 5,
             total_files: 10,
         };
         assert!(phase.status_message().contains("5/10"));
