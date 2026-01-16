@@ -2582,7 +2582,11 @@ impl MeshCueApp {
                 }
             }
             Message::ToggleExportPlaylist(id) => {
-                self.export_state.toggle_playlist(id);
+                // Use recursive toggle to select/deselect all children
+                self.export_state.toggle_playlist_recursive(id, &self.collection.tree_nodes);
+            }
+            Message::ToggleExportPlaylistExpand(id) => {
+                self.export_state.toggle_playlist_expanded(id);
             }
             Message::ToggleExportConfig => {
                 self.export_state.export_config = !self.export_state.export_config;
@@ -3178,19 +3182,24 @@ impl MeshCueApp {
             )
             .on_press(Message::CloseExport);
 
-            // Build playlist list for export modal (flatten tree to find playlist nodes)
-            fn collect_playlists(nodes: &[mesh_widgets::TreeNode<mesh_core::playlist::NodeId>], result: &mut Vec<(mesh_core::playlist::NodeId, String)>) {
+            // Extract the playlists subtree for the export modal
+            fn find_playlists_tree(nodes: &[mesh_widgets::TreeNode<mesh_core::playlist::NodeId>]) -> Vec<mesh_widgets::TreeNode<mesh_core::playlist::NodeId>> {
                 for node in nodes {
-                    if node.id.0.starts_with("playlists/") && !node.id.0.ends_with("/playlists") {
-                        result.push((node.id.clone(), node.label.clone()));
+                    if node.id.0 == "playlists" {
+                        // Return the children of the playlists root
+                        return node.children.clone();
                     }
-                    collect_playlists(&node.children, result);
+                    // Recurse into children
+                    let result = find_playlists_tree(&node.children);
+                    if !result.is_empty() {
+                        return result;
+                    }
                 }
+                Vec::new()
             }
-            let mut playlists = Vec::new();
-            collect_playlists(&self.collection.tree_nodes, &mut playlists);
+            let playlist_tree = find_playlists_tree(&self.collection.tree_nodes);
 
-            let modal = center(opaque(super::export_modal::view(&self.export_state, playlists)))
+            let modal = center(opaque(super::export_modal::view(&self.export_state, playlist_tree)))
                 .width(Length::Fill)
                 .height(Length::Fill);
 

@@ -4,6 +4,7 @@
 
 use mesh_core::playlist::NodeId;
 use mesh_core::usb::{SyncPlan, UsbDevice, UsbMessage};
+use mesh_widgets::TreeNode;
 use std::collections::HashSet;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -115,6 +116,9 @@ pub struct ExportState {
     /// Selected playlists for export (by NodeId)
     pub selected_playlists: HashSet<NodeId>,
 
+    /// Expanded playlist nodes in the tree view
+    pub expanded_playlists: HashSet<NodeId>,
+
     /// Current export phase
     pub phase: ExportPhase,
 
@@ -136,6 +140,7 @@ impl Default for ExportState {
             devices: Vec::new(),
             selected_device: None,
             selected_playlists: HashSet::new(),
+            expanded_playlists: HashSet::new(),
             phase: ExportPhase::SelectDevice,
             export_config: true, // Default to including config
             usb_message_rx: None,
@@ -149,6 +154,7 @@ impl ExportState {
     pub fn reset(&mut self) {
         self.selected_device = None;
         self.selected_playlists.clear();
+        self.expanded_playlists.clear();
         self.phase = ExportPhase::SelectDevice;
         self.show_results = false;
     }
@@ -170,6 +176,88 @@ impl ExportState {
             self.selected_playlists.remove(&id);
         } else {
             self.selected_playlists.insert(id);
+        }
+    }
+
+    /// Toggle playlist selection with recursive child selection
+    ///
+    /// When toggling a parent playlist, all children are set to the same state.
+    pub fn toggle_playlist_recursive(&mut self, id: NodeId, tree: &[TreeNode<NodeId>]) {
+        let new_state = !self.selected_playlists.contains(&id);
+
+        // Apply to this node and all descendants
+        self.set_playlist_recursive(&id, new_state, tree);
+    }
+
+    /// Set a playlist and all its descendants to a specific selection state
+    fn set_playlist_recursive(&mut self, id: &NodeId, selected: bool, tree: &[TreeNode<NodeId>]) {
+        // Set the state of this node
+        if selected {
+            self.selected_playlists.insert(id.clone());
+        } else {
+            self.selected_playlists.remove(id);
+        }
+
+        // Find this node in the tree and recurse to children
+        if let Some(node) = Self::find_node(id, tree) {
+            for child in &node.children {
+                self.set_playlist_recursive(&child.id, selected, tree);
+            }
+        }
+    }
+
+    /// Find a node by ID in the tree (recursive search)
+    fn find_node<'a>(id: &NodeId, tree: &'a [TreeNode<NodeId>]) -> Option<&'a TreeNode<NodeId>> {
+        for node in tree {
+            if &node.id == id {
+                return Some(node);
+            }
+            if let Some(found) = Self::find_node(id, &node.children) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Toggle expand/collapse state for a tree node
+    pub fn toggle_playlist_expanded(&mut self, id: NodeId) {
+        if self.expanded_playlists.contains(&id) {
+            self.expanded_playlists.remove(&id);
+        } else {
+            self.expanded_playlists.insert(id);
+        }
+    }
+
+    /// Check if a node is expanded
+    pub fn is_playlist_expanded(&self, id: &NodeId) -> bool {
+        self.expanded_playlists.contains(id)
+    }
+
+    /// Check if all children of a node are selected (for partial checkbox state)
+    pub fn all_children_selected(&self, id: &NodeId, tree: &[TreeNode<NodeId>]) -> bool {
+        if let Some(node) = Self::find_node(id, tree) {
+            if node.children.is_empty() {
+                return self.selected_playlists.contains(id);
+            }
+            node.children
+                .iter()
+                .all(|child| self.all_children_selected(&child.id, tree))
+        } else {
+            false
+        }
+    }
+
+    /// Check if any children of a node are selected (for partial checkbox state)
+    pub fn any_children_selected(&self, id: &NodeId, tree: &[TreeNode<NodeId>]) -> bool {
+        if let Some(node) = Self::find_node(id, tree) {
+            if node.children.is_empty() {
+                return self.selected_playlists.contains(id);
+            }
+            node.children
+                .iter()
+                .any(|child| self.any_children_selected(&child.id, tree))
+        } else {
+            false
         }
     }
 

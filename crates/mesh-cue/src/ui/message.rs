@@ -233,8 +233,10 @@ pub enum Message {
     CloseExport,
     /// Select a USB device by index
     SelectExportDevice(usize),
-    /// Toggle playlist selection for export
+    /// Toggle playlist selection for export (recursive - includes children)
     ToggleExportPlaylist(NodeId),
+    /// Toggle expand/collapse state of a playlist tree node
+    ToggleExportPlaylistExpand(NodeId),
     /// Toggle whether to include config in export
     ToggleExportConfig,
     /// Start building sync plan

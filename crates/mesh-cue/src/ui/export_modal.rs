@@ -1,7 +1,7 @@
 //! USB Export modal UI
 //!
 //! Provides a modal dialog for exporting playlists to USB devices.
-//! Shows detected devices, playlist selection, sync progress, and export controls.
+//! Shows detected devices, playlist selection with hierarchical tree, sync progress, and export controls.
 
 use super::app::Message;
 use super::state::export::{ExportPhase, ExportState};
@@ -11,9 +11,10 @@ use iced::widget::{
 };
 use iced::{Alignment, Element, Length};
 use mesh_core::playlist::NodeId;
+use mesh_widgets::TreeNode;
 
 /// Render the export modal content
-pub fn view(state: &ExportState, playlists: Vec<(NodeId, String)>) -> Element<'static, Message> {
+pub fn view(state: &ExportState, playlist_tree: Vec<TreeNode<NodeId>>) -> Element<'static, Message> {
     let title = text("Export to USB").size(24);
     let close_btn = button(text("×").size(20))
         .on_press(Message::CloseExport)
@@ -25,14 +26,14 @@ pub fn view(state: &ExportState, playlists: Vec<(NodeId, String)>) -> Element<'s
 
     // Content depends on current phase
     let content: Element<Message> = match &state.phase {
-        ExportPhase::SelectDevice => view_device_selection(state, &playlists),
+        ExportPhase::SelectDevice => view_device_selection(state, &playlist_tree),
         ExportPhase::Mounting { device_label } => view_mounting(device_label),
         ExportPhase::ScanningUsb => view_scanning_usb(),
         ExportPhase::BuildingSyncPlan {
             files_hashed,
             total_files,
         } => view_building_plan(*files_hashed, *total_files),
-        ExportPhase::ReadyToSync { plan } => view_ready_to_sync(state, &playlists, plan),
+        ExportPhase::ReadyToSync { plan } => view_ready_to_sync(state, &playlist_tree, plan),
         ExportPhase::Exporting {
             current_file,
             files_complete,
@@ -66,10 +67,68 @@ pub fn view(state: &ExportState, playlists: Vec<(NodeId, String)>) -> Element<'s
         .into()
 }
 
+/// Render a single tree node with its children (recursive)
+fn render_tree_node(
+    node: &TreeNode<NodeId>,
+    state: &ExportState,
+    tree: &[TreeNode<NodeId>],
+    depth: usize,
+) -> Element<'static, Message> {
+    let has_children = !node.children.is_empty();
+    let is_expanded = state.is_playlist_expanded(&node.id);
+    let is_selected = state.is_playlist_selected(&node.id);
+
+    // Indentation based on depth (16px per level)
+    let indent = Space::new().width(Length::Fixed((depth * 16) as f32));
+
+    // Expand/collapse arrow (only for nodes with children)
+    let expand_arrow: Element<Message> = if has_children {
+        let arrow_text = if is_expanded { "▼" } else { "▶" };
+        let id_for_expand = node.id.clone();
+        button(text(arrow_text).size(10))
+            .on_press(Message::ToggleExportPlaylistExpand(id_for_expand))
+            .style(button::text)
+            .padding(2)
+            .into()
+    } else {
+        // Placeholder space to align leaf nodes with parents
+        Space::new().width(Length::Fixed(20.0)).into()
+    };
+
+    // Checkbox for selection
+    let id_for_toggle = node.id.clone();
+    let label_text = node.label.clone();
+    let node_checkbox = checkbox(is_selected)
+        .label(label_text)
+        .on_toggle(move |_| Message::ToggleExportPlaylist(id_for_toggle.clone()))
+        .size(16);
+
+    // Build the row for this node
+    let node_row = row![indent, expand_arrow, node_checkbox]
+        .spacing(4)
+        .align_y(Alignment::Center);
+
+    // If expanded and has children, render children recursively
+    if has_children && is_expanded {
+        let children_elements: Vec<Element<Message>> = node
+            .children
+            .iter()
+            .map(|child| render_tree_node(child, state, tree, depth + 1))
+            .collect();
+
+        column![node_row]
+            .push(column(children_elements).spacing(4))
+            .spacing(4)
+            .into()
+    } else {
+        node_row.into()
+    }
+}
+
 /// Device selection view (initial state)
 fn view_device_selection(
     state: &ExportState,
-    playlists: &[(NodeId, String)],
+    playlist_tree: &[TreeNode<NodeId>],
 ) -> Element<'static, Message> {
     // Device dropdown - use display_info() for consistent human-readable formatting
     let device_options: Vec<String> = state
@@ -107,22 +166,12 @@ fn view_device_selection(
         text("").size(1)
     };
 
-    // Playlist checkboxes
+    // Playlist tree with hierarchical checkboxes
     let playlists_title = text("Select Playlists to Export").size(16);
 
-    let playlist_items: Vec<Element<Message>> = playlists
+    let playlist_items: Vec<Element<Message>> = playlist_tree
         .iter()
-        .filter(|(id, _)| id.0.starts_with("playlists/") && !id.0.ends_with("/playlists"))
-        .map(|(id, name)| {
-            let id_owned = id.clone();
-            let name_owned = name.clone();
-            let is_selected = state.is_playlist_selected(id);
-            checkbox(is_selected)
-                .label(name_owned)
-                .on_toggle(move |_| Message::ToggleExportPlaylist(id_owned.clone()))
-                .size(16)
-                .into()
-        })
+        .map(|node| render_tree_node(node, state, playlist_tree, 0))
         .collect();
 
     let playlists_content: Element<Message> = if playlist_items.is_empty() {
@@ -130,7 +179,7 @@ fn view_device_selection(
             .size(14)
             .into()
     } else {
-        scrollable(column(playlist_items).spacing(8))
+        scrollable(column(playlist_items).spacing(4))
             .height(Length::Fixed(200.0))
             .into()
     };
@@ -227,7 +276,7 @@ fn view_building_plan(files_hashed: usize, total_files: usize) -> Element<'stati
 /// View when sync plan is ready
 fn view_ready_to_sync(
     state: &ExportState,
-    _playlists: &[(NodeId, String)],
+    _playlist_tree: &[TreeNode<NodeId>],
     plan: &mesh_core::usb::SyncPlan,
 ) -> Element<'static, Message> {
     let summary_title = text("Sync Summary").size(18);
@@ -237,9 +286,8 @@ fn view_ready_to_sync(
     let delete_count = plan.tracks_to_delete.len();
     let symlinks_add_count = plan.symlinks_to_add.len();
     let symlinks_remove_count = plan.symlinks_to_remove.len();
-    let total_mb = plan.total_bytes as f64 / 1_000_000.0;
 
-    let copy_text = text(format!("{} tracks to copy ({:.1} MB)", copy_count, total_mb))
+    let copy_text = text(format!("{} tracks to copy ({})", copy_count, mesh_core::usb::format_bytes(plan.total_bytes)))
         .size(14)
         .color(if copy_count > 0 {
             iced::Color::from_rgb(0.2, 0.7, 0.2)
@@ -268,7 +316,6 @@ fn view_ready_to_sync(
 
     // Device space check
     let device_info: Element<Message> = if let Some(device) = state.selected_device() {
-        let available_mb = device.available_bytes as f64 / 1_000_000.0;
         let has_space = plan.total_bytes <= device.available_bytes;
 
         let space_color = if has_space {
@@ -277,7 +324,7 @@ fn view_ready_to_sync(
             iced::Color::from_rgb(0.9, 0.3, 0.2)
         };
 
-        text(format!("{:.1} MB available on {}", available_mb, device.label))
+        text(format!("{} available on {}", mesh_core::usb::format_bytes(device.available_bytes), device.label))
             .size(12)
             .color(space_color)
             .into()
@@ -306,8 +353,7 @@ fn view_ready_to_sync(
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| f.destination.display().to_string());
-                let size_kb = f.size as f64 / 1000.0;
-                text(format!("  {} ({:.1} KB)", name, size_kb))
+                text(format!("  {} ({})", name, mesh_core::usb::format_bytes(f.size)))
                     .size(12)
                     .into()
             })
@@ -420,9 +466,9 @@ fn view_exporting(
     .size(14);
 
     let bytes_text = text(format!(
-        "{:.1} MB / {:.1} MB",
-        bytes_complete as f64 / 1_000_000.0,
-        total_bytes as f64 / 1_000_000.0
+        "{} / {}",
+        mesh_core::usb::format_bytes(bytes_complete),
+        mesh_core::usb::format_bytes(total_bytes)
     ))
     .size(12);
 
