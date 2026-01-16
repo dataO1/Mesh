@@ -2002,6 +2002,10 @@ impl MeshCueApp {
                                 log::warn!("[LEFT TABLE] No playlist storage");
                             }
                         }
+                        // Handle sort column click
+                        if let TrackTableMessage::SortBy(column) = &table_msg {
+                            self.collection.browser_left.table_state.set_sort(*column);
+                        }
                     }
                 }
             }
@@ -2308,6 +2312,10 @@ impl MeshCueApp {
                                     return self.update(Message::ShowContextMenu(menu_kind, position));
                                 }
                             }
+                        }
+                        // Handle sort column click
+                        if let TrackTableMessage::SortBy(column) = &table_msg {
+                            self.collection.browser_right.table_state.set_sort(*column);
                         }
                     }
                 }
