@@ -2661,6 +2661,12 @@ impl MeshCueApp {
                 match usb_msg {
                     UsbMsg::DevicesRefreshed(devices) => {
                         self.export_state.devices = devices;
+                        // Auto-select first device if none selected and devices available
+                        if self.export_state.selected_device.is_none()
+                            && !self.export_state.devices.is_empty()
+                        {
+                            self.export_state.selected_device = Some(0);
+                        }
                     }
                     UsbMsg::DeviceConnected(device) => {
                         log::info!("USB device connected: {}", device.label);
@@ -2739,9 +2745,13 @@ impl MeshCueApp {
                             failed_files,
                         };
                         self.export_state.show_results = true;
+                        // Re-open modal to show completion results (even if user closed it during export)
+                        self.export_state.is_open = true;
                     }
                     UsbMsg::ExportError(err) => {
                         self.export_state.phase = ExportPhase::Error(err.to_string());
+                        // Re-open modal to show error (even if user closed it during export)
+                        self.export_state.is_open = true;
                     }
                     UsbMsg::ExportCancelled => {
                         self.export_state.phase = ExportPhase::SelectDevice;
