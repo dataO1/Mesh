@@ -183,6 +183,54 @@ impl<Id: Clone> TrackRow<Id> {
     }
 }
 
+/// Compare two tracks by a specific column
+fn compare_tracks_by_column<Id: Clone>(
+    a: &TrackRow<Id>,
+    b: &TrackRow<Id>,
+    column: TrackColumn,
+) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+
+    match column {
+        TrackColumn::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        TrackColumn::Artist => {
+            let a_artist = a.artist.as_deref().unwrap_or("");
+            let b_artist = b.artist.as_deref().unwrap_or("");
+            a_artist.to_lowercase().cmp(&b_artist.to_lowercase())
+        }
+        TrackColumn::Bpm => {
+            // Sort None values to the end
+            match (a.bpm, b.bpm) {
+                (Some(a_bpm), Some(b_bpm)) => a_bpm.partial_cmp(&b_bpm).unwrap_or(Ordering::Equal),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => Ordering::Equal,
+            }
+        }
+        TrackColumn::Key => {
+            let a_key = a.key.as_deref().unwrap_or("");
+            let b_key = b.key.as_deref().unwrap_or("");
+            a_key.cmp(b_key)
+        }
+        TrackColumn::Duration => {
+            match (a.duration, b.duration) {
+                (Some(a_dur), Some(b_dur)) => a_dur.partial_cmp(&b_dur).unwrap_or(Ordering::Equal),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => Ordering::Equal,
+            }
+        }
+        TrackColumn::Lufs => {
+            match (a.lufs, b.lufs) {
+                (Some(a_lufs), Some(b_lufs)) => a_lufs.partial_cmp(&b_lufs).unwrap_or(Ordering::Equal),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => Ordering::Equal,
+            }
+        }
+    }
+}
+
 /// State for the track table widget
 #[derive(Debug, Clone)]
 pub struct TrackTableState<Id: Clone + Eq + Hash> {
@@ -422,7 +470,7 @@ where
     let headers = build_headers(state, on_message.clone());
 
     // Filter tracks by search query
-    let filtered: Vec<_> = tracks
+    let mut filtered: Vec<_> = tracks
         .iter()
         .filter(|t| {
             state.search_query.is_empty()
@@ -431,6 +479,16 @@ where
                     .contains(&state.search_query.to_lowercase())
         })
         .collect();
+
+    // Sort tracks by selected column
+    filtered.sort_by(|a, b| {
+        let cmp = compare_tracks_by_column(a, b, state.sort_column);
+        if state.sort_ascending {
+            cmp
+        } else {
+            cmp.reverse()
+        }
+    });
 
     // Track rows
     let rows: Vec<Element<'a, Message>> = filtered

@@ -2002,6 +2002,7 @@ impl MeshCueApp {
                                 log::warn!("[LEFT TABLE] No playlist storage");
                             }
                         }
+                        // Note: SortBy is already handled by handle_table_message() above
                     }
                 }
             }
@@ -2309,6 +2310,7 @@ impl MeshCueApp {
                                 }
                             }
                         }
+                        // Note: SortBy is already handled by handle_table_message() above
                     }
                 }
             }
