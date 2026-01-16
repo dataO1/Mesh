@@ -307,6 +307,17 @@ and mesh-widget and only if necessary in the ui.
   drift. also validate the code quality and duplication of this. can we improve
   this, by making this better factored out, such that all the correction,
   playback logic etc happens at a central point like the deck/engine.
+- [x] clicking backdrop or closing the export window stops the export process,
+  this should run in the background. the footer shows the progress.
+- [x] auto select the first external disk in the export window.
+- [x] mesh-player again doesnt show any tracks in the playlists. check the usb
+  filesystem and verify the export is correct.
+- [x] deleting playlists on the usb stick (so the symlinks), then reexporting
+  them, copies the tracks as well (even though they are still present). so for
+  playlists, before copying the files, check if they are already present.
+  tracks can also be present in several playlists, so this should never
+  duplicate tracks, but first check if the track is present in /tracks, if not
+  copy, then symlink it (for ext4).
 - [x] stem linking visuals:
   - [x] for overview wvaeform: always show on top half the currently running
     stems together, on bottom half any non-running stems. this needs to be
@@ -314,7 +325,7 @@ and mesh-widget and only if necessary in the ui.
     a track where the vocal stem is stem linked to another vocal stem of another
     track, show this vocal stem initially in the bottom half, as soon as i
     switch, switch this stem to top and move the original stem to bottom half.
-- [ ] The tracks still dont directly come up in the collection (mesh-cue) right after they
+- [ ] when importing, tracks still dont directly come up in the collection (mesh-cue) right after they
   are done with analysis. i can see them finished in the status bar and written
   as a file but not directly in the collection list in the file browser.
 - [ ] On resize the last state of the canvas is imprinted and does not go away.
@@ -322,9 +333,6 @@ and mesh-widget and only if necessary in the ui.
 - [ ] when deleting a file in the file browser, first mark the next one (or
   previous one if there is no next one) for selection, otherwise it scrolls to
   the very top.
-- [ ] clicking backdrop or closing the export window stops the export process,
-  this should run in the background. the footer shows the progress.
-- [ ] auto select the first external disk in the export window.
 
 # Performance
 - [ ] Can we optimize how stems are stored, this is currently roughly 200-300 mb
