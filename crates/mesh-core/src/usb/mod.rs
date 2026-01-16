@@ -1,10 +1,10 @@
 //! USB device support for Mesh DJ software
 //!
 //! This module provides:
-//! - USB storage device detection via udev
-//! - Mount/unmount via udisks2 D-Bus API
+//! - USB storage device detection via sysinfo (cross-platform)
+//! - Mount/unmount support
 //! - Playlist storage backend for USB devices
-//! - Efficient sync with SHA256 content hashing
+//! - Efficient sync with metadata-based change detection (size + mtime)
 //! - Background manager thread for non-blocking operations
 //!
 //! # Architecture
@@ -41,7 +41,7 @@ pub use config::{
 pub use manager::{UsbCommand, UsbManager};
 pub use message::UsbMessage;
 pub use storage::UsbStorage;
-pub use sync::{CollectionState, FileHash, PlaylistLink, SyncPlan, TrackCopy, TrackInfo};
+pub use sync::{CollectionState, PlaylistLink, SyncPlan, TrackCopy, TrackInfo};
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -115,7 +115,7 @@ impl UsbDevice {
 }
 
 /// Format bytes as human-readable string (GB for >= 1GB, MB otherwise)
-fn format_bytes(bytes: u64) -> String {
+pub fn format_bytes(bytes: u64) -> String {
     const GB: u64 = 1_000_000_000;
     const MB: u64 = 1_000_000;
 
@@ -201,9 +201,11 @@ pub enum UsbError {
     /// Device was disconnected during operation
     DeviceDisconnected,
 
-    /// File hash verification failed after copy
-    HashMismatch {
+    /// File size verification failed after copy
+    SizeMismatch {
         path: PathBuf,
+        expected: u64,
+        actual: u64,
     },
 
     /// Filesystem not supported
@@ -223,19 +225,19 @@ impl std::fmt::Display for UsbError {
             UsbError::MountFailed(msg) => write!(f, "Mount failed: {}", msg),
             UsbError::UnmountFailed(msg) => write!(f, "Unmount failed: {}", msg),
             UsbError::InsufficientSpace { required, available } => {
-                let req_mb = *required as f64 / 1_000_000.0;
-                let avail_mb = *available as f64 / 1_000_000.0;
                 write!(
                     f,
-                    "Insufficient space: need {:.1}MB, only {:.1}MB available",
-                    req_mb, avail_mb
+                    "Insufficient space: need {}, only {} available",
+                    format_bytes(*required),
+                    format_bytes(*available)
                 )
             }
             UsbError::PermissionDenied(msg) => write!(f, "Permission denied: {}", msg),
             UsbError::IoError(msg) => write!(f, "IO error: {}", msg),
             UsbError::DeviceDisconnected => write!(f, "Device disconnected during operation"),
-            UsbError::HashMismatch { path } => {
-                write!(f, "File verification failed: {}", path.display())
+            UsbError::SizeMismatch { path, expected, actual } => {
+                write!(f, "File verification failed: {} (expected {} bytes, got {})",
+                    path.display(), expected, actual)
             }
             UsbError::UnsupportedFilesystem(fs) => write!(f, "Unsupported filesystem: {}", fs),
             UsbError::ManifestError(msg) => write!(f, "Manifest error: {}", msg),

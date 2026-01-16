@@ -525,7 +525,7 @@ fn handle_start_export(
 
             let dest_path = collection_root.join(&track.destination);
 
-            match copy_with_verification(&track.source, &dest_path, &track.hash, 3) {
+            match copy_with_verification(&track.source, &dest_path, track.size, 3) {
                 Ok(()) => {
                     let current_files = files_complete.fetch_add(1, Ordering::Relaxed) + 1;
                     let current_bytes =

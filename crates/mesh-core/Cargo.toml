@@ -19,8 +19,6 @@ rubato = "0.16"   # High-quality sample rate conversion
 log = "0.4"
 
 # USB device support (cross-platform)
-sha2 = "0.10"       # SHA256 hashing for change detection
-hex = "0.4"         # Hex encoding for hash display
 pathdiff = "0.2"    # Relative path computation for symlinks
 sysinfo = "0.33"    # Cross-platform disk detection (replaces udev/sysfs/blkid)
 walkdir = "2"       # Cross-platform recursive directory traversal
