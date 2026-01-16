@@ -183,8 +183,24 @@ impl<Id: Clone> TrackRow<Id> {
     }
 }
 
+/// Sort a slice of tracks by a specific column and direction
+///
+/// This should be called when sort state changes to keep track data in sync.
+pub fn sort_tracks<Id: Clone>(tracks: &mut [TrackRow<Id>], column: TrackColumn, ascending: bool) {
+    tracks.sort_by(|a, b| {
+        let cmp = compare_tracks_by_column(a, b, column);
+        if ascending {
+            cmp
+        } else {
+            cmp.reverse()
+        }
+    });
+}
+
 /// Compare two tracks by a specific column
-fn compare_tracks_by_column<Id: Clone>(
+///
+/// Used for sorting tracks. None values are sorted to the end.
+pub fn compare_tracks_by_column<Id: Clone>(
     a: &TrackRow<Id>,
     b: &TrackRow<Id>,
     column: TrackColumn,
