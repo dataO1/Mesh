@@ -177,6 +177,15 @@ fn handle_track_load(
             let duration = track.duration_samples as u64;
             let bpm = track.metadata.bpm.unwrap_or(120.0);
 
+            // LUFS logging: trace where LUFS values are in the load pipeline
+            log::info!(
+                "[LUFS] Loader: Track loaded for deck {} - LUFS={:?}, BPM={:.1}, path={:?}",
+                request.deck_idx,
+                track.metadata.lufs,
+                bpm,
+                request.path.file_name().unwrap_or_default()
+            );
+
             // Create cue markers for display
             let cue_markers: Vec<CueMarker> = track
                 .metadata

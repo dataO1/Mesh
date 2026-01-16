@@ -383,12 +383,23 @@ impl AudioEngine {
             // ─────────────────────────────────────────────────────────────
             // Auto-apply LUFS gain compensation
             // ─────────────────────────────────────────────────────────────
+            log::info!(
+                "[LUFS] engine.load_track_fast: deck {} - track_lufs={:?}, loudness_config.enabled={}",
+                deck,
+                track_lufs,
+                self.loudness_config.auto_gain_enabled
+            );
             let lufs_gain = self.loudness_config.calculate_gain_linear(track_lufs);
             d.set_lufs_gain(lufs_gain, track_lufs);
             if let Some(lufs) = track_lufs {
                 log::info!(
-                    "Deck {}: LUFS auto-gain applied: {:.3}x ({:+.1} dB), track={:.1} LUFS, target={:.1} LUFS",
+                    "[LUFS] Deck {}: LUFS auto-gain applied: {:.3}x ({:+.1} dB), track={:.1} LUFS, target={:.1} LUFS",
                     deck, lufs_gain, self.loudness_config.target_lufs - lufs, lufs, self.loudness_config.target_lufs
+                );
+            } else {
+                log::warn!(
+                    "[LUFS] Deck {}: No LUFS value available, using gain=1.0 (no normalization)",
+                    deck
                 );
             }
         }

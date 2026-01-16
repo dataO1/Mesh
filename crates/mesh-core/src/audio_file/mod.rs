@@ -1648,8 +1648,16 @@ pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFile
     };
 
     // Parse bext description with duration to regenerate beat grid
-    if let Some(description) = bext_description {
-        metadata = TrackMetadata::parse_bext_description_with_duration(&description, duration_samples);
+    if let Some(ref description) = bext_description {
+        metadata = TrackMetadata::parse_bext_description_with_duration(description, duration_samples);
+        log::info!(
+            "[LUFS] read_metadata: bext parsed - LUFS={:?}, BPM={:?}, description_len={}",
+            metadata.lufs,
+            metadata.bpm,
+            description.len()
+        );
+    } else {
+        log::warn!("[LUFS] read_metadata: No bext description found in file!");
     }
     log::trace!("    [PERF] Beat grid regenerated: {:?}", start.elapsed());
 

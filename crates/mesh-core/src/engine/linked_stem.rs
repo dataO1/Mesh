@@ -189,16 +189,38 @@ impl StemLink {
     /// After this correction, the deck's overall `lufs_gain` will bring
     /// everything to the target LUFS level.
     pub fn update_gain(&mut self, host_lufs: Option<f32>) {
-        self.gain = match (host_lufs, self.linked.as_ref().and_then(|l| l.lufs)) {
+        let linked_lufs = self.linked.as_ref().and_then(|l| l.lufs);
+        log::info!(
+            "[LUFS] linked_stem.update_gain: host_lufs={:?}, linked_lufs={:?}",
+            host_lufs, linked_lufs
+        );
+        self.gain = match (host_lufs, linked_lufs) {
             (Some(host), Some(linked)) => {
                 let gain = 10.0_f32.powf((host - linked) / 20.0);
-                log::debug!(
-                    "Linked stem gain: host={:.1} LUFS, linked={:.1} LUFS → gain={:.3} ({:+.1} dB)",
+                log::info!(
+                    "[LUFS] Linked stem gain calculated: host={:.1} LUFS, linked={:.1} LUFS → gain={:.3} ({:+.1} dB)",
                     host, linked, gain, host - linked
                 );
                 gain
             }
-            _ => 1.0, // No correction if either LUFS is missing
+            (None, Some(linked)) => {
+                log::warn!(
+                    "[LUFS] No host LUFS available, linked={:.1} LUFS → using gain=1.0 (no correction)",
+                    linked
+                );
+                1.0
+            }
+            (Some(host), None) => {
+                log::warn!(
+                    "[LUFS] No linked stem LUFS available, host={:.1} LUFS → using gain=1.0 (no correction)",
+                    host
+                );
+                1.0
+            }
+            (None, None) => {
+                log::warn!("[LUFS] Neither host nor linked LUFS available → using gain=1.0 (no correction)");
+                1.0
+            }
         };
     }
 
