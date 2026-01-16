@@ -22,9 +22,12 @@
 //! ```
 
 use super::detection::{enumerate_devices, monitor_devices, DeviceEvent};
-use super::mount::{init_collection_structure, mount_device_sync, refresh_device_info};
+use super::mount::{init_collection_structure, refresh_device_info};
 use super::storage::UsbStorage;
-use super::sync::{build_sync_plan, copy_with_verification, SyncPlan, UsbManifest};
+use super::sync::{
+    build_sync_plan, copy_with_verification, scan_local_collection, scan_usb_collection,
+    CollectionState, SyncPlan,
+};
 use super::{ExportableConfig, UsbDevice, UsbError};
 use crate::playlist::NodeId;
 
@@ -250,6 +253,9 @@ fn handle_refresh_devices(
 }
 
 /// Handle mount command
+///
+/// On cross-platform, we rely on OS auto-mount. This just refreshes device info
+/// to check if the device is currently mounted.
 fn handle_mount(
     devices: &mut HashMap<PathBuf, UsbDevice>,
     device_path: &PathBuf,
@@ -269,29 +275,26 @@ fn handle_mount(
         }
     };
 
-    match mount_device_sync(&device) {
-        Ok(mounted_device) => {
-            devices.insert(device_path.clone(), mounted_device.clone());
-            let _ = message_tx.send(UsbMessage::MountComplete {
-                result: Ok(mounted_device),
-            });
-        }
-        Err(e) => {
-            // Try refreshing device info in case it's already mounted
-            let refreshed = refresh_device_info(&device);
-            if refreshed.mount_point.is_some() {
-                devices.insert(device_path.clone(), refreshed.clone());
-                let _ = message_tx.send(UsbMessage::MountComplete {
-                    result: Ok(refreshed),
-                });
-            } else {
-                let _ = message_tx.send(UsbMessage::MountComplete { result: Err(e) });
-            }
-        }
+    // Refresh device info - if OS has auto-mounted, we'll see it
+    let refreshed = refresh_device_info(&device);
+    if refreshed.mount_point.is_some() {
+        devices.insert(device_path.clone(), refreshed.clone());
+        let _ = message_tx.send(UsbMessage::MountComplete {
+            result: Ok(refreshed),
+        });
+    } else {
+        let _ = message_tx.send(UsbMessage::MountComplete {
+            result: Err(UsbError::MountFailed(
+                "Device not mounted. Please ensure the device is connected and mounted by your operating system.".to_string()
+            )),
+        });
     }
 }
 
 /// Handle unmount command
+///
+/// On cross-platform, unmounting is handled by the OS. We just refresh
+/// device info to reflect current state.
 fn handle_unmount(
     devices: &mut HashMap<PathBuf, UsbDevice>,
     device_path: &PathBuf,
@@ -308,28 +311,15 @@ fn handle_unmount(
         }
     };
 
-    match super::mount::unmount_device_sync(&device) {
-        Ok(()) => {
-            // Update device to unmounted state
-            let unmounted = UsbDevice {
-                mount_point: None,
-                available_bytes: 0,
-                has_mesh_collection: false,
-                ..device
-            };
-            devices.insert(device_path.clone(), unmounted);
-            let _ = message_tx.send(UsbMessage::UnmountComplete {
-                device_path: device_path.clone(),
-                result: Ok(()),
-            });
-        }
-        Err(e) => {
-            let _ = message_tx.send(UsbMessage::UnmountComplete {
-                device_path: device_path.clone(),
-                result: Err(e),
-            });
-        }
-    }
+    // Refresh device info - if it's been unmounted, mount_point will be None
+    let refreshed = refresh_device_info(&device);
+    devices.insert(device_path.clone(), refreshed);
+
+    // Report success - the device state has been updated
+    let _ = message_tx.send(UsbMessage::UnmountComplete {
+        device_path: device_path.clone(),
+        result: Ok(()),
+    });
 }
 
 /// Handle playlist scan command
@@ -368,6 +358,9 @@ fn handle_scan_playlists(
 }
 
 /// Handle sync plan building
+///
+/// Scans both local and USB collections, then computes the minimal diff.
+/// Uses parallel hashing for performance.
 fn handle_build_sync_plan(
     devices: &HashMap<PathBuf, UsbDevice>,
     device_path: &PathBuf,
@@ -387,83 +380,82 @@ fn handle_build_sync_plan(
         }
     };
 
-    // Load existing manifest from USB
-    let manifest = device
-        .manifest_path()
-        .and_then(|p| UsbManifest::load(&p).ok())
-        .unwrap_or_default();
-
-    // Build list of tracks to export from selected playlists
-    let mut local_tracks: Vec<(PathBuf, PathBuf)> = Vec::new();
-
-    // Read local collection to get track paths
-    let _local_playlists_dir = local_collection_root.join("playlists");
-    let _local_tracks_dir = local_collection_root.join("tracks");
-
-    for playlist_id in playlists {
-        // Get playlist directory
-        let playlist_path = if playlist_id.is_in_playlists() {
-            local_collection_root.join(playlist_id.as_str())
-        } else {
-            continue;
-        };
-
-        // Scan playlist for tracks
-        if let Ok(entries) = std::fs::read_dir(&playlist_path) {
-            for entry in entries.filter_map(|e| e.ok()) {
-                let entry_path = entry.path();
-                if entry_path.extension().and_then(|e| e.to_str()) == Some("wav") {
-                    // Resolve symlink to get actual track path
-                    let track_path = if entry_path.is_symlink() {
-                        std::fs::read_link(&entry_path)
-                            .ok()
-                            .map(|link| {
-                                if link.is_absolute() {
-                                    link
-                                } else {
-                                    entry_path.parent().unwrap().join(&link)
-                                }
-                            })
-                            .and_then(|p| p.canonicalize().ok())
-                            .unwrap_or(entry_path.clone())
-                    } else {
-                        entry_path.clone()
-                    };
-
-                    // Compute destination path (relative to USB collection)
-                    let file_name = entry_path.file_name().unwrap();
-                    let dest_tracks = PathBuf::from("tracks").join(file_name);
-                    let _dest_playlist = PathBuf::from(playlist_id.as_str()).join(file_name);
-
-                    // Add track to collection
-                    if !local_tracks.iter().any(|(_, d)| d == &dest_tracks) {
-                        local_tracks.push((track_path.clone(), dest_tracks));
-                    }
-                }
+    // Extract playlist names from NodeIds (e.g., "playlists/My Set" -> "My Set")
+    let playlist_names: Vec<String> = playlists
+        .iter()
+        .filter_map(|id| {
+            if id.is_in_playlists() {
+                Some(
+                    id.as_str()
+                        .strip_prefix("playlists/")
+                        .unwrap_or(id.as_str())
+                        .to_string(),
+                )
+            } else {
+                None
             }
-        }
-    }
+        })
+        .collect();
 
-    // Build sync plan with progress callback
-    let tx = message_tx.clone();
-    let progress_callback = Box::new(move |current: usize, total: usize| {
-        let _ = tx.send(UsbMessage::SyncPlanProgress {
-            files_hashed: current,
-            total_files: total,
+    // Progress callback for local scanning
+    let tx_local = message_tx.clone();
+    let local_progress: super::sync::ProgressCallback =
+        Box::new(move |current: usize, total: usize| {
+            let _ = tx_local.send(UsbMessage::SyncPlanProgress {
+                files_hashed: current,
+                total_files: total,
+            });
         });
-    });
 
-    match build_sync_plan(local_tracks, &manifest, Some(progress_callback)) {
-        Ok(plan) => {
-            let _ = message_tx.send(UsbMessage::SyncPlanReady(plan));
-        }
+    // Scan local collection (parallel hashing)
+    let local_state = match scan_local_collection(
+        local_collection_root,
+        &playlist_names,
+        Some(local_progress),
+    ) {
+        Ok(state) => state,
         Err(e) => {
             let _ = message_tx.send(UsbMessage::SyncPlanFailed(UsbError::IoError(e.to_string())));
+            return;
         }
-    }
+    };
+
+    // Scan USB collection if it exists
+    let usb_state = if let Some(usb_root) = device.collection_root() {
+        if usb_root.exists() {
+            // Progress callback for USB scanning
+            let tx_usb = message_tx.clone();
+            let usb_progress: super::sync::ProgressCallback =
+                Box::new(move |current: usize, total: usize| {
+                    let _ = tx_usb.send(UsbMessage::SyncPlanProgress {
+                        files_hashed: current,
+                        total_files: total,
+                    });
+                });
+
+            match scan_usb_collection(&usb_root, Some(usb_progress)) {
+                Ok(state) => state,
+                Err(e) => {
+                    log::warn!("Failed to scan USB collection: {}", e);
+                    CollectionState::default()
+                }
+            }
+        } else {
+            CollectionState::default()
+        }
+    } else {
+        CollectionState::default()
+    };
+
+    // Build the sync plan by comparing states
+    let plan = build_sync_plan(&local_state, &usb_state);
+    let _ = message_tx.send(UsbMessage::SyncPlanReady(plan));
 }
 
 /// Handle export start
+///
+/// Executes the sync plan: copies tracks, creates/removes symlinks, cleans up.
+/// Uses parallel file copying with limited thread pool for USB I/O.
 fn handle_start_export(
     devices: &HashMap<PathBuf, UsbDevice>,
     device_path: &PathBuf,
@@ -500,7 +492,7 @@ fn handle_start_export(
     }
 
     let _ = message_tx.send(UsbMessage::ExportStarted {
-        total_files: plan.to_copy.len(),
+        total_files: plan.tracks_to_copy.len(),
         total_bytes: plan.total_bytes,
     });
 
@@ -508,13 +500,15 @@ fn handle_start_export(
     let mut files_exported = 0usize;
     let mut bytes_complete = 0u64;
     let mut failed_files: Vec<(PathBuf, String)> = Vec::new();
+    let mut copied_tracks: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    // Use rayon for parallel copying (but limit threads to not saturate USB)
+    // Phase 1: Copy tracks (parallel with limited threads for USB I/O)
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
+        .num_threads(4) // USB is sequential; too many threads = thrashing
         .build()
         .unwrap();
 
+    let total_tracks = plan.tracks_to_copy.len();
     pool.install(|| {
         use rayon::prelude::*;
         use std::sync::atomic::AtomicU64;
@@ -522,32 +516,47 @@ fn handle_start_export(
         let files_complete = std::sync::atomic::AtomicUsize::new(0);
         let bytes_done = AtomicU64::new(0);
         let failed = std::sync::Mutex::new(Vec::new());
+        let copied = std::sync::Mutex::new(std::collections::HashSet::new());
 
-        plan.to_copy.par_iter().for_each(|file| {
+        plan.tracks_to_copy.par_iter().for_each(|track| {
             if cancel_flag.load(Ordering::Relaxed) {
                 return;
             }
 
-            let dest_path = collection_root.join(&file.destination);
+            let dest_path = collection_root.join(&track.destination);
 
-            match copy_with_verification(&file.source, &dest_path, &file.hash, 3) {
+            match copy_with_verification(&track.source, &dest_path, &track.hash, 3) {
                 Ok(()) => {
                     let current_files = files_complete.fetch_add(1, Ordering::Relaxed) + 1;
-                    let current_bytes = bytes_done.fetch_add(file.size, Ordering::Relaxed) + file.size;
+                    let current_bytes =
+                        bytes_done.fetch_add(track.size, Ordering::Relaxed) + track.size;
+
+                    // Track which files were copied successfully
+                    if let Some(filename) = track.destination.file_name() {
+                        copied
+                            .lock()
+                            .unwrap()
+                            .insert(filename.to_string_lossy().to_string());
+                    }
 
                     let _ = message_tx.send(UsbMessage::ExportProgress {
-                        current_file: file.source.file_name()
+                        current_file: track
+                            .source
+                            .file_name()
                             .and_then(|n| n.to_str())
                             .unwrap_or("Unknown")
                             .to_string(),
                         files_complete: current_files,
                         bytes_complete: current_bytes,
-                        total_files: plan.to_copy.len(),
+                        total_files: total_tracks,
                         total_bytes: plan.total_bytes,
                     });
                 }
                 Err(e) => {
-                    failed.lock().unwrap().push((file.destination.clone(), e.to_string()));
+                    failed
+                        .lock()
+                        .unwrap()
+                        .push((track.destination.clone(), e.to_string()));
                 }
             }
         });
@@ -555,6 +564,7 @@ fn handle_start_export(
         files_exported = files_complete.load(Ordering::Relaxed);
         bytes_complete = bytes_done.load(Ordering::Relaxed);
         failed_files = failed.into_inner().unwrap();
+        copied_tracks = copied.into_inner().unwrap();
     });
 
     if cancel_flag.load(Ordering::Relaxed) {
@@ -562,7 +572,105 @@ fn handle_start_export(
         return;
     }
 
-    // Save config if requested
+    // Phase 2: Delete tracks that are no longer needed
+    let tracks_dir = collection_root.join("tracks");
+    for filename in &plan.tracks_to_delete {
+        let track_path = tracks_dir.join(filename);
+        if track_path.exists() {
+            if let Err(e) = std::fs::remove_file(&track_path) {
+                log::warn!("Failed to delete track {}: {}", track_path.display(), e);
+            }
+        }
+    }
+
+    // Phase 3: Create playlist directories
+    let playlists_dir = collection_root.join("playlists");
+    for playlist_name in &plan.dirs_to_create {
+        let playlist_dir = playlists_dir.join(playlist_name);
+        if let Err(e) = std::fs::create_dir_all(&playlist_dir) {
+            log::error!(
+                "Failed to create playlist dir {}: {}",
+                playlist_dir.display(),
+                e
+            );
+        }
+    }
+
+    // Phase 4: Remove symlinks that are no longer needed
+    for link in &plan.symlinks_to_remove {
+        let link_path = playlists_dir.join(&link.playlist).join(&link.track_filename);
+        if link_path.exists() {
+            if let Err(e) = std::fs::remove_file(&link_path) {
+                log::warn!("Failed to remove symlink {}: {}", link_path.display(), e);
+            }
+        }
+    }
+
+    // Phase 5: Create new symlinks (or copies for FAT filesystems)
+    for link in &plan.symlinks_to_add {
+        let playlist_dir = playlists_dir.join(&link.playlist);
+
+        // Ensure playlist directory exists
+        if !playlist_dir.exists() {
+            if let Err(e) = std::fs::create_dir_all(&playlist_dir) {
+                log::error!(
+                    "Failed to create playlist dir {}: {}",
+                    playlist_dir.display(),
+                    e
+                );
+                continue;
+            }
+        }
+
+        let link_path = playlist_dir.join(&link.track_filename);
+
+        // Skip if link already exists
+        if link_path.exists() {
+            continue;
+        }
+
+        if device.supports_symlinks() {
+            // Create relative symlink: ../../tracks/Track.wav
+            let target = PathBuf::from("..")
+                .join("..")
+                .join("tracks")
+                .join(&link.track_filename);
+
+            // Use cross-platform symlink crate
+            if let Err(e) = symlink::symlink_file(&target, &link_path) {
+                log::error!("Failed to create symlink {}: {}", link_path.display(), e);
+            }
+        } else {
+            // For FAT/exFAT, copy the file (no symlink support)
+            let track_path = tracks_dir.join(&link.track_filename);
+            if track_path.exists() {
+                if let Err(e) = std::fs::copy(&track_path, &link_path) {
+                    log::error!("Failed to copy to playlist {}: {}", link_path.display(), e);
+                }
+            }
+        }
+    }
+
+    // Phase 6: Delete empty playlist directories
+    for playlist_name in &plan.dirs_to_delete {
+        let playlist_dir = playlists_dir.join(playlist_name);
+        if playlist_dir.exists() {
+            // Only delete if empty
+            if let Ok(mut entries) = std::fs::read_dir(&playlist_dir) {
+                if entries.next().is_none() {
+                    if let Err(e) = std::fs::remove_dir(&playlist_dir) {
+                        log::warn!(
+                            "Failed to remove playlist dir {}: {}",
+                            playlist_dir.display(),
+                            e
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Phase 7: Save config if requested
     if include_config {
         if let Some(cfg) = config {
             if let Some(config_path) = device.config_path() {
@@ -573,25 +681,7 @@ fn handle_start_export(
         }
     }
 
-    // Update manifest
-    let mut manifest = device
-        .manifest_path()
-        .and_then(|p| UsbManifest::load(&p).ok())
-        .unwrap_or_default();
-
-    for file in &plan.to_copy {
-        if !failed_files.iter().any(|(p, _)| p == &file.destination) {
-            manifest.files.insert(file.destination.clone(), file.hash.clone());
-        }
-    }
-
-    manifest.exported_at = std::time::SystemTime::now();
-
-    if let Some(manifest_path) = device.manifest_path() {
-        if let Err(e) = manifest.save(&manifest_path) {
-            log::error!("Failed to save manifest: {}", e);
-        }
-    }
+    // No manifest to save - USB filesystem is the source of truth
 
     let duration = start_time.elapsed();
     let _ = message_tx.send(UsbMessage::ExportComplete {

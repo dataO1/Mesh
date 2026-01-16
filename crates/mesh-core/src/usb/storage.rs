@@ -257,6 +257,8 @@ impl UsbStorage {
     }
 
     /// Create a symlink (ext4) or copy (FAT32/exFAT) for a track
+    ///
+    /// Uses cross-platform symlink crate for portability across Linux/macOS/Windows.
     fn link_or_copy_track(&self, source: &Path, dest: &Path) -> Result<(), PlaylistError> {
         // Ensure parent directory exists
         if let Some(parent) = dest.parent() {
@@ -264,12 +266,12 @@ impl UsbStorage {
         }
 
         if self.device.supports_symlinks() {
-            // Create relative symlink
+            // Create relative symlink using cross-platform crate
             let rel_path = pathdiff::diff_paths(source, dest.parent().unwrap())
                 .ok_or_else(|| {
                     PlaylistError::InvalidOperation("Could not compute relative path".to_string())
                 })?;
-            std::os::unix::fs::symlink(&rel_path, dest)?;
+            symlink::symlink_file(&rel_path, dest)?;
         } else {
             // Copy the file (FAT32/exFAT don't support symlinks)
             fs::copy(source, dest)?;

@@ -233,12 +233,13 @@ fn view_ready_to_sync(
     let summary_title = text("Sync Summary").size(18);
 
     // Summary stats
-    let copy_count = plan.to_copy.len();
-    let delete_count = plan.to_delete.len();
-    let unchanged_count = plan.unchanged.len();
+    let copy_count = plan.tracks_to_copy.len();
+    let delete_count = plan.tracks_to_delete.len();
+    let symlinks_add_count = plan.symlinks_to_add.len();
+    let symlinks_remove_count = plan.symlinks_to_remove.len();
     let total_mb = plan.total_bytes as f64 / 1_000_000.0;
 
-    let copy_text = text(format!("{} files to copy ({:.1} MB)", copy_count, total_mb))
+    let copy_text = text(format!("{} tracks to copy ({:.1} MB)", copy_count, total_mb))
         .size(14)
         .color(if copy_count > 0 {
             iced::Color::from_rgb(0.2, 0.7, 0.2)
@@ -246,7 +247,7 @@ fn view_ready_to_sync(
             iced::Color::from_rgb(0.5, 0.5, 0.5)
         });
 
-    let delete_text = text(format!("{} files to delete", delete_count))
+    let delete_text = text(format!("{} tracks to delete", delete_count))
         .size(14)
         .color(if delete_count > 0 {
             iced::Color::from_rgb(0.9, 0.4, 0.2)
@@ -254,9 +255,16 @@ fn view_ready_to_sync(
             iced::Color::from_rgb(0.5, 0.5, 0.5)
         });
 
-    let unchanged_text = text(format!("{} files unchanged (skipped)", unchanged_count))
+    // Show playlist link changes instead of unchanged count
+    let playlist_changes = symlinks_add_count + symlinks_remove_count;
+    let playlist_text = text(format!("{} playlist links to update (+{} / -{})",
+        playlist_changes, symlinks_add_count, symlinks_remove_count))
         .size(14)
-        .color(iced::Color::from_rgb(0.5, 0.5, 0.5));
+        .color(if playlist_changes > 0 {
+            iced::Color::from_rgb(0.4, 0.6, 0.9)
+        } else {
+            iced::Color::from_rgb(0.5, 0.5, 0.5)
+        });
 
     // Device space check
     let device_info: Element<Message> = if let Some(device) = state.selected_device() {
@@ -287,9 +295,9 @@ fn view_ready_to_sync(
     };
 
     // Show a few files that will be copied
-    let files_preview: Element<Message> = if !plan.to_copy.is_empty() {
+    let files_preview: Element<Message> = if !plan.tracks_to_copy.is_empty() {
         let items: Vec<Element<Message>> = plan
-            .to_copy
+            .tracks_to_copy
             .iter()
             .take(5)
             .map(|f| {
@@ -306,19 +314,19 @@ fn view_ready_to_sync(
             .collect();
 
         let mut preview_col = column(items).spacing(2);
-        if plan.to_copy.len() > 5 {
+        if plan.tracks_to_copy.len() > 5 {
             preview_col = preview_col.push(
-                text(format!("  ... and {} more", plan.to_copy.len() - 5))
+                text(format!("  ... and {} more", plan.tracks_to_copy.len() - 5))
                     .size(12)
                     .color(iced::Color::from_rgb(0.5, 0.5, 0.5)),
             );
         }
 
-        column![text("Files to copy:").size(14), preview_col]
+        column![text("Tracks to copy:").size(14), preview_col]
             .spacing(4)
             .into()
     } else {
-        text("All files are up to date!")
+        text("All tracks are up to date!")
             .size(14)
             .color(iced::Color::from_rgb(0.2, 0.7, 0.2))
             .into()
@@ -353,7 +361,7 @@ fn view_ready_to_sync(
         summary_title,
         copy_text,
         delete_text,
-        unchanged_text,
+        playlist_text,
         device_info,
         config_note,
         rule::horizontal(1),

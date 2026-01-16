@@ -239,7 +239,7 @@ impl UsbMessage {
                 format!("Hashing files: {}/{}", files_hashed, total_files)
             }
             UsbMessage::SyncPlanReady(plan) => {
-                format!("{} files to copy ({:.1}MB)", plan.to_copy.len(), plan.total_bytes as f64 / 1_000_000.0)
+                plan.summary()
             }
             UsbMessage::ExportStarted { total_files, .. } => {
                 format!("Starting export of {} files", total_files)

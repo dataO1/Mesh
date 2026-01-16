@@ -346,10 +346,15 @@ impl CollectionBrowserState {
     fn get_track_path(&self, track_id: &NodeId) -> Option<PathBuf> {
         // Check if this is a USB track (ID starts with "usb:")
         if track_id.0.starts_with("usb:") {
-            // Extract device path from the track ID and find the USB storage
+            // Track ID is prefixed like "usb:/run/media/user/DEVICE/playlists/Detox/track.wav"
+            // Strip the prefix to get the unprefixed ID for lookup in UsbStorage
             for (device_path, usb_storage) in &self.usb_storages {
-                if let Some(node) = usb_storage.get_node(track_id) {
-                    return node.track_path;
+                let device_prefix = format!("usb:{}/", device_path.display());
+                if let Some(stripped) = track_id.0.strip_prefix(&device_prefix) {
+                    let unprefixed_id = NodeId(stripped.to_string());
+                    if let Some(node) = usb_storage.get_node(&unprefixed_id) {
+                        return node.track_path;
+                    }
                 }
             }
             return None;
@@ -486,10 +491,21 @@ impl CollectionBrowserState {
 
     /// Get tracks from USB storage for a given folder
     fn get_usb_tracks_for_folder(&self, folder_id: &NodeId) -> Vec<TrackRow<NodeId>> {
-        // Find the USB storage that contains this folder
-        for (_, usb_storage) in &self.usb_storages {
-            let tracks = usb_storage.get_tracks(folder_id);
-            if !tracks.is_empty() || usb_storage.get_node(folder_id).is_some() {
+        // folder_id is prefixed like "usb:/run/media/user/DEVICE/playlists/Detox"
+        // We need to find the matching device and strip the prefix to get "playlists/Detox"
+        let id_str = &folder_id.0;
+        if !id_str.starts_with("usb:") {
+            return Vec::new();
+        }
+
+        // Find matching USB storage and strip the device path prefix
+        for (device_path, usb_storage) in &self.usb_storages {
+            let device_prefix = format!("usb:{}/", device_path.display());
+            if let Some(stripped) = id_str.strip_prefix(&device_prefix) {
+                // Create unprefixed NodeId for lookup in UsbStorage
+                let unprefixed_id = NodeId(stripped.to_string());
+                let tracks = usb_storage.get_tracks(&unprefixed_id);
+
                 return tracks
                     .into_iter()
                     .map(|info| {
