@@ -131,6 +131,35 @@ and mesh-widget and only if necessary in the ui.
         - [x] I think we actually need to restrict linked stems to prepared mode, so we can define a link point which marks a common first beat, for example marking the drop. Or we have structural markers for tracks anyways, the we can use on the fly stem linking. We could use the hot cue marker for relative positioning, but how is the user interaction then and how does the system k or which hit cues match? I think I like the drop marker
         - [x] How to visualise this? I think we can split the detailed waveform horizontally in half, the upper half represent the actively playing stems, the bottom half the linked stems (if there are any, otherwise keep full waveform). Same for overview waveform, so the dj has an overview of when stems have meaningful information (like a vocal stem which does not permanently have info, also the alignment becomes visual then).
     - [x] if you still have questions let me know and lets design this together.
+- [ ] we need usb stick support, so in mesh cue the user should be able to
+  export playlists, and config files to external devices (like usb stick) of the
+  right format. everything that is necessary for
+  mesh-player to work and the dj to play sets on it with their saved config
+  file. what should not be transfered: midi mappings.
+  - [ ] the file browser needs to be adjusted. for mesh-cue show the locally existing
+    collection and playlists as before. Add a small icon in the footer for
+    opening a export manager popup (similar to the import window), where in a
+    header the user can select detected external storage devices with supported
+    file systems, that can be mounted. selecting a device should mount it if not
+    already mounted, detect if there is a collection/playlists/config setup
+    existing. under the header, there should be two columns, left side for the
+    local playlists, right side the selected external devices playlists. The
+    user can then in the footer press a "export" button to sync local selected playlists (from the left column) to the usb stick.
+  - [ ] the sticks exported format should also be like local: all track files in
+    the colleciton and playlists with symlinks to the collection. the export
+    process should be as efficient as possible, so check existing files in the
+    collection (via hash to compare if they got updated) and only sync new
+    files. this should use multi-threading efficiently as well.
+  - [ ] in mesh-player the file browser needs to automatically show detected
+    external usb devices with exported playlists. so on the otp level there
+    should be devices (with their name), then if click on it, show the playlists
+    inside (similar to already existing playlists behavirou for local).
+  - [ ] all the usb detection, mounting, export import logic for playlists etc,
+    should be written ONCE, be its own logic unit in mesh-core and should be
+    initialized once each for mesh-cue and mesh-player each. the uis should
+    communicate with it via messages and subscriptions efficiently.
+  - [ ] if youre unsure what exactly should be on external exported devices, or
+    how loading should happen etc, ask me questions.
 
 # Changes
 - [x] The waveform indicators of hot cues use colors, but the hot cue buttons
@@ -190,13 +219,13 @@ and mesh-widget and only if necessary in the ui.
       feeling beats like 1,0,2,0,3,0,4,0,5,0,6,0,7,0,8,0 . slices that have a
       muted slice afterwards should have a release fade off to avoid
       clickiness.
-  - [ ] Then with the new slicing features we need a slice preset editor in the
+  - [x] Then with the new slicing features we need a slice preset editor in the
     mesh-cue software, where users can prepare slice presets based on a loaded
     track.
-    - [ ] Slices are still stored in the config, not per track, the track is
+    - [x] Slices are still stored in the config, not per track, the track is
       just there for reference of the beat, so the user can interactively create
       presets.
-    - [ ] We need a slice edit widget (this should be its own widget/file in the
+    - [x] We need a slice edit widget (this should be its own widget/file in the
       shared widgets and hide logic from the outside and the ui should just
       communicate with it). for the overall layout: 2 colums, the left colum has
       4 rows/buttons for the stems, then in the second column a 16 by 16 grid
@@ -204,14 +233,14 @@ and mesh-widget and only if necessary in the ui.
       the queue slot to be filled, the y axis represents the possible slices to
       set. clicking one of the buttons should toggle the slot on or off, for now no velocity, we will add this later. for example
       pressing button 4x1 (x axis 3 y axis 1) and button 4x8 assigns two slices (1 and 8) of the original buffer to the queue slot 4. so on position 4 there will be two slices playing at the same time. toggled on buttons should be black, others white if default queue position (so x=y) or gray if the column is muted. the buttons of the grid should be flush next to each other, not padding and the buttons should not be rounded, but rectangular. also the buttons should be wider than high and fixed size. there should be a header row with a button for each column, which on press toggles the whole column muted or not.
-    - [ ] the mesh-cue waveform should also show the slice mode like in the
+    - [x] the mesh-cue waveform should also show the slice mode like in the
       mesh-player, make sure to reuse existing code for this/factor this out
       for common use ,make sure to not duplicate code and the logic should
       resign in the widget, not in the uis, the ui just sends commands with
       necessary information.
-    - [ ] the stem linking buttons should be moved to a column with 4 rows for
+    - [x] the stem linking buttons should be moved to a column with 4 rows for
       each button right to the waveforms canvas, fitting the height.
-    - [ ] now the slice widget lives underneight the queue and loop buttons.
+    - [x] now the slice widget lives underneight the queue and loop buttons.
 
 - [ ] a single morph knob for slicer per deck. this should scroll through a
       presets preset banks. preset banks have up to 8 presets
@@ -290,6 +319,12 @@ and mesh-widget and only if necessary in the ui.
   as a file but not directly in the collection list in the file browser.
 - [ ] On resize the last state of the canvas is imprinted and does not go away.
   the actual canvas is still working normally.
+- [ ] when deleting a file in the file browser, first mark the next one (or
+  previous one if there is no next one) for selection, otherwise it scrolls to
+  the very top.
+- [ ] clicking backdrop or closing the export window stops the export process,
+  this should run in the background. the footer shows the progress.
+- [ ] auto select the first external disk in the export window.
 
 # Performance
 - [ ] Can we optimize how stems are stored, this is currently roughly 200-300 mb
