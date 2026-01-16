@@ -16,7 +16,7 @@ use iced::{Element, Length};
 use mesh_core::playlist::{FilesystemStorage, NodeId, NodeKind, PlaylistNode, PlaylistStorage};
 use mesh_core::usb::{UsbDevice, UsbStorage};
 use mesh_widgets::{
-    playlist_browser, PlaylistBrowserMessage, PlaylistBrowserState, TrackRow,
+    playlist_browser, sort_tracks, PlaylistBrowserMessage, PlaylistBrowserState, TrackRow,
     TrackTableMessage, TreeIcon, TreeMessage, TreeNode,
 };
 use std::path::PathBuf;
@@ -324,8 +324,14 @@ impl CollectionBrowserState {
                     PlaylistBrowserMessage::Table(ref table_msg) => {
                         // Only handle read-only table operations
                         match table_msg {
-                            TrackTableMessage::SearchChanged(_) | TrackTableMessage::SortBy(_) => {
+                            TrackTableMessage::SearchChanged(_) => {
                                 let _ = self.browser.handle_table_message(table_msg);
+                            }
+                            TrackTableMessage::SortBy(_) => {
+                                let _ = self.browser.handle_table_message(table_msg);
+                                // Sort the actual track data so navigation follows sort order
+                                let state = &self.browser.table_state;
+                                sort_tracks(&mut self.tracks, state.sort_column, state.sort_ascending);
                             }
                             TrackTableMessage::Select(track_id) => {
                                 // mesh-player uses simple single-selection (no Shift/Ctrl)

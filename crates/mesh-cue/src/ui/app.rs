@@ -14,7 +14,7 @@ use mesh_core::audio_file::{BeatGrid, CuePoint, LoadedTrack, MetadataField, Trac
 use mesh_core::playlist::{FilesystemStorage, NodeId, NodeKind, PlaylistStorage};
 use mesh_core::types::{PlayState, Stem};
 use mesh_widgets::{
-    mpsc_subscription,
+    mpsc_subscription, sort_tracks,
     PlaylistBrowserMessage,
     TrackColumn, TrackTableMessage,
     SliceEditorState, ZoomedViewMode,
@@ -2002,9 +2002,14 @@ impl MeshCueApp {
                                 log::warn!("[LEFT TABLE] No playlist storage");
                             }
                         }
-                        // Handle sort column click
-                        if let TrackTableMessage::SortBy(column) = &table_msg {
-                            self.collection.browser_left.table_state.set_sort(*column);
+                        // Sort tracks when sort column/direction changes
+                        if let TrackTableMessage::SortBy(_) = &table_msg {
+                            let state = &self.collection.browser_left.table_state;
+                            sort_tracks(
+                                &mut self.collection.left_tracks,
+                                state.sort_column,
+                                state.sort_ascending,
+                            );
                         }
                     }
                 }
@@ -2313,9 +2318,14 @@ impl MeshCueApp {
                                 }
                             }
                         }
-                        // Handle sort column click
-                        if let TrackTableMessage::SortBy(column) = &table_msg {
-                            self.collection.browser_right.table_state.set_sort(*column);
+                        // Sort tracks when sort column/direction changes
+                        if let TrackTableMessage::SortBy(_) = &table_msg {
+                            let state = &self.collection.browser_right.table_state;
+                            sort_tracks(
+                                &mut self.collection.right_tracks,
+                                state.sort_column,
+                                state.sort_ascending,
+                            );
                         }
                     }
                 }
