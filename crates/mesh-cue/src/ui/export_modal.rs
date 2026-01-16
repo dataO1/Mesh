@@ -190,12 +190,46 @@ fn view_device_selection(
         .on_toggle(|_| Message::ToggleExportConfig)
         .size(16);
 
-    // Status
-    let status = text(format!(
-        "{} playlist(s) selected",
-        state.selected_playlists.len()
-    ))
-    .size(12);
+    // Sync summary (shows what will be synced)
+    let sync_summary: Element<Message> = if state.sync_plan_computing {
+        text("Calculating changes...")
+            .size(12)
+            .color(iced::Color::from_rgb(0.5, 0.5, 0.5))
+            .into()
+    } else if let Some(ref plan) = state.sync_plan {
+        let copy_count = plan.tracks_to_copy.len();
+        let delete_count = plan.tracks_to_delete.len();
+        let link_changes = plan.symlinks_to_add.len() + plan.symlinks_to_remove.len();
+
+        if plan.is_empty() {
+            text("✓ Everything up to date")
+                .size(12)
+                .color(iced::Color::from_rgb(0.2, 0.7, 0.2))
+                .into()
+        } else {
+            let summary = format!(
+                "{} tracks to copy ({}), {} to delete, {} playlist links to update",
+                copy_count,
+                mesh_core::usb::format_bytes(plan.total_bytes),
+                delete_count,
+                link_changes
+            );
+            text(summary)
+                .size(12)
+                .color(iced::Color::from_rgb(0.4, 0.6, 0.9))
+                .into()
+        }
+    } else if state.selected_playlists.is_empty() {
+        text("Select playlists to export")
+            .size(12)
+            .color(iced::Color::from_rgb(0.5, 0.5, 0.5))
+            .into()
+    } else {
+        text("Select a USB device")
+            .size(12)
+            .color(iced::Color::from_rgb(0.5, 0.5, 0.5))
+            .into()
+    };
 
     // Action buttons
     let cancel_btn = button(text("Cancel"))
@@ -203,11 +237,15 @@ fn view_device_selection(
         .style(button::secondary);
 
     let export_btn = if state.can_start_export() {
-        button(text("Calculate Changes"))
-            .on_press(Message::BuildSyncPlan)
+        button(text("Export"))
+            .on_press(Message::StartExport)
             .style(button::primary)
+    } else if state.sync_plan_computing {
+        button(text("Calculating...")).style(button::secondary)
+    } else if state.sync_plan.as_ref().map(|p| p.is_empty()).unwrap_or(false) {
+        button(text("Nothing to Export")).style(button::secondary)
     } else {
-        button(text("Calculate Changes")).style(button::secondary)
+        button(text("Export")).style(button::secondary)
     };
 
     let actions = row![Space::new().width(Length::Fill), cancel_btn, export_btn]
@@ -221,7 +259,7 @@ fn view_device_selection(
         playlists_title,
         playlists_content,
         config_checkbox,
-        status,
+        sync_summary,
         actions,
     ]
     .spacing(15)

@@ -131,6 +131,13 @@ pub struct ExportState {
 
     /// Show detailed results after completion
     pub show_results: bool,
+
+    /// Cached sync plan (computed in background during selection)
+    /// This is updated automatically when playlists/device selection changes
+    pub sync_plan: Option<SyncPlan>,
+
+    /// Whether a sync plan computation is in progress
+    pub sync_plan_computing: bool,
 }
 
 impl Default for ExportState {
@@ -145,6 +152,8 @@ impl Default for ExportState {
             export_config: true, // Default to including config
             usb_message_rx: None,
             show_results: false,
+            sync_plan: None,
+            sync_plan_computing: false,
         }
     }
 }
@@ -157,6 +166,8 @@ impl ExportState {
         self.expanded_playlists.clear();
         self.phase = ExportPhase::SelectDevice;
         self.show_results = false;
+        self.sync_plan = None;
+        self.sync_plan_computing = false;
     }
 
     /// Get the currently selected device
@@ -265,7 +276,9 @@ impl ExportState {
     pub fn can_start_export(&self) -> bool {
         self.selected_device.is_some()
             && !self.selected_playlists.is_empty()
-            && matches!(self.phase, ExportPhase::SelectDevice | ExportPhase::ReadyToSync { .. })
+            && self.sync_plan.is_some()
+            && !self.sync_plan_computing
+            && matches!(self.phase, ExportPhase::SelectDevice)
     }
 
     /// Check if cancel is available

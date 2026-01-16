@@ -2571,6 +2571,8 @@ impl MeshCueApp {
             }
             Message::SelectExportDevice(idx) => {
                 self.export_state.selected_device = Some(idx);
+                // Invalidate cached sync plan when device changes
+                self.export_state.sync_plan = None;
                 // If the device isn't mounted yet, request mount
                 if let Some(device) = self.export_state.devices.get(idx) {
                     if device.mount_point.is_none() {
@@ -2578,12 +2580,18 @@ impl MeshCueApp {
                             device_label: device.label.clone(),
                         };
                         self.usb_manager.mount(device.device_path.clone());
+                    } else {
+                        // Device already mounted, trigger sync plan computation
+                        self.trigger_sync_plan_computation();
                     }
                 }
             }
             Message::ToggleExportPlaylist(id) => {
                 // Use recursive toggle to select/deselect all children
                 self.export_state.toggle_playlist_recursive(id, &self.collection.tree_nodes);
+                // Invalidate cached sync plan and trigger recomputation
+                self.export_state.sync_plan = None;
+                self.trigger_sync_plan_computation();
             }
             Message::ToggleExportPlaylistExpand(id) => {
                 self.export_state.toggle_playlist_expanded(id);
@@ -2592,28 +2600,16 @@ impl MeshCueApp {
                 self.export_state.export_config = !self.export_state.export_config;
             }
             Message::BuildSyncPlan => {
-                log::info!("Building sync plan for USB export");
-                if let Some(idx) = self.export_state.selected_device {
-                    if let Some(device) = self.export_state.devices.get(idx) {
-                        let playlists: Vec<_> = self.export_state.selected_playlists.iter().cloned().collect();
-                        let collection_root = self.collection.collection.path().to_path_buf();
-                        let _ = self.usb_manager.send(mesh_core::usb::UsbCommand::BuildSyncPlan {
-                            device_path: device.device_path.clone(),
-                            playlists,
-                            local_collection_root: collection_root,
-                        });
-                        self.export_state.phase = ExportPhase::BuildingSyncPlan {
-                            files_hashed: 0,
-                            total_files: 0,
-                        };
-                    }
-                }
+                // Legacy handler - sync plan is now computed automatically
+                // This triggers a manual recomputation if needed
+                self.trigger_sync_plan_computation();
             }
             Message::StartExport => {
                 log::info!("Starting USB export");
                 if let Some(idx) = self.export_state.selected_device {
                     if let Some(device) = self.export_state.devices.get(idx) {
-                        if let ExportPhase::ReadyToSync { ref plan } = self.export_state.phase {
+                        // Use the cached sync plan
+                        if let Some(ref plan) = self.export_state.sync_plan {
                             let config = if self.export_state.export_config {
                                 // Build ExportableConfig from mesh-cue's Config
                                 use mesh_core::usb::{
@@ -2692,7 +2688,9 @@ impl MeshCueApp {
                                 {
                                     *existing = dev;
                                 }
-                                self.export_state.phase = ExportPhase::ScanningUsb;
+                                // Stay in SelectDevice phase, trigger sync plan computation
+                                self.export_state.phase = ExportPhase::SelectDevice;
+                                self.trigger_sync_plan_computation();
                             }
                             Err(e) => {
                                 log::error!("Mount failed: {}", e);
@@ -2700,14 +2698,14 @@ impl MeshCueApp {
                             }
                         }
                     }
-                    UsbMsg::SyncPlanProgress { files_hashed, total_files } => {
-                        self.export_state.phase = ExportPhase::BuildingSyncPlan {
-                            files_hashed,
-                            total_files,
-                        };
+                    UsbMsg::SyncPlanProgress { files_hashed: _, total_files: _ } => {
+                        // Sync plan computation in progress (background, don't change phase)
+                        self.export_state.sync_plan_computing = true;
                     }
                     UsbMsg::SyncPlanReady(plan) => {
-                        self.export_state.phase = ExportPhase::ReadyToSync { plan };
+                        // Store the computed plan (don't change phase - stay in SelectDevice)
+                        self.export_state.sync_plan = Some(plan);
+                        self.export_state.sync_plan_computing = false;
                     }
                     UsbMsg::ExportStarted { total_files, total_bytes } => {
                         self.export_state.phase = ExportPhase::Exporting {
@@ -3350,6 +3348,35 @@ impl MeshCueApp {
             linked_stem_sub,
             usb_sub,
         ])
+    }
+
+    /// Trigger background sync plan computation for USB export
+    ///
+    /// This is called automatically when device or playlist selection changes.
+    /// The sync plan is computed in the background and stored in export_state.sync_plan.
+    fn trigger_sync_plan_computation(&mut self) {
+        // Only compute if we have a device selected and playlists selected
+        if self.export_state.selected_playlists.is_empty() {
+            self.export_state.sync_plan = None;
+            self.export_state.sync_plan_computing = false;
+            return;
+        }
+
+        if let Some(idx) = self.export_state.selected_device {
+            if let Some(device) = self.export_state.devices.get(idx) {
+                // Only compute if device is mounted
+                if device.mount_point.is_some() {
+                    let playlists: Vec<_> = self.export_state.selected_playlists.iter().cloned().collect();
+                    let collection_root = self.collection.collection.path().to_path_buf();
+                    self.export_state.sync_plan_computing = true;
+                    let _ = self.usb_manager.send(mesh_core::usb::UsbCommand::BuildSyncPlan {
+                        device_path: device.device_path.clone(),
+                        playlists,
+                        local_collection_root: collection_root,
+                    });
+                }
+            }
+        }
     }
 
     /// Render a progress bar for re-analysis operations
