@@ -47,6 +47,8 @@ pub enum TrackColumn {
     Key,
     /// Track duration
     Duration,
+    /// LUFS loudness
+    Lufs,
 }
 
 impl TrackColumn {
@@ -58,6 +60,7 @@ impl TrackColumn {
             Self::Bpm => "BPM",
             Self::Key => "Key",
             Self::Duration => "Duration",
+            Self::Lufs => "LUFS",
         }
     }
 
@@ -74,6 +77,7 @@ impl TrackColumn {
             Self::Bpm => Length::Fixed(60.0),
             Self::Key => Length::Fixed(50.0),
             Self::Duration => Length::Fixed(70.0),
+            Self::Lufs => Length::Fixed(55.0),
         }
     }
 
@@ -84,6 +88,7 @@ impl TrackColumn {
             TrackColumn::Artist,
             TrackColumn::Bpm,
             TrackColumn::Key,
+            TrackColumn::Lufs,
             TrackColumn::Duration,
         ]
     }
@@ -104,6 +109,8 @@ pub struct TrackRow<Id: Clone> {
     pub key: Option<String>,
     /// Duration in seconds if known
     pub duration: Option<f64>,
+    /// LUFS loudness if known
+    pub lufs: Option<f32>,
 }
 
 impl<Id: Clone> TrackRow<Id> {
@@ -116,6 +123,7 @@ impl<Id: Clone> TrackRow<Id> {
             bpm: None,
             key: None,
             duration: None,
+            lufs: None,
         }
     }
 
@@ -143,6 +151,12 @@ impl<Id: Clone> TrackRow<Id> {
         self
     }
 
+    /// Set the LUFS loudness
+    pub fn with_lufs(mut self, lufs: f32) -> Self {
+        self.lufs = Some(lufs);
+        self
+    }
+
     /// Format duration as MM:SS
     pub fn format_duration(&self) -> String {
         self.duration
@@ -158,6 +172,13 @@ impl<Id: Clone> TrackRow<Id> {
     pub fn format_bpm(&self) -> String {
         self.bpm
             .map(|b| format!("{:.1}", b))
+            .unwrap_or_else(|| "-".to_string())
+    }
+
+    /// Format LUFS with one decimal
+    pub fn format_lufs(&self) -> String {
+        self.lufs
+            .map(|l| format!("{:.1}", l))
             .unwrap_or_else(|| "-".to_string())
     }
 }
@@ -535,6 +556,7 @@ where
         TrackColumn::Bpm => track.format_bpm(),
         TrackColumn::Key => track.key.clone().unwrap_or_else(|| "-".to_string()),
         TrackColumn::Duration => track.format_duration(),
+        TrackColumn::Lufs => track.format_lufs(),
     };
 
     if is_editing {

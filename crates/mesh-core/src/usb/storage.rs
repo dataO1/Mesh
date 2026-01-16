@@ -55,6 +55,8 @@ pub struct CachedTrackMetadata {
     pub duration_seconds: Option<f64>,
     /// Number of cue points set
     pub cue_count: u8,
+    /// LUFS loudness value
+    pub lufs: Option<f32>,
 }
 
 /// PlaylistStorage implementation for USB devices
@@ -410,6 +412,7 @@ impl PlaylistStorage for UsbStorage {
                         bpm: cached.bpm,
                         key: cached.key.clone(),
                         duration: cached.duration_seconds,
+                        lufs: cached.lufs,
                     };
                 }
 
@@ -424,6 +427,7 @@ impl PlaylistStorage for UsbStorage {
                     bpm: metadata.as_ref().and_then(|m| m.bpm),
                     key: metadata.as_ref().and_then(|m| m.key.clone()),
                     duration: metadata.as_ref().and_then(|m| m.duration_seconds),
+                    lufs: metadata.as_ref().and_then(|m| m.lufs),
                 }
             })
             .collect()

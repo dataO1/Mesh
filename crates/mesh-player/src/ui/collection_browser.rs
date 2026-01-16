@@ -644,6 +644,9 @@ impl CollectionBrowserState {
                         if let Some(duration) = info.duration {
                             row = row.with_duration(duration);
                         }
+                        if let Some(lufs) = info.lufs {
+                            row = row.with_lufs(lufs);
+                        }
                         row
                     })
                     .collect();
@@ -720,6 +723,9 @@ fn get_tracks_for_folder(storage: &FilesystemStorage, folder_id: &NodeId) -> Vec
             }
             if let Some(duration) = info.duration {
                 row = row.with_duration(duration);
+            }
+            if let Some(lufs) = info.lufs {
+                row = row.with_lufs(lufs);
             }
             row
         })

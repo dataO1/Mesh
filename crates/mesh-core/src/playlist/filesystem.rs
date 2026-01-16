@@ -288,21 +288,22 @@ impl PlaylistStorage for FilesystemStorage {
                     .unwrap_or_else(|| node.name.clone());
 
                 // Load metadata from WAV file (fast path - no audio loading)
-                let (artist, bpm, key, duration) = if path.exists() {
+                let (artist, bpm, key, duration, lufs) = if path.exists() {
                     match read_metadata(&path) {
                         Ok(meta) => (
                             meta.artist,
                             meta.bpm,
                             meta.key,
                             meta.duration_seconds,
+                            meta.lufs,
                         ),
                         Err(e) => {
                             log::debug!("Failed to read metadata from {:?}: {:?}", path, e);
-                            (None, None, None, None)
+                            (None, None, None, None, None)
                         }
                     }
                 } else {
-                    (None, None, None, None)
+                    (None, None, None, None, None)
                 };
 
                 TrackInfo {
@@ -313,6 +314,7 @@ impl PlaylistStorage for FilesystemStorage {
                     bpm,
                     key,
                     duration,
+                    lufs,
                 }
             })
             .collect()

@@ -154,6 +154,8 @@ pub struct TrackInfo {
     pub key: Option<String>,
     /// Duration in seconds
     pub duration: Option<f64>,
+    /// LUFS loudness value
+    pub lufs: Option<f32>,
 }
 
 impl TrackInfo {
