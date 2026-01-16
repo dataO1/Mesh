@@ -51,6 +51,8 @@ pub struct SettingsState {
     pub draft_auto_gain_enabled: bool,
     /// Draft target LUFS (index into preset values)
     pub draft_target_lufs_index: usize,
+    /// Draft show local collection in browser
+    pub draft_show_local_collection: bool,
     /// Status message (for save feedback)
     pub status: String,
 }
@@ -68,6 +70,7 @@ impl SettingsState {
             draft_slicer_buffer_bars: config.slicer.buffer_bars,
             draft_auto_gain_enabled: config.audio.loudness.auto_gain_enabled,
             draft_target_lufs_index: lufs_to_index(config.audio.loudness.target_lufs),
+            draft_show_local_collection: config.display.show_local_collection,
             status: String::new(),
         }
     }
@@ -84,6 +87,7 @@ impl SettingsState {
             draft_slicer_buffer_bars: 1, // 1 bar = 4 beats (default)
             draft_auto_gain_enabled: true, // Auto-gain on by default
             draft_target_lufs_index: 1, // -9 LUFS (balanced)
+            draft_show_local_collection: false, // USB-only by default
             status: String::new(),
         }
     }
@@ -325,6 +329,21 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
 
     let palette_row = row(palette_buttons).spacing(4).align_y(Alignment::Center);
 
+    // Browser settings
+    let browser_subsection = text("Browser").size(14);
+    let local_collection_label = text("Show Local Collection").size(14);
+    let local_collection_hint = text("Display local music library alongside USB devices")
+        .size(12);
+    let local_collection_toggle = toggler(state.draft_show_local_collection)
+        .on_toggle(Message::UpdateSettingsShowLocalCollection);
+    let local_collection_row = row![
+        column![local_collection_label, local_collection_hint].spacing(4),
+        Space::new().width(Length::Fill),
+        local_collection_toggle,
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+
     container(
         column![
             section_title,
@@ -339,6 +358,9 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
             palette_subsection,
             palette_hint,
             palette_row,
+            Space::new().height(10),
+            browser_subsection,
+            local_collection_row,
         ]
         .spacing(8),
     )

@@ -7,7 +7,55 @@ use super::{ExportableConfig, UsbDevice};
 use crate::playlist::{NodeId, NodeKind, PlaylistError, PlaylistNode, PlaylistStorage, TrackInfo};
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+
+/// Normalize a path by resolving `.` and `..` components without requiring the path to exist.
+///
+/// This is used for symlink resolution where `canonicalize()` would fail because it
+/// requires the target file to exist. This function handles paths like:
+/// `/mount/usb/playlists/Detox/../../tracks/song.wav` → `/mount/usb/tracks/song.wav`
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                // Go up one level (pop last component, but not root)
+                if !components.is_empty() {
+                    // Don't pop root components (RootDir, Prefix)
+                    if let Some(last) = components.last() {
+                        if !matches!(last, Component::RootDir | Component::Prefix(_)) {
+                            components.pop();
+                        }
+                    }
+                }
+            }
+            Component::CurDir => {
+                // Skip current dir references (.)
+            }
+            c => {
+                components.push(c);
+            }
+        }
+    }
+    components.iter().collect()
+}
+
+/// Lightweight cached metadata for display (no waveforms or heavy data)
+///
+/// This is preloaded when a USB device connects to enable instant browsing.
+#[derive(Debug, Clone)]
+pub struct CachedTrackMetadata {
+    /// Artist name
+    pub artist: Option<String>,
+    /// Beats per minute
+    pub bpm: Option<f64>,
+    /// Musical key
+    pub key: Option<String>,
+    /// Duration in seconds
+    pub duration_seconds: Option<f64>,
+    /// Number of cue points set
+    pub cue_count: u8,
+}
 
 /// PlaylistStorage implementation for USB devices
 ///
@@ -22,6 +70,8 @@ pub struct UsbStorage {
     nodes: HashMap<NodeId, PlaylistNode>,
     /// Whether write operations are allowed
     read_only: bool,
+    /// Cached track metadata keyed by filename (for instant browsing)
+    track_metadata_cache: HashMap<String, CachedTrackMetadata>,
 }
 
 impl UsbStorage {
@@ -43,6 +93,7 @@ impl UsbStorage {
             collection_root,
             nodes: HashMap::new(),
             read_only,
+            track_metadata_cache: HashMap::new(),
         };
 
         // Scan the tree
@@ -80,6 +131,21 @@ impl UsbStorage {
     /// Get all nodes (for export to mesh-player)
     pub fn all_nodes(&self) -> &HashMap<NodeId, PlaylistNode> {
         &self.nodes
+    }
+
+    /// Set the cached track metadata (called after background preload)
+    pub fn set_metadata_cache(&mut self, metadata: HashMap<String, CachedTrackMetadata>) {
+        self.track_metadata_cache = metadata;
+    }
+
+    /// Get cached metadata for a track by filename (instant, no I/O)
+    pub fn get_cached_metadata(&self, filename: &str) -> Option<&CachedTrackMetadata> {
+        self.track_metadata_cache.get(filename)
+    }
+
+    /// Check if metadata has been preloaded
+    pub fn has_metadata_cache(&self) -> bool {
+        !self.track_metadata_cache.is_empty()
     }
 
     /// Convert node ID to filesystem path
@@ -204,23 +270,34 @@ impl UsbStorage {
                 self.scan_directory(&child_id, &entry_path, is_collection)?;
                 children.push(child_id);
             } else if is_audio_file(&entry_path) {
-                // Resolve symlinks to get actual path
+                // Resolve symlinks to get actual track path
+                // Note: We use normalize_path() instead of canonicalize() because
+                // canonicalize() requires the file to exist, which may fail on USB
+                // due to mount timing or filesystem differences
                 let track_path = if entry_path.is_symlink() {
-                    fs::read_link(&entry_path)
-                        .ok()
-                        .map(|link| {
+                    match fs::read_link(&entry_path) {
+                        Ok(link) => {
                             if link.is_absolute() {
                                 link
                             } else {
-                                // Resolve relative symlink
+                                // Resolve relative symlink manually
                                 entry_path
                                     .parent()
-                                    .map(|p| p.join(&link))
-                                    .and_then(|p| p.canonicalize().ok())
-                                    .unwrap_or(link)
+                                    .map(|parent| {
+                                        let joined = parent.join(&link);
+                                        normalize_path(&joined)
+                                    })
+                                    .unwrap_or_else(|| {
+                                        log::warn!("Could not resolve symlink parent for {:?}", entry_path);
+                                        entry_path.clone()
+                                    })
                             }
-                        })
-                        .unwrap_or_else(|| entry_path.clone())
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to read symlink {:?}: {}", entry_path, e);
+                            entry_path.clone()
+                        }
+                    }
                 } else {
                     entry_path.clone()
                 };
@@ -317,7 +394,26 @@ impl PlaylistStorage for UsbStorage {
             .filter(|node| node.is_track())
             .map(|node| {
                 let path = node.track_path.clone().unwrap_or_default();
-                // Try to read metadata from file
+
+                // Try cached metadata first (instant, no disk I/O)
+                let filename = path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("");
+
+                if let Some(cached) = self.track_metadata_cache.get(filename) {
+                    // Use preloaded cache - instant!
+                    return TrackInfo {
+                        id: node.id,
+                        name: node.name,
+                        path,
+                        artist: cached.artist.clone(),
+                        bpm: cached.bpm,
+                        key: cached.key.clone(),
+                        duration: cached.duration_seconds,
+                    };
+                }
+
+                // Fall back to reading from file (slow path, only if not preloaded)
                 let metadata = crate::audio_file::read_metadata(&path).ok();
 
                 TrackInfo {

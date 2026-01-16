@@ -23,6 +23,8 @@ use std::path::PathBuf;
 
 /// State for the collection browser
 pub struct CollectionBrowserState {
+    /// Path to local collection (stored for runtime loading/unloading)
+    collection_path: PathBuf,
     /// Local playlist storage backend (shared with mesh-cue)
     pub storage: Option<Box<FilesystemStorage>>,
     /// Browser widget state (single browser, not dual)
@@ -58,13 +60,25 @@ pub enum CollectionBrowserMessage {
 
 impl CollectionBrowserState {
     /// Create new state, initializing storage at collection path
-    pub fn new(collection_path: PathBuf) -> Self {
-        let storage = match FilesystemStorage::new(collection_path) {
-            Ok(s) => Some(Box::new(s)),
-            Err(e) => {
-                log::warn!("Failed to initialize collection storage: {}", e);
-                None
+    ///
+    /// # Arguments
+    /// * `collection_path` - Path to the local collection (only used if show_local is true)
+    /// * `show_local` - Whether to load and display the local collection.
+    ///                  When false (USB-only mode), no FilesystemStorage is created,
+    ///                  saving memory and startup time.
+    pub fn new(collection_path: PathBuf, show_local: bool) -> Self {
+        // Only load local storage if configured - USB-only mode skips this entirely
+        let storage = if show_local {
+            match FilesystemStorage::new(collection_path.clone()) {
+                Ok(s) => Some(Box::new(s)),
+                Err(e) => {
+                    log::warn!("Failed to initialize collection storage: {}", e);
+                    None
+                }
             }
+        } else {
+            log::info!("USB-only mode: skipping local collection");
+            None
         };
 
         let tree_nodes = storage
@@ -73,6 +87,7 @@ impl CollectionBrowserState {
             .unwrap_or_default();
 
         Self {
+            collection_path,
             storage,
             browser: PlaylistBrowserState::new(),
             tree_nodes,
@@ -117,6 +132,44 @@ impl CollectionBrowserState {
         self.rebuild_tree();
     }
 
+    /// Enable or disable local collection display at runtime
+    ///
+    /// When enabled, loads the FilesystemStorage from the stored collection path.
+    /// When disabled, unloads the storage to free memory.
+    /// The tree is rebuilt automatically after the change.
+    pub fn set_show_local_collection(&mut self, show: bool) {
+        if show {
+            // Load local storage if not already loaded
+            if self.storage.is_none() {
+                log::info!("Loading local collection from {:?}", self.collection_path);
+                match FilesystemStorage::new(self.collection_path.clone()) {
+                    Ok(s) => {
+                        self.storage = Some(Box::new(s));
+                        log::info!("Local collection loaded successfully");
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to load local collection: {}", e);
+                    }
+                }
+            }
+        } else {
+            // Unload local storage to free memory
+            if self.storage.is_some() {
+                log::info!("Unloading local collection");
+                self.storage = None;
+
+                // Clear tracks if we were browsing local collection
+                if self.active_usb_idx.is_none() {
+                    self.tracks.clear();
+                    self.selected_track_path = None;
+                    self.browser.current_folder = None;
+                }
+            }
+        }
+
+        self.rebuild_tree();
+    }
+
     /// Initialize USB storage for a mounted device
     pub fn init_usb_storage(&mut self, device: &UsbDevice) {
         // Check if already initialized
@@ -139,6 +192,20 @@ impl CollectionBrowserState {
             Err(e) => {
                 log::warn!("Failed to initialize USB storage for {}: {}", device.label, e);
             }
+        }
+    }
+
+    /// Set preloaded metadata cache for a USB device
+    pub fn set_usb_metadata(
+        &mut self,
+        device_path: &std::path::Path,
+        metadata: std::collections::HashMap<String, mesh_core::usb::CachedTrackMetadata>,
+    ) {
+        if let Some((_, storage)) = self.usb_storages.iter_mut()
+            .find(|(path, _)| path == device_path)
+        {
+            storage.set_metadata_cache(metadata);
+            log::info!("USB metadata cache set for {}", device_path.display());
         }
     }
 
@@ -188,6 +255,27 @@ impl CollectionBrowserState {
         }
 
         self.tree_nodes = nodes;
+
+        // Expand all nodes by default so nested playlists are visible
+        // User can scroll through entire hierarchy without needing to expand
+        self.expand_all_nodes();
+    }
+
+    /// Expand all nodes in the tree (makes nested playlists visible by default)
+    fn expand_all_nodes(&mut self) {
+        fn collect_node_ids(nodes: &[TreeNode<NodeId>], ids: &mut Vec<NodeId>) {
+            for node in nodes {
+                ids.push(node.id.clone());
+                collect_node_ids(&node.children, ids);
+            }
+        }
+
+        let mut all_ids = Vec::new();
+        collect_node_ids(&self.tree_nodes, &mut all_ids);
+
+        for id in all_ids {
+            self.browser.tree_state.expanded.insert(id);
+        }
     }
 
     /// Handle a browser message (filters out write operations)
@@ -282,7 +370,9 @@ impl CollectionBrowserState {
                 None
             }
             CollectionBrowserMessage::ScrollBy(delta) => {
-                // If no folder selected or tracks are empty, scroll through folders (tree)
+                // If no tracks loaded, scroll through folders (tree view)
+                // Note: scrolling only highlights folders, doesn't enter them
+                // User must press encoder/click (SelectCurrent) to enter a playlist
                 if self.tracks.is_empty() {
                     self.scroll_tree(delta);
                     return None;
@@ -324,21 +414,41 @@ impl CollectionBrowserState {
                 }
                 // If no track selected but we have a selected folder in tree, enter it
                 if let Some(ref folder_id) = self.browser.tree_state.selected.clone() {
-                    // Expand the folder in the tree view
-                    self.browser.tree_state.expanded.insert(folder_id.clone());
-                    // Set as current folder and load its tracks
+                    // Set as current folder and load its tracks (handles both local and USB)
                     self.browser.current_folder = Some(folder_id.clone());
-                    if let Some(ref storage) = self.storage {
-                        self.tracks = get_tracks_for_folder(storage, folder_id);
-                    }
-                    // Select first track if any
-                    if let Some(first_track) = self.tracks.first() {
-                        self.browser.table_state.select(first_track.id.clone());
-                        self.selected_track_path = self.get_track_path(&first_track.id);
-                    }
+                    self.load_tracks_for_folder(&folder_id);
                 }
                 None
             }
+        }
+    }
+
+    /// Load tracks for a folder (handles both local and USB)
+    fn load_tracks_for_folder(&mut self, folder_id: &NodeId) {
+        log::debug!("load_tracks_for_folder: {:?}", folder_id);
+
+        if folder_id.0.starts_with("usb:") {
+            self.tracks = self.get_usb_tracks_for_folder(folder_id);
+            self.active_usb_idx = self.find_usb_idx_for_folder(folder_id);
+            log::debug!("load_tracks_for_folder: loaded {} USB tracks", self.tracks.len());
+        } else if let Some(ref storage) = self.storage {
+            self.tracks = get_tracks_for_folder(storage, folder_id);
+            self.active_usb_idx = None;
+            log::debug!("load_tracks_for_folder: loaded {} local tracks", self.tracks.len());
+        } else {
+            self.tracks = Vec::new();
+            self.active_usb_idx = None;
+            log::debug!("load_tracks_for_folder: no storage available");
+        }
+
+        // Select first track if any
+        if let Some(first) = self.tracks.first() {
+            self.browser.table_state.select(first.id.clone());
+            self.selected_track_path = self.get_track_path(&first.id);
+            log::info!("load_tracks_for_folder: selected first track, path = {:?}", self.selected_track_path);
+        } else {
+            self.selected_track_path = None;
+            log::debug!("load_tracks_for_folder: no tracks to select");
         }
     }
 
@@ -346,25 +456,31 @@ impl CollectionBrowserState {
     fn get_track_path(&self, track_id: &NodeId) -> Option<PathBuf> {
         // Check if this is a USB track (ID starts with "usb:")
         if track_id.0.starts_with("usb:") {
-            // Track ID is prefixed like "usb:/run/media/user/DEVICE/playlists/Detox/track.wav"
+            // Track ID is prefixed like "usb:/dev/sda/playlists/Detox/track.wav"
             // Strip the prefix to get the unprefixed ID for lookup in UsbStorage
             for (device_path, usb_storage) in &self.usb_storages {
                 let device_prefix = format!("usb:{}/", device_path.display());
                 if let Some(stripped) = track_id.0.strip_prefix(&device_prefix) {
                     let unprefixed_id = NodeId(stripped.to_string());
                     if let Some(node) = usb_storage.get_node(&unprefixed_id) {
+                        log::debug!("get_track_path: USB track {:?} -> {:?}", track_id, node.track_path);
                         return node.track_path;
+                    } else {
+                        log::debug!("get_track_path: USB track node not found for {:?}", unprefixed_id);
                     }
                 }
             }
+            log::debug!("get_track_path: no matching USB storage for {:?}", track_id);
             return None;
         }
 
         // Local storage
-        self.storage
+        let path = self.storage
             .as_ref()
             .and_then(|s| s.get_node(track_id))
-            .and_then(|node| node.track_path)
+            .and_then(|node| node.track_path);
+        log::debug!("get_track_path: local track {:?} -> {:?}", track_id, path);
+        path
     }
 
     /// Get the currently selected track path (for MIDI load functionality)
@@ -491,10 +607,11 @@ impl CollectionBrowserState {
 
     /// Get tracks from USB storage for a given folder
     fn get_usb_tracks_for_folder(&self, folder_id: &NodeId) -> Vec<TrackRow<NodeId>> {
-        // folder_id is prefixed like "usb:/run/media/user/DEVICE/playlists/Detox"
+        // folder_id is prefixed like "usb:/dev/sda/playlists/Detox"
         // We need to find the matching device and strip the prefix to get "playlists/Detox"
         let id_str = &folder_id.0;
         if !id_str.starts_with("usb:") {
+            log::debug!("get_usb_tracks_for_folder: folder_id doesn't start with usb: {:?}", folder_id);
             return Vec::new();
         }
 
@@ -506,10 +623,15 @@ impl CollectionBrowserState {
                 let unprefixed_id = NodeId(stripped.to_string());
                 let tracks = usb_storage.get_tracks(&unprefixed_id);
 
+                log::debug!("get_usb_tracks_for_folder: found {} tracks for {:?}", tracks.len(), unprefixed_id);
+
                 return tracks
                     .into_iter()
                     .map(|info| {
-                        let mut row = TrackRow::new(info.id, info.name);
+                        // IMPORTANT: Prefix track IDs with usb:device_path so get_track_path
+                        // can route them back to USB storage lookup
+                        let prefixed_id = NodeId(format!("usb:{}/{}", device_path.display(), &info.id.0));
+                        let mut row = TrackRow::new(prefixed_id, info.name);
                         if let Some(artist) = info.artist {
                             row = row.with_artist(artist);
                         }
@@ -527,6 +649,7 @@ impl CollectionBrowserState {
                     .collect();
             }
         }
+        log::debug!("get_usb_tracks_for_folder: no matching USB storage for {:?}", folder_id);
         Vec::new()
     }
 

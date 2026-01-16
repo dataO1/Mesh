@@ -137,6 +137,9 @@ pub struct DisplayConfig {
     pub grid_bars: u32,
     /// Stem color palette for waveform display
     pub stem_color_palette: StemColorPalette,
+    /// Show local collection in browser (default: false for USB-only mode)
+    /// When false, only USB devices appear in the collection browser
+    pub show_local_collection: bool,
 }
 
 /// Loop length options in beats (matches mesh-core/deck.rs LOOP_LENGTHS)
@@ -150,6 +153,7 @@ impl Default for DisplayConfig {
             default_zoom_bars: 8,         // Default zoomed waveform to 8 bars
             grid_bars: 8,                 // Default grid density to 8 bars
             stem_color_palette: StemColorPalette::default(), // Natural palette
+            show_local_collection: false, // USB-only mode by default
         }
     }
 }

@@ -10,7 +10,7 @@
 //!
 //! This ensures all USB operations are async and never block the UI.
 
-use super::{ExportableConfig, SyncPlan, UsbDevice, UsbError};
+use super::{CachedTrackMetadata, ExportableConfig, SyncPlan, UsbDevice, UsbError};
 use crate::playlist::{NodeId, PlaylistNode};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -58,6 +58,9 @@ pub enum UsbCommand {
 
     /// Cancel the current export operation
     CancelExport,
+
+    /// Preload track metadata for a device (runs in background for instant browsing)
+    PreloadMetadata { device_path: PathBuf },
 
     /// Shutdown the manager thread
     Shutdown,
@@ -118,6 +121,25 @@ pub enum UsbMessage {
         tree_nodes: HashMap<NodeId, PlaylistNode>,
         /// Config loaded from device (if present)
         config: Option<ExportableConfig>,
+    },
+
+    // ─────────────────────────────────────────────────────────────────
+    // Metadata Preloading (for instant browsing)
+    // ─────────────────────────────────────────────────────────────────
+    /// Metadata preload progress
+    MetadataPreloadProgress {
+        device_path: PathBuf,
+        /// Tracks loaded so far
+        loaded: usize,
+        /// Total tracks to load
+        total: usize,
+    },
+
+    /// Metadata preload completed
+    MetadataPreloaded {
+        device_path: PathBuf,
+        /// Cached metadata keyed by filename
+        metadata: HashMap<String, CachedTrackMetadata>,
     },
 
     // ─────────────────────────────────────────────────────────────────
@@ -233,6 +255,12 @@ impl UsbMessage {
             UsbMessage::PlaylistScanStarted { .. } => "Scanning playlists...".to_string(),
             UsbMessage::PlaylistScanComplete { tree_nodes, .. } => {
                 format!("Found {} items", tree_nodes.len())
+            }
+            UsbMessage::MetadataPreloadProgress { loaded, total, .. } => {
+                format!("Preloading metadata: {}/{}", loaded, total)
+            }
+            UsbMessage::MetadataPreloaded { metadata, .. } => {
+                format!("Preloaded {} tracks", metadata.len())
             }
             UsbMessage::SyncPlanStarted => "Calculating sync plan...".to_string(),
             UsbMessage::SyncPlanProgress { files_hashed, total_files } => {

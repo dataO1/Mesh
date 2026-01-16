@@ -200,7 +200,10 @@ impl MeshApp {
                 DeckView::new(3),
             ],
             mixer_view: MixerView::new(),
-            collection_browser: CollectionBrowserState::new(config.collection_path.clone()),
+            collection_browser: CollectionBrowserState::new(
+                config.collection_path.clone(),
+                config.display.show_local_collection,
+            ),
             global_bpm: config.audio.global_bpm,
             status: if audio_connected { "Audio connected (lock-free)".to_string() } else { "No audio".to_string() },
             audio_connected,
@@ -1240,6 +1243,10 @@ impl MeshApp {
                 self.settings.draft_target_lufs_index = index;
                 Task::none()
             }
+            Message::UpdateSettingsShowLocalCollection(enabled) => {
+                self.settings.draft_show_local_collection = enabled;
+                Task::none()
+            }
             Message::SaveSettings => {
                 // Apply draft settings to config
                 let mut new_config = (*self.config).clone();
@@ -1247,6 +1254,7 @@ impl MeshApp {
                 new_config.display.default_zoom_bars = self.settings.draft_zoom_bars;
                 new_config.display.grid_bars = self.settings.draft_grid_bars;
                 new_config.display.stem_color_palette = self.settings.draft_stem_color_palette;
+                new_config.display.show_local_collection = self.settings.draft_show_local_collection;
                 // Save global BPM from current state
                 new_config.audio.global_bpm = self.global_bpm;
                 // Save phase sync setting
@@ -1262,6 +1270,11 @@ impl MeshApp {
                 // Apply stem color palette to waveform display immediately
                 self.player_canvas_state.set_stem_colors(
                     self.settings.draft_stem_color_palette.colors()
+                );
+
+                // Apply local collection visibility change immediately
+                self.collection_browser.set_show_local_collection(
+                    self.settings.draft_show_local_collection
                 );
 
                 // Send settings to audio engine immediately
@@ -1425,10 +1438,16 @@ impl MeshApp {
                     UsbMsg::DevicesRefreshed(devices) => {
                         log::info!("USB: {} devices detected", devices.len());
                         self.collection_browser.update_usb_devices(devices.clone());
-                        // Initialize storages for mounted devices
+                        // Initialize storages for mounted devices and trigger metadata preload
                         for device in &devices {
                             if device.mount_point.is_some() && device.has_mesh_collection {
                                 self.collection_browser.init_usb_storage(device);
+                                // Trigger background metadata preload for instant browsing
+                                let _ = self.usb_manager.send(
+                                    mesh_core::usb::UsbCommand::PreloadMetadata {
+                                        device_path: device.device_path.clone(),
+                                    }
+                                );
                             }
                         }
                     }
@@ -1436,6 +1455,12 @@ impl MeshApp {
                         self.collection_browser.add_usb_device(device.clone());
                         if device.mount_point.is_some() && device.has_mesh_collection {
                             self.collection_browser.init_usb_storage(&device);
+                            // Trigger background metadata preload for instant browsing
+                            let _ = self.usb_manager.send(
+                                mesh_core::usb::UsbCommand::PreloadMetadata {
+                                    device_path: device.device_path.clone(),
+                                }
+                            );
                         }
                         self.status = format!("USB: {} connected", device.label);
                     }
@@ -1450,12 +1475,27 @@ impl MeshApp {
                                 self.collection_browser.add_usb_device(device.clone());
                                 if device.has_mesh_collection {
                                     self.collection_browser.init_usb_storage(&device);
+                                    // Trigger background metadata preload for instant browsing
+                                    let _ = self.usb_manager.send(
+                                        mesh_core::usb::UsbCommand::PreloadMetadata {
+                                            device_path: device.device_path.clone(),
+                                        }
+                                    );
                                 }
                             }
                             Err(e) => {
                                 log::warn!("USB mount failed: {}", e);
                             }
                         }
+                    }
+                    UsbMsg::MetadataPreloaded { device_path, metadata } => {
+                        log::info!("USB: Preloaded {} track metadata from {}",
+                            metadata.len(), device_path.display());
+                        self.collection_browser.set_usb_metadata(&device_path, metadata);
+                    }
+                    UsbMsg::MetadataPreloadProgress { device_path, loaded, total } => {
+                        log::debug!("USB: Preloading metadata {}/{} from {}",
+                            loaded, total, device_path.display());
                     }
                     _ => {
                         // Ignore export-related messages in mesh-player (read-only)

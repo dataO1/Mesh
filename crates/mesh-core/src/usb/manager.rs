@@ -23,13 +23,15 @@
 
 use super::detection::{enumerate_devices, monitor_devices, DeviceEvent};
 use super::mount::{init_collection_structure, refresh_device_info};
-use super::storage::UsbStorage;
+use super::storage::{CachedTrackMetadata, UsbStorage};
 use super::sync::{
     build_sync_plan, copy_with_verification, scan_local_collection, scan_usb_collection,
     CollectionState, SyncPlan,
 };
 use super::{ExportableConfig, UsbDevice, UsbError};
+use crate::audio_file::read_metadata;
 use crate::playlist::NodeId;
+use walkdir::WalkDir;
 
 // Re-export for convenience
 pub use super::message::{UsbCommand, UsbMessage};
@@ -203,6 +205,22 @@ fn manager_thread_main(command_rx: Receiver<UsbCommand>, message_tx: Sender<UsbM
                         );
 
                         export_cancel_flag = None;
+                    }
+
+                    UsbCommand::PreloadMetadata { device_path } => {
+                        // Find the device and get mount point
+                        if let Some(device) = devices.get(&device_path) {
+                            if let Some(mount_point) = &device.mount_point {
+                                let tracks_dir = mount_point.join("mesh-collection").join("tracks");
+                                let tx = message_tx.clone();
+                                let dp = device_path.clone();
+
+                                // Spawn background thread for preloading
+                                thread::spawn(move || {
+                                    handle_preload_metadata(tracks_dir, dp, tx);
+                                });
+                            }
+                        }
                     }
 
                     UsbCommand::CancelExport => {
@@ -630,11 +648,16 @@ fn handle_start_export(
         }
 
         if device.supports_symlinks() {
-            // Create relative symlink: ../../tracks/Track.wav
-            let target = PathBuf::from("..")
-                .join("..")
-                .join("tracks")
-                .join(&link.track_filename);
+            // Calculate relative path depth based on playlist nesting
+            // playlists/Foo -> ../../tracks (depth 1)
+            // playlists/Foo/Bar -> ../../../tracks (depth 2)
+            let depth = link.playlist.matches('/').count() + 1;
+            let mut target = PathBuf::new();
+            for _ in 0..=depth {
+                target.push("..");
+            }
+            target.push("tracks");
+            target.push(&link.track_filename);
 
             // Use cross-platform symlink crate
             if let Err(e) = symlink::symlink_file(&target, &link_path) {
@@ -688,6 +711,73 @@ fn handle_start_export(
         duration,
         files_exported,
         failed_files,
+    });
+}
+
+/// Handle preload metadata command (runs in background thread)
+fn handle_preload_metadata(tracks_dir: PathBuf, device_path: PathBuf, tx: Sender<UsbMessage>) {
+    log::info!(
+        "Preloading track metadata from {}",
+        tracks_dir.display()
+    );
+
+    // Collect all WAV files
+    let entries: Vec<_> = if tracks_dir.exists() {
+        WalkDir::new(&tracks_dir)
+            .max_depth(1)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .and_then(|x| x.to_str())
+                    .map(|x| x.eq_ignore_ascii_case("wav"))
+                    .unwrap_or(false)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let total = entries.len();
+    let mut metadata = HashMap::new();
+
+    for (i, entry) in entries.iter().enumerate() {
+        let path = entry.path();
+        if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+            // Read metadata from the WAV file
+            if let Ok(meta) = read_metadata(path) {
+                let cached = CachedTrackMetadata {
+                    artist: meta.artist,
+                    bpm: meta.bpm,
+                    key: meta.key,
+                    duration_seconds: meta.duration_seconds,
+                    cue_count: meta.cue_points.len() as u8,
+                };
+                metadata.insert(filename.to_string(), cached);
+            }
+        }
+
+        // Send progress every 10 tracks (avoid flooding messages)
+        if i % 10 == 0 || i == total - 1 {
+            let _ = tx.send(UsbMessage::MetadataPreloadProgress {
+                device_path: device_path.clone(),
+                loaded: i + 1,
+                total,
+            });
+        }
+    }
+
+    log::info!(
+        "Preloaded metadata for {} tracks from {}",
+        metadata.len(),
+        device_path.display()
+    );
+
+    // Send completion message with all metadata
+    let _ = tx.send(UsbMessage::MetadataPreloaded {
+        device_path,
+        metadata,
     });
 }
 

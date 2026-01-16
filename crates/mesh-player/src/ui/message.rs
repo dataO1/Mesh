@@ -59,6 +59,8 @@ pub enum Message {
     UpdateSettingsAutoGainEnabled(bool),
     /// Update settings: target LUFS index (0-3)
     UpdateSettingsTargetLufs(usize),
+    /// Update settings: show local collection in browser
+    UpdateSettingsShowLocalCollection(bool),
     /// Save settings to disk
     SaveSettings,
     /// Settings save complete
