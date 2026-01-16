@@ -642,6 +642,11 @@ impl MeshApp {
                         self.player_canvas_state.set_track_bpm(deck_idx, track.metadata.bpm);
                         // Store track LUFS for use in LinkedStemLoaded (avoids race conditions)
                         self.track_lufs_per_deck[deck_idx] = track.metadata.lufs;
+                        log::info!(
+                            "[LUFS] app.rs TrackLoaded: deck {} - track_lufs={:?}, stored for LinkedStemLoaded",
+                            deck_idx,
+                            track.metadata.lufs
+                        );
                         // LUFS gain is calculated by engine and synced via atomics in Tick
 
                         // Sync hot cues to deck view for display
@@ -794,6 +799,13 @@ impl MeshApp {
                                 // Pass host_lufs explicitly to avoid race conditions
                                 // (deck.host_lufs in engine might be stale)
                                 let host_lufs = self.track_lufs_per_deck[deck_idx];
+                                log::info!(
+                                    "[LUFS] app.rs LinkStem: deck {} stem {} - host_lufs={:?}, linked_lufs={:?}",
+                                    deck_idx,
+                                    stem_idx,
+                                    host_lufs,
+                                    linked_data.lufs
+                                );
                                 let _ = sender.send(EngineCommand::LinkStem {
                                     deck: deck_idx,
                                     stem,
