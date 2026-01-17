@@ -121,7 +121,7 @@ impl MeshCueApp {
 
         // Initialize playlist storage at collection root using DatabaseStorage
         // Database is created if it doesn't exist (no filesystem fallback)
-        let collection_root = collection_state.collection.path().to_path_buf();
+        let collection_root = collection_state.collection_path.clone();
         let db_path = collection_root.join("mesh.db");
 
         // Ensure collection directory exists
@@ -290,37 +290,20 @@ impl MeshCueApp {
 
             // Collection: Browser
             Message::RefreshCollection => {
-                // Scan is fast (just reads directory), so do it synchronously
-                if let Err(e) = self.collection.collection.scan() {
-                    eprintln!("Failed to refresh collection: {}", e);
+                // Rebuild tree from database
+                if let Some(ref storage) = self.collection.playlist_storage {
+                    self.collection.tree_nodes = build_tree_nodes(storage.as_ref());
+                    log::info!("Refreshed collection tree from database");
                 }
             }
             Message::SelectTrack(index) => {
+                // Legacy: index-based selection (kept for compatibility)
                 self.collection.selected_track = Some(index);
             }
-            Message::LoadTrack(index) => {
-                // Auto-save current track if modified before loading new one
-                let save_task = self.save_current_track_if_modified();
-
-                // Phase 1: Load metadata first (fast, ~50ms)
-                if let Some(track) = self.collection.collection.tracks().get(index) {
-                    let path = track.path.clone();
-                    log::info!("LoadTrack: Starting two-phase load for {:?}", path);
-                    let load_task = Task::perform(
-                        async move {
-                            LoadedTrack::load_metadata_only(&path)
-                                .map(|metadata| (path, metadata))
-                                .map_err(|e| e.to_string())
-                        },
-                        Message::TrackMetadataLoaded,
-                    );
-
-                    // Chain save and load tasks
-                    if let Some(save) = save_task {
-                        return Task::batch([save, load_task]);
-                    }
-                    return load_task;
-                }
+            Message::LoadTrack(_index) => {
+                // Legacy: index-based loading is deprecated
+                // Use Message::LoadTrackByPath instead
+                log::warn!("Message::LoadTrack is deprecated, use LoadTrackByPath");
             }
             Message::TrackMetadataLoaded(result) => {
                 match result {
@@ -366,8 +349,7 @@ impl MeshCueApp {
                             last_playhead_update: std::time::Instant::now(),
                             slice_editor: {
                                 // Load presets from dedicated file (shared with mesh-player)
-                                let collection_path = self.collection.collection.path();
-                                let slicer_config = mesh_widgets::load_slicer_presets(collection_path);
+                                let slicer_config = mesh_widgets::load_slicer_presets(&self.collection.collection_path);
                                 let mut editor = SliceEditorState::new();
                                 slicer_config.apply_to_editor_state(&mut editor);
                                 editor
@@ -595,8 +577,7 @@ impl MeshCueApp {
                             last_playhead_update: std::time::Instant::now(),
                             slice_editor: {
                                 // Load presets from dedicated file (shared with mesh-player)
-                                let collection_path = self.collection.collection.path();
-                                let slicer_config = mesh_widgets::load_slicer_presets(collection_path);
+                                let slicer_config = mesh_widgets::load_slicer_presets(&self.collection.collection_path);
                                 let mut editor = SliceEditorState::new();
                                 slicer_config.apply_to_editor_state(&mut editor);
                                 editor
@@ -1186,7 +1167,7 @@ impl MeshCueApp {
                     self.config = Arc::new(new_config);
 
                     // Save to dedicated presets file (shared with mesh-player)
-                    let collection_path = self.collection.collection.path().to_path_buf();
+                    let collection_path = self.collection.collection_path.to_path_buf();
                     return Task::perform(
                         async move {
                             mesh_widgets::save_slicer_presets(&slicer_config, &collection_path).ok()
@@ -2567,7 +2548,7 @@ impl MeshCueApp {
                 // Create import config
                 let config = ImportConfig {
                     import_folder: self.import_state.import_folder.clone(),
-                    collection_path: self.collection.collection.path().to_path_buf(),
+                    collection_path: self.collection.collection_path.to_path_buf(),
                     bpm_config: self.config.analysis.bpm.clone(),
                     loudness_config: self.config.analysis.loudness.clone(),
                     parallel_processes: self.config.analysis.parallel_processes,
@@ -3178,13 +3159,19 @@ impl MeshCueApp {
                             .unwrap_or_default()
                     }
                     ReanalysisScope::EntireCollection => {
-                        // Get all tracks from collection
+                        // Get all tracks from database via storage
                         self.collection
-                            .collection
-                            .tracks()
-                            .iter()
-                            .map(|t| t.path.clone())
-                            .collect()
+                            .playlist_storage
+                            .as_ref()
+                            .map(|s| {
+                                // Get tracks from the root tracks folder
+                                s.get_children(&NodeId::tracks())
+                                    .into_iter()
+                                    .flat_map(|folder| s.get_children(&folder.id))
+                                    .filter_map(|node| node.track_path)
+                                    .collect()
+                            })
+                            .unwrap_or_default()
                     }
                 };
 
@@ -3583,7 +3570,7 @@ impl MeshCueApp {
                 // Only compute if device is mounted
                 if device.mount_point.is_some() {
                     let playlists: Vec<_> = self.export_state.selected_playlists.iter().cloned().collect();
-                    let collection_root = self.collection.collection.path().to_path_buf();
+                    let collection_root = self.collection.collection_path.to_path_buf();
                     self.export_state.sync_plan_computing = true;
                     let _ = self.usb_manager.send(mesh_core::usb::UsbCommand::BuildSyncPlan {
                         device_path: device.device_path.clone(),

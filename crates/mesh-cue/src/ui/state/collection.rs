@@ -1,7 +1,7 @@
 //! Collection browser state
 
+use std::path::PathBuf;
 use std::sync::Arc;
-use crate::collection::Collection;
 use mesh_core::db::MeshDb;
 use mesh_core::playlist::{NodeId, PlaylistStorage};
 use mesh_widgets::{PlaylistBrowserState, TrackRow, TreeNode};
@@ -57,8 +57,8 @@ impl DragState {
 
 /// State for the collection view
 pub struct CollectionState {
-    /// Collection manager (legacy - kept for track scanning)
-    pub collection: Collection,
+    /// Path to the collection root folder
+    pub collection_path: PathBuf,
     /// Currently selected track index (legacy)
     pub selected_track: Option<usize>,
     /// Currently loaded track for editing
@@ -84,7 +84,7 @@ pub struct CollectionState {
 impl std::fmt::Debug for CollectionState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CollectionState")
-            .field("collection", &self.collection)
+            .field("collection_path", &self.collection_path)
             .field("selected_track", &self.selected_track)
             .field("loaded_track", &self.loaded_track)
             .field("has_playlist_storage", &self.playlist_storage.is_some())
@@ -95,8 +95,15 @@ impl std::fmt::Debug for CollectionState {
 
 impl Default for CollectionState {
     fn default() -> Self {
+        // Default to ~/Music/mesh-collection
+        let default_path = std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join("Music")
+            .join("mesh-collection");
+
         Self {
-            collection: Collection::default(),
+            collection_path: default_path,
             selected_track: None,
             loaded_track: None,
             playlist_storage: None,
