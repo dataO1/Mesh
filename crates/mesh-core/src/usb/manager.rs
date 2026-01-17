@@ -25,9 +25,10 @@ use super::detection::{enumerate_devices, monitor_devices, DeviceEvent};
 use super::mount::{init_collection_structure, refresh_device_info};
 use super::storage::{CachedTrackMetadata, UsbStorage};
 use super::sync::{
-    build_sync_plan, copy_with_verification, scan_local_collection, scan_usb_collection,
+    build_sync_plan, copy_with_verification, scan_local_collection_from_db, scan_usb_collection,
     CollectionState, SyncPlan,
 };
+use crate::db::MeshDb;
 use super::{ExportableConfig, UsbDevice, UsbError};
 use crate::audio_file::read_metadata;
 use crate::playlist::NodeId;
@@ -415,6 +416,18 @@ fn handle_build_sync_plan(
         })
         .collect();
 
+    // Open the database
+    let db_path = local_collection_root.join("mesh.db");
+    let db = match MeshDb::open(&db_path) {
+        Ok(db) => db,
+        Err(e) => {
+            let _ = message_tx.send(UsbMessage::SyncPlanFailed(UsbError::IoError(
+                format!("Failed to open database: {}", e)
+            )));
+            return;
+        }
+    };
+
     // Progress callback for local scanning
     let tx_local = message_tx.clone();
     let local_progress: super::sync::ProgressCallback =
@@ -425,8 +438,9 @@ fn handle_build_sync_plan(
             });
         });
 
-    // Scan local collection (parallel hashing)
-    let local_state = match scan_local_collection(
+    // Scan local collection from database (reads playlist membership from DB)
+    let local_state = match scan_local_collection_from_db(
+        &db,
         local_collection_root,
         &playlist_names,
         Some(local_progress),

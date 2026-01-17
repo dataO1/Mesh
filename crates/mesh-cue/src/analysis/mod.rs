@@ -156,6 +156,9 @@ pub struct AnalysisResult {
     /// Integrated LUFS loudness (EBU R128)
     /// Used for automatic gain compensation to target loudness
     pub lufs: Option<f32>,
+    /// 16-dimensional audio features for similarity search
+    /// Includes rhythm, harmony, energy, and timbre features
+    pub audio_features: Option<mesh_core::db::AudioFeatures>,
 }
 
 impl Default for AnalysisResult {
@@ -167,6 +170,7 @@ impl Default for AnalysisResult {
             beat_grid: Vec::new(),
             confidence: 0.0,
             lufs: None,
+            audio_features: None,
         }
     }
 }
@@ -178,9 +182,11 @@ impl Default for AnalysisResult {
 /// * `bpm_config` - BPM detection configuration (min/max tempo range)
 ///
 /// # Returns
-/// Complete analysis result with BPM, key, beat grid, and LUFS
+/// Complete analysis result with BPM, key, beat grid, LUFS, and audio features
 pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<AnalysisResult> {
+    use mesh_core::features::extract_audio_features;
     use mesh_core::types::SAMPLE_RATE;
+
     log::info!(
         "analyze_audio: received {} samples ({:.1}s at {}Hz)",
         samples.len(),
@@ -210,6 +216,18 @@ pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<
         }
     };
 
+    // Extract 16-dimensional audio features for similarity search
+    let audio_features = match extract_audio_features(samples) {
+        Ok(features) => {
+            log::info!("analyze_audio: Audio features extracted successfully");
+            Some(features)
+        }
+        Err(e) => {
+            log::warn!("Audio feature extraction failed, skipping: {}", e);
+            None
+        }
+    };
+
     // Generate fixed beat grid from detected beats, using actual track duration
     let beat_grid = generate_beat_grid(bpm, &beat_ticks, samples.len() as u64);
 
@@ -227,6 +245,7 @@ pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<
         beat_grid,
         confidence: 0.8, // TODO: Get from essentia
         lufs,
+        audio_features,
     })
 }
 

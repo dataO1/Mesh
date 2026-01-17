@@ -1,11 +1,15 @@
 //! Cross-platform sync engine with metadata-based change detection
 //!
 //! This module provides efficient file synchronization by:
-//! - Scanning local and USB collections to discover current state
+//! - Scanning local collection from database for playlist membership
+//! - Scanning USB collections from filesystem
 //! - Using file metadata (size + mtime) for fast change detection
 //! - Building minimal sync plans (what to copy, delete, link)
-//! - Supporting playlist-aware diffing (track symlinks)
+//!
+//! For local collections, playlist membership is read from the CozoDB database.
+//! For USB devices, playlist structure is created as symlinks (ext4) or copies (FAT).
 
+use crate::db::{MeshDb, PlaylistQuery};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -115,72 +119,57 @@ impl SyncPlan {
 /// Progress callback for scanning
 pub type ProgressCallback = Box<dyn Fn(usize, usize) + Send + Sync>;
 
-/// Scan a local collection directory to discover tracks and playlist membership
+/// Scan a local collection from the database to discover tracks and playlist membership
+///
+/// This is the database-based version that reads playlist membership from CozoDB
+/// instead of scanning the filesystem for symlinks.
 ///
 /// # Arguments
-/// * `collection_root` - Path to the local collection (contains tracks/ and playlists/)
-/// * `selected_playlists` - List of playlist names to include (e.g., ["My Playlist", "Set 1"])
-/// * `progress` - Optional callback for progress updates (reports files scanned, not hashed)
-pub fn scan_local_collection(
-    collection_root: &Path,
+/// * `db` - Database connection
+/// * `collection_root` - Path to the local collection (for resolving track paths)
+/// * `selected_playlists` - List of playlist names to include
+/// * `progress` - Optional callback for progress updates
+pub fn scan_local_collection_from_db(
+    db: &MeshDb,
+    _collection_root: &Path,  // Kept for API compatibility, paths come from DB
     selected_playlists: &[String],
     progress: Option<ProgressCallback>,
 ) -> Result<CollectionState, Box<dyn std::error::Error + Send + Sync>> {
     let mut state = CollectionState::default();
-    let playlists_dir = collection_root.join("playlists");
+    let mut track_paths: HashMap<String, PathBuf> = HashMap::new();
 
-    // Collect all track paths and their playlist membership
-    let mut track_paths: HashMap<String, PathBuf> = HashMap::new(); // filename -> resolved path
+    // Get all playlists from the database
+    let all_playlists = PlaylistQuery::get_all(db)
+        .map_err(|e| format!("Failed to get playlists: {}", e))?;
 
-    for playlist_name in selected_playlists {
-        let playlist_path = playlists_dir.join(playlist_name);
-        if !playlist_path.exists() {
+    // Filter to selected playlists and get their tracks
+    for playlist in &all_playlists {
+        if !selected_playlists.contains(&playlist.name) {
             continue;
         }
 
-        state.playlist_names.insert(playlist_name.clone());
+        state.playlist_names.insert(playlist.name.clone());
 
-        // Scan playlist directory for tracks
-        if let Ok(entries) = std::fs::read_dir(&playlist_path) {
-            for entry in entries.filter_map(|e| e.ok()) {
-                let entry_path = entry.path();
+        // Get tracks in this playlist
+        let tracks = PlaylistQuery::get_tracks(db, playlist.id)
+            .map_err(|e| format!("Failed to get tracks for playlist {}: {}", playlist.name, e))?;
 
-                // Only process .wav files
-                if entry_path.extension().and_then(|e| e.to_str()) != Some("wav") {
-                    continue;
-                }
+        for track in tracks {
+            let path = PathBuf::from(&track.path);
+            let filename = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(&track.name)
+                .to_string();
 
-                let filename = match entry_path.file_name().and_then(|n| n.to_str()) {
-                    Some(f) => f.to_string(),
-                    None => continue,
-                };
+            // Track the file path (use first occurrence if duplicate filename)
+            track_paths.entry(filename.clone()).or_insert(path);
 
-                // Resolve symlink to get actual track path
-                let track_path = if entry_path.is_symlink() {
-                    std::fs::read_link(&entry_path)
-                        .ok()
-                        .map(|link| {
-                            if link.is_absolute() {
-                                link
-                            } else {
-                                entry_path.parent().unwrap().join(&link)
-                            }
-                        })
-                        .and_then(|p| p.canonicalize().ok())
-                        .unwrap_or_else(|| entry_path.clone())
-                } else {
-                    entry_path.clone()
-                };
-
-                // Track the file path (use first occurrence if duplicate filename)
-                track_paths.entry(filename.clone()).or_insert(track_path);
-
-                // Add playlist link
-                state.playlist_links.insert(PlaylistLink {
-                    playlist: playlist_name.clone(),
-                    track_filename: filename,
-                });
-            }
+            // Add playlist link
+            state.playlist_links.insert(PlaylistLink {
+                playlist: playlist.name.clone(),
+                track_filename: filename,
+            });
         }
     }
 
@@ -497,6 +486,7 @@ mod tests {
             dirs_to_create: vec!["My Playlist".to_string()],
             dirs_to_delete: vec![],
             total_bytes: 10_000_000,
+            tracks_missing_lufs: vec![],
         };
 
         let summary = plan.summary();
