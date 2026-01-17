@@ -2,17 +2,17 @@
 //!
 //! Functions for building tree nodes and getting tracks from playlist storage.
 
-use mesh_core::playlist::{FilesystemStorage, NodeId, NodeKind, PlaylistNode, PlaylistStorage};
+use mesh_core::playlist::{NodeId, NodeKind, PlaylistNode, PlaylistStorage};
 use mesh_widgets::{TrackRow, TreeIcon, TreeNode};
 
 /// Build tree nodes from playlist storage
-pub fn build_tree_nodes(storage: &FilesystemStorage) -> Vec<TreeNode<NodeId>> {
+pub fn build_tree_nodes(storage: &dyn PlaylistStorage) -> Vec<TreeNode<NodeId>> {
     let root = storage.root();
     build_node_children(storage, &root)
 }
 
 /// Recursively build tree node children
-fn build_node_children(storage: &FilesystemStorage, parent: &PlaylistNode) -> Vec<TreeNode<NodeId>> {
+fn build_node_children(storage: &dyn PlaylistStorage, parent: &PlaylistNode) -> Vec<TreeNode<NodeId>> {
     storage
         .get_children(&parent.id)
         .into_iter()
@@ -44,7 +44,7 @@ fn build_node_children(storage: &FilesystemStorage, parent: &PlaylistNode) -> Ve
 }
 
 /// Get tracks for a folder as TrackRow items for display
-pub fn get_tracks_for_folder(storage: &FilesystemStorage, folder_id: &NodeId) -> Vec<TrackRow<NodeId>> {
+pub fn get_tracks_for_folder(storage: &dyn PlaylistStorage, folder_id: &NodeId) -> Vec<TrackRow<NodeId>> {
     storage
         .get_tracks(folder_id)
         .into_iter()

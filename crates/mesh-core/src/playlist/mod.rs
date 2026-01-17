@@ -1,12 +1,13 @@
 //! Playlist management for mesh-cue
 //!
 //! This module provides a hierarchical playlist system with:
-//! - Abstract storage trait for future DB/file backend flexibility
-//! - Filesystem implementation using symlinks for track references
+//! - CozoDB database implementation for instant metadata access
 //! - Tree-based navigation with folders and playlists
+//! - All metadata stored in database (no filesystem symlinks)
 
-pub mod filesystem;
-pub use filesystem::FilesystemStorage;
+pub mod database;
+
+pub use database::DatabaseStorage;
 
 use std::path::PathBuf;
 

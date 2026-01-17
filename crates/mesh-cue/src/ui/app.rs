@@ -11,7 +11,8 @@ use iced::widget::{button, center, column, container, mouse_area, opaque, row, s
 use iced::{Color, Element, Length, Task, Theme};
 use basedrop::Shared;
 use mesh_core::audio_file::{BeatGrid, CuePoint, LoadedTrack, MetadataField, TrackMetadata, update_metadata_in_file};
-use mesh_core::playlist::{FilesystemStorage, NodeId, NodeKind, PlaylistStorage};
+use mesh_core::db::MeshDb;
+use mesh_core::playlist::{DatabaseStorage, NodeId, NodeKind};
 use mesh_core::types::{PlayState, Stem};
 use mesh_widgets::{
     mpsc_subscription, sort_tracks,
@@ -118,15 +119,34 @@ impl MeshCueApp {
         // Initialize collection state with playlist storage
         let mut collection_state = CollectionState::default();
 
-        // Initialize playlist storage at collection root
+        // Initialize playlist storage at collection root using DatabaseStorage
+        // Database is created if it doesn't exist (no filesystem fallback)
         let collection_root = collection_state.collection.path().to_path_buf();
-        match FilesystemStorage::new(collection_root.clone()) {
+        let db_path = collection_root.join("mesh.db");
+
+        // Ensure collection directory exists
+        if let Err(e) = std::fs::create_dir_all(&collection_root) {
+            log::warn!("Failed to create collection directory: {}", e);
+        }
+
+        let storage_result: Result<Box<dyn mesh_core::playlist::PlaylistStorage>, String> = {
+            log::info!("Initializing database storage at {:?}", db_path);
+            MeshDb::open(&db_path)
+                .map_err(|e| format!("DB error: {}", e))
+                .and_then(|db| {
+                    DatabaseStorage::new(Arc::new(db), collection_root.clone())
+                        .map(|s| Box::new(s) as Box<dyn mesh_core::playlist::PlaylistStorage>)
+                        .map_err(|e| format!("Storage error: {}", e))
+                })
+        };
+
+        match storage_result {
             Ok(storage) => {
                 log::info!("Playlist storage initialized at {:?}", collection_root);
-                collection_state.playlist_storage = Some(Box::new(storage));
+                collection_state.playlist_storage = Some(storage);
                 // Build initial tree
                 if let Some(ref storage) = collection_state.playlist_storage {
-                    collection_state.tree_nodes = build_tree_nodes(storage);
+                    collection_state.tree_nodes = build_tree_nodes(storage.as_ref());
                     // Expand root nodes by default
                     collection_state.browser_left.tree_state.expand(NodeId::tracks());
                     collection_state.browser_left.tree_state.expand(NodeId::playlists());
@@ -135,7 +155,7 @@ impl MeshCueApp {
 
                     // Set left browser to show tracks (collection) by default
                     collection_state.browser_left.set_current_folder(NodeId::tracks());
-                    collection_state.left_tracks = get_tracks_for_folder(&storage, &NodeId::tracks());
+                    collection_state.left_tracks = get_tracks_for_folder(storage.as_ref(), &NodeId::tracks());
                 }
             }
             Err(e) => {
@@ -1684,7 +1704,7 @@ impl MeshCueApp {
                                     match storage.create_playlist(parent_id, "New Playlist") {
                                         Ok(new_id) => {
                                             log::info!("Created playlist: {:?}", new_id);
-                                            self.collection.tree_nodes = build_tree_nodes(storage);
+                                            self.collection.tree_nodes = build_tree_nodes(storage.as_ref());
                                             // Start editing the new playlist name
                                             self.collection.browser_left.tree_state.start_edit(
                                                 new_id,
@@ -1711,7 +1731,7 @@ impl MeshCueApp {
                                         if let Err(e) = storage.rename_playlist(&id, &new_name) {
                                             log::error!("Failed to rename playlist: {:?}", e);
                                         }
-                                        self.collection.tree_nodes = build_tree_nodes(storage);
+                                        self.collection.tree_nodes = build_tree_nodes(storage.as_ref());
                                     }
                                 }
                             }
@@ -1788,7 +1808,7 @@ impl MeshCueApp {
                                     // Refresh cached tracks for this browser
                                     if let Some(ref folder) = self.collection.browser_left.current_folder {
                                         if let Some(ref storage) = self.collection.playlist_storage {
-                                            self.collection.left_tracks = get_tracks_for_folder(storage, folder);
+                                            self.collection.left_tracks = get_tracks_for_folder(storage.as_ref(), folder);
                                         }
                                     } else {
                                         self.collection.left_tracks.clear();
@@ -1862,7 +1882,7 @@ impl MeshCueApp {
                                                 log::info!("Saved {:?} = '{}' for {:?}", column, new_value, track_id);
                                                 // Refresh tracks to show updated value
                                                 if let Some(ref folder) = self.collection.browser_left.current_folder {
-                                                    self.collection.left_tracks = get_tracks_for_folder(storage, folder);
+                                                    self.collection.left_tracks = get_tracks_for_folder(storage.as_ref(), folder);
                                                 }
                                             }
                                             Err(e) => log::error!("Failed to save metadata: {:?}", e),
@@ -2026,7 +2046,7 @@ impl MeshCueApp {
                                     match storage.create_playlist(parent_id, "New Playlist") {
                                         Ok(new_id) => {
                                             log::info!("Created playlist: {:?}", new_id);
-                                            self.collection.tree_nodes = build_tree_nodes(storage);
+                                            self.collection.tree_nodes = build_tree_nodes(storage.as_ref());
                                             // Start editing the new playlist name
                                             self.collection.browser_right.tree_state.start_edit(
                                                 new_id,
@@ -2053,7 +2073,7 @@ impl MeshCueApp {
                                         if let Err(e) = storage.rename_playlist(&id, &new_name) {
                                             log::error!("Failed to rename playlist: {:?}", e);
                                         }
-                                        self.collection.tree_nodes = build_tree_nodes(storage);
+                                        self.collection.tree_nodes = build_tree_nodes(storage.as_ref());
                                     }
                                 }
                             }
@@ -2123,7 +2143,7 @@ impl MeshCueApp {
                                     // Refresh cached tracks for this browser
                                     if let Some(ref folder) = self.collection.browser_right.current_folder {
                                         if let Some(ref storage) = self.collection.playlist_storage {
-                                            self.collection.right_tracks = get_tracks_for_folder(storage, folder);
+                                            self.collection.right_tracks = get_tracks_for_folder(storage.as_ref(), folder);
                                         }
                                     } else {
                                         self.collection.right_tracks.clear();
@@ -2185,7 +2205,7 @@ impl MeshCueApp {
                                                 log::info!("Saved {:?} = '{}' for {:?}", column, new_value, track_id);
                                                 // Refresh tracks to show updated value
                                                 if let Some(ref folder) = self.collection.browser_right.current_folder {
-                                                    self.collection.right_tracks = get_tracks_for_folder(storage, folder);
+                                                    self.collection.right_tracks = get_tracks_for_folder(storage.as_ref(), folder);
                                                 }
                                             }
                                             Err(e) => log::error!("Failed to save metadata: {:?}", e),
@@ -2335,7 +2355,7 @@ impl MeshCueApp {
                     if let Err(e) = storage.refresh() {
                         log::error!("Failed to refresh playlists: {:?}", e);
                     } else {
-                        self.collection.tree_nodes = build_tree_nodes(storage);
+                        self.collection.tree_nodes = build_tree_nodes(storage.as_ref());
                     }
                 }
             }
@@ -2398,12 +2418,12 @@ impl MeshCueApp {
                     if success_count > 0 {
                         log::info!("Moved {}/{} tracks successfully", success_count, track_ids.len());
                         // Refresh tree and both browser track lists
-                        self.collection.tree_nodes = build_tree_nodes(storage);
+                        self.collection.tree_nodes = build_tree_nodes(storage.as_ref());
                         if let Some(ref folder) = self.collection.browser_left.current_folder {
-                            self.collection.left_tracks = get_tracks_for_folder(storage, folder);
+                            self.collection.left_tracks = get_tracks_for_folder(storage.as_ref(), folder);
                         }
                         if let Some(ref folder) = self.collection.browser_right.current_folder {
-                            self.collection.right_tracks = get_tracks_for_folder(storage, folder);
+                            self.collection.right_tracks = get_tracks_for_folder(storage.as_ref(), folder);
                         }
                     }
                 }
@@ -2926,12 +2946,12 @@ impl MeshCueApp {
                                     }
                                 }
                                 // Refresh displays
-                                self.collection.tree_nodes = build_tree_nodes(storage);
+                                self.collection.tree_nodes = build_tree_nodes(storage.as_ref());
                                 if let Some(ref folder) = self.collection.browser_left.current_folder {
-                                    self.collection.left_tracks = get_tracks_for_folder(storage, folder);
+                                    self.collection.left_tracks = get_tracks_for_folder(storage.as_ref(), folder);
                                 }
                                 if let Some(ref folder) = self.collection.browser_right.current_folder {
-                                    self.collection.right_tracks = get_tracks_for_folder(storage, folder);
+                                    self.collection.right_tracks = get_tracks_for_folder(storage.as_ref(), folder);
                                 }
                             }
                         }
@@ -2944,12 +2964,12 @@ impl MeshCueApp {
                                     }
                                 }
                                 // Refresh displays
-                                self.collection.tree_nodes = build_tree_nodes(storage);
+                                self.collection.tree_nodes = build_tree_nodes(storage.as_ref());
                                 if let Some(ref folder) = self.collection.browser_left.current_folder {
-                                    self.collection.left_tracks = get_tracks_for_folder(storage, folder);
+                                    self.collection.left_tracks = get_tracks_for_folder(storage.as_ref(), folder);
                                 }
                                 if let Some(ref folder) = self.collection.browser_right.current_folder {
-                                    self.collection.right_tracks = get_tracks_for_folder(storage, folder);
+                                    self.collection.right_tracks = get_tracks_for_folder(storage.as_ref(), folder);
                                 }
                             }
                         }
@@ -2959,7 +2979,7 @@ impl MeshCueApp {
                                 if let Err(e) = storage.delete_playlist(playlist_id) {
                                     log::error!("Failed to delete playlist: {:?}", e);
                                 }
-                                self.collection.tree_nodes = build_tree_nodes(storage);
+                                self.collection.tree_nodes = build_tree_nodes(storage.as_ref());
                             }
                         }
                     }

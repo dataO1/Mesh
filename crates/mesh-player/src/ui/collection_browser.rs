@@ -13,20 +13,22 @@
 
 use iced::widget::{button, column, container, row, text};
 use iced::{Element, Length};
-use mesh_core::playlist::{FilesystemStorage, NodeId, NodeKind, PlaylistNode, PlaylistStorage};
+use mesh_core::db::MeshDb;
+use mesh_core::playlist::{DatabaseStorage, NodeId, NodeKind, PlaylistNode, PlaylistStorage};
 use mesh_core::usb::{UsbDevice, UsbStorage};
 use mesh_widgets::{
     playlist_browser, sort_tracks, PlaylistBrowserMessage, PlaylistBrowserState, TrackRow,
     TrackTableMessage, TreeIcon, TreeMessage, TreeNode,
 };
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// State for the collection browser
 pub struct CollectionBrowserState {
     /// Path to local collection (stored for runtime loading/unloading)
     collection_path: PathBuf,
-    /// Local playlist storage backend (shared with mesh-cue)
-    pub storage: Option<Box<FilesystemStorage>>,
+    /// Local playlist storage backend using CozoDB
+    pub storage: Option<Box<DatabaseStorage>>,
     /// Browser widget state (single browser, not dual)
     pub browser: PlaylistBrowserState<NodeId, NodeId>,
     /// Cached tree nodes for display (includes USB devices)
@@ -64,17 +66,29 @@ impl CollectionBrowserState {
     /// # Arguments
     /// * `collection_path` - Path to the local collection (only used if show_local is true)
     /// * `show_local` - Whether to load and display the local collection.
-    ///                  When false (USB-only mode), no FilesystemStorage is created,
+    ///                  When false (USB-only mode), no database is opened,
     ///                  saving memory and startup time.
     pub fn new(collection_path: PathBuf, show_local: bool) -> Self {
         // Only load local storage if configured - USB-only mode skips this entirely
         let storage = if show_local {
-            match FilesystemStorage::new(collection_path.clone()) {
-                Ok(s) => Some(Box::new(s)),
-                Err(e) => {
-                    log::warn!("Failed to initialize collection storage: {}", e);
-                    None
+            let db_path = collection_path.join("mesh.db");
+            if db_path.exists() {
+                match MeshDb::open(&db_path)
+                    .map_err(|e| format!("DB error: {}", e))
+                    .and_then(|db| {
+                        DatabaseStorage::new(Arc::new(db), collection_path.clone())
+                            .map_err(|e| format!("Storage error: {}", e))
+                    })
+                {
+                    Ok(s) => Some(Box::new(s)),
+                    Err(e) => {
+                        log::warn!("Failed to initialize collection storage: {}", e);
+                        None
+                    }
                 }
+            } else {
+                log::info!("No mesh.db found at {:?}, local collection unavailable", db_path);
+                None
             }
         } else {
             log::info!("USB-only mode: skipping local collection");
@@ -83,7 +97,7 @@ impl CollectionBrowserState {
 
         let tree_nodes = storage
             .as_ref()
-            .map(|s| build_tree_nodes(s))
+            .map(|s| build_tree_nodes(s.as_ref()))
             .unwrap_or_default();
 
         Self {
@@ -134,22 +148,33 @@ impl CollectionBrowserState {
 
     /// Enable or disable local collection display at runtime
     ///
-    /// When enabled, loads the FilesystemStorage from the stored collection path.
+    /// When enabled, loads the DatabaseStorage from the stored collection path.
     /// When disabled, unloads the storage to free memory.
     /// The tree is rebuilt automatically after the change.
     pub fn set_show_local_collection(&mut self, show: bool) {
         if show {
             // Load local storage if not already loaded
             if self.storage.is_none() {
-                log::info!("Loading local collection from {:?}", self.collection_path);
-                match FilesystemStorage::new(self.collection_path.clone()) {
-                    Ok(s) => {
-                        self.storage = Some(Box::new(s));
-                        log::info!("Local collection loaded successfully");
+                let db_path = self.collection_path.join("mesh.db");
+                log::info!("Loading local collection from {:?}", db_path);
+                if db_path.exists() {
+                    match MeshDb::open(&db_path)
+                        .map_err(|e| format!("DB error: {}", e))
+                        .and_then(|db| {
+                            DatabaseStorage::new(Arc::new(db), self.collection_path.clone())
+                                .map_err(|e| format!("Storage error: {}", e))
+                        })
+                    {
+                        Ok(s) => {
+                            self.storage = Some(Box::new(s));
+                            log::info!("Local collection loaded successfully");
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to load local collection: {}", e);
+                        }
                     }
-                    Err(e) => {
-                        log::warn!("Failed to load local collection: {}", e);
-                    }
+                } else {
+                    log::warn!("No mesh.db found at {:?}", db_path);
                 }
             }
         } else {
@@ -215,7 +240,7 @@ impl CollectionBrowserState {
 
         // Local collection
         if let Some(ref storage) = self.storage {
-            nodes.extend(build_tree_nodes(storage));
+            nodes.extend(build_tree_nodes(storage.as_ref()));
         }
 
         // USB devices section (if any devices connected)
@@ -299,7 +324,7 @@ impl CollectionBrowserState {
                                         } else {
                                             // Local storage
                                             if let Some(ref storage) = self.storage {
-                                                self.tracks = get_tracks_for_folder(storage, folder);
+                                                self.tracks = get_tracks_for_folder(storage.as_ref(), folder);
                                             }
                                             self.active_usb_idx = None;
                                         }
@@ -368,9 +393,9 @@ impl CollectionBrowserState {
             CollectionBrowserMessage::Refresh => {
                 if let Some(ref mut storage) = self.storage {
                     let _ = storage.refresh();
-                    self.tree_nodes = build_tree_nodes(storage);
+                    self.tree_nodes = build_tree_nodes(storage.as_ref());
                     if let Some(ref folder) = self.browser.current_folder {
-                        self.tracks = get_tracks_for_folder(storage, folder);
+                        self.tracks = get_tracks_for_folder(storage.as_ref(), folder);
                     }
                 }
                 None
@@ -438,7 +463,7 @@ impl CollectionBrowserState {
             self.active_usb_idx = self.find_usb_idx_for_folder(folder_id);
             log::debug!("load_tracks_for_folder: loaded {} USB tracks", self.tracks.len());
         } else if let Some(ref storage) = self.storage {
-            self.tracks = get_tracks_for_folder(storage, folder_id);
+            self.tracks = get_tracks_for_folder(storage.as_ref(), folder_id);
             self.active_usb_idx = None;
             log::debug!("load_tracks_for_folder: loaded {} local tracks", self.tracks.len());
         } else {
@@ -678,13 +703,13 @@ impl CollectionBrowserState {
 }
 
 /// Build tree nodes from storage (read-only: no create/rename allowed)
-fn build_tree_nodes(storage: &FilesystemStorage) -> Vec<TreeNode<NodeId>> {
+fn build_tree_nodes(storage: &dyn PlaylistStorage) -> Vec<TreeNode<NodeId>> {
     let root = storage.root();
     build_node_children(storage, &root)
 }
 
 /// Recursively build tree node children (read-only version)
-fn build_node_children(storage: &FilesystemStorage, parent: &PlaylistNode) -> Vec<TreeNode<NodeId>> {
+fn build_node_children(storage: &dyn PlaylistStorage, parent: &PlaylistNode) -> Vec<TreeNode<NodeId>> {
     storage
         .get_children(&parent.id)
         .into_iter()
@@ -712,7 +737,7 @@ fn build_node_children(storage: &FilesystemStorage, parent: &PlaylistNode) -> Ve
 }
 
 /// Get tracks for a folder as TrackRow items for display
-fn get_tracks_for_folder(storage: &FilesystemStorage, folder_id: &NodeId) -> Vec<TrackRow<NodeId>> {
+fn get_tracks_for_folder(storage: &dyn PlaylistStorage, folder_id: &NodeId) -> Vec<TrackRow<NodeId>> {
     storage
         .get_tracks(folder_id)
         .into_iter()

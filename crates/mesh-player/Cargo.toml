@@ -15,7 +15,7 @@ mesh-midi = { path = "../mesh-midi" }
 jack.workspace = true
 iced.workspace = true
 tokio.workspace = true
-rayon = "1.10"
+rayon.workspace = true
 basedrop = "0.1"
 log = "0.4"
 env_logger = "0.11"

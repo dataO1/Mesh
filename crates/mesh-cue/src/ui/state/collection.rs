@@ -1,7 +1,7 @@
 //! Collection browser state
 
 use crate::collection::Collection;
-use mesh_core::playlist::{FilesystemStorage, NodeId};
+use mesh_core::playlist::{NodeId, PlaylistStorage};
 use mesh_widgets::{PlaylistBrowserState, TrackRow, TreeNode};
 
 use super::loaded_track::LoadedTrackState;
@@ -61,8 +61,8 @@ pub struct CollectionState {
     pub selected_track: Option<usize>,
     /// Currently loaded track for editing
     pub loaded_track: Option<LoadedTrackState>,
-    /// Playlist storage backend
-    pub playlist_storage: Option<Box<FilesystemStorage>>,
+    /// Playlist storage backend (FilesystemStorage or DatabaseStorage)
+    pub playlist_storage: Option<Box<dyn PlaylistStorage>>,
     /// Left browser state
     pub browser_left: PlaylistBrowserState<NodeId, NodeId>,
     /// Right browser state
