@@ -12,11 +12,23 @@ serde.workspace = true
 serde_yaml.workspace = true
 anyhow.workspace = true
 dirs = "5"
-rayon = "1.10"
+rayon.workspace = true
 basedrop = "0.1"  # RT-safe deferred deallocation for audio
 bytemuck = { version = "1.21", features = ["derive"] }
 rubato = "0.16"   # High-quality sample rate conversion
 log = "0.4"
+thiserror.workspace = true
+
+# Database and messaging
+cozo = { workspace = true }
+crossbeam = { workspace = true }
+notify = { workspace = true }
+tokio = { workspace = true }  # For oneshot channels in services
+
+# Audio analysis - Essentia bindings
+essentia = "0.1.5"
+essentia-sys = "0.1.5"  # For StereoSample type
+procspawn = "1.0"       # Process isolation (Essentia not thread-safe)
 
 # USB device support (cross-platform)
 pathdiff = "0.2"    # Relative path computation for symlinks

@@ -25,11 +25,17 @@ tokio = { version = "1.0", features = ["sync", "rt-multi-thread"] }
 mesh-core = { path = "crates/mesh-core" }
 mesh-widgets = { path = "crates/mesh-widgets" }
 
+# Database and messaging
+cozo = { version = "0.7.6", features = ["storage-sqlite", "graph-algo"] }
+crossbeam = "0.8"
+notify = "6"
+rayon = ">=1.9,<1.10"  # Pinned for graph_builder 0.4.1 compatibility (rayon 1.10+ broke API)
+
 # mesh-cue dependencies
 essentia = "0.1.5"
 rfd = "0.15"
 anyhow = "1.0"
-thiserror = "2.0"
+thiserror = { version = "2.0", default-features = false, features = ["std"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
 dirs = "5.0"

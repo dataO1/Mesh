@@ -11,5 +11,8 @@ pub mod playlist;
 pub mod music;
 pub mod loader;
 pub mod usb;
+pub mod db;
+pub mod services;
+pub mod features;
 
 pub use types::*;
