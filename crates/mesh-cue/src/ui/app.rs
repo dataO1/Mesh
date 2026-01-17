@@ -11,7 +11,7 @@ use iced::widget::{button, center, column, container, mouse_area, opaque, row, s
 use iced::{Color, Element, Length, Task, Theme};
 use basedrop::Shared;
 use mesh_core::audio_file::{BeatGrid, CuePoint, LoadedTrack, MetadataField, TrackMetadata, update_metadata_in_file};
-use mesh_core::db::MeshDb;
+use mesh_core::db::{MeshDb, TrackQuery};
 use mesh_core::playlist::{DatabaseStorage, NodeId, NodeKind};
 use mesh_core::types::{PlayState, Stem};
 use mesh_widgets::{
@@ -129,20 +129,22 @@ impl MeshCueApp {
             log::warn!("Failed to create collection directory: {}", e);
         }
 
-        let storage_result: Result<Box<dyn mesh_core::playlist::PlaylistStorage>, String> = {
+        let storage_result: Result<(Arc<MeshDb>, Box<dyn mesh_core::playlist::PlaylistStorage>), String> = {
             log::info!("Initializing database storage at {:?}", db_path);
             MeshDb::open(&db_path)
                 .map_err(|e| format!("DB error: {}", e))
                 .and_then(|db| {
-                    DatabaseStorage::new(Arc::new(db), collection_root.clone())
-                        .map(|s| Box::new(s) as Box<dyn mesh_core::playlist::PlaylistStorage>)
+                    let db_arc = Arc::new(db);
+                    DatabaseStorage::new(db_arc.clone(), collection_root.clone())
+                        .map(|s| (db_arc, Box::new(s) as Box<dyn mesh_core::playlist::PlaylistStorage>))
                         .map_err(|e| format!("Storage error: {}", e))
                 })
         };
 
         match storage_result {
-            Ok(storage) => {
+            Ok((db_arc, storage)) => {
                 log::info!("Playlist storage initialized at {:?}", collection_root);
+                collection_state.db = Some(db_arc);
                 collection_state.playlist_storage = Some(storage);
                 // Build initial tree
                 if let Some(ref storage) = collection_state.playlist_storage {
@@ -228,6 +230,17 @@ impl MeshCueApp {
                         stem_links: state.stem_links.clone(),
                         lufs: None, // Preserve existing LUFS (not re-measured on save)
                     };
+
+                    // Sync metadata to database before async file save
+                    if let Some(ref db) = self.collection.db {
+                        let path_str = path.to_string_lossy();
+                        if let Err(e) = TrackQuery::update_field_by_path(db, &path_str, "bpm", &state.bpm.to_string()) {
+                            log::warn!("Auto-save: Failed to sync BPM to database: {:?}", e);
+                        }
+                        if let Err(e) = TrackQuery::update_field_by_path(db, &path_str, "key", &state.key) {
+                            log::warn!("Auto-save: Failed to sync key to database: {:?}", e);
+                        }
+                    }
 
                     // Mark as saved to prevent re-saving
                     state.modified = false;
@@ -682,6 +695,18 @@ impl MeshCueApp {
                         stem_links: state.stem_links.clone(),
                         lufs: None, // Preserve existing LUFS (not re-measured on save)
                     };
+
+                    // Sync metadata to database before async file save
+                    if let Some(ref db) = self.collection.db {
+                        let path_str = path.to_string_lossy();
+                        if let Err(e) = TrackQuery::update_field_by_path(db, &path_str, "bpm", &state.bpm.to_string()) {
+                            log::warn!("Failed to sync BPM to database: {:?}", e);
+                        }
+                        if let Err(e) = TrackQuery::update_field_by_path(db, &path_str, "key", &state.key) {
+                            log::warn!("Failed to sync key to database: {:?}", e);
+                        }
+                        log::info!("Synced track metadata to database");
+                    }
 
                     return Task::perform(
                         async move {
@@ -1880,6 +1905,25 @@ impl MeshCueApp {
                                         match update_metadata_in_file(path, field, &new_value) {
                                             Ok(_) => {
                                                 log::info!("Saved {:?} = '{}' for {:?}", column, new_value, track_id);
+
+                                                // Sync to database - convert TrackColumn to DB field name
+                                                let db_field = match column {
+                                                    TrackColumn::Artist => "artist",
+                                                    TrackColumn::Bpm => "bpm",
+                                                    TrackColumn::Key => "key",
+                                                    _ => "",
+                                                };
+                                                if !db_field.is_empty() {
+                                                    if let Some(ref db) = self.collection.db {
+                                                        let path_str = path.to_string_lossy();
+                                                        if let Err(e) = TrackQuery::update_field_by_path(db, &path_str, db_field, &new_value) {
+                                                            log::warn!("Failed to sync metadata to database: {:?}", e);
+                                                        } else {
+                                                            log::info!("Synced {:?} to database", column);
+                                                        }
+                                                    }
+                                                }
+
                                                 // Refresh tracks to show updated value
                                                 if let Some(ref folder) = self.collection.browser_left.current_folder {
                                                     self.collection.left_tracks = get_tracks_for_folder(storage.as_ref(), folder);
@@ -2203,6 +2247,25 @@ impl MeshCueApp {
                                         match update_metadata_in_file(path, field, &new_value) {
                                             Ok(_) => {
                                                 log::info!("Saved {:?} = '{}' for {:?}", column, new_value, track_id);
+
+                                                // Sync to database - convert TrackColumn to DB field name
+                                                let db_field = match column {
+                                                    TrackColumn::Artist => "artist",
+                                                    TrackColumn::Bpm => "bpm",
+                                                    TrackColumn::Key => "key",
+                                                    _ => "",
+                                                };
+                                                if !db_field.is_empty() {
+                                                    if let Some(ref db) = self.collection.db {
+                                                        let path_str = path.to_string_lossy();
+                                                        if let Err(e) = TrackQuery::update_field_by_path(db, &path_str, db_field, &new_value) {
+                                                            log::warn!("Failed to sync metadata to database: {:?}", e);
+                                                        } else {
+                                                            log::info!("Synced {:?} to database", column);
+                                                        }
+                                                    }
+                                                }
+
                                                 // Refresh tracks to show updated value
                                                 if let Some(ref folder) = self.collection.browser_right.current_folder {
                                                     self.collection.right_tracks = get_tracks_for_folder(storage.as_ref(), folder);

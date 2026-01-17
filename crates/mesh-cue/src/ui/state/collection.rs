@@ -1,6 +1,8 @@
 //! Collection browser state
 
+use std::sync::Arc;
 use crate::collection::Collection;
+use mesh_core::db::MeshDb;
 use mesh_core::playlist::{NodeId, PlaylistStorage};
 use mesh_widgets::{PlaylistBrowserState, TrackRow, TreeNode};
 
@@ -63,6 +65,8 @@ pub struct CollectionState {
     pub loaded_track: Option<LoadedTrackState>,
     /// Playlist storage backend (FilesystemStorage or DatabaseStorage)
     pub playlist_storage: Option<Box<dyn PlaylistStorage>>,
+    /// Database connection for metadata updates (shared with DatabaseStorage)
+    pub db: Option<Arc<MeshDb>>,
     /// Left browser state
     pub browser_left: PlaylistBrowserState<NodeId, NodeId>,
     /// Right browser state
@@ -84,6 +88,7 @@ impl std::fmt::Debug for CollectionState {
             .field("selected_track", &self.selected_track)
             .field("loaded_track", &self.loaded_track)
             .field("has_playlist_storage", &self.playlist_storage.is_some())
+            .field("has_db", &self.db.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -95,6 +100,7 @@ impl Default for CollectionState {
             selected_track: None,
             loaded_track: None,
             playlist_storage: None,
+            db: None,
             browser_left: PlaylistBrowserState::new(),
             browser_right: PlaylistBrowserState::new(),
             tree_nodes: Vec::new(),

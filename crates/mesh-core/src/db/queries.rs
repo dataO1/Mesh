@@ -128,6 +128,105 @@ impl TrackQuery {
         Ok(())
     }
 
+    /// Update a single field of a track by ID
+    ///
+    /// Supported fields: artist, bpm, original_bpm, key, lufs, drop_marker
+    /// For string fields, pass the string value directly.
+    /// For numeric fields, parse to the appropriate type first.
+    pub fn update_field(db: &MeshDb, track_id: i64, field: &str, value: &str) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("id".to_string(), DataValue::from(track_id));
+
+        // Parse value based on field type and build the appropriate update query
+        let query = match field {
+            "artist" => {
+                let val = if value.is_empty() { DataValue::Null } else { DataValue::Str(value.into()) };
+                params.insert("value".to_string(), val);
+                r#"
+                    ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
+                      duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path] :=
+                        *tracks{id, path, folder_path, name, bpm, original_bpm, key,
+                                duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path},
+                        id = $id,
+                        artist = $value
+                    :put tracks {id => path, folder_path, name, artist, bpm, original_bpm, key,
+                                 duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path}
+                "#
+            }
+            "bpm" => {
+                let val: f64 = value.parse().map_err(|_| DbError::Query(format!("Invalid BPM value: {}", value)))?;
+                params.insert("value".to_string(), DataValue::from(val));
+                r#"
+                    ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
+                      duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path] :=
+                        *tracks{id, path, folder_path, name, artist, original_bpm, key,
+                                duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path},
+                        id = $id,
+                        bpm = $value
+                    :put tracks {id => path, folder_path, name, artist, bpm, original_bpm, key,
+                                 duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path}
+                "#
+            }
+            "original_bpm" => {
+                let val: f64 = value.parse().map_err(|_| DbError::Query(format!("Invalid original_bpm value: {}", value)))?;
+                params.insert("value".to_string(), DataValue::from(val));
+                r#"
+                    ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
+                      duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path] :=
+                        *tracks{id, path, folder_path, name, artist, bpm, key,
+                                duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path},
+                        id = $id,
+                        original_bpm = $value
+                    :put tracks {id => path, folder_path, name, artist, bpm, original_bpm, key,
+                                 duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path}
+                "#
+            }
+            "key" => {
+                let val = if value.is_empty() { DataValue::Null } else { DataValue::Str(value.into()) };
+                params.insert("value".to_string(), val);
+                r#"
+                    ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
+                      duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path] :=
+                        *tracks{id, path, folder_path, name, artist, bpm, original_bpm,
+                                duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path},
+                        id = $id,
+                        key = $value
+                    :put tracks {id => path, folder_path, name, artist, bpm, original_bpm, key,
+                                 duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path}
+                "#
+            }
+            "lufs" => {
+                let val: f64 = value.parse().map_err(|_| DbError::Query(format!("Invalid LUFS value: {}", value)))?;
+                params.insert("value".to_string(), DataValue::from(val));
+                r#"
+                    ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
+                      duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path] :=
+                        *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
+                                duration_seconds, drop_marker, file_mtime, file_size, waveform_path},
+                        id = $id,
+                        lufs = $value
+                    :put tracks {id => path, folder_path, name, artist, bpm, original_bpm, key,
+                                 duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path}
+                "#
+            }
+            _ => {
+                return Err(DbError::Query(format!("Unknown or immutable field: {}", field)));
+            }
+        };
+
+        db.run_script(query, params)?;
+        Ok(())
+    }
+
+    /// Update a track by path (convenience wrapper for cases where we have path but not ID)
+    pub fn update_field_by_path(db: &MeshDb, path: &str, field: &str, value: &str) -> Result<(), DbError> {
+        // First find the track ID by path
+        let track = Self::get_by_path(db, path)?
+            .ok_or_else(|| DbError::Query(format!("Track not found: {}", path)))?;
+
+        Self::update_field(db, track.id, field, value)
+    }
+
     /// Get all unique folder paths
     pub fn get_folders(db: &MeshDb) -> Result<Vec<String>, DbError> {
         let result = db.run_query(r#"
