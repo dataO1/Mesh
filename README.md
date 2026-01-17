@@ -6,6 +6,58 @@ Mesh is an open-source DJ application designed for live performance with a focus
 
 ---
 
+## Quick Start for DJs
+
+**New to Mesh?** Here's what you need to know:
+
+### 1. Prepare Your Tracks (mesh-cue)
+
+Before you can DJ with Mesh, your tracks need to be split into stems (Vocals, Drums, Bass, Other). Use a tool like [Demucs](https://github.com/facebookresearch/demucs) or [Ultimate Vocal Remover](https://ultimatevocalremover.com/) to separate your tracks.
+
+```bash
+# Example with Demucs
+demucs --two-stems=vocals "My Track.mp3"
+```
+
+Then drop the stems into your import folder and let mesh-cue handle the rest:
+
+```
+~/Music/mesh-collection/import/
+├── Artist - Track_(Vocals).wav
+├── Artist - Track_(Drums).wav
+├── Artist - Track_(Bass).wav
+└── Artist - Track_(Other).wav
+```
+
+Click **Import** in mesh-cue → All tracks are analyzed (BPM, key, beats) and combined into a single stem file.
+
+### 2. Play Your Set (mesh-player)
+
+Launch mesh-player, load tracks onto any of the 4 decks, and start mixing:
+
+| Feature | What It Does |
+|---------|--------------|
+| **Stem Mute/Solo** | Mute the vocals, solo the drums — full control over each element |
+| **Auto Beat Sync** | Tracks automatically phase-lock when you press play |
+| **Auto Key Match** | Enable KEY button to harmonically match tracks |
+| **Stem Slicer** | Remix on the fly by rearranging beats and phrases |
+| **Find Similar** | Discover tracks with similar energy and vibe (NEW) |
+
+### 3. Export to USB
+
+Going to a gig without your laptop? Export playlists to a USB drive:
+- Incremental sync (only copies changed files)
+- Works with ext4, exFAT, and FAT32
+- Full playlist structure preserved
+
+### What You'll Need
+
+- **Linux** (NixOS recommended, other distros work too)
+- **JACK audio server** (for low-latency audio)
+- **Stem-separated tracks** (mesh-cue converts them to the 8-channel format)
+
+---
+
 ## Overview
 
 ### What is Mesh?
@@ -25,6 +77,16 @@ Unlike traditional DJ software that works with stereo audio files, Mesh is built
 - Create mashups and remixes on the fly
 
 Mesh also integrates **neural audio effects** powered by [RAVE](https://github.com/acids-ircam/RAVE) (Realtime Audio Variational autoEncoder), allowing you to transform sounds in ways that traditional effects cannot achieve.
+
+### Key Highlights
+
+| Category | Features |
+|----------|----------|
+| **Performance** | Instant track loading at any library size, zero audio dropouts during loading |
+| **Mixing** | 4 decks, auto beat sync, auto key matching, 3-band EQ with kill |
+| **Creative** | Per-stem effects, stem slicer, stem linking for mashups |
+| **Discovery** | Find similar tracks by audio fingerprint, harmonic mixing suggestions |
+| **Preparation** | Batch import, BPM/key detection, beat grid editing, USB export |
 
 ### Goals
 
@@ -537,6 +599,52 @@ Transposition always uses the **smallest interval** (±6 semitones max) to minim
 Key matching uses [signalsmith-stretch](https://signalsmith-audio.co.uk/code/stretch/)'s `set_transpose_factor_semitones()` for high-quality pitch shifting without tempo change. This is applied in the audio engine's real-time processing loop alongside time stretching.
 
 > **Note:** This feature requires tracks to have key metadata. mesh-cue automatically detects keys during import using Essentia's KeyExtractor.
+
+---
+
+## Track Discovery (Find Similar)
+
+Mesh analyzes your tracks to create **audio fingerprints** — 16-dimensional vectors that capture rhythm, harmony, energy, and timbre. This enables intelligent track discovery:
+
+### Audio Fingerprint
+
+Each track is analyzed to extract these characteristics:
+
+| Dimension | What It Captures | Why It Matters |
+|-----------|------------------|----------------|
+| **Rhythm** (4) | BPM, beat strength, regularity | Matches groove and danceability |
+| **Harmony** (4) | Key, mode (major/minor), complexity | Finds harmonically compatible tracks |
+| **Energy** (4) | Loudness (LUFS), dynamic range | Matches intensity and energy flow |
+| **Timbre** (4) | Spectral character, brightness | Matches sonic texture and "feel" |
+
+### Finding Similar Tracks
+
+From the track context menu or sidebar, click **Find Similar** to discover:
+
+- Tracks with similar energy levels and rhythmic feel
+- Harmonically compatible options for smooth transitions
+- Sonically cohesive sets that flow naturally
+
+Results are ranked by **cosine similarity** — tracks that share similar fingerprints appear first.
+
+### Mix Suggestions
+
+Mesh can suggest what to play next based on:
+
+| Suggestion Type | Description |
+|-----------------|-------------|
+| **Similar Energy** | Maintain the current vibe |
+| **Build Up** | Tracks with higher energy for peak moments |
+| **Cool Down** | Lower energy tracks for winding down |
+| **Harmonic Match** | Tracks in compatible keys (Camelot wheel) |
+
+### Technical Details
+
+- Fingerprints are computed during import using [Essentia](https://essentia.upf.edu/) audio analysis algorithms
+- Stored in a **HNSW vector index** (CozoDB) for instant similarity search (<5ms for 10K tracks)
+- All analysis runs in isolated subprocesses (Essentia's C++ library isn't thread-safe)
+
+> **Note:** This feature requires tracks to be imported through mesh-cue. Legacy tracks can be re-analyzed via the context menu.
 
 ---
 
