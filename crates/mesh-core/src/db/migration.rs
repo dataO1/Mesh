@@ -521,7 +521,7 @@ pub fn insert_analyzed_track(
     track_data: &NewTrackData,
 ) -> Result<i64, DbError> {
     let track_id = generate_track_id(&track_data.path);
-    let folder_path = extract_folder_path(&track_data.path, &collection_root.join("tracks"));
+    let folder_path = extract_folder_path(&track_data.path, collection_root);
 
     // Get file metadata
     let file_meta = std::fs::metadata(&track_data.path)
@@ -588,9 +588,16 @@ mod tests {
     #[test]
     fn test_extract_folder_path() {
         let root = Path::new("/collection");
+
+        // Track directly in tracks folder → folder_path = "tracks"
+        let path = Path::new("/collection/tracks/track.wav");
+        let folder = extract_folder_path(path, root);
+        assert_eq!(folder, "tracks");
+
+        // Track in subfolder → folder_path = "tracks/subfolder"
         let path = Path::new("/collection/tracks/subfolder/track.wav");
-        let folder = extract_folder_path(path, &root.join("tracks"));
-        assert_eq!(folder, "subfolder");
+        let folder = extract_folder_path(path, root);
+        assert_eq!(folder, "tracks/subfolder");
     }
 
     #[test]
