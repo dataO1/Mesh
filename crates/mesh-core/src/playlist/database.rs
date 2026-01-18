@@ -226,20 +226,33 @@ impl PlaylistStorage for DatabaseStorage {
 
         // Handle playlist tracks
         if folder_path.starts_with("playlists/") {
-            if let Ok(playlist_db_id) = self.get_playlist_db_id(folder_id) {
-                if let Ok(tracks) = PlaylistQuery::get_tracks(self.service.db(), playlist_db_id) {
-                    return tracks.iter()
-                        .map(|track| TrackInfo {
-                            id: NodeId(format!("{}/{}", folder_id.0, track.name)),
-                            name: track.name.clone(),
-                            path: PathBuf::from(&track.path),
-                            artist: track.artist.clone(),
-                            bpm: track.bpm,
-                            key: track.key.clone(),
-                            duration: Some(track.duration_seconds),
-                            lufs: track.lufs,
-                        })
-                        .collect();
+            log::debug!("get_tracks: looking up playlist {:?}", folder_id);
+            match self.get_playlist_db_id(folder_id) {
+                Ok(playlist_db_id) => {
+                    log::debug!("get_tracks: found playlist db_id={}", playlist_db_id);
+                    match PlaylistQuery::get_tracks(self.service.db(), playlist_db_id) {
+                        Ok(tracks) => {
+                            log::debug!("get_tracks: found {} tracks in playlist", tracks.len());
+                            return tracks.iter()
+                                .map(|track| TrackInfo {
+                                    id: NodeId(format!("{}/{}", folder_id.0, track.name)),
+                                    name: track.name.clone(),
+                                    path: PathBuf::from(&track.path),
+                                    artist: track.artist.clone(),
+                                    bpm: track.bpm,
+                                    key: track.key.clone(),
+                                    duration: Some(track.duration_seconds),
+                                    lufs: track.lufs,
+                                })
+                                .collect();
+                        }
+                        Err(e) => {
+                            log::warn!("get_tracks: failed to get tracks for playlist {}: {}", playlist_db_id, e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("get_tracks: failed to get playlist db_id for {:?}: {:?}", folder_id, e);
                 }
             }
             return Vec::new();

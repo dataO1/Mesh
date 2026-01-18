@@ -302,13 +302,14 @@ impl PlaylistQuery {
         let mut params = BTreeMap::new();
         params.insert("playlist_id".to_string(), DataValue::from(playlist_id));
 
+        // Note: sort_order must be in output columns to use :order in CozoDB
         let result = db.run_query(r#"
-            ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path] :=
-                *playlist_tracks{playlist_id, track_id, sort_order},
+            ?[track_id, path, folder_path, name, artist, bpm, original_bpm, key,
+              duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path, sort_order] :=
+                *playlist_tracks{playlist_id: pid, track_id, sort_order},
                 *tracks{id: track_id, path, folder_path, name, artist, bpm, original_bpm, key,
                         duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path},
-                playlist_id = $playlist_id
+                pid = $playlist_id
             :order sort_order
         "#, params)?;
 

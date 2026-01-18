@@ -2456,13 +2456,32 @@ impl MeshCueApp {
                 if let Some(ref mut storage) = self.collection.playlist_storage {
                     let mut success_count = 0;
                     for track_id in &track_ids {
-                        match storage.move_track(track_id, &target_playlist) {
+                        // Check if source is collection (tracks/...) or playlist (playlists/...)
+                        let result = if track_id.0.starts_with("tracks/") {
+                            // Adding from collection - need to get the file path first
+                            if let Some(node) = storage.get_node(track_id) {
+                                if let Some(track_path) = node.track_path {
+                                    storage.add_track_to_playlist(&track_path, &target_playlist)
+                                } else {
+                                    Err(mesh_core::playlist::PlaylistError::NotFound(
+                                        format!("No path for track {:?}", track_id)
+                                    ))
+                                }
+                            } else {
+                                Err(mesh_core::playlist::PlaylistError::NotFound(track_id.0.clone()))
+                            }
+                        } else {
+                            // Moving between playlists
+                            storage.move_track(track_id, &target_playlist)
+                        };
+
+                        match result {
                             Ok(new_id) => {
-                                log::info!("Track {:?} moved successfully to {:?}", track_id, new_id);
+                                log::info!("Track {:?} added/moved successfully to {:?}", track_id, new_id);
                                 success_count += 1;
                             }
                             Err(e) => {
-                                log::error!("Failed to move track {:?}: {:?}", track_id, e);
+                                log::error!("Failed to add/move track {:?}: {:?}", track_id, e);
                             }
                         }
                     }
