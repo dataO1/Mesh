@@ -381,8 +381,8 @@ impl CollectionBrowserState {
                     .map(|path| (deck_idx, path))
             }
             CollectionBrowserMessage::Refresh => {
-                if let Some(ref mut storage) = self.storage {
-                    let _ = storage.refresh();
+                // Database queries are always fresh - just rebuild the UI views
+                if let Some(ref storage) = self.storage {
                     self.tree_nodes = build_tree_nodes(storage.as_ref());
                     if let Some(ref folder) = self.browser.current_folder {
                         self.tracks = get_tracks_for_folder(storage.as_ref(), folder);

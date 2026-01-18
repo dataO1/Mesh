@@ -99,7 +99,7 @@ impl UsbStorage {
         };
 
         // Scan the tree
-        storage.refresh()?;
+        storage.scan_tree()?;
 
         Ok(storage)
     }
@@ -454,7 +454,7 @@ impl PlaylistStorage for UsbStorage {
         }
 
         fs::create_dir_all(&playlist_path)?;
-        self.refresh()?;
+        self.scan_tree()?;
 
         Ok(playlist_id)
     }
@@ -477,7 +477,7 @@ impl PlaylistStorage for UsbStorage {
         }
 
         fs::rename(&old_path, &new_path)?;
-        self.refresh()?;
+        self.scan_tree()?;
 
         Ok(())
     }
@@ -497,7 +497,7 @@ impl PlaylistStorage for UsbStorage {
         }
 
         fs::remove_dir_all(&path)?;
-        self.refresh()?;
+        self.scan_tree()?;
 
         Ok(())
     }
@@ -526,7 +526,7 @@ impl PlaylistStorage for UsbStorage {
         let dest_path = self.node_to_path(&track_id);
 
         self.link_or_copy_track(track_path, &dest_path)?;
-        self.refresh()?;
+        self.scan_tree()?;
 
         Ok(track_id)
     }
@@ -548,7 +548,7 @@ impl PlaylistStorage for UsbStorage {
         }
 
         fs::remove_file(&path)?;
-        self.refresh()?;
+        self.scan_tree()?;
 
         Ok(())
     }
@@ -578,10 +578,6 @@ impl PlaylistStorage for UsbStorage {
         self.add_track_to_playlist(&track_path, target_playlist)
     }
 
-    fn refresh(&mut self) -> Result<(), PlaylistError> {
-        self.scan_tree()
-    }
-
     fn delete_track_permanently(&mut self, track_id: &NodeId) -> Result<PathBuf, PlaylistError> {
         if self.read_only {
             return Err(PlaylistError::CannotModifyCollection);
@@ -601,7 +597,7 @@ impl PlaylistStorage for UsbStorage {
 
         let result_path = path.clone();
         fs::remove_file(&path)?;
-        self.refresh()?;
+        self.scan_tree()?;
 
         Ok(result_path)
     }

@@ -2398,18 +2398,15 @@ impl MeshCueApp {
                 }
             }
             Message::RefreshPlaylists => {
-                if let Some(ref mut storage) = self.collection.playlist_storage {
-                    if let Err(e) = storage.refresh() {
-                        log::error!("Failed to refresh playlists: {:?}", e);
-                    } else {
-                        self.collection.tree_nodes = build_tree_nodes(storage.as_ref());
-                        // Refresh track lists for both browsers
-                        if let Some(ref folder) = self.collection.browser_left.current_folder {
-                            self.collection.left_tracks = get_tracks_for_folder(storage.as_ref(), folder);
-                        }
-                        if let Some(ref folder) = self.collection.browser_right.current_folder {
-                            self.collection.right_tracks = get_tracks_for_folder(storage.as_ref(), folder);
-                        }
+                // Database queries are always fresh - just rebuild the UI views
+                if let Some(ref storage) = self.collection.playlist_storage {
+                    self.collection.tree_nodes = build_tree_nodes(storage.as_ref());
+                    // Refresh track lists for both browsers
+                    if let Some(ref folder) = self.collection.browser_left.current_folder {
+                        self.collection.left_tracks = get_tracks_for_folder(storage.as_ref(), folder);
+                    }
+                    if let Some(ref folder) = self.collection.browser_right.current_folder {
+                        self.collection.right_tracks = get_tracks_for_folder(storage.as_ref(), folder);
                     }
                 }
             }

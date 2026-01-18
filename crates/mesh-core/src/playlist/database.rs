@@ -3,149 +3,27 @@
 //! This implementation provides O(1) track metadata access by reading from
 //! the database instead of scanning WAV files. The database is populated
 //! during import/analysis and kept in sync via file watchers.
+//!
+//! No caching is needed - CozoDB queries are fast enough for real-time use.
 
 use super::{NodeId, NodeKind, PlaylistError, PlaylistNode, PlaylistStorage, TrackInfo};
 use crate::db::{DatabaseService, TrackQuery, PlaylistQuery};
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 /// Database-backed playlist storage
 ///
 /// Uses CozoDB for track metadata, providing instant access without file I/O.
-/// The tree structure is cached in memory and rebuilt on refresh.
+/// Queries the database directly - no caching needed.
 pub struct DatabaseStorage {
     /// Shared database service
     service: Arc<DatabaseService>,
-    /// Cached tree structure (folder hierarchy)
-    tree_cache: RwLock<TreeCache>,
-}
-
-/// Cached tree structure for fast navigation
-struct TreeCache {
-    /// All folder nodes indexed by ID
-    folders: HashMap<String, CachedFolder>,
-    /// Track count per folder (for lazy loading indicator)
-    track_counts: HashMap<String, usize>,
-    /// Whether cache needs refresh
-    dirty: bool,
-}
-
-/// A cached folder node
-struct CachedFolder {
-    id: NodeId,
-    kind: NodeKind,
-    name: String,
-    children: Vec<NodeId>,
 }
 
 impl DatabaseStorage {
     /// Create a new database storage backed by the given DatabaseService
-    ///
-    /// # Arguments
-    /// * `service` - Shared database service
     pub fn new(service: Arc<DatabaseService>) -> Result<Self, PlaylistError> {
-        let storage = Self {
-            service,
-            tree_cache: RwLock::new(TreeCache {
-                folders: HashMap::new(),
-                track_counts: HashMap::new(),
-                dirty: true,
-            }),
-        };
-
-        // Build initial cache
-        storage.rebuild_tree_cache()?;
-
-        Ok(storage)
-    }
-
-    /// Rebuild the tree cache from database
-    fn rebuild_tree_cache(&self) -> Result<(), PlaylistError> {
-        let mut cache = self.tree_cache.write()
-            .map_err(|_| PlaylistError::InvalidOperation("Lock poisoned".into()))?;
-
-        cache.folders.clear();
-        cache.track_counts.clear();
-
-        // Get all unique folder paths from tracks
-        let folders = TrackQuery::get_folders(self.service.db())
-            .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
-
-        // Build the root structure
-        let root_id = NodeId::root();
-        let tracks_id = NodeId::tracks();
-        let playlists_id = NodeId::playlists();
-
-        // Root node
-        cache.folders.insert(root_id.0.clone(), CachedFolder {
-            id: root_id.clone(),
-            kind: NodeKind::Root,
-            name: String::new(),
-            children: vec![tracks_id.clone(), playlists_id.clone()],
-        });
-
-        // Tracks (collection) node
-        let mut tracks_children = Vec::new();
-        for folder_path in &folders {
-            // Extract subfolder structure
-            if let Some(subfolder) = folder_path.strip_prefix("tracks/") {
-                if !subfolder.contains('/') {
-                    // Direct child of tracks
-                    tracks_children.push(NodeId(folder_path.clone()));
-                }
-            }
-        }
-        cache.folders.insert(tracks_id.0.clone(), CachedFolder {
-            id: tracks_id,
-            kind: NodeKind::Collection,
-            name: "General Collection".into(),
-            children: tracks_children,
-        });
-
-        // Playlists root node
-        let playlists = PlaylistQuery::get_roots(self.service.db())
-            .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
-        let playlist_children: Vec<NodeId> = playlists
-            .iter()
-            .map(|p| NodeId(format!("playlists/{}", p.name)))
-            .collect();
-        cache.folders.insert(playlists_id.0.clone(), CachedFolder {
-            id: playlists_id,
-            kind: NodeKind::PlaylistsRoot,
-            name: "Playlists".into(),
-            children: playlist_children.clone(),
-        });
-
-        // Add each playlist folder
-        for playlist in playlists {
-            let id = NodeId(format!("playlists/{}", playlist.name));
-            cache.folders.insert(id.0.clone(), CachedFolder {
-                id: id.clone(),
-                kind: NodeKind::Playlist,
-                name: playlist.name,
-                children: Vec::new(), // Tracks loaded on demand
-            });
-        }
-
-        // Add collection subfolders
-        for folder_path in folders {
-            if folder_path != "tracks" && folder_path.starts_with("tracks/") {
-                let name = folder_path.rsplit_once('/')
-                    .map(|(_, n)| n.to_string())
-                    .unwrap_or_else(|| folder_path.clone());
-                let id = NodeId(folder_path.clone());
-                cache.folders.insert(folder_path.clone(), CachedFolder {
-                    id,
-                    kind: NodeKind::CollectionFolder,
-                    name,
-                    children: Vec::new(),
-                });
-            }
-        }
-
-        cache.dirty = false;
-        Ok(())
+        Ok(Self { service })
     }
 
     /// Convert database Track to TrackInfo
@@ -164,12 +42,8 @@ impl DatabaseStorage {
 
     /// Get database playlist ID from a NodeId like "playlists/MyPlaylist"
     fn get_playlist_db_id(&self, node_id: &NodeId) -> Result<i64, PlaylistError> {
-        // Extract the playlist name from the path
-        let playlist_name = if node_id.0.starts_with("playlists/") {
-            node_id.0.strip_prefix("playlists/").unwrap_or(&node_id.0)
-        } else {
-            return Err(PlaylistError::NotFound(node_id.0.clone()));
-        };
+        let playlist_name = node_id.0.strip_prefix("playlists/")
+            .ok_or_else(|| PlaylistError::NotFound(node_id.0.clone()))?;
 
         // Handle nested playlists: "playlists/Parent/Child" -> name="Child", parent="Parent"
         let (parent_name, name) = if let Some((parent_path, name)) = playlist_name.rsplit_once('/') {
@@ -188,7 +62,6 @@ impl DatabaseStorage {
             None
         };
 
-        // Look up the playlist
         let playlist = PlaylistQuery::get_by_name(self.service.db(), name, parent_id)
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?
             .ok_or_else(|| PlaylistError::NotFound(node_id.0.clone()))?;
@@ -196,14 +69,39 @@ impl DatabaseStorage {
         Ok(playlist.id)
     }
 
-    /// Get database track ID from a path in the tracks folder
+    /// Get database track ID from a file path
     fn get_track_db_id(&self, track_path: &PathBuf) -> Result<i64, PlaylistError> {
-        // Search for track by path
         let track = TrackQuery::get_by_path(self.service.db(), track_path.to_str().unwrap_or(""))
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?
             .ok_or_else(|| PlaylistError::NotFound(track_path.display().to_string()))?;
 
         Ok(track.id)
+    }
+
+    /// Get folder children (subfolders only, not tracks)
+    fn get_folder_children(&self, folder_path: &str) -> Vec<NodeId> {
+        let all_folders = match TrackQuery::get_folders(self.service.db()) {
+            Ok(f) => f,
+            Err(_) => return Vec::new(),
+        };
+
+        let prefix = if folder_path.is_empty() || folder_path == "tracks" {
+            "tracks/"
+        } else {
+            return Vec::new(); // Only tracks folder has subfolders for now
+        };
+
+        all_folders
+            .into_iter()
+            .filter(|f| {
+                if let Some(rest) = f.strip_prefix(prefix) {
+                    !rest.contains('/') // Direct children only
+                } else {
+                    false
+                }
+            })
+            .map(NodeId)
+            .collect()
     }
 }
 
@@ -219,44 +117,135 @@ impl PlaylistStorage for DatabaseStorage {
     }
 
     fn get_node(&self, id: &NodeId) -> Option<PlaylistNode> {
-        let cache = self.tree_cache.read().ok()?;
-        let folder = cache.folders.get(&id.0)?;
+        // Handle special root nodes
+        if id.0 == "" || id.0 == "root" {
+            return Some(self.root());
+        }
+        if id.0 == "tracks" {
+            return Some(PlaylistNode {
+                id: NodeId::tracks(),
+                kind: NodeKind::Collection,
+                name: "General Collection".into(),
+                children: self.get_folder_children("tracks"),
+                track_path: None,
+            });
+        }
+        if id.0 == "playlists" {
+            let playlists = PlaylistQuery::get_roots(self.service.db()).unwrap_or_default();
+            let children: Vec<NodeId> = playlists
+                .iter()
+                .map(|p| NodeId(format!("playlists/{}", p.name)))
+                .collect();
+            return Some(PlaylistNode {
+                id: NodeId::playlists(),
+                kind: NodeKind::PlaylistsRoot,
+                name: "Playlists".into(),
+                children,
+                track_path: None,
+            });
+        }
 
-        Some(PlaylistNode {
-            id: folder.id.clone(),
-            kind: folder.kind,
-            name: folder.name.clone(),
-            children: folder.children.clone(),
-            track_path: None,
-        })
+        // Handle collection folders (e.g., "tracks/Subfolder")
+        if id.0.starts_with("tracks/") && !id.0.contains('/') {
+            // This is a subfolder, not a track
+            let name = id.0.strip_prefix("tracks/").unwrap_or(&id.0).to_string();
+            return Some(PlaylistNode {
+                id: id.clone(),
+                kind: NodeKind::CollectionFolder,
+                name,
+                children: Vec::new(),
+                track_path: None,
+            });
+        }
+
+        // Handle tracks in collection (e.g., "tracks/trackname" or "tracks/Subfolder/trackname")
+        if id.0.starts_with("tracks/") {
+            // Try to find this track in the database by name
+            let track_name = id.name();
+            let folder_path = id.parent().map(|p| p.0.clone()).unwrap_or_else(|| "tracks".to_string());
+
+            let tracks = TrackQuery::get_by_folder(self.service.db(), &folder_path).ok()?;
+            let track = tracks.iter().find(|t| t.name == track_name)?;
+
+            return Some(PlaylistNode {
+                id: id.clone(),
+                kind: NodeKind::Track,
+                name: track.name.clone(),
+                children: Vec::new(),
+                track_path: Some(PathBuf::from(&track.path)),
+            });
+        }
+
+        // Handle playlists (e.g., "playlists/MyPlaylist")
+        if id.0.starts_with("playlists/") {
+            let playlist_name = id.0.strip_prefix("playlists/")?;
+            // Could be a playlist or a track in a playlist
+
+            // First check if it's a playlist
+            if let Ok(Some(_)) = PlaylistQuery::get_by_name(self.service.db(), playlist_name, None) {
+                return Some(PlaylistNode {
+                    id: id.clone(),
+                    kind: NodeKind::Playlist,
+                    name: playlist_name.to_string(),
+                    children: Vec::new(),
+                    track_path: None,
+                });
+            }
+
+            // Otherwise it might be a track in a playlist
+            let parent = id.parent()?;
+            let playlist_db_id = self.get_playlist_db_id(&parent).ok()?;
+            let tracks = PlaylistQuery::get_tracks(self.service.db(), playlist_db_id).ok()?;
+            let track_name = id.name();
+            let track = tracks.iter().find(|t| t.name == track_name)?;
+
+            return Some(PlaylistNode {
+                id: id.clone(),
+                kind: NodeKind::Track,
+                name: track.name.clone(),
+                children: Vec::new(),
+                track_path: Some(PathBuf::from(&track.path)),
+            });
+        }
+
+        None
     }
 
     fn get_children(&self, id: &NodeId) -> Vec<PlaylistNode> {
-        let cache = match self.tree_cache.read() {
-            Ok(c) => c,
-            Err(_) => return Vec::new(),
-        };
-
-        let folder = match cache.folders.get(&id.0) {
-            Some(f) => f,
-            None => return Vec::new(),
-        };
-
-        folder.children.iter().filter_map(|child_id| {
-            cache.folders.get(&child_id.0).map(|f| PlaylistNode {
-                id: f.id.clone(),
-                kind: f.kind,
-                name: f.name.clone(),
-                children: f.children.clone(),
-                track_path: None,
-            })
-        }).collect()
+        if let Some(node) = self.get_node(id) {
+            node.children.iter()
+                .filter_map(|child_id| self.get_node(child_id))
+                .collect()
+        } else {
+            Vec::new()
+        }
     }
 
     fn get_tracks(&self, folder_id: &NodeId) -> Vec<TrackInfo> {
-        // This is the key optimization - read from DB instead of files!
         let folder_path = &folder_id.0;
 
+        // Handle playlist tracks
+        if folder_path.starts_with("playlists/") {
+            if let Ok(playlist_db_id) = self.get_playlist_db_id(folder_id) {
+                if let Ok(tracks) = PlaylistQuery::get_tracks(self.service.db(), playlist_db_id) {
+                    return tracks.iter()
+                        .map(|track| TrackInfo {
+                            id: NodeId(format!("{}/{}", folder_id.0, track.name)),
+                            name: track.name.clone(),
+                            path: PathBuf::from(&track.path),
+                            artist: track.artist.clone(),
+                            bpm: track.bpm,
+                            key: track.key.clone(),
+                            duration: Some(track.duration_seconds),
+                            lufs: track.lufs,
+                        })
+                        .collect();
+                }
+            }
+            return Vec::new();
+        }
+
+        // Handle collection tracks
         let tracks = match TrackQuery::get_by_folder(self.service.db(), folder_path) {
             Ok(t) => t,
             Err(e) => {
@@ -286,12 +275,7 @@ impl PlaylistStorage for DatabaseStorage {
         let _db_id = PlaylistQuery::create(self.service.db(), name, parent_db_id)
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
 
-        let new_id = NodeId(format!("{}/{}", parent.0, name));
-
-        // Invalidate and rebuild cache
-        self.rebuild_tree_cache()?;
-
-        Ok(new_id)
+        Ok(NodeId(format!("{}/{}", parent.0, name)))
     }
 
     fn rename_playlist(&mut self, id: &NodeId, new_name: &str) -> Result<(), PlaylistError> {
@@ -306,9 +290,6 @@ impl PlaylistStorage for DatabaseStorage {
         PlaylistQuery::rename(self.service.db(), db_id, new_name)
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
 
-        // Invalidate and rebuild cache
-        self.rebuild_tree_cache()?;
-
         Ok(())
     }
 
@@ -317,15 +298,11 @@ impl PlaylistStorage for DatabaseStorage {
             return Err(PlaylistError::CannotModifyCollection);
         }
 
-        // Get the database ID for this playlist
         let db_id = self.get_playlist_db_id(id)?;
 
         // Delete from database (also removes track associations)
         PlaylistQuery::delete(self.service.db(), db_id)
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
-
-        // Invalidate and rebuild cache
-        self.rebuild_tree_cache()?;
 
         Ok(())
     }
@@ -427,10 +404,6 @@ impl PlaylistStorage for DatabaseStorage {
         Ok(NodeId(format!("{}/{}", target_playlist.0, track_name)))
     }
 
-    fn refresh(&mut self) -> Result<(), PlaylistError> {
-        self.rebuild_tree_cache()
-    }
-
     fn delete_track_permanently(&mut self, track_id: &NodeId) -> Result<PathBuf, PlaylistError> {
         if !track_id.0.starts_with("tracks/") {
             return Err(PlaylistError::InvalidOperation(
@@ -459,11 +432,6 @@ impl PlaylistStorage for DatabaseStorage {
 
         // Delete actual file
         std::fs::remove_file(&path)?;
-
-        // Invalidate cache
-        if let Ok(mut cache) = self.tree_cache.write() {
-            cache.dirty = true;
-        }
 
         Ok(path)
     }

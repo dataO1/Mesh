@@ -264,9 +264,6 @@ pub trait PlaylistStorage: Send + Sync {
         target_playlist: &NodeId,
     ) -> Result<NodeId, PlaylistError>;
 
-    /// Refresh the tree from storage (re-scan filesystem, etc.)
-    fn refresh(&mut self) -> Result<(), PlaylistError>;
-
     /// PERMANENTLY delete a track from the collection (deletes the actual file!)
     /// Returns the path of the deleted file.
     fn delete_track_permanently(&mut self, track_id: &NodeId) -> Result<PathBuf, PlaylistError>;
