@@ -627,4 +627,140 @@ mod tests {
         let result = migrate_from_wav_collection(&db, temp.path(), None);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_insert_analyzed_track_persists() {
+        use crate::db::TrackQuery;
+
+        let temp = TempDir::new().unwrap();
+        let tracks_dir = temp.path().join("tracks");
+        fs::create_dir_all(&tracks_dir).unwrap();
+
+        // Create a dummy file (needed for file metadata)
+        let track_path = tracks_dir.join("test_track.wav");
+        fs::write(&track_path, b"dummy wav data").unwrap();
+
+        // Open database (on disk, not in-memory)
+        let db_path = temp.path().join("mesh.db");
+        let db = MeshDb::open(&db_path).unwrap();
+        println!("Database opened at: {:?}", db_path);
+
+        // Insert track
+        let track_data = NewTrackData {
+            path: track_path.clone(),
+            name: "Test Track".to_string(),
+            artist: Some("Test Artist".to_string()),
+            bpm: Some(120.0),
+            original_bpm: Some(120.0),
+            key: Some("Am".to_string()),
+            duration_seconds: 180.0,
+            lufs: Some(-14.0),
+        };
+
+        let track_id = insert_analyzed_track(&db, temp.path(), &track_data).unwrap();
+        println!("Inserted track with id: {}", track_id);
+
+        // Verify track exists by count
+        let count = TrackQuery::count(&db).unwrap();
+        println!("Track count after insert: {}", count);
+        assert_eq!(count, 1, "Track should be in database");
+
+        // Verify by folder query
+        let folders = TrackQuery::get_folders(&db).unwrap();
+        println!("Folders: {:?}", folders);
+        assert!(!folders.is_empty(), "Should have at least one folder");
+        assert!(folders.contains(&"tracks".to_string()), "Should have 'tracks' folder");
+    }
+
+    #[test]
+    fn test_insert_analyzed_track_in_memory() {
+        use crate::db::TrackQuery;
+
+        let temp = TempDir::new().unwrap();
+        let tracks_dir = temp.path().join("tracks");
+        fs::create_dir_all(&tracks_dir).unwrap();
+
+        // Create a dummy file
+        let track_path = tracks_dir.join("test_track.wav");
+        fs::write(&track_path, b"dummy wav data").unwrap();
+
+        // Use in-memory database
+        let db = MeshDb::in_memory().unwrap();
+        println!("In-memory database created");
+
+        // Insert track
+        let track_data = NewTrackData {
+            path: track_path.clone(),
+            name: "Test Track".to_string(),
+            artist: Some("Test Artist".to_string()),
+            bpm: Some(120.0),
+            original_bpm: Some(120.0),
+            key: Some("Am".to_string()),
+            duration_seconds: 180.0,
+            lufs: Some(-14.0),
+        };
+
+        let track_id = insert_analyzed_track(&db, temp.path(), &track_data).unwrap();
+        println!("Inserted track with id: {}", track_id);
+
+        // Verify track exists
+        let count = TrackQuery::count(&db).unwrap();
+        println!("Track count after insert: {}", count);
+        assert_eq!(count, 1, "Track should be in database");
+    }
+
+    #[test]
+    fn test_multiple_connections_insert() {
+        // This simulates what batch_import does: opens a new connection per track
+        use crate::db::TrackQuery;
+
+        let temp = TempDir::new().unwrap();
+        let tracks_dir = temp.path().join("tracks");
+        fs::create_dir_all(&tracks_dir).unwrap();
+
+        let db_path = temp.path().join("mesh.db");
+
+        // First, create the database with schema
+        {
+            let db = MeshDb::open(&db_path).unwrap();
+            let count = TrackQuery::count(&db).unwrap();
+            println!("Initial track count: {}", count);
+        } // Connection dropped here
+
+        // Now simulate multiple imports, each opening its own connection
+        for i in 0..3 {
+            let track_path = tracks_dir.join(format!("track_{}.wav", i));
+            fs::write(&track_path, b"dummy wav data").unwrap();
+
+            // Open NEW connection (like batch_import does)
+            let db = MeshDb::open(&db_path).unwrap();
+
+            let track_data = NewTrackData {
+                path: track_path.clone(),
+                name: format!("Track {}", i),
+                artist: Some("Artist".to_string()),
+                bpm: Some(120.0),
+                original_bpm: Some(120.0),
+                key: Some("Am".to_string()),
+                duration_seconds: 180.0,
+                lufs: Some(-14.0),
+            };
+
+            let track_id = insert_analyzed_track(&db, temp.path(), &track_data).unwrap();
+            println!("Connection {}: Inserted track_id={}", i, track_id);
+
+            let count = TrackQuery::count(&db).unwrap();
+            println!("Connection {}: Track count = {}", i, count);
+        } // All connections dropped
+
+        // Now open a fresh connection and check
+        let db = MeshDb::open(&db_path).unwrap();
+        let final_count = TrackQuery::count(&db).unwrap();
+        println!("Final track count after reopening: {}", final_count);
+
+        let folders = TrackQuery::get_folders(&db).unwrap();
+        println!("Final folders: {:?}", folders);
+
+        assert_eq!(final_count, 3, "All 3 tracks should be persisted");
+    }
 }

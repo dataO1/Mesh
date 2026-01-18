@@ -28,7 +28,7 @@ use super::sync::{
     build_sync_plan, copy_with_verification, scan_local_collection_from_db, scan_usb_collection,
     CollectionState, SyncPlan,
 };
-use crate::db::MeshDb;
+use crate::db::DatabaseService;
 use super::{ExportableConfig, UsbDevice, UsbError};
 use crate::audio_file::read_metadata;
 use crate::playlist::NodeId;
@@ -56,24 +56,33 @@ pub struct UsbManager {
     _thread_handle: JoinHandle<()>,
     /// Handle to the udev monitor thread
     _monitor_handle: JoinHandle<()>,
+    /// Shared database service (optional - not all USB operations need DB)
+    db_service: Option<Arc<DatabaseService>>,
 }
 
 impl UsbManager {
     /// Spawn the USB manager background thread
     ///
+    /// # Arguments
+    /// * `db_service` - Optional shared database service for sync operations.
+    ///                  If None, sync plan building will fail gracefully.
+    ///
     /// Returns a manager instance with channels for communication.
-    pub fn spawn() -> Self {
+    pub fn spawn(db_service: Option<Arc<DatabaseService>>) -> Self {
         let (command_tx, command_rx) = channel::<UsbCommand>();
         let (message_tx, message_rx) = channel::<UsbMessage>();
 
         // Clone message_tx for the udev monitor thread
         let monitor_message_tx = message_tx.clone();
 
+        // Clone db_service for the manager thread
+        let thread_db_service = db_service.clone();
+
         // Spawn the main manager thread
         let thread_handle = thread::Builder::new()
             .name("usb-manager".to_string())
             .spawn(move || {
-                manager_thread_main(command_rx, message_tx);
+                manager_thread_main(command_rx, message_tx, thread_db_service);
             })
             .expect("Failed to spawn USB manager thread");
 
@@ -90,6 +99,7 @@ impl UsbManager {
             message_rx: Arc::new(Mutex::new(message_rx)),
             _thread_handle: thread_handle,
             _monitor_handle: monitor_handle,
+            db_service,
         }
     }
 
@@ -133,7 +143,11 @@ impl UsbManager {
 }
 
 /// Main manager thread function
-fn manager_thread_main(command_rx: Receiver<UsbCommand>, message_tx: Sender<UsbMessage>) {
+fn manager_thread_main(
+    command_rx: Receiver<UsbCommand>,
+    message_tx: Sender<UsbMessage>,
+    db_service: Option<Arc<DatabaseService>>,
+) {
     log::info!("USB manager thread started");
 
     // Track known devices
@@ -182,6 +196,7 @@ fn manager_thread_main(command_rx: Receiver<UsbCommand>, message_tx: Sender<UsbM
                             &device_path,
                             &playlists,
                             &local_collection_root,
+                            db_service.as_ref(),
                             &message_tx,
                         );
                     }
@@ -385,6 +400,7 @@ fn handle_build_sync_plan(
     device_path: &PathBuf,
     playlists: &[NodeId],
     local_collection_root: &PathBuf,
+    db_service: Option<&Arc<DatabaseService>>,
     message_tx: &Sender<UsbMessage>,
 ) {
     let _ = message_tx.send(UsbMessage::SyncPlanStarted);
@@ -394,6 +410,17 @@ fn handle_build_sync_plan(
         None => {
             let _ = message_tx.send(UsbMessage::SyncPlanFailed(UsbError::DeviceNotFound(
                 device_path.display().to_string(),
+            )));
+            return;
+        }
+    };
+
+    // Ensure we have a database service
+    let db_service = match db_service {
+        Some(s) => s,
+        None => {
+            let _ = message_tx.send(UsbMessage::SyncPlanFailed(UsbError::IoError(
+                "Database service not available for sync".to_string()
             )));
             return;
         }
@@ -416,18 +443,6 @@ fn handle_build_sync_plan(
         })
         .collect();
 
-    // Open the database
-    let db_path = local_collection_root.join("mesh.db");
-    let db = match MeshDb::open(&db_path) {
-        Ok(db) => db,
-        Err(e) => {
-            let _ = message_tx.send(UsbMessage::SyncPlanFailed(UsbError::IoError(
-                format!("Failed to open database: {}", e)
-            )));
-            return;
-        }
-    };
-
     // Progress callback for local scanning
     let tx_local = message_tx.clone();
     let local_progress: super::sync::ProgressCallback =
@@ -440,7 +455,7 @@ fn handle_build_sync_plan(
 
     // Scan local collection from database (reads playlist membership from DB)
     let local_state = match scan_local_collection_from_db(
-        &db,
+        db_service.db(),
         local_collection_root,
         &playlist_names,
         Some(local_progress),
@@ -826,7 +841,8 @@ mod tests {
     fn test_manager_spawn() {
         // Just test that we can spawn without panicking
         // Actual functionality requires USB hardware
-        let _manager = UsbManager::spawn();
+        // Pass None for db_service - sync operations won't work but basic USB ops will
+        let _manager = UsbManager::spawn(None);
         // Manager will be dropped and threads will be detached
     }
 }

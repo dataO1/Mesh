@@ -5,7 +5,7 @@
 //! during import/analysis and kept in sync via file watchers.
 
 use super::{NodeId, NodeKind, PlaylistError, PlaylistNode, PlaylistStorage, TrackInfo};
-use crate::db::{MeshDb, TrackQuery, PlaylistQuery};
+use crate::db::{DatabaseService, TrackQuery, PlaylistQuery};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -15,11 +15,8 @@ use std::sync::{Arc, RwLock};
 /// Uses CozoDB for track metadata, providing instant access without file I/O.
 /// The tree structure is cached in memory and rebuilt on refresh.
 pub struct DatabaseStorage {
-    /// Database connection
-    db: Arc<MeshDb>,
-    /// Root path for the collection (for resolving relative paths)
-    #[allow(dead_code)] // Will be used for path resolution in future
-    collection_root: PathBuf,
+    /// Shared database service
+    service: Arc<DatabaseService>,
     /// Cached tree structure (folder hierarchy)
     tree_cache: RwLock<TreeCache>,
 }
@@ -43,15 +40,13 @@ struct CachedFolder {
 }
 
 impl DatabaseStorage {
-    /// Create a new database storage backed by the given MeshDb
+    /// Create a new database storage backed by the given DatabaseService
     ///
     /// # Arguments
-    /// * `db` - Shared database connection
-    /// * `collection_root` - Root path for the collection (e.g., ~/.mesh-cue/collection)
-    pub fn new(db: Arc<MeshDb>, collection_root: PathBuf) -> Result<Self, PlaylistError> {
+    /// * `service` - Shared database service
+    pub fn new(service: Arc<DatabaseService>) -> Result<Self, PlaylistError> {
         let storage = Self {
-            db,
-            collection_root,
+            service,
             tree_cache: RwLock::new(TreeCache {
                 folders: HashMap::new(),
                 track_counts: HashMap::new(),
@@ -74,7 +69,7 @@ impl DatabaseStorage {
         cache.track_counts.clear();
 
         // Get all unique folder paths from tracks
-        let folders = TrackQuery::get_folders(&self.db)
+        let folders = TrackQuery::get_folders(self.service.db())
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
 
         // Build the root structure
@@ -109,7 +104,7 @@ impl DatabaseStorage {
         });
 
         // Playlists root node
-        let playlists = PlaylistQuery::get_roots(&self.db)
+        let playlists = PlaylistQuery::get_roots(self.service.db())
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
         let playlist_children: Vec<NodeId> = playlists
             .iter()
@@ -185,7 +180,7 @@ impl DatabaseStorage {
 
         // Look up parent ID first if needed
         let parent_id = if let Some(pname) = parent_name {
-            let parent = PlaylistQuery::get_by_name(&self.db, pname, None)
+            let parent = PlaylistQuery::get_by_name(self.service.db(), pname, None)
                 .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?
                 .ok_or_else(|| PlaylistError::NotFound(format!("Parent playlist: {}", pname)))?;
             Some(parent.id)
@@ -194,7 +189,7 @@ impl DatabaseStorage {
         };
 
         // Look up the playlist
-        let playlist = PlaylistQuery::get_by_name(&self.db, name, parent_id)
+        let playlist = PlaylistQuery::get_by_name(self.service.db(), name, parent_id)
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?
             .ok_or_else(|| PlaylistError::NotFound(node_id.0.clone()))?;
 
@@ -204,7 +199,7 @@ impl DatabaseStorage {
     /// Get database track ID from a path in the tracks folder
     fn get_track_db_id(&self, track_path: &PathBuf) -> Result<i64, PlaylistError> {
         // Search for track by path
-        let track = TrackQuery::get_by_path(&self.db, track_path.to_str().unwrap_or(""))
+        let track = TrackQuery::get_by_path(self.service.db(), track_path.to_str().unwrap_or(""))
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?
             .ok_or_else(|| PlaylistError::NotFound(track_path.display().to_string()))?;
 
@@ -262,7 +257,7 @@ impl PlaylistStorage for DatabaseStorage {
         // This is the key optimization - read from DB instead of files!
         let folder_path = &folder_id.0;
 
-        let tracks = match TrackQuery::get_by_folder(&self.db, folder_path) {
+        let tracks = match TrackQuery::get_by_folder(self.service.db(), folder_path) {
             Ok(t) => t,
             Err(e) => {
                 log::warn!("Failed to get tracks for folder {}: {}", folder_path, e);
@@ -288,7 +283,7 @@ impl PlaylistStorage for DatabaseStorage {
         };
 
         // Insert into database
-        let _db_id = PlaylistQuery::create(&self.db, name, parent_db_id)
+        let _db_id = PlaylistQuery::create(self.service.db(), name, parent_db_id)
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
 
         let new_id = NodeId(format!("{}/{}", parent.0, name));
@@ -308,7 +303,7 @@ impl PlaylistStorage for DatabaseStorage {
         let db_id = self.get_playlist_db_id(id)?;
 
         // Update in database
-        PlaylistQuery::rename(&self.db, db_id, new_name)
+        PlaylistQuery::rename(self.service.db(), db_id, new_name)
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
 
         // Invalidate and rebuild cache
@@ -326,7 +321,7 @@ impl PlaylistStorage for DatabaseStorage {
         let db_id = self.get_playlist_db_id(id)?;
 
         // Delete from database (also removes track associations)
-        PlaylistQuery::delete(&self.db, db_id)
+        PlaylistQuery::delete(self.service.db(), db_id)
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
 
         // Invalidate and rebuild cache
@@ -349,11 +344,11 @@ impl PlaylistStorage for DatabaseStorage {
         let track_db_id = self.get_track_db_id(track_path)?;
 
         // Get next sort order for the playlist
-        let sort_order = PlaylistQuery::next_sort_order(&self.db, playlist_db_id)
+        let sort_order = PlaylistQuery::next_sort_order(self.service.db(), playlist_db_id)
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
 
         // Add track-playlist association
-        PlaylistQuery::add_track(&self.db, playlist_db_id, track_db_id, sort_order)
+        PlaylistQuery::add_track(self.service.db(), playlist_db_id, track_db_id, sort_order)
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
 
         let track_name = track_path.file_stem()
@@ -376,7 +371,7 @@ impl PlaylistStorage for DatabaseStorage {
         let playlist_db_id = self.get_playlist_db_id(&playlist_id)?;
 
         // Find the track by name in the playlist to get its db ID
-        let tracks = PlaylistQuery::get_tracks(&self.db, playlist_db_id)
+        let tracks = PlaylistQuery::get_tracks(self.service.db(), playlist_db_id)
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
 
         let track_name = track_id.name();
@@ -385,7 +380,7 @@ impl PlaylistStorage for DatabaseStorage {
             .ok_or_else(|| PlaylistError::NotFound(track_id.0.clone()))?;
 
         // Remove track-playlist association
-        PlaylistQuery::remove_track(&self.db, playlist_db_id, track.id)
+        PlaylistQuery::remove_track(self.service.db(), playlist_db_id, track.id)
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
 
         Ok(())
@@ -408,7 +403,7 @@ impl PlaylistStorage for DatabaseStorage {
         let target_playlist_db_id = self.get_playlist_db_id(target_playlist)?;
 
         // Find the track by name
-        let tracks = PlaylistQuery::get_tracks(&self.db, source_playlist_db_id)
+        let tracks = PlaylistQuery::get_tracks(self.service.db(), source_playlist_db_id)
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
 
         let track_name = track_id.name();
@@ -419,14 +414,14 @@ impl PlaylistStorage for DatabaseStorage {
         let track_db_id = track.id;
 
         // Remove from source playlist
-        PlaylistQuery::remove_track(&self.db, source_playlist_db_id, track_db_id)
+        PlaylistQuery::remove_track(self.service.db(), source_playlist_db_id, track_db_id)
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
 
         // Add to target playlist
-        let sort_order = PlaylistQuery::next_sort_order(&self.db, target_playlist_db_id)
+        let sort_order = PlaylistQuery::next_sort_order(self.service.db(), target_playlist_db_id)
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
 
-        PlaylistQuery::add_track(&self.db, target_playlist_db_id, track_db_id, sort_order)
+        PlaylistQuery::add_track(self.service.db(), target_playlist_db_id, track_db_id, sort_order)
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
 
         Ok(NodeId(format!("{}/{}", target_playlist.0, track_name)))
@@ -448,7 +443,7 @@ impl PlaylistStorage for DatabaseStorage {
             .map(|p| p.0.clone())
             .unwrap_or_default();
 
-        let tracks = TrackQuery::get_by_folder(&self.db, &folder_path)
+        let tracks = TrackQuery::get_by_folder(self.service.db(), &folder_path)
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
 
         let track_name = track_id.name();
@@ -459,7 +454,7 @@ impl PlaylistStorage for DatabaseStorage {
         let path = PathBuf::from(&track.path);
 
         // Delete from database
-        TrackQuery::delete(&self.db, track.id)
+        TrackQuery::delete(self.service.db(), track.id)
             .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?;
 
         // Delete actual file
@@ -481,18 +476,18 @@ mod tests {
 
     #[test]
     fn test_database_storage_creation() {
-        let db = Arc::new(MeshDb::in_memory().unwrap());
         let temp_dir = TempDir::new().unwrap();
+        let service = DatabaseService::in_memory(temp_dir.path()).unwrap();
 
-        let storage = DatabaseStorage::new(db, temp_dir.path().to_path_buf());
+        let storage = DatabaseStorage::new(service);
         assert!(storage.is_ok());
     }
 
     #[test]
     fn test_root_node() {
-        let db = Arc::new(MeshDb::in_memory().unwrap());
         let temp_dir = TempDir::new().unwrap();
-        let storage = DatabaseStorage::new(db, temp_dir.path().to_path_buf()).unwrap();
+        let service = DatabaseService::in_memory(temp_dir.path()).unwrap();
+        let storage = DatabaseStorage::new(service).unwrap();
 
         let root = storage.root();
         assert_eq!(root.kind, NodeKind::Root);
@@ -502,9 +497,9 @@ mod tests {
 
     #[test]
     fn test_get_tracks_empty_folder() {
-        let db = Arc::new(MeshDb::in_memory().unwrap());
         let temp_dir = TempDir::new().unwrap();
-        let storage = DatabaseStorage::new(db, temp_dir.path().to_path_buf()).unwrap();
+        let service = DatabaseService::in_memory(temp_dir.path()).unwrap();
+        let storage = DatabaseStorage::new(service).unwrap();
 
         let tracks = storage.get_tracks(&NodeId::tracks());
         assert!(tracks.is_empty());

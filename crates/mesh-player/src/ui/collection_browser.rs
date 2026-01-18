@@ -13,7 +13,7 @@
 
 use iced::widget::{button, column, container, row, text};
 use iced::{Element, Length};
-use mesh_core::db::MeshDb;
+use mesh_core::db::DatabaseService;
 use mesh_core::playlist::{DatabaseStorage, NodeId, NodeKind, PlaylistNode, PlaylistStorage};
 use mesh_core::usb::{UsbDevice, UsbStorage};
 use mesh_widgets::{
@@ -27,6 +27,8 @@ use std::sync::Arc;
 pub struct CollectionBrowserState {
     /// Path to local collection (stored for runtime loading/unloading)
     collection_path: PathBuf,
+    /// Shared database service (passed from App)
+    db_service: Option<Arc<DatabaseService>>,
     /// Local playlist storage backend using CozoDB
     pub storage: Option<Box<DatabaseStorage>>,
     /// Browser widget state (single browser, not dual)
@@ -61,37 +63,31 @@ pub enum CollectionBrowserMessage {
 }
 
 impl CollectionBrowserState {
-    /// Create new state, initializing storage at collection path
+    /// Create new state, using the shared database service
     ///
     /// # Arguments
-    /// * `collection_path` - Path to the local collection (only used if show_local is true)
-    /// * `show_local` - Whether to load and display the local collection.
-    ///                  When false (USB-only mode), no database is opened,
-    ///                  saving memory and startup time.
-    pub fn new(collection_path: PathBuf, show_local: bool) -> Self {
-        // Only load local storage if configured - USB-only mode skips this entirely
+    /// * `collection_path` - Path to the local collection
+    /// * `db_service` - Shared database service (required for local collection access)
+    /// * `show_local` - Whether to display the local collection in the UI.
+    ///                  When false (USB-only mode), local collection is hidden.
+    pub fn new(
+        collection_path: PathBuf,
+        db_service: Option<Arc<DatabaseService>>,
+        show_local: bool,
+    ) -> Self {
+        // Create storage from shared database service only if show_local is enabled
         let storage = if show_local {
-            let db_path = collection_path.join("mesh.db");
-            if db_path.exists() {
-                match MeshDb::open(&db_path)
-                    .map_err(|e| format!("DB error: {}", e))
-                    .and_then(|db| {
-                        DatabaseStorage::new(Arc::new(db), collection_path.clone())
-                            .map_err(|e| format!("Storage error: {}", e))
-                    })
-                {
+            db_service.as_ref().and_then(|service| {
+                match DatabaseStorage::new(service.clone()) {
                     Ok(s) => Some(Box::new(s)),
                     Err(e) => {
                         log::warn!("Failed to initialize collection storage: {}", e);
                         None
                     }
                 }
-            } else {
-                log::info!("No mesh.db found at {:?}, local collection unavailable", db_path);
-                None
-            }
+            })
         } else {
-            log::info!("USB-only mode: skipping local collection");
+            log::info!("USB-only mode: local collection hidden");
             None
         };
 
@@ -102,6 +98,7 @@ impl CollectionBrowserState {
 
         Self {
             collection_path,
+            db_service,
             storage,
             browser: PlaylistBrowserState::new(),
             tree_nodes,
@@ -153,18 +150,11 @@ impl CollectionBrowserState {
     /// The tree is rebuilt automatically after the change.
     pub fn set_show_local_collection(&mut self, show: bool) {
         if show {
-            // Load local storage if not already loaded
+            // Load local storage if not already loaded (uses shared db_service)
             if self.storage.is_none() {
-                let db_path = self.collection_path.join("mesh.db");
-                log::info!("Loading local collection from {:?}", db_path);
-                if db_path.exists() {
-                    match MeshDb::open(&db_path)
-                        .map_err(|e| format!("DB error: {}", e))
-                        .and_then(|db| {
-                            DatabaseStorage::new(Arc::new(db), self.collection_path.clone())
-                                .map_err(|e| format!("Storage error: {}", e))
-                        })
-                    {
+                if let Some(ref service) = self.db_service {
+                    log::info!("Loading local collection from shared database service");
+                    match DatabaseStorage::new(service.clone()) {
                         Ok(s) => {
                             self.storage = Some(Box::new(s));
                             log::info!("Local collection loaded successfully");
@@ -174,7 +164,7 @@ impl CollectionBrowserState {
                         }
                     }
                 } else {
-                    log::warn!("No mesh.db found at {:?}", db_path);
+                    log::warn!("Cannot load local collection: no database service available");
                 }
             }
         } else {

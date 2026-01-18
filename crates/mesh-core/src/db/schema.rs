@@ -238,22 +238,73 @@ impl AudioFeatures {
 // Schema Creation
 // ============================================================================
 
-/// Create all required relations in the database
+/// Get the set of existing relation names in the database
+fn get_existing_relations(db: &DbInstance) -> Result<std::collections::HashSet<String>, DbError> {
+    let result = db
+        .run_script("::relations", Default::default(), cozo::ScriptMutability::Immutable)
+        .map_err(|e| DbError::Schema(e.to_string()))?;
+
+    // The result has columns [name, arity, access_level, description]
+    // We want the first column (name)
+    let mut relations = std::collections::HashSet::new();
+    for row in result.rows {
+        if let Some(name) = row.first().and_then(|v| v.get_str()) {
+            relations.insert(name.to_string());
+        }
+    }
+    Ok(relations)
+}
+
+/// Create all required relations in the database (idempotent)
+///
+/// This function checks which relations already exist and only creates
+/// missing ones. Safe to call multiple times.
 pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
+    // Get existing relations to avoid "already exists" errors
+    let existing = get_existing_relations(db)?;
+    log::debug!("Existing relations: {:?}", existing);
+
     // Core relations
-    create_tracks_relation(db)?;
-    create_playlists_relation(db)?;
-    create_playlist_tracks_relation(db)?;
-    create_cue_points_relation(db)?;
-    create_saved_loops_relation(db)?;
+    if !existing.contains("tracks") {
+        log::debug!("Creating 'tracks' relation");
+        create_tracks_relation(db)?;
+    }
+    if !existing.contains("playlists") {
+        log::debug!("Creating 'playlists' relation");
+        create_playlists_relation(db)?;
+    }
+    if !existing.contains("playlist_tracks") {
+        log::debug!("Creating 'playlist_tracks' relation");
+        create_playlist_tracks_relation(db)?;
+    }
+    if !existing.contains("cue_points") {
+        log::debug!("Creating 'cue_points' relation");
+        create_cue_points_relation(db)?;
+    }
+    if !existing.contains("saved_loops") {
+        log::debug!("Creating 'saved_loops' relation");
+        create_saved_loops_relation(db)?;
+    }
 
     // Graph relations
-    create_similar_to_relation(db)?;
-    create_played_after_relation(db)?;
-    create_harmonic_match_relation(db)?;
+    if !existing.contains("similar_to") {
+        log::debug!("Creating 'similar_to' relation");
+        create_similar_to_relation(db)?;
+    }
+    if !existing.contains("played_after") {
+        log::debug!("Creating 'played_after' relation");
+        create_played_after_relation(db)?;
+    }
+    if !existing.contains("harmonic_match") {
+        log::debug!("Creating 'harmonic_match' relation");
+        create_harmonic_match_relation(db)?;
+    }
 
-    // Vector index (HNSW)
-    create_audio_features_index(db)?;
+    // Vector index (HNSW) - check for audio_features relation
+    if !existing.contains("audio_features") {
+        log::debug!("Creating 'audio_features' HNSW index");
+        create_audio_features_index(db)?;
+    }
 
     Ok(())
 }
@@ -265,7 +316,6 @@ fn run_schema(db: &DbInstance, script: &str) -> Result<(), DbError> {
 }
 
 fn create_tracks_relation(db: &DbInstance) -> Result<(), DbError> {
-    // Use :create to create if not exists, or silently succeed if exists
     run_schema(db, r#"
         {:create tracks {
             id: Int =>

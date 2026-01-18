@@ -34,16 +34,20 @@
 //!
 //! ```no_run
 //! use mesh_core::services::{
-//!     EventBus, QueryService, QueryServiceConfig, QueryClient,
+//!     EventBus, QueryService, QueryClient,
 //!     FileWatchService, WatchServiceConfig, WatchClient,
 //! };
+//! use mesh_core::db::DatabaseService;
 //!
 //! // Create event bus for inter-service communication
 //! let event_bus = EventBus::default();
 //!
-//! // Start QueryService
+//! // Create database service
+//! let db_service = DatabaseService::new("/path/to/collection").unwrap();
+//!
+//! // Start QueryService with shared database service
 //! let query_handle = QueryService::spawn(
-//!     QueryServiceConfig { in_memory: true, ..Default::default() },
+//!     db_service,
 //!     event_bus.sender(),
 //! ).unwrap();
 //!
@@ -74,7 +78,7 @@ pub use messages::{
     ServiceHandle, EventBus,
 };
 
-pub use query::{QueryService, QueryServiceConfig, QueryClient};
+pub use query::{QueryService, QueryClient};
 pub use watch::{FileWatchService, WatchServiceConfig, WatchClient};
 pub use feature_extraction::{
     FeatureExtractionService, FeatureExtractionConfig, FeatureExtractionClient,

@@ -11,7 +11,7 @@ use iced::widget::{button, center, column, container, mouse_area, opaque, row, s
 use iced::{Color, Element, Length, Task, Theme};
 use basedrop::Shared;
 use mesh_core::audio_file::{BeatGrid, CuePoint, LoadedTrack, MetadataField, TrackMetadata, update_metadata_in_file};
-use mesh_core::db::{MeshDb, TrackQuery};
+use mesh_core::db::{DatabaseService, TrackQuery};
 use mesh_core::playlist::{DatabaseStorage, NodeId, NodeKind};
 use mesh_core::types::{PlayState, Stem};
 use mesh_widgets::{
@@ -122,29 +122,22 @@ impl MeshCueApp {
         // Initialize playlist storage at collection root using DatabaseStorage
         // Database is created if it doesn't exist (no filesystem fallback)
         let collection_root = collection_state.collection_path.clone();
-        let db_path = collection_root.join("mesh.db");
 
-        // Ensure collection directory exists
-        if let Err(e) = std::fs::create_dir_all(&collection_root) {
-            log::warn!("Failed to create collection directory: {}", e);
-        }
-
-        let storage_result: Result<(Arc<MeshDb>, Box<dyn mesh_core::playlist::PlaylistStorage>), String> = {
-            log::info!("Initializing database storage at {:?}", db_path);
-            MeshDb::open(&db_path)
+        let storage_result: Result<(Arc<DatabaseService>, Box<dyn mesh_core::playlist::PlaylistStorage>), String> = {
+            log::info!("Initializing database service at {:?}", collection_root);
+            DatabaseService::new(&collection_root)
                 .map_err(|e| format!("DB error: {}", e))
-                .and_then(|db| {
-                    let db_arc = Arc::new(db);
-                    DatabaseStorage::new(db_arc.clone(), collection_root.clone())
-                        .map(|s| (db_arc, Box::new(s) as Box<dyn mesh_core::playlist::PlaylistStorage>))
+                .and_then(|service| {
+                    DatabaseStorage::new(service.clone())
+                        .map(|s| (service, Box::new(s) as Box<dyn mesh_core::playlist::PlaylistStorage>))
                         .map_err(|e| format!("Storage error: {}", e))
                 })
         };
 
         match storage_result {
-            Ok((db_arc, storage)) => {
+            Ok((service, storage)) => {
                 log::info!("Playlist storage initialized at {:?}", collection_root);
-                collection_state.db = Some(db_arc);
+                collection_state.db_service = Some(service);
                 collection_state.playlist_storage = Some(storage);
                 // Build initial tree
                 if let Some(ref storage) = collection_state.playlist_storage {
@@ -164,6 +157,9 @@ impl MeshCueApp {
                 log::warn!("Failed to initialize playlist storage: {:?}", e);
             }
         }
+
+        // Create USB manager with shared database service for sync operations
+        let usb_db_service = collection_state.db_service.clone();
 
         let app = Self {
             current_view: View::Collection,
@@ -185,7 +181,7 @@ impl MeshCueApp {
             stem_link_selection: None,
             reanalysis_state: ReanalysisState::default(),
             export_state: ExportState::default(),
-            usb_manager: mesh_core::usb::UsbManager::spawn(),
+            usb_manager: mesh_core::usb::UsbManager::spawn(usb_db_service),
         };
 
         // Initial collection scan and playlist refresh
@@ -232,12 +228,12 @@ impl MeshCueApp {
                     };
 
                     // Sync metadata to database before async file save
-                    if let Some(ref db) = self.collection.db {
+                    if let Some(ref service) = self.collection.db_service {
                         let path_str = path.to_string_lossy();
-                        if let Err(e) = TrackQuery::update_field_by_path(db, &path_str, "bpm", &state.bpm.to_string()) {
+                        if let Err(e) = TrackQuery::update_field_by_path(service.db(), &path_str, "bpm", &state.bpm.to_string()) {
                             log::warn!("Auto-save: Failed to sync BPM to database: {:?}", e);
                         }
-                        if let Err(e) = TrackQuery::update_field_by_path(db, &path_str, "key", &state.key) {
+                        if let Err(e) = TrackQuery::update_field_by_path(service.db(), &path_str, "key", &state.key) {
                             log::warn!("Auto-save: Failed to sync key to database: {:?}", e);
                         }
                     }
@@ -293,7 +289,14 @@ impl MeshCueApp {
                 // Rebuild tree from database
                 if let Some(ref storage) = self.collection.playlist_storage {
                     self.collection.tree_nodes = build_tree_nodes(storage.as_ref());
-                    log::info!("Refreshed collection tree from database");
+                    // Refresh track lists for both browsers
+                    if let Some(ref folder) = self.collection.browser_left.current_folder {
+                        self.collection.left_tracks = get_tracks_for_folder(storage.as_ref(), folder);
+                    }
+                    if let Some(ref folder) = self.collection.browser_right.current_folder {
+                        self.collection.right_tracks = get_tracks_for_folder(storage.as_ref(), folder);
+                    }
+                    log::info!("Refreshed collection tree and track lists from database");
                 }
             }
             Message::SelectTrack(index) => {
@@ -678,12 +681,12 @@ impl MeshCueApp {
                     };
 
                     // Sync metadata to database before async file save
-                    if let Some(ref db) = self.collection.db {
+                    if let Some(ref service) = self.collection.db_service {
                         let path_str = path.to_string_lossy();
-                        if let Err(e) = TrackQuery::update_field_by_path(db, &path_str, "bpm", &state.bpm.to_string()) {
+                        if let Err(e) = TrackQuery::update_field_by_path(service.db(), &path_str, "bpm", &state.bpm.to_string()) {
                             log::warn!("Failed to sync BPM to database: {:?}", e);
                         }
-                        if let Err(e) = TrackQuery::update_field_by_path(db, &path_str, "key", &state.key) {
+                        if let Err(e) = TrackQuery::update_field_by_path(service.db(), &path_str, "key", &state.key) {
                             log::warn!("Failed to sync key to database: {:?}", e);
                         }
                         log::info!("Synced track metadata to database");
@@ -1895,9 +1898,9 @@ impl MeshCueApp {
                                                     _ => "",
                                                 };
                                                 if !db_field.is_empty() {
-                                                    if let Some(ref db) = self.collection.db {
+                                                    if let Some(ref service) = self.collection.db_service {
                                                         let path_str = path.to_string_lossy();
-                                                        if let Err(e) = TrackQuery::update_field_by_path(db, &path_str, db_field, &new_value) {
+                                                        if let Err(e) = TrackQuery::update_field_by_path(service.db(), &path_str, db_field, &new_value) {
                                                             log::warn!("Failed to sync metadata to database: {:?}", e);
                                                         } else {
                                                             log::info!("Synced {:?} to database", column);
@@ -2237,9 +2240,9 @@ impl MeshCueApp {
                                                     _ => "",
                                                 };
                                                 if !db_field.is_empty() {
-                                                    if let Some(ref db) = self.collection.db {
+                                                    if let Some(ref service) = self.collection.db_service {
                                                         let path_str = path.to_string_lossy();
-                                                        if let Err(e) = TrackQuery::update_field_by_path(db, &path_str, db_field, &new_value) {
+                                                        if let Err(e) = TrackQuery::update_field_by_path(service.db(), &path_str, db_field, &new_value) {
                                                             log::warn!("Failed to sync metadata to database: {:?}", e);
                                                         } else {
                                                             log::info!("Synced {:?} to database", column);
@@ -2400,6 +2403,13 @@ impl MeshCueApp {
                         log::error!("Failed to refresh playlists: {:?}", e);
                     } else {
                         self.collection.tree_nodes = build_tree_nodes(storage.as_ref());
+                        // Refresh track lists for both browsers
+                        if let Some(ref folder) = self.collection.browser_left.current_folder {
+                            self.collection.left_tracks = get_tracks_for_folder(storage.as_ref(), folder);
+                        }
+                        if let Some(ref folder) = self.collection.browser_right.current_folder {
+                            self.collection.right_tracks = get_tracks_for_folder(storage.as_ref(), folder);
+                        }
                     }
                 }
             }
@@ -2545,10 +2555,17 @@ impl MeshCueApp {
                     start_time: std::time::Instant::now(),
                 });
 
+                // Ensure database service exists before import
+                let Some(db_service) = self.collection.db_service.clone() else {
+                    log::error!("Cannot import: database service not initialized");
+                    return Task::none();
+                };
+
                 // Create import config
                 let config = ImportConfig {
                     import_folder: self.import_state.import_folder.clone(),
                     collection_path: self.collection.collection_path.to_path_buf(),
+                    db_service,
                     bpm_config: self.config.analysis.bpm.clone(),
                     loudness_config: self.config.analysis.loudness.clone(),
                     parallel_processes: self.config.analysis.parallel_processes,

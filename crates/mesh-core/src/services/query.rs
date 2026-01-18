@@ -5,31 +5,14 @@
 //! results are sent back through oneshot reply channels.
 
 use super::messages::{QueryCommand, AppEvent, ServiceHandle, EnergyDirection, MixSuggestion, MixReason};
-use crate::db::{MeshDb, Track, TrackQuery, PlaylistQuery, SimilarityQuery};
+use crate::db::{DatabaseService, Track, TrackQuery, PlaylistQuery, SimilarityQuery};
 use crossbeam::channel::{Receiver, Sender};
+use std::sync::Arc;
 use std::thread;
-
-/// Configuration for the QueryService
-#[derive(Debug, Clone)]
-pub struct QueryServiceConfig {
-    /// Path to the database file
-    pub db_path: std::path::PathBuf,
-    /// Whether to use in-memory database (for testing)
-    pub in_memory: bool,
-}
-
-impl Default for QueryServiceConfig {
-    fn default() -> Self {
-        Self {
-            db_path: std::path::PathBuf::from("mesh.db"),
-            in_memory: false,
-        }
-    }
-}
 
 /// QueryService handles all database operations in a background thread
 pub struct QueryService {
-    db: MeshDb,
+    service: Arc<DatabaseService>,
     command_rx: Receiver<QueryCommand>,
     event_tx: Sender<AppEvent>,
 }
@@ -39,20 +22,13 @@ impl QueryService {
     ///
     /// Returns a handle for sending commands to the service.
     pub fn spawn(
-        config: QueryServiceConfig,
+        db_service: Arc<DatabaseService>,
         event_tx: Sender<AppEvent>,
     ) -> Result<ServiceHandle<QueryCommand>, String> {
         let (command_tx, command_rx) = crossbeam::channel::unbounded();
 
-        // Open database
-        let db = if config.in_memory {
-            MeshDb::in_memory().map_err(|e| e.to_string())?
-        } else {
-            MeshDb::open(&config.db_path).map_err(|e| e.to_string())?
-        };
-
         let service = QueryService {
-            db,
+            service: db_service,
             command_rx,
             event_tx: event_tx.clone(),
         };
@@ -101,49 +77,49 @@ impl QueryService {
     fn handle_command(&self, cmd: QueryCommand) {
         match cmd {
             QueryCommand::GetTracksInFolder { folder_path, reply } => {
-                let result = TrackQuery::get_by_folder(&self.db, &folder_path)
+                let result = TrackQuery::get_by_folder(self.service.db(), &folder_path)
                     .map_err(|e| e.to_string());
                 let _ = reply.send(result);
             }
 
             QueryCommand::GetTrack { track_id, reply } => {
-                let result = TrackQuery::get_by_id(&self.db, track_id)
+                let result = TrackQuery::get_by_id(self.service.db(), track_id)
                     .map_err(|e| e.to_string());
                 let _ = reply.send(result);
             }
 
             QueryCommand::GetTrackByPath { path, reply } => {
-                let result = TrackQuery::get_by_path(&self.db, &path)
+                let result = TrackQuery::get_by_path(self.service.db(), &path)
                     .map_err(|e| e.to_string());
                 let _ = reply.send(result);
             }
 
             QueryCommand::Search { query, limit, reply } => {
-                let result = TrackQuery::search(&self.db, &query, limit)
+                let result = TrackQuery::search(self.service.db(), &query, limit)
                     .map_err(|e| e.to_string());
                 let _ = reply.send(result);
             }
 
             QueryCommand::GetFolders { reply } => {
-                let result = TrackQuery::get_folders(&self.db)
+                let result = TrackQuery::get_folders(self.service.db())
                     .map_err(|e| e.to_string());
                 let _ = reply.send(result);
             }
 
             QueryCommand::GetTrackCount { reply } => {
-                let result = TrackQuery::count(&self.db)
+                let result = TrackQuery::count(self.service.db())
                     .map_err(|e| e.to_string());
                 let _ = reply.send(result);
             }
 
             QueryCommand::FindSimilar { track_id, limit, reply } => {
-                let result = SimilarityQuery::find_similar(&self.db, track_id, limit)
+                let result = SimilarityQuery::find_similar(self.service.db(), track_id, limit)
                     .map_err(|e| e.to_string());
                 let _ = reply.send(result);
             }
 
             QueryCommand::FindHarmonicMatches { track_id, limit, reply } => {
-                let result = SimilarityQuery::find_harmonic_compatible(&self.db, track_id, limit)
+                let result = SimilarityQuery::find_harmonic_compatible(self.service.db(), track_id, limit)
                     .map_err(|e| e.to_string());
                 let _ = reply.send(result);
             }
@@ -154,19 +130,19 @@ impl QueryService {
             }
 
             QueryCommand::GetPlaylists { reply } => {
-                let result = PlaylistQuery::get_all(&self.db)
+                let result = PlaylistQuery::get_all(self.service.db())
                     .map_err(|e| e.to_string());
                 let _ = reply.send(result);
             }
 
             QueryCommand::GetPlaylistTracks { playlist_id, reply } => {
-                let result = PlaylistQuery::get_tracks(&self.db, playlist_id)
+                let result = PlaylistQuery::get_tracks(self.service.db(), playlist_id)
                     .map_err(|e| e.to_string());
                 let _ = reply.send(result);
             }
 
             QueryCommand::UpsertTrack { track, reply } => {
-                let result = TrackQuery::upsert(&self.db, &track)
+                let result = TrackQuery::upsert(self.service.db(), &track)
                     .map_err(|e| e.to_string());
 
                 if result.is_ok() {
@@ -180,7 +156,7 @@ impl QueryService {
             }
 
             QueryCommand::DeleteTrack { track_id, reply } => {
-                let result = TrackQuery::delete(&self.db, track_id)
+                let result = TrackQuery::delete(self.service.db(), track_id)
                     .map_err(|e| e.to_string());
 
                 if result.is_ok() {
@@ -191,7 +167,7 @@ impl QueryService {
             }
 
             QueryCommand::UpdateAudioFeatures { track_id, features, reply } => {
-                let result = SimilarityQuery::upsert_features(&self.db, track_id, &features)
+                let result = SimilarityQuery::upsert_features(self.service.db(), track_id, &features)
                     .map_err(|e| e.to_string());
 
                 if result.is_ok() {
@@ -218,7 +194,7 @@ impl QueryService {
         limit: usize,
     ) -> Result<Vec<MixSuggestion>, String> {
         // Get current track info
-        let current_track = TrackQuery::get_by_id(&self.db, current_track_id)
+        let current_track = TrackQuery::get_by_id(self.service.db(), current_track_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "Current track not found".to_string())?;
 
@@ -260,7 +236,7 @@ impl QueryService {
         params.insert("bpm_max".to_string(), cozo::DataValue::from(bpm_max));
         params.insert("limit".to_string(), cozo::DataValue::from(limit as i64));
 
-        let result = self.db.run_query(&query, params)
+        let result = self.service.db().run_query(&query, params)
             .map_err(|e| e.to_string())?;
 
         // Convert results to MixSuggestions
@@ -406,16 +382,15 @@ impl QueryClient {
 mod tests {
     use super::*;
     use crate::services::messages::EventBus;
+    use tempfile::TempDir;
 
     #[test]
     fn test_query_service_lifecycle() {
         let event_bus = EventBus::new(16);
-        let config = QueryServiceConfig {
-            db_path: std::path::PathBuf::new(),
-            in_memory: true,
-        };
+        let temp_dir = TempDir::new().unwrap();
+        let db_service = DatabaseService::in_memory(temp_dir.path()).unwrap();
 
-        let handle = QueryService::spawn(config, event_bus.sender()).unwrap();
+        let handle = QueryService::spawn(db_service, event_bus.sender()).unwrap();
         let client = QueryClient::new(&handle);
 
         // Test basic operations
@@ -434,12 +409,10 @@ mod tests {
     #[test]
     fn test_query_service_crud() {
         let event_bus = EventBus::new(16);
-        let config = QueryServiceConfig {
-            db_path: std::path::PathBuf::new(),
-            in_memory: true,
-        };
+        let temp_dir = TempDir::new().unwrap();
+        let db_service = DatabaseService::in_memory(temp_dir.path()).unwrap();
 
-        let handle = QueryService::spawn(config, event_bus.sender()).unwrap();
+        let handle = QueryService::spawn(db_service, event_bus.sender()).unwrap();
 
         // Insert a track
         let track = Track {

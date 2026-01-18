@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use basedrop::Shared;
+use mesh_core::db::DatabaseService;
 use iced::widget::{button, center, column, container, mouse_area, opaque, row, slider, stack, text, Space};
 use iced::{Center as CenterAlign, Color, Element, Fill, Length, Subscription, Task, Theme};
 use iced::time;
@@ -178,6 +179,23 @@ impl MeshApp {
             }
         };
 
+        // Initialize shared database service (singleton for the application)
+        let db_service = if config.display.show_local_collection {
+            match DatabaseService::new(&config.collection_path) {
+                Ok(service) => {
+                    log::info!("Database service initialized at {:?}", config.collection_path);
+                    Some(service)
+                }
+                Err(e) => {
+                    log::warn!("Failed to initialize database service: {}", e);
+                    None
+                }
+            }
+        } else {
+            log::info!("USB-only mode: skipping database initialization");
+            None
+        };
+
         Self {
             command_sender,
             deck_atomics,
@@ -202,6 +220,7 @@ impl MeshApp {
             mixer_view: MixerView::new(),
             collection_browser: CollectionBrowserState::new(
                 config.collection_path.clone(),
+                db_service.clone(),
                 config.display.show_local_collection,
             ),
             global_bpm: config.audio.global_bpm,
@@ -222,7 +241,8 @@ impl MeshApp {
             app_mode: if mapping_mode { AppMode::Mapping } else { AppMode::Performance },
             stem_link_state: StemLinkState::Idle,
             linked_stem_receiver,
-            usb_manager: mesh_core::usb::UsbManager::spawn(),
+            // Pass shared database service to USB manager for sync operations
+            usb_manager: mesh_core::usb::UsbManager::spawn(db_service),
         }
     }
 

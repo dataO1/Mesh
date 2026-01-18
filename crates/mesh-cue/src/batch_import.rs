@@ -36,7 +36,7 @@ use crate::export::export_stem_file_with_gain;
 use crate::import::StemImporter;
 use anyhow::{Context, Result};
 use mesh_core::audio_file::{BeatGrid, CuePoint, SavedLoop, TrackMetadata};
-use mesh_core::db::{insert_analyzed_track, MeshDb, NewTrackData, SimilarityQuery};
+use mesh_core::db::{DatabaseService, NewTrackData};
 use mesh_core::types::SAMPLE_RATE;
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -246,12 +246,14 @@ pub enum ImportProgress {
 }
 
 /// Configuration for batch import
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ImportConfig {
     /// Folder to scan for stems
     pub import_folder: PathBuf,
     /// Collection folder to export to
     pub collection_path: PathBuf,
+    /// Shared database service for thread-safe track insertion
+    pub db_service: Arc<DatabaseService>,
     /// BPM detection configuration
     pub bpm_config: BpmConfig,
     /// Loudness normalization configuration
@@ -543,55 +545,43 @@ fn process_single_track(group: &StemGroup, config: &ImportConfig) -> TrackImport
         final_path
     );
 
-    // Insert track into the database
-    // The database is created/opened at collection_path/mesh.db
-    let db_path = config.collection_path.join("mesh.db");
-    match MeshDb::open(&db_path) {
-        Ok(db) => {
-            let track_data = NewTrackData {
-                path: final_path.clone(),
-                name: base_name.clone(),
-                artist: db_artist,
-                bpm: Some(analysis.bpm),
-                original_bpm: Some(analysis.original_bpm),
-                key: Some(db_key),
-                duration_seconds: (duration_samples as f64) / (SAMPLE_RATE as f64),
-                lufs: analysis.lufs,
-            };
+    // Insert track into the shared database service
+    let track_data = NewTrackData {
+        path: final_path.clone(),
+        name: base_name.clone(),
+        artist: db_artist,
+        bpm: Some(analysis.bpm),
+        original_bpm: Some(analysis.original_bpm),
+        key: Some(db_key),
+        duration_seconds: (duration_samples as f64) / (SAMPLE_RATE as f64),
+        lufs: analysis.lufs,
+    };
 
-            match insert_analyzed_track(&db, &config.collection_path, &track_data) {
-                Ok(track_id) => {
-                    log::info!(
-                        "process_single_track: '{}' inserted into database (id={})",
-                        base_name, track_id
-                    );
+    match config.db_service.add_track(&track_data) {
+        Ok(track_id) => {
+            log::info!(
+                "process_single_track: '{}' inserted into database (id={})",
+                base_name, track_id
+            );
 
-                    // Store audio features for similarity search
-                    if let Some(ref features) = analysis.audio_features {
-                        if let Err(e) = SimilarityQuery::upsert_features(&db, track_id, features) {
-                            log::warn!(
-                                "process_single_track: Failed to store audio features for '{}': {}",
-                                base_name, e
-                            );
-                        } else {
-                            log::info!(
-                                "process_single_track: '{}' audio features stored for similarity search",
-                                base_name
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
+            // Store audio features for similarity search
+            if let Some(ref features) = analysis.audio_features {
+                if let Err(e) = config.db_service.store_audio_features(track_id, features) {
                     log::warn!(
-                        "process_single_track: Failed to insert '{}' into database: {}",
+                        "process_single_track: Failed to store audio features for '{}': {}",
                         base_name, e
+                    );
+                } else {
+                    log::info!(
+                        "process_single_track: '{}' audio features stored for similarity search",
+                        base_name
                     );
                 }
             }
         }
         Err(e) => {
             log::warn!(
-                "process_single_track: Failed to open database for '{}': {}",
+                "process_single_track: Failed to insert '{}' into database: {}",
                 base_name, e
             );
         }

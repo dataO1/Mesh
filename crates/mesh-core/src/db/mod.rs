@@ -18,6 +18,7 @@
 mod schema;
 mod queries;
 mod migration;
+mod service;
 
 pub use schema::{
     Track, Playlist, PlaylistTrack, CuePoint, SavedLoop,
@@ -30,6 +31,7 @@ pub use migration::{
     insert_analyzed_track, NewTrackData,
     MigrationProgress, MigrationPhase, MigrationResult,
 };
+pub use service::DatabaseService;
 
 use cozo::{DbInstance, DataValue, NamedRows};
 use std::collections::BTreeMap;
