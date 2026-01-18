@@ -210,7 +210,7 @@ impl CollectionBrowserState {
         }
     }
 
-    /// Rebuild tree nodes (local + USB devices)
+    /// Rebuild tree nodes (local + USB devices at top level)
     fn rebuild_tree(&mut self) {
         let mut nodes = Vec::new();
 
@@ -219,40 +219,28 @@ impl CollectionBrowserState {
             nodes.extend(build_tree_nodes(storage.as_ref()));
         }
 
-        // USB devices section (if any devices connected)
-        if !self.usb_devices.is_empty() {
-            let mut usb_children = Vec::new();
+        // USB devices directly at top level (no "USB Devices" wrapper)
+        for device in &self.usb_devices {
+            let device_id = NodeId(format!("usb:{}", device.device_path.display()));
 
-            for device in &self.usb_devices {
-                let device_id = NodeId(format!("usb:{}", device.device_path.display()));
+            // Build playlists directly from USB storage (they're direct children of root)
+            let children = self.usb_storages
+                .iter()
+                .find(|(path, _)| path == &device.device_path)
+                .map(|(_, storage)| build_usb_tree_nodes(storage, &device.device_path))
+                .unwrap_or_default();
 
-                // Build children from USB storage if available
-                let children = self.usb_storages
-                    .iter()
-                    .find(|(path, _)| path == &device.device_path)
-                    .map(|(_, storage)| build_usb_tree_nodes(storage, &device.device_path))
-                    .unwrap_or_default();
-
-                let mut device_node = TreeNode::with_children(
-                    device_id,
-                    device.label.clone(),
-                    TreeIcon::Collection,
-                    children,
-                );
-                device_node = device_node.with_create_child(false).with_rename(false);
-                usb_children.push(device_node);
-            }
-
-            let usb_root = TreeNode::with_children(
-                NodeId("usb_devices".to_string()),
-                "USB Devices".to_string(),
-                TreeIcon::Folder,
-                usb_children,
+            // USB device shows as a top-level node with playlists as direct children
+            let device_node = TreeNode::with_children(
+                device_id,
+                device.label.clone(),
+                TreeIcon::Collection,
+                children,
             )
             .with_create_child(false)
             .with_rename(false);
 
-            nodes.push(usb_root);
+            nodes.push(device_node);
         }
 
         self.tree_nodes = nodes;

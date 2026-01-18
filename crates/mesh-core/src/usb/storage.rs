@@ -110,28 +110,19 @@ impl UsbStorage {
 
     /// Build the node tree from USB's mesh.db database
     ///
-    /// Only shows playlists - the DJ browses by playlist, not by raw track folder.
+    /// Playlists are direct children of root - no extra nesting.
     fn build_tree_from_db(&mut self) {
         self.nodes.clear();
 
-        // Create root node - only playlists, no tracks folder
-        let root = PlaylistNode {
-            id: NodeId::root(),
-            kind: NodeKind::Root,
-            name: self.device.label.clone(),
-            children: vec![NodeId::playlists()],
-            track_path: None,
-        };
-        self.nodes.insert(NodeId::root(), root);
-
-        // Build playlists from database
+        // Build playlists from database - they become direct children of root
         let mut playlist_children = Vec::new();
 
         if let Some(ref db_service) = self.db_service {
             // Get all playlists from database
             if let Ok(playlists) = PlaylistQuery::get_all(db_service.db()) {
                 for playlist in playlists {
-                    let playlist_id = NodeId::playlists().child(&playlist.name);
+                    // Playlists are direct children of root (no "playlists/" prefix)
+                    let playlist_id = NodeId(format!("playlist:{}", playlist.name));
                     playlist_children.push(playlist_id.clone());
 
                     // Get tracks in this playlist
@@ -173,15 +164,15 @@ impl UsbStorage {
             }
         }
 
-        // Create playlists root node
-        let playlists_node = PlaylistNode {
-            id: NodeId::playlists(),
-            kind: NodeKind::PlaylistsRoot,
-            name: "Playlists".to_string(),
+        // Create root node with playlists as direct children
+        let root = PlaylistNode {
+            id: NodeId::root(),
+            kind: NodeKind::Root,
+            name: self.device.label.clone(),
             children: playlist_children,
             track_path: None,
         };
-        self.nodes.insert(NodeId::playlists(), playlists_node);
+        self.nodes.insert(NodeId::root(), root);
     }
 }
 
@@ -221,8 +212,8 @@ impl PlaylistStorage for UsbStorage {
             return Vec::new();
         };
 
-        // Extract playlist name from folder_id (e.g., "playlists/My Set" -> "My Set")
-        let playlist_name = folder_id.as_str().strip_prefix("playlists/").unwrap_or("");
+        // Extract playlist name from folder_id (e.g., "playlist:My Set" -> "My Set")
+        let playlist_name = folder_id.as_str().strip_prefix("playlist:").unwrap_or("");
         if playlist_name.is_empty() {
             return Vec::new();
         }
