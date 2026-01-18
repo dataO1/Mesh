@@ -296,6 +296,9 @@
             # Debugging
             gdb
             lldb
+
+            # Database inspection (CozoDB uses SQLite backend)
+            sqlite
           ]);
 
           shellHook = ''

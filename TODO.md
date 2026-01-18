@@ -131,12 +131,12 @@ and mesh-widget and only if necessary in the ui.
         - [x] I think we actually need to restrict linked stems to prepared mode, so we can define a link point which marks a common first beat, for example marking the drop. Or we have structural markers for tracks anyways, the we can use on the fly stem linking. We could use the hot cue marker for relative positioning, but how is the user interaction then and how does the system k or which hit cues match? I think I like the drop marker
         - [x] How to visualise this? I think we can split the detailed waveform horizontally in half, the upper half represent the actively playing stems, the bottom half the linked stems (if there are any, otherwise keep full waveform). Same for overview waveform, so the dj has an overview of when stems have meaningful information (like a vocal stem which does not permanently have info, also the alignment becomes visual then).
     - [x] if you still have questions let me know and lets design this together.
-- [ ] we need usb stick support, so in mesh cue the user should be able to
+- [x] we need usb stick support, so in mesh cue the user should be able to
   export playlists, and config files to external devices (like usb stick) of the
   right format. everything that is necessary for
   mesh-player to work and the dj to play sets on it with their saved config
   file. what should not be transfered: midi mappings.
-  - [ ] the file browser needs to be adjusted. for mesh-cue show the locally existing
+  - [x] the file browser needs to be adjusted. for mesh-cue show the locally existing
     collection and playlists as before. Add a small icon in the footer for
     opening a export manager popup (similar to the import window), where in a
     header the user can select detected external storage devices with supported
@@ -145,21 +145,24 @@ and mesh-widget and only if necessary in the ui.
     existing. under the header, there should be two columns, left side for the
     local playlists, right side the selected external devices playlists. The
     user can then in the footer press a "export" button to sync local selected playlists (from the left column) to the usb stick.
-  - [ ] the sticks exported format should also be like local: all track files in
+  - [x] the sticks exported format should also be like local: all track files in
     the colleciton and playlists with symlinks to the collection. the export
     process should be as efficient as possible, so check existing files in the
     collection (via hash to compare if they got updated) and only sync new
     files. this should use multi-threading efficiently as well.
-  - [ ] in mesh-player the file browser needs to automatically show detected
+  - [x] in mesh-player the file browser needs to automatically show detected
     external usb devices with exported playlists. so on the otp level there
     should be devices (with their name), then if click on it, show the playlists
     inside (similar to already existing playlists behavirou for local).
-  - [ ] all the usb detection, mounting, export import logic for playlists etc,
+  - [x] all the usb detection, mounting, export import logic for playlists etc,
     should be written ONCE, be its own logic unit in mesh-core and should be
     initialized once each for mesh-cue and mesh-player each. the uis should
     communicate with it via messages and subscriptions efficiently.
-  - [ ] if youre unsure what exactly should be on external exported devices, or
-    how loading should happen etc, ask me questions.
+- [ ] mesh-player should keep dj history for each session, per dj and persist it
+  on the db while playing
+  - [ ] for now this is primarily used to update the graph based relations for
+    track exploration features using the vector/graph db, but later this should
+    be able to be used for full set reconsttruction.
 
 # Changes
 - [x] The waveform indicators of hot cues use colors, but the hot cue buttons
@@ -190,7 +193,7 @@ and mesh-widget and only if necessary in the ui.
   logic should be not in the ui itself, but factored out if necessary (like
   engine behaviour and interaction handlers etc) and the layout should reuse the
   existing components.
-- [ ] mesh-cue needs to be able to toggle mute state of stems and also load
+- [x] mesh-cue needs to be able to toggle mute state of stems and also load
   stem-links and be able to switch between stems (just like mesh-player, this
   should reuse all the decks capabilities and not introduce duplicated code). we
   already have 4 stem link button, when a stem link button is set with a stem
@@ -369,3 +372,4 @@ and mesh-widget and only if necessary in the ui.
   potential target user hardware spectrum, but if we go embedded, we know our
   environment, we can optimize this for there (ie 48, or 96 khz sample rate fixed
   everywhere)
+- [ ] use cpal instead of jack for full cross-compatability
