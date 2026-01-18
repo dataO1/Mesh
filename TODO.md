@@ -163,6 +163,15 @@ and mesh-widget and only if necessary in the ui.
   - [ ] for now this is primarily used to update the graph based relations for
     track exploration features using the vector/graph db, but later this should
     be able to be used for full set reconsttruction.
+- [ ] improved playlist features:
+  - [ ] how can we make use of the graph db and vector features?
+   - [ ] similarity search for tracks or stems? for example a smart dynamic
+     playlist of tracks, that match the vibe of the currently running track, or
+     just a single stem that matches the vibe.
+   - [ ] dynamic, smart playlists based on camelot key with several options for
+     energy instead of exact key match (so the user has 3 options, lower energy,
+     keep, or up the energy)?
+   - [ ]
 
 # Changes
 - [x] The waveform indicators of hot cues use colors, but the hot cue buttons
