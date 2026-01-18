@@ -29,6 +29,9 @@ pub struct Track {
     pub duration_seconds: f64,
     pub lufs: Option<f32>,
     pub drop_marker: Option<i64>,
+    /// First beat position in samples (for beat grid regeneration)
+    /// Required - beatgrid is essential for beat matching
+    pub first_beat_sample: i64,
     pub file_mtime: i64,
     pub file_size: i64,
     pub waveform_path: Option<String>,
@@ -70,6 +73,22 @@ pub struct SavedLoop {
     pub end_sample: i64,
     pub label: Option<String>,
     pub color: Option<String>,
+}
+
+/// A stem link for prepared mode (linking stems between tracks)
+///
+/// Allows replacing a stem (e.g., drums) from one track with another track's stem,
+/// aligned at their respective drop markers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StemLink {
+    /// Track that owns this link
+    pub track_id: i64,
+    /// Which stem slot is being replaced (0=vocals, 1=drums, 2=bass, 3=other)
+    pub stem_index: u8,
+    /// Source track providing the replacement stem
+    pub source_track_id: i64,
+    /// Which stem to use from source (0=vocals, 1=drums, 2=bass, 3=other)
+    pub source_stem: u8,
 }
 
 // ============================================================================
@@ -285,6 +304,10 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
         log::debug!("Creating 'saved_loops' relation");
         create_saved_loops_relation(db)?;
     }
+    if !existing.contains("stem_links") {
+        log::debug!("Creating 'stem_links' relation");
+        create_stem_links_relation(db)?;
+    }
 
     // Graph relations
     if !existing.contains("similar_to") {
@@ -329,6 +352,7 @@ fn create_tracks_relation(db: &DbInstance) -> Result<(), DbError> {
             duration_seconds: Float,
             lufs: Float?,
             drop_marker: Int?,
+            first_beat_sample: Int default 0,
             file_mtime: Int,
             file_size: Int,
             waveform_path: String?
@@ -378,6 +402,17 @@ fn create_saved_loops_relation(db: &DbInstance) -> Result<(), DbError> {
             end_sample: Int,
             label: String?,
             color: String?
+        }}
+    "#)
+}
+
+fn create_stem_links_relation(db: &DbInstance) -> Result<(), DbError> {
+    run_schema(db, r#"
+        {:create stem_links {
+            track_id: Int,
+            stem_index: Int =>
+            source_track_id: Int,
+            source_stem: Int
         }}
     "#)
 }

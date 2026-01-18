@@ -35,7 +35,6 @@ use crate::config::{BpmConfig, BpmSource, LoudnessConfig};
 use crate::export::export_stem_file_with_gain;
 use crate::import::StemImporter;
 use anyhow::{Context, Result};
-use mesh_core::audio_file::{BeatGrid, CuePoint, SavedLoop, TrackMetadata};
 use mesh_core::db::{DatabaseService, NewTrackData};
 use mesh_core::types::SAMPLE_RATE;
 use rayon::prelude::*;
@@ -475,34 +474,17 @@ fn process_single_track(group: &StemGroup, config: &ImportConfig) -> TrackImport
         source_sample_rate, SAMPLE_RATE, resample_ratio, source_duration_samples, duration_samples, source_first_beat, first_beat
     );
 
-    // Save copies for database insertion before moving into metadata
-    let db_artist = artist.clone();
-    let db_key = analysis.key.clone();
-
-    // Build metadata (beat grid is at TARGET sample rate)
-    let metadata = TrackMetadata {
-        artist,
-        bpm: Some(analysis.bpm),
-        original_bpm: Some(analysis.original_bpm),
-        key: Some(analysis.key),
-        lufs: analysis.lufs, // Integrated loudness for gain compensation
-        beat_grid: BeatGrid::regenerate(first_beat, analysis.bpm, duration_samples),
-        ..Default::default()
-    };
-
     // Export to temp file first (export handles resampling from source_sample_rate to SAMPLE_RATE)
     let temp_dir = std::env::temp_dir();
     let sanitized_name = sanitize_filename(&base_name);
     let temp_path = temp_dir.join(format!("{}.wav", sanitized_name));
 
-    let empty_cues: Vec<CuePoint> = Vec::new();
-    let empty_loops: Vec<SavedLoop> = Vec::new();
-
     // Calculate waveform gain from LUFS for loudness-normalized preview
     // The new LoudnessConfig API handles Option<f32> directly and returns 1.0 if None
     let waveform_gain = config.loudness_config.calculate_gain_linear(analysis.lufs);
 
-    if let Err(e) = export_stem_file_with_gain(&temp_path, &buffers, source_sample_rate, &metadata, &empty_cues, &empty_loops, waveform_gain) {
+    // Export audio only - all metadata (BPM, key, cues, loops) is stored in the database
+    if let Err(e) = export_stem_file_with_gain(&temp_path, &buffers, source_sample_rate, waveform_gain) {
         return TrackImportResult {
             base_name,
             success: false,
@@ -549,12 +531,13 @@ fn process_single_track(group: &StemGroup, config: &ImportConfig) -> TrackImport
     let track_data = NewTrackData {
         path: final_path.clone(),
         name: base_name.clone(),
-        artist: db_artist,
+        artist,
         bpm: Some(analysis.bpm),
         original_bpm: Some(analysis.original_bpm),
-        key: Some(db_key),
+        key: Some(analysis.key.clone()),
         duration_seconds: (duration_samples as f64) / (SAMPLE_RATE as f64),
         lufs: analysis.lufs,
+        first_beat_sample: first_beat as i64,
     };
 
     match config.db_service.add_track(&track_data) {

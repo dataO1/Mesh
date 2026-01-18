@@ -3,14 +3,13 @@
 use crate::audio::{AudioState, JackHandle, start_jack_client};
 use crate::batch_import::{self, ImportConfig, ImportProgress};
 use crate::config::{self, Config};
-use crate::export;
 use crate::keybindings::{self, KeybindingsConfig};
 use super::waveform::{CombinedWaveformView, WaveformView, ZoomedWaveformView, generate_peaks};
 use mesh_widgets::HIGHRES_WIDTH;
 use iced::widget::{button, center, column, container, mouse_area, opaque, row, stack, text, Space};
 use iced::{Color, Element, Length, Task, Theme};
 use basedrop::Shared;
-use mesh_core::audio_file::{BeatGrid, CuePoint, LoadedTrack, MetadataField, TrackMetadata, update_metadata_in_file};
+use mesh_core::audio_file::{BeatGrid, CuePoint, LoadedTrack, TrackMetadata};
 use mesh_core::db::{DatabaseService, TrackQuery};
 use mesh_core::playlist::{DatabaseStorage, NodeId, NodeKind};
 use mesh_core::types::{PlayState, Stem};
@@ -104,25 +103,12 @@ impl MeshCueApp {
 
         let settings = SettingsState::from_config(&config);
 
-        // Start JACK client for audio preview (lock-free architecture)
-        let (audio, jack_client) = match start_jack_client() {
-            Ok((audio_state, handle)) => {
-                log::info!("JACK audio preview enabled (lock-free)");
-                (audio_state, Some(handle))
-            }
-            Err(e) => {
-                log::warn!("JACK not available: {} - audio preview disabled", e);
-                (AudioState::disconnected(), None)
-            }
-        };
-
-        // Initialize collection state with playlist storage
+        // Initialize collection state first (needed for collection_root)
         let mut collection_state = CollectionState::default();
-
-        // Initialize playlist storage at collection root using DatabaseStorage
-        // Database is created if it doesn't exist (no filesystem fallback)
         let collection_root = collection_state.collection_path.clone();
 
+        // Initialize database service at collection root
+        // This is needed before starting JACK client (for metadata loading in loaders)
         let storage_result: Result<(Arc<DatabaseService>, Box<dyn mesh_core::playlist::PlaylistStorage>), String> = {
             log::info!("Initializing database service at {:?}", collection_root);
             DatabaseService::new(&collection_root)
@@ -157,6 +143,25 @@ impl MeshCueApp {
                 log::warn!("Failed to initialize playlist storage: {:?}", e);
             }
         }
+
+        // Start JACK client for audio preview (lock-free architecture)
+        // Pass database service for background loaders (linked stems, etc.)
+        let (audio, jack_client) = match collection_state.db_service.clone() {
+            Some(db_service) => match start_jack_client(db_service) {
+                Ok((audio_state, handle)) => {
+                    log::info!("JACK audio preview enabled (lock-free)");
+                    (audio_state, Some(handle))
+                }
+                Err(e) => {
+                    log::warn!("JACK not available: {} - audio preview disabled", e);
+                    (AudioState::disconnected(), None)
+                }
+            },
+            None => {
+                log::warn!("No database service available - audio preview disabled");
+                (AudioState::disconnected(), None)
+            }
+        };
 
         // Create USB manager with shared database service for sync operations
         let usb_db_service = collection_state.db_service.clone();
@@ -200,56 +205,81 @@ impl MeshCueApp {
 
     /// Save current track if it has been modified
     ///
-    /// Returns a Task to perform the save asynchronously, or None if no save is needed.
+    /// Saves all metadata to the database (single source of truth).
+    /// WAV files are not modified - they contain only audio data.
     fn save_current_track_if_modified(&mut self) -> Option<Task<Message>> {
         if let Some(ref mut state) = self.collection.loaded_track {
             if state.modified {
-                if let Some(ref stems) = state.stems {
-                    let path = state.path.clone();
-                    let stems = stems.clone();
-                    let cue_points = state.cue_points.clone();
-                    let saved_loops = state.saved_loops.clone();
-                    let metadata = TrackMetadata {
-                        artist: None, // TODO: Support artist editing
-                        bpm: Some(state.bpm),
-                        original_bpm: Some(state.bpm),
-                        key: Some(state.key.clone()),
-                        duration_seconds: None,
-                        beat_grid: BeatGrid {
-                            beats: state.beat_grid.clone(),
-                            first_beat_sample: state.beat_grid.first().copied(),
-                        },
-                        cue_points: cue_points.clone(),
-                        saved_loops: saved_loops.clone(),
-                        waveform_preview: None,
-                        drop_marker: state.drop_marker,
-                        stem_links: state.stem_links.clone(),
-                        lufs: None, // Preserve existing LUFS (not re-measured on save)
+                let path = state.path.clone();
+
+                // Save all metadata to database
+                if let Some(ref service) = self.collection.db_service {
+                    let path_str = path.to_string_lossy();
+                    let db = service.db();
+
+                    // Get track ID for related data operations
+                    let track_id = match TrackQuery::get_by_path(db, &path_str) {
+                        Ok(Some(track)) => track.id,
+                        Ok(None) => {
+                            log::warn!("Auto-save: Track not found in database: {}", path_str);
+                            state.modified = false;
+                            return None;
+                        }
+                        Err(e) => {
+                            log::error!("Auto-save: Failed to find track: {:?}", e);
+                            return None;
+                        }
                     };
 
-                    // Sync metadata to database before async file save
-                    if let Some(ref service) = self.collection.db_service {
-                        let path_str = path.to_string_lossy();
-                        if let Err(e) = TrackQuery::update_field_by_path(service.db(), &path_str, "bpm", &state.bpm.to_string()) {
-                            log::warn!("Auto-save: Failed to sync BPM to database: {:?}", e);
+                    // Update track fields
+                    if let Err(e) = TrackQuery::update_field(db, track_id, "bpm", &state.bpm.to_string()) {
+                        log::warn!("Auto-save: Failed to sync BPM: {:?}", e);
+                    }
+                    if let Err(e) = TrackQuery::update_field(db, track_id, "key", &state.key) {
+                        log::warn!("Auto-save: Failed to sync key: {:?}", e);
+                    }
+                    if let Some(drop_marker) = state.drop_marker {
+                        if let Err(e) = TrackQuery::update_field(db, track_id, "drop_marker", &drop_marker.to_string()) {
+                            log::warn!("Auto-save: Failed to sync drop_marker: {:?}", e);
                         }
-                        if let Err(e) = TrackQuery::update_field_by_path(service.db(), &path_str, "key", &state.key) {
-                            log::warn!("Auto-save: Failed to sync key to database: {:?}", e);
+                    }
+                    if let Some(first_beat) = state.beat_grid.first().copied() {
+                        if let Err(e) = TrackQuery::update_field(db, track_id, "first_beat_sample", &first_beat.to_string()) {
+                            log::warn!("Auto-save: Failed to sync first_beat_sample: {:?}", e);
                         }
                     }
 
-                    // Mark as saved to prevent re-saving
-                    state.modified = false;
+                    // Save cue points (replace all for atomicity)
+                    use mesh_core::db::{CuePointQuery, SavedLoopQuery, CuePoint as DbCuePoint, SavedLoop as DbSavedLoop};
+                    let db_cues: Vec<DbCuePoint> = state.cue_points.iter().map(|c| DbCuePoint {
+                        track_id,
+                        index: c.index,
+                        sample_position: c.sample_position as i64,
+                        label: if c.label.is_empty() { None } else { Some(c.label.clone()) },
+                        color: c.color.clone(),
+                    }).collect();
+                    if let Err(e) = CuePointQuery::replace_all(db, track_id, &db_cues) {
+                        log::warn!("Auto-save: Failed to sync cue points: {:?}", e);
+                    }
 
-                    log::info!("Auto-saving track: {:?}", path);
-                    return Some(Task::perform(
-                        async move {
-                            export::save_track_metadata(&path, &stems, &metadata, &cue_points, &saved_loops)
-                                .map_err(|e| e.to_string())
-                        },
-                        Message::SaveComplete,
-                    ));
+                    // Save loops (replace all for atomicity)
+                    let db_loops: Vec<DbSavedLoop> = state.saved_loops.iter().map(|l| DbSavedLoop {
+                        track_id,
+                        index: l.index,
+                        start_sample: l.start_sample as i64,
+                        end_sample: l.end_sample as i64,
+                        label: if l.label.is_empty() { None } else { Some(l.label.clone()) },
+                        color: l.color.clone(),
+                    }).collect();
+                    if let Err(e) = SavedLoopQuery::replace_all(db, track_id, &db_loops) {
+                        log::warn!("Auto-save: Failed to sync saved loops: {:?}", e);
+                    }
+
+                    log::info!("Auto-saved track to database: {:?}", path);
                 }
+
+                // Mark as saved
+                state.modified = false;
             }
         }
         None
@@ -647,58 +677,74 @@ impl MeshCueApp {
                 }
             }
             Message::SaveTrack => {
-                if let Some(ref state) = self.collection.loaded_track {
-                    // Can't save if stems aren't loaded yet
-                    let stems = match &state.stems {
-                        Some(s) => s.clone(),
-                        None => {
-                            log::warn!("Cannot save: audio not loaded yet");
-                            return Task::none();
-                        }
-                    };
-
+                if let Some(ref mut state) = self.collection.loaded_track {
                     let path = state.path.clone();
-                    let cue_points = state.cue_points.clone();
-                    let saved_loops = state.saved_loops.clone();
 
-                    // Build updated metadata from edited fields
-                    let metadata = TrackMetadata {
-                        artist: None, // TODO: Support artist editing
-                        bpm: Some(state.bpm),
-                        original_bpm: Some(state.bpm), // Use current BPM if no original
-                        key: Some(state.key.clone()),
-                        duration_seconds: None,
-                        beat_grid: BeatGrid {
-                            beats: state.beat_grid.clone(),
-                            first_beat_sample: state.beat_grid.first().copied(),
-                        },
-                        cue_points: cue_points.clone(),
-                        saved_loops: saved_loops.clone(),
-                        waveform_preview: None, // Will be regenerated during save
-                        drop_marker: state.drop_marker,
-                        stem_links: state.stem_links.clone(),
-                        lufs: None, // Preserve existing LUFS (not re-measured on save)
-                    };
-
-                    // Sync metadata to database before async file save
+                    // Save all metadata to database (single source of truth)
                     if let Some(ref service) = self.collection.db_service {
                         let path_str = path.to_string_lossy();
-                        if let Err(e) = TrackQuery::update_field_by_path(service.db(), &path_str, "bpm", &state.bpm.to_string()) {
-                            log::warn!("Failed to sync BPM to database: {:?}", e);
-                        }
-                        if let Err(e) = TrackQuery::update_field_by_path(service.db(), &path_str, "key", &state.key) {
-                            log::warn!("Failed to sync key to database: {:?}", e);
-                        }
-                        log::info!("Synced track metadata to database");
-                    }
+                        let db = service.db();
 
-                    return Task::perform(
-                        async move {
-                            export::save_track_metadata(&path, &stems, &metadata, &cue_points, &saved_loops)
-                                .map_err(|e| e.to_string())
-                        },
-                        Message::SaveComplete,
-                    );
+                        // Get track ID for related data operations
+                        let track_id = match TrackQuery::get_by_path(db, &path_str) {
+                            Ok(Some(track)) => track.id,
+                            Ok(None) => {
+                                log::error!("Cannot save: Track not found in database: {}", path_str);
+                                return Task::none();
+                            }
+                            Err(e) => {
+                                log::error!("Cannot save: Failed to find track: {:?}", e);
+                                return Task::none();
+                            }
+                        };
+
+                        // Update track fields
+                        if let Err(e) = TrackQuery::update_field(db, track_id, "bpm", &state.bpm.to_string()) {
+                            log::warn!("Failed to sync BPM: {:?}", e);
+                        }
+                        if let Err(e) = TrackQuery::update_field(db, track_id, "key", &state.key) {
+                            log::warn!("Failed to sync key: {:?}", e);
+                        }
+                        if let Some(drop_marker) = state.drop_marker {
+                            if let Err(e) = TrackQuery::update_field(db, track_id, "drop_marker", &drop_marker.to_string()) {
+                                log::warn!("Failed to sync drop_marker: {:?}", e);
+                            }
+                        }
+                        if let Some(first_beat) = state.beat_grid.first().copied() {
+                            if let Err(e) = TrackQuery::update_field(db, track_id, "first_beat_sample", &first_beat.to_string()) {
+                                log::warn!("Failed to sync first_beat_sample: {:?}", e);
+                            }
+                        }
+
+                        // Save cue points
+                        use mesh_core::db::{CuePointQuery, SavedLoopQuery, CuePoint as DbCuePoint, SavedLoop as DbSavedLoop};
+                        let db_cues: Vec<DbCuePoint> = state.cue_points.iter().map(|c| DbCuePoint {
+                            track_id,
+                            index: c.index,
+                            sample_position: c.sample_position as i64,
+                            label: if c.label.is_empty() { None } else { Some(c.label.clone()) },
+                            color: c.color.clone(),
+                        }).collect();
+                        if let Err(e) = CuePointQuery::replace_all(db, track_id, &db_cues) {
+                            log::warn!("Failed to sync cue points: {:?}", e);
+                        }
+
+                        // Save loops
+                        let db_loops: Vec<DbSavedLoop> = state.saved_loops.iter().map(|l| DbSavedLoop {
+                            track_id,
+                            index: l.index,
+                            start_sample: l.start_sample as i64,
+                            end_sample: l.end_sample as i64,
+                            label: if l.label.is_empty() { None } else { Some(l.label.clone()) },
+                            color: l.color.clone(),
+                        }).collect();
+                        if let Err(e) = SavedLoopQuery::replace_all(db, track_id, &db_loops) {
+                            log::warn!("Failed to sync saved loops: {:?}", e);
+                        }
+
+                        state.modified = false;
+                        log::info!("Track saved to database: {:?}", path);
+                    }
                 }
             }
             Message::SaveComplete(result) => {
@@ -1880,40 +1926,27 @@ impl MeshCueApp {
                             if let Some(ref storage) = self.collection.playlist_storage {
                                 if let Some(node) = storage.get_node(&track_id) {
                                     if let Some(ref path) = node.track_path {
-                                        let field = match column {
-                                            TrackColumn::Artist => MetadataField::Artist,
-                                            TrackColumn::Bpm => MetadataField::Bpm,
-                                            TrackColumn::Key => MetadataField::Key,
+                                        // Write metadata to database only (not WAV file)
+                                        let db_field = match column {
+                                            TrackColumn::Artist => "artist",
+                                            TrackColumn::Bpm => "bpm",
+                                            TrackColumn::Key => "key",
                                             _ => return Task::none(), // Not editable
                                         };
-                                        match update_metadata_in_file(path, field, &new_value) {
-                                            Ok(_) => {
-                                                log::info!("Saved {:?} = '{}' for {:?}", column, new_value, track_id);
-
-                                                // Sync to database - convert TrackColumn to DB field name
-                                                let db_field = match column {
-                                                    TrackColumn::Artist => "artist",
-                                                    TrackColumn::Bpm => "bpm",
-                                                    TrackColumn::Key => "key",
-                                                    _ => "",
-                                                };
-                                                if !db_field.is_empty() {
-                                                    if let Some(ref service) = self.collection.db_service {
-                                                        let path_str = path.to_string_lossy();
-                                                        if let Err(e) = TrackQuery::update_field_by_path(service.db(), &path_str, db_field, &new_value) {
-                                                            log::warn!("Failed to sync metadata to database: {:?}", e);
-                                                        } else {
-                                                            log::info!("Synced {:?} to database", column);
-                                                        }
+                                        if let Some(ref service) = self.collection.db_service {
+                                            let path_str = path.to_string_lossy();
+                                            match TrackQuery::update_field_by_path(service.db(), &path_str, db_field, &new_value) {
+                                                Ok(_) => {
+                                                    log::info!("Saved {:?} = '{}' to database for {:?}", column, new_value, track_id);
+                                                    // Refresh tracks to show updated value
+                                                    if let Some(ref folder) = self.collection.browser_left.current_folder {
+                                                        self.collection.left_tracks = get_tracks_for_folder(storage.as_ref(), folder);
                                                     }
                                                 }
-
-                                                // Refresh tracks to show updated value
-                                                if let Some(ref folder) = self.collection.browser_left.current_folder {
-                                                    self.collection.left_tracks = get_tracks_for_folder(storage.as_ref(), folder);
-                                                }
+                                                Err(e) => log::error!("Failed to save metadata to database: {:?}", e),
                                             }
-                                            Err(e) => log::error!("Failed to save metadata: {:?}", e),
+                                        } else {
+                                            log::error!("No database service available for metadata edit");
                                         }
                                     }
                                 }
@@ -2222,40 +2255,27 @@ impl MeshCueApp {
                             if let Some(ref storage) = self.collection.playlist_storage {
                                 if let Some(node) = storage.get_node(&track_id) {
                                     if let Some(ref path) = node.track_path {
-                                        let field = match column {
-                                            TrackColumn::Artist => MetadataField::Artist,
-                                            TrackColumn::Bpm => MetadataField::Bpm,
-                                            TrackColumn::Key => MetadataField::Key,
+                                        // Write metadata to database only (not WAV file)
+                                        let db_field = match column {
+                                            TrackColumn::Artist => "artist",
+                                            TrackColumn::Bpm => "bpm",
+                                            TrackColumn::Key => "key",
                                             _ => return Task::none(), // Not editable
                                         };
-                                        match update_metadata_in_file(path, field, &new_value) {
-                                            Ok(_) => {
-                                                log::info!("Saved {:?} = '{}' for {:?}", column, new_value, track_id);
-
-                                                // Sync to database - convert TrackColumn to DB field name
-                                                let db_field = match column {
-                                                    TrackColumn::Artist => "artist",
-                                                    TrackColumn::Bpm => "bpm",
-                                                    TrackColumn::Key => "key",
-                                                    _ => "",
-                                                };
-                                                if !db_field.is_empty() {
-                                                    if let Some(ref service) = self.collection.db_service {
-                                                        let path_str = path.to_string_lossy();
-                                                        if let Err(e) = TrackQuery::update_field_by_path(service.db(), &path_str, db_field, &new_value) {
-                                                            log::warn!("Failed to sync metadata to database: {:?}", e);
-                                                        } else {
-                                                            log::info!("Synced {:?} to database", column);
-                                                        }
+                                        if let Some(ref service) = self.collection.db_service {
+                                            let path_str = path.to_string_lossy();
+                                            match TrackQuery::update_field_by_path(service.db(), &path_str, db_field, &new_value) {
+                                                Ok(_) => {
+                                                    log::info!("Saved {:?} = '{}' to database for {:?}", column, new_value, track_id);
+                                                    // Refresh tracks to show updated value
+                                                    if let Some(ref folder) = self.collection.browser_right.current_folder {
+                                                        self.collection.right_tracks = get_tracks_for_folder(storage.as_ref(), folder);
                                                     }
                                                 }
-
-                                                // Refresh tracks to show updated value
-                                                if let Some(ref folder) = self.collection.browser_right.current_folder {
-                                                    self.collection.right_tracks = get_tracks_for_folder(storage.as_ref(), folder);
-                                                }
+                                                Err(e) => log::error!("Failed to save metadata to database: {:?}", e),
                                             }
-                                            Err(e) => log::error!("Failed to save metadata: {:?}", e),
+                                        } else {
+                                            log::error!("No database service available for metadata edit");
                                         }
                                     }
                                 }
@@ -2415,11 +2435,25 @@ impl MeshCueApp {
                 let save_task = self.save_current_track_if_modified();
 
                 log::info!("LoadTrackByPath: Loading {:?}", path);
+
+                // Load metadata from database instead of WAV file
+                let db_service = self.collection.db_service.clone();
                 let load_task = Task::perform(
                     async move {
-                        LoadedTrack::load_metadata_only(&path)
-                            .map(|metadata| (path, metadata))
-                            .map_err(|e| e.to_string())
+                        let path_str = path.to_string_lossy().to_string();
+                        match db_service {
+                            Some(service) => {
+                                match service.load_track_metadata_by_path(&path_str) {
+                                    Ok(Some(db_meta)) => {
+                                        let metadata: TrackMetadata = db_meta.into();
+                                        Ok((path, metadata))
+                                    }
+                                    Ok(None) => Err(format!("Track not found in database: {}", path_str)),
+                                    Err(e) => Err(format!("Database error: {}", e)),
+                                }
+                            }
+                            None => Err("Database service not available".to_string()),
+                        }
                     },
                     Message::TrackMetadataLoaded,
                 );
@@ -2770,6 +2804,9 @@ impl MeshCueApp {
 
                                 self.reanalysis_state.progress_rx = Some(progress_rx);
 
+                                // Clone database service for the worker thread
+                                let db_service = self.collection.db_service.clone();
+
                                 // Spawn worker thread for LUFS analysis
                                 std::thread::spawn(move || {
                                     run_batch_reanalysis(
@@ -2780,6 +2817,7 @@ impl MeshCueApp {
                                         parallel_processes,
                                         progress_tx,
                                         cancel_flag,
+                                        db_service,
                                     );
                                 });
 
@@ -3240,6 +3278,9 @@ impl MeshCueApp {
                 // Store receiver for polling in Tick handler (same pattern as import)
                 self.reanalysis_state.progress_rx = Some(progress_rx);
 
+                // Clone database service for the worker thread
+                let db_service = self.collection.db_service.clone();
+
                 // Spawn worker thread
                 std::thread::spawn(move || {
                     run_batch_reanalysis(
@@ -3250,6 +3291,7 @@ impl MeshCueApp {
                         parallel_processes,
                         progress_tx,
                         cancel_flag,
+                        db_service,
                     );
                 });
             }

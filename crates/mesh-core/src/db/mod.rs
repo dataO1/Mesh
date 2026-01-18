@@ -17,21 +17,15 @@
 
 mod schema;
 mod queries;
-mod migration;
 mod service;
 
 pub use schema::{
-    Track, Playlist, PlaylistTrack, CuePoint, SavedLoop,
+    Track, Playlist, PlaylistTrack, CuePoint, SavedLoop, StemLink,
     SimilarTo, PlayedAfter, HarmonicMatch, HarmonicMatchType,
     AudioFeatures,
 };
-pub use queries::{TrackQuery, PlaylistQuery, SimilarityQuery};
-pub use migration::{
-    migrate_from_wav_collection, migrate_single_track, track_needs_update,
-    insert_analyzed_track, NewTrackData,
-    MigrationProgress, MigrationPhase, MigrationResult,
-};
-pub use service::DatabaseService;
+pub use queries::{TrackQuery, PlaylistQuery, SimilarityQuery, CuePointQuery, SavedLoopQuery, StemLinkQuery};
+pub use service::{DatabaseService, LoadedTrackMetadata, NewTrackData};
 
 use cozo::{DbInstance, DataValue, NamedRows};
 use std::collections::BTreeMap;

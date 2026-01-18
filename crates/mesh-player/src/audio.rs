@@ -36,6 +36,7 @@
 use std::sync::Arc;
 
 use jack::{AudioOut, Client, ClientOptions, Control, Port, ProcessScope};
+use mesh_core::db::DatabaseService;
 use mesh_core::engine::{command_channel, AudioEngine, DeckAtomics, EngineCommand, LinkedStemAtomics, SlicerAtomics};
 use mesh_core::loader::LinkedStemResultReceiver;
 use mesh_core::types::{StereoBuffer, NUM_DECKS};
@@ -224,6 +225,7 @@ pub type JackClientResult = (
 
 pub fn start_jack_client(
     client_name: &str,
+    db_service: Arc<DatabaseService>,
 ) -> Result<JackClientResult, JackError> {
     // Create JACK client
     let (client, _status) = Client::new(client_name, ClientOptions::NO_START_SERVER)
@@ -255,7 +257,7 @@ pub fn start_jack_client(
 
     // Create engine with JACK's sample rate and extract atomics before moving to processor
     let jack_sample_rate = client.sample_rate() as u32;
-    let engine = AudioEngine::new_with_sample_rate(jack_sample_rate);
+    let engine = AudioEngine::new_with_sample_rate(jack_sample_rate, db_service);
     let deck_atomics = engine.deck_atomics();
     let slicer_atomics = engine.slicer_atomics();
     let linked_stem_atomics = engine.linked_stem_atomics();

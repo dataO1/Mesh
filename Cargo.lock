@@ -3179,7 +3179,6 @@ dependencies = [
  "pathdiff",
  "procspawn",
  "rayon",
- "riff",
  "rtrb",
  "rubato",
  "serde",
@@ -3211,7 +3210,6 @@ dependencies = [
  "procspawn",
  "rayon",
  "rfd",
- "riff",
  "rtrb",
  "serde",
  "serde_json",
@@ -4698,12 +4696,6 @@ dependencies = [
  "web-sys",
  "windows-sys 0.59.0",
 ]
-
-[[package]]
-name = "riff"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c601484456988d75017d86700d3743b949c21cdc7399f940c75e34680d185c5"
 
 [[package]]
 name = "ring"

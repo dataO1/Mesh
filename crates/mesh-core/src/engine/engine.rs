@@ -1,6 +1,8 @@
 //! Main audio engine - ties together decks, mixer, and time-stretching
 
+use std::sync::Arc;
 use crate::config::LoudnessConfig;
+use crate::db::DatabaseService;
 use crate::loader::{HostTrackParams, LinkedStemLoader, LinkedStemResultReceiver};
 use crate::music::semitones_to_match;
 use crate::timestretch::TimeStretcher;
@@ -79,7 +81,11 @@ impl AudioEngine {
     ///
     /// The sample rate should come from JACK (or other audio backend).
     /// Audio files will be resampled to match this rate on load.
-    pub fn new_with_sample_rate(output_sample_rate: u32) -> Self {
+    ///
+    /// # Arguments
+    /// * `output_sample_rate` - Sample rate from audio backend
+    /// * `db_service` - Database service for loading track metadata
+    pub fn new_with_sample_rate(output_sample_rate: u32, db_service: Arc<DatabaseService>) -> Self {
         log::info!("AudioEngine created with sample rate: {} Hz", output_sample_rate);
         Self {
             decks: std::array::from_fn(|i| Deck::new(DeckId::new(i))),
@@ -109,13 +115,8 @@ impl AudioEngine {
             // Loudness normalization (config sent via SetLoudnessConfig command)
             loudness_config: LoudnessConfig::default(),
             // Linked stem loader (auto-loads stems from track metadata)
-            linked_stem_loader: LinkedStemLoader::new(output_sample_rate),
+            linked_stem_loader: LinkedStemLoader::new(output_sample_rate, db_service),
         }
-    }
-
-    /// Create a new audio engine with default sample rate (48000 Hz)
-    pub fn new() -> Self {
-        Self::new_with_sample_rate(crate::types::SAMPLE_RATE)
     }
 
     /// Get the output sample rate
@@ -1088,26 +1089,28 @@ impl AudioEngine {
     }
 }
 
-impl Default for AudioEngine {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
+
+    /// Create an AudioEngine for testing with an in-memory database
+    fn test_engine() -> AudioEngine {
+        let temp = TempDir::new().unwrap();
+        let db_service = DatabaseService::in_memory(temp.path()).unwrap();
+        AudioEngine::new_with_sample_rate(44100, db_service)
+    }
 
     #[test]
     fn test_engine_creation() {
-        let engine = AudioEngine::new();
+        let engine = test_engine();
         assert_eq!(engine.global_bpm(), DEFAULT_BPM);
         assert_eq!(engine.global_latency(), 0);
     }
 
     #[test]
     fn test_bpm_adjustment() {
-        let mut engine = AudioEngine::new();
+        let mut engine = test_engine();
 
         engine.set_global_bpm(120.0);
         assert_eq!(engine.global_bpm(), 120.0);
@@ -1125,7 +1128,7 @@ mod tests {
 
     #[test]
     fn test_process_empty_engine() {
-        let mut engine = AudioEngine::new();
+        let mut engine = test_engine();
         let mut master = StereoBuffer::silence(256);
         let mut cue = StereoBuffer::silence(256);
 

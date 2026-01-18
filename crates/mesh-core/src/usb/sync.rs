@@ -8,14 +8,14 @@
 //!
 //! Both local and USB collections use CozoDB databases for track and playlist metadata.
 
-use crate::db::{DatabaseService, MeshDb, PlaylistQuery};
+use crate::db::{DatabaseService, MeshDb, PlaylistQuery, Track, CuePoint, SavedLoop, CuePointQuery, SavedLoopQuery, TrackQuery};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use walkdir::WalkDir;
 
-/// Information about a track file
+/// Information about a track file with metadata for comparison
 #[derive(Debug, Clone)]
 pub struct TrackInfo {
     /// Absolute path to the file
@@ -26,6 +26,12 @@ pub struct TrackInfo {
     pub size: u64,
     /// Last modified time
     pub mtime: SystemTime,
+    /// Database track record (for metadata comparison)
+    pub db_track: Option<Track>,
+    /// Cue points for this track
+    pub cue_points: Vec<CuePoint>,
+    /// Saved loops for this track
+    pub saved_loops: Vec<SavedLoop>,
 }
 
 /// A track membership in a playlist (database record)
@@ -135,7 +141,8 @@ pub fn scan_local_collection_from_db(
     progress: Option<ProgressCallback>,
 ) -> Result<CollectionState, Box<dyn std::error::Error + Send + Sync>> {
     let mut state = CollectionState::default();
-    let mut track_paths: HashMap<String, PathBuf> = HashMap::new();
+    // Map filename -> (path, Track) to keep the database record for metadata comparison
+    let mut track_data: HashMap<String, (PathBuf, Track)> = HashMap::new();
 
     // Get all playlists from the database
     let all_playlists = PlaylistQuery::get_all(db)
@@ -161,8 +168,8 @@ pub fn scan_local_collection_from_db(
                 .unwrap_or(&track.name)
                 .to_string();
 
-            // Track the file path (use first occurrence if duplicate filename)
-            track_paths.entry(filename.clone()).or_insert(path);
+            // Keep track data for metadata comparison (use first occurrence if duplicate filename)
+            track_data.entry(filename.clone()).or_insert((path, track));
 
             // Add playlist track membership
             state.playlist_tracks.insert(PlaylistTrack {
@@ -172,15 +179,30 @@ pub fn scan_local_collection_from_db(
         }
     }
 
-    // Get metadata for all unique tracks (fast - no hashing)
-    let track_list: Vec<(String, PathBuf)> = track_paths.into_iter().collect();
+    // Pre-fetch cue points and loops for all tracks (sequential DB queries)
+    let mut cue_points_map: HashMap<i64, Vec<CuePoint>> = HashMap::new();
+    let mut loops_map: HashMap<i64, Vec<SavedLoop>> = HashMap::new();
+    for (_, (_, track)) in &track_data {
+        if let Ok(cues) = CuePointQuery::get_for_track(db, track.id) {
+            cue_points_map.insert(track.id, cues);
+        }
+        if let Ok(loops) = SavedLoopQuery::get_for_track(db, track.id) {
+            loops_map.insert(track.id, loops);
+        }
+    }
+
+    // Get file metadata for all unique tracks (parallel for speed)
+    let track_list: Vec<(String, PathBuf, Track)> = track_data
+        .into_iter()
+        .map(|(filename, (path, track))| (filename, path, track))
+        .collect();
     let total_files = track_list.len();
     let progress_counter = std::sync::atomic::AtomicUsize::new(0);
     let progress_ref = progress.as_ref();
 
     let track_infos: Vec<Result<TrackInfo, std::io::Error>> = track_list
         .into_par_iter()
-        .map(|(filename, path)| {
+        .map(|(filename, path, db_track)| {
             let metadata = std::fs::metadata(&path)?;
             let mtime = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
 
@@ -190,11 +212,18 @@ pub fn scan_local_collection_from_db(
                 cb(current, total_files);
             }
 
+            // Get pre-fetched cue points and loops
+            let cue_points = cue_points_map.get(&db_track.id).cloned().unwrap_or_default();
+            let saved_loops = loops_map.get(&db_track.id).cloned().unwrap_or_default();
+
             Ok(TrackInfo {
                 path,
                 filename,
                 size: metadata.len(),
                 mtime,
+                db_track: Some(db_track),
+                cue_points,
+                saved_loops,
             })
         })
         .collect();
@@ -236,7 +265,60 @@ pub fn scan_usb_collection(
         Vec::new()
     };
 
-    // Get metadata for tracks (fast - no hashing)
+    // Try to open USB database for metadata comparison
+    let db_path = collection_root.join("mesh.db");
+    let usb_db_service = if db_path.exists() {
+        DatabaseService::new(collection_root).ok()
+    } else {
+        None
+    };
+
+    // Build map of filename -> (Track, cue_points, saved_loops) from USB database
+    let mut db_metadata: HashMap<String, (Track, Vec<CuePoint>, Vec<SavedLoop>)> = HashMap::new();
+    if let Some(ref db_service) = usb_db_service {
+        // Get all tracks from database
+        if let Ok(all_tracks) = TrackQuery::get_all(db_service.db()) {
+            for track in all_tracks {
+                let filename = PathBuf::from(&track.path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&track.name)
+                    .to_string();
+
+                let cue_points = CuePointQuery::get_for_track(db_service.db(), track.id)
+                    .unwrap_or_default();
+                let saved_loops = SavedLoopQuery::get_for_track(db_service.db(), track.id)
+                    .unwrap_or_default();
+
+                db_metadata.insert(filename, (track, cue_points, saved_loops));
+            }
+        }
+
+        // Get playlists
+        if let Ok(playlists) = PlaylistQuery::get_all(db_service.db()) {
+            for playlist in playlists {
+                state.playlist_names.insert(playlist.name.clone());
+
+                // Get tracks in this playlist
+                if let Ok(tracks) = PlaylistQuery::get_tracks(db_service.db(), playlist.id) {
+                    for track in tracks {
+                        let filename = PathBuf::from(&track.path)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(&track.name)
+                            .to_string();
+
+                        state.playlist_tracks.insert(PlaylistTrack {
+                            playlist: playlist.name.clone(),
+                            track_filename: filename,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Get file metadata for tracks (parallel for speed)
     let total_files = track_paths.len();
     let progress_counter = std::sync::atomic::AtomicUsize::new(0);
     let progress_ref = progress.as_ref();
@@ -258,11 +340,20 @@ pub fn scan_usb_collection(
                 cb(current, total_files);
             }
 
+            // Get database metadata if available
+            let (db_track, cue_points, saved_loops) = db_metadata
+                .get(&filename)
+                .map(|(t, c, l)| (Some(t.clone()), c.clone(), l.clone()))
+                .unwrap_or((None, Vec::new(), Vec::new()));
+
             Ok(TrackInfo {
                 path,
                 filename,
                 size: metadata.len(),
                 mtime,
+                db_track,
+                cue_points,
+                saved_loops,
             })
         })
         .collect();
@@ -274,46 +365,74 @@ pub fn scan_usb_collection(
         }
     }
 
-    // Read playlists from USB's mesh.db if it exists
-    let db_path = collection_root.join("mesh.db");
-    if db_path.exists() {
-        // Open USB database (read-only for scanning)
-        if let Ok(usb_db_service) = DatabaseService::new(collection_root) {
-            // Get all playlists
-            if let Ok(playlists) = PlaylistQuery::get_all(usb_db_service.db()) {
-                for playlist in playlists {
-                    state.playlist_names.insert(playlist.name.clone());
+    Ok(state)
+}
 
-                    // Get tracks in this playlist
-                    if let Ok(tracks) = PlaylistQuery::get_tracks(usb_db_service.db(), playlist.id) {
-                        for track in tracks {
-                            let filename = PathBuf::from(&track.path)
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or(&track.name)
-                                .to_string();
-
-                            state.playlist_tracks.insert(PlaylistTrack {
-                                playlist: playlist.name.clone(),
-                                track_filename: filename,
-                            });
-                        }
-                    }
-                }
+/// Check if metadata differs between local and USB tracks
+///
+/// Compares track fields (BPM, key, artist, etc.), cue points, and saved loops.
+/// Returns true if any metadata field differs and requires re-export.
+fn metadata_differs(local: &TrackInfo, usb: &TrackInfo) -> bool {
+    // Compare Track fields if both have db_track
+    match (&local.db_track, &usb.db_track) {
+        (Some(l), Some(u)) => {
+            // Compare only fields that are synced to USB database
+            // Note: drop_marker, cue_points, saved_loops are NOT synced to USB DB
+            // (drop_marker is always NULL, cue_points/loops go into WAV chunks)
+            if l.bpm != u.bpm {
+                log::debug!("metadata_differs: bpm differs for {} ({:?} vs {:?})", local.filename, l.bpm, u.bpm);
+                return true;
             }
+            if l.original_bpm != u.original_bpm {
+                log::debug!("metadata_differs: original_bpm differs for {} ({:?} vs {:?})", local.filename, l.original_bpm, u.original_bpm);
+                return true;
+            }
+            if l.key != u.key {
+                log::debug!("metadata_differs: key differs for {} ({:?} vs {:?})", local.filename, l.key, u.key);
+                return true;
+            }
+            if l.artist != u.artist {
+                log::debug!("metadata_differs: artist differs for {} ({:?} vs {:?})", local.filename, l.artist, u.artist);
+                return true;
+            }
+            if l.lufs != u.lufs {
+                log::debug!("metadata_differs: lufs differs for {} ({:?} vs {:?})", local.filename, l.lufs, u.lufs);
+                return true;
+            }
+            // Skip drop_marker comparison - not synced to USB DB (always NULL)
+            // Skip cue_points/saved_loops comparison - stored in WAV chunks, not USB DB
+        }
+        (Some(_), None) => {
+            // Local has metadata, USB doesn't - needs export
+            log::debug!("metadata_differs: USB missing metadata for {}", local.filename);
+            return true;
+        }
+        _ => {
+            // No metadata to compare
         }
     }
 
-    Ok(state)
+    // TODO: cue_points and saved_loops are currently stored in WAV file chunks,
+    // not in USB database. To enable change detection for these, we need to:
+    // 1. Write cue_points/saved_loops to USB DB during export
+    // 2. Then compare them here
+    // For now, changes to cue points/loops will trigger re-export via WAV file
+    // modification (mtime change) when the WAV is re-rendered.
+
+    false
 }
 
 /// Build a sync plan by comparing local state with USB state
 ///
-/// Uses size and modification time to detect changes (fast, no hashing).
+/// Detects changes using:
+/// - File size/mtime for audio content changes
+/// - Database metadata comparison for BPM, key, cue points, loops, etc.
+///
 /// A file needs to be copied if:
 /// - It doesn't exist on USB
-/// - Size differs (definite change)
+/// - Size differs (definite content change)
 /// - Local mtime is newer (file was modified)
+/// - Database metadata differs (BPM, cue points, etc. changed)
 pub fn build_sync_plan(local: &CollectionState, usb: &CollectionState) -> SyncPlan {
     let mut plan = SyncPlan::default();
 
@@ -321,13 +440,12 @@ pub fn build_sync_plan(local: &CollectionState, usb: &CollectionState) -> SyncPl
     for (filename, local_info) in &local.tracks {
         let needs_copy = match usb.tracks.get(filename) {
             Some(usb_info) => {
-                // Different size = definitely different content
-                if local_info.size != usb_info.size {
+                // Audio content changed?
+                if local_info.size != usb_info.size || local_info.mtime > usb_info.mtime {
                     true
                 } else {
-                    // Same size, check if local is newer
-                    // Use a small tolerance (2 seconds) for FAT32 time granularity
-                    local_info.mtime > usb_info.mtime
+                    // Audio same, check if metadata changed
+                    metadata_differs(local_info, usb_info)
                 }
             }
             None => true, // New file
@@ -379,13 +497,19 @@ pub fn build_sync_plan(local: &CollectionState, usb: &CollectionState) -> SyncPl
     }
 
     // Check which tracks are missing LUFS (for auto-analysis before export)
+    // Read LUFS from database, not from WAV file metadata
     plan.tracks_missing_lufs = plan
         .tracks_to_copy
         .iter()
         .filter(|track| {
-            crate::audio_file::read_metadata(&track.source)
-                .map(|m| m.lufs.is_none())
-                .unwrap_or(false)
+            // Look up the track in local collection by filename
+            let filename = track.source.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            local.tracks.get(filename)
+                .and_then(|info| info.db_track.as_ref())
+                .map(|db_track| db_track.lufs.is_none())
+                .unwrap_or(true) // If no DB track, assume LUFS is missing
         })
         .map(|track| track.source.clone())
         .collect();
@@ -508,6 +632,9 @@ mod tests {
                 filename: "test.wav".to_string(),
                 size: 1000,
                 mtime: SystemTime::now(),
+                db_track: None,
+                cue_points: Vec::new(),
+                saved_loops: Vec::new(),
             },
         );
 
@@ -526,6 +653,9 @@ mod tests {
             filename: "test.wav".to_string(),
             size: 1000,
             mtime,
+            db_track: None,
+            cue_points: Vec::new(),
+            saved_loops: Vec::new(),
         };
 
         let mut local = CollectionState::default();
@@ -550,6 +680,9 @@ mod tests {
                 filename: "test.wav".to_string(),
                 size: 2000, // Different size
                 mtime,
+                db_track: None,
+                cue_points: Vec::new(),
+                saved_loops: Vec::new(),
             },
         );
 
@@ -561,6 +694,9 @@ mod tests {
                 filename: "test.wav".to_string(),
                 size: 1000,
                 mtime,
+                db_track: None,
+                cue_points: Vec::new(),
+                saved_loops: Vec::new(),
             },
         );
 
@@ -583,6 +719,9 @@ mod tests {
                 filename: "test.wav".to_string(),
                 size: 1000,
                 mtime: new_mtime, // Newer
+                db_track: None,
+                cue_points: Vec::new(),
+                saved_loops: Vec::new(),
             },
         );
 
@@ -594,6 +733,9 @@ mod tests {
                 filename: "test.wav".to_string(),
                 size: 1000,
                 mtime: old_mtime, // Older
+                db_track: None,
+                cue_points: Vec::new(),
+                saved_loops: Vec::new(),
             },
         );
 

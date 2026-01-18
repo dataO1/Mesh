@@ -5,7 +5,6 @@ edition.workspace = true
 
 [dependencies]
 rtrb.workspace = true
-riff.workspace = true
 signalsmith-stretch.workspace = true
 libpd-rs.workspace = true
 serde.workspace = true

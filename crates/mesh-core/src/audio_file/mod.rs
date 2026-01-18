@@ -279,6 +279,62 @@ impl StemLinkReference {
     }
 }
 
+// ============================================================================
+// Database type conversions (From/Into implementations)
+// ============================================================================
+
+impl From<crate::db::CuePoint> for CuePoint {
+    fn from(db_cue: crate::db::CuePoint) -> Self {
+        Self {
+            index: db_cue.index,
+            sample_position: db_cue.sample_position as u64,
+            label: db_cue.label.unwrap_or_default(),
+            color: db_cue.color,
+        }
+    }
+}
+
+impl From<crate::db::SavedLoop> for SavedLoop {
+    fn from(db_loop: crate::db::SavedLoop) -> Self {
+        Self {
+            index: db_loop.index,
+            start_sample: db_loop.start_sample as u64,
+            end_sample: db_loop.end_sample as u64,
+            label: db_loop.label.unwrap_or_default(),
+            color: db_loop.color,
+        }
+    }
+}
+
+impl From<crate::db::LoadedTrackMetadata> for TrackMetadata {
+    fn from(db_meta: crate::db::LoadedTrackMetadata) -> Self {
+        let track = &db_meta.track;
+
+        // Regenerate beat grid from first_beat_sample and BPM
+        let beat_grid = if let Some(bpm) = track.bpm {
+            let duration_samples = (track.duration_seconds * crate::types::SAMPLE_RATE as f64) as u64;
+            BeatGrid::regenerate(track.first_beat_sample as u64, bpm, duration_samples)
+        } else {
+            BeatGrid::default()
+        };
+
+        Self {
+            artist: track.artist.clone(),
+            bpm: track.bpm,
+            original_bpm: track.original_bpm,
+            key: track.key.clone(),
+            lufs: track.lufs,
+            duration_seconds: Some(track.duration_seconds),
+            beat_grid,
+            cue_points: db_meta.cue_points.into_iter().map(Into::into).collect(),
+            saved_loops: db_meta.saved_loops.into_iter().map(Into::into).collect(),
+            waveform_preview: None, // No longer stored in WAV files
+            drop_marker: track.drop_marker.map(|d| d as u64),
+            stem_links: Vec::new(), // Stem links handled separately via track IDs
+        }
+    }
+}
+
 /// Quantized waveform peaks for a single stem
 ///
 /// Values are quantized from f32 [-1.0, 1.0] to u8 [0, 255] for compact storage.
@@ -459,6 +515,93 @@ pub fn serialize_wvfm_chunk(preview: &WaveformPreview) -> Vec<u8> {
     }
 
     bytes
+}
+
+/// Read only the waveform preview from a WAV file
+///
+/// This efficiently scans the file for the `wvfm` chunk without loading
+/// audio data, making it suitable for quick waveform display updates.
+///
+/// Returns `Ok(None)` if the file has no wvfm chunk (not an error).
+pub fn read_waveform_preview_from_file<P: AsRef<Path>>(path: P) -> Result<Option<WaveformPreview>, AudioFileError> {
+    let file = File::open(path.as_ref())
+        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+    let mut reader = BufReader::new(file);
+
+    // Read RIFF/RF64 header
+    let mut riff_id = [0u8; 4];
+    reader.read_exact(&mut riff_id)
+        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+
+    let is_rf64 = match &riff_id {
+        b"RIFF" => false,
+        b"RF64" => true,
+        _ => return Err(AudioFileError::InvalidFormat("Not a RIFF/RF64 file".into())),
+    };
+
+    // Skip file size (4 bytes)
+    reader.seek(SeekFrom::Current(4))
+        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+
+    // Read WAVE identifier
+    let mut wave_id = [0u8; 4];
+    reader.read_exact(&mut wave_id)
+        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+
+    if &wave_id != b"WAVE" {
+        return Err(AudioFileError::InvalidFormat("Not a WAVE file".into()));
+    }
+
+    // For RF64, skip ds64 chunk if present
+    if is_rf64 {
+        let mut chunk_id = [0u8; 4];
+        if reader.read_exact(&mut chunk_id).is_ok() && &chunk_id == b"ds64" {
+            let mut chunk_size = [0u8; 4];
+            reader.read_exact(&mut chunk_size)
+                .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+            let chunk_size = u32::from_le_bytes(chunk_size);
+            reader.seek(SeekFrom::Current(chunk_size as i64))
+                .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+        } else {
+            // Seek back if not ds64
+            reader.seek(SeekFrom::Current(-4))
+                .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+        }
+    }
+
+    // Scan chunks looking for wvfm
+    loop {
+        let mut chunk_id = [0u8; 4];
+        if reader.read_exact(&mut chunk_id).is_err() {
+            break; // End of file
+        }
+
+        let mut chunk_size_bytes = [0u8; 4];
+        reader.read_exact(&mut chunk_size_bytes)
+            .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+        let chunk_size = u32::from_le_bytes(chunk_size_bytes);
+
+        if &chunk_id == b"wvfm" {
+            // Found wvfm chunk - read and parse it
+            let mut wvfm_data = vec![0u8; chunk_size as usize];
+            reader.read_exact(&mut wvfm_data)
+                .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+            return Ok(Some(parse_wvfm_chunk(&wvfm_data)?));
+        }
+
+        // Skip this chunk
+        reader.seek(SeekFrom::Current(chunk_size as i64))
+            .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+
+        // Pad to word boundary
+        if chunk_size % 2 != 0 {
+            reader.seek(SeekFrom::Current(1))
+                .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+        }
+    }
+
+    // No wvfm chunk found
+    Ok(None)
 }
 
 /// Parse a mlop (mesh loops) chunk into a Vec<SavedLoop>
@@ -656,102 +799,6 @@ pub fn serialize_mslk_chunk(links: &[StemLinkReference]) -> Vec<u8> {
     bytes
 }
 
-impl TrackMetadata {
-    /// Parse metadata from bext description string
-    ///
-    /// Format: `BPM:128.00|KEY:Am|FIRST_BEAT:14335|DROP:1234567|ORIGINAL_BPM:125.00`
-    /// Legacy: `BPM:128.00|KEY:Am|GRID:0,22050,44100,...|ORIGINAL_BPM:125.00`
-    ///
-    /// Note: FIRST_BEAT is preferred over GRID as it stores only the first beat position,
-    /// allowing the full beat grid to be regenerated from BPM when the track is loaded.
-    pub fn parse_bext_description(description: &str) -> Self {
-        let mut metadata = Self::default();
-        let mut first_beat: Option<u64> = None;
-
-        for part in description.split('|') {
-            if let Some((key, value)) = part.split_once(':') {
-                match key.trim() {
-                    "ARTIST" => metadata.artist = Some(value.trim().to_string()),
-                    "BPM" => metadata.bpm = value.trim().parse().ok(),
-                    "ORIGINAL_BPM" => metadata.original_bpm = value.trim().parse().ok(),
-                    "KEY" => metadata.key = Some(value.trim().to_string()),
-                    "LUFS" => metadata.lufs = value.trim().parse().ok(),
-                    "FIRST_BEAT" => first_beat = value.trim().parse().ok(),
-                    "GRID" => metadata.beat_grid = BeatGrid::from_csv(value),
-                    "DROP" => metadata.drop_marker = value.trim().parse().ok(),
-                    _ => {}
-                }
-            }
-        }
-
-        // If we have FIRST_BEAT but no/empty GRID, store it for later regeneration
-        if let Some(fb) = first_beat {
-            metadata.beat_grid.first_beat_sample = Some(fb);
-        }
-
-        metadata
-    }
-
-    /// Parse metadata from bext description and regenerate beat grid from duration
-    ///
-    /// This is the preferred method when loading a track - it regenerates the full
-    /// beat grid from BPM and first beat position using the known duration.
-    pub fn parse_bext_description_with_duration(description: &str, duration_samples: u64) -> Self {
-        let mut metadata = Self::parse_bext_description(description);
-
-        // If we have first_beat_sample and BPM but empty/truncated beats, regenerate
-        if let (Some(first_beat), Some(bpm)) = (metadata.beat_grid.first_beat_sample, metadata.bpm) {
-            // Only regenerate if we have very few beats (likely truncated) or none
-            if metadata.beat_grid.beats.len() < 50 {
-                log::trace!(
-                    "Regenerating beat grid: first_beat={}, bpm={:.1}, duration={}",
-                    first_beat, bpm, duration_samples
-                );
-                metadata.beat_grid = BeatGrid::regenerate(first_beat, bpm, duration_samples);
-            }
-        }
-
-        metadata
-    }
-
-    /// Serialize metadata to bext description string
-    ///
-    /// Format: `ARTIST:Name|BPM:128.00|KEY:Am|FIRST_BEAT:14335|DROP:1234567|ORIGINAL_BPM:125.00`
-    ///
-    /// Uses FIRST_BEAT instead of full GRID to fit in 256-byte bext description limit.
-    /// The full beat grid is regenerated from BPM + FIRST_BEAT when loading.
-    pub fn to_bext_description(&self) -> String {
-        let mut parts = Vec::new();
-
-        if let Some(ref artist) = self.artist {
-            parts.push(format!("ARTIST:{}", artist));
-        }
-        if let Some(bpm) = self.bpm {
-            parts.push(format!("BPM:{:.2}", bpm));
-        }
-        if let Some(ref key) = self.key {
-            parts.push(format!("KEY:{}", key));
-        }
-        if let Some(lufs) = self.lufs {
-            parts.push(format!("LUFS:{:.2}", lufs));
-        }
-        // Store only FIRST_BEAT (fits in 256 bytes, grid regenerated on load)
-        let first_beat = self.beat_grid.first_beat_sample
-            .or_else(|| self.beat_grid.beats.first().copied());
-        if let Some(fb) = first_beat {
-            parts.push(format!("FIRST_BEAT:{}", fb));
-        }
-        // Drop marker for linked stem alignment
-        if let Some(drop_marker) = self.drop_marker {
-            parts.push(format!("DROP:{}", drop_marker));
-        }
-        if let Some(original) = self.original_bpm {
-            parts.push(format!("ORIGINAL_BPM:{:.2}", original));
-        }
-
-        parts.join("|")
-    }
-}
 
 /// Stem audio buffers extracted from a file
 #[derive(Debug, Clone)]
@@ -1408,550 +1455,6 @@ impl AudioFileReader {
     }
 }
 
-/// Read metadata from a WAV/RF64 file without loading audio data
-///
-/// Also calculates duration from the file header and regenerates the beat grid
-/// from BPM + FIRST_BEAT if available.
-pub fn read_metadata<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFileError> {
-    use std::time::Instant;
-    let start = Instant::now();
-
-    let file = File::open(path.as_ref())
-        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-    let mut reader = BufReader::new(file);
-
-    // Read and validate header
-    let mut header = [0u8; 12];
-    reader.read_exact(&mut header)
-        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-    let is_rf64 = &header[0..4] == b"RF64";
-    if &header[0..4] != b"RIFF" && !is_rf64 {
-        return Err(AudioFileError::InvalidFormat("Not a RIFF/RF64 file".into()));
-    }
-    if &header[8..12] != b"WAVE" {
-        return Err(AudioFileError::InvalidFormat("Not a WAVE file".into()));
-    }
-
-    let mut metadata = TrackMetadata::default();
-    let mut cue_points: Vec<(u32, u64)> = Vec::new(); // id, position
-    let mut bext_description: Option<String> = None;
-    let mut saved_loops: Vec<SavedLoop> = Vec::new();
-    let mut stem_links: Vec<StemLinkReference> = Vec::new();
-
-    // Track format info for duration calculation
-    let mut channels: u16 = 8;
-    let mut bits_per_sample: u16 = 16;
-    let mut data_size: u64 = 0;
-    let mut waveform_preview: Option<WaveformPreview> = None;
-
-    // Parse chunks
-    loop {
-        let mut chunk_id = [0u8; 4];
-        if reader.read_exact(&mut chunk_id).is_err() {
-            break;
-        }
-
-        let mut chunk_size_bytes = [0u8; 4];
-        reader.read_exact(&mut chunk_size_bytes)
-            .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-        let chunk_size = u32::from_le_bytes(chunk_size_bytes);
-
-        match &chunk_id {
-            b"fmt " => {
-                // Format chunk - extract channel count and bit depth for duration calculation
-                let mut fmt_data = vec![0u8; chunk_size as usize];
-                reader.read_exact(&mut fmt_data)
-                    .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-                if fmt_data.len() >= 16 {
-                    channels = u16::from_le_bytes([fmt_data[2], fmt_data[3]]);
-                    bits_per_sample = u16::from_le_bytes([fmt_data[14], fmt_data[15]]);
-                }
-            }
-            b"data" => {
-                // Data chunk - capture size for duration calculation
-                data_size = chunk_size as u64;
-                // Skip the audio data
-                reader.seek(SeekFrom::Current(chunk_size as i64))
-                    .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-            }
-            b"bext" => {
-                // Broadcast Extension chunk
-                let mut bext_data = vec![0u8; chunk_size as usize];
-                reader.read_exact(&mut bext_data)
-                    .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-                // Description is first 256 bytes (null-terminated string)
-                // Store it for later parsing with duration info
-                if bext_data.len() >= 256 {
-                    let description_end = bext_data[..256].iter()
-                        .position(|&b| b == 0)
-                        .unwrap_or(256);
-                    if let Ok(description) = std::str::from_utf8(&bext_data[..description_end]) {
-                        bext_description = Some(description.to_string());
-                    }
-                }
-            }
-            b"cue " => {
-                // Cue points chunk
-                let mut cue_data = vec![0u8; chunk_size as usize];
-                reader.read_exact(&mut cue_data)
-                    .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-                if cue_data.len() >= 4 {
-                    let num_cues = u32::from_le_bytes([cue_data[0], cue_data[1], cue_data[2], cue_data[3]]);
-
-                    // Each cue point is 24 bytes
-                    for i in 0..num_cues as usize {
-                        let offset = 4 + i * 24;
-                        if offset + 24 <= cue_data.len() {
-                            let cue_id = u32::from_le_bytes([
-                                cue_data[offset], cue_data[offset + 1],
-                                cue_data[offset + 2], cue_data[offset + 3]
-                            ]);
-                            let sample_pos = u32::from_le_bytes([
-                                cue_data[offset + 20], cue_data[offset + 21],
-                                cue_data[offset + 22], cue_data[offset + 23]
-                            ]);
-                            cue_points.push((cue_id, sample_pos as u64));
-                        }
-                    }
-                }
-            }
-            b"LIST" => {
-                // LIST chunk (may contain adtl with cue labels)
-                let mut list_data = vec![0u8; chunk_size as usize];
-                reader.read_exact(&mut list_data)
-                    .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-                if list_data.len() >= 4 && &list_data[0..4] == b"adtl" {
-                    // Parse adtl sub-chunks for labels
-                    let mut pos = 4;
-                    while pos + 8 <= list_data.len() {
-                        let sub_id = &list_data[pos..pos + 4];
-                        let sub_size = u32::from_le_bytes([
-                            list_data[pos + 4], list_data[pos + 5],
-                            list_data[pos + 6], list_data[pos + 7]
-                        ]) as usize;
-
-                        if sub_id == b"labl" && pos + 8 + sub_size <= list_data.len() {
-                            // Label sub-chunk
-                            let cue_id = u32::from_le_bytes([
-                                list_data[pos + 8], list_data[pos + 9],
-                                list_data[pos + 10], list_data[pos + 11]
-                            ]);
-
-                            // Find the cue point and add label
-                            let label_end = list_data[pos + 12..pos + 8 + sub_size]
-                                .iter()
-                                .position(|&b| b == 0)
-                                .unwrap_or(sub_size - 4);
-
-                            if let Ok(label_str) = std::str::from_utf8(&list_data[pos + 12..pos + 12 + label_end]) {
-                                // Parse label format: "Drop|color:#FF5500"
-                                let (label, color) = if let Some((l, c)) = label_str.split_once("|color:") {
-                                    (l.to_string(), Some(c.to_string()))
-                                } else {
-                                    (label_str.to_string(), None)
-                                };
-
-                                // Find matching cue point
-                                if let Some((_, pos)) = cue_points.iter().find(|(id, _)| *id == cue_id) {
-                                    metadata.cue_points.push(CuePoint {
-                                        index: metadata.cue_points.len() as u8,
-                                        sample_position: *pos,
-                                        label,
-                                        color,
-                                    });
-                                }
-                            }
-                        }
-
-                        pos += 8 + sub_size;
-                        if sub_size % 2 != 0 {
-                            pos += 1;
-                        }
-                    }
-                }
-            }
-            b"wvfm" => {
-                // Waveform preview chunk
-                let mut wvfm_data = vec![0u8; chunk_size as usize];
-                reader.read_exact(&mut wvfm_data)
-                    .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-                match parse_wvfm_chunk(&wvfm_data) {
-                    Ok(preview) => {
-                        log::trace!("Loaded waveform preview: {}px width, 4 stems", preview.width);
-                        waveform_preview = Some(preview);
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to parse wvfm chunk: {}", e);
-                    }
-                }
-            }
-            b"mlop" => {
-                // Mesh saved loops chunk
-                let mut mlop_data = vec![0u8; chunk_size as usize];
-                reader.read_exact(&mut mlop_data)
-                    .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-                match parse_mlop_chunk(&mlop_data) {
-                    Ok(loops) => {
-                        log::trace!("Loaded {} saved loops", loops.len());
-                        saved_loops = loops;
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to parse mlop chunk: {}", e);
-                    }
-                }
-            }
-            b"mslk" => {
-                // Mesh stem links chunk (prepared linked stems)
-                let mut mslk_data = vec![0u8; chunk_size as usize];
-                reader.read_exact(&mut mslk_data)
-                    .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-                match parse_mslk_chunk(&mslk_data) {
-                    Ok(links) => {
-                        log::trace!("Loaded {} stem link references", links.len());
-                        stem_links = links;
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to parse mslk chunk: {}", e);
-                    }
-                }
-            }
-            _ => {
-                // Skip unknown chunks
-                reader.seek(SeekFrom::Current(chunk_size as i64))
-                    .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-            }
-        }
-
-        // Pad to word boundary
-        if chunk_size % 2 != 0 {
-            reader.seek(SeekFrom::Current(1))
-                .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-        }
-    }
-    log::trace!("    [PERF] Chunk parsing complete: {:?}", start.elapsed());
-
-    // Calculate duration in samples from format info
-    let bytes_per_sample = (bits_per_sample / 8) as u64;
-    let bytes_per_frame = channels as u64 * bytes_per_sample;
-    let duration_samples = if bytes_per_frame > 0 {
-        data_size / bytes_per_frame
-    } else {
-        0
-    };
-
-    // Parse bext description with duration to regenerate beat grid
-    if let Some(ref description) = bext_description {
-        metadata = TrackMetadata::parse_bext_description_with_duration(description, duration_samples);
-        log::info!(
-            "[LUFS] read_metadata: bext parsed - LUFS={:?}, BPM={:?}, description_len={}",
-            metadata.lufs,
-            metadata.bpm,
-            description.len()
-        );
-    } else {
-        log::warn!("[LUFS] read_metadata: No bext description found in file!");
-    }
-    log::trace!("    [PERF] Beat grid regenerated: {:?}", start.elapsed());
-
-    // Add any cue points without labels
-    for (id, pos) in cue_points {
-        if !metadata.cue_points.iter().any(|c| c.sample_position == pos) {
-            metadata.cue_points.push(CuePoint {
-                index: metadata.cue_points.len() as u8,
-                sample_position: pos,
-                label: format!("Cue {}", id),
-                color: None,
-            });
-        }
-    }
-
-    // Sort cue points by position
-    metadata.cue_points.sort_by_key(|c| c.sample_position);
-
-    // Re-index after sorting
-    for (i, cue) in metadata.cue_points.iter_mut().enumerate() {
-        cue.index = i as u8;
-    }
-
-    // Attach waveform preview if present
-    metadata.waveform_preview = waveform_preview;
-
-    // Attach saved loops if present
-    metadata.saved_loops = saved_loops;
-
-    // Attach stem links if present
-    metadata.stem_links = stem_links;
-
-    // Calculate and store duration in seconds at system sample rate
-    if duration_samples > 0 {
-        metadata.duration_seconds = Some(duration_samples as f64 / SAMPLE_RATE as f64);
-    }
-
-    Ok(metadata)
-}
-
-/// Metadata field that can be updated
-#[derive(Debug, Clone, Copy)]
-pub enum MetadataField {
-    /// Artist name
-    Artist,
-    /// BPM value
-    Bpm,
-    /// Musical key
-    Key,
-    /// LUFS integrated loudness
-    Lufs,
-    /// First beat sample position
-    FirstBeat,
-}
-
-/// Update a single metadata field in a WAV file's bext chunk
-///
-/// Uses the `riff` crate to efficiently navigate chunks and updates only
-/// the 256-byte bext description in-place without loading audio data.
-///
-/// # Arguments
-///
-/// * `path` - Path to the WAV file
-/// * `field` - Which metadata field to update
-/// * `value` - New value as a string (BPM is parsed as f64)
-///
-/// # Returns
-///
-/// The updated metadata after the change
-pub fn update_metadata_in_file<P: AsRef<Path>>(
-    path: P,
-    field: MetadataField,
-    value: &str,
-) -> Result<TrackMetadata, AudioFileError> {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
-    let path = path.as_ref();
-
-    // Open file for reading to find bext chunk
-    let mut file = File::open(path).map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-    // Use riff crate to parse the chunk structure efficiently
-    let chunk = riff::Chunk::read(&mut file, 0)
-        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-    // Find bext chunk and its offset, plus read current description
-    let mut bext_offset: Option<u64> = None;
-    let mut current_description = String::new();
-
-    for child in chunk.iter(&mut file) {
-        let child = child.map_err(|e| AudioFileError::IoError(e.to_string()))?;
-        if child.id().as_str() == "bext" {
-            // Offset is: chunk start + 8 bytes (id + size header)
-            bext_offset = Some(child.offset() + 8);
-
-            // Read current description (first 256 bytes of bext data)
-            let content = child
-                .read_contents(&mut file)
-                .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-            if content.len() >= 256 {
-                current_description = String::from_utf8_lossy(&content[..256])
-                    .trim_end_matches('\0')
-                    .to_string();
-            }
-            break;
-        }
-    }
-
-    // Close the read handle
-    drop(file);
-
-    let bext_offset = bext_offset.ok_or_else(|| {
-        AudioFileError::InvalidFormat("No bext chunk found in file".to_string())
-    })?;
-
-    // Parse current metadata and update the field
-    let mut metadata = TrackMetadata::parse_bext_description(&current_description);
-
-    match field {
-        MetadataField::Artist => {
-            metadata.artist = if value.is_empty() {
-                None
-            } else {
-                Some(value.to_string())
-            };
-        }
-        MetadataField::Bpm => {
-            metadata.bpm = value.parse().ok();
-            if metadata.original_bpm.is_none() {
-                metadata.original_bpm = metadata.bpm;
-            }
-        }
-        MetadataField::Key => {
-            metadata.key = if value.is_empty() {
-                None
-            } else {
-                Some(value.to_string())
-            };
-        }
-        MetadataField::Lufs => {
-            metadata.lufs = value.parse().ok();
-        }
-        MetadataField::FirstBeat => {
-            if let Ok(sample) = value.parse::<u64>() {
-                metadata.beat_grid.first_beat_sample = Some(sample);
-            }
-        }
-    }
-
-    // Generate new bext description (256 bytes, null-padded)
-    let new_description = metadata.to_bext_description();
-    let mut description_bytes = [0u8; 256];
-    let desc_data = new_description.as_bytes();
-    let copy_len = desc_data.len().min(255);
-    description_bytes[..copy_len].copy_from_slice(&desc_data[..copy_len]);
-
-    // Write only the 256-byte description in-place
-    let mut file = OpenOptions::new()
-        .write(true)
-        .open(path)
-        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-    file.seek(SeekFrom::Start(bext_offset))
-        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-    file.write_all(&description_bytes)
-        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-    log::info!(
-        "Updated metadata field {:?} = '{}' in {:?}",
-        field,
-        value,
-        path
-    );
-
-    Ok(metadata)
-}
-
-/// Partial metadata update for re-analysis operations
-///
-/// Contains only the fields that may need to be updated during re-analysis.
-/// Any `Some` value will be written; `None` values are preserved from the file.
-#[derive(Debug, Clone, Default)]
-pub struct PartialMetadataUpdate {
-    /// New BPM value
-    pub bpm: Option<f64>,
-    /// New first beat position (if beat grid changes)
-    pub first_beat: Option<u64>,
-    /// New key detection
-    pub key: Option<String>,
-    /// New LUFS measurement
-    pub lufs: Option<f32>,
-}
-
-/// Update multiple metadata fields in a WAV file's bext chunk at once
-///
-/// This is more efficient than calling `update_metadata_in_file` multiple times
-/// as it only opens the file once.
-///
-/// # Arguments
-///
-/// * `path` - Path to the WAV file
-/// * `updates` - Partial metadata updates (only Some fields are updated)
-///
-/// # Returns
-///
-/// The updated metadata after the changes
-pub fn update_metadata_bulk<P: AsRef<Path>>(
-    path: P,
-    updates: &PartialMetadataUpdate,
-) -> Result<TrackMetadata, AudioFileError> {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
-    let path = path.as_ref();
-
-    // Open file for reading to find bext chunk
-    let mut file = File::open(path).map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-    // Use riff crate to parse the chunk structure efficiently
-    let chunk = riff::Chunk::read(&mut file, 0)
-        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-    // Find bext chunk and its offset, plus read current description
-    let mut bext_offset: Option<u64> = None;
-    let mut current_description = String::new();
-
-    for child in chunk.iter(&mut file) {
-        let child = child.map_err(|e| AudioFileError::IoError(e.to_string()))?;
-        if child.id().as_str() == "bext" {
-            // Offset is: chunk start + 8 bytes (id + size header)
-            bext_offset = Some(child.offset() + 8);
-
-            // Read current description (first 256 bytes of bext data)
-            let content = child
-                .read_contents(&mut file)
-                .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-            if content.len() >= 256 {
-                current_description = String::from_utf8_lossy(&content[..256])
-                    .trim_end_matches('\0')
-                    .to_string();
-            }
-            break;
-        }
-    }
-
-    // Close the read handle
-    drop(file);
-
-    let bext_offset = bext_offset.ok_or_else(|| {
-        AudioFileError::InvalidFormat("No bext chunk found in file".to_string())
-    })?;
-
-    // Parse current metadata and apply updates
-    let mut metadata = TrackMetadata::parse_bext_description(&current_description);
-
-    if let Some(bpm) = updates.bpm {
-        metadata.bpm = Some(bpm);
-        if metadata.original_bpm.is_none() {
-            metadata.original_bpm = Some(bpm);
-        }
-    }
-    if let Some(first_beat) = updates.first_beat {
-        metadata.beat_grid.first_beat_sample = Some(first_beat);
-    }
-    if let Some(ref key) = updates.key {
-        metadata.key = Some(key.clone());
-    }
-    if let Some(lufs) = updates.lufs {
-        metadata.lufs = Some(lufs);
-    }
-
-    // Generate new bext description (256 bytes, null-padded)
-    let new_description = metadata.to_bext_description();
-    let mut description_bytes = [0u8; 256];
-    let desc_data = new_description.as_bytes();
-    let copy_len = desc_data.len().min(255);
-    description_bytes[..copy_len].copy_from_slice(&desc_data[..copy_len]);
-
-    // Write only the 256-byte description in-place
-    let mut file = OpenOptions::new()
-        .write(true)
-        .open(path)
-        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-    file.seek(SeekFrom::Start(bext_offset))
-        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-    file.write_all(&description_bytes)
-        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-    log::info!("Updated metadata bulk in {:?}: {:?}", path, updates);
-
-    Ok(metadata)
-}
 
 /// A fully loaded track ready for playback
 ///
@@ -1998,34 +1501,63 @@ impl std::fmt::Debug for LoadedTrack {
 }
 
 impl LoadedTrack {
-    /// Load a track from a file path
+    /// Load a track from a file path with metadata from the database
     ///
     /// Uses the default system sample rate (48kHz).
-    /// For JACK-aware loading, use `load_to(path, target_rate)` instead.
-    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, AudioFileError> {
-        Self::load_to(path, SAMPLE_RATE)
+    /// For JACK-aware loading, use `load_to(path, db, target_rate)` instead.
+    pub fn load<P: AsRef<Path>>(path: P, db: &crate::db::DatabaseService) -> Result<Self, AudioFileError> {
+        Self::load_to(path, db, SAMPLE_RATE)
     }
 
     /// Load a track from a file path, resampling to target sample rate
     ///
     /// # Arguments
     /// * `path` - Path to the audio file
+    /// * `db` - Database service for loading metadata
     /// * `target_sample_rate` - Target sample rate (typically JACK's sample rate)
     ///
     /// This allows loading tracks to match whatever sample rate JACK is running at.
-    pub fn load_to<P: AsRef<Path>>(path: P, target_sample_rate: u32) -> Result<Self, AudioFileError> {
+    /// Metadata (BPM, key, cue points, etc.) is loaded from the database.
+    /// Waveform preview is loaded from the WAV file's wvfm chunk.
+    pub fn load_to<P: AsRef<Path>>(path: P, db: &crate::db::DatabaseService, target_sample_rate: u32) -> Result<Self, AudioFileError> {
         use std::time::Instant;
 
         let path_ref = path.as_ref();
         let total_start = Instant::now();
         log::info!("[PERF] Loading track: {:?} (target rate: {} Hz)", path_ref, target_sample_rate);
 
-        // Read metadata first (fast, doesn't load audio)
+        // Load metadata from database
         let meta_start = Instant::now();
-        let metadata = read_metadata(path_ref)?;
-        log::info!("  [PERF] Metadata loaded in {:?}", meta_start.elapsed());
+        let path_str = path_ref.to_string_lossy().to_string();
+        let mut metadata: TrackMetadata = match db.load_track_metadata_by_path(&path_str) {
+            Ok(Some(db_meta)) => db_meta.into(),
+            Ok(None) => {
+                log::warn!("Track not found in database: {}, using default metadata", path_str);
+                TrackMetadata::default()
+            }
+            Err(e) => {
+                log::warn!("Failed to load metadata from database: {}, using default", e);
+                TrackMetadata::default()
+            }
+        };
+        log::info!("  [PERF] Metadata loaded from DB in {:?}", meta_start.elapsed());
 
-        // Then read the audio data
+        // Load waveform preview from WAV file (stored in wvfm chunk)
+        let wvfm_start = Instant::now();
+        match read_waveform_preview_from_file(path_ref) {
+            Ok(Some(waveform)) => {
+                metadata.waveform_preview = Some(waveform);
+                log::info!("  [PERF] Waveform preview loaded from WAV in {:?}", wvfm_start.elapsed());
+            }
+            Ok(None) => {
+                log::debug!("  No wvfm chunk found in {:?}", path_ref);
+            }
+            Err(e) => {
+                log::warn!("  Failed to read waveform preview: {}", e);
+            }
+        }
+
+        // Load the audio data
         let open_start = Instant::now();
         let mut reader = AudioFileReader::open(path_ref)?;
         log::info!("  [PERF] File opened in {:?}", open_start.elapsed());
@@ -2054,13 +1586,6 @@ impl LoadedTrack {
             duration_samples,
             duration_seconds,
         })
-    }
-
-    /// Load only metadata from a file (fast, no audio data)
-    ///
-    /// Use this for quick UI display while audio loads in background.
-    pub fn load_metadata_only<P: AsRef<Path>>(path: P) -> Result<TrackMetadata, AudioFileError> {
-        read_metadata(path.as_ref())
     }
 
     /// Load only audio stems from a file (slow, loads all audio data)
@@ -2183,121 +1708,6 @@ mod tests {
             wrong_rate.is_compatible(),
             Err(AudioFileError::WrongSampleRate { .. })
         ));
-    }
-
-    #[test]
-    fn test_metadata_parsing() {
-        let description = "ARTIST:Test Artist|BPM:128.00|KEY:Am|GRID:0,22050,44100|ORIGINAL_BPM:125.00";
-        let metadata = TrackMetadata::parse_bext_description(description);
-
-        assert_eq!(metadata.artist, Some("Test Artist".to_string()));
-        assert_eq!(metadata.bpm, Some(128.0));
-        assert_eq!(metadata.original_bpm, Some(125.0));
-        assert_eq!(metadata.key, Some("Am".to_string()));
-        assert_eq!(metadata.beat_grid.beats, vec![0, 22050, 44100]);
-    }
-
-    #[test]
-    fn test_drop_marker_parsing() {
-        // Test parsing DROP marker from bext
-        let description = "BPM:128.00|KEY:Am|FIRST_BEAT:14335|DROP:1234567";
-        let metadata = TrackMetadata::parse_bext_description(description);
-
-        assert_eq!(metadata.bpm, Some(128.0));
-        assert_eq!(metadata.key, Some("Am".to_string()));
-        assert_eq!(metadata.drop_marker, Some(1234567));
-        assert_eq!(metadata.beat_grid.first_beat_sample, Some(14335));
-    }
-
-    #[test]
-    fn test_drop_marker_roundtrip() {
-        // Create metadata with drop marker
-        let mut original = TrackMetadata::default();
-        original.bpm = Some(174.5);
-        original.key = Some("Fm".to_string());
-        original.drop_marker = Some(5000000);
-        original.beat_grid.first_beat_sample = Some(1000);
-
-        // Serialize
-        let description = original.to_bext_description();
-        assert!(description.contains("DROP:5000000"));
-
-        // Parse back
-        let parsed = TrackMetadata::parse_bext_description(&description);
-        assert_eq!(parsed.drop_marker, Some(5000000));
-        assert_eq!(parsed.bpm, original.bpm);
-        assert_eq!(parsed.key, original.key);
-    }
-
-    #[test]
-    fn test_metadata_roundtrip() {
-        // Create metadata with first_beat_sample set
-        let original = TrackMetadata {
-            artist: Some("Test Artist".to_string()),
-            bpm: Some(174.5),
-            original_bpm: Some(172.0),
-            key: Some("Dm".to_string()),
-            lufs: Some(-9.5),
-            duration_seconds: None, // Not serialized to bext
-            beat_grid: BeatGrid::from_csv("0,11025,22050"),
-            cue_points: Vec::new(),
-            saved_loops: Vec::new(),
-            waveform_preview: None,
-            drop_marker: None,
-            stem_links: Vec::new(),
-        };
-
-        // Serialize to bext description (now uses FIRST_BEAT format)
-        let description = original.to_bext_description();
-
-        // Should contain FIRST_BEAT instead of full GRID
-        assert!(description.contains("ARTIST:Test Artist"));
-        assert!(description.contains("FIRST_BEAT:0"));
-        assert!(!description.contains("GRID:"));
-
-        // Parse back - without duration, beats won't be regenerated
-        let parsed = TrackMetadata::parse_bext_description(&description);
-
-        // Verify basic roundtrip
-        assert_eq!(parsed.artist, original.artist);
-        assert_eq!(parsed.bpm, original.bpm);
-        assert_eq!(parsed.original_bpm, original.original_bpm);
-        assert_eq!(parsed.key, original.key);
-        // first_beat_sample is preserved
-        assert_eq!(parsed.beat_grid.first_beat_sample, Some(0));
-    }
-
-    #[test]
-    fn test_metadata_roundtrip_with_duration() {
-        // Create metadata
-        let original = TrackMetadata {
-            artist: Some("Duration Artist".to_string()),
-            bpm: Some(120.0), // 120 BPM = 22050 samples per beat at 44100
-            original_bpm: Some(120.0),
-            key: Some("Am".to_string()),
-            lufs: Some(-8.0),
-            duration_seconds: None, // Not serialized to bext
-            beat_grid: BeatGrid::from_csv("0,22050,44100,66150"),
-            cue_points: Vec::new(),
-            saved_loops: Vec::new(),
-            waveform_preview: None,
-            drop_marker: None,
-            stem_links: Vec::new(),
-        };
-
-        // Serialize to bext description
-        let description = original.to_bext_description();
-
-        // Parse with duration to regenerate beat grid
-        let duration_samples = 100000; // About 2.3 seconds
-        let parsed = TrackMetadata::parse_bext_description_with_duration(&description, duration_samples);
-
-        // Beat grid should be regenerated
-        assert_eq!(parsed.bpm, Some(120.0));
-        assert_eq!(parsed.beat_grid.first_beat_sample, Some(0));
-        assert!(!parsed.beat_grid.beats.is_empty());
-        // Should have approximately 4-5 beats for 100000 samples at 120 BPM
-        assert!(parsed.beat_grid.beats.len() >= 4);
     }
 
     #[test]

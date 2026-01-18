@@ -16,6 +16,7 @@ use std::thread::{self, JoinHandle};
 
 use basedrop::Shared;
 use mesh_core::audio_file::{LoadedTrack, StemBuffers};
+use mesh_core::db::DatabaseService;
 use mesh_core::engine::PreparedTrack;
 use mesh_widgets::{CueMarker, OverviewState, ZoomedState, CUE_COLORS, generate_peaks, HIGHRES_WIDTH};
 
@@ -68,7 +69,8 @@ impl TrackLoader {
     ///
     /// # Arguments
     /// * `target_sample_rate` - JACK's sample rate for resampling tracks on load
-    pub fn spawn(target_sample_rate: u32) -> Self {
+    /// * `db_service` - Database service for loading track metadata
+    pub fn spawn(target_sample_rate: u32, db_service: Arc<DatabaseService>) -> Self {
         let (request_tx, request_rx) = std::sync::mpsc::channel::<TrackLoadRequest>();
         let (result_tx, result_rx) = std::sync::mpsc::channel::<TrackLoadResult>();
 
@@ -79,7 +81,7 @@ impl TrackLoader {
         let handle = thread::Builder::new()
             .name("track-loader".to_string())
             .spawn(move || {
-                loader_thread(request_rx, result_tx, rate_for_thread);
+                loader_thread(request_rx, result_tx, rate_for_thread, db_service);
             })
             .expect("Failed to spawn track loader thread");
 
@@ -139,11 +141,12 @@ fn loader_thread(
     rx: Receiver<TrackLoadRequest>,
     tx: Sender<TrackLoadResult>,
     target_sample_rate: Arc<AtomicU32>,
+    db_service: Arc<DatabaseService>,
 ) {
     log::info!("Track loader thread started");
 
     while let Ok(request) = rx.recv() {
-        handle_track_load(request, &tx, &target_sample_rate);
+        handle_track_load(request, &tx, &target_sample_rate, &db_service);
     }
 
     log::info!("Track loader thread shutting down");
@@ -154,6 +157,7 @@ fn handle_track_load(
     request: TrackLoadRequest,
     tx: &Sender<TrackLoadResult>,
     target_sample_rate: &Arc<AtomicU32>,
+    db_service: &DatabaseService,
 ) {
     // Read the current target sample rate (may have been updated)
     let sample_rate = target_sample_rate.load(Ordering::SeqCst);
@@ -167,9 +171,9 @@ fn handle_track_load(
 
     let total_start = std::time::Instant::now();
 
-    // Load the track with resampling to JACK's sample rate
+    // Load the track with resampling to JACK's sample rate (metadata from DB)
     let load_start = std::time::Instant::now();
-    let result = LoadedTrack::load_to(&request.path, sample_rate);
+    let result = LoadedTrack::load_to(&request.path, db_service, sample_rate);
     log::info!("[PERF] Loader: LoadedTrack::load_to({} Hz) took {:?}", sample_rate, load_start.elapsed());
 
     match result {

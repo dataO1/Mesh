@@ -30,9 +30,7 @@ use super::sync::{
 };
 use crate::db::DatabaseService;
 use super::{ExportableConfig, UsbDevice, UsbError};
-use crate::audio_file::read_metadata;
 use crate::playlist::NodeId;
-use walkdir::WalkDir;
 
 // Re-export for convenience
 pub use super::message::{UsbCommand, UsbMessage};
@@ -56,7 +54,7 @@ pub struct UsbManager {
     _thread_handle: JoinHandle<()>,
     /// Handle to the udev monitor thread
     _monitor_handle: JoinHandle<()>,
-    /// Shared database service (optional - not all USB operations need DB)
+    /// Shared database service (optional - sync operations require it)
     db_service: Option<Arc<DatabaseService>>,
 }
 
@@ -65,7 +63,7 @@ impl UsbManager {
     ///
     /// # Arguments
     /// * `db_service` - Optional shared database service for sync operations.
-    ///                  If None, sync plan building will fail gracefully.
+    ///                  If None, sync/export operations will fail gracefully.
     ///
     /// Returns a manager instance with channels for communication.
     pub fn spawn(db_service: Option<Arc<DatabaseService>>) -> Self {
@@ -218,6 +216,7 @@ fn manager_thread_main(
                             config,
                             cancel_flag,
                             &message_tx,
+                            db_service.as_ref(),
                         );
 
                         export_cancel_flag = None;
@@ -511,6 +510,7 @@ fn handle_start_export(
     config: Option<ExportableConfig>,
     cancel_flag: Arc<AtomicBool>,
     message_tx: &Sender<UsbMessage>,
+    local_db: Option<&Arc<DatabaseService>>,
 ) {
     let device = match devices.get(device_path) {
         Some(d) => d.clone(),
@@ -652,28 +652,43 @@ fn handle_start_export(
 
     // Phase 3b: Insert track records for copied tracks
     // We need to ensure tracks exist in USB database before adding to playlists
+    // IMPORTANT: Read metadata from LOCAL DATABASE only - WAV files no longer contain metadata
+    // This is consistent with the metadata comparison logic in scan_local_collection_from_db
     for track_copy in &plan.tracks_to_copy {
         let filename = track_copy.destination.file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("Unknown");
         let track_path = tracks_dir.join(filename);
+        let source_path_str = track_copy.source.to_string_lossy().to_string();
 
-        // Read metadata from the source file to get track info
-        if let Ok(metadata) = read_metadata(&track_copy.source) {
-            let track_data = crate::db::NewTrackData {
-                path: track_path.clone(),
-                name: filename.trim_end_matches(".wav").to_string(),
-                artist: metadata.artist,
-                bpm: metadata.bpm,
-                original_bpm: metadata.original_bpm,
-                key: metadata.key,
-                duration_seconds: metadata.duration_seconds.unwrap_or(0.0),
-                lufs: metadata.lufs,
-            };
-
-            if let Err(e) = usb_db.add_track(&track_data) {
-                log::warn!("Failed to add track {} to USB database: {}", filename, e);
+        // Read metadata from local database only (WAV files no longer contain metadata)
+        let track_data = if let Some(db) = local_db {
+            if let Ok(Some(local_track)) = db.get_track_by_path(&source_path_str) {
+                // Use metadata from local database
+                crate::db::NewTrackData {
+                    path: track_path.clone(),
+                    name: filename.trim_end_matches(".wav").to_string(),
+                    artist: local_track.artist,
+                    bpm: local_track.bpm,
+                    original_bpm: local_track.original_bpm,
+                    key: local_track.key,
+                    duration_seconds: local_track.duration_seconds,
+                    lufs: local_track.lufs,
+                    first_beat_sample: local_track.first_beat_sample,
+                }
+            } else {
+                // Track not in local DB - skip (database is required for metadata)
+                log::warn!("Track {} not found in local DB, skipping metadata sync", filename);
+                continue;
             }
+        } else {
+            // No local DB provided - skip metadata sync for this track
+            log::warn!("No local database provided, skipping metadata for {}", filename);
+            continue;
+        };
+
+        if let Err(e) = usb_db.add_track(&track_data) {
+            log::warn!("Failed to add track {} to USB database: {}", filename, e);
         }
     }
 
@@ -767,52 +782,58 @@ fn handle_preload_metadata(tracks_dir: PathBuf, device_path: PathBuf, tx: Sender
         tracks_dir.display()
     );
 
-    // Collect all WAV files
-    let entries: Vec<_> = if tracks_dir.exists() {
-        WalkDir::new(&tracks_dir)
-            .max_depth(1)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .and_then(|x| x.to_str())
-                    .map(|x| x.eq_ignore_ascii_case("wav"))
-                    .unwrap_or(false)
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    let total = entries.len();
+    // Read metadata from USB's mesh.db (WAV files no longer contain metadata)
+    let collection_root = device_path.join("mesh-collection");
     let mut metadata = HashMap::new();
 
-    for (i, entry) in entries.iter().enumerate() {
-        let path = entry.path();
-        if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
-            // Read metadata from the WAV file
-            if let Ok(meta) = read_metadata(path) {
+    if let Ok(db_service) = DatabaseService::new(&collection_root) {
+        use crate::db::{TrackQuery, CuePointQuery};
+
+        // Get all tracks from USB database
+        if let Ok(tracks) = TrackQuery::get_all(db_service.db()) {
+            let total = tracks.len();
+
+            for (i, track) in tracks.iter().enumerate() {
+                // Extract filename from path
+                let filename = std::path::Path::new(&track.path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("");
+
+                // Get cue point count for this track
+                let cue_count = CuePointQuery::get_for_track(db_service.db(), track.id)
+                    .map(|cues| cues.len() as u8)
+                    .unwrap_or(0);
+
                 let cached = CachedTrackMetadata {
-                    artist: meta.artist,
-                    bpm: meta.bpm,
-                    key: meta.key,
-                    duration_seconds: meta.duration_seconds,
-                    cue_count: meta.cue_points.len() as u8,
-                    lufs: meta.lufs,
+                    artist: track.artist.clone(),
+                    bpm: track.bpm,
+                    key: track.key.clone(),
+                    duration_seconds: Some(track.duration_seconds),
+                    cue_count,
+                    lufs: track.lufs,
                 };
                 metadata.insert(filename.to_string(), cached);
-            }
-        }
 
-        // Send progress every 10 tracks (avoid flooding messages)
-        if i % 10 == 0 || i == total - 1 {
-            let _ = tx.send(UsbMessage::MetadataPreloadProgress {
-                device_path: device_path.clone(),
-                loaded: i + 1,
-                total,
-            });
+                // Send progress every 10 tracks (avoid flooding messages)
+                if i % 10 == 0 || i == total - 1 {
+                    let _ = tx.send(UsbMessage::MetadataPreloadProgress {
+                        device_path: device_path.clone(),
+                        loaded: i + 1,
+                        total,
+                    });
+                }
+            }
+
+            log::info!(
+                "Preloaded metadata for {} tracks from USB database",
+                metadata.len()
+            );
+        } else {
+            log::warn!("Failed to read tracks from USB database");
         }
+    } else {
+        log::warn!("Failed to open USB database at {:?}, no metadata available", collection_root);
     }
 
     log::info!(

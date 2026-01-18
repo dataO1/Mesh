@@ -217,9 +217,9 @@ impl QueryService {
         // Query for BPM-compatible tracks
         let query = format!(r#"
             ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path] :=
+              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                 *tracks{{id, path, folder_path, name, artist, bpm, original_bpm, key,
-                        duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path}},
+                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}},
                 id != $current_id,
                 is_not_null(bpm),
                 bpm >= $bpm_min,
@@ -254,9 +254,10 @@ impl QueryService {
                     duration_seconds: row.get(8)?.get_float().unwrap_or(0.0),
                     lufs: row.get(9)?.get_float().map(|f| f as f32),
                     drop_marker: row.get(10)?.get_int(),
-                    file_mtime: row.get(11)?.get_int().unwrap_or(0),
-                    file_size: row.get(12)?.get_int().unwrap_or(0),
-                    waveform_path: row.get(13)?.get_str().map(|s| s.to_string()),
+                    first_beat_sample: row.get(11)?.get_int().unwrap_or(0),
+                    file_mtime: row.get(12)?.get_int().unwrap_or(0),
+                    file_size: row.get(13)?.get_int().unwrap_or(0),
+                    waveform_path: row.get(14)?.get_str().map(|s| s.to_string()),
                 };
 
                 let bpm_diff = (track.bpm.unwrap_or(current_bpm) - current_bpm).abs();

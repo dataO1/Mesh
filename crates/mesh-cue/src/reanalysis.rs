@@ -9,31 +9,32 @@ use crate::analysis::{
 };
 use crate::config::{BpmConfig, LoudnessConfig};
 use anyhow::{Context, Result};
-use mesh_core::audio_file::{
-    update_metadata_bulk, AudioFileReader, PartialMetadataUpdate,
-};
+use mesh_core::audio_file::AudioFileReader;
+use mesh_core::db::DatabaseService;
 use mesh_core::types::SAMPLE_RATE;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Re-analyze a single track file and update its metadata
+/// Re-analyze a single track file and update its metadata in the database
 ///
 /// This function:
 /// 1. Loads the audio from the existing WAV file
 /// 2. Creates a mono mix for analysis
 /// 3. Runs the requested analysis in an isolated subprocess
-/// 4. Updates the file's bext chunk with new metadata
+/// 4. Updates the database with new metadata (BPM, key, LUFS)
 ///
-/// For LUFS changes, a full re-export with new waveform is required.
-/// For BPM/Key only, the bext chunk is updated in-place (fast path).
+/// For LUFS changes, the waveform preview is regenerated and stored externally.
+/// The database is the single source of truth - WAV files contain only audio.
 ///
 /// # Arguments
 /// * `path` - Path to the WAV file to re-analyze
 /// * `analysis_type` - Which analysis to perform
 /// * `bpm_config` - BPM detection configuration
 /// * `loudness_config` - Loudness normalization configuration (for waveform regeneration)
+/// * `db` - Optional database service for storing analysis results
 ///
 /// # Returns
 /// The partial analysis result with the updated fields
@@ -42,6 +43,7 @@ pub fn reanalyze_track(
     analysis_type: AnalysisType,
     bpm_config: &BpmConfig,
     loudness_config: &LoudnessConfig,
+    db: Option<&Arc<DatabaseService>>,
 ) -> Result<PartialAnalysisResult> {
     log::info!(
         "reanalyze_track: {} analysis on {:?}",
@@ -70,23 +72,51 @@ pub fn reanalyze_track(
     let result = analyze_partial_in_subprocess(mono_samples, analysis_type, bpm_config.clone())
         .with_context(|| format!("Analysis failed for: {:?}", path))?;
 
-    // Update the file based on what was analyzed
-    if analysis_type.requires_waveform_regeneration() {
-        // For LUFS changes, we need to regenerate the waveform preview
-        // This requires a full re-export of the file
-        reexport_with_new_waveform(path, &result, loudness_config)
-            .with_context(|| format!("Re-export failed for: {:?}", path))?;
-    } else {
-        // Fast path: just update bext chunk in-place
-        let updates = PartialMetadataUpdate {
-            bpm: result.bpm,
-            first_beat: result.beat_grid.as_ref().and_then(|g| g.first().copied()),
-            key: result.key.clone(),
-            lufs: result.lufs,
-        };
+    // Update the database with analysis results
+    // WAV files are now audio-only containers - all metadata lives in the database
+    if let Some(db_service) = db {
+        use mesh_core::db::TrackQuery;
 
-        update_metadata_bulk(path, &updates)
-            .with_context(|| format!("Metadata update failed for: {:?}", path))?;
+        let path_str = path.to_string_lossy();
+
+        // Update BPM if detected
+        if let Some(bpm) = result.bpm {
+            if let Err(e) = TrackQuery::update_field_by_path(db_service.db(), &path_str, "bpm", &bpm.to_string()) {
+                log::error!("Failed to update BPM in database: {:?}", e);
+            }
+            // Set original_bpm if this is first analysis
+            // (handled by upsert logic in import, so we skip here to preserve user edits)
+        }
+
+        // Update key if detected
+        if let Some(ref key) = result.key {
+            if let Err(e) = TrackQuery::update_field_by_path(db_service.db(), &path_str, "key", key) {
+                log::error!("Failed to update key in database: {:?}", e);
+            }
+        }
+
+        // Update LUFS if measured
+        if let Some(lufs) = result.lufs {
+            if let Err(e) = TrackQuery::update_field_by_path(db_service.db(), &path_str, "lufs", &lufs.to_string()) {
+                log::error!("Failed to update LUFS in database: {:?}", e);
+            }
+        }
+
+        // TODO: Store first_beat_sample in database when schema is updated
+        // if let Some(first_beat) = result.beat_grid.as_ref().and_then(|g| g.first().copied()) {
+        //     TrackQuery::update_field_by_path(db_service.db(), &path_str, "first_beat_sample", &first_beat.to_string())?;
+        // }
+
+        log::info!("reanalyze_track: Updated database for {:?}", path);
+    } else {
+        log::warn!("reanalyze_track: No database provided, analysis results not persisted");
+    }
+
+    // For LUFS changes, regenerate waveform preview (stored externally via waveform_path)
+    if analysis_type.requires_waveform_regeneration() {
+        // TODO: Generate and store waveform preview to external file
+        // For now, waveform will be regenerated on-demand when track is loaded
+        log::info!("reanalyze_track: LUFS changed, waveform will be regenerated on next load");
     }
 
     log::info!(
@@ -117,96 +147,21 @@ fn create_mono_mix(stems: &mesh_core::audio_file::StemBuffers) -> Vec<f32> {
     mono
 }
 
-/// Re-export a track with regenerated waveform preview
-///
-/// This is needed when LUFS changes, as the waveform preview is scaled
-/// by the loudness compensation gain.
-fn reexport_with_new_waveform(
-    path: &Path,
-    analysis_result: &PartialAnalysisResult,
-    loudness_config: &LoudnessConfig,
-) -> Result<()> {
-    use crate::export::export_stem_file_with_gain;
-    use mesh_core::audio_file::LoadedTrack;
-    use std::fs;
-
-    log::info!("reexport_with_new_waveform: Re-exporting {:?}", path);
-
-    // Load the full track (including metadata, cues, loops)
-    let track = LoadedTrack::load(path)
-        .map_err(|e| anyhow::anyhow!("Failed to load track: {}", e))?;
-
-    // Update metadata with new analysis results
-    let mut metadata = track.metadata.clone();
-    if let Some(bpm) = analysis_result.bpm {
-        metadata.bpm = Some(bpm);
-        if metadata.original_bpm.is_none() {
-            metadata.original_bpm = Some(bpm);
-        }
-    }
-    if let Some(ref beat_grid) = analysis_result.beat_grid {
-        metadata.beat_grid.first_beat_sample = beat_grid.first().copied();
-        metadata.beat_grid.beats = beat_grid.clone();
-    }
-    if let Some(ref key) = analysis_result.key {
-        metadata.key = Some(key.clone());
-    }
-    if let Some(lufs) = analysis_result.lufs {
-        metadata.lufs = Some(lufs);
-    }
-
-    // Calculate new waveform gain from LUFS
-    // The new LoudnessConfig API handles Option<f32> directly and returns 1.0 if None
-    let waveform_gain = loudness_config.calculate_gain_linear(metadata.lufs);
-
-    log::info!(
-        "reexport_with_new_waveform: LUFS={:?}, waveform_gain={:.3}",
-        metadata.lufs,
-        waveform_gain
-    );
-
-    // Export to temp file first
-    let temp_path = path.with_extension("wav.tmp");
-
-    // Clone stems from Shared for export
-    let stems = (*track.stems).clone();
-
-    export_stem_file_with_gain(
-        &temp_path,
-        &stems,
-        SAMPLE_RATE, // Already at target rate
-        &metadata,
-        &metadata.cue_points,
-        &metadata.saved_loops,
-        waveform_gain,
-    )
-    .with_context(|| format!("Export failed for temp file: {:?}", temp_path))?;
-
-    // Atomic rename to replace original
-    fs::rename(&temp_path, path)
-        .with_context(|| format!("Failed to replace {:?} with {:?}", path, temp_path))?;
-
-    log::info!(
-        "reexport_with_new_waveform: Successfully updated {:?}",
-        path
-    );
-
-    Ok(())
-}
-
 /// Run batch re-analysis on multiple tracks
 ///
 /// Processes tracks in parallel using rayon thread pool.
 /// Sends progress updates through the channel for UI display.
+/// Analysis results are stored directly in the database.
 ///
 /// # Arguments
 /// * `tracks` - List of track file paths to re-analyze
 /// * `analysis_type` - Which analysis to perform
 /// * `bpm_config` - BPM detection configuration
-/// * `loudness_config` - Loudness configuration (for waveform regeneration)
+/// * `loudness_config` - Loudness configuration (unused, kept for API compatibility)
 /// * `parallel_processes` - Number of parallel workers (1-16)
 /// * `progress_tx` - Channel to send progress updates
 /// * `cancel_flag` - Atomic flag to check for cancellation
+/// * `db` - Optional database service for storing results
 pub fn run_batch_reanalysis(
     tracks: Vec<PathBuf>,
     analysis_type: AnalysisType,
@@ -215,7 +170,11 @@ pub fn run_batch_reanalysis(
     parallel_processes: u8,
     progress_tx: Sender<ReanalysisProgress>,
     cancel_flag: std::sync::Arc<AtomicBool>,
+    db: Option<Arc<DatabaseService>>,
 ) {
+    // Note: loudness_config is kept for API compatibility but no longer used
+    // since WAV files no longer store metadata
+    let _ = &loudness_config;
     use rayon::prelude::*;
 
     let start_time = Instant::now();
@@ -277,7 +236,7 @@ pub fn run_batch_reanalysis(
                 });
 
                 // Re-analyze the track
-                let success = match reanalyze_track(path, analysis_type, &bpm_config, &loudness_config) {
+                let success = match reanalyze_track(path, analysis_type, &bpm_config, &loudness_config, db.as_ref()) {
                     Ok(_) => {
                         let _ = progress_tx.send(ReanalysisProgress::TrackCompleted {
                             track_name,

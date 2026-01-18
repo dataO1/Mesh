@@ -45,6 +45,8 @@ pub use super::state::{AppMode, LinkedStemLoadedMsg, StemLinkState, TrackLoadedM
 
 /// Application state
 pub struct MeshApp {
+    /// Database service for track metadata (required)
+    db_service: Arc<DatabaseService>,
     /// Command sender for lock-free communication with audio engine
     /// Uses an SPSC ringbuffer - no mutex, no dropouts, guaranteed delivery
     command_sender: Option<CommandSender>,
@@ -110,6 +112,7 @@ impl MeshApp {
     ///
     /// ## Parameters
     ///
+    /// - `db_service`: Database service for track metadata (required)
     /// - `command_sender`: Lock-free command channel for engine control (None for offline mode)
     /// - `deck_atomics`: Lock-free position/state for UI reads (None for offline mode)
     /// - `slicer_atomics`: Lock-free slicer state for UI reads (None for offline mode)
@@ -117,6 +120,7 @@ impl MeshApp {
     /// - `linked_stem_receiver`: Receiver for linked stem load results (engine owns the loader)
     /// - `jack_sample_rate`: JACK's sample rate for track loading (e.g., 48000 or 44100)
     pub fn new(
+        db_service: Arc<DatabaseService>,
         mut command_sender: Option<CommandSender>,
         deck_atomics: Option<[Arc<DeckAtomics>; NUM_DECKS]>,
         slicer_atomics: Option<[Arc<SlicerAtomics>; NUM_DECKS]>,
@@ -179,29 +183,13 @@ impl MeshApp {
             }
         };
 
-        // Initialize shared database service (singleton for the application)
-        let db_service = if config.display.show_local_collection {
-            match DatabaseService::new(&config.collection_path) {
-                Ok(service) => {
-                    log::info!("Database service initialized at {:?}", config.collection_path);
-                    Some(service)
-                }
-                Err(e) => {
-                    log::warn!("Failed to initialize database service: {}", e);
-                    None
-                }
-            }
-        } else {
-            log::info!("USB-only mode: skipping database initialization");
-            None
-        };
-
         Self {
+            db_service: db_service.clone(),
             command_sender,
             deck_atomics,
             slicer_atomics,
             linked_stem_atomics,
-            track_loader: TrackLoader::spawn(jack_sample_rate),
+            track_loader: TrackLoader::spawn(jack_sample_rate, db_service.clone()),
             peaks_computer: PeaksComputer::spawn(),
             player_canvas_state: {
                 let mut state = PlayerCanvasState::new();
@@ -242,7 +230,7 @@ impl MeshApp {
             stem_link_state: StemLinkState::Idle,
             linked_stem_receiver,
             // Pass shared database service to USB manager for sync operations
-            usb_manager: mesh_core::usb::UsbManager::spawn(db_service),
+            usb_manager: mesh_core::usb::UsbManager::spawn(Some(db_service)),
         }
     }
 
@@ -2079,14 +2067,7 @@ impl MeshApp {
     }
 }
 
-impl Default for MeshApp {
-    fn default() -> Self {
-        // Default to 48kHz when no JACK rate is available (matches SAMPLE_RATE constant)
-        // Default to performance mode (no linked_stem_receiver in offline mode)
-        // Note: USB manager is spawned by new(), not created separately
-        Self::new(None, None, None, None, None, 48000, false)
-    }
-}
+// Note: MeshApp no longer implements Default as it requires a DatabaseService
 
 /// Convert a raw MidiInputEvent to CapturedMidiEvent for learn mode
 fn convert_midi_event_to_captured(event: &MidiInputEvent) -> super::midi_learn::CapturedMidiEvent {

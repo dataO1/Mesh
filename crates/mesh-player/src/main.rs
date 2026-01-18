@@ -14,9 +14,12 @@ mod config;
 mod loader;
 mod ui;
 
+use std::sync::Arc;
+
 use iced::{Size, Task};
 
 use audio::{start_jack_client, auto_connect_ports};
+use mesh_core::db::DatabaseService;
 use ui::{MeshApp, app::Message, midi_learn::MidiLearnMessage, theme};
 
 const CLIENT_NAME: &str = "mesh-player";
@@ -54,31 +57,41 @@ fn main() -> iced::Result {
     println!("╚══════════════════════════════════════════════════════════════╝");
     println!();
 
+    // Load config to get collection path for database service
+    let config_path = config::default_config_path();
+    let config: config::PlayerConfig = config::load_config(&config_path);
+
+    // Create database service (required for track metadata loading)
+    let db_service = DatabaseService::new(&config.collection_path)
+        .expect("Failed to create database service - this is required for mesh-player");
+    log::info!("Database service initialized at {:?}", config.collection_path);
+
     // Try to start JACK client
     // Returns CommandSender (lock-free queue), DeckAtomics, SlicerAtomics, LinkedStemAtomics,
     // LinkedStemResultReceiver, and sample rate
-    let (jack_handle, command_sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, jack_sample_rate) = match start_jack_client(CLIENT_NAME) {
-        Ok((handle, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, sample_rate)) => {
-            println!("JACK client started successfully (lock-free command queue, {} Hz)", sample_rate);
+    let (jack_handle, command_sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, jack_sample_rate) =
+        match start_jack_client(CLIENT_NAME, db_service.clone()) {
+            Ok((handle, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, sample_rate)) => {
+                println!("JACK client started successfully (lock-free command queue, {} Hz)", sample_rate);
 
-            // Try to auto-connect to system outputs
-            if let Err(e) = auto_connect_ports(CLIENT_NAME) {
-                eprintln!("Warning: Could not auto-connect ports: {}", e);
+                // Try to auto-connect to system outputs
+                if let Err(e) = auto_connect_ports(CLIENT_NAME) {
+                    eprintln!("Warning: Could not auto-connect ports: {}", e);
+                }
+
+                (Some(handle), Some(sender), Some(deck_atomics), Some(slicer_atomics), Some(linked_stem_atomics), Some(linked_stem_receiver), sample_rate)
             }
-
-            (Some(handle), Some(sender), Some(deck_atomics), Some(slicer_atomics), Some(linked_stem_atomics), Some(linked_stem_receiver), sample_rate)
-        }
-        Err(e) => {
-            eprintln!("Warning: Could not start JACK client: {}", e);
-            eprintln!("Running in UI-only mode (no audio output)");
-            eprintln!();
-            eprintln!("To enable audio, make sure JACK server is running:");
-            eprintln!("  jackd -d alsa -r 44100");
-            eprintln!("or use QjackCtl/Cadence to start it.");
-            // Default to 48000 Hz when JACK is not available (matches SAMPLE_RATE constant)
-            (None, None, None, None, None, None, 48000)
-        }
-    };
+            Err(e) => {
+                eprintln!("Warning: Could not start JACK client: {}", e);
+                eprintln!("Running in UI-only mode (no audio output)");
+                eprintln!();
+                eprintln!("To enable audio, make sure JACK server is running:");
+                eprintln!("  jackd -d alsa -r 44100");
+                eprintln!("or use QjackCtl/Cadence to start it.");
+                // Default to 48000 Hz when JACK is not available (matches SAMPLE_RATE constant)
+                (None, None, None, None, None, None, 48000)
+            }
+        };
 
     println!();
     println!("Starting Mesh DJ Player GUI...");
@@ -88,6 +101,7 @@ fn main() -> iced::Result {
 
     // Wrap resources in cells so the boot closure can be Fn (required by iced)
     // The boot function is only called once, but iced requires Fn for API consistency
+    let db_service_cell = std::cell::RefCell::new(Some(db_service));
     let command_sender_cell = std::cell::RefCell::new(command_sender);
     let deck_atomics_cell = std::cell::RefCell::new(deck_atomics);
     let slicer_atomics_cell = std::cell::RefCell::new(slicer_atomics);
@@ -99,13 +113,14 @@ fn main() -> iced::Result {
         move || {
             // Boot function: creates initial state with lock-free command channel
             // Take ownership from the cells (only called once)
+            let db_service = db_service_cell.borrow_mut().take().expect("db_service already taken");
             let sender = command_sender_cell.borrow_mut().take();
             let deck_atomics = deck_atomics_cell.borrow_mut().take();
             let slicer_atomics = slicer_atomics_cell.borrow_mut().take();
             let linked_stem_atomics = linked_stem_atomics_cell.borrow_mut().take();
             let linked_stem_receiver = linked_stem_receiver_cell.borrow_mut().take();
             // mapping_mode = true shows full UI with controls, false = performance mode
-            let app = MeshApp::new(sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, jack_sample_rate, start_midi_learn);
+            let app = MeshApp::new(db_service, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, jack_sample_rate, start_midi_learn);
 
             // If --midi-learn flag was passed, start MIDI learn mode (opens the drawer)
             let startup_task = if start_midi_learn {

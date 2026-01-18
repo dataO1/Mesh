@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use jack::{AudioOut, Client, ClientOptions, Control, Port, ProcessScope};
 use mesh_core::audio_file::LoadedTrack;
+use mesh_core::db::DatabaseService;
 use mesh_core::engine::{
     command_channel, AudioEngine, DeckAtomics, EngineCommand, LinkedStemAtomics, PreparedTrack,
     SlicerAtomics,
@@ -565,7 +566,10 @@ impl AudioState {
 /// Start the JACK audio client for mesh-cue
 ///
 /// Returns AudioState for UI interaction and JackHandle to keep client alive.
-pub fn start_jack_client() -> Result<(AudioState, JackHandle), JackError> {
+///
+/// # Arguments
+/// * `db_service` - Database service for loading track metadata in background loaders
+pub fn start_jack_client(db_service: Arc<DatabaseService>) -> Result<(AudioState, JackHandle), JackError> {
     let (client, _status) = Client::new("mesh-cue", ClientOptions::NO_START_SERVER)
         .map_err(|e| JackError::ClientCreation(e.to_string()))?;
 
@@ -587,7 +591,7 @@ pub fn start_jack_client() -> Result<(AudioState, JackHandle), JackError> {
         .map_err(|e| JackError::PortRegistration(e.to_string()))?;
 
     // Create engine and extract atomics before moving to processor
-    let engine = AudioEngine::new_with_sample_rate(sample_rate);
+    let engine = AudioEngine::new_with_sample_rate(sample_rate, db_service);
     let deck_atomics = engine.deck_atomics()[PREVIEW_DECK].clone();
     // Get slicer atomics for all 4 stems on preview deck
     let slicer_atomics = engine.slicer_atomics_for_deck(PREVIEW_DECK);

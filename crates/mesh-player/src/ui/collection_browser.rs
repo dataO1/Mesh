@@ -27,8 +27,8 @@ use std::sync::Arc;
 pub struct CollectionBrowserState {
     /// Path to local collection (stored for runtime loading/unloading)
     collection_path: PathBuf,
-    /// Shared database service (passed from App)
-    db_service: Option<Arc<DatabaseService>>,
+    /// Shared database service (required, passed from App)
+    db_service: Arc<DatabaseService>,
     /// Local playlist storage backend using CozoDB
     pub storage: Option<Box<DatabaseStorage>>,
     /// Browser widget state (single browser, not dual)
@@ -72,20 +72,18 @@ impl CollectionBrowserState {
     ///                  When false (USB-only mode), local collection is hidden.
     pub fn new(
         collection_path: PathBuf,
-        db_service: Option<Arc<DatabaseService>>,
+        db_service: Arc<DatabaseService>,
         show_local: bool,
     ) -> Self {
         // Create storage from shared database service only if show_local is enabled
         let storage = if show_local {
-            db_service.as_ref().and_then(|service| {
-                match DatabaseStorage::new(service.clone()) {
-                    Ok(s) => Some(Box::new(s)),
-                    Err(e) => {
-                        log::warn!("Failed to initialize collection storage: {}", e);
-                        None
-                    }
+            match DatabaseStorage::new(db_service.clone()) {
+                Ok(s) => Some(Box::new(s)),
+                Err(e) => {
+                    log::warn!("Failed to initialize collection storage: {}", e);
+                    None
                 }
-            })
+            }
         } else {
             log::info!("USB-only mode: local collection hidden");
             None
@@ -152,19 +150,15 @@ impl CollectionBrowserState {
         if show {
             // Load local storage if not already loaded (uses shared db_service)
             if self.storage.is_none() {
-                if let Some(ref service) = self.db_service {
-                    log::info!("Loading local collection from shared database service");
-                    match DatabaseStorage::new(service.clone()) {
-                        Ok(s) => {
-                            self.storage = Some(Box::new(s));
-                            log::info!("Local collection loaded successfully");
-                        }
-                        Err(e) => {
-                            log::warn!("Failed to load local collection: {}", e);
-                        }
+                log::info!("Loading local collection from shared database service");
+                match DatabaseStorage::new(self.db_service.clone()) {
+                    Ok(s) => {
+                        self.storage = Some(Box::new(s));
+                        log::info!("Local collection loaded successfully");
                     }
-                } else {
-                    log::warn!("Cannot load local collection: no database service available");
+                    Err(e) => {
+                        log::warn!("Failed to load local collection: {}", e);
+                    }
                 }
             }
         } else {

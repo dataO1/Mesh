@@ -17,13 +17,155 @@
 //! let tracks = service.get_tracks_in_folder("tracks")?;
 //! ```
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 
-use super::schema::{Track, Playlist, AudioFeatures};
-use super::queries::{TrackQuery, PlaylistQuery, SimilarityQuery};
-use super::migration::{NewTrackData, insert_analyzed_track};
+use cozo::DataValue;
+
+use super::schema::{Track, Playlist, AudioFeatures, CuePoint, SavedLoop, StemLink};
+use super::queries::{TrackQuery, PlaylistQuery, SimilarityQuery, CuePointQuery, SavedLoopQuery, StemLinkQuery};
 use super::{MeshDb, DbError};
+
+// ============================================================================
+// Track Insertion Types
+// ============================================================================
+
+/// Parameters for inserting a newly analyzed track into the database.
+///
+/// This is used during import to store analysis results directly in the database.
+#[derive(Debug, Clone)]
+pub struct NewTrackData {
+    /// Full path to the track file
+    pub path: PathBuf,
+    /// Track display name
+    pub name: String,
+    /// Artist name (if extracted from filename)
+    pub artist: Option<String>,
+    /// Detected BPM
+    pub bpm: Option<f64>,
+    /// Original BPM before rounding
+    pub original_bpm: Option<f64>,
+    /// Musical key
+    pub key: Option<String>,
+    /// Duration in seconds
+    pub duration_seconds: f64,
+    /// Integrated LUFS loudness
+    pub lufs: Option<f32>,
+    /// First beat sample position (for beatgrid regeneration)
+    /// Required - beatgrid is essential for beat matching
+    pub first_beat_sample: i64,
+}
+
+/// Generate a unique track ID from the file path
+///
+/// Uses a hash of the path to ensure consistency across sessions.
+fn generate_track_id(path: &Path) -> i64 {
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    // Mask to positive i64 to avoid issues with CozoDB
+    (hasher.finish() as i64).abs()
+}
+
+/// Extract folder path from full track path relative to collection root
+fn extract_folder_path(path: &Path, collection_root: &Path) -> String {
+    if let Ok(relative) = path.strip_prefix(collection_root) {
+        if let Some(parent) = relative.parent() {
+            return parent.to_string_lossy().to_string();
+        }
+    }
+    String::new()
+}
+
+/// Insert a newly analyzed track into the database.
+///
+/// This is called during the import process after audio analysis completes,
+/// allowing the database to be populated immediately.
+fn insert_analyzed_track(
+    db: &MeshDb,
+    collection_root: &Path,
+    track_data: &NewTrackData,
+) -> Result<i64, DbError> {
+    let track_id = generate_track_id(&track_data.path);
+    let folder_path = extract_folder_path(&track_data.path, collection_root);
+
+    // Get file metadata
+    let file_meta = std::fs::metadata(&track_data.path)
+        .map_err(|e| DbError::Migration(format!("Failed to read file metadata: {}", e)))?;
+
+    let file_size = file_meta.len() as i64;
+    let file_mtime = file_meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    // Insert the track
+    log::debug!(
+        "insert_analyzed_track: inserting track_id={} name='{}' folder_path='{}' path='{}'",
+        track_id, track_data.name, folder_path, track_data.path.display()
+    );
+
+    let mut params = std::collections::BTreeMap::new();
+    params.insert("id".to_string(), DataValue::from(track_id));
+    params.insert("path".to_string(), DataValue::from(track_data.path.to_string_lossy().to_string()));
+    params.insert("folder_path".to_string(), DataValue::from(folder_path.clone()));
+    params.insert("name".to_string(), DataValue::from(track_data.name.clone()));
+    params.insert("artist".to_string(), track_data.artist.clone().map(DataValue::from).unwrap_or(DataValue::Null));
+    params.insert("bpm".to_string(), track_data.bpm.map(DataValue::from).unwrap_or(DataValue::Null));
+    params.insert("original_bpm".to_string(), track_data.original_bpm.map(DataValue::from).unwrap_or(DataValue::Null));
+    params.insert("key".to_string(), track_data.key.clone().map(DataValue::from).unwrap_or(DataValue::Null));
+    params.insert("duration_seconds".to_string(), DataValue::from(track_data.duration_seconds));
+    params.insert("lufs".to_string(), track_data.lufs.map(|l| DataValue::from(l as f64)).unwrap_or(DataValue::Null));
+    params.insert("drop_marker".to_string(), DataValue::Null);
+    params.insert("first_beat_sample".to_string(), DataValue::from(track_data.first_beat_sample));
+    params.insert("file_mtime".to_string(), DataValue::from(file_mtime));
+    params.insert("file_size".to_string(), DataValue::from(file_size));
+    params.insert("waveform_path".to_string(), DataValue::Null);
+
+    let result = db.run_script(
+        r#"
+        ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
+          duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] <- [[
+            $id, $path, $folder_path, $name, $artist, $bpm, $original_bpm, $key,
+            $duration_seconds, $lufs, $drop_marker, $first_beat_sample, $file_mtime, $file_size, $waveform_path
+        ]]
+        :put tracks {
+            id =>
+            path, folder_path, name, artist, bpm, original_bpm, key,
+            duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path
+        }
+        "#,
+        params,
+    );
+
+    match &result {
+        Ok(_) => log::info!("insert_analyzed_track: SUCCESS track_id={} folder_path='{}'", track_id, folder_path),
+        Err(e) => log::error!("insert_analyzed_track: FAILED track_id={} error={}", track_id, e),
+    }
+
+    result?;
+    Ok(track_id)
+}
+
+/// Full track metadata loaded from database
+///
+/// This struct contains all metadata needed to display and play a track,
+/// loaded from the database tables (tracks, cue_points, saved_loops, stem_links).
+#[derive(Debug, Clone)]
+pub struct LoadedTrackMetadata {
+    /// The track record from the tracks table
+    pub track: Track,
+    /// Cue points for this track
+    pub cue_points: Vec<CuePoint>,
+    /// Saved loops for this track
+    pub saved_loops: Vec<SavedLoop>,
+    /// Stem links for this track (prepared mode)
+    pub stem_links: Vec<StemLink>,
+}
 
 /// Thread-safe database service for mesh applications
 ///
@@ -77,8 +219,14 @@ impl DatabaseService {
     ///
     /// Returns the generated track ID.
     pub fn add_track(&self, track_data: &NewTrackData) -> Result<i64, DbError> {
+        log::info!(
+            "DatabaseService::add_track: name='{}' path='{}' collection_root='{}'",
+            track_data.name,
+            track_data.path.display(),
+            self.collection_root.display()
+        );
         let track_id = insert_analyzed_track(&self.db, &self.collection_root, track_data)?;
-        log::debug!("Added track to database: id={}, name={}", track_id, track_data.name);
+        log::info!("DatabaseService::add_track: SUCCESS id={}, name={}", track_id, track_data.name);
         Ok(track_id)
     }
 
@@ -120,6 +268,64 @@ impl DatabaseService {
     /// Delete a track from the database
     pub fn delete_track(&self, track_id: i64) -> Result<(), DbError> {
         TrackQuery::delete(&self.db, track_id)
+    }
+
+    /// Load full track metadata by file path
+    ///
+    /// This loads the track record along with all associated cue points,
+    /// saved loops, and stem links. Returns None if the track is not found.
+    pub fn load_track_metadata_by_path(&self, path: &str) -> Result<Option<LoadedTrackMetadata>, DbError> {
+        // First, find the track by path
+        let track = match TrackQuery::get_by_path(&self.db, path)? {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+
+        self.load_track_metadata_by_id(track.id).map(|opt| opt.or(Some(LoadedTrackMetadata {
+            track,
+            cue_points: Vec::new(),
+            saved_loops: Vec::new(),
+            stem_links: Vec::new(),
+        })))
+    }
+
+    /// Load full track metadata by track ID
+    ///
+    /// This loads the track record along with all associated cue points,
+    /// saved loops, and stem links. Returns None if the track is not found.
+    pub fn load_track_metadata_by_id(&self, track_id: i64) -> Result<Option<LoadedTrackMetadata>, DbError> {
+        // Get the track
+        let track = match TrackQuery::get_by_id(&self.db, track_id)? {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+
+        // Load associated data
+        let cue_points = CuePointQuery::get_for_track(&self.db, track_id)?;
+        let saved_loops = SavedLoopQuery::get_for_track(&self.db, track_id)?;
+        let stem_links = StemLinkQuery::get_for_track(&self.db, track_id)?;
+
+        Ok(Some(LoadedTrackMetadata {
+            track,
+            cue_points,
+            saved_loops,
+            stem_links,
+        }))
+    }
+
+    /// Get cue points for a track
+    pub fn get_cue_points(&self, track_id: i64) -> Result<Vec<CuePoint>, DbError> {
+        CuePointQuery::get_for_track(&self.db, track_id)
+    }
+
+    /// Get saved loops for a track
+    pub fn get_saved_loops(&self, track_id: i64) -> Result<Vec<SavedLoop>, DbError> {
+        SavedLoopQuery::get_for_track(&self.db, track_id)
+    }
+
+    /// Get stem links for a track
+    pub fn get_stem_links(&self, track_id: i64) -> Result<Vec<StemLink>, DbError> {
+        StemLinkQuery::get_for_track(&self.db, track_id)
     }
 
     // ========================================================================
@@ -235,6 +441,7 @@ mod tests {
             key: Some("Am".to_string()),
             duration_seconds: 180.0,
             lufs: Some(-14.0),
+            first_beat_sample: 0,
         };
 
         let track_id = service.add_track(&track_data).unwrap();
@@ -276,6 +483,7 @@ mod tests {
                         key: None,
                         duration_seconds: 180.0,
                         lufs: None,
+                        first_beat_sample: 0,
                     };
 
                     service.add_track(&track_data).unwrap()

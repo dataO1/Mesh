@@ -21,6 +21,7 @@ use std::thread::{self, JoinHandle};
 use basedrop::Shared;
 
 use crate::audio_file::{LoadedTrack, StemLinkReference};
+use crate::db::DatabaseService;
 use crate::engine::{gc::gc_handle, LinkedStemData, StemLink};
 use crate::types::{Stem, StereoBuffer};
 
@@ -124,7 +125,7 @@ impl LinkedStemLoader {
     /// Create a new linked stem loader
     ///
     /// Spawns a background thread that processes load requests using rayon.
-    pub fn new(sample_rate: u32) -> Self {
+    pub fn new(sample_rate: u32, db_service: Arc<DatabaseService>) -> Self {
         let (request_tx, request_rx) = mpsc::channel::<LinkedStemLoadRequest>();
         let (result_tx, result_rx) = mpsc::channel::<LinkedStemLoadResult>();
 
@@ -134,7 +135,7 @@ impl LinkedStemLoader {
         let handle = thread::Builder::new()
             .name("linked-stem-loader".to_string())
             .spawn(move || {
-                loader_thread(request_rx, result_tx, rate_clone);
+                loader_thread(request_rx, result_tx, rate_clone, db_service);
             })
             .expect("Failed to spawn linked stem loader thread");
 
@@ -228,6 +229,7 @@ fn loader_thread(
     rx: Receiver<LinkedStemLoadRequest>,
     tx: Sender<LinkedStemLoadResult>,
     sample_rate: Arc<AtomicU32>,
+    db_service: Arc<DatabaseService>,
 ) {
     log::info!("Linked stem loader thread started");
 
@@ -235,16 +237,17 @@ fn loader_thread(
         // Spawn to rayon thread pool for parallel processing
         let tx_clone = tx.clone();
         let rate = sample_rate.load(Ordering::SeqCst);
+        let db = db_service.clone();
 
         rayon::spawn(move || {
-            handle_linked_stem_load(request, tx_clone, rate);
+            handle_linked_stem_load(request, tx_clone, rate, &db);
         });
     }
 
     log::info!("Linked stem loader thread exiting");
 }
 
-fn handle_linked_stem_load(request: LinkedStemLoadRequest, tx: Sender<LinkedStemLoadResult>, sample_rate: u32) {
+fn handle_linked_stem_load(request: LinkedStemLoadRequest, tx: Sender<LinkedStemLoadResult>, sample_rate: u32, db_service: &DatabaseService) {
     log::info!(
         "[PERF] LinkedStemLoader: Loading stem {} for deck {} from {:?}",
         request.stem_idx,
@@ -254,8 +257,8 @@ fn handle_linked_stem_load(request: LinkedStemLoadRequest, tx: Sender<LinkedStem
 
     let total_start = std::time::Instant::now();
 
-    // Load the source track
-    let load_result = LoadedTrack::load_to(&request.source_path, sample_rate);
+    // Load the source track (metadata from database)
+    let load_result = LoadedTrack::load_to(&request.source_path, db_service, sample_rate);
 
     match load_result {
         Ok(source_track) => {

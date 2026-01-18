@@ -2,9 +2,12 @@
 //!
 //! This module provides typed query APIs that generate CozoScript internally.
 
-use super::{MeshDb, DbError, Track, Playlist, AudioFeatures};
+use super::{MeshDb, DbError, Track, Playlist, AudioFeatures, CuePoint, SavedLoop, StemLink};
 use cozo::{DataValue, NamedRows};
 use std::collections::BTreeMap;
+
+/// Column list for track queries (must match schema order for first_beat_sample)
+const TRACK_COLUMNS: &str = "id, path, folder_path, name, artist, bpm, original_bpm, key, duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path";
 
 // ============================================================================
 // Track Queries
@@ -16,19 +19,23 @@ pub struct TrackQuery;
 impl TrackQuery {
     /// Get all tracks in a folder
     pub fn get_by_folder(db: &MeshDb, folder_path: &str) -> Result<Vec<Track>, DbError> {
+        log::debug!("TrackQuery::get_by_folder: querying folder_path='{}'", folder_path);
+
         let mut params = BTreeMap::new();
         params.insert("folder".to_string(), DataValue::Str(folder_path.into()));
 
         let result = db.run_query(r#"
             ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path] :=
+              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                 *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
-                        duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path},
+                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                 folder_path = $folder
             :order name
         "#, params)?;
 
-        Ok(rows_to_tracks(&result))
+        let tracks = rows_to_tracks(&result);
+        log::debug!("TrackQuery::get_by_folder: found {} tracks for folder_path='{}'", tracks.len(), folder_path);
+        Ok(tracks)
     }
 
     /// Get a track by ID
@@ -38,9 +45,9 @@ impl TrackQuery {
 
         let result = db.run_query(r#"
             ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path] :=
+              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                 *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
-                        duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path},
+                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                 id = $id
         "#, params)?;
 
@@ -54,13 +61,26 @@ impl TrackQuery {
 
         let result = db.run_query(r#"
             ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path] :=
+              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                 *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
-                        duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path},
+                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                 path = $path
         "#, params)?;
 
         Ok(rows_to_tracks(&result).into_iter().next())
+    }
+
+    /// Get all tracks in the database
+    pub fn get_all(db: &MeshDb) -> Result<Vec<Track>, DbError> {
+        let result = db.run_query(r#"
+            ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
+              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
+                *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
+                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+            :order name
+        "#, BTreeMap::new())?;
+
+        Ok(rows_to_tracks(&result))
     }
 
     /// Search tracks by name or artist
@@ -72,9 +92,9 @@ impl TrackQuery {
 
         let result = db.run_query(r#"
             ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path] :=
+              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                 *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
-                        duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path},
+                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                 (lowercase(name) ~ $query or
                  (is_not_null(artist) and lowercase(artist) ~ $query))
             :limit $limit
@@ -98,18 +118,19 @@ impl TrackQuery {
         params.insert("duration_seconds".to_string(), DataValue::from(track.duration_seconds));
         params.insert("lufs".to_string(), track.lufs.map(|v| DataValue::from(v as f64)).unwrap_or(DataValue::Null));
         params.insert("drop_marker".to_string(), track.drop_marker.map(DataValue::from).unwrap_or(DataValue::Null));
+        params.insert("first_beat_sample".to_string(), DataValue::from(track.first_beat_sample));
         params.insert("file_mtime".to_string(), DataValue::from(track.file_mtime));
         params.insert("file_size".to_string(), DataValue::from(track.file_size));
         params.insert("waveform_path".to_string(), track.waveform_path.as_ref().map(|s| DataValue::Str(s.clone().into())).unwrap_or(DataValue::Null));
 
         db.run_script(r#"
             ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path] <- [[
+              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] <- [[
                 $id, $path, $folder_path, $name, $artist, $bpm, $original_bpm, $key,
-                $duration_seconds, $lufs, $drop_marker, $file_mtime, $file_size, $waveform_path
+                $duration_seconds, $lufs, $drop_marker, $first_beat_sample, $file_mtime, $file_size, $waveform_path
             ]]
             :put tracks {id => path, folder_path, name, artist, bpm, original_bpm, key,
-                         duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path}
+                         duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
         "#, params)?;
 
         Ok(())
@@ -130,7 +151,7 @@ impl TrackQuery {
 
     /// Update a single field of a track by ID
     ///
-    /// Supported fields: artist, bpm, original_bpm, key, lufs, drop_marker
+    /// Supported fields: artist, bpm, original_bpm, key, lufs, drop_marker, first_beat_sample
     /// For string fields, pass the string value directly.
     /// For numeric fields, parse to the appropriate type first.
     pub fn update_field(db: &MeshDb, track_id: i64, field: &str, value: &str) -> Result<(), DbError> {
@@ -144,13 +165,13 @@ impl TrackQuery {
                 params.insert("value".to_string(), val);
                 r#"
                     ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-                      duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path] :=
+                      duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                         *tracks{id, path, folder_path, name, bpm, original_bpm, key,
-                                duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path},
+                                duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                         id = $id,
                         artist = $value
                     :put tracks {id => path, folder_path, name, artist, bpm, original_bpm, key,
-                                 duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path}
+                                 duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
                 "#
             }
             "bpm" => {
@@ -158,13 +179,13 @@ impl TrackQuery {
                 params.insert("value".to_string(), DataValue::from(val));
                 r#"
                     ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-                      duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path] :=
+                      duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                         *tracks{id, path, folder_path, name, artist, original_bpm, key,
-                                duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path},
+                                duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                         id = $id,
                         bpm = $value
                     :put tracks {id => path, folder_path, name, artist, bpm, original_bpm, key,
-                                 duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path}
+                                 duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
                 "#
             }
             "original_bpm" => {
@@ -172,13 +193,13 @@ impl TrackQuery {
                 params.insert("value".to_string(), DataValue::from(val));
                 r#"
                     ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-                      duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path] :=
+                      duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                         *tracks{id, path, folder_path, name, artist, bpm, key,
-                                duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path},
+                                duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                         id = $id,
                         original_bpm = $value
                     :put tracks {id => path, folder_path, name, artist, bpm, original_bpm, key,
-                                 duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path}
+                                 duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
                 "#
             }
             "key" => {
@@ -186,13 +207,13 @@ impl TrackQuery {
                 params.insert("value".to_string(), val);
                 r#"
                     ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-                      duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path] :=
+                      duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                         *tracks{id, path, folder_path, name, artist, bpm, original_bpm,
-                                duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path},
+                                duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                         id = $id,
                         key = $value
                     :put tracks {id => path, folder_path, name, artist, bpm, original_bpm, key,
-                                 duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path}
+                                 duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
                 "#
             }
             "lufs" => {
@@ -200,13 +221,41 @@ impl TrackQuery {
                 params.insert("value".to_string(), DataValue::from(val));
                 r#"
                     ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-                      duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path] :=
+                      duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                         *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
-                                duration_seconds, drop_marker, file_mtime, file_size, waveform_path},
+                                duration_seconds, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                         id = $id,
                         lufs = $value
                     :put tracks {id => path, folder_path, name, artist, bpm, original_bpm, key,
-                                 duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path}
+                                 duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+                "#
+            }
+            "drop_marker" => {
+                let val: i64 = value.parse().map_err(|_| DbError::Query(format!("Invalid drop_marker value: {}", value)))?;
+                params.insert("value".to_string(), DataValue::from(val));
+                r#"
+                    ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
+                      duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
+                        *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
+                                duration_seconds, lufs, first_beat_sample, file_mtime, file_size, waveform_path},
+                        id = $id,
+                        drop_marker = $value
+                    :put tracks {id => path, folder_path, name, artist, bpm, original_bpm, key,
+                                 duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+                "#
+            }
+            "first_beat_sample" => {
+                let val: i64 = value.parse().map_err(|_| DbError::Query(format!("Invalid first_beat_sample value: {}", value)))?;
+                params.insert("value".to_string(), DataValue::from(val));
+                r#"
+                    ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
+                      duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
+                        *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
+                                duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path},
+                        id = $id,
+                        first_beat_sample = $value
+                    :put tracks {id => path, folder_path, name, artist, bpm, original_bpm, key,
+                                 duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
                 "#
             }
             _ => {
@@ -229,26 +278,36 @@ impl TrackQuery {
 
     /// Get all unique folder paths
     pub fn get_folders(db: &MeshDb) -> Result<Vec<String>, DbError> {
+        log::debug!("TrackQuery::get_folders: querying all folders");
+
         let result = db.run_query(r#"
             ?[folder_path] := *tracks{folder_path}
             :order folder_path
         "#, BTreeMap::new())?;
 
-        Ok(result.rows.into_iter()
+        let folders: Vec<String> = result.rows.into_iter()
             .filter_map(|row| row.first().and_then(|v| v.get_str().map(|s| s.to_string())))
-            .collect())
+            .collect();
+
+        log::debug!("TrackQuery::get_folders: found {} folders: {:?}", folders.len(), folders);
+        Ok(folders)
     }
 
     /// Count tracks in the database
     pub fn count(db: &MeshDb) -> Result<usize, DbError> {
+        log::debug!("TrackQuery::count: counting all tracks");
+
         let result = db.run_query(r#"
             ?[count(id)] := *tracks{id}
         "#, BTreeMap::new())?;
 
-        Ok(result.rows.first()
+        let count = result.rows.first()
             .and_then(|row| row.first())
             .and_then(|v| v.get_int())
-            .unwrap_or(0) as usize)
+            .unwrap_or(0) as usize;
+
+        log::info!("TrackQuery::count: total tracks = {}", count);
+        Ok(count)
     }
 }
 
@@ -305,10 +364,10 @@ impl PlaylistQuery {
         // Note: sort_order must be in output columns to use :order in CozoDB
         let result = db.run_query(r#"
             ?[track_id, path, folder_path, name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path, sort_order] :=
+              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path, sort_order] :=
                 *playlist_tracks{playlist_id: pid, track_id, sort_order},
                 *tracks{id: track_id, path, folder_path, name, artist, bpm, original_bpm, key,
-                        duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path},
+                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                 pid = $playlist_id
             :order sort_order
         "#, params)?;
@@ -515,12 +574,12 @@ impl SimilarityQuery {
         // First get the embedding for the query track, then search using HNSW
         let result = db.run_query(r#"
             ?[track_id, path, folder_path, name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path, dist] :=
+              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path, dist] :=
                 *audio_features{track_id: $track_id, vec: query_vec},
                 ~audio_features:similarity_index{track_id | query: query_vec, k: $k, ef: 50 | dist},
                 track_id != $track_id,
                 *tracks{id: track_id, path, folder_path, name, artist, bpm, original_bpm, key,
-                        duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path}
+                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
             :order dist
         "#, params)?;
 
@@ -535,10 +594,10 @@ impl SimilarityQuery {
 
         let result = db.run_query(r#"
             ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path] :=
+              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                 *harmonic_match{from_track: $track_id, to_track: id},
                 *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
-                        duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path}
+                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
             :limit $limit
         "#, params)?;
 
@@ -603,8 +662,276 @@ impl SimilarityQuery {
 }
 
 // ============================================================================
+// Cue Point Queries
+// ============================================================================
+
+/// Query builder for cue points
+pub struct CuePointQuery;
+
+impl CuePointQuery {
+    /// Get all cue points for a track
+    pub fn get_for_track(db: &MeshDb, track_id: i64) -> Result<Vec<CuePoint>, DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+
+        let result = db.run_query(r#"
+            ?[track_id, index, sample_position, label, color] :=
+                *cue_points{track_id, index, sample_position, label, color},
+                track_id = $track_id
+            :order index
+        "#, params)?;
+
+        Ok(rows_to_cue_points(&result))
+    }
+
+    /// Insert or update a single cue point
+    pub fn upsert(db: &MeshDb, cue: &CuePoint) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(cue.track_id));
+        params.insert("index".to_string(), DataValue::from(cue.index as i64));
+        params.insert("sample_position".to_string(), DataValue::from(cue.sample_position));
+        params.insert("label".to_string(), cue.label.as_ref().map(|s| DataValue::Str(s.clone().into())).unwrap_or(DataValue::Null));
+        params.insert("color".to_string(), cue.color.as_ref().map(|s| DataValue::Str(s.clone().into())).unwrap_or(DataValue::Null));
+
+        db.run_script(r#"
+            ?[track_id, index, sample_position, label, color] <- [[$track_id, $index, $sample_position, $label, $color]]
+            :put cue_points {track_id, index => sample_position, label, color}
+        "#, params)?;
+
+        Ok(())
+    }
+
+    /// Delete a single cue point
+    pub fn delete(db: &MeshDb, track_id: i64, index: u8) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+        params.insert("index".to_string(), DataValue::from(index as i64));
+
+        db.run_script(r#"
+            ?[track_id, index] := track_id = $track_id, index = $index
+            :rm cue_points {track_id, index}
+        "#, params)?;
+
+        Ok(())
+    }
+
+    /// Delete all cue points for a track
+    pub fn delete_all_for_track(db: &MeshDb, track_id: i64) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+
+        db.run_script(r#"
+            ?[track_id, index] := *cue_points{track_id, index}, track_id = $track_id
+            :rm cue_points {track_id, index}
+        "#, params)?;
+
+        Ok(())
+    }
+
+    /// Replace all cue points for a track (delete existing, insert new)
+    pub fn replace_all(db: &MeshDb, track_id: i64, cues: &[CuePoint]) -> Result<(), DbError> {
+        // Delete all existing
+        Self::delete_all_for_track(db, track_id)?;
+
+        // Insert new ones
+        for cue in cues {
+            Self::upsert(db, cue)?;
+        }
+
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Saved Loop Queries
+// ============================================================================
+
+/// Query builder for saved loops
+pub struct SavedLoopQuery;
+
+impl SavedLoopQuery {
+    /// Get all saved loops for a track
+    pub fn get_for_track(db: &MeshDb, track_id: i64) -> Result<Vec<SavedLoop>, DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+
+        let result = db.run_query(r#"
+            ?[track_id, index, start_sample, end_sample, label, color] :=
+                *saved_loops{track_id, index, start_sample, end_sample, label, color},
+                track_id = $track_id
+            :order index
+        "#, params)?;
+
+        Ok(rows_to_saved_loops(&result))
+    }
+
+    /// Insert or update a single saved loop
+    pub fn upsert(db: &MeshDb, loop_: &SavedLoop) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(loop_.track_id));
+        params.insert("index".to_string(), DataValue::from(loop_.index as i64));
+        params.insert("start_sample".to_string(), DataValue::from(loop_.start_sample));
+        params.insert("end_sample".to_string(), DataValue::from(loop_.end_sample));
+        params.insert("label".to_string(), loop_.label.as_ref().map(|s| DataValue::Str(s.clone().into())).unwrap_or(DataValue::Null));
+        params.insert("color".to_string(), loop_.color.as_ref().map(|s| DataValue::Str(s.clone().into())).unwrap_or(DataValue::Null));
+
+        db.run_script(r#"
+            ?[track_id, index, start_sample, end_sample, label, color] <- [[$track_id, $index, $start_sample, $end_sample, $label, $color]]
+            :put saved_loops {track_id, index => start_sample, end_sample, label, color}
+        "#, params)?;
+
+        Ok(())
+    }
+
+    /// Delete a single saved loop
+    pub fn delete(db: &MeshDb, track_id: i64, index: u8) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+        params.insert("index".to_string(), DataValue::from(index as i64));
+
+        db.run_script(r#"
+            ?[track_id, index] := track_id = $track_id, index = $index
+            :rm saved_loops {track_id, index}
+        "#, params)?;
+
+        Ok(())
+    }
+
+    /// Delete all saved loops for a track
+    pub fn delete_all_for_track(db: &MeshDb, track_id: i64) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+
+        db.run_script(r#"
+            ?[track_id, index] := *saved_loops{track_id, index}, track_id = $track_id
+            :rm saved_loops {track_id, index}
+        "#, params)?;
+
+        Ok(())
+    }
+
+    /// Replace all saved loops for a track (delete existing, insert new)
+    pub fn replace_all(db: &MeshDb, track_id: i64, loops: &[SavedLoop]) -> Result<(), DbError> {
+        // Delete all existing
+        Self::delete_all_for_track(db, track_id)?;
+
+        // Insert new ones
+        for loop_ in loops {
+            Self::upsert(db, loop_)?;
+        }
+
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Stem Link Queries
+// ============================================================================
+
+/// Query builder for stem links (prepared mode stem replacements)
+pub struct StemLinkQuery;
+
+impl StemLinkQuery {
+    /// Get all stem links for a track
+    pub fn get_for_track(db: &MeshDb, track_id: i64) -> Result<Vec<StemLink>, DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+
+        let result = db.run_query(r#"
+            ?[track_id, stem_index, source_track_id, source_stem] :=
+                *stem_links{track_id, stem_index, source_track_id, source_stem},
+                track_id = $track_id
+            :order stem_index
+        "#, params)?;
+
+        Ok(rows_to_stem_links(&result))
+    }
+
+    /// Insert or update a single stem link
+    pub fn upsert(db: &MeshDb, link: &StemLink) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(link.track_id));
+        params.insert("stem_index".to_string(), DataValue::from(link.stem_index as i64));
+        params.insert("source_track_id".to_string(), DataValue::from(link.source_track_id));
+        params.insert("source_stem".to_string(), DataValue::from(link.source_stem as i64));
+
+        db.run_script(r#"
+            ?[track_id, stem_index, source_track_id, source_stem] <- [[$track_id, $stem_index, $source_track_id, $source_stem]]
+            :put stem_links {track_id, stem_index => source_track_id, source_stem}
+        "#, params)?;
+
+        Ok(())
+    }
+
+    /// Delete a single stem link
+    pub fn delete(db: &MeshDb, track_id: i64, stem_index: u8) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+        params.insert("stem_index".to_string(), DataValue::from(stem_index as i64));
+
+        db.run_script(r#"
+            ?[track_id, stem_index] := track_id = $track_id, stem_index = $stem_index
+            :rm stem_links {track_id, stem_index}
+        "#, params)?;
+
+        Ok(())
+    }
+
+    /// Delete all stem links for a track
+    pub fn delete_all_for_track(db: &MeshDb, track_id: i64) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+
+        db.run_script(r#"
+            ?[track_id, stem_index] := *stem_links{track_id, stem_index}, track_id = $track_id
+            :rm stem_links {track_id, stem_index}
+        "#, params)?;
+
+        Ok(())
+    }
+
+    /// Replace all stem links for a track (delete existing, insert new)
+    pub fn replace_all(db: &MeshDb, track_id: i64, links: &[StemLink]) -> Result<(), DbError> {
+        // Delete all existing
+        Self::delete_all_for_track(db, track_id)?;
+
+        // Insert new ones
+        for link in links {
+            Self::upsert(db, link)?;
+        }
+
+        Ok(())
+    }
+}
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
+
+fn rows_to_cue_points(result: &NamedRows) -> Vec<CuePoint> {
+    result.rows.iter().filter_map(|row| {
+        Some(CuePoint {
+            track_id: row.get(0)?.get_int()?,
+            index: row.get(1)?.get_int()? as u8,
+            sample_position: row.get(2)?.get_int()?,
+            label: row.get(3)?.get_str().map(|s| s.to_string()),
+            color: row.get(4)?.get_str().map(|s| s.to_string()),
+        })
+    }).collect()
+}
+
+fn rows_to_saved_loops(result: &NamedRows) -> Vec<SavedLoop> {
+    result.rows.iter().filter_map(|row| {
+        Some(SavedLoop {
+            track_id: row.get(0)?.get_int()?,
+            index: row.get(1)?.get_int()? as u8,
+            start_sample: row.get(2)?.get_int()?,
+            end_sample: row.get(3)?.get_int()?,
+            label: row.get(4)?.get_str().map(|s| s.to_string()),
+            color: row.get(5)?.get_str().map(|s| s.to_string()),
+        })
+    }).collect()
+}
 
 fn rows_to_tracks(result: &NamedRows) -> Vec<Track> {
     result.rows.iter().filter_map(|row| {
@@ -620,9 +947,10 @@ fn rows_to_tracks(result: &NamedRows) -> Vec<Track> {
             duration_seconds: row.get(8)?.get_float().unwrap_or(0.0),
             lufs: row.get(9)?.get_float().map(|f| f as f32),
             drop_marker: row.get(10)?.get_int(),
-            file_mtime: row.get(11)?.get_int().unwrap_or(0),
-            file_size: row.get(12)?.get_int().unwrap_or(0),
-            waveform_path: row.get(13)?.get_str().map(|s| s.to_string()),
+            first_beat_sample: row.get(11)?.get_int().unwrap_or(0),
+            file_mtime: row.get(12)?.get_int().unwrap_or(0),
+            file_size: row.get(13)?.get_int().unwrap_or(0),
+            waveform_path: row.get(14)?.get_str().map(|s| s.to_string()),
         })
     }).collect()
 }
@@ -641,12 +969,24 @@ fn rows_to_tracks_with_distance(result: &NamedRows) -> Vec<(Track, f32)> {
             duration_seconds: row.get(8)?.get_float().unwrap_or(0.0),
             lufs: row.get(9)?.get_float().map(|f| f as f32),
             drop_marker: row.get(10)?.get_int(),
-            file_mtime: row.get(11)?.get_int().unwrap_or(0),
-            file_size: row.get(12)?.get_int().unwrap_or(0),
-            waveform_path: row.get(13)?.get_str().map(|s| s.to_string()),
+            first_beat_sample: row.get(11)?.get_int().unwrap_or(0),
+            file_mtime: row.get(12)?.get_int().unwrap_or(0),
+            file_size: row.get(13)?.get_int().unwrap_or(0),
+            waveform_path: row.get(14)?.get_str().map(|s| s.to_string()),
         };
-        let distance = row.get(14)?.get_float()? as f32;
+        let distance = row.get(15)?.get_float()? as f32;
         Some((track, distance))
+    }).collect()
+}
+
+fn rows_to_stem_links(result: &NamedRows) -> Vec<StemLink> {
+    result.rows.iter().filter_map(|row| {
+        Some(StemLink {
+            track_id: row.get(0)?.get_int()?,
+            stem_index: row.get(1)?.get_int()? as u8,
+            source_track_id: row.get(2)?.get_int()?,
+            source_stem: row.get(3)?.get_int()? as u8,
+        })
     }).collect()
 }
 
@@ -681,6 +1021,7 @@ mod tests {
             duration_seconds: 180.0,
             lufs: Some(-8.0),
             drop_marker: None,
+            first_beat_sample: 14335,
             file_mtime: 1234567890,
             file_size: 1000000,
             waveform_path: None,
