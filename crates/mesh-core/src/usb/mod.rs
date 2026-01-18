@@ -41,7 +41,7 @@ pub use config::{
 pub use manager::{UsbCommand, UsbManager};
 pub use message::UsbMessage;
 pub use storage::{CachedTrackMetadata, UsbStorage};
-pub use sync::{CollectionState, PlaylistLink, SyncPlan, TrackCopy, TrackInfo};
+pub use sync::{CollectionState, PlaylistTrack, SyncPlan, TrackCopy, TrackInfo};
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

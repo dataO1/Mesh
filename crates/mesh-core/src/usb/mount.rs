@@ -67,7 +67,8 @@ pub fn is_mounted(device: &UsbDevice) -> bool {
 /// Creates the necessary directories if they don't exist:
 /// - mesh-collection/
 /// - mesh-collection/tracks/
-/// - mesh-collection/playlists/
+///
+/// Playlists are stored in mesh.db (same as local collection).
 pub fn init_collection_structure(device: &UsbDevice) -> Result<PathBuf, UsbError> {
     let mount_point = device
         .mount_point
@@ -76,20 +77,9 @@ pub fn init_collection_structure(device: &UsbDevice) -> Result<PathBuf, UsbError
 
     let collection_root = mount_point.join("mesh-collection");
     let tracks_dir = collection_root.join("tracks");
-    let playlists_dir = collection_root.join("playlists");
 
     // Create directories with helpful permission error
     if let Err(e) = std::fs::create_dir_all(&tracks_dir) {
-        if e.kind() == std::io::ErrorKind::PermissionDenied {
-            return Err(UsbError::PermissionDenied(format!(
-                "Cannot write to USB device at {}",
-                mount_point.display()
-            )));
-        }
-        return Err(e.into());
-    }
-
-    if let Err(e) = std::fs::create_dir_all(&playlists_dir) {
         if e.kind() == std::io::ErrorKind::PermissionDenied {
             return Err(UsbError::PermissionDenied(format!(
                 "Cannot write to USB device at {}",

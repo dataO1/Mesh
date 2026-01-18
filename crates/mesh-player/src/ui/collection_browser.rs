@@ -210,20 +210,6 @@ impl CollectionBrowserState {
         }
     }
 
-    /// Set preloaded metadata cache for a USB device
-    pub fn set_usb_metadata(
-        &mut self,
-        device_path: &std::path::Path,
-        metadata: std::collections::HashMap<String, mesh_core::usb::CachedTrackMetadata>,
-    ) {
-        if let Some((_, storage)) = self.usb_storages.iter_mut()
-            .find(|(path, _)| path == device_path)
-        {
-            storage.set_metadata_cache(metadata);
-            log::info!("USB metadata cache set for {}", device_path.display());
-        }
-    }
-
     /// Rebuild tree nodes (local + USB devices)
     fn rebuild_tree(&mut self) {
         let mut nodes = Vec::new();

@@ -2,14 +2,13 @@
 //!
 //! This module provides efficient file synchronization by:
 //! - Scanning local collection from database for playlist membership
-//! - Scanning USB collections from filesystem
+//! - Scanning USB collections from database (mesh.db on USB)
 //! - Using file metadata (size + mtime) for fast change detection
-//! - Building minimal sync plans (what to copy, delete, link)
+//! - Building minimal sync plans (what to copy, delete, update)
 //!
-//! For local collections, playlist membership is read from the CozoDB database.
-//! For USB devices, playlist structure is created as symlinks (ext4) or copies (FAT).
+//! Both local and USB collections use CozoDB databases for track and playlist metadata.
 
-use crate::db::{MeshDb, PlaylistQuery};
+use crate::db::{DatabaseService, MeshDb, PlaylistQuery};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -29,10 +28,10 @@ pub struct TrackInfo {
     pub mtime: SystemTime,
 }
 
-/// A symlink in a playlist folder
+/// A track membership in a playlist (database record)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct PlaylistLink {
-    /// Playlist name (folder name under playlists/)
+pub struct PlaylistTrack {
+    /// Playlist name
     pub playlist: String,
     /// Track filename (e.g., "track.wav")
     pub track_filename: String,
@@ -44,8 +43,8 @@ pub struct CollectionState {
     /// Map of filename -> TrackInfo for tracks in tracks/
     pub tracks: HashMap<String, TrackInfo>,
     /// Set of (playlist_name, track_filename) pairs
-    pub playlist_links: HashSet<PlaylistLink>,
-    /// Set of playlist names (directories under playlists/)
+    pub playlist_tracks: HashSet<PlaylistTrack>,
+    /// Set of playlist names
     pub playlist_names: HashSet<String>,
 }
 
@@ -67,14 +66,14 @@ pub struct SyncPlan {
     pub tracks_to_copy: Vec<TrackCopy>,
     /// Track filenames to delete from USB
     pub tracks_to_delete: Vec<String>,
-    /// Playlist symlinks to add
-    pub symlinks_to_add: Vec<PlaylistLink>,
-    /// Playlist symlinks to remove
-    pub symlinks_to_remove: Vec<PlaylistLink>,
-    /// Playlist directories to create
-    pub dirs_to_create: Vec<String>,
-    /// Playlist directories to delete
-    pub dirs_to_delete: Vec<String>,
+    /// Playlist track memberships to add (insert into USB database)
+    pub playlist_tracks_to_add: Vec<PlaylistTrack>,
+    /// Playlist track memberships to remove (delete from USB database)
+    pub playlist_tracks_to_remove: Vec<PlaylistTrack>,
+    /// Playlists to create in USB database
+    pub playlists_to_create: Vec<String>,
+    /// Playlists to delete from USB database
+    pub playlists_to_delete: Vec<String>,
     /// Total bytes to transfer
     pub total_bytes: u64,
     /// Tracks missing LUFS analysis (need to analyze before export)
@@ -86,21 +85,21 @@ impl SyncPlan {
     pub fn is_empty(&self) -> bool {
         self.tracks_to_copy.is_empty()
             && self.tracks_to_delete.is_empty()
-            && self.symlinks_to_add.is_empty()
-            && self.symlinks_to_remove.is_empty()
-            && self.dirs_to_create.is_empty()
-            && self.dirs_to_delete.is_empty()
+            && self.playlist_tracks_to_add.is_empty()
+            && self.playlist_tracks_to_remove.is_empty()
+            && self.playlists_to_create.is_empty()
+            && self.playlists_to_delete.is_empty()
     }
 
     /// Get summary for display
     pub fn summary(&self) -> String {
         format!(
-            "{} tracks to copy ({}), {} to delete, {} symlinks to add, {} to remove",
+            "{} tracks to copy ({}), {} to delete, {} playlist entries to add, {} to remove",
             self.tracks_to_copy.len(),
             super::format_bytes(self.total_bytes),
             self.tracks_to_delete.len(),
-            self.symlinks_to_add.len(),
-            self.symlinks_to_remove.len(),
+            self.playlist_tracks_to_add.len(),
+            self.playlist_tracks_to_remove.len(),
         )
     }
 
@@ -165,8 +164,8 @@ pub fn scan_local_collection_from_db(
             // Track the file path (use first occurrence if duplicate filename)
             track_paths.entry(filename.clone()).or_insert(path);
 
-            // Add playlist link
-            state.playlist_links.insert(PlaylistLink {
+            // Add playlist track membership
+            state.playlist_tracks.insert(PlaylistTrack {
                 playlist: playlist.name.clone(),
                 track_filename: filename,
             });
@@ -209,7 +208,10 @@ pub fn scan_local_collection_from_db(
     Ok(state)
 }
 
-/// Scan a USB collection to discover what's already there
+/// Scan a USB collection from its mesh.db database
+///
+/// Reads track and playlist information from the USB's database file.
+/// Also scans the tracks/ directory to get file metadata for change detection.
 ///
 /// # Arguments
 /// * `collection_root` - Path to mesh-collection/ on USB
@@ -219,11 +221,9 @@ pub fn scan_usb_collection(
     progress: Option<ProgressCallback>,
 ) -> Result<CollectionState, Box<dyn std::error::Error + Send + Sync>> {
     let mut state = CollectionState::default();
-
     let tracks_dir = collection_root.join("tracks");
-    let playlists_dir = collection_root.join("playlists");
 
-    // Collect track paths first
+    // Scan track files for metadata (size, mtime for change detection)
     let track_paths: Vec<PathBuf> = if tracks_dir.exists() {
         WalkDir::new(&tracks_dir)
             .max_depth(1)
@@ -274,33 +274,29 @@ pub fn scan_usb_collection(
         }
     }
 
-    // Scan playlist directories
-    if playlists_dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(&playlists_dir) {
-            for entry in entries.filter_map(|e| e.ok()) {
-                let path = entry.path();
-                if !path.is_dir() {
-                    continue;
-                }
+    // Read playlists from USB's mesh.db if it exists
+    let db_path = collection_root.join("mesh.db");
+    if db_path.exists() {
+        // Open USB database (read-only for scanning)
+        if let Ok(usb_db_service) = DatabaseService::new(collection_root) {
+            // Get all playlists
+            if let Ok(playlists) = PlaylistQuery::get_all(usb_db_service.db()) {
+                for playlist in playlists {
+                    state.playlist_names.insert(playlist.name.clone());
 
-                let playlist_name = match path.file_name().and_then(|n| n.to_str()) {
-                    Some(n) => n.to_string(),
-                    None => continue,
-                };
+                    // Get tracks in this playlist
+                    if let Ok(tracks) = PlaylistQuery::get_tracks(usb_db_service.db(), playlist.id) {
+                        for track in tracks {
+                            let filename = PathBuf::from(&track.path)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or(&track.name)
+                                .to_string();
 
-                state.playlist_names.insert(playlist_name.clone());
-
-                // Scan playlist for links (symlinks or copies)
-                if let Ok(playlist_entries) = std::fs::read_dir(&path) {
-                    for pentry in playlist_entries.filter_map(|e| e.ok()) {
-                        let ppath = pentry.path();
-                        if ppath.extension().and_then(|x| x.to_str()) == Some("wav") {
-                            if let Some(filename) = ppath.file_name().and_then(|n| n.to_str()) {
-                                state.playlist_links.insert(PlaylistLink {
-                                    playlist: playlist_name.clone(),
-                                    track_filename: filename.to_string(),
-                                });
-                            }
+                            state.playlist_tracks.insert(PlaylistTrack {
+                                playlist: playlist.name.clone(),
+                                track_filename: filename,
+                            });
                         }
                     }
                 }
@@ -354,31 +350,31 @@ pub fn build_sync_plan(local: &CollectionState, usb: &CollectionState) -> SyncPl
         }
     }
 
-    // Symlinks to add: in local but not in USB
-    for link in &local.playlist_links {
-        if !usb.playlist_links.contains(link) {
-            plan.symlinks_to_add.push(link.clone());
+    // Playlist tracks to add: in local but not in USB
+    for track in &local.playlist_tracks {
+        if !usb.playlist_tracks.contains(track) {
+            plan.playlist_tracks_to_add.push(track.clone());
         }
     }
 
-    // Symlinks to remove: in USB but not in local
-    for link in &usb.playlist_links {
-        if !local.playlist_links.contains(link) {
-            plan.symlinks_to_remove.push(link.clone());
+    // Playlist tracks to remove: in USB but not in local
+    for track in &usb.playlist_tracks {
+        if !local.playlist_tracks.contains(track) {
+            plan.playlist_tracks_to_remove.push(track.clone());
         }
     }
 
-    // Directories to create: in local but not in USB
+    // Playlists to create: in local but not in USB
     for name in &local.playlist_names {
         if !usb.playlist_names.contains(name) {
-            plan.dirs_to_create.push(name.clone());
+            plan.playlists_to_create.push(name.clone());
         }
     }
 
-    // Directories to delete: in USB but not in local
+    // Playlists to delete: in USB but not in local
     for name in &usb.playlist_names {
         if !local.playlist_names.contains(name) {
-            plan.dirs_to_delete.push(name.clone());
+            plan.playlists_to_delete.push(name.clone());
         }
     }
 
@@ -478,13 +474,13 @@ mod tests {
                 size: 10_000_000,
             }],
             tracks_to_delete: vec![],
-            symlinks_to_add: vec![PlaylistLink {
+            playlist_tracks_to_add: vec![PlaylistTrack {
                 playlist: "My Playlist".to_string(),
                 track_filename: "test.wav".to_string(),
             }],
-            symlinks_to_remove: vec![],
-            dirs_to_create: vec!["My Playlist".to_string()],
-            dirs_to_delete: vec![],
+            playlist_tracks_to_remove: vec![],
+            playlists_to_create: vec!["My Playlist".to_string()],
+            playlists_to_delete: vec![],
             total_bytes: 10_000_000,
             tracks_missing_lufs: vec![],
         };

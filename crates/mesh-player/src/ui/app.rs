@@ -1521,9 +1521,9 @@ impl MeshApp {
                         }
                     }
                     UsbMsg::MetadataPreloaded { device_path, metadata } => {
-                        log::info!("USB: Preloaded {} track metadata from {}",
-                            metadata.len(), device_path.display());
-                        self.collection_browser.set_usb_metadata(&device_path, metadata);
+                        // Metadata now comes from USB's mesh.db, no caching needed
+                        log::debug!("USB: Metadata preload complete for {} ({} tracks)",
+                            device_path.display(), metadata.len());
                     }
                     UsbMsg::MetadataPreloadProgress { device_path, loaded, total } => {
                         log::debug!("USB: Preloading metadata {}/{} from {}",

@@ -501,7 +501,7 @@ fn handle_build_sync_plan(
 
 /// Handle export start
 ///
-/// Executes the sync plan: copies tracks, creates/removes symlinks, cleans up.
+/// Executes the sync plan: copies tracks, updates USB database.
 /// Uses parallel file copying with limited thread pool for USB I/O.
 fn handle_start_export(
     devices: &HashMap<PathBuf, UsbDevice>,
@@ -630,94 +630,111 @@ fn handle_start_export(
         }
     }
 
-    // Phase 3: Create playlist directories
-    let playlists_dir = collection_root.join("playlists");
-    for playlist_name in &plan.dirs_to_create {
-        let playlist_dir = playlists_dir.join(playlist_name);
-        if let Err(e) = std::fs::create_dir_all(&playlist_dir) {
-            log::error!(
-                "Failed to create playlist dir {}: {}",
-                playlist_dir.display(),
-                e
-            );
+    // Phase 3: Update USB database with track records and playlists
+    // Open/create the USB database
+    let usb_db = match DatabaseService::new(&collection_root) {
+        Ok(db) => db,
+        Err(e) => {
+            log::error!("Failed to open USB database: {}", e);
+            let _ = message_tx.send(UsbMessage::ExportError(UsbError::IoError(
+                format!("Failed to open USB database: {}", e)
+            )));
+            return;
+        }
+    };
+
+    // Phase 3a: Create new playlists
+    for playlist_name in &plan.playlists_to_create {
+        if let Err(e) = usb_db.create_playlist(playlist_name, None) {
+            log::warn!("Failed to create playlist {}: {}", playlist_name, e);
         }
     }
 
-    // Phase 4: Remove symlinks that are no longer needed
-    for link in &plan.symlinks_to_remove {
-        let link_path = playlists_dir.join(&link.playlist).join(&link.track_filename);
-        if link_path.exists() {
-            if let Err(e) = std::fs::remove_file(&link_path) {
-                log::warn!("Failed to remove symlink {}: {}", link_path.display(), e);
-            }
-        }
-    }
+    // Phase 3b: Insert track records for copied tracks
+    // We need to ensure tracks exist in USB database before adding to playlists
+    for track_copy in &plan.tracks_to_copy {
+        let filename = track_copy.destination.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Unknown");
+        let track_path = tracks_dir.join(filename);
 
-    // Phase 5: Create new symlinks (or copies for FAT filesystems)
-    for link in &plan.symlinks_to_add {
-        let playlist_dir = playlists_dir.join(&link.playlist);
+        // Read metadata from the source file to get track info
+        if let Ok(metadata) = read_metadata(&track_copy.source) {
+            let track_data = crate::db::NewTrackData {
+                path: track_path.clone(),
+                name: filename.trim_end_matches(".wav").to_string(),
+                artist: metadata.artist,
+                bpm: metadata.bpm,
+                original_bpm: metadata.original_bpm,
+                key: metadata.key,
+                duration_seconds: metadata.duration_seconds.unwrap_or(0.0),
+                lufs: metadata.lufs,
+            };
 
-        // Ensure playlist directory exists
-        if !playlist_dir.exists() {
-            if let Err(e) = std::fs::create_dir_all(&playlist_dir) {
-                log::error!(
-                    "Failed to create playlist dir {}: {}",
-                    playlist_dir.display(),
-                    e
-                );
-                continue;
-            }
-        }
-
-        let link_path = playlist_dir.join(&link.track_filename);
-
-        // Skip if link already exists
-        if link_path.exists() {
-            continue;
-        }
-
-        if device.supports_symlinks() {
-            // Calculate relative path depth based on playlist nesting
-            // playlists/Foo -> ../../tracks (depth 1)
-            // playlists/Foo/Bar -> ../../../tracks (depth 2)
-            let depth = link.playlist.matches('/').count() + 1;
-            let mut target = PathBuf::new();
-            for _ in 0..=depth {
-                target.push("..");
-            }
-            target.push("tracks");
-            target.push(&link.track_filename);
-
-            // Use cross-platform symlink crate
-            if let Err(e) = symlink::symlink_file(&target, &link_path) {
-                log::error!("Failed to create symlink {}: {}", link_path.display(), e);
-            }
-        } else {
-            // For FAT/exFAT, copy the file (no symlink support)
-            let track_path = tracks_dir.join(&link.track_filename);
-            if track_path.exists() {
-                if let Err(e) = std::fs::copy(&track_path, &link_path) {
-                    log::error!("Failed to copy to playlist {}: {}", link_path.display(), e);
-                }
+            if let Err(e) = usb_db.add_track(&track_data) {
+                log::warn!("Failed to add track {} to USB database: {}", filename, e);
             }
         }
     }
 
-    // Phase 6: Delete empty playlist directories
-    for playlist_name in &plan.dirs_to_delete {
-        let playlist_dir = playlists_dir.join(playlist_name);
-        if playlist_dir.exists() {
-            // Only delete if empty
-            if let Ok(mut entries) = std::fs::read_dir(&playlist_dir) {
-                if entries.next().is_none() {
-                    if let Err(e) = std::fs::remove_dir(&playlist_dir) {
+    // Phase 3c: Add playlist track memberships
+    for playlist_track in &plan.playlist_tracks_to_add {
+        // Find the playlist ID
+        if let Ok(Some(playlist)) = usb_db.get_playlist_by_name(&playlist_track.playlist, None) {
+            // Find the track ID by filename
+            let track_path = tracks_dir.join(&playlist_track.track_filename);
+            let track_path_str = track_path.to_string_lossy().to_string();
+
+            if let Ok(Some(track)) = usb_db.get_track_by_path(&track_path_str) {
+                // Get next sort order and add track to playlist
+                if let Ok(sort_order) = usb_db.next_playlist_sort_order(playlist.id) {
+                    if let Err(e) = usb_db.add_track_to_playlist(playlist.id, track.id, sort_order) {
                         log::warn!(
-                            "Failed to remove playlist dir {}: {}",
-                            playlist_dir.display(),
-                            e
+                            "Failed to add track {} to playlist {}: {}",
+                            playlist_track.track_filename, playlist_track.playlist, e
                         );
                     }
                 }
+            }
+        }
+    }
+
+    // Phase 3d: Remove playlist track memberships
+    for playlist_track in &plan.playlist_tracks_to_remove {
+        // Find the playlist ID
+        if let Ok(Some(playlist)) = usb_db.get_playlist_by_name(&playlist_track.playlist, None) {
+            // Find the track ID by filename
+            let track_path = tracks_dir.join(&playlist_track.track_filename);
+            let track_path_str = track_path.to_string_lossy().to_string();
+
+            if let Ok(Some(track)) = usb_db.get_track_by_path(&track_path_str) {
+                if let Err(e) = usb_db.remove_track_from_playlist(playlist.id, track.id) {
+                    log::warn!(
+                        "Failed to remove track {} from playlist {}: {}",
+                        playlist_track.track_filename, playlist_track.playlist, e
+                    );
+                }
+            }
+        }
+    }
+
+    // Phase 3e: Delete playlists
+    for playlist_name in &plan.playlists_to_delete {
+        if let Ok(Some(playlist)) = usb_db.get_playlist_by_name(playlist_name, None) {
+            if let Err(e) = usb_db.delete_playlist(playlist.id) {
+                log::warn!("Failed to delete playlist {}: {}", playlist_name, e);
+            }
+        }
+    }
+
+    // Phase 3f: Delete tracks from USB database that were removed
+    for filename in &plan.tracks_to_delete {
+        let track_path = tracks_dir.join(filename);
+        let track_path_str = track_path.to_string_lossy().to_string();
+
+        if let Ok(Some(track)) = usb_db.get_track_by_path(&track_path_str) {
+            if let Err(e) = usb_db.delete_track(track.id) {
+                log::warn!("Failed to delete track {} from USB database: {}", filename, e);
             }
         }
     }

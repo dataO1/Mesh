@@ -199,7 +199,7 @@ fn view_device_selection(
     } else if let Some(ref plan) = state.sync_plan {
         let copy_count = plan.tracks_to_copy.len();
         let delete_count = plan.tracks_to_delete.len();
-        let link_changes = plan.symlinks_to_add.len() + plan.symlinks_to_remove.len();
+        let link_changes = plan.playlist_tracks_to_add.len() + plan.playlist_tracks_to_remove.len();
 
         if plan.is_empty() {
             text("✓ Everything up to date")
@@ -322,8 +322,8 @@ fn view_ready_to_sync(
     // Summary stats
     let copy_count = plan.tracks_to_copy.len();
     let delete_count = plan.tracks_to_delete.len();
-    let symlinks_add_count = plan.symlinks_to_add.len();
-    let symlinks_remove_count = plan.symlinks_to_remove.len();
+    let playlist_add_count = plan.playlist_tracks_to_add.len();
+    let playlist_remove_count = plan.playlist_tracks_to_remove.len();
 
     let copy_text = text(format!("{} tracks to copy ({})", copy_count, mesh_core::usb::format_bytes(plan.total_bytes)))
         .size(14)
@@ -342,9 +342,9 @@ fn view_ready_to_sync(
         });
 
     // Show playlist link changes instead of unchanged count
-    let playlist_changes = symlinks_add_count + symlinks_remove_count;
-    let playlist_text = text(format!("{} playlist links to update (+{} / -{})",
-        playlist_changes, symlinks_add_count, symlinks_remove_count))
+    let playlist_changes = playlist_add_count + playlist_remove_count;
+    let playlist_text = text(format!("{} playlist entries to update (+{} / -{})",
+        playlist_changes, playlist_add_count, playlist_remove_count))
         .size(14)
         .color(if playlist_changes > 0 {
             iced::Color::from_rgb(0.4, 0.6, 0.9)
