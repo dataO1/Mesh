@@ -228,9 +228,11 @@ impl PlaylistStorage for UsbStorage {
             return Vec::new();
         };
 
+        // Tracks are already ordered by sort_order from DB, use enumerate for display order
         tracks
             .into_iter()
-            .map(|track| {
+            .enumerate()
+            .map(|(i, track)| {
                 let filename = PathBuf::from(&track.path)
                     .file_name()
                     .and_then(|n| n.to_str())
@@ -244,6 +246,7 @@ impl PlaylistStorage for UsbStorage {
                     id: track_id,
                     name: track.name,
                     path: track_path,
+                    order: (i + 1) as i32, // 1-based for display
                     artist: track.artist,
                     bpm: track.bpm,
                     key: track.key,

@@ -49,7 +49,7 @@ pub fn get_tracks_for_folder(storage: &dyn PlaylistStorage, folder_id: &NodeId) 
         .get_tracks(folder_id)
         .into_iter()
         .map(|info| {
-            let mut row = TrackRow::new(info.id, info.name);
+            let mut row = TrackRow::new(info.id, info.name, info.order);
             if let Some(artist) = info.artist {
                 row = row.with_artist(artist);
             }

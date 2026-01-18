@@ -37,6 +37,8 @@ pub struct SelectModifiers {
 /// Column types for the track table
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackColumn {
+    /// Order in playlist/collection (#)
+    Order,
     /// Track name
     Name,
     /// Artist name
@@ -55,6 +57,7 @@ impl TrackColumn {
     /// Get the display label for this column
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Order => "#",
             Self::Name => "Name",
             Self::Artist => "Artist",
             Self::Bpm => "BPM",
@@ -72,6 +75,7 @@ impl TrackColumn {
     /// Get the width for this column
     pub fn width(&self) -> Length {
         match self {
+            Self::Order => Length::Fixed(35.0),
             Self::Name => Length::Fill,
             Self::Artist => Length::Fixed(120.0),
             Self::Bpm => Length::Fixed(60.0),
@@ -84,6 +88,7 @@ impl TrackColumn {
     /// Get all columns in display order
     pub fn all() -> &'static [TrackColumn] {
         &[
+            TrackColumn::Order,
             TrackColumn::Name,
             TrackColumn::Artist,
             TrackColumn::Bpm,
@@ -101,6 +106,8 @@ pub struct TrackRow<Id: Clone> {
     pub id: Id,
     /// Track name (usually filename without extension)
     pub name: String,
+    /// Order in playlist/collection (1-based for display as #)
+    pub order: i32,
     /// Artist name if known
     pub artist: Option<String>,
     /// BPM if known
@@ -114,11 +121,12 @@ pub struct TrackRow<Id: Clone> {
 }
 
 impl<Id: Clone> TrackRow<Id> {
-    /// Create a new track row
-    pub fn new(id: Id, name: impl Into<String>) -> Self {
+    /// Create a new track row with order
+    pub fn new(id: Id, name: impl Into<String>, order: i32) -> Self {
         Self {
             id,
             name: name.into(),
+            order,
             artist: None,
             bpm: None,
             key: None,
@@ -208,6 +216,7 @@ pub fn compare_tracks_by_column<Id: Clone>(
     use std::cmp::Ordering;
 
     match column {
+        TrackColumn::Order => a.order.cmp(&b.order),
         TrackColumn::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
         TrackColumn::Artist => {
             let a_artist = a.artist.as_deref().unwrap_or("");
@@ -284,7 +293,7 @@ impl<Id: Clone + Eq + Hash> TrackTableState<Id> {
             selected: HashSet::new(),
             anchor: None,
             last_selected: None,
-            sort_column: TrackColumn::Name,
+            sort_column: TrackColumn::Order,
             sort_ascending: true,
             editing: None,
             edit_buffer: String::new(),
@@ -625,6 +634,7 @@ where
 
     // Get the display value for this cell
     let display_value = match column {
+        TrackColumn::Order => track.order.to_string(),
         TrackColumn::Name => track.name.clone(),
         TrackColumn::Artist => track.artist.clone().unwrap_or_else(|| "-".to_string()),
         TrackColumn::Bpm => track.format_bpm(),
@@ -767,7 +777,7 @@ mod tests {
 
     #[test]
     fn test_track_row_formatting() {
-        let row = TrackRow::new("1", "Test Track")
+        let row = TrackRow::new("1", "Test Track", 1)
             .with_bpm(128.5)
             .with_duration(185.0);
 
@@ -789,10 +799,10 @@ mod tests {
         assert!(!state.is_selected(&"track2".to_string()));
 
         // Test sort toggle
-        assert_eq!(state.sort_column, TrackColumn::Name);
+        assert_eq!(state.sort_column, TrackColumn::Order);
         assert!(state.sort_ascending);
 
-        state.set_sort(TrackColumn::Name);
+        state.set_sort(TrackColumn::Order);
         assert!(!state.sort_ascending); // Toggled
 
         state.set_sort(TrackColumn::Bpm);

@@ -147,6 +147,8 @@ pub struct TrackInfo {
     pub name: String,
     /// Path to the actual audio file
     pub path: PathBuf,
+    /// Order in playlist/collection (1-based for display)
+    pub order: i32,
     /// Artist name if set
     pub artist: Option<String>,
     /// BPM if detected/set

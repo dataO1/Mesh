@@ -27,11 +27,12 @@ impl DatabaseStorage {
     }
 
     /// Convert database Track to TrackInfo
-    fn track_to_info(track: &crate::db::Track, folder_id: &NodeId) -> TrackInfo {
+    fn track_to_info(track: &crate::db::Track, folder_id: &NodeId, order: i32) -> TrackInfo {
         TrackInfo {
             id: NodeId(format!("{}/{}", folder_id.0, track.name)),
             name: track.name.clone(),
             path: PathBuf::from(&track.path),
+            order,
             artist: track.artist.clone(),
             bpm: track.bpm,
             key: track.key.clone(),
@@ -233,11 +234,14 @@ impl PlaylistStorage for DatabaseStorage {
                     match PlaylistQuery::get_tracks(self.service.db(), playlist_db_id) {
                         Ok(tracks) => {
                             log::debug!("get_tracks: found {} tracks in playlist", tracks.len());
+                            // Tracks are already ordered by sort_order from DB, use enumerate for display order
                             return tracks.iter()
-                                .map(|track| TrackInfo {
+                                .enumerate()
+                                .map(|(i, track)| TrackInfo {
                                     id: NodeId(format!("{}/{}", folder_id.0, track.name)),
                                     name: track.name.clone(),
                                     path: PathBuf::from(&track.path),
+                                    order: (i + 1) as i32, // 1-based for display
                                     artist: track.artist.clone(),
                                     bpm: track.bpm,
                                     key: track.key.clone(),
@@ -267,8 +271,10 @@ impl PlaylistStorage for DatabaseStorage {
             }
         };
 
+        // Use enumerate for collection tracks - order represents import order
         tracks.iter()
-            .map(|track| Self::track_to_info(track, folder_id))
+            .enumerate()
+            .map(|(i, track)| Self::track_to_info(track, folder_id, (i + 1) as i32))
             .collect()
     }
 
