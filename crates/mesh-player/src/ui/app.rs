@@ -22,6 +22,7 @@ use iced::time;
 
 use crate::audio::CommandSender;
 use crate::config::{self, PlayerConfig};
+use crate::domain::MeshDomain;
 use crate::loader::TrackLoader;
 
 use mesh_midi::{MidiController, MidiMessage as MidiMsg, MidiInputEvent, DeckAction as MidiDeckAction, MixerAction as MidiMixerAction, BrowserAction as MidiBrowserAction};
@@ -45,7 +46,11 @@ pub use super::state::{AppMode, LinkedStemLoadedMsg, StemLinkState, TrackLoadedM
 
 /// Application state
 pub struct MeshApp {
+    /// Domain layer for service orchestration
+    /// Manages which database (local vs USB) is used for metadata lookups
+    domain: MeshDomain,
     /// Database service for track metadata (required)
+    /// Note: Prefer using domain.active_db() for metadata lookups
     db_service: Arc<DatabaseService>,
     /// Command sender for lock-free communication with audio engine
     /// Uses an SPSC ringbuffer - no mutex, no dropouts, guaranteed delivery
@@ -183,13 +188,17 @@ impl MeshApp {
             }
         };
 
+        // Create domain layer for service orchestration
+        let domain = MeshDomain::new(db_service.clone(), config.collection_path.clone());
+
         Self {
+            domain,
             db_service: db_service.clone(),
             command_sender,
             deck_atomics,
             slicer_atomics,
             linked_stem_atomics,
-            track_loader: TrackLoader::spawn(jack_sample_rate, db_service.clone()),
+            track_loader: TrackLoader::spawn(jack_sample_rate),
             peaks_computer: PeaksComputer::spawn(),
             player_canvas_state: {
                 let mut state = PlayerCanvasState::new();
@@ -1135,6 +1144,20 @@ impl MeshApp {
                     return self.update(Message::LoadTrack(deck_idx, path_str));
                 }
 
+                // Sync domain layer with collection browser's active storage
+                // This ensures metadata is loaded from the correct database (local or USB)
+                if let Some((usb_idx, collection_path)) = self.collection_browser.get_active_usb_info() {
+                    // Browsing USB - switch domain to USB if not already
+                    if !self.domain.is_browsing_usb() {
+                        if let Err(e) = self.domain.switch_to_usb(usb_idx, &collection_path) {
+                            log::error!("Failed to switch domain to USB: {}", e);
+                        }
+                    }
+                } else if self.domain.is_browsing_usb() {
+                    // Browsing local - switch domain back if it was on USB
+                    self.domain.switch_to_local();
+                }
+
                 // If it was a scroll, create a Task to auto-scroll the track list
                 if is_scroll {
                     if let Some(selected_idx) = self.collection_browser.get_selected_index() {
@@ -1179,7 +1202,19 @@ impl MeshApp {
                 // Result will be picked up in Tick handler via track_loader.try_recv()
                 if deck_idx < 4 {
                     self.status = format!("Loading track to deck {}...", deck_idx + 1);
-                    if let Err(e) = self.track_loader.load(deck_idx, path.into()) {
+
+                    // Load metadata from the active database (local or USB)
+                    // The domain layer knows which database to query based on current storage
+                    let metadata = self.domain.load_track_metadata_or_default(&path);
+                    log::info!(
+                        "[DOMAIN] Loaded metadata for deck {} from {}: BPM={:?}, LUFS={:?}",
+                        deck_idx,
+                        if self.domain.is_browsing_usb() { "USB" } else { "local" },
+                        metadata.bpm,
+                        metadata.lufs
+                    );
+
+                    if let Err(e) = self.track_loader.load(deck_idx, path.into(), metadata) {
                         self.status = format!("Failed to start load: {}", e);
                     }
                 }

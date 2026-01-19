@@ -7,6 +7,12 @@
 //! ensuring correct playback speed regardless of the JACK server configuration.
 //!
 //! Note: Linked stem loading is handled separately by `mesh_core::loader::LinkedStemLoader`.
+//!
+//! ## Database Independence
+//!
+//! The loader is deliberately database-agnostic. It receives pre-loaded metadata
+//! with each request, allowing the domain layer to choose which database to query
+//! (local or USB). This enables proper metadata loading when playing from USB drives.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
@@ -15,18 +21,22 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread::{self, JoinHandle};
 
 use basedrop::Shared;
-use mesh_core::audio_file::{LoadedTrack, StemBuffers};
-use mesh_core::db::DatabaseService;
+use mesh_core::audio_file::{LoadedTrack, StemBuffers, TrackMetadata};
 use mesh_core::engine::PreparedTrack;
 use mesh_widgets::{CueMarker, OverviewState, ZoomedState, CUE_COLORS, generate_peaks, HIGHRES_WIDTH};
 
 /// Request to load a track in the background
-#[derive(Debug)]
+///
+/// Contains pre-loaded metadata from the domain layer. This allows the loader
+/// to be database-agnostic - it doesn't need to know whether the track is from
+/// local storage or USB.
 pub struct TrackLoadRequest {
     /// Deck index (0-3)
     pub deck_idx: usize,
     /// Path to the audio file
     pub path: PathBuf,
+    /// Pre-loaded metadata from the appropriate database (local or USB)
+    pub metadata: TrackMetadata,
 }
 
 /// Result of a background track load
@@ -69,8 +79,10 @@ impl TrackLoader {
     ///
     /// # Arguments
     /// * `target_sample_rate` - JACK's sample rate for resampling tracks on load
-    /// * `db_service` - Database service for loading track metadata
-    pub fn spawn(target_sample_rate: u32, db_service: Arc<DatabaseService>) -> Self {
+    ///
+    /// Note: The loader is database-agnostic. Metadata is provided with each
+    /// load request by the domain layer, which knows which database to query.
+    pub fn spawn(target_sample_rate: u32) -> Self {
         let (request_tx, request_rx) = std::sync::mpsc::channel::<TrackLoadRequest>();
         let (result_tx, result_rx) = std::sync::mpsc::channel::<TrackLoadResult>();
 
@@ -81,7 +93,7 @@ impl TrackLoader {
         let handle = thread::Builder::new()
             .name("track-loader".to_string())
             .spawn(move || {
-                loader_thread(request_rx, result_tx, rate_for_thread, db_service);
+                loader_thread(request_rx, result_tx, rate_for_thread);
             })
             .expect("Failed to spawn track loader thread");
 
@@ -102,9 +114,17 @@ impl TrackLoader {
     }
 
     /// Request loading a track (non-blocking)
-    pub fn load(&self, deck_idx: usize, path: PathBuf) -> Result<(), String> {
+    ///
+    /// # Arguments
+    /// * `deck_idx` - Deck to load the track into (0-3)
+    /// * `path` - Path to the audio file
+    /// * `metadata` - Pre-loaded metadata from the appropriate database
+    ///
+    /// The metadata should be loaded by the domain layer from whichever database
+    /// is currently active (local or USB).
+    pub fn load(&self, deck_idx: usize, path: PathBuf, metadata: TrackMetadata) -> Result<(), String> {
         self.tx
-            .send(TrackLoadRequest { deck_idx, path })
+            .send(TrackLoadRequest { deck_idx, path, metadata })
             .map_err(|e| format!("Loader thread disconnected: {}", e))
     }
 
@@ -141,12 +161,11 @@ fn loader_thread(
     rx: Receiver<TrackLoadRequest>,
     tx: Sender<TrackLoadResult>,
     target_sample_rate: Arc<AtomicU32>,
-    db_service: Arc<DatabaseService>,
 ) {
     log::info!("Track loader thread started");
 
     while let Ok(request) = rx.recv() {
-        handle_track_load(request, &tx, &target_sample_rate, &db_service);
+        handle_track_load(request, &tx, &target_sample_rate);
     }
 
     log::info!("Track loader thread shutting down");
@@ -157,7 +176,6 @@ fn handle_track_load(
     request: TrackLoadRequest,
     tx: &Sender<TrackLoadResult>,
     target_sample_rate: &Arc<AtomicU32>,
-    db_service: &DatabaseService,
 ) {
     // Read the current target sample rate (may have been updated)
     let sample_rate = target_sample_rate.load(Ordering::SeqCst);
@@ -171,10 +189,11 @@ fn handle_track_load(
 
     let total_start = std::time::Instant::now();
 
-    // Load the track with resampling to JACK's sample rate (metadata from DB)
+    // Load the track with pre-provided metadata (from domain layer)
+    // This is the key change: metadata comes from the request, not a DB query
     let load_start = std::time::Instant::now();
-    let result = LoadedTrack::load_to(&request.path, db_service, sample_rate);
-    log::info!("[PERF] Loader: LoadedTrack::load_to({} Hz) took {:?}", sample_rate, load_start.elapsed());
+    let result = LoadedTrack::load_with_metadata(&request.path, request.metadata, sample_rate);
+    log::info!("[PERF] Loader: LoadedTrack::load_with_metadata({} Hz) took {:?}", sample_rate, load_start.elapsed());
 
     match result {
         Ok(track) => {

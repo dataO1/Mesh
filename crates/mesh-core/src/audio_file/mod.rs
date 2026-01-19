@@ -1523,13 +1523,11 @@ impl LoadedTrack {
         use std::time::Instant;
 
         let path_ref = path.as_ref();
-        let total_start = Instant::now();
-        log::info!("[PERF] Loading track: {:?} (target rate: {} Hz)", path_ref, target_sample_rate);
-
-        // Load metadata from database
         let meta_start = Instant::now();
         let path_str = path_ref.to_string_lossy().to_string();
-        let mut metadata: TrackMetadata = match db.load_track_metadata_by_path(&path_str) {
+
+        // Load metadata from database
+        let metadata: TrackMetadata = match db.load_track_metadata_by_path(&path_str) {
             Ok(Some(db_meta)) => db_meta.into(),
             Ok(None) => {
                 log::warn!("Track not found in database: {}, using default metadata", path_str);
@@ -1541,6 +1539,31 @@ impl LoadedTrack {
             }
         };
         log::info!("  [PERF] Metadata loaded from DB in {:?}", meta_start.elapsed());
+
+        // Delegate to load_with_metadata
+        Self::load_with_metadata(path, metadata, target_sample_rate)
+    }
+
+    /// Load a track with pre-loaded metadata (DB-agnostic)
+    ///
+    /// # Arguments
+    /// * `path` - Path to the audio file
+    /// * `metadata` - Pre-loaded track metadata (from any source: local DB, USB DB, etc.)
+    /// * `target_sample_rate` - Target sample rate (typically JACK's sample rate)
+    ///
+    /// This is the core loading function that doesn't depend on any database.
+    /// The caller is responsible for loading metadata from the appropriate source.
+    /// Waveform preview is loaded from the WAV file's wvfm chunk.
+    pub fn load_with_metadata<P: AsRef<Path>>(
+        path: P,
+        mut metadata: TrackMetadata,
+        target_sample_rate: u32,
+    ) -> Result<Self, AudioFileError> {
+        use std::time::Instant;
+
+        let path_ref = path.as_ref();
+        let total_start = Instant::now();
+        log::info!("[PERF] Loading track: {:?} (target rate: {} Hz)", path_ref, target_sample_rate);
 
         // Load waveform preview from WAV file (stored in wvfm chunk)
         let wvfm_start = Instant::now();

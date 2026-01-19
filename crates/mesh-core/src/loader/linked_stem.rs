@@ -257,8 +257,30 @@ fn handle_linked_stem_load(request: LinkedStemLoadRequest, tx: Sender<LinkedStem
 
     let total_start = std::time::Instant::now();
 
-    // Load the source track (metadata from database)
-    let load_result = LoadedTrack::load_to(&request.source_path, db_service, sample_rate);
+    // Determine which database to use based on path
+    // USB paths are typically under /run/media/, /media/, or /mnt/
+    let load_result = if is_usb_path(&request.source_path) {
+        // Try to load metadata from USB's database
+        match get_usb_database_for_path(&request.source_path) {
+            Some(usb_db) => {
+                log::info!(
+                    "[LINKED] Using USB database for linked stem from {:?}",
+                    request.source_path
+                );
+                LoadedTrack::load_to(&request.source_path, &usb_db, sample_rate)
+            }
+            None => {
+                log::warn!(
+                    "[LINKED] Could not find USB database for {:?}, using local",
+                    request.source_path
+                );
+                LoadedTrack::load_to(&request.source_path, db_service, sample_rate)
+            }
+        }
+    } else {
+        // Local path - use local database
+        LoadedTrack::load_to(&request.source_path, db_service, sample_rate)
+    };
 
     match load_result {
         Ok(source_track) => {
@@ -537,4 +559,55 @@ fn align_buffer_to_host(
     }
 
     aligned
+}
+
+/// Check if a path appears to be on a USB device
+///
+/// Uses common Linux mount point patterns for removable media.
+fn is_usb_path(path: &std::path::Path) -> bool {
+    if let Some(path_str) = path.to_str() {
+        path_str.starts_with("/run/media/")
+            || path_str.starts_with("/media/")
+            || path_str.starts_with("/mnt/")
+    } else {
+        false
+    }
+}
+
+/// Get the DatabaseService for a USB path
+///
+/// Attempts to find the mesh-collection directory containing the file
+/// and open its mesh.db database.
+fn get_usb_database_for_path(path: &std::path::Path) -> Option<std::sync::Arc<DatabaseService>> {
+    // Walk up the path to find mesh-collection directory
+    let mut current = path.parent()?;
+
+    while let Some(parent) = current.parent() {
+        // Check if this is the mesh-collection directory
+        if current.file_name()?.to_str()? == "mesh-collection" {
+            // Found it - open the database
+            log::info!("[LINKED] Found USB mesh-collection at {:?}", current);
+            match DatabaseService::new(current) {
+                Ok(db) => return Some(db),
+                Err(e) => {
+                    log::error!("[LINKED] Failed to open USB database at {:?}: {}", current, e);
+                    return None;
+                }
+            }
+        }
+
+        // Check if we've reached a mount point root
+        if parent.to_str() == Some("/run/media")
+            || parent.to_str() == Some("/media")
+            || parent.to_str() == Some("/mnt")
+        {
+            // Didn't find mesh-collection within the USB device
+            log::warn!("[LINKED] No mesh-collection found in USB device for {:?}", path);
+            return None;
+        }
+
+        current = parent;
+    }
+
+    None
 }

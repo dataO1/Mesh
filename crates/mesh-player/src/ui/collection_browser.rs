@@ -658,6 +658,22 @@ impl CollectionBrowserState {
             id_str.starts_with(&device_prefix) || id_str == &device_prefix
         })
     }
+
+    /// Get the active USB device info if browsing USB storage
+    ///
+    /// Returns `Some((usb_index, collection_path))` if currently browsing a USB device,
+    /// or `None` if browsing local storage. The collection path is where mesh.db is stored.
+    pub fn get_active_usb_info(&self) -> Option<(usize, PathBuf)> {
+        let idx = self.active_usb_idx?;
+        let device = self.usb_devices.get(idx)?;
+        let collection_path = device.collection_root()?;
+        Some((idx, collection_path))
+    }
+
+    /// Check if currently browsing USB storage
+    pub fn is_browsing_usb(&self) -> bool {
+        self.active_usb_idx.is_some()
+    }
 }
 
 /// Build tree nodes from storage (read-only: no create/rename allowed)

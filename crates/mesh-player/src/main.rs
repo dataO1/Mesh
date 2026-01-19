@@ -11,6 +11,7 @@
 
 mod audio;
 mod config;
+mod domain;
 mod loader;
 mod ui;
 
