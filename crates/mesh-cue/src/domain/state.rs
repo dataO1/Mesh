@@ -103,17 +103,11 @@ impl LoadedTrackState {
             }
         }).collect();
 
-        // Convert database stem links to runtime format
-        // Note: We need to look up source track path from ID, but for now
-        // we'll leave source_path empty and resolve it when needed
-        let stem_links: Vec<StemLinkReference> = track.stem_links.iter().map(|l| {
-            StemLinkReference {
-                stem_index: l.stem_index,
-                source_path: PathBuf::new(), // Will be resolved when loading
-                source_stem: l.source_stem,
-                source_drop_marker: 0, // Will be resolved when loading
-            }
-        }).collect();
+        // Note: stem_links are NOT converted here because converting from
+        // database format (ID-based) to runtime format (path-based) requires
+        // database lookups. Use MeshCueDomain::load_track_state() instead,
+        // which handles the conversion properly.
+        let stem_links = Vec::new();
 
         Self {
             path: track.path.clone(),
