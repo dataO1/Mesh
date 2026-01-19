@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 use mesh_core::audio_file::{CuePoint, SavedLoop, StemLinkReference};
-use mesh_core::db::Track;
+use mesh_core::db::Track as DbTrack;
 use mesh_core::types::SAMPLE_RATE;
 
 /// Domain-level state for a loaded track
@@ -74,7 +74,7 @@ pub struct LoadedTrackState {
 
 impl LoadedTrackState {
     /// Create from a database Track
-    pub fn from_db_track(track: Track) -> Self {
+    pub fn from_db_track(track: DbTrack) -> Self {
         let bpm = track.bpm.unwrap_or(120.0);
         let first_beat_sample = track.first_beat_sample as u64;
         let duration_samples = (track.duration_seconds * SAMPLE_RATE as f64) as u64;

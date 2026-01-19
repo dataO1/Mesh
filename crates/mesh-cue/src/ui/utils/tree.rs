@@ -2,7 +2,7 @@
 //!
 //! Functions for building tree nodes and getting tracks from playlist storage.
 
-use mesh_core::db::Track;
+use crate::domain::DomainTrack;
 use mesh_core::playlist::{NodeId, NodeKind, PlaylistNode, PlaylistStorage};
 use mesh_widgets::{TrackRow, TreeIcon, TreeNode};
 
@@ -71,11 +71,11 @@ pub fn get_tracks_for_folder(storage: &dyn PlaylistStorage, folder_id: &NodeId) 
         .collect()
 }
 
-/// Convert database Tracks to UI TrackRow items
+/// Convert domain Tracks to UI TrackRow items
 ///
-/// Used when querying tracks directly from the domain layer (which returns Track objects)
+/// Used when querying tracks directly from the domain layer (which returns DomainTrack objects)
 /// instead of through PlaylistStorage (which returns TrackInfo).
-pub fn tracks_to_rows(tracks: &[Track]) -> Vec<TrackRow<NodeId>> {
+pub fn tracks_to_rows(tracks: &[DomainTrack]) -> Vec<TrackRow<NodeId>> {
     tracks
         .iter()
         .enumerate()

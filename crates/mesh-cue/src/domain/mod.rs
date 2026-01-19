@@ -413,32 +413,18 @@ impl MeshCueDomain {
         track.drop_marker = state.drop_marker.map(|s| s as i64);
         track.first_beat_sample = state.first_beat_sample as i64;
 
-        // Convert cue points (only non-empty ones)
+        // Convert cue points using standard conversion (only non-empty ones)
+        let track_id = track.id.unwrap_or(0);
         track.cue_points = state.cue_points.iter()
             .filter(|c| c.sample_position > 0)
-            .map(|cue| {
-                DbCuePoint {
-                    track_id: track.id.unwrap_or(0),
-                    index: cue.index,
-                    sample_position: cue.sample_position as i64,
-                    label: if cue.label.is_empty() { None } else { Some(cue.label.clone()) },
-                    color: cue.color.clone(),
-                }
-            }).collect();
+            .map(|cue| DbCuePoint::from_runtime(track_id, cue))
+            .collect();
 
-        // Convert saved loops (only non-empty ones)
+        // Convert saved loops using standard conversion (only non-empty ones)
         track.saved_loops = state.saved_loops.iter()
             .filter(|l| l.start_sample > 0 || l.end_sample > 0)
-            .map(|loop_| {
-                DbSavedLoop {
-                    track_id: track.id.unwrap_or(0),
-                    index: loop_.index,
-                    start_sample: loop_.start_sample as i64,
-                    end_sample: loop_.end_sample as i64,
-                    label: if loop_.label.is_empty() { None } else { Some(loop_.label.clone()) },
-                    color: loop_.color.clone(),
-                }
-            }).collect();
+            .map(|loop_| DbSavedLoop::from_runtime(track_id, loop_))
+            .collect();
 
         // Use central conversion method for stem links
         track.stem_links = self.convert_stem_links_to_db(track.id.unwrap_or(0), &state.stem_links);
@@ -489,25 +475,15 @@ impl MeshCueDomain {
         track.drop_marker = drop_marker.map(|d| d as i64);
         track.first_beat_sample = first_beat_sample as i64;
 
-        // Convert cue points to database format
+        // Convert using standard conversion methods
         let track_id = track.id.unwrap_or(0);
-        track.cue_points = cue_points.iter().map(|c| DbCuePoint {
-            track_id,
-            index: c.index,
-            sample_position: c.sample_position as i64,
-            label: if c.label.is_empty() { None } else { Some(c.label.clone()) },
-            color: c.color.clone(),
-        }).collect();
+        track.cue_points = cue_points.iter()
+            .map(|c| DbCuePoint::from_runtime(track_id, c))
+            .collect();
 
-        // Convert saved loops to database format
-        track.saved_loops = saved_loops.iter().map(|l| DbSavedLoop {
-            track_id,
-            index: l.index,
-            start_sample: l.start_sample as i64,
-            end_sample: l.end_sample as i64,
-            label: if l.label.is_empty() { None } else { Some(l.label.clone()) },
-            color: l.color.clone(),
-        }).collect();
+        track.saved_loops = saved_loops.iter()
+            .map(|l| DbSavedLoop::from_runtime(track_id, l))
+            .collect();
 
         // Use central conversion method for stem links
         track.stem_links = self.convert_stem_links_to_db(track_id, stem_links);

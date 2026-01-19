@@ -55,7 +55,7 @@ pub struct PlaylistTrack {
     pub sort_order: i32,
 }
 
-/// A cue point on a track
+/// A cue point on a track (database format)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CuePoint {
     pub track_id: i64,
@@ -65,7 +65,23 @@ pub struct CuePoint {
     pub color: Option<String>,
 }
 
-/// A saved loop on a track
+impl CuePoint {
+    /// Create from runtime CuePoint format
+    ///
+    /// Converts from audio_file::CuePoint (u64 sample, String label)
+    /// to database format (i64 sample, Option<String> label).
+    pub fn from_runtime(track_id: i64, cue: &crate::audio_file::CuePoint) -> Self {
+        Self {
+            track_id,
+            index: cue.index,
+            sample_position: cue.sample_position as i64,
+            label: if cue.label.is_empty() { None } else { Some(cue.label.clone()) },
+            color: cue.color.clone(),
+        }
+    }
+}
+
+/// A saved loop on a track (database format)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedLoop {
     pub track_id: i64,
@@ -74,6 +90,23 @@ pub struct SavedLoop {
     pub end_sample: i64,
     pub label: Option<String>,
     pub color: Option<String>,
+}
+
+impl SavedLoop {
+    /// Create from runtime SavedLoop format
+    ///
+    /// Converts from audio_file::SavedLoop (u64 samples)
+    /// to database format (i64 samples).
+    pub fn from_runtime(track_id: i64, loop_: &crate::audio_file::SavedLoop) -> Self {
+        Self {
+            track_id,
+            index: loop_.index,
+            start_sample: loop_.start_sample as i64,
+            end_sample: loop_.end_sample as i64,
+            label: if loop_.label.is_empty() { None } else { Some(loop_.label.clone()) },
+            color: loop_.color.clone(),
+        }
+    }
 }
 
 /// A stem link for prepared mode (linking stems between tracks)
