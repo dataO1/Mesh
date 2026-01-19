@@ -14,7 +14,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use basedrop::Shared;
 use mesh_core::db::DatabaseService;
 use iced::widget::{button, center, column, container, mouse_area, opaque, row, slider, stack, text, Space};
 use iced::{Center as CenterAlign, Color, Element, Fill, Length, Subscription, Task, Theme};
@@ -23,14 +22,12 @@ use iced::time;
 use crate::audio::CommandSender;
 use crate::config::{self, PlayerConfig};
 use crate::domain::MeshDomain;
-use crate::loader::TrackLoader;
 
 use mesh_midi::{MidiController, MidiMessage as MidiMsg, MidiInputEvent, DeckAction as MidiDeckAction, MixerAction as MidiMixerAction, BrowserAction as MidiBrowserAction};
-use mesh_core::audio_file::StemBuffers;
-use mesh_core::engine::{DeckAtomics, EngineCommand, LinkedStemAtomics, SlicerAtomics};
-use mesh_core::types::{StereoBuffer, NUM_DECKS};
+use mesh_core::engine::{DeckAtomics, LinkedStemAtomics, SlicerAtomics};
+use mesh_core::types::NUM_DECKS;
 use mesh_widgets::{
-    mpsc_subscription, PeaksComputer, PeaksComputeRequest, SliceEditorState, ZoomedViewMode,
+    mpsc_subscription, PeaksComputeRequest, SliceEditorState, ZoomedViewMode,
     TRACK_ROW_HEIGHT, TRACK_TABLE_SCROLLABLE_ID,
 };
 use super::collection_browser::{CollectionBrowserState, CollectionBrowserMessage};
@@ -47,14 +44,8 @@ pub use super::state::{AppMode, LinkedStemLoadedMsg, StemLinkState, TrackLoadedM
 /// Application state
 pub struct MeshApp {
     /// Domain layer for service orchestration
-    /// Manages which database (local vs USB) is used for metadata lookups
+    /// Manages databases, services, and domain state (stems, LUFS, BPM)
     domain: MeshDomain,
-    /// Database service for track metadata (required)
-    /// Note: Prefer using domain.active_db() for metadata lookups
-    db_service: Arc<DatabaseService>,
-    /// Command sender for lock-free communication with audio engine
-    /// Uses an SPSC ringbuffer - no mutex, no dropouts, guaranteed delivery
-    command_sender: Option<CommandSender>,
     /// Lock-free deck state for UI reads (position, play state, loop)
     /// These atomics are updated by the audio thread; UI reads are wait-free
     deck_atomics: Option<[Arc<DeckAtomics>; NUM_DECKS]>,
@@ -62,32 +53,16 @@ pub struct MeshApp {
     slicer_atomics: Option<[Arc<SlicerAtomics>; NUM_DECKS]>,
     /// Lock-free linked stem state for UI reads (which stems have links)
     linked_stem_atomics: Option<[Arc<LinkedStemAtomics>; NUM_DECKS]>,
-    /// Background track loader (avoids blocking UI/audio during loads)
-    track_loader: TrackLoader,
-    /// Background peak computer (offloads expensive waveform peak computation)
-    peaks_computer: PeaksComputer,
     /// Unified waveform state for all 4 decks
     player_canvas_state: PlayerCanvasState,
-    /// Stem buffers for waveform recomputation (Shared for RT-safe deallocation)
-    deck_stems: [Option<Shared<StemBuffers>>; 4],
-    /// Linked stem buffers per deck per stem [deck_idx][stem_idx]
-    /// Used for zoomed waveform visualization of active linked stems
-    deck_linked_stems: [[Option<Shared<StereoBuffer>>; 4]; 4],
-    /// Track LUFS per deck (cached from TrackLoaded for LinkedStemLoaded)
-    /// Used to avoid race conditions when passing host_lufs to LinkStem command
-    track_lufs_per_deck: [Option<f32>; 4],
     /// Local deck view states (controls only, waveform moved to player_canvas_state)
     deck_views: [DeckView; 4],
     /// Mixer view state
     mixer_view: MixerView,
     /// Collection browser (read-only, shared with mesh-cue)
     collection_browser: CollectionBrowserState,
-    /// Global BPM (cached for UI display; authoritative value is in audio engine)
-    global_bpm: f64,
     /// Status message
     status: String,
-    /// Whether audio is connected
-    audio_connected: bool,
     /// Configuration
     config: Arc<PlayerConfig>,
     /// Path to config file
@@ -104,10 +79,6 @@ pub struct MeshApp {
     stem_link_state: StemLinkState,
     /// Slice editor state (shared presets and per-stem patterns)
     slice_editor: SliceEditorState,
-    /// Linked stem result receiver (engine owns the loader, we just receive results)
-    linked_stem_receiver: Option<mesh_core::loader::LinkedStemResultReceiver>,
-    /// USB manager for device detection and browsing
-    usb_manager: mesh_core::usb::UsbManager,
 }
 
 // Message enum moved to message.rs
@@ -126,7 +97,7 @@ impl MeshApp {
     /// - `jack_sample_rate`: JACK's sample rate for track loading (e.g., 48000 or 44100)
     pub fn new(
         db_service: Arc<DatabaseService>,
-        mut command_sender: Option<CommandSender>,
+        command_sender: Option<CommandSender>,
         deck_atomics: Option<[Arc<DeckAtomics>; NUM_DECKS]>,
         slicer_atomics: Option<[Arc<SlicerAtomics>; NUM_DECKS]>,
         linked_stem_atomics: Option<[Arc<LinkedStemAtomics>; NUM_DECKS]>,
@@ -139,39 +110,10 @@ impl MeshApp {
         let config = Arc::new(config::load_config(&config_path));
         let settings = SettingsState::from_config(&config);
 
-        // Send initial config to audio engine
-        if let Some(ref mut sender) = command_sender {
-            // Initialize global BPM
-            let _ = sender.send(EngineCommand::SetGlobalBpm(config.audio.global_bpm));
-            // Initialize phase sync setting
-            let _ = sender.send(EngineCommand::SetPhaseSync(config.audio.phase_sync));
-            // Initialize slicer presets from shared presets file (same source as UI)
-            let slicer_config = mesh_widgets::load_slicer_presets(&config.collection_path);
-            let _ = sender.send(EngineCommand::SetSlicerPresets {
-                presets: Box::new(config::slicer_config_to_engine_presets(&slicer_config)),
-            });
-            // Initialize slicer buffer size for all decks and stems
-            let buffer_bars = slicer_config.validated_buffer_bars();
-            let stems = [
-                mesh_core::types::Stem::Vocals,
-                mesh_core::types::Stem::Drums,
-                mesh_core::types::Stem::Bass,
-                mesh_core::types::Stem::Other,
-            ];
-            for deck in 0..4 {
-                for &stem in &stems {
-                    let _ = sender.send(EngineCommand::SetSlicerBufferBars {
-                        deck,
-                        stem,
-                        bars: buffer_bars,
-                    });
-                }
-            }
-            // Initialize loudness config (engine calculates LUFS gain automatically)
-            let _ = sender.send(EngineCommand::SetLoudnessConfig(config.audio.loudness.clone()));
-        }
-
         let audio_connected = command_sender.is_some();
+
+        // Load slicer presets (shared with both engine and UI)
+        let slicer_config = mesh_widgets::load_slicer_presets(&config.collection_path);
 
         // Initialize MIDI controller with raw event capture enabled (for MIDI learn mode)
         // Raw capture has minimal overhead when not actively reading
@@ -188,26 +130,37 @@ impl MeshApp {
             }
         };
 
-        // Create domain layer for service orchestration
-        let domain = MeshDomain::new(db_service.clone(), config.collection_path.clone());
+        // Create domain layer with all services
+        // Domain owns: command_sender, track_loader, peaks_computer, usb_manager, linked_stem_receiver
+        // Domain also owns: deck_stems, deck_linked_stems, track_lufs_per_deck, global_bpm
+        let mut domain = MeshDomain::new(
+            db_service.clone(),
+            config.collection_path.clone(),
+            command_sender,
+            linked_stem_receiver,
+            jack_sample_rate,
+            config.audio.global_bpm,
+        );
+
+        // Initialize audio engine with config (sends initial settings)
+        domain.initialize_engine(
+            config.audio.global_bpm,
+            config.audio.phase_sync,
+            config::slicer_config_to_engine_presets(&slicer_config),
+            slicer_config.validated_buffer_bars(),
+            config.audio.loudness.clone(),
+        );
 
         Self {
             domain,
-            db_service: db_service.clone(),
-            command_sender,
             deck_atomics,
             slicer_atomics,
             linked_stem_atomics,
-            track_loader: TrackLoader::spawn(jack_sample_rate),
-            peaks_computer: PeaksComputer::spawn(),
             player_canvas_state: {
                 let mut state = PlayerCanvasState::new();
                 state.set_stem_colors(config.display.stem_color_palette.colors());
                 state
             },
-            deck_stems: [None, None, None, None],
-            deck_linked_stems: std::array::from_fn(|_| [None, None, None, None]),
-            track_lufs_per_deck: [None, None, None, None],
             deck_views: [
                 DeckView::new(0),
                 DeckView::new(1),
@@ -220,12 +173,9 @@ impl MeshApp {
                 db_service.clone(),
                 config.display.show_local_collection,
             ),
-            global_bpm: config.audio.global_bpm,
             status: if audio_connected { "Audio connected (lock-free)".to_string() } else { "No audio".to_string() },
-            audio_connected,
             slice_editor: {
-                // Load presets from dedicated file (shared with mesh-cue, read-only)
-                let slicer_config = mesh_widgets::load_slicer_presets(&config.collection_path);
+                // Apply presets to slice editor (reusing already-loaded config)
                 let mut state = SliceEditorState::default();
                 slicer_config.apply_to_editor_state(&mut state);
                 state
@@ -237,9 +187,6 @@ impl MeshApp {
             midi_learn: MidiLearnState::new(),
             app_mode: if mapping_mode { AppMode::Mapping } else { AppMode::Performance },
             stem_link_state: StemLinkState::Idle,
-            linked_stem_receiver,
-            // Pass shared database service to USB manager for sync operations
-            usb_manager: mesh_core::usb::UsbManager::spawn(Some(db_service)),
         }
     }
 
@@ -542,16 +489,16 @@ impl MeshApp {
 
                         let zoomed = &self.player_canvas_state.decks[i].zoomed;
                         if zoomed.needs_recompute(position, &linked_active) && zoomed.has_track {
-                            if let Some(ref stems) = self.deck_stems[i] {
+                            if let Some(ref stems) = self.domain.deck_stems()[i] {
                                 // Clone linked stem buffer references (cheap Shared clone)
                                 let linked_stems = [
-                                    self.deck_linked_stems[i][0].clone(),
-                                    self.deck_linked_stems[i][1].clone(),
-                                    self.deck_linked_stems[i][2].clone(),
-                                    self.deck_linked_stems[i][3].clone(),
+                                    self.domain.deck_linked_stem(i, 0).cloned(),
+                                    self.domain.deck_linked_stem(i, 1).cloned(),
+                                    self.domain.deck_linked_stem(i, 2).cloned(),
+                                    self.domain.deck_linked_stem(i, 3).cloned(),
                                 ];
 
-                                let _ = self.peaks_computer.compute(PeaksComputeRequest {
+                                let _ = self.domain.request_peaks_compute(PeaksComputeRequest {
                                     id: i,
                                     playhead: position,
                                     stems: stems.clone(),
@@ -643,12 +590,13 @@ impl MeshApp {
                             track.duration_samples
                         );
 
+                        // ─────────────────────────────────────────────────
+                        // UI State Updates (waveforms, display)
+                        // ─────────────────────────────────────────────────
+
                         // Apply pre-computed waveform states (expensive work already done in loader)
                         self.player_canvas_state.decks[deck_idx].overview = result.overview_state;
                         self.player_canvas_state.decks[deck_idx].zoomed = result.zoomed_state;
-
-                        // Store stem buffers for potential waveform recomputation
-                        self.deck_stems[deck_idx] = Some(result.stems);
 
                         // Set track info on player canvas state (for header display)
                         self.player_canvas_state.set_track_name(deck_idx, filename.clone());
@@ -657,14 +605,6 @@ impl MeshApp {
                             track.metadata.key.clone().unwrap_or_default()
                         );
                         self.player_canvas_state.set_track_bpm(deck_idx, track.metadata.bpm);
-                        // Store track LUFS for use in LinkedStemLoaded (avoids race conditions)
-                        self.track_lufs_per_deck[deck_idx] = track.metadata.lufs;
-                        log::info!(
-                            "[LUFS] app.rs TrackLoaded: deck {} - track_lufs={:?}, stored for LinkedStemLoaded",
-                            deck_idx,
-                            track.metadata.lufs
-                        );
-                        // LUFS gain is calculated by engine and synced via atomics in Tick
 
                         // Sync hot cues to deck view for display
                         for (slot, hot_cue) in prepared.hot_cues.iter().enumerate() {
@@ -679,18 +619,21 @@ impl MeshApp {
                             self.deck_views[deck_idx].set_stem_muted(stem_idx, false);
                             self.deck_views[deck_idx].set_stem_soloed(stem_idx, false);
                             self.player_canvas_state.set_stem_active(deck_idx, stem_idx, true);
-                            // Clear any linked stems from previous track
+                            // Clear linked stem visual state
                             self.player_canvas_state.set_linked_stem(deck_idx, stem_idx, false, false);
-                            self.deck_linked_stems[deck_idx][stem_idx] = None;
                         }
 
-                        // Send prepared track to audio engine via lock-free command
-                        if let Some(ref mut sender) = self.command_sender {
-                            let _ = sender.send(EngineCommand::LoadTrack {
-                                deck: deck_idx,
-                                track: Box::new(prepared),
-                            });
-                        }
+                        // ─────────────────────────────────────────────────
+                        // Domain State Updates (encapsulated)
+                        // ─────────────────────────────────────────────────
+
+                        // Domain handles: stem buffers, LUFS cache, linked stem cleanup, engine send
+                        self.domain.apply_loaded_track(
+                            deck_idx,
+                            result.stems,
+                            track.metadata.lufs,
+                            prepared,
+                        );
 
                         self.status = format!("Loaded {} to deck {}", filename, deck_idx + 1);
                     }
@@ -735,7 +678,7 @@ impl MeshApp {
                                 stem_idx,
                                 shared_buffer.len()
                             );
-                            self.deck_linked_stems[deck_idx][stem_idx] = Some(shared_buffer);
+                            self.domain.set_deck_linked_stem(deck_idx, stem_idx, Some(shared_buffer));
                         }
 
                         // Store linked stem overview peaks in waveform state for visualization
@@ -809,33 +752,24 @@ impl MeshApp {
                         // Mark stem as having a linked stem (enables split-view)
                         self.player_canvas_state.set_linked_stem(deck_idx, stem_idx, true, false);
 
-                        // Send linked stem to audio engine
-                        if let Some(ref mut sender) = self.command_sender {
-                            if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
-                                let track_name = linked_data.track_name.clone();
-                                // Pass host_lufs explicitly to avoid race conditions
-                                // (deck.host_lufs in engine might be stale)
-                                let host_lufs = self.track_lufs_per_deck[deck_idx];
-                                log::info!(
-                                    "[LUFS] app.rs LinkStem: deck {} stem {} - host_lufs={:?}, linked_lufs={:?}",
-                                    deck_idx,
-                                    stem_idx,
-                                    host_lufs,
-                                    linked_data.lufs
-                                );
-                                let _ = sender.send(EngineCommand::LinkStem {
-                                    deck: deck_idx,
-                                    stem,
-                                    linked_stem: Box::new(linked_data),
-                                    host_lufs,
-                                });
-                                self.status = format!(
-                                    "Linked {} stem on deck {} from {}",
-                                    stem.name(),
-                                    deck_idx + 1,
-                                    track_name
-                                );
-                            }
+                        // Send linked stem to audio engine via domain
+                        if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
+                            let track_name = linked_data.track_name.clone();
+                            let host_lufs = self.domain.track_lufs(deck_idx);
+                            log::info!(
+                                "[LUFS] app.rs LinkStem: deck {} stem {} - host_lufs={:?}, linked_lufs={:?}",
+                                deck_idx,
+                                stem_idx,
+                                host_lufs,
+                                linked_data.lufs
+                            );
+                            self.domain.link_stem(deck_idx, stem, linked_data, host_lufs);
+                            self.status = format!(
+                                "Linked {} stem on deck {} from {}",
+                                stem.name(),
+                                deck_idx + 1,
+                                track_name
+                            );
                         }
 
                         // Transition from Loading to Idle - linked stem is ready
@@ -863,235 +797,227 @@ impl MeshApp {
 
             Message::Deck(deck_idx, deck_msg) => {
                 if deck_idx < 4 {
-                    // Translate DeckMessage to EngineCommand and send via lock-free queue
-                    // No mutex, no blocking, no dropouts!
-                    if let Some(ref mut sender) = self.command_sender {
-                        use DeckMessage::*;
-                        match deck_msg {
-                            TogglePlayPause => {
-                                let _ = sender.send(EngineCommand::TogglePlay { deck: deck_idx });
-                            }
-                            CuePressed => {
-                                let _ = sender.send(EngineCommand::CuePress { deck: deck_idx });
-                            }
-                            CueReleased => {
-                                let _ = sender.send(EngineCommand::CueRelease { deck: deck_idx });
-                            }
-                            SetCue => {
-                                let _ = sender.send(EngineCommand::SetCuePoint { deck: deck_idx });
-                            }
-                            HotCuePressed(slot) => {
-                                // If slot is empty, engine will set a new hot cue at current position
-                                // Update UI optimistically by reading current position from atomics
-                                let slot_was_empty = self.deck_views[deck_idx].hot_cue_position(slot).is_none();
-                                if slot_was_empty {
-                                    if let Some(ref atomics) = self.deck_atomics {
-                                        let position = atomics[deck_idx].position();
-                                        self.deck_views[deck_idx].set_hot_cue_position(slot, Some(position));
-                                    }
-                                }
-                                let _ = sender.send(EngineCommand::HotCuePress { deck: deck_idx, slot });
-                            }
-                            HotCueReleased(_slot) => {
-                                let _ = sender.send(EngineCommand::HotCueRelease { deck: deck_idx });
-                            }
-                            SetHotCue(_slot) => {
-                                // Hot cue is set automatically on press if empty
-                            }
-                            ClearHotCue(slot) => {
-                                // Clear the UI state for this hot cue slot
-                                self.deck_views[deck_idx].set_hot_cue_position(slot, None);
-                                let _ = sender.send(EngineCommand::ClearHotCue { deck: deck_idx, slot });
-                            }
-                            Sync => {
-                                // TODO: Implement sync command
-                            }
-                            ToggleLoop => {
-                                let _ = sender.send(EngineCommand::ToggleLoop { deck: deck_idx });
-                            }
-                            ToggleSlip => {
-                                let _ = sender.send(EngineCommand::ToggleSlip { deck: deck_idx });
-                            }
-                            ToggleKeyMatch => {
-                                // Toggle key matching for this deck
-                                let current = self.deck_views[deck_idx].key_match_enabled();
-                                let _ = sender.send(EngineCommand::SetKeyMatchEnabled { deck: deck_idx, enabled: !current });
-                            }
-                            SetLoopLength(_beats) => {
-                                // Loop length is handled via adjust commands
-                            }
-                            LoopHalve => {
-                                let _ = sender.send(EngineCommand::AdjustLoopLength { deck: deck_idx, direction: -1 });
-                            }
-                            LoopDouble => {
-                                let _ = sender.send(EngineCommand::AdjustLoopLength { deck: deck_idx, direction: 1 });
-                            }
-                            BeatJumpBack => {
-                                let _ = sender.send(EngineCommand::BeatJumpBackward { deck: deck_idx });
-                            }
-                            BeatJumpForward => {
-                                let _ = sender.send(EngineCommand::BeatJumpForward { deck: deck_idx });
-                            }
-                            ToggleStemMute(stem_idx) => {
-                                let shift_held = self.deck_views[deck_idx].shift_held();
-                                log::info!(
-                                    "[STEM_TOGGLE] Stem button pressed: deck={}, stem={}, shift_held={}",
-                                    deck_idx, stem_idx, shift_held
-                                );
-
-                                if shift_held {
-                                    // Shift+Stem: Linked stem operation
-                                    self.handle_shift_stem(deck_idx, stem_idx);
-                                } else {
-                                    // Normal: Toggle mute
-                                    if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
-                                        let _ = sender.send(EngineCommand::ToggleStemMute { deck: deck_idx, stem });
-                                    }
-                                    // Toggle mute state in DeckView for UI
-                                    let was_muted = self.deck_views[deck_idx].is_stem_muted(stem_idx);
-                                    let new_muted = !was_muted;
-                                    self.deck_views[deck_idx].set_stem_muted(stem_idx, new_muted);
-
-                                    // stem_active = NOT muted (when muted, stem is inactive)
-                                    self.player_canvas_state.set_stem_active(deck_idx, stem_idx, !new_muted);
+                    // Handle deck messages via domain layer (no direct EngineCommand sends)
+                    use DeckMessage::*;
+                    match deck_msg {
+                        // ─────────────────────────────────────────────────
+                        // Playback Control
+                        // ─────────────────────────────────────────────────
+                        TogglePlayPause => {
+                            self.domain.toggle_play(deck_idx);
+                        }
+                        CuePressed => {
+                            self.domain.cue_press(deck_idx);
+                        }
+                        CueReleased => {
+                            self.domain.cue_release(deck_idx);
+                        }
+                        SetCue => {
+                            self.domain.set_cue_point(deck_idx);
+                        }
+                        // ─────────────────────────────────────────────────
+                        // Hot Cues
+                        // ─────────────────────────────────────────────────
+                        HotCuePressed(slot) => {
+                            // If slot is empty, engine will set a new hot cue at current position
+                            // Update UI optimistically by reading current position from atomics
+                            let slot_was_empty = self.deck_views[deck_idx].hot_cue_position(slot).is_none();
+                            if slot_was_empty {
+                                if let Some(ref atomics) = self.deck_atomics {
+                                    let position = atomics[deck_idx].position();
+                                    self.deck_views[deck_idx].set_hot_cue_position(slot, Some(position));
                                 }
                             }
-                            ToggleStemSolo(stem_idx) => {
+                            self.domain.hot_cue_press(deck_idx, slot);
+                        }
+                        HotCueReleased(_slot) => {
+                            self.domain.hot_cue_release(deck_idx);
+                        }
+                        SetHotCue(_slot) => {
+                            // Hot cue is set automatically on press if empty
+                        }
+                        ClearHotCue(slot) => {
+                            // Clear the UI state for this hot cue slot
+                            self.deck_views[deck_idx].set_hot_cue_position(slot, None);
+                            self.domain.clear_hot_cue(deck_idx, slot);
+                        }
+                        Sync => {
+                            // TODO: Implement sync command
+                        }
+                        // ─────────────────────────────────────────────────
+                        // Loop Control
+                        // ─────────────────────────────────────────────────
+                        ToggleLoop => {
+                            self.domain.toggle_loop(deck_idx);
+                        }
+                        ToggleSlip => {
+                            self.domain.toggle_slip(deck_idx);
+                        }
+                        ToggleKeyMatch => {
+                            // Toggle key matching for this deck
+                            let current = self.deck_views[deck_idx].key_match_enabled();
+                            self.domain.set_key_match_enabled(deck_idx, !current);
+                        }
+                        SetLoopLength(_beats) => {
+                            // Loop length is handled via adjust commands
+                        }
+                        LoopHalve => {
+                            self.domain.adjust_loop_length(deck_idx, -1);
+                        }
+                        LoopDouble => {
+                            self.domain.adjust_loop_length(deck_idx, 1);
+                        }
+                        // ─────────────────────────────────────────────────
+                        // Beat Jump
+                        // ─────────────────────────────────────────────────
+                        BeatJumpBack => {
+                            self.domain.beat_jump_backward(deck_idx);
+                        }
+                        BeatJumpForward => {
+                            self.domain.beat_jump_forward(deck_idx);
+                        }
+                        // ─────────────────────────────────────────────────
+                        // Stem Control
+                        // ─────────────────────────────────────────────────
+                        ToggleStemMute(stem_idx) => {
+                            let shift_held = self.deck_views[deck_idx].shift_held();
+                            log::info!(
+                                "[STEM_TOGGLE] Stem button pressed: deck={}, stem={}, shift_held={}",
+                                deck_idx, stem_idx, shift_held
+                            );
+
+                            if shift_held {
+                                // Shift+Stem: Linked stem operation
+                                self.handle_shift_stem(deck_idx, stem_idx);
+                            } else {
+                                // Normal: Toggle mute
                                 if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
-                                    let _ = sender.send(EngineCommand::ToggleStemSolo { deck: deck_idx, stem });
+                                    self.domain.toggle_stem_mute(deck_idx, stem);
                                 }
-                                // Toggle solo state
-                                let was_soloed = self.deck_views[deck_idx].is_stem_soloed(stem_idx);
-                                let new_soloed = !was_soloed;
+                                // Toggle mute state in DeckView for UI
+                                let was_muted = self.deck_views[deck_idx].is_stem_muted(stem_idx);
+                                let new_muted = !was_muted;
+                                self.deck_views[deck_idx].set_stem_muted(stem_idx, new_muted);
 
-                                if new_soloed {
-                                    // Solo: this stem becomes active, all others become inactive
-                                    for i in 0..4 {
-                                        self.deck_views[deck_idx].set_stem_soloed(i, i == stem_idx);
-                                        // When soloing, set active state based on solo selection
-                                        // (ignore mute state - solo overrides)
-                                        self.player_canvas_state.set_stem_active(deck_idx, i, i == stem_idx);
-                                    }
-                                } else {
-                                    // Un-solo: all stems become active (unless muted)
-                                    self.deck_views[deck_idx].set_stem_soloed(stem_idx, false);
-                                    for i in 0..4 {
-                                        let is_muted = self.deck_views[deck_idx].is_stem_muted(i);
-                                        self.player_canvas_state.set_stem_active(deck_idx, i, !is_muted);
-                                    }
+                                // stem_active = NOT muted (when muted, stem is inactive)
+                                self.player_canvas_state.set_stem_active(deck_idx, stem_idx, !new_muted);
+                            }
+                        }
+                        ToggleStemSolo(stem_idx) => {
+                            if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
+                                self.domain.toggle_stem_solo(deck_idx, stem);
+                            }
+                            // Toggle solo state
+                            let was_soloed = self.deck_views[deck_idx].is_stem_soloed(stem_idx);
+                            let new_soloed = !was_soloed;
+
+                            if new_soloed {
+                                // Solo: this stem becomes active, all others become inactive
+                                for i in 0..4 {
+                                    self.deck_views[deck_idx].set_stem_soloed(i, i == stem_idx);
+                                    // When soloing, set active state based on solo selection
+                                    // (ignore mute state - solo overrides)
+                                    self.player_canvas_state.set_stem_active(deck_idx, i, i == stem_idx);
+                                }
+                            } else {
+                                // Un-solo: all stems become active (unless muted)
+                                self.deck_views[deck_idx].set_stem_soloed(stem_idx, false);
+                                for i in 0..4 {
+                                    let is_muted = self.deck_views[deck_idx].is_stem_muted(i);
+                                    self.player_canvas_state.set_stem_active(deck_idx, i, !is_muted);
                                 }
                             }
-                            SelectStem(stem_idx) => {
-                                // UI-only state, no command needed
-                                self.deck_views[deck_idx].set_selected_stem(stem_idx);
-                            }
-                            SetStemKnob(_stem_idx, _knob_idx, _value) => {
-                                // TODO: Effect parameter control
-                            }
-                            ToggleEffectBypass(_stem_idx, _effect_idx) => {
-                                // TODO: Effect bypass control
-                            }
-                            // ─────────────────────────────────────────────────
-                            // Slicer Mode Controls
-                            // ─────────────────────────────────────────────────
-                            SetActionMode(mode) => {
-                                // Update UI state
-                                self.deck_views[deck_idx].set_action_mode(mode);
+                        }
+                        SelectStem(stem_idx) => {
+                            // UI-only state, no command needed
+                            self.deck_views[deck_idx].set_selected_stem(stem_idx);
+                        }
+                        SetStemKnob(_stem_idx, _knob_idx, _value) => {
+                            // TODO: Effect parameter control
+                        }
+                        ToggleEffectBypass(_stem_idx, _effect_idx) => {
+                            // TODO: Effect bypass control
+                        }
+                        // ─────────────────────────────────────────────────
+                        // Slicer Mode Controls
+                        // ─────────────────────────────────────────────────
+                        SetActionMode(mode) => {
+                            // Update UI state
+                            self.deck_views[deck_idx].set_action_mode(mode);
 
-                                // Enable/disable slicer based on mode for stems with patterns
-                                use crate::ui::deck_view::ActionButtonMode;
-                                use mesh_core::types::Stem;
-                                let stems = [Stem::Vocals, Stem::Drums, Stem::Bass, Stem::Other];
-                                let preset = &self.slice_editor.presets[self.slice_editor.selected_preset];
+                            // Enable/disable slicer based on mode for stems with patterns
+                            use crate::ui::deck_view::ActionButtonMode;
+                            use mesh_core::types::Stem;
+                            let stems = [Stem::Vocals, Stem::Drums, Stem::Bass, Stem::Other];
+                            let preset = &self.slice_editor.presets[self.slice_editor.selected_preset];
 
-                                match mode {
-                                    ActionButtonMode::Slicer => {
-                                        // Entering slicer mode - enable slicer for stems with patterns
-                                        for (idx, &stem) in stems.iter().enumerate() {
-                                            if preset.stems[idx].is_some() {
-                                                let _ = sender.send(EngineCommand::SetSlicerEnabled {
-                                                    deck: deck_idx,
-                                                    stem,
-                                                    enabled: true,
-                                                });
-                                            }
+                            match mode {
+                                ActionButtonMode::Slicer => {
+                                    // Entering slicer mode - enable slicer for stems with patterns
+                                    for (idx, &stem) in stems.iter().enumerate() {
+                                        if preset.stems[idx].is_some() {
+                                            self.domain.set_slicer_enabled(deck_idx, stem, true);
                                         }
                                     }
-                                    ActionButtonMode::HotCue => {
-                                        // Leaving slicer mode - disable processing but keep queue arrangement
-                                        for &stem in &stems {
-                                            let _ = sender.send(EngineCommand::SetSlicerEnabled {
-                                                deck: deck_idx,
-                                                stem,
-                                                enabled: false,
-                                            });
-                                        }
+                                }
+                                ActionButtonMode::HotCue => {
+                                    // Leaving slicer mode - disable processing but keep queue arrangement
+                                    for &stem in &stems {
+                                        self.domain.set_slicer_enabled(deck_idx, stem, false);
                                     }
                                 }
                             }
-                            SlicerPresetSelect(preset_idx) => {
-                                // Select a new slicer preset via engine's button action
-                                // The engine handles enabling slicers and loading patterns
-                                use mesh_core::types::Stem;
-                                let stems = [Stem::Vocals, Stem::Drums, Stem::Bass, Stem::Other];
+                        }
+                        SlicerPresetSelect(preset_idx) => {
+                            // Select a new slicer preset via engine's button action
+                            // The engine handles enabling slicers and loading patterns
+                            use mesh_core::types::Stem;
+                            let stems = [Stem::Vocals, Stem::Drums, Stem::Bass, Stem::Other];
 
-                                // Update selected preset in slice editor state
-                                self.slice_editor.selected_preset = preset_idx;
+                            // Update selected preset in slice editor state
+                            self.slice_editor.selected_preset = preset_idx;
 
-                                // Send button action to engine for each stem (shift_held=false = load preset)
-                                let preset = &self.slice_editor.presets[preset_idx];
-                                for (idx, &stem) in stems.iter().enumerate() {
-                                    if preset.stems[idx].is_some() {
-                                        let _ = sender.send(EngineCommand::SlicerButtonAction {
-                                            deck: deck_idx,
-                                            stem,
-                                            button_idx: preset_idx,
-                                            shift_held: false, // Load preset mode
-                                        });
-                                    }
+                            // Send button action to engine for each stem (shift_held=false = load preset)
+                            let preset = &self.slice_editor.presets[preset_idx];
+                            for (idx, &stem) in stems.iter().enumerate() {
+                                if preset.stems[idx].is_some() {
+                                    self.domain.slicer_button_action(deck_idx, stem, preset_idx, false);
                                 }
                             }
-                            SlicerTrigger(button_idx) => {
-                                // Shift+click triggers slice for live queue adjustment
-                                use mesh_core::types::Stem;
-                                let stems = [Stem::Vocals, Stem::Drums, Stem::Bass, Stem::Other];
-                                let shift_held = self.deck_views[deck_idx].shift_held();
-                                let preset = &self.slice_editor.presets[self.slice_editor.selected_preset];
+                        }
+                        SlicerTrigger(button_idx) => {
+                            // Shift+click triggers slice for live queue adjustment
+                            use mesh_core::types::Stem;
+                            let stems = [Stem::Vocals, Stem::Drums, Stem::Bass, Stem::Other];
+                            let shift_held = self.deck_views[deck_idx].shift_held();
+                            let preset = &self.slice_editor.presets[self.slice_editor.selected_preset];
 
-                                for (idx, &stem) in stems.iter().enumerate() {
-                                    if preset.stems[idx].is_some() {
-                                        let _ = sender.send(EngineCommand::SlicerButtonAction {
-                                            deck: deck_idx,
-                                            stem,
-                                            button_idx,
-                                            shift_held,
-                                        });
-                                    }
+                            for (idx, &stem) in stems.iter().enumerate() {
+                                if preset.stems[idx].is_some() {
+                                    self.domain.slicer_button_action(deck_idx, stem, button_idx, shift_held);
                                 }
                             }
-                            ResetSlicerPattern => {
-                                // Reset slicer queue to default [0..15]
-                                use mesh_core::types::Stem;
-                                let stems = [Stem::Vocals, Stem::Drums, Stem::Bass, Stem::Other];
-                                let preset = &self.slice_editor.presets[self.slice_editor.selected_preset];
+                        }
+                        ResetSlicerPattern => {
+                            // Reset slicer queue to default [0..15]
+                            use mesh_core::types::Stem;
+                            let stems = [Stem::Vocals, Stem::Drums, Stem::Bass, Stem::Other];
+                            let preset = &self.slice_editor.presets[self.slice_editor.selected_preset];
 
-                                for (idx, &stem) in stems.iter().enumerate() {
-                                    if preset.stems[idx].is_some() {
-                                        let _ = sender.send(EngineCommand::SlicerResetQueue {
-                                            deck: deck_idx,
-                                            stem,
-                                        });
-                                    }
+                            for (idx, &stem) in stems.iter().enumerate() {
+                                if preset.stems[idx].is_some() {
+                                    self.domain.slicer_reset_queue(deck_idx, stem);
                                 }
                             }
-                            ShiftPressed => {
-                                // UI-only state change
-                                self.deck_views[deck_idx].set_shift_held(true);
-                            }
-                            ShiftReleased => {
-                                // UI-only state change
-                                self.deck_views[deck_idx].set_shift_held(false);
-                            }
+                        }
+                        // ─────────────────────────────────────────────────
+                        // Shift State (UI only)
+                        // ─────────────────────────────────────────────────
+                        ShiftPressed => {
+                            self.deck_views[deck_idx].set_shift_held(true);
+                        }
+                        ShiftReleased => {
+                            self.deck_views[deck_idx].set_shift_held(false);
                         }
                     }
                 }
@@ -1099,33 +1025,31 @@ impl MeshApp {
             }
 
             Message::Mixer(mixer_msg) => {
-                // Translate MixerMessage to EngineCommand where applicable
-                if let Some(ref mut sender) = self.command_sender {
-                    use MixerMessage::*;
-                    match &mixer_msg {
-                        SetChannelVolume(deck, volume) => {
-                            let _ = sender.send(EngineCommand::SetVolume { deck: *deck, volume: *volume });
-                        }
-                        ToggleChannelCue(deck) => {
-                            // Read current state and send toggle
-                            let enabled = !self.mixer_view.cue_enabled(*deck);
-                            let _ = sender.send(EngineCommand::SetCueListen { deck: *deck, enabled });
-                        }
-                        SetChannelEqHi(deck, value) => {
-                            let _ = sender.send(EngineCommand::SetEqHi { deck: *deck, value: *value });
-                        }
-                        SetChannelEqMid(deck, value) => {
-                            let _ = sender.send(EngineCommand::SetEqMid { deck: *deck, value: *value });
-                        }
-                        SetChannelEqLo(deck, value) => {
-                            let _ = sender.send(EngineCommand::SetEqLo { deck: *deck, value: *value });
-                        }
-                        SetChannelFilter(deck, value) => {
-                            let _ = sender.send(EngineCommand::SetFilter { deck: *deck, value: *value });
-                        }
-                        _ => {
-                            // Master volume, cue volume, cue mix - not yet in engine
-                        }
+                // Send mixer commands to audio engine via domain
+                use MixerMessage::*;
+                match &mixer_msg {
+                    SetChannelVolume(deck, volume) => {
+                        self.domain.set_volume(*deck, *volume);
+                    }
+                    ToggleChannelCue(deck) => {
+                        // Read current state and toggle
+                        let enabled = !self.mixer_view.cue_enabled(*deck);
+                        self.domain.set_cue_listen(*deck, enabled);
+                    }
+                    SetChannelEqHi(deck, value) => {
+                        self.domain.set_eq_hi(*deck, *value);
+                    }
+                    SetChannelEqMid(deck, value) => {
+                        self.domain.set_eq_mid(*deck, *value);
+                    }
+                    SetChannelEqLo(deck, value) => {
+                        self.domain.set_eq_lo(*deck, *value);
+                    }
+                    SetChannelFilter(deck, value) => {
+                        self.domain.set_filter(*deck, *value);
+                    }
+                    _ => {
+                        // Master volume, cue volume, cue mix - not yet in engine
                     }
                 }
                 // Always update local UI state
@@ -1189,32 +1113,19 @@ impl MeshApp {
             Message::SetGlobalBpm(bpm) => {
                 // Round to integer BPM for clean display and computation
                 let bpm_rounded = bpm.round();
-                self.global_bpm = bpm_rounded;
-                // Send BPM change via lock-free command (~50ns)
-                if let Some(ref mut sender) = self.command_sender {
-                    let _ = sender.send(EngineCommand::SetGlobalBpm(bpm_rounded));
-                }
+                // Update domain state and send to audio engine
+                self.domain.set_global_bpm_with_engine(bpm_rounded);
                 Task::none()
             }
 
             Message::LoadTrack(deck_idx, path) => {
                 // Send load request to background thread (non-blocking)
-                // Result will be picked up in Tick handler via track_loader.try_recv()
+                // Result will be picked up via subscription from domain's track_loader
                 if deck_idx < 4 {
                     self.status = format!("Loading track to deck {}...", deck_idx + 1);
 
-                    // Load metadata from the active database (local or USB)
-                    // The domain layer knows which database to query based on current storage
-                    let metadata = self.domain.load_track_metadata_or_default(&path);
-                    log::info!(
-                        "[DOMAIN] Loaded metadata for deck {} from {}: BPM={:?}, LUFS={:?}",
-                        deck_idx,
-                        if self.domain.is_browsing_usb() { "USB" } else { "local" },
-                        metadata.bpm,
-                        metadata.lufs
-                    );
-
-                    if let Err(e) = self.track_loader.load(deck_idx, path.into(), metadata) {
+                    // Domain handles metadata lookup and track loading
+                    if let Err(e) = self.domain.request_track_load(deck_idx, path.into()) {
                         self.status = format!("Failed to start load: {}", e);
                     }
                 }
@@ -1232,14 +1143,7 @@ impl MeshApp {
                             let duration = self.player_canvas_state.decks[deck_idx].overview.duration_samples;
                             if duration > 0 {
                                 let seek_samples = (position * duration as f64) as usize;
-
-                                // Send seek command to audio engine (lock-free)
-                                if let Some(ref mut sender) = self.command_sender {
-                                    let _ = sender.send(EngineCommand::Seek {
-                                        deck: deck_idx,
-                                        position: seek_samples,
-                                    });
-                                }
+                                self.domain.seek(deck_idx, seek_samples);
                             }
                         }
                     }
@@ -1311,7 +1215,7 @@ impl MeshApp {
                 new_config.display.stem_color_palette = self.settings.draft_stem_color_palette;
                 new_config.display.show_local_collection = self.settings.draft_show_local_collection;
                 // Save global BPM from current state
-                new_config.audio.global_bpm = self.global_bpm;
+                new_config.audio.global_bpm = self.domain.global_bpm();
                 // Save phase sync setting
                 new_config.audio.phase_sync = self.settings.draft_phase_sync;
                 // Save only buffer_bars (presets are read-only from shared file)
@@ -1332,31 +1236,13 @@ impl MeshApp {
                     self.settings.draft_show_local_collection
                 );
 
-                // Send settings to audio engine immediately
-                if let Some(ref mut sender) = self.command_sender {
-                    let _ = sender.send(EngineCommand::SetPhaseSync(self.settings.draft_phase_sync));
-                    // Send loudness config to engine (triggers recalculation for all loaded decks)
-                    let _ = sender.send(EngineCommand::SetLoudnessConfig(
-                        self.config.audio.loudness.clone()
-                    ));
-                    // Send slicer buffer bars to audio engine for all decks and stems
-                    let buffer_bars = new_config.slicer.validated_buffer_bars();
-                    let stems = [
-                        mesh_core::types::Stem::Vocals,
-                        mesh_core::types::Stem::Drums,
-                        mesh_core::types::Stem::Bass,
-                        mesh_core::types::Stem::Other,
-                    ];
-                    for deck in 0..4 {
-                        for &stem in &stems {
-                            let _ = sender.send(EngineCommand::SetSlicerBufferBars {
-                                deck,
-                                stem,
-                                bars: buffer_bars,
-                            });
-                        }
-                    }
-                }
+                // Send settings to audio engine via domain
+                self.domain.set_phase_sync(self.settings.draft_phase_sync);
+                // Send loudness config to engine (triggers recalculation for all loaded decks)
+                self.domain.set_loudness_config(self.config.audio.loudness.clone());
+                // Send slicer buffer bars to audio engine for all decks and stems
+                let buffer_bars = new_config.slicer.validated_buffer_bars();
+                self.domain.apply_slicer_buffer_bars_all(buffer_bars);
 
                 // Save to disk in background
                 let config_clone = new_config;
@@ -1498,7 +1384,7 @@ impl MeshApp {
                             if device.mount_point.is_some() && device.has_mesh_collection {
                                 self.collection_browser.init_usb_storage(device);
                                 // Trigger background metadata preload for instant browsing
-                                let _ = self.usb_manager.send(
+                                let _ = self.domain.send_usb_command(
                                     mesh_core::usb::UsbCommand::PreloadMetadata {
                                         device_path: device.device_path.clone(),
                                     }
@@ -1511,7 +1397,7 @@ impl MeshApp {
                         if device.mount_point.is_some() && device.has_mesh_collection {
                             self.collection_browser.init_usb_storage(&device);
                             // Trigger background metadata preload for instant browsing
-                            let _ = self.usb_manager.send(
+                            let _ = self.domain.send_usb_command(
                                 mesh_core::usb::UsbCommand::PreloadMetadata {
                                     device_path: device.device_path.clone(),
                                 }
@@ -1531,7 +1417,7 @@ impl MeshApp {
                                 if device.has_mesh_collection {
                                     self.collection_browser.init_usb_storage(&device);
                                     // Trigger background metadata preload for instant browsing
-                                    let _ = self.usb_manager.send(
+                                    let _ = self.domain.send_usb_command(
                                         mesh_core::usb::UsbCommand::PreloadMetadata {
                                             device_path: device.device_path.clone(),
                                         }
@@ -1583,24 +1469,17 @@ impl MeshApp {
             StemLinkState::Idle => {
                 if has_linked {
                     // Toggle existing linked stem
-                    if let Some(ref mut sender) = self.command_sender {
-                        if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
-                            log::info!(
-                                "[STEM_TOGGLE] Sending ToggleLinkedStem: deck={}, stem={:?}",
-                                deck_idx, stem
-                            );
-                            let _ = sender.send(EngineCommand::ToggleLinkedStem {
-                                deck: deck_idx,
-                                stem,
-                            });
-                            self.status = format!(
-                                "Toggled {} linked stem on deck {}",
-                                stem.name(),
-                                deck_idx + 1
-                            );
-                        }
-                    } else {
-                        log::warn!("[STEM_TOGGLE] command_sender is None!");
+                    if let Some(stem) = mesh_core::types::Stem::from_index(stem_idx) {
+                        log::info!(
+                            "[STEM_TOGGLE] Sending ToggleLinkedStem: deck={}, stem={:?}",
+                            deck_idx, stem
+                        );
+                        self.domain.toggle_linked_stem(deck_idx, stem);
+                        self.status = format!(
+                            "Toggled {} linked stem on deck {}",
+                            stem.name(),
+                            deck_idx + 1
+                        );
                     }
                 } else {
                     // Enter Selecting mode - user will pick a track from browser
@@ -1658,7 +1537,7 @@ impl MeshApp {
             // Get selected track path from browser
             if let Some(path) = self.collection_browser.get_selected_track_path().cloned() {
                 // Get host deck's BPM, drop marker, and duration
-                let host_bpm = self.global_bpm;
+                let host_bpm = self.domain.global_bpm();
                 // Get host track's drop marker from LinkedStemAtomics (set when track loads)
                 let host_drop_marker = self
                     .linked_stem_atomics
@@ -1672,16 +1551,8 @@ impl MeshApp {
                 // Get host track's duration from waveform state
                 let host_duration = self.player_canvas_state.decks[deck].overview.duration_samples;
 
-                // Send command to engine (single source of truth for stem loading)
-                if let Some(ref mut sender) = self.command_sender {
-                    let _ = sender.send(EngineCommand::LoadLinkedStem {
-                        deck,
-                        stem_idx: stem,
-                        path: path.clone(),
-                        host_bpm,
-                        host_drop_marker,
-                        host_duration,
-                    });
+                // Send command to engine via domain (single source of truth for stem loading)
+                if self.domain.load_linked_stem(deck, stem, path.clone(), host_bpm, host_drop_marker, host_duration) {
                     self.stem_link_state = StemLinkState::Loading {
                         deck,
                         stem,
@@ -1874,8 +1745,8 @@ impl MeshApp {
 
     /// Subscribe to periodic updates and async results
     pub fn subscription(&self) -> Subscription<Message> {
-        // Linked stem subscription (engine owns the loader, we receive results)
-        let linked_stem_sub = if let Some(ref receiver) = self.linked_stem_receiver {
+        // Linked stem subscription (domain owns the receiver from engine)
+        let linked_stem_sub = if let Some(receiver) = self.domain.linked_stem_result_receiver() {
             mpsc_subscription(receiver.clone())
                 .map(|result| Message::LinkedStemLoaded(LinkedStemLoadedMsg(Arc::new(result))))
         } else {
@@ -1883,17 +1754,17 @@ impl MeshApp {
         };
 
         // USB manager subscription (event-driven device detection)
-        let usb_sub = mpsc_subscription(self.usb_manager.message_receiver())
+        let usb_sub = mpsc_subscription(self.domain.usb_message_receiver())
             .map(Message::Usb);
 
         Subscription::batch([
             // Update UI at ~60fps for smooth waveform animation
             time::every(std::time::Duration::from_millis(16)).map(|_| Message::Tick),
             // Background track load results (delivered as messages, no polling needed)
-            mpsc_subscription(self.track_loader.result_receiver())
+            mpsc_subscription(self.domain.track_loader_result_receiver())
                 .map(|result| Message::TrackLoaded(TrackLoadedMsg(Arc::new(result)))),
             // Background peak computation results
-            mpsc_subscription(self.peaks_computer.result_receiver())
+            mpsc_subscription(self.domain.peaks_result_receiver())
                 .map(Message::PeaksComputed),
             // Background linked stem load results (from engine's loader)
             linked_stem_sub,
@@ -2064,13 +1935,14 @@ impl MeshApp {
         let title = text("MESH DJ PLAYER")
             .size(24);
 
-        let bpm_label = text(format!("BPM: {}", self.global_bpm as i32)).size(16);
+        let global_bpm = self.domain.global_bpm();
+        let bpm_label = text(format!("BPM: {}", global_bpm as i32)).size(16);
 
-        let bpm_slider = slider(30.0..=200.0, self.global_bpm, Message::SetGlobalBpm)
+        let bpm_slider = slider(30.0..=200.0, global_bpm, Message::SetGlobalBpm)
             .step(1.0)
             .width(200);
 
-        let connection_status = if self.audio_connected {
+        let connection_status = if self.domain.is_audio_connected() {
             text("● JACK Connected").size(12)
         } else {
             text("○ JACK Disconnected").size(12)
