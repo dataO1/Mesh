@@ -501,6 +501,58 @@ impl DatabaseService {
         StemLinkQuery::delete(&self.db, track_id, stem_index)
     }
 
+    /// Convert database stem links (ID-based) to runtime format (path-based)
+    ///
+    /// This is the authoritative conversion from database format to runtime format.
+    /// Invalid links (missing source track) are filtered out with warnings.
+    ///
+    /// Used by both mesh-cue and mesh-player to populate TrackMetadata.stem_links.
+    pub fn convert_stem_links_to_runtime(&self, db_links: &[StemLink]) -> Vec<crate::audio_file::StemLinkReference> {
+        db_links.iter().filter_map(|link| {
+            match self.get_track(link.source_track_id) {
+                Ok(Some(source_track)) => {
+                    Some(crate::audio_file::StemLinkReference {
+                        stem_index: link.stem_index,
+                        source_path: std::path::PathBuf::from(&source_track.path),
+                        source_stem: link.source_stem,
+                        source_drop_marker: source_track.drop_marker.unwrap_or(0) as u64,
+                    })
+                }
+                Ok(None) => {
+                    log::warn!("Stem link source track not found: id={}", link.source_track_id);
+                    None
+                }
+                Err(e) => {
+                    log::warn!("Failed to load stem link source track: {:?}", e);
+                    None
+                }
+            }
+        }).collect()
+    }
+
+    /// Get track metadata with stem links converted to runtime format
+    ///
+    /// This is the preferred method for loading track metadata when you need
+    /// stem_links populated (for playback with linked stems).
+    pub fn get_track_metadata(&self, path: &str) -> Result<Option<crate::audio_file::TrackMetadata>, DbError> {
+        let track = match self.get_track_by_path(path)? {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+
+        // Convert stem links from database format to runtime format
+        let stem_links = self.convert_stem_links_to_runtime(&track.stem_links);
+        if !stem_links.is_empty() {
+            log::info!("DatabaseService: Loaded {} stem links for {:?}", stem_links.len(), path);
+        }
+
+        // Convert track to metadata and inject the converted stem links
+        let mut metadata: crate::audio_file::TrackMetadata = track.into();
+        metadata.stem_links = stem_links;
+
+        Ok(Some(metadata))
+    }
+
     // ========================================================================
     // Playlist Operations
     // ========================================================================

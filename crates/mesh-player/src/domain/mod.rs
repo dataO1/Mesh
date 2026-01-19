@@ -241,11 +241,13 @@ impl MeshDomain {
     ///
     /// This is the primary method for getting metadata before loading a track.
     /// It automatically uses the correct database based on active storage.
+    ///
+    /// Returns TrackMetadata with stem_links properly converted (ID → path).
     pub fn load_track_metadata(&self, path: &str) -> Option<TrackMetadata> {
         let db = self.active_db();
-        // Use new DatabaseService API that returns Track with all metadata
-        match db.get_track_by_path(path) {
-            Ok(Some(track)) => Some(track.into()),
+        // Use DatabaseService API that returns TrackMetadata with stem_links converted
+        match db.get_track_metadata(path) {
+            Ok(Some(metadata)) => Some(metadata),
             Ok(None) => {
                 log::warn!("Track not found in active database: {}", path);
                 None

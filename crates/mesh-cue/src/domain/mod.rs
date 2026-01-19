@@ -204,39 +204,18 @@ impl MeshCueDomain {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Stem Link Conversion (single source of truth for ID ↔ path conversion)
+    // Stem Link Conversion (delegates to DatabaseService)
     // ═══════════════════════════════════════════════════════════════════════
 
     /// Convert database stem links (ID-based) to runtime format (path-based)
     ///
-    /// This is the authoritative conversion from database format to runtime format.
-    /// Invalid links (missing source track) are filtered out with warnings.
+    /// Delegates to DatabaseService::convert_stem_links_to_runtime()
     pub fn convert_stem_links_to_runtime(&self, db_links: &[DbStemLink]) -> Vec<StemLinkReference> {
-        db_links.iter().filter_map(|link| {
-            match self.db_service.get_track(link.source_track_id) {
-                Ok(Some(source_track)) => {
-                    Some(StemLinkReference {
-                        stem_index: link.stem_index,
-                        source_path: PathBuf::from(&source_track.path),
-                        source_stem: link.source_stem,
-                        source_drop_marker: source_track.drop_marker.unwrap_or(0) as u64,
-                    })
-                }
-                Ok(None) => {
-                    log::warn!("Stem link source track not found: id={}", link.source_track_id);
-                    None
-                }
-                Err(e) => {
-                    log::warn!("Failed to load stem link source track: {:?}", e);
-                    None
-                }
-            }
-        }).collect()
+        self.db_service.convert_stem_links_to_runtime(db_links)
     }
 
     /// Convert runtime stem links (path-based) to database format (ID-based)
     ///
-    /// This is the authoritative conversion from runtime format to database format.
     /// Invalid links (missing source track) are filtered out with warnings.
     pub fn convert_stem_links_to_db(&self, track_id: i64, links: &[StemLinkReference]) -> Vec<DbStemLink> {
         links.iter().filter_map(|link| {
@@ -282,22 +261,12 @@ impl MeshCueDomain {
     ///
     /// This is the main entry point for loading track metadata in the UI.
     /// Returns TrackMetadata with stem_links properly converted (ID → path).
+    ///
+    /// Delegates to DatabaseService::get_track_metadata() which handles the conversion.
     pub fn get_track_metadata(&self, path: &Path) -> Result<Option<mesh_core::audio_file::TrackMetadata>> {
         let path_str = path.to_string_lossy();
-        let track = match self.db_service.get_track_by_path(&path_str)? {
-            Some(t) => t,
-            None => return Ok(None),
-        };
-
-        // Use central conversion method
-        let stem_links = self.convert_stem_links_to_runtime(&track.stem_links);
-        log::info!("get_track_metadata: Loaded {} stem links for {:?}", stem_links.len(), path);
-
-        // Convert track to metadata and inject the converted stem links
-        let mut metadata: mesh_core::audio_file::TrackMetadata = track.into();
-        metadata.stem_links = stem_links;
-
-        Ok(Some(metadata))
+        self.db_service.get_track_metadata(&path_str)
+            .map_err(|e| anyhow!("Failed to get track metadata: {}", e))
     }
 
     /// Get all tracks in a folder
