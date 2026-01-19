@@ -15,8 +15,6 @@ mod domain;
 mod loader;
 mod ui;
 
-use std::sync::Arc;
-
 use iced::{Size, Task};
 
 use audio::{start_jack_client, auto_connect_ports};

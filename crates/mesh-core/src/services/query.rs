@@ -7,6 +7,7 @@
 use super::messages::{QueryCommand, AppEvent, ServiceHandle, EnergyDirection, MixSuggestion, MixReason};
 use crate::db::{DatabaseService, Track, TrackQuery, PlaylistQuery, SimilarityQuery};
 use crossbeam::channel::{Receiver, Sender};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 
@@ -77,49 +78,55 @@ impl QueryService {
     fn handle_command(&self, cmd: QueryCommand) {
         match cmd {
             QueryCommand::GetTracksInFolder { folder_path, reply } => {
-                let result = TrackQuery::get_by_folder(self.service.db(), &folder_path)
+                // Use DatabaseService method which returns Track (not TrackRow)
+                let result = self.service.get_tracks_in_folder(&folder_path)
                     .map_err(|e| e.to_string());
                 let _ = reply.send(result);
             }
 
             QueryCommand::GetTrack { track_id, reply } => {
-                let result = TrackQuery::get_by_id(self.service.db(), track_id)
+                // Use DatabaseService method which returns Track with full metadata
+                let result = self.service.get_track(track_id)
                     .map_err(|e| e.to_string());
                 let _ = reply.send(result);
             }
 
             QueryCommand::GetTrackByPath { path, reply } => {
-                let result = TrackQuery::get_by_path(self.service.db(), &path)
+                // Use DatabaseService method which returns Track with full metadata
+                let result = self.service.get_track_by_path(&path)
                     .map_err(|e| e.to_string());
                 let _ = reply.send(result);
             }
 
             QueryCommand::Search { query, limit, reply } => {
-                let result = TrackQuery::search(self.service.db(), &query, limit)
+                // Use DatabaseService method which returns Track (not TrackRow)
+                let result = self.service.search_tracks(&query, limit)
                     .map_err(|e| e.to_string());
                 let _ = reply.send(result);
             }
 
             QueryCommand::GetFolders { reply } => {
-                let result = TrackQuery::get_folders(self.service.db())
+                let result = self.service.get_folders()
                     .map_err(|e| e.to_string());
                 let _ = reply.send(result);
             }
 
             QueryCommand::GetTrackCount { reply } => {
-                let result = TrackQuery::count(self.service.db())
+                let result = self.service.track_count()
                     .map_err(|e| e.to_string());
                 let _ = reply.send(result);
             }
 
             QueryCommand::FindSimilar { track_id, limit, reply } => {
-                let result = SimilarityQuery::find_similar(self.service.db(), track_id, limit)
+                let result = self.service.find_similar_tracks(track_id, limit)
                     .map_err(|e| e.to_string());
                 let _ = reply.send(result);
             }
 
             QueryCommand::FindHarmonicMatches { track_id, limit, reply } => {
+                // Convert TrackRow to Track using from_row_only (available within mesh-core)
                 let result = SimilarityQuery::find_harmonic_compatible(self.service.db(), track_id, limit)
+                    .map(|rows| rows.into_iter().map(Track::from_row_only).collect())
                     .map_err(|e| e.to_string());
                 let _ = reply.send(result);
             }
@@ -136,18 +143,22 @@ impl QueryService {
             }
 
             QueryCommand::GetPlaylistTracks { playlist_id, reply } => {
-                let result = PlaylistQuery::get_tracks(self.service.db(), playlist_id)
+                // Use DatabaseService method which returns Vec<Track>
+                let result = self.service.get_playlist_tracks(playlist_id)
                     .map_err(|e| e.to_string());
                 let _ = reply.send(result);
             }
 
             QueryCommand::UpsertTrack { track, reply } => {
-                let result = TrackQuery::upsert(self.service.db(), &track)
+                // Use DatabaseService method which handles Track -> TrackRow conversion
+                let result = self.service.save_track(&track)
+                    .map(|_| ()) // save_track returns the ID, but channel expects ()
                     .map_err(|e| e.to_string());
 
                 if result.is_ok() {
+                    let track_id = track.id.unwrap_or(0);
                     let _ = self.event_tx.send(AppEvent::TrackUpdated {
-                        track_id: track.id,
+                        track_id,
                         track: track.clone(),
                     });
                 }
@@ -156,7 +167,7 @@ impl QueryService {
             }
 
             QueryCommand::DeleteTrack { track_id, reply } => {
-                let result = TrackQuery::delete(self.service.db(), track_id)
+                let result = self.service.delete_track(track_id)
                     .map_err(|e| e.to_string());
 
                 if result.is_ok() {
@@ -243,8 +254,8 @@ impl QueryService {
         let suggestions: Vec<MixSuggestion> = result.rows.iter()
             .filter_map(|row| {
                 let track = Track {
-                    id: row.get(0)?.get_int()?,
-                    path: row.get(1)?.get_str()?.to_string(),
+                    id: Some(row.get(0)?.get_int()?),
+                    path: PathBuf::from(row.get(1)?.get_str()?),
                     folder_path: row.get(2)?.get_str()?.to_string(),
                     name: row.get(3)?.get_str()?.to_string(),
                     artist: row.get(4)?.get_str().map(|s| s.to_string()),
@@ -258,6 +269,10 @@ impl QueryService {
                     file_mtime: row.get(12)?.get_int().unwrap_or(0),
                     file_size: row.get(13)?.get_int().unwrap_or(0),
                     waveform_path: row.get(14)?.get_str().map(|s| s.to_string()),
+                    // For mix suggestions, we don't need full metadata
+                    cue_points: Vec::new(),
+                    saved_loops: Vec::new(),
+                    stem_links: Vec::new(),
                 };
 
                 let bpm_diff = (track.bpm.unwrap_or(current_bpm) - current_bpm).abs();
@@ -417,8 +432,8 @@ mod tests {
 
         // Insert a track
         let track = Track {
-            id: 42,
-            path: "/music/test.wav".to_string(),
+            id: Some(42),
+            path: PathBuf::from("/music/test.wav"),
             folder_path: "/music".to_string(),
             name: "Test Track".to_string(),
             artist: Some("Test Artist".to_string()),
@@ -428,9 +443,13 @@ mod tests {
             duration_seconds: 180.0,
             lufs: Some(-8.0),
             drop_marker: None,
+            first_beat_sample: 0,
             file_mtime: 1234567890,
             file_size: 1000000,
             waveform_path: None,
+            cue_points: Vec::new(),
+            saved_loops: Vec::new(),
+            stem_links: Vec::new(),
         };
 
         let (tx, rx) = tokio::sync::oneshot::channel();

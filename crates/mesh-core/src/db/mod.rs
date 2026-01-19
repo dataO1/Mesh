@@ -19,13 +19,17 @@ mod schema;
 mod queries;
 mod service;
 
-pub use schema::{
-    Track, Playlist, PlaylistTrack, CuePoint, SavedLoop, StemLink,
-    SimilarTo, PlayedAfter, HarmonicMatch, HarmonicMatchType,
-    AudioFeatures,
-};
-pub use queries::{TrackQuery, PlaylistQuery, SimilarityQuery, CuePointQuery, SavedLoopQuery, StemLinkQuery};
-pub use service::{DatabaseService, LoadedTrackMetadata, NewTrackData};
+// Internal schema types (pub(crate) - only used within mesh-core)
+pub(crate) use schema::TrackRow;
+
+// Public schema types (used across crates)
+pub use schema::{Playlist, AudioFeatures, CuePoint, SavedLoop, StemLink, SimilarTo, PlayedAfter, HarmonicMatch, HarmonicMatchType};
+
+// Internal query module (pub(crate) - implementation detail)
+pub(crate) use queries::{TrackQuery, PlaylistQuery, SimilarityQuery, CuePointQuery, SavedLoopQuery};
+
+// Public service API - the only interface for domain code
+pub use service::{DatabaseService, Track};
 
 use cozo::{DbInstance, DataValue, NamedRows};
 use std::collections::BTreeMap;

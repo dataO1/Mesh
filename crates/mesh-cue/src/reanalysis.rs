@@ -75,13 +75,24 @@ pub fn reanalyze_track(
     // Update the database with analysis results
     // WAV files are now audio-only containers - all metadata lives in the database
     if let Some(db_service) = db {
-        use mesh_core::db::TrackQuery;
-
         let path_str = path.to_string_lossy();
+
+        // Look up track by path to get track_id
+        let track_id = match db_service.get_track_by_path(&path_str) {
+            Ok(Some(track)) => track.id.unwrap_or(0),
+            Ok(None) => {
+                log::warn!("reanalyze_track: Track not found in database: {}", path_str);
+                return Ok(result);
+            }
+            Err(e) => {
+                log::error!("reanalyze_track: Failed to look up track: {:?}", e);
+                return Ok(result);
+            }
+        };
 
         // Update BPM if detected
         if let Some(bpm) = result.bpm {
-            if let Err(e) = TrackQuery::update_field_by_path(db_service.db(), &path_str, "bpm", &bpm.to_string()) {
+            if let Err(e) = db_service.update_track_field(track_id, "bpm", &bpm.to_string()) {
                 log::error!("Failed to update BPM in database: {:?}", e);
             }
             // Set original_bpm if this is first analysis
@@ -90,21 +101,21 @@ pub fn reanalyze_track(
 
         // Update key if detected
         if let Some(ref key) = result.key {
-            if let Err(e) = TrackQuery::update_field_by_path(db_service.db(), &path_str, "key", key) {
+            if let Err(e) = db_service.update_track_field(track_id, "key", key) {
                 log::error!("Failed to update key in database: {:?}", e);
             }
         }
 
         // Update LUFS if measured
         if let Some(lufs) = result.lufs {
-            if let Err(e) = TrackQuery::update_field_by_path(db_service.db(), &path_str, "lufs", &lufs.to_string()) {
+            if let Err(e) = db_service.update_track_field(track_id, "lufs", &lufs.to_string()) {
                 log::error!("Failed to update LUFS in database: {:?}", e);
             }
         }
 
         // TODO: Store first_beat_sample in database when schema is updated
         // if let Some(first_beat) = result.beat_grid.as_ref().and_then(|g| g.first().copied()) {
-        //     TrackQuery::update_field_by_path(db_service.db(), &path_str, "first_beat_sample", &first_beat.to_string())?;
+        //     db_service.update_track_field(track_id, "first_beat_sample", &first_beat.to_string())?;
         // }
 
         log::info!("reanalyze_track: Updated database for {:?}", path);

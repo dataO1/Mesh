@@ -306,10 +306,8 @@ impl From<crate::db::SavedLoop> for SavedLoop {
     }
 }
 
-impl From<crate::db::LoadedTrackMetadata> for TrackMetadata {
-    fn from(db_meta: crate::db::LoadedTrackMetadata) -> Self {
-        let track = &db_meta.track;
-
+impl From<crate::db::Track> for TrackMetadata {
+    fn from(track: crate::db::Track) -> Self {
         // Regenerate beat grid from first_beat_sample and BPM
         let beat_grid = if let Some(bpm) = track.bpm {
             let duration_samples = (track.duration_seconds * crate::types::SAMPLE_RATE as f64) as u64;
@@ -326,11 +324,13 @@ impl From<crate::db::LoadedTrackMetadata> for TrackMetadata {
             lufs: track.lufs,
             duration_seconds: Some(track.duration_seconds),
             beat_grid,
-            cue_points: db_meta.cue_points.into_iter().map(Into::into).collect(),
-            saved_loops: db_meta.saved_loops.into_iter().map(Into::into).collect(),
+            cue_points: track.cue_points.into_iter().map(Into::into).collect(),
+            saved_loops: track.saved_loops.into_iter().map(Into::into).collect(),
             waveform_preview: None, // No longer stored in WAV files
             drop_marker: track.drop_marker.map(|d| d as u64),
-            stem_links: Vec::new(), // Stem links handled separately via track IDs
+            // Stem links are NOT included here because StemLink has track_id references
+            // that require database lookups. The engine handles stem link loading separately.
+            stem_links: Vec::new(),
         }
     }
 }
@@ -1527,8 +1527,8 @@ impl LoadedTrack {
         let path_str = path_ref.to_string_lossy().to_string();
 
         // Load metadata from database
-        let metadata: TrackMetadata = match db.load_track_metadata_by_path(&path_str) {
-            Ok(Some(db_meta)) => db_meta.into(),
+        let metadata: TrackMetadata = match db.get_track_by_path(&path_str) {
+            Ok(Some(track)) => track.into(),
             Ok(None) => {
                 log::warn!("Track not found in database: {}, using default metadata", path_str);
                 TrackMetadata::default()

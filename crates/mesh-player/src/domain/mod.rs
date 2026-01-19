@@ -243,8 +243,9 @@ impl MeshDomain {
     /// It automatically uses the correct database based on active storage.
     pub fn load_track_metadata(&self, path: &str) -> Option<TrackMetadata> {
         let db = self.active_db();
-        match db.load_track_metadata_by_path(path) {
-            Ok(Some(db_meta)) => Some(db_meta.into()),
+        // Use new DatabaseService API that returns Track with all metadata
+        match db.get_track_by_path(path) {
+            Ok(Some(track)) => Some(track.into()),
             Ok(None) => {
                 log::warn!("Track not found in active database: {}", path);
                 None

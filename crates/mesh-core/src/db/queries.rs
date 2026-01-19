@@ -2,7 +2,8 @@
 //!
 //! This module provides typed query APIs that generate CozoScript internally.
 
-use super::{MeshDb, DbError, Track, Playlist, AudioFeatures, CuePoint, SavedLoop, StemLink};
+use super::schema::{TrackRow, Playlist, AudioFeatures, CuePoint, SavedLoop, StemLink};
+use super::{MeshDb, DbError};
 use cozo::{DataValue, NamedRows};
 use std::collections::BTreeMap;
 
@@ -18,7 +19,7 @@ pub struct TrackQuery;
 
 impl TrackQuery {
     /// Get all tracks in a folder
-    pub fn get_by_folder(db: &MeshDb, folder_path: &str) -> Result<Vec<Track>, DbError> {
+    pub fn get_by_folder(db: &MeshDb, folder_path: &str) -> Result<Vec<TrackRow>, DbError> {
         log::debug!("TrackQuery::get_by_folder: querying folder_path='{}'", folder_path);
 
         let mut params = BTreeMap::new();
@@ -39,7 +40,7 @@ impl TrackQuery {
     }
 
     /// Get a track by ID
-    pub fn get_by_id(db: &MeshDb, track_id: i64) -> Result<Option<Track>, DbError> {
+    pub fn get_by_id(db: &MeshDb, track_id: i64) -> Result<Option<TrackRow>, DbError> {
         let mut params = BTreeMap::new();
         params.insert("id".to_string(), DataValue::from(track_id));
 
@@ -55,7 +56,7 @@ impl TrackQuery {
     }
 
     /// Get a track by path
-    pub fn get_by_path(db: &MeshDb, path: &str) -> Result<Option<Track>, DbError> {
+    pub fn get_by_path(db: &MeshDb, path: &str) -> Result<Option<TrackRow>, DbError> {
         let mut params = BTreeMap::new();
         params.insert("path".to_string(), DataValue::Str(path.into()));
 
@@ -71,7 +72,7 @@ impl TrackQuery {
     }
 
     /// Get all tracks in the database
-    pub fn get_all(db: &MeshDb) -> Result<Vec<Track>, DbError> {
+    pub fn get_all(db: &MeshDb) -> Result<Vec<TrackRow>, DbError> {
         let result = db.run_query(r#"
             ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
               duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
@@ -84,7 +85,7 @@ impl TrackQuery {
     }
 
     /// Search tracks by name or artist
-    pub fn search(db: &MeshDb, query: &str, limit: usize) -> Result<Vec<Track>, DbError> {
+    pub fn search(db: &MeshDb, query: &str, limit: usize) -> Result<Vec<TrackRow>, DbError> {
         let mut params = BTreeMap::new();
         let query_lower = query.to_lowercase();
         params.insert("query".to_string(), DataValue::Str(query_lower.into()));
@@ -105,7 +106,7 @@ impl TrackQuery {
     }
 
     /// Insert or update a track
-    pub fn upsert(db: &MeshDb, track: &Track) -> Result<(), DbError> {
+    pub fn upsert(db: &MeshDb, track: &TrackRow) -> Result<(), DbError> {
         let mut params = BTreeMap::new();
         params.insert("id".to_string(), DataValue::from(track.id));
         params.insert("path".to_string(), DataValue::Str(track.path.clone().into()));
@@ -357,7 +358,7 @@ impl PlaylistQuery {
     }
 
     /// Get tracks in a playlist
-    pub fn get_tracks(db: &MeshDb, playlist_id: i64) -> Result<Vec<Track>, DbError> {
+    pub fn get_tracks(db: &MeshDb, playlist_id: i64) -> Result<Vec<TrackRow>, DbError> {
         let mut params = BTreeMap::new();
         params.insert("playlist_id".to_string(), DataValue::from(playlist_id));
 
@@ -566,7 +567,7 @@ impl SimilarityQuery {
     ///
     /// Uses the audio_features relation with HNSW index for fast approximate
     /// nearest neighbor search based on the 16-dimensional audio feature vector.
-    pub fn find_similar(db: &MeshDb, track_id: i64, limit: usize) -> Result<Vec<(Track, f32)>, DbError> {
+    pub fn find_similar(db: &MeshDb, track_id: i64, limit: usize) -> Result<Vec<(TrackRow, f32)>, DbError> {
         let mut params = BTreeMap::new();
         params.insert("track_id".to_string(), DataValue::from(track_id));
         params.insert("k".to_string(), DataValue::from((limit + 1) as i64)); // +1 to exclude self
@@ -587,7 +588,7 @@ impl SimilarityQuery {
     }
 
     /// Find harmonically compatible tracks
-    pub fn find_harmonic_compatible(db: &MeshDb, track_id: i64, limit: usize) -> Result<Vec<Track>, DbError> {
+    pub fn find_harmonic_compatible(db: &MeshDb, track_id: i64, limit: usize) -> Result<Vec<TrackRow>, DbError> {
         let mut params = BTreeMap::new();
         params.insert("track_id".to_string(), DataValue::from(track_id));
         params.insert("limit".to_string(), DataValue::from(limit as i64));
@@ -933,9 +934,9 @@ fn rows_to_saved_loops(result: &NamedRows) -> Vec<SavedLoop> {
     }).collect()
 }
 
-fn rows_to_tracks(result: &NamedRows) -> Vec<Track> {
+fn rows_to_tracks(result: &NamedRows) -> Vec<TrackRow> {
     result.rows.iter().filter_map(|row| {
-        Some(Track {
+        Some(TrackRow {
             id: row.get(0)?.get_int()?,
             path: row.get(1)?.get_str()?.to_string(),
             folder_path: row.get(2)?.get_str()?.to_string(),
@@ -955,9 +956,9 @@ fn rows_to_tracks(result: &NamedRows) -> Vec<Track> {
     }).collect()
 }
 
-fn rows_to_tracks_with_distance(result: &NamedRows) -> Vec<(Track, f32)> {
+fn rows_to_tracks_with_distance(result: &NamedRows) -> Vec<(TrackRow, f32)> {
     result.rows.iter().filter_map(|row| {
-        let track = Track {
+        let track = TrackRow {
             id: row.get(0)?.get_int()?,
             path: row.get(1)?.get_str()?.to_string(),
             folder_path: row.get(2)?.get_str()?.to_string(),
@@ -1009,7 +1010,7 @@ mod tests {
     fn test_track_crud() {
         let db = MeshDb::in_memory().unwrap();
 
-        let track = Track {
+        let track = TrackRow {
             id: 1,
             path: "/music/track1.wav".to_string(),
             folder_path: "/music".to_string(),

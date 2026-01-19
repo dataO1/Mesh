@@ -262,8 +262,8 @@ impl PlaylistStorage for DatabaseStorage {
             return Vec::new();
         }
 
-        // Handle collection tracks
-        let tracks = match TrackQuery::get_by_folder(self.service.db(), folder_path) {
+        // Handle collection tracks - use DatabaseService for proper Track type
+        let tracks = match self.service.get_tracks_in_folder(folder_path) {
             Ok(t) => t,
             Err(e) => {
                 log::warn!("Failed to get tracks for folder {}: {}", folder_path, e);

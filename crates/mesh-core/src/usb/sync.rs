@@ -8,7 +8,7 @@
 //!
 //! Both local and USB collections use CozoDB databases for track and playlist metadata.
 
-use crate::db::{DatabaseService, MeshDb, PlaylistQuery, Track, CuePoint, SavedLoop, CuePointQuery, SavedLoopQuery, TrackQuery};
+use crate::db::{DatabaseService, MeshDb, PlaylistQuery, TrackRow, CuePoint, SavedLoop, CuePointQuery, SavedLoopQuery, TrackQuery};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -27,7 +27,8 @@ pub struct TrackInfo {
     /// Last modified time
     pub mtime: SystemTime,
     /// Database track record (for metadata comparison)
-    pub db_track: Option<Track>,
+    /// Uses TrackRow internally since this is within mesh-core
+    pub db_track: Option<TrackRow>,
     /// Cue points for this track
     pub cue_points: Vec<CuePoint>,
     /// Saved loops for this track
@@ -142,7 +143,7 @@ pub fn scan_local_collection_from_db(
 ) -> Result<CollectionState, Box<dyn std::error::Error + Send + Sync>> {
     let mut state = CollectionState::default();
     // Map filename -> (path, Track) to keep the database record for metadata comparison
-    let mut track_data: HashMap<String, (PathBuf, Track)> = HashMap::new();
+    let mut track_data: HashMap<String, (PathBuf, TrackRow)> = HashMap::new();
 
     // Get all playlists from the database
     let all_playlists = PlaylistQuery::get_all(db)
@@ -169,6 +170,7 @@ pub fn scan_local_collection_from_db(
                 .to_string();
 
             // Keep track data for metadata comparison (use first occurrence if duplicate filename)
+            // Note: PlaylistQuery returns TrackRow, not Track
             track_data.entry(filename.clone()).or_insert((path, track));
 
             // Add playlist track membership
@@ -192,7 +194,7 @@ pub fn scan_local_collection_from_db(
     }
 
     // Get file metadata for all unique tracks (parallel for speed)
-    let track_list: Vec<(String, PathBuf, Track)> = track_data
+    let track_list: Vec<(String, PathBuf, TrackRow)> = track_data
         .into_iter()
         .map(|(filename, (path, track))| (filename, path, track))
         .collect();
@@ -273,8 +275,8 @@ pub fn scan_usb_collection(
         None
     };
 
-    // Build map of filename -> (Track, cue_points, saved_loops) from USB database
-    let mut db_metadata: HashMap<String, (Track, Vec<CuePoint>, Vec<SavedLoop>)> = HashMap::new();
+    // Build map of filename -> (TrackRow, cue_points, saved_loops) from USB database
+    let mut db_metadata: HashMap<String, (TrackRow, Vec<CuePoint>, Vec<SavedLoop>)> = HashMap::new();
     if let Some(ref db_service) = usb_db_service {
         // Get all tracks from database
         if let Ok(all_tracks) = TrackQuery::get_all(db_service.db()) {

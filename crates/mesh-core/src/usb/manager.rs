@@ -653,7 +653,7 @@ fn handle_start_export(
     // Phase 3b: Insert track records for copied tracks
     // We need to ensure tracks exist in USB database before adding to playlists
     // IMPORTANT: Read metadata from LOCAL DATABASE only - WAV files no longer contain metadata
-    // This is consistent with the metadata comparison logic in scan_local_collection_from_db
+    // Sync ALL track data including cue_points, saved_loops, and stem_links
     for track_copy in &plan.tracks_to_copy {
         let filename = track_copy.destination.file_name()
             .and_then(|n| n.to_str())
@@ -661,34 +661,34 @@ fn handle_start_export(
         let track_path = tracks_dir.join(filename);
         let source_path_str = track_copy.source.to_string_lossy().to_string();
 
-        // Read metadata from local database only (WAV files no longer contain metadata)
-        let track_data = if let Some(db) = local_db {
-            if let Ok(Some(local_track)) = db.get_track_by_path(&source_path_str) {
-                // Use metadata from local database
-                crate::db::NewTrackData {
-                    path: track_path.clone(),
-                    name: filename.trim_end_matches(".wav").to_string(),
-                    artist: local_track.artist,
-                    bpm: local_track.bpm,
-                    original_bpm: local_track.original_bpm,
-                    key: local_track.key,
-                    duration_seconds: local_track.duration_seconds,
-                    lufs: local_track.lufs,
-                    first_beat_sample: local_track.first_beat_sample,
-                }
-            } else {
-                // Track not in local DB - skip (database is required for metadata)
-                log::warn!("Track {} not found in local DB, skipping metadata sync", filename);
-                continue;
-            }
-        } else {
-            // No local DB provided - skip metadata sync for this track
+        // Read full track metadata from local database
+        let Some(local_db) = local_db else {
             log::warn!("No local database provided, skipping metadata for {}", filename);
             continue;
         };
 
-        if let Err(e) = usb_db.add_track(&track_data) {
-            log::warn!("Failed to add track {} to USB database: {}", filename, e);
+        let local_track = match local_db.get_track_by_path(&source_path_str) {
+            Ok(Some(track)) => track,
+            Ok(None) => {
+                log::warn!("Track {} not found in local DB, skipping metadata sync", filename);
+                continue;
+            }
+            Err(e) => {
+                log::warn!("Failed to get track {} from local DB: {}, skipping", filename, e);
+                continue;
+            }
+        };
+
+        // Create USB track with updated path but all metadata preserved
+        let mut usb_track = local_track.clone();
+        usb_track.id = None;  // Generate new ID for USB database
+        usb_track.path = track_path.clone();
+        usb_track.folder_path = "tracks".to_string();
+        usb_track.name = filename.trim_end_matches(".wav").to_string();
+
+        // Sync the track with ID remapping for stem links
+        if let Err(e) = usb_db.sync_track_from(&usb_track, local_db) {
+            log::warn!("Failed to sync track {} to USB database: {}", filename, e);
         }
     }
 
@@ -701,13 +701,15 @@ fn handle_start_export(
             let track_path_str = track_path.to_string_lossy().to_string();
 
             if let Ok(Some(track)) = usb_db.get_track_by_path(&track_path_str) {
-                // Get next sort order and add track to playlist
-                if let Ok(sort_order) = usb_db.next_playlist_sort_order(playlist.id) {
-                    if let Err(e) = usb_db.add_track_to_playlist(playlist.id, track.id, sort_order) {
-                        log::warn!(
-                            "Failed to add track {} to playlist {}: {}",
-                            playlist_track.track_filename, playlist_track.playlist, e
-                        );
+                if let Some(track_id) = track.id {
+                    // Get next sort order and add track to playlist
+                    if let Ok(sort_order) = usb_db.next_playlist_sort_order(playlist.id) {
+                        if let Err(e) = usb_db.add_track_to_playlist(playlist.id, track_id, sort_order) {
+                            log::warn!(
+                                "Failed to add track {} to playlist {}: {}",
+                                playlist_track.track_filename, playlist_track.playlist, e
+                            );
+                        }
                     }
                 }
             }
@@ -723,11 +725,13 @@ fn handle_start_export(
             let track_path_str = track_path.to_string_lossy().to_string();
 
             if let Ok(Some(track)) = usb_db.get_track_by_path(&track_path_str) {
-                if let Err(e) = usb_db.remove_track_from_playlist(playlist.id, track.id) {
-                    log::warn!(
-                        "Failed to remove track {} from playlist {}: {}",
-                        playlist_track.track_filename, playlist_track.playlist, e
-                    );
+                if let Some(track_id) = track.id {
+                    if let Err(e) = usb_db.remove_track_from_playlist(playlist.id, track_id) {
+                        log::warn!(
+                            "Failed to remove track {} from playlist {}: {}",
+                            playlist_track.track_filename, playlist_track.playlist, e
+                        );
+                    }
                 }
             }
         }
@@ -748,8 +752,10 @@ fn handle_start_export(
         let track_path_str = track_path.to_string_lossy().to_string();
 
         if let Ok(Some(track)) = usb_db.get_track_by_path(&track_path_str) {
-            if let Err(e) = usb_db.delete_track(track.id) {
-                log::warn!("Failed to delete track {} from USB database: {}", filename, e);
+            if let Some(track_id) = track.id {
+                if let Err(e) = usb_db.delete_track(track_id) {
+                    log::warn!("Failed to delete track {} from USB database: {}", filename, e);
+                }
             }
         }
     }

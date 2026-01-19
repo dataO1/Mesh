@@ -15,9 +15,11 @@ use super::DbError;
 // Core Data Types
 // ============================================================================
 
-/// A track in the collection
+/// Internal database row representation of a track
+///
+/// This is the raw database schema - use `Track` from service.rs for the public API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Track {
+pub struct TrackRow {
     pub id: i64,
     pub path: String,
     pub folder_path: String,
@@ -30,7 +32,6 @@ pub struct Track {
     pub lufs: Option<f32>,
     pub drop_marker: Option<i64>,
     /// First beat position in samples (for beat grid regeneration)
-    /// Required - beatgrid is essential for beat matching
     pub first_beat_sample: i64,
     pub file_mtime: i64,
     pub file_size: i64,

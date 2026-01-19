@@ -35,7 +35,7 @@ use crate::config::{BpmConfig, BpmSource, LoudnessConfig};
 use crate::export::export_stem_file_with_gain;
 use crate::import::StemImporter;
 use anyhow::{Context, Result};
-use mesh_core::db::{DatabaseService, NewTrackData};
+use mesh_core::db::{DatabaseService, Track};
 use mesh_core::types::SAMPLE_RATE;
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -527,20 +527,17 @@ fn process_single_track(group: &StemGroup, config: &ImportConfig) -> TrackImport
         final_path
     );
 
-    // Insert track into the shared database service
-    let track_data = NewTrackData {
-        path: final_path.clone(),
-        name: base_name.clone(),
-        artist,
-        bpm: Some(analysis.bpm),
-        original_bpm: Some(analysis.original_bpm),
-        key: Some(analysis.key.clone()),
-        duration_seconds: (duration_samples as f64) / (SAMPLE_RATE as f64),
-        lufs: analysis.lufs,
-        first_beat_sample: first_beat as i64,
-    };
+    // Insert track into the shared database service using new Track API
+    let mut track = Track::new(final_path.clone(), base_name.clone());
+    track.artist = artist;
+    track.bpm = Some(analysis.bpm);
+    track.original_bpm = Some(analysis.original_bpm);
+    track.key = Some(analysis.key.clone());
+    track.duration_seconds = (duration_samples as f64) / (SAMPLE_RATE as f64);
+    track.lufs = analysis.lufs;
+    track.first_beat_sample = first_beat as i64;
 
-    match config.db_service.add_track(&track_data) {
+    match config.db_service.save_track(&track) {
         Ok(track_id) => {
             log::info!(
                 "process_single_track: '{}' inserted into database (id={})",
