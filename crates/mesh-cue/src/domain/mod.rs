@@ -219,6 +219,49 @@ impl MeshCueDomain {
             .map_err(|e| anyhow!("Failed to get track: {}", e))
     }
 
+    /// Get track metadata by path, with stem links converted to path-based format
+    ///
+    /// This is the main entry point for loading track metadata in the UI.
+    /// It handles the conversion from database format (ID-based stem links)
+    /// to runtime format (path-based stem links).
+    pub fn get_track_metadata(&self, path: &Path) -> Result<Option<mesh_core::audio_file::TrackMetadata>> {
+        let path_str = path.to_string_lossy();
+        let track = match self.db_service.get_track_by_path(&path_str)? {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+
+        // Convert stem links from database format (ID-based) to runtime format (path-based)
+        let stem_links: Vec<StemLinkReference> = track.stem_links.iter().filter_map(|link| {
+            match self.db_service.get_track(link.source_track_id) {
+                Ok(Some(source_track)) => {
+                    Some(StemLinkReference {
+                        stem_index: link.stem_index,
+                        source_path: PathBuf::from(&source_track.path),
+                        source_stem: link.source_stem,
+                        source_drop_marker: source_track.drop_marker.unwrap_or(0) as u64,
+                    })
+                }
+                Ok(None) => {
+                    log::warn!("Stem link source track not found: id={}", link.source_track_id);
+                    None
+                }
+                Err(e) => {
+                    log::warn!("Failed to load stem link source track: {:?}", e);
+                    None
+                }
+            }
+        }).collect();
+
+        log::info!("get_track_metadata: Loaded {} stem links for {:?}", stem_links.len(), path);
+
+        // Convert track to metadata and inject the converted stem links
+        let mut metadata: mesh_core::audio_file::TrackMetadata = track.into();
+        metadata.stem_links = stem_links;
+
+        Ok(Some(metadata))
+    }
+
     /// Get all tracks in a folder
     pub fn get_tracks_in_folder(&self, folder_path: &str) -> Result<Vec<Track>> {
         self.db_service.get_tracks_in_folder(folder_path)

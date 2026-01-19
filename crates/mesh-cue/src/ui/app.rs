@@ -11,7 +11,6 @@ use crate::keybindings::{self, KeybindingsConfig};
 use iced::widget::{button, column, container, mouse_area, row, stack, text, Space};
 use iced::{Element, Length, Task, Theme};
 use super::modals::with_modal_overlay;
-use mesh_core::audio_file::TrackMetadata;
 use mesh_core::playlist::NodeId;
 use mesh_widgets::mpsc_subscription;
 use std::sync::Arc;
@@ -378,14 +377,10 @@ impl MeshCueApp {
 
                 log::info!("LoadTrackByPath: Loading {:?}", path);
 
-                // Load metadata from database synchronously (fast SQLite query)
-                let path_str = path.to_string_lossy().to_string();
-                let result = match self.domain.get_track_by_path(&path_str) {
-                    Ok(Some(track)) => {
-                        let metadata: TrackMetadata = track.into();
-                        Ok((path, metadata))
-                    }
-                    Ok(None) => Err(format!("Track not found in database: {}", path_str)),
+                // Load metadata from database (includes stem link conversion)
+                let result = match self.domain.get_track_metadata(&path) {
+                    Ok(Some(metadata)) => Ok((path, metadata)),
+                    Ok(None) => Err(format!("Track not found in database: {:?}", path)),
                     Err(e) => Err(format!("Database error: {}", e)),
                 };
 
