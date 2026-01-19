@@ -89,6 +89,7 @@ impl MeshCueApp {
                 state.beat_grid.first().copied().unwrap_or(0),
                 &state.cue_points,
                 &state.saved_loops,
+                &state.stem_links,
             );
 
             match result {

@@ -409,6 +409,7 @@ impl MeshCueDomain {
         first_beat_sample: u64,
         cue_points: &[CuePoint],
         saved_loops: &[SavedLoop],
+        stem_links: &[StemLinkReference],
     ) -> Result<()> {
         let path_str = path.to_string_lossy();
 
@@ -442,10 +443,34 @@ impl MeshCueDomain {
             color: l.color.clone(),
         }).collect();
 
+        // Convert stem links to database format (path -> track ID lookup)
+        track.stem_links = stem_links.iter().filter_map(|link| {
+            // Look up source track ID from path
+            let source_path_str = link.source_path.to_string_lossy();
+            match self.db_service.get_track_by_path(&source_path_str) {
+                Ok(Some(source_track)) => {
+                    Some(DbStemLink {
+                        track_id,
+                        stem_index: link.stem_index,
+                        source_track_id: source_track.id.unwrap_or(0),
+                        source_stem: link.source_stem,
+                    })
+                }
+                Ok(None) => {
+                    log::warn!("Stem link source track not found: {:?}", link.source_path);
+                    None
+                }
+                Err(e) => {
+                    log::warn!("Failed to lookup stem link source: {:?}", e);
+                    None
+                }
+            }
+        }).collect();
+
         // Save everything at once
         self.db_service.save_track(&track)?;
 
-        log::info!("Domain: Saved track metadata for {:?}", path);
+        log::info!("Domain: Saved track metadata for {:?} ({} stem links)", path, track.stem_links.len());
         Ok(())
     }
 
