@@ -2,7 +2,7 @@
 //!
 //! Provides a modal dialog for editing player configuration.
 
-use super::app::Message;
+use super::message::{Message, SettingsMessage};
 use super::midi_learn::MidiLearnMessage;
 use crate::config::{LOOP_LENGTH_OPTIONS, StemColorPalette};
 use iced::widget::{button, column, container, row, scrollable, text, toggler, Space};
@@ -110,7 +110,7 @@ impl Default for SettingsState {
 pub fn view(state: &SettingsState) -> Element<'_, Message> {
     let title = text("Settings").size(24);
     let close_btn = button(text("×").size(20))
-        .on_press(Message::CloseSettings)
+        .on_press(Message::Settings(SettingsMessage::Close))
         .style(button::secondary);
 
     let header = row![title, Space::new().width(Length::Fill), close_btn]
@@ -149,11 +149,11 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
 
     // Action buttons
     let cancel_btn = button(text("Cancel"))
-        .on_press(Message::CloseSettings)
+        .on_press(Message::Settings(SettingsMessage::Close))
         .style(button::secondary);
 
     let save_btn = button(text("Save"))
-        .on_press(Message::SaveSettings)
+        .on_press(Message::Settings(SettingsMessage::Save))
         .style(button::primary);
 
     let actions = row![Space::new().width(Length::Fill), cancel_btn, save_btn]
@@ -181,7 +181,7 @@ fn view_loop_section(state: &SettingsState) -> Element<'_, Message> {
     let phase_sync_hint = text("Automatically align beats when starting playback or hot cues")
         .size(12);
     let phase_sync_toggle = toggler(state.draft_phase_sync)
-        .on_toggle(Message::UpdateSettingsPhaseSync);
+        .on_toggle(|v| Message::Settings(SettingsMessage::UpdatePhaseSync(v)));
     let phase_sync_row = row![
         column![phase_sync_label, phase_sync_hint].spacing(4),
         Space::new().width(Length::Fill),
@@ -207,7 +207,7 @@ fn view_loop_section(state: &SettingsState) -> Element<'_, Message> {
                 format!("{:.0}", beats)
             };
             let btn = button(text(label).size(11))
-                .on_press(Message::UpdateSettingsLoopLength(idx))
+                .on_press(Message::Settings(SettingsMessage::UpdateLoopLength(idx)))
                 .style(if is_selected {
                     iced::widget::button::primary
                 } else {
@@ -257,7 +257,7 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
         .map(|&size| {
             let is_selected = state.draft_zoom_bars == size;
             let btn = button(text(format!("{}", size)).size(11))
-                .on_press(Message::UpdateSettingsZoomBars(size))
+                .on_press(Message::Settings(SettingsMessage::UpdateZoomBars(size)))
                 .style(if is_selected {
                     iced::widget::button::primary
                 } else {
@@ -287,7 +287,7 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
         .map(|&size| {
             let is_selected = state.draft_grid_bars == size;
             let btn = button(text(format!("{}", size)).size(11))
-                .on_press(Message::UpdateSettingsGridBars(size))
+                .on_press(Message::Settings(SettingsMessage::UpdateGridBars(size)))
                 .style(if is_selected {
                     iced::widget::button::primary
                 } else {
@@ -316,7 +316,7 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
         .map(|&palette| {
             let is_selected = state.draft_stem_color_palette == palette;
             let btn = button(text(palette.display_name()).size(11))
-                .on_press(Message::UpdateSettingsStemColorPalette(palette))
+                .on_press(Message::Settings(SettingsMessage::UpdateStemColorPalette(palette)))
                 .style(if is_selected {
                     iced::widget::button::primary
                 } else {
@@ -335,7 +335,7 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
     let local_collection_hint = text("Display local music library alongside USB devices")
         .size(12);
     let local_collection_toggle = toggler(state.draft_show_local_collection)
-        .on_toggle(Message::UpdateSettingsShowLocalCollection);
+        .on_toggle(|v| Message::Settings(SettingsMessage::UpdateShowLocalCollection(v)));
     let local_collection_row = row![
         column![local_collection_label, local_collection_hint].spacing(4),
         Space::new().width(Length::Fill),
@@ -378,7 +378,7 @@ fn view_loudness_section(state: &SettingsState) -> Element<'_, Message> {
     let auto_gain_hint = text("Automatically adjust track volume to match target loudness")
         .size(12);
     let auto_gain_toggle = toggler(state.draft_auto_gain_enabled)
-        .on_toggle(Message::UpdateSettingsAutoGainEnabled);
+        .on_toggle(|v| Message::Settings(SettingsMessage::UpdateAutoGainEnabled(v)));
     let auto_gain_row = row![
         column![auto_gain_label, auto_gain_hint].spacing(4),
         Space::new().width(Length::Fill),
@@ -399,7 +399,7 @@ fn view_loudness_section(state: &SettingsState) -> Element<'_, Message> {
             let is_selected = state.draft_target_lufs_index == idx;
             let label = format!("{:.0}", lufs);
             let btn = button(text(label).size(11))
-                .on_press(Message::UpdateSettingsTargetLufs(idx))
+                .on_press(Message::Settings(SettingsMessage::UpdateTargetLufs(idx)))
                 .style(if is_selected {
                     iced::widget::button::primary
                 } else {
@@ -453,7 +453,7 @@ fn view_slicer_section(state: &SettingsState) -> Element<'_, Message> {
         .map(|&size| {
             let is_selected = state.draft_slicer_buffer_bars == size;
             let btn = button(text(format!("{}", size)).size(11))
-                .on_press(Message::UpdateSettingsSlicerBufferBars(size))
+                .on_press(Message::Settings(SettingsMessage::UpdateSlicerBufferBars(size)))
                 .style(if is_selected {
                     iced::widget::button::primary
                 } else {

@@ -12,6 +12,37 @@ use super::mixer_view::MixerMessage;
 use super::state::{LinkedStemLoadedMsg, TrackLoadedMsg};
 use mesh_core::usb::UsbMessage;
 
+/// Settings-related messages
+#[derive(Debug, Clone)]
+pub enum SettingsMessage {
+    /// Open settings modal
+    Open,
+    /// Close settings modal
+    Close,
+    /// Update draft loop length index
+    UpdateLoopLength(usize),
+    /// Update draft zoom bars
+    UpdateZoomBars(u32),
+    /// Update draft grid bars
+    UpdateGridBars(u32),
+    /// Update draft stem color palette
+    UpdateStemColorPalette(StemColorPalette),
+    /// Update draft phase sync setting
+    UpdatePhaseSync(bool),
+    /// Update draft slicer buffer bars
+    UpdateSlicerBufferBars(u32),
+    /// Update draft auto-gain enabled
+    UpdateAutoGainEnabled(bool),
+    /// Update draft target LUFS index
+    UpdateTargetLufs(usize),
+    /// Update draft show local collection
+    UpdateShowLocalCollection(bool),
+    /// Save settings to disk
+    Save,
+    /// Settings save completed
+    SaveComplete(Result<(), String>),
+}
+
 /// Messages that can be sent to the application
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -38,39 +69,12 @@ pub enum Message {
     /// Set zoom level on a deck (deck_idx, zoom in bars)
     DeckSetZoom(usize, u32),
 
-    // Settings
-    /// Open settings modal
-    OpenSettings,
-    /// Close settings modal
-    CloseSettings,
-    /// Update settings: loop length index
-    UpdateSettingsLoopLength(usize),
-    /// Update settings: zoom bars
-    UpdateSettingsZoomBars(u32),
-    /// Update settings: grid bars
-    UpdateSettingsGridBars(u32),
-    /// Update settings: stem color palette
-    UpdateSettingsStemColorPalette(StemColorPalette),
-    /// Update settings: phase sync enabled
-    UpdateSettingsPhaseSync(bool),
-    /// Update settings: slicer buffer bars (1, 4, 8, or 16)
-    UpdateSettingsSlicerBufferBars(u32),
-    /// Update settings: auto-gain enabled
-    UpdateSettingsAutoGainEnabled(bool),
-    /// Update settings: target LUFS index (0-3)
-    UpdateSettingsTargetLufs(usize),
-    /// Update settings: show local collection in browser
-    UpdateSettingsShowLocalCollection(bool),
-    /// Save settings to disk
-    SaveSettings,
-    /// Settings save complete
-    SaveSettingsComplete(Result<(), String>),
+    /// Settings modal message
+    Settings(SettingsMessage),
 
-    // MIDI Learn
     /// MIDI learn mode message
     MidiLearn(MidiLearnMessage),
 
-    // USB
     /// USB manager message received
     Usb(UsbMessage),
 }
