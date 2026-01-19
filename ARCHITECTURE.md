@@ -429,3 +429,304 @@ mesh-player/
 4. **Domain layer**: Encapsulates all service coordination, hides EngineCommand details
 5. **Handler extraction**: Message handlers in separate modules for maintainability
 6. **Atomic state sharing**: UI reads engine state without synchronization overhead
+
+---
+
+## mesh-cue
+
+The cue point editor application for preparing tracks with metadata, cue points, loops, and stem links.
+
+### Module Structure
+
+```
+mesh-cue/
+├── main.rs              # Application entry point
+├── config.rs            # Configuration loading/saving
+└── ui/
+    ├── app.rs           # MeshCueApp - iced application (663 lines)
+    ├── message.rs       # Message enum definitions
+    ├── handlers/        # Message handlers (extracted)
+    │   ├── browser.rs   # Dual playlist browser (parameterized)
+    │   ├── track_loading.rs # Two-phase track loading
+    │   ├── playback.rs  # Audio transport controls
+    │   ├── waveform.rs  # Waveform interaction
+    │   ├── stem_links.rs# Stem linking workflow
+    │   └── tick.rs      # Periodic sync (60fps)
+    ├── modals/          # Modal overlay utilities
+    │   ├── overlay.rs   # with_modal_overlay() helper
+    │   └── mod.rs
+    ├── state/           # UI state types
+    │   ├── collection.rs# Browser state + drag/drop
+    │   └── loaded_track.rs # Loaded track metadata
+    ├── collection_browser.rs # Dual browser view
+    ├── cue_editor.rs    # Cue point editing UI
+    ├── waveform.rs      # Combined waveform canvas
+    ├── transport.rs     # Playback controls
+    ├── settings.rs      # Settings modal
+    ├── import_modal.rs  # Batch stem import
+    ├── export_modal.rs  # USB export
+    └── delete_modal.rs  # Delete confirmation
+```
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    MESH-CUE ARCHITECTURE                             │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │                      UI LAYER (iced)                         │    │
+│  │  ┌─────────────────────────────────────────────────────────┐ │    │
+│  │  │                     MeshCueApp                           │ │    │
+│  │  │  ┌─────────────────────────────────────────────────────┐ │ │    │
+│  │  │  │                    handlers/                         │ │ │    │
+│  │  │  │  browser │ track_loading │ playback │ waveform │ ... │ │ │    │
+│  │  │  └─────────────────────────────────────────────────────┘ │ │    │
+│  │  │  ┌─────────────────────────────────────────────────────┐ │ │    │
+│  │  │  │                    modals/                           │ │ │    │
+│  │  │  │  overlay │ import │ export │ delete │ settings       │ │ │    │
+│  │  │  └─────────────────────────────────────────────────────┘ │ │    │
+│  │  └──────────────────────────┬──────────────────────────────┘ │    │
+│  └─────────────────────────────┼────────────────────────────────┘    │
+│                                │                                     │
+│                                ▼                                     │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │                    SERVICE LAYER (mesh-core)                 │    │
+│  │  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌───────────┐ │    │
+│  │  │AudioEngine │ │ Database   │ │BatchImport │ │UsbManager │ │    │
+│  │  │(JACK)      │ │ (SQLite)   │ │ (Threaded) │ │(Hot-plug) │ │    │
+│  │  └────────────┘ └────────────┘ └────────────┘ └───────────┘ │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Handler Module Design (Parameterized Browsers)
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    BROWSER HANDLER PATTERN                           │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  Problem: Dual browsers (left/right) had 300+ lines of duplication  │
+│                                                                      │
+│  Solution: Parameterized handlers with BrowserSide enum             │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │  impl MeshCueApp {                                            │   │
+│  │    pub fn handle_browser_left(&mut self, msg) -> Task {       │   │
+│  │      self.handle_browser(BrowserSide::Left, msg)              │   │
+│  │    }                                                          │   │
+│  │                                                               │   │
+│  │    pub fn handle_browser_right(&mut self, msg) -> Task {      │   │
+│  │      self.handle_browser(BrowserSide::Right, msg)             │   │
+│  │    }                                                          │   │
+│  │                                                               │   │
+│  │    fn handle_browser(&mut self, side, msg) -> Task {          │   │
+│  │      // Single implementation handles both sides              │   │
+│  │      let browser = self.collection.browser_mut(side);         │   │
+│  │      let tracks = self.collection.tracks_mut(side);           │   │
+│  │      // ... all logic uses side parameter                     │   │
+│  │    }                                                          │   │
+│  │  }                                                            │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  CollectionState accessors:                                         │
+│  ├─ browser_mut(side) -> &mut PlaylistBrowserState                 │
+│  ├─ browser(side) -> &PlaylistBrowserState                         │
+│  ├─ tracks_mut(side) -> &mut Vec<TrackRow>                         │
+│  ├─ tracks(side) -> &Vec<TrackRow>                                 │
+│  └─ side_name(side) -> &str  ("Left" / "Right")                    │
+│                                                                      │
+│  Result: 532 → 347 lines (35% reduction)                            │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Modal Overlay Pattern
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    MODAL OVERLAY HELPER                              │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  Before: Each modal duplicated backdrop + centering code            │
+│                                                                      │
+│  After: Single reusable helper                                      │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │  pub fn with_modal_overlay<'a>(                               │   │
+│  │      base: Element<'a, Message>,                              │   │
+│  │      modal_content: Element<'a, Message>,                     │   │
+│  │      close_message: Message,                                  │   │
+│  │  ) -> Element<'a, Message>                                    │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  Constructs:                                                         │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │                      stack![]                                │    │
+│  │  ┌─────────────────────────────────────────────────────────┐│    │
+│  │  │ Layer 0: base (main app content)                        ││    │
+│  │  └─────────────────────────────────────────────────────────┘│    │
+│  │  ┌─────────────────────────────────────────────────────────┐│    │
+│  │  │ Layer 1: backdrop (60% opacity, click-to-close)         ││    │
+│  │  └─────────────────────────────────────────────────────────┘│    │
+│  │  ┌─────────────────────────────────────────────────────────┐│    │
+│  │  │ Layer 2: center(opaque(modal_content))                  ││    │
+│  │  └─────────────────────────────────────────────────────────┘│    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│                                                                      │
+│  Usage in view():                                                    │
+│  ├─ with_modal_overlay(base, import_modal, Message::CloseImport)   │
+│  ├─ with_modal_overlay(base, export_modal, Message::CloseExport)   │
+│  └─ with_modal_overlay(base, delete_modal, Message::CancelDelete)  │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Track Loading Pipeline (Two-Phase)
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    TWO-PHASE TRACK LOADING                           │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  Phase 1: Metadata (Fast)                 Phase 2: Audio (Slow)     │
+│  ──────────────────────                   ─────────────────────     │
+│                                                                      │
+│  User double-clicks track                                            │
+│       │                                                              │
+│       ▼                                                              │
+│  ┌─────────────────────────────┐                                    │
+│  │ DatabaseService.get_track() │  < 10ms                            │
+│  │ - BPM, key, LUFS            │                                    │
+│  │ - Cue points, loops         │                                    │
+│  │ - Beat grid, stem links     │                                    │
+│  │ - Drop marker, first beat   │                                    │
+│  └──────────────┬──────────────┘                                    │
+│                 │                                                    │
+│                 ▼                                                    │
+│  ┌─────────────────────────────┐     ┌─────────────────────────┐   │
+│  │ UI updates immediately      │     │ TrackLoader.request()   │   │
+│  │ - Show cue editor           │     │ (Background thread)     │   │
+│  │ - Display metadata          │     │ - Decode stems (FLAC)   │   │
+│  │ - Show "loading" spinner    │     │ - Compute peaks         │   │
+│  └─────────────────────────────┘     │ - 2-5 seconds           │   │
+│                                       └────────────┬────────────┘   │
+│                                                    │                 │
+│                                                    ▼                 │
+│                                       ┌─────────────────────────┐   │
+│                                       │ Message::TrackLoaded    │   │
+│                                       │ - StemBuffers (Arc)     │   │
+│                                       │ - Overview peaks        │   │
+│                                       │ - Duration samples      │   │
+│                                       └────────────┬────────────┘   │
+│                                                    │                 │
+│                                                    ▼                 │
+│                                       ┌─────────────────────────┐   │
+│                                       │ UI updates waveform     │   │
+│                                       │ - Combined stem display │   │
+│                                       │ - Remove spinner        │   │
+│                                       │ - Enable transport      │   │
+│                                       └─────────────────────────┘   │
+│                                                                      │
+│  Benefit: User sees metadata instantly, can review cue points       │
+│           while audio loads in background                            │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Track Editing Workflow
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    CUE POINT EDITING WORKFLOW                        │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  LoadedTrackState (in-memory working copy)                          │
+│  ├─ path: PathBuf                                                   │
+│  ├─ bpm, key, lufs                                                  │
+│  ├─ drop_marker, first_beat_sample                                  │
+│  ├─ cue_points: Vec<CuePoint>      ◄── Edit operations              │
+│  ├─ saved_loops: Vec<SavedLoop>    ◄── modify this state            │
+│  ├─ stem_links: Vec<StemLink>                                       │
+│  └─ beat_grid: Vec<u64>                                             │
+│                                                                      │
+│  Edit Operations:                                                    │
+│  ├─ SetCuePoint(index, sample, label)                               │
+│  ├─ DeleteCuePoint(index)                                           │
+│  ├─ SetSavedLoop(index, start, end)                                 │
+│  ├─ SetDropMarker(sample)                                           │
+│  ├─ AdjustBpm(delta)                                                │
+│  ├─ SetKey(key_string)                                              │
+│  └─ SetStemLink(stem_idx, source_track, source_stem)                │
+│                                                                      │
+│  Save Flow:                                                          │
+│  ┌──────────────┐    ┌────────────────┐    ┌──────────────────┐    │
+│  │ User presses │───►│ LoadedTrack →  │───►│ DatabaseService  │    │
+│  │ Ctrl+S       │    │ Track struct   │    │ .save_track()    │    │
+│  └──────────────┘    └────────────────┘    └──────────────────┘    │
+│                                                                      │
+│  Keyboard Shortcuts:                                                 │
+│  ├─ 1-8: Set cue point at playhead                                  │
+│  ├─ Shift+1-8: Jump to cue point                                    │
+│  ├─ D: Set drop marker                                              │
+│  ├─ L: Set loop start/end                                           │
+│  └─ Ctrl+S: Save all changes                                        │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Message Handler Organization
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    MESSAGE ROUTING (app.rs)                          │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │  fn update(&mut self, message: Message) -> Task<Message> {    │   │
+│  │    match message {                                            │   │
+│  │                                                               │   │
+│  │      // Browser handlers (parameterized)                      │   │
+│  │      Message::BrowserLeft(msg) =>                             │   │
+│  │          self.handle_browser_left(msg),                       │   │
+│  │      Message::BrowserRight(msg) =>                            │   │
+│  │          self.handle_browser_right(msg),                      │   │
+│  │                                                               │   │
+│  │      // Drag and drop                                         │   │
+│  │      Message::DragTrackStart { .. } =>                        │   │
+│  │          self.handle_drag_track_start(..),                    │   │
+│  │      Message::DropTracksOnPlaylist { .. } =>                  │   │
+│  │          self.handle_drop_tracks_on_playlist(..),             │   │
+│  │                                                               │   │
+│  │      // Track operations                                      │   │
+│  │      Message::TrackLoaded(result) =>                          │   │
+│  │          self.handle_track_loaded(result),                    │   │
+│  │      Message::SaveTrack =>                                    │   │
+│  │          self.handle_save_track(),                            │   │
+│  │                                                               │   │
+│  │      // Audio transport                                       │   │
+│  │      Message::TogglePlay =>                                   │   │
+│  │          self.handle_toggle_play(),                           │   │
+│  │      Message::Seek(pos) =>                                    │   │
+│  │          self.handle_seek(pos),                               │   │
+│  │                                                               │   │
+│  │      // Simple operations inline                              │   │
+│  │      Message::Tick => self.handle_tick(),                     │   │
+│  │      Message::CloseExport => { .. },                          │   │
+│  │    }                                                          │   │
+│  │  }                                                            │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  Handler file mapping:                                               │
+│  ├─ handlers/browser.rs    → BrowserLeft, BrowserRight, Drag/Drop  │
+│  ├─ handlers/track_loading.rs → TrackLoaded, LoadTrack             │
+│  ├─ handlers/playback.rs   → TogglePlay, Seek, SetLoop             │
+│  ├─ handlers/waveform.rs   → Click, Drag on waveform               │
+│  ├─ handlers/stem_links.rs → Stem linking operations               │
+│  └─ handlers/tick.rs       → 60fps atomic state sync               │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```

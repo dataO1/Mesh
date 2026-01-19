@@ -1,9 +1,10 @@
 //! Collection browser state
+//!
+//! UI-only state for the collection browser panels.
+//! Database service and playlist storage are owned by the domain layer.
 
 use std::path::PathBuf;
-use std::sync::Arc;
-use mesh_core::db::DatabaseService;
-use mesh_core::playlist::{NodeId, PlaylistStorage};
+use mesh_core::playlist::NodeId;
 use mesh_widgets::{PlaylistBrowserState, TrackRow, TreeNode};
 
 use super::loaded_track::LoadedTrackState;
@@ -56,17 +57,16 @@ impl DragState {
 }
 
 /// State for the collection view
+///
+/// This is pure UI state - browser panels, selections, and cached display data.
+/// All business logic and service access goes through the domain layer.
 pub struct CollectionState {
     /// Path to the collection root folder
     pub collection_path: PathBuf,
     /// Currently selected track index (legacy)
     pub selected_track: Option<usize>,
-    /// Currently loaded track for editing
+    /// Currently loaded track for editing (UI view state)
     pub loaded_track: Option<LoadedTrackState>,
-    /// Playlist storage backend (FilesystemStorage or DatabaseStorage)
-    pub playlist_storage: Option<Box<dyn PlaylistStorage>>,
-    /// Shared database service for metadata updates and track operations
-    pub db_service: Option<Arc<DatabaseService>>,
     /// Left browser state
     pub browser_left: PlaylistBrowserState<NodeId, NodeId>,
     /// Right browser state
@@ -87,9 +87,52 @@ impl std::fmt::Debug for CollectionState {
             .field("collection_path", &self.collection_path)
             .field("selected_track", &self.selected_track)
             .field("loaded_track", &self.loaded_track)
-            .field("has_playlist_storage", &self.playlist_storage.is_some())
-            .field("has_db_service", &self.db_service.is_some())
+            .field("tree_nodes_count", &self.tree_nodes.len())
+            .field("left_tracks_count", &self.left_tracks.len())
+            .field("right_tracks_count", &self.right_tracks.len())
             .finish_non_exhaustive()
+    }
+}
+
+impl CollectionState {
+    /// Get mutable reference to browser state for the given side
+    pub fn browser_mut(&mut self, side: BrowserSide) -> &mut PlaylistBrowserState<NodeId, NodeId> {
+        match side {
+            BrowserSide::Left => &mut self.browser_left,
+            BrowserSide::Right => &mut self.browser_right,
+        }
+    }
+
+    /// Get reference to browser state for the given side
+    pub fn browser(&self, side: BrowserSide) -> &PlaylistBrowserState<NodeId, NodeId> {
+        match side {
+            BrowserSide::Left => &self.browser_left,
+            BrowserSide::Right => &self.browser_right,
+        }
+    }
+
+    /// Get mutable reference to tracks for the given side
+    pub fn tracks_mut(&mut self, side: BrowserSide) -> &mut Vec<TrackRow<NodeId>> {
+        match side {
+            BrowserSide::Left => &mut self.left_tracks,
+            BrowserSide::Right => &mut self.right_tracks,
+        }
+    }
+
+    /// Get reference to tracks for the given side
+    pub fn tracks(&self, side: BrowserSide) -> &Vec<TrackRow<NodeId>> {
+        match side {
+            BrowserSide::Left => &self.left_tracks,
+            BrowserSide::Right => &self.right_tracks,
+        }
+    }
+
+    /// Get the side name for logging
+    pub fn side_name(side: BrowserSide) -> &'static str {
+        match side {
+            BrowserSide::Left => "Left",
+            BrowserSide::Right => "Right",
+        }
     }
 }
 
@@ -106,8 +149,6 @@ impl Default for CollectionState {
             collection_path: default_path,
             selected_track: None,
             loaded_track: None,
-            playlist_storage: None,
-            db_service: None,
             browser_left: PlaylistBrowserState::new(),
             browser_right: PlaylistBrowserState::new(),
             tree_nodes: Vec::new(),

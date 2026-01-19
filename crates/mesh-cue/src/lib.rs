@@ -7,11 +7,19 @@
 //!
 //! 2. **Collection Editor**: Browse converted tracks, edit cue points, adjust beat grid,
 //!    and save changes back to the files.
+//!
+//! ## Architecture
+//!
+//! - **Domain Layer** (`domain/`): Business logic, services, and state management
+//! - **UI Layer** (`ui/`): Display and user input handling only
+//!
+//! The UI layer delegates all business logic to the domain layer.
 
 pub mod analysis;
 pub mod audio;
 pub mod batch_import;
 pub mod config;
+pub mod domain;
 pub mod export;
 pub mod import;
 pub mod keybindings;
