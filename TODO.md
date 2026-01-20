@@ -172,6 +172,20 @@ and mesh-widget and only if necessary in the ui.
      energy instead of exact key match (so the user has 3 options, lower energy,
      keep, or up the energy)?
    - [ ] backup of databse (without files, just db)
+   - [ ] ok so currently the dj has no way of previewing tracks they want to
+     play into the current mix with a cue channel mixer, we need this. there are
+     a few problems to solve here:
+     - [ ] multiple jack outputs. the physical cue output is independent of the
+       master mix output. so the mesh-player needs to be able to configure which
+       output is which. this needs to be added to the ui interface (add it to
+       the top, since this is very important). importantly the two audio threads
+       needs to be completely independant, each in its own thread i think!
+     - [ ] the actual audio channel computation should happen after the
+       timestretching and effects sections of the deck, but before summing to
+       mix output. so essentially the cue output takes all deck outs, which are
+       marked for cue playback (this needs to be a separate boolean field per
+       deck) and sums them to the second audio out. so the cue output is
+       parallel to the mix output.
 
 # Changes
 - [x] The waveform indicators of hot cues use colors, but the hot cue buttons
@@ -377,6 +391,8 @@ and mesh-widget and only if necessary in the ui.
   stem using essentia or ebur128 or lufs crate ( i want stems after processing to be
   relatively comparable loudness as input stem loudness, since rave processing can either
   be very loud or silent ).
+- [ ] export ui progress x/x shows the tracks id not, the amount of tracks that
+  have been processed. the progress bar itself seems correct.
 
 
 
