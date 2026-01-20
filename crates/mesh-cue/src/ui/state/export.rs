@@ -44,6 +44,13 @@ pub enum ExportPhase {
         start_time: Instant,
     },
 
+    /// Updating playlist memberships (after all tracks copied)
+    UpdatingPlaylists {
+        completed: usize,
+        total: usize,
+        start_time: Instant,
+    },
+
     /// Export complete
     Complete {
         duration: Duration,
@@ -70,6 +77,7 @@ impl ExportPhase {
                 | ExportPhase::ScanningUsb
                 | ExportPhase::BuildingSyncPlan { .. }
                 | ExportPhase::Exporting { .. }
+                | ExportPhase::UpdatingPlaylists { .. }
         )
     }
 
@@ -85,6 +93,9 @@ impl ExportPhase {
             ExportPhase::ReadyToSync { plan } => plan.summary(),
             ExportPhase::Exporting { tracks_complete, total_tracks, .. } => {
                 format!("Exporting: {}/{} tracks", tracks_complete, total_tracks)
+            }
+            ExportPhase::UpdatingPlaylists { completed, total, .. } => {
+                format!("Updating playlist entries: {}/{}", completed, total)
             }
             ExportPhase::Complete { tracks_exported, failed_files, .. } => {
                 if failed_files.is_empty() {

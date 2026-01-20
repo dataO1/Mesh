@@ -242,6 +242,25 @@ impl MeshCueApp {
                 log::warn!("Track export failed: {} - {}", filename, error);
                 // Don't change phase - let export continue with other tracks
             }
+            UsbMsg::ExportPlaylistOpsStarted { total_operations } => {
+                // Transition from Exporting to UpdatingPlaylists phase
+                self.export_state.phase = ExportPhase::UpdatingPlaylists {
+                    completed: 0,
+                    total: total_operations,
+                    start_time: std::time::Instant::now(),
+                };
+            }
+            UsbMsg::ExportPlaylistOpComplete { completed, total } => {
+                // Update playlist operations progress
+                if let ExportPhase::UpdatingPlaylists { start_time, .. } = &self.export_state.phase {
+                    let start = *start_time;
+                    self.export_state.phase = ExportPhase::UpdatingPlaylists {
+                        completed,
+                        total,
+                        start_time: start,
+                    };
+                }
+            }
             UsbMsg::ExportComplete { duration, tracks_exported, failed_files } => {
                 self.export_state.phase = ExportPhase::Complete {
                     duration,

@@ -49,6 +49,11 @@ pub fn view(state: &ExportState, playlist_tree: Vec<TreeNode<NodeId>>) -> Elemen
             *total_bytes,
             start_time,
         ),
+        ExportPhase::UpdatingPlaylists {
+            completed,
+            total,
+            start_time,
+        } => view_updating_playlists(*completed, *total, start_time),
         ExportPhase::Complete {
             duration,
             tracks_exported,
@@ -520,6 +525,59 @@ fn view_exporting(
         status,
         container(progress_bar(0.0..=1.0, progress)).width(Length::Fill),
         row![bytes_text, Space::new().width(Length::Fill), eta],
+        row![Space::new().width(Length::Fill), cancel_btn],
+    ]
+    .spacing(10)
+    .into()
+}
+
+/// View when updating playlist memberships
+fn view_updating_playlists(
+    completed: usize,
+    total: usize,
+    start_time: &std::time::Instant,
+) -> Element<'static, Message> {
+    let progress = if total > 0 {
+        completed as f32 / total as f32
+    } else {
+        0.0
+    };
+
+    // Calculate ETA based on completed operations
+    let elapsed = start_time.elapsed();
+    let eta_text = if completed > 0 {
+        let rate = completed as f64 / elapsed.as_secs_f64();
+        let remaining = total.saturating_sub(completed);
+        let eta_secs = remaining as f64 / rate;
+        if eta_secs > 60.0 {
+            format!(
+                "ETA: {}m {}s",
+                (eta_secs / 60.0) as u32,
+                (eta_secs % 60.0) as u32
+            )
+        } else {
+            format!("ETA: {:.0}s", eta_secs)
+        }
+    } else {
+        String::from("Calculating...")
+    };
+
+    let status = text(format!(
+        "Updating playlist entries: {}/{}",
+        completed, total
+    ))
+    .size(14);
+
+    let eta = text(eta_text).size(12);
+
+    let cancel_btn = button(text("Cancel"))
+        .on_press(Message::CancelExport)
+        .style(button::danger);
+
+    column![
+        status,
+        container(progress_bar(0.0..=1.0, progress)).width(Length::Fill),
+        row![Space::new().width(Length::Fill), eta],
         row![Space::new().width(Length::Fill), cancel_btn],
     ]
     .spacing(10)

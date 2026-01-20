@@ -219,15 +219,36 @@ impl ExportService {
                 return;
             }
 
-            // Phase 3: Add playlist track memberships (sequential)
+            // Phase 3-4: Update playlist memberships (parallel with progress)
             let tracks_dir = usb_root.join("tracks");
-            for playlist_track in &playlist_tracks_to_add {
-                add_track_to_playlist(&usb_db, &tracks_dir, playlist_track);
-            }
+            let total_playlist_ops = playlist_tracks_to_add.len() + playlist_tracks_to_remove.len();
 
-            // Phase 4: Remove playlist track memberships
-            for playlist_track in &playlist_tracks_to_remove {
-                remove_track_from_playlist(&usb_db, &tracks_dir, playlist_track);
+            if total_playlist_ops > 0 {
+                let _ = progress_tx.send(ExportProgress::PlaylistOpsStarted {
+                    total_operations: total_playlist_ops,
+                });
+
+                let playlist_ops_complete = AtomicUsize::new(0);
+
+                // Parallelize playlist track additions
+                playlist_tracks_to_add.par_iter().for_each(|playlist_track| {
+                    add_track_to_playlist(&usb_db, &tracks_dir, playlist_track);
+                    let completed = playlist_ops_complete.fetch_add(1, Ordering::Relaxed) + 1;
+                    let _ = progress_tx.send(ExportProgress::PlaylistOpComplete {
+                        completed,
+                        total: total_playlist_ops,
+                    });
+                });
+
+                // Parallelize playlist track removals
+                playlist_tracks_to_remove.par_iter().for_each(|playlist_track| {
+                    remove_track_from_playlist(&usb_db, &tracks_dir, playlist_track);
+                    let completed = playlist_ops_complete.fetch_add(1, Ordering::Relaxed) + 1;
+                    let _ = progress_tx.send(ExportProgress::PlaylistOpComplete {
+                        completed,
+                        total: total_playlist_ops,
+                    });
+                });
             }
 
             // Phase 5: Delete playlists

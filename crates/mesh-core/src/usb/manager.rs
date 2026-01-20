@@ -606,6 +606,12 @@ fn handle_start_export(
                 }
             }
             ExportProgress::Cancelled => UsbMessage::ExportCancelled,
+            ExportProgress::PlaylistOpsStarted { total_operations } => {
+                UsbMessage::ExportPlaylistOpsStarted { total_operations }
+            }
+            ExportProgress::PlaylistOpComplete { completed, total } => {
+                UsbMessage::ExportPlaylistOpComplete { completed, total }
+            }
         };
 
         if message_tx.send(usb_msg).is_err() {

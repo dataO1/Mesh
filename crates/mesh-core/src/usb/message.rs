@@ -224,6 +224,22 @@ pub enum UsbMessage {
     /// Export was cancelled by user
     ExportCancelled,
 
+    /// Playlist operations phase started (after all tracks are copied)
+    ///
+    /// This phase adds/removes tracks from playlists in the USB database.
+    ExportPlaylistOpsStarted {
+        /// Total number of playlist membership operations
+        total_operations: usize,
+    },
+
+    /// A playlist operation completed
+    ExportPlaylistOpComplete {
+        /// Number of operations completed so far
+        completed: usize,
+        /// Total number of operations
+        total: usize,
+    },
+
     // ─────────────────────────────────────────────────────────────────
     // General
     // ─────────────────────────────────────────────────────────────────
@@ -300,6 +316,12 @@ impl UsbMessage {
             }
             UsbMessage::ExportError(e) => format!("Export failed: {}", e),
             UsbMessage::ExportCancelled => "Export cancelled".to_string(),
+            UsbMessage::ExportPlaylistOpsStarted { total_operations } => {
+                format!("Updating {} playlist entries...", total_operations)
+            }
+            UsbMessage::ExportPlaylistOpComplete { completed, total } => {
+                format!("Playlist entries: {}/{}", completed, total)
+            }
             _ => format!("{:?}", self),
         }
     }

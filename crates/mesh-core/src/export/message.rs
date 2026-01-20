@@ -69,6 +69,22 @@ pub enum ExportProgress {
 
     /// Export was cancelled by user
     Cancelled,
+
+    /// Playlist operations phase started (after all tracks are copied)
+    ///
+    /// This phase adds/removes tracks from playlists in the USB database.
+    PlaylistOpsStarted {
+        /// Total number of playlist membership operations
+        total_operations: usize,
+    },
+
+    /// A playlist operation completed
+    PlaylistOpComplete {
+        /// Number of operations completed so far
+        completed: usize,
+        /// Total number of operations
+        total: usize,
+    },
 }
 
 impl ExportProgress {
@@ -112,6 +128,12 @@ impl ExportProgress {
                 }
             }
             Self::Cancelled => "Export cancelled".to_string(),
+            Self::PlaylistOpsStarted { total_operations } => {
+                format!("Updating {} playlist entries...", total_operations)
+            }
+            Self::PlaylistOpComplete { completed, total } => {
+                format!("Playlist entries: {}/{}", completed, total)
+            }
         }
     }
 
@@ -128,8 +150,11 @@ impl ExportProgress {
                 total_tracks,
                 ..
             } => Some((*track_index + 1) as f32 / *total_tracks as f32),
+            Self::PlaylistOpComplete { completed, total } => {
+                Some(*completed as f32 / *total as f32)
+            }
             Self::Complete { .. } => Some(1.0),
-            Self::Started { .. } => Some(0.0),
+            Self::Started { .. } | Self::PlaylistOpsStarted { .. } => Some(0.0),
             _ => None,
         }
     }
