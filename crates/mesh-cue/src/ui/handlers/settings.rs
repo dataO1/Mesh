@@ -14,6 +14,8 @@ impl MeshCueApp {
         // Reset draft values from current config
         self.settings = SettingsState::from_config(self.domain.config());
         self.settings.is_open = true;
+        // Refresh available JACK ports
+        self.settings.refresh_jack_ports();
         Task::none()
     }
 
@@ -63,6 +65,24 @@ impl MeshCueApp {
     /// Handle UpdateSettingsSlicerBufferBars message
     pub fn handle_update_settings_slicer_buffer_bars(&mut self, bars: u32) -> Task<Message> {
         self.settings.draft_slicer_buffer_bars = bars;
+        Task::none()
+    }
+
+    /// Handle UpdateSettingsOutputPair message
+    pub fn handle_update_settings_output_pair(&mut self, idx: usize) -> Task<Message> {
+        self.settings.selected_output_pair = idx;
+        // Connect to the selected output pair immediately
+        if let Some(pair) = self.settings.available_stereo_pairs.get(idx) {
+            if let Err(e) = crate::audio::connect_to_stereo_pair(pair) {
+                log::error!("Failed to connect to output pair: {}", e);
+            }
+        }
+        Task::none()
+    }
+
+    /// Handle RefreshJackPorts message
+    pub fn handle_refresh_jack_ports(&mut self) -> Task<Message> {
+        self.settings.refresh_jack_ports();
         Task::none()
     }
 

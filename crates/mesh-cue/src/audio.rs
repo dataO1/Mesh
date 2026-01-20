@@ -643,30 +643,129 @@ pub fn start_jack_client(db_service: Arc<DatabaseService>) -> Result<(AudioState
     ))
 }
 
-/// Auto-connect mesh-cue outputs to system playback
+/// Auto-connect mesh-cue outputs to system playback (first available pair)
 fn auto_connect_ports() -> Result<(), JackError> {
+    let pairs = get_available_stereo_pairs();
+    if let Some(first_pair) = pairs.first() {
+        connect_to_stereo_pair(first_pair)?;
+    } else {
+        log::warn!("No JACK playback ports found for auto-connect");
+    }
+    Ok(())
+}
+
+/// Stereo output pair (L/R port names)
+///
+/// Represents a pair of JACK ports that together form a stereo output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StereoPair {
+    /// Human-readable label (e.g., "Outputs 1-2")
+    pub label: String,
+    /// Left channel port name (e.g., "system:playback_1")
+    pub left: String,
+    /// Right channel port name (e.g., "system:playback_2")
+    pub right: String,
+}
+
+impl std::fmt::Display for StereoPair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.label)
+    }
+}
+
+/// Get available JACK stereo output pairs
+///
+/// Queries the JACK server for available playback ports and groups them
+/// into stereo pairs. Returns an empty list if JACK is not running.
+pub fn get_available_stereo_pairs() -> Vec<StereoPair> {
+    let (client, _) = match Client::new("mesh_port_query", ClientOptions::NO_START_SERVER) {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+
+    let playback_ports = client.ports(None, None, jack::PortFlags::IS_INPUT);
+
+    // Group ports by device (everything before the colon)
+    let mut device_ports: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for port in playback_ports {
+        if let Some(colon_pos) = port.find(':') {
+            let device = port[..colon_pos].to_string();
+            let port_name = &port[colon_pos + 1..];
+            // Only include playback ports
+            if port_name.starts_with("playback_") || port_name.contains("playback") {
+                device_ports.entry(device).or_default().push(port);
+            }
+        }
+    }
+
+    let mut pairs = Vec::new();
+    for (device_name, mut ports) in device_ports {
+        ports.sort();
+
+        // Check for PipeWire surround naming (FL/FR/RL/RR)
+        let fl = ports.iter().find(|p| p.contains("_FL")).cloned();
+        let fr = ports.iter().find(|p| p.contains("_FR")).cloned();
+        let rl = ports.iter().find(|p| p.contains("_RL")).cloned();
+        let rr = ports.iter().find(|p| p.contains("_RR")).cloned();
+
+        let short_name = device_name.split(' ').next().unwrap_or(&device_name);
+
+        if fl.is_some() && fr.is_some() {
+            // PipeWire surround - Front pair
+            pairs.push(StereoPair {
+                label: format!("{} Front", short_name),
+                left: fl.unwrap(),
+                right: fr.unwrap(),
+            });
+
+            // Rear pair if available
+            if rl.is_some() && rr.is_some() {
+                pairs.push(StereoPair {
+                    label: format!("{} Rear", short_name),
+                    left: rl.unwrap(),
+                    right: rr.unwrap(),
+                });
+            }
+        } else {
+            // Traditional JACK naming (playback_1, playback_2, ...)
+            let device_ports: Vec<_> = ports.into_iter()
+                .filter(|p| !p.contains("_FL") && !p.contains("_FR") && !p.contains("_RL") && !p.contains("_RR"))
+                .collect();
+
+            device_ports
+                .chunks(2)
+                .enumerate()
+                .filter(|(_, chunk)| chunk.len() == 2)
+                .for_each(|(i, chunk)| {
+                    pairs.push(StereoPair {
+                        label: format!("{} {}-{}", short_name, i * 2 + 1, i * 2 + 2),
+                        left: chunk[0].clone(),
+                        right: chunk[1].clone(),
+                    });
+                });
+        }
+    }
+
+    pairs.sort_by(|a, b| a.label.cmp(&b.label));
+    pairs
+}
+
+/// Connect mesh-cue outputs to a specific stereo pair
+pub fn connect_to_stereo_pair(pair: &StereoPair) -> Result<(), JackError> {
     let (client, _) = Client::new("mesh-cue_connect", ClientOptions::NO_START_SERVER)
         .map_err(|e| JackError::ClientCreation(e.to_string()))?;
 
-    let playback_ports = client.ports(
-        Some("system:playback_.*"),
-        None,
-        jack::PortFlags::IS_INPUT,
-    );
+    let our_left = "mesh-cue:out_left";
+    let our_right = "mesh-cue:out_right";
 
-    if playback_ports.len() >= 2 {
-        if let Err(e) = client.connect_ports_by_name("mesh-cue:out_left", &playback_ports[0]) {
-            log::warn!("Could not connect left output: {}", e);
-        }
-        if let Err(e) = client.connect_ports_by_name("mesh-cue:out_right", &playback_ports[1]) {
-            log::warn!("Could not connect right output: {}", e);
-        }
-        log::info!(
-            "Connected outputs to {} and {}",
-            playback_ports[0],
-            playback_ports[1]
-        );
+    // Connect to new pair (JACK allows multiple connections, so we just add the new one)
+    if let Err(e) = client.connect_ports_by_name(our_left, &pair.left) {
+        log::warn!("Could not connect left output to {}: {}", pair.left, e);
+    }
+    if let Err(e) = client.connect_ports_by_name(our_right, &pair.right) {
+        log::warn!("Could not connect right output to {}: {}", pair.right, e);
     }
 
+    log::info!("Connected outputs to {} ({} / {})", pair.label, pair.left, pair.right);
     Ok(())
 }

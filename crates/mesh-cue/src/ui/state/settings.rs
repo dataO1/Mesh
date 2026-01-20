@@ -1,5 +1,6 @@
 //! Settings modal state
 
+use crate::audio::StereoPair;
 use crate::config::{BpmSource, Config};
 
 /// State for the settings modal
@@ -21,6 +22,10 @@ pub struct SettingsState {
     pub draft_bpm_source: BpmSource,
     /// Draft slicer buffer bars (1, 4, 8, or 16)
     pub draft_slicer_buffer_bars: u32,
+    /// Available JACK stereo output pairs
+    pub available_stereo_pairs: Vec<StereoPair>,
+    /// Selected output pair index
+    pub selected_output_pair: usize,
     /// Status message for save feedback
     pub status: String,
 }
@@ -37,7 +42,18 @@ impl SettingsState {
             draft_grid_bars: config.display.grid_bars,
             draft_bpm_source: config.analysis.bpm.source,
             draft_slicer_buffer_bars: config.slicer.validated_buffer_bars(),
+            available_stereo_pairs: Vec::new(),
+            selected_output_pair: 0,
             status: String::new(),
+        }
+    }
+
+    /// Refresh available JACK ports
+    pub fn refresh_jack_ports(&mut self) {
+        self.available_stereo_pairs = crate::audio::get_available_stereo_pairs();
+        // Keep selection in bounds
+        if self.selected_output_pair >= self.available_stereo_pairs.len() {
+            self.selected_output_pair = 0;
         }
     }
 }

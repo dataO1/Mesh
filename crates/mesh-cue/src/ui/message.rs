@@ -136,6 +136,10 @@ pub enum Message {
     UpdateSettingsGridBars(u32),
     UpdateSettingsBpmSource(BpmSource),
     UpdateSettingsSlicerBufferBars(u32),
+    /// Update selected audio output pair
+    UpdateSettingsOutputPair(usize),
+    /// Refresh available JACK ports
+    RefreshJackPorts,
     SaveSettings,
     SaveSettingsComplete(Result<(), String>),
 

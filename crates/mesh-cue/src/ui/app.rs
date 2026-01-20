@@ -359,6 +359,8 @@ impl MeshCueApp {
             Message::UpdateSettingsGridBars(value) => return self.handle_update_settings_grid_bars(value),
             Message::UpdateSettingsBpmSource(source) => return self.handle_update_settings_bpm_source(source),
             Message::UpdateSettingsSlicerBufferBars(bars) => return self.handle_update_settings_slicer_buffer_bars(bars),
+            Message::UpdateSettingsOutputPair(idx) => return self.handle_update_settings_output_pair(idx),
+            Message::RefreshJackPorts => return self.handle_refresh_jack_ports(),
             Message::SaveSettings => return self.handle_save_settings(),
             Message::SaveSettingsComplete(result) => return self.handle_save_settings_complete(result),
             // Keyboard input (delegated to handlers/keyboard.rs)

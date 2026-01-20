@@ -4,7 +4,7 @@
 
 use super::app::{Message, SettingsState};
 use crate::config::BpmSource;
-use iced::widget::{button, column, container, row, text, text_input, Space};
+use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_input, Space};
 use iced::{Alignment, Element, Length};
 
 /// Render the settings modal content
@@ -17,6 +17,9 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
     let header = row![title, Space::new().width(Length::Fill), close_btn]
         .align_y(Alignment::Center)
         .width(Length::Fill);
+
+    // Audio output section (at top)
+    let audio_section = view_audio_output_section(state);
 
     // BPM Range section
     let bpm_section = view_bpm_section(state);
@@ -47,14 +50,72 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
         .spacing(10)
         .width(Length::Fill);
 
-    let content = column![header, bpm_section, display_section, format_section, status, actions]
-        .spacing(20)
+    // Scrollable content area
+    let scrollable_content = scrollable(
+        column![audio_section, bpm_section, display_section, format_section]
+            .spacing(15)
+    )
+    .height(Length::Fixed(400.0));
+
+    let content = column![header, scrollable_content, status, actions]
+        .spacing(15)
         .width(Length::Fixed(450.0));
 
     container(content)
         .padding(30)
         .style(container::rounded_box)
         .into()
+}
+
+/// Audio output settings section
+fn view_audio_output_section(state: &SettingsState) -> Element<'_, Message> {
+    let section_title = text("Audio Output").size(18);
+    let hint = text("Select the audio output for playback preview")
+        .size(12);
+
+    // Output device dropdown
+    let output_label = text("Output:").size(14);
+    let output_dropdown: Element<'_, Message> = if state.available_stereo_pairs.is_empty() {
+        text("No JACK outputs available").size(12).into()
+    } else {
+        pick_list(
+            state.available_stereo_pairs.clone(),
+            state.available_stereo_pairs.get(state.selected_output_pair).cloned(),
+            |pair| {
+                // Find index of selected pair
+                let idx = state.available_stereo_pairs.iter()
+                    .position(|p| p == &pair)
+                    .unwrap_or(0);
+                Message::UpdateSettingsOutputPair(idx)
+            },
+        )
+        .width(Length::Fixed(200.0))
+        .into()
+    };
+
+    let output_row = row![output_label, Space::new().width(Length::Fill), output_dropdown]
+        .spacing(10)
+        .align_y(Alignment::Center);
+
+    // Refresh button
+    let refresh_btn = button(text("Refresh Ports").size(11))
+        .on_press(Message::RefreshJackPorts)
+        .style(button::secondary);
+
+    container(
+        column![
+            section_title,
+            hint,
+            Space::new().height(5),
+            output_row,
+            Space::new().height(5),
+            refresh_btn,
+        ]
+        .spacing(8),
+    )
+    .padding(15)
+    .width(Length::Fill)
+    .into()
 }
 
 /// BPM detection range settings
