@@ -171,7 +171,7 @@ and mesh-widget and only if necessary in the ui.
    - [ ] dynamic, smart playlists based on camelot key with several options for
      energy instead of exact key match (so the user has 3 options, lower energy,
      keep, or up the energy)?
-   - [ ]
+   - [ ] backup of databse (without files, just db)
 
 # Changes
 - [x] The waveform indicators of hot cues use colors, but the hot cue buttons
@@ -354,6 +354,10 @@ and mesh-widget and only if necessary in the ui.
   this only works for stems of the original file not for linked stems, since
   they need to be prestretched, then the peaks get computed. NO WE CANT DUE TO
   GAIN STAGING.
+- [ ] analyse how to reduce code in the tick handler of the ui (both player and cue), to reduce
+  the computational overhead for each frame and how we can factor out some
+  not-frequently changing information into message/subscription instead of tick
+  handlers.
 
 # Future fields
 - [x] automatic gain staging for optimal headroom and that the dj doesnt
@@ -382,3 +386,97 @@ and mesh-widget and only if necessary in the ui.
   environment, we can optimize this for there (ie 48, or 96 khz sample rate fixed
   everywhere)
 - [ ] use cpal instead of jack for full cross-compatability
+
+
+
+
+  Host Track Load (Deck 0) - 524ms Total
+
+  Track: 100_Nocturnal - Surveillance (Original Mix).wav
+  Size: 16.35M frames (523.3 MB of audio data)
+  ┌───────────────────┬───────┬─────────────────────────────────┐
+  │       Phase       │ Time  │              Notes              │
+  ├───────────────────┼───────┼─────────────────────────────────┤
+  │ File open         │ 22µs  │ Negligible                      │
+  ├───────────────────┼───────┼─────────────────────────────────┤
+  │ Buffer allocation │ 271ms │ 4× stem buffers (65MB each)     │
+  ├───────────────────┼───────┼─────────────────────────────────┤
+  │ Audio read        │ 159ms │ 1647 MB/s from USB              │
+  ├───────────────────┼───────┼─────────────────────────────────┤
+  │ Peak computation  │ 92ms  │ Highres waveform (65536 points) │
+  ├───────────────────┼───────┼─────────────────────────────────┤
+  │ Total             │ 524ms │                                 │
+  └───────────────────┴───────┴─────────────────────────────────┘
+  ---
+  Linked Stem Load (Stem 1 for Deck 0) - 2.86s Total
+
+  Track: 101_Noisia - Block Control.wav
+  Source BPM: 172.0 → Target: 174.0 (ratio: 1.0116)
+  Size: 20.68M frames (661.6 MB)
+  ┌─────────────────────┬────────┬────────────┬───────────────────────────┐
+  │        Phase        │  Time  │ % of Total │           Notes           │
+  ├─────────────────────┼────────┼────────────┼───────────────────────────┤
+  │ USB database lookup │ ~0.1ms │ 0%         │ Cache HIT - instant       │
+  ├─────────────────────┼────────┼────────────┼───────────────────────────┤
+  │ Audio file load     │ 450ms  │ 16%        │ USB I/O (2813 MB/s)       │
+  ├─────────────────────┼────────┼────────────┼───────────────────────────┤
+  │ Time stretching     │ 2169ms │ 76%        │ The dominant bottleneck   │
+  ├─────────────────────┼────────┼────────────┼───────────────────────────┤
+  │ Buffer alignment    │ 109ms  │ 4%         │ Crop/pad to host duration │
+  ├─────────────────────┼────────┼────────────┼───────────────────────────┤
+  │ Peak computation    │ 30ms   │ 1%         │ Highres waveform          │
+  ├─────────────────────┼────────┼────────────┼───────────────────────────┤
+  │ Total               │ 2859ms │ 100%       │                           │
+  └─────────────────────┴────────┴────────────┴───────────────────────────┘
+  ★ Insight ─────────────────────────────────────
+  Why time stretching dominates:
+  1. Rubberband does sample-by-sample resampling for pitch-preserving stretch
+  2. Even with 4 threads (our optimization), processing 20M stereo frames takes ~2s
+  3. The 1.16% BPM change requires analyzing and reconstructing every sample
+  4. This is a fundamental algorithmic cost - further speedup requires GPU or algorithmic tradeoffs
+  ─────────────────────────────────────────────────
+
+  ---
+  Second Host Track Load (Deck 1) - 810ms Total
+
+  Track: 101_Noisia - Block Control.wav
+  Size: 20.68M frames (661.6 MB) - 26% larger than track 1
+  ┌───────────────────┬───────┬───────────────────────────────────────────────────┐
+  │       Phase       │ Time  │                       Notes                       │
+  ├───────────────────┼───────┼───────────────────────────────────────────────────┤
+  │ Buffer allocation │ 502ms │ Larger file = more allocation time                │
+  ├───────────────────┼───────┼───────────────────────────────────────────────────┤
+  │ Audio read        │ 166ms │ 1988 MB/s - OS cache not helping (different file) │
+  ├───────────────────┼───────┼───────────────────────────────────────────────────┤
+  │ Peak computation  │ 139ms │ More samples = more peaks                         │
+  ├───────────────────┼───────┼───────────────────────────────────────────────────┤
+  │ Total             │ 810ms │ ~1.5x slower due to 1.26x larger file             │
+  └───────────────────┴───────┴───────────────────────────────────────────────────┘
+  ---
+  Summary: Current Performance Profile
+  ┌────────────────────────────┬────────┬─────────────────────────────┐
+  │         Operation          │  Time  │         Bottleneck          │
+  ├────────────────────────────┼────────┼─────────────────────────────┤
+  │ USB database access        │ ~0.1ms │ ✅ Solved (was 50-100ms)    │
+  ├────────────────────────────┼────────┼─────────────────────────────┤
+  │ Host track load (523 MB)   │ ~524ms │ USB I/O + memory allocation │
+  ├────────────────────────────┼────────┼─────────────────────────────┤
+  │ Linked stem load           │ ~2.86s │ Time stretching (76%)       │
+  ├────────────────────────────┼────────┼─────────────────────────────┤
+  │ Second track load (662 MB) │ ~810ms │ USB I/O + larger file       │
+  └────────────────────────────┴────────┴─────────────────────────────┘
+  What We Optimized
+  ┌──────────────────────────┬──────────────────────────────────────────┐
+  │       Optimization       │                  Impact                  │
+  ├──────────────────────────┼──────────────────────────────────────────┤
+  │ USB database caching     │ Eliminated ~200-500ms of redundant opens │
+  ├──────────────────────────┼──────────────────────────────────────────┤
+  │ Batch stem link queries  │ Reduced N+1 to 1 query                   │
+  ├──────────────────────────┼──────────────────────────────────────────┤
+  │ 4 stretch threads (vs 2) │ ~30-40% faster stretching                │
+  └──────────────────────────┴──────────────────────────────────────────┘
+  Remaining Bottlenecks (Future Work)
+
+  1. Time stretching (76% of linked stem load) - Would need GPU acceleration or quality tradeoffs
+  2. USB I/O (~450ms per track) - Hardware limited, could potentially use async prefetching
+  3. Buffer allocation (~270-500ms) - Could pool/reuse buffers across loads
