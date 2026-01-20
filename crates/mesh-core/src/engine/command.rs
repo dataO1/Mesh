@@ -238,6 +238,12 @@ pub enum EngineCommand {
     SetEqLo { deck: usize, value: f32 },
     /// Set channel filter (-1.0 = full LP, 0.0 = flat, 1.0 = full HP)
     SetFilter { deck: usize, value: f32 },
+    /// Set master output volume (0.0 - 1.0)
+    SetMasterVolume { volume: f32 },
+    /// Set cue/master mix for headphone output (0.0 = cue only, 1.0 = master only)
+    SetCueMix { mix: f32 },
+    /// Set cue/headphone output volume (0.0 - 1.0)
+    SetCueVolume { volume: f32 },
 
     // ─────────────────────────────────────────────────────────────
     // Loudness Compensation

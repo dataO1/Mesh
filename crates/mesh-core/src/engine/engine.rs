@@ -948,6 +948,15 @@ impl AudioEngine {
                         ch.filter = value;
                     }
                 }
+                EngineCommand::SetMasterVolume { volume } => {
+                    self.mixer.set_master_volume(volume);
+                }
+                EngineCommand::SetCueMix { mix } => {
+                    self.mixer.set_cue_mix(mix);
+                }
+                EngineCommand::SetCueVolume { volume } => {
+                    self.mixer.set_cue_volume(volume);
+                }
 
                 // Loudness Compensation
                 EngineCommand::SetLufsGain { deck, gain, host_lufs } => {

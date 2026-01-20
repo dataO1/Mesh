@@ -34,8 +34,14 @@ pub fn handle(app: &mut MeshApp, mixer_msg: MixerMessage) -> Task<Message> {
         SetChannelFilter(deck, value) => {
             app.domain.set_filter(*deck, *value);
         }
-        _ => {
-            // Master volume, cue volume, cue mix - not yet in engine
+        SetMasterVolume(volume) => {
+            app.domain.set_master_volume(*volume);
+        }
+        SetCueMix(mix) => {
+            app.domain.set_cue_mix(*mix);
+        }
+        SetCueVolume(volume) => {
+            app.domain.set_cue_volume(*volume);
         }
     }
 

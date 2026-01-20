@@ -74,7 +74,7 @@ impl MixerView {
             channel_cue: [false; 4],
             master_volume: 0.8,
             cue_volume: 0.8,
-            cue_mix: 0.5,
+            cue_mix: 0.0,
             highlight_target: None,
         }
     }

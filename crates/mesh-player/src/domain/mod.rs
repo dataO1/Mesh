@@ -647,6 +647,27 @@ impl MeshDomain {
         }
     }
 
+    /// Set master output volume (0.0 - 1.0)
+    pub fn set_master_volume(&mut self, volume: f32) {
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(EngineCommand::SetMasterVolume { volume });
+        }
+    }
+
+    /// Set cue/master mix for headphone output (0.0 = cue only, 1.0 = master only)
+    pub fn set_cue_mix(&mut self, mix: f32) {
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(EngineCommand::SetCueMix { mix });
+        }
+    }
+
+    /// Set cue/headphone output volume (0.0 - 1.0)
+    pub fn set_cue_volume(&mut self, volume: f32) {
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(EngineCommand::SetCueVolume { volume });
+        }
+    }
+
     // =========================================================================
     // Global Controls
     // =========================================================================

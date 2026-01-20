@@ -340,6 +340,8 @@ pub struct Mixer {
     master_volume: f32,
     /// Cue/master blend for headphones (0.0 = cue only, 1.0 = master only)
     cue_mix: f32,
+    /// Cue/headphone output volume (0.0 to 1.0)
+    cue_volume: f32,
 }
 
 impl Mixer {
@@ -348,7 +350,8 @@ impl Mixer {
         Self {
             channels: std::array::from_fn(|_| ChannelStrip::new()),
             master_volume: 1.0,
-            cue_mix: 0.5,
+            cue_mix: 0.0,
+            cue_volume: 0.8,
         }
     }
 
@@ -380,6 +383,16 @@ impl Mixer {
     /// Get cue mix
     pub fn cue_mix(&self) -> f32 {
         self.cue_mix
+    }
+
+    /// Set cue/headphone volume (0.0 to 1.0)
+    pub fn set_cue_volume(&mut self, volume: f32) {
+        self.cue_volume = volume.clamp(0.0, 1.0);
+    }
+
+    /// Get cue volume
+    pub fn cue_volume(&self) -> f32 {
+        self.cue_volume
     }
 
     /// Process deck outputs and produce master + cue outputs
@@ -437,10 +450,10 @@ impl Mixer {
             let master = master_out[i];
             let cue = cue_out[i];
 
-            // Crossfade between cue and master
+            // Crossfade between cue and master, then apply cue volume
             cue_out.as_mut_slice()[i] = StereoSample::new(
-                cue.left * (1.0 - self.cue_mix) + master.left * self.cue_mix,
-                cue.right * (1.0 - self.cue_mix) + master.right * self.cue_mix,
+                (cue.left * (1.0 - self.cue_mix) + master.left * self.cue_mix) * self.cue_volume,
+                (cue.right * (1.0 - self.cue_mix) + master.right * self.cue_mix) * self.cue_volume,
             );
         }
     }
@@ -490,6 +503,7 @@ mod tests {
     fn test_mixer_creation() {
         let mixer = Mixer::new();
         assert_eq!(mixer.master_volume(), 1.0);
-        assert_eq!(mixer.cue_mix(), 0.5);
+        assert_eq!(mixer.cue_mix(), 0.0);
+        assert_eq!(mixer.cue_volume(), 0.8);
     }
 }
