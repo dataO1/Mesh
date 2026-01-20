@@ -347,6 +347,9 @@ and mesh-widget and only if necessary in the ui.
 - [ ] when deleting a file in the file browser, first mark the next one (or
   previous one if there is no next one) for selection, otherwise it scrolls to
   the very top.
+- [ ] usbmanager should invalidate db connection, cache and notify ui to return
+  to root in the file browser (currently its still in the playlist), if it detects, that
+  a usb stick is removed.
 
 # Performance
 - [ ] Can we optimize how stems are stored, this is currently roughly 200-300 mb
