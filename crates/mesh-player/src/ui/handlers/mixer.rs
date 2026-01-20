@@ -21,6 +21,8 @@ pub fn handle(app: &mut MeshApp, mixer_msg: MixerMessage) -> Task<Message> {
             // Read current state and toggle
             let enabled = !app.mixer_view.cue_enabled(*deck);
             app.domain.set_cue_listen(*deck, enabled);
+            // Update waveform canvas to show cue indicator
+            app.player_canvas_state.set_cue_enabled(*deck, enabled);
         }
         SetChannelEqHi(deck, value) => {
             app.domain.set_eq_hi(*deck, *value);

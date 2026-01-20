@@ -1111,6 +1111,8 @@ pub struct PlayerCanvasState {
     /// LUFS gain compensation in dB per deck (None if no track or no LUFS data)
     /// Positive = boost (quiet track), Negative = cut (loud track)
     lufs_gain_db: [Option<f32>; 4],
+    /// Whether cue (headphone monitoring) is enabled per deck
+    cue_enabled: [bool; 4],
 }
 
 impl PlayerCanvasState {
@@ -1148,6 +1150,7 @@ impl PlayerCanvasState {
             linked_stems: [[false; 4]; 4],       // No linked stems by default
             linked_stems_active: [[false; 4]; 4], // All using original stems
             lufs_gain_db: [None; 4],             // No LUFS data initially
+            cue_enabled: [false; 4],             // No cue enabled by default
         }
     }
 
@@ -1302,6 +1305,22 @@ impl PlayerCanvasState {
             self.lufs_gain_db[idx]
         } else {
             None
+        }
+    }
+
+    /// Set cue (headphone monitoring) enabled state for a deck
+    pub fn set_cue_enabled(&mut self, idx: usize, enabled: bool) {
+        if idx < 4 {
+            self.cue_enabled[idx] = enabled;
+        }
+    }
+
+    /// Get cue (headphone monitoring) enabled state for a deck
+    pub fn cue_enabled(&self, idx: usize) -> bool {
+        if idx < 4 {
+            self.cue_enabled[idx]
+        } else {
+            false
         }
     }
 

@@ -288,6 +288,8 @@ where
             let lufs_gain_db = self.state.lufs_gain_db(deck_idx);
             let track_bpm = self.state.track_bpm(deck_idx);
 
+            let cue_enabled = self.state.cue_enabled(deck_idx);
+
             draw_deck_quadrant(
                 &mut frame,
                 &self.state.decks[deck_idx],
@@ -299,6 +301,7 @@ where
                 track_name,
                 track_key,
                 is_master,
+                cue_enabled,
                 stem_active,
                 transpose,
                 key_match_enabled,
@@ -343,6 +346,7 @@ fn draw_deck_quadrant(
     track_name: &str,
     track_key: &str,
     is_master: bool,
+    cue_enabled: bool,
     stem_active: &[bool; 4],
     transpose: i8,
     key_match_enabled: bool,
@@ -373,9 +377,9 @@ fn draw_deck_quadrant(
     let badge_height = DECK_HEADER_HEIGHT - 6.0;
     let badge_y = y + 3.0;
 
-    // Badge background color based on state
-    let badge_bg_color = if is_master {
-        Color::from_rgb(0.15, 0.35, 0.15) // Dark green for master
+    // Badge background color based on state (cue takes priority for fill)
+    let badge_bg_color = if cue_enabled {
+        Color::from_rgb(0.35, 0.30, 0.10) // Dark yellow/amber for cue
     } else if deck.zoomed.has_track {
         Color::from_rgb(0.15, 0.15, 0.25) // Dark blue for loaded
     } else {
@@ -388,10 +392,23 @@ fn draw_deck_quadrant(
         badge_bg_color,
     );
 
+    // Draw green border around badge when master (uses Vocals stem green)
+    if is_master {
+        let border_color = Color::from_rgb(0.45, 0.8, 0.55); // Sage green (matches stem colors)
+        let stroke = Stroke::default().with_width(2.0).with_color(border_color);
+        frame.stroke(
+            &Path::rectangle(
+                Point::new(x + badge_margin, badge_y),
+                Size::new(badge_width, badge_height),
+            ),
+            stroke,
+        );
+    }
+
     // Draw deck number text
     let deck_num_text = format!("{}", deck_idx + 1);
-    let text_color = if is_master {
-        Color::from_rgb(0.4, 1.0, 0.4) // Bright green for master
+    let text_color = if cue_enabled {
+        Color::from_rgb(1.0, 0.85, 0.3) // Bright yellow/amber for cue
     } else if deck.zoomed.has_track {
         Color::from_rgb(0.7, 0.7, 0.9) // Light blue for loaded
     } else {
