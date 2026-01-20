@@ -3,7 +3,7 @@
 //! Reads playlists and track metadata from USB's mesh.db database.
 //! Track audio files are stored in tracks/ but browsing is playlist-only.
 
-use super::{ExportableConfig, UsbDevice};
+use super::{ExportableConfig, UsbDevice, get_or_open_usb_database};
 use crate::db::{DatabaseService, PlaylistQuery};
 use crate::playlist::{NodeId, NodeKind, PlaylistError, PlaylistNode, PlaylistStorage, TrackInfo};
 use std::collections::HashMap;
@@ -60,8 +60,8 @@ impl UsbStorage {
 
         let collection_root = mount_point.join("mesh-collection");
 
-        // Try to open the USB database
-        let db_service = DatabaseService::new(&collection_root).ok();
+        // Get or open the USB database (uses centralized cache)
+        let db_service = get_or_open_usb_database(&collection_root);
 
         let mut storage = Self {
             device,

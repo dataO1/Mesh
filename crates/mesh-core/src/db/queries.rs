@@ -55,6 +55,31 @@ impl TrackQuery {
         Ok(rows_to_tracks(&result).into_iter().next())
     }
 
+    /// Get multiple tracks by IDs in a single query (batch lookup)
+    ///
+    /// More efficient than calling get_by_id in a loop when fetching multiple tracks.
+    pub fn get_by_ids(db: &MeshDb, track_ids: &[i64]) -> Result<Vec<TrackRow>, DbError> {
+        if track_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut params = BTreeMap::new();
+        params.insert(
+            "ids".to_string(),
+            DataValue::List(track_ids.iter().map(|&id| DataValue::from(id)).collect()),
+        );
+
+        let result = db.run_query(r#"
+            ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
+              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
+                *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
+                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
+                id in $ids
+        "#, params)?;
+
+        Ok(rows_to_tracks(&result))
+    }
+
     /// Get a track by path
     pub fn get_by_path(db: &MeshDb, path: &str) -> Result<Option<TrackRow>, DbError> {
         let mut params = BTreeMap::new();

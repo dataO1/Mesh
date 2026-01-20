@@ -33,6 +33,7 @@ use mesh_core::config::LoudnessConfig;
 use mesh_core::db::DatabaseService;
 use mesh_core::engine::{EngineCommand, LinkedStemData, PreparedTrack, SlicerPreset};
 use mesh_core::loader::LinkedStemResultReceiver;
+use mesh_core::usb::get_or_open_usb_database;
 use mesh_core::types::{Stem, StereoBuffer};
 use mesh_core::usb::{UsbCommand, UsbManager, UsbMessage};
 use mesh_widgets::{PeaksComputer, PeaksResultReceiver};
@@ -195,11 +196,12 @@ impl MeshDomain {
 
     /// Switch to USB storage
     ///
-    /// Creates a new DatabaseService for the USB if needed.
+    /// Uses the centralized USB database cache - the database is typically already
+    /// cached from UsbManager's preload when the device was mounted.
     pub fn switch_to_usb(&mut self, index: usize, usb_collection_path: &Path) -> Result<(), String> {
-        // Create database service for USB
-        let db = DatabaseService::new(usb_collection_path)
-            .map_err(|e| format!("Failed to open USB database: {}", e))?;
+        // Get cached database or open if not cached yet
+        let db = get_or_open_usb_database(usb_collection_path)
+            .ok_or_else(|| format!("Failed to open USB database at {:?}", usb_collection_path))?;
 
         self.set_active_storage(StorageSource::Usb {
             index,

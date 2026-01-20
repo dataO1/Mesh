@@ -8,7 +8,8 @@
 //!
 //! Both local and USB collections use CozoDB databases for track and playlist metadata.
 
-use crate::db::{DatabaseService, MeshDb, PlaylistQuery, TrackRow, CuePoint, SavedLoop, CuePointQuery, SavedLoopQuery, TrackQuery};
+use crate::db::{MeshDb, PlaylistQuery, TrackRow, CuePoint, SavedLoop, CuePointQuery, SavedLoopQuery, TrackQuery};
+use super::cache::get_or_open_usb_database;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -267,13 +268,8 @@ pub fn scan_usb_collection(
         Vec::new()
     };
 
-    // Try to open USB database for metadata comparison
-    let db_path = collection_root.join("mesh.db");
-    let usb_db_service = if db_path.exists() {
-        DatabaseService::new(collection_root).ok()
-    } else {
-        None
-    };
+    // Get USB database from cache for metadata comparison
+    let usb_db_service = get_or_open_usb_database(collection_root);
 
     // Build map of filename -> (TrackRow, cue_points, saved_loops) from USB database
     let mut db_metadata: HashMap<String, (TrackRow, Vec<CuePoint>, Vec<SavedLoop>)> = HashMap::new();

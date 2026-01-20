@@ -5,6 +5,7 @@
 
 use super::ExportProgress;
 use crate::db::DatabaseService;
+use crate::usb::get_or_open_usb_database;
 use crate::usb::sync::{copy_with_verification, SyncPlan, PlaylistTrack};
 
 use rayon::prelude::*;
@@ -94,15 +95,15 @@ impl ExportService {
             let tracks_failed = AtomicUsize::new(0);
             let failed_files: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
-            // Open USB database for this export
-            let usb_db = match DatabaseService::new(&usb_root) {
-                Ok(db) => Arc::new(db),
-                Err(e) => {
-                    log::error!("Failed to open USB database: {}", e);
+            // Get USB database from cache (or open if not cached)
+            let usb_db = match get_or_open_usb_database(&usb_root) {
+                Some(db) => db,
+                None => {
+                    log::error!("Failed to open USB database");
                     let _ = progress_tx.send(ExportProgress::Complete {
                         duration: start_time.elapsed(),
                         tracks_exported: 0,
-                        failed_files: vec![("database".to_string(), e.to_string())],
+                        failed_files: vec![("database".to_string(), "Failed to open".to_string())],
                     });
                     return;
                 }

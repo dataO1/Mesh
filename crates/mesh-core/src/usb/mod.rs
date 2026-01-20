@@ -26,6 +26,7 @@
 //!        UI Thread
 //! ```
 
+pub mod cache;
 pub mod config;
 pub mod detection;
 pub mod manager;
@@ -35,6 +36,11 @@ pub mod storage;
 pub mod sync;
 
 // Re-export main types for convenience
+pub use cache::{
+    get_usb_database, get_usb_database_for_path, get_or_open_usb_database,
+    register_usb_database, clear_usb_database, clear_all_usb_databases,
+    find_collection_root,
+};
 pub use config::{
     ExportableConfig, ExportableAudioConfig, ExportableDisplayConfig, ExportableSlicerConfig,
 };

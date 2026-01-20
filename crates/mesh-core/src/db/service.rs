@@ -566,11 +566,40 @@ impl DatabaseService {
     /// This is the authoritative conversion from database format to runtime format.
     /// Invalid links (missing source track) are filtered out with warnings.
     ///
+    /// Uses batch query to fetch all source tracks in a single database round-trip,
+    /// avoiding N+1 query pattern when tracks have multiple stem links.
+    ///
     /// Used by both mesh-cue and mesh-player to populate TrackMetadata.stem_links.
     pub fn convert_stem_links_to_runtime(&self, db_links: &[StemLink]) -> Vec<crate::audio_file::StemLinkReference> {
+        use std::collections::HashMap;
+
+        if db_links.is_empty() {
+            return Vec::new();
+        }
+
+        // Collect all source track IDs for batch lookup
+        let source_ids: Vec<i64> = db_links.iter()
+            .map(|link| link.source_track_id)
+            .collect();
+
+        // Single batch query instead of N individual queries
+        let source_tracks = match TrackQuery::get_by_ids(&self.db, &source_ids) {
+            Ok(tracks) => tracks,
+            Err(e) => {
+                log::warn!("Failed to batch load stem link source tracks: {:?}", e);
+                return Vec::new();
+            }
+        };
+
+        // Build lookup map by track ID
+        let track_map: HashMap<i64, &TrackRow> = source_tracks.iter()
+            .map(|t| (t.id, t))
+            .collect();
+
+        // Convert links using the map
         db_links.iter().filter_map(|link| {
-            match self.get_track(link.source_track_id) {
-                Ok(Some(source_track)) => {
+            match track_map.get(&link.source_track_id) {
+                Some(source_track) => {
                     Some(crate::audio_file::StemLinkReference {
                         stem_index: link.stem_index,
                         source_path: std::path::PathBuf::from(&source_track.path),
@@ -578,12 +607,8 @@ impl DatabaseService {
                         source_drop_marker: source_track.drop_marker.unwrap_or(0) as u64,
                     })
                 }
-                Ok(None) => {
+                None => {
                     log::warn!("Stem link source track not found: id={}", link.source_track_id);
-                    None
-                }
-                Err(e) => {
-                    log::warn!("Failed to load stem link source track: {:?}", e);
                     None
                 }
             }

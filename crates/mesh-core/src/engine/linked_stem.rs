@@ -40,8 +40,8 @@ use crate::timestretch::TimeStretcher;
 use crate::types::{StereoBuffer, StereoSample, NUM_STEMS, SAMPLE_RATE};
 
 /// Maximum threads to use for parallel stretching
-/// Keep low to avoid starving the audio thread
-const MAX_STRETCH_THREADS: usize = 2;
+/// 4 threads balances performance vs CPU load - safe on modern multi-core systems
+const MAX_STRETCH_THREADS: usize = 4;
 
 /// Minimum segment size for parallel stretching (in samples)
 /// Below this, single-threaded is faster due to overhead

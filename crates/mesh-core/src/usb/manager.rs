@@ -617,6 +617,9 @@ fn handle_start_export(
 
 /// Handle preload metadata command (runs in background thread)
 fn handle_preload_metadata(tracks_dir: PathBuf, device_path: PathBuf, tx: Sender<UsbMessage>) {
+    use crate::db::{TrackQuery, CuePointQuery};
+    use super::cache::get_or_open_usb_database;
+
     log::info!(
         "Preloading track metadata from {}",
         tracks_dir.display()
@@ -626,54 +629,61 @@ fn handle_preload_metadata(tracks_dir: PathBuf, device_path: PathBuf, tx: Sender
     let collection_root = device_path.join("mesh-collection");
     let mut metadata = HashMap::new();
 
-    if let Ok(db_service) = DatabaseService::new(&collection_root) {
-        use crate::db::{TrackQuery, CuePointQuery};
-
-        // Get all tracks from USB database
-        if let Ok(tracks) = TrackQuery::get_all(db_service.db()) {
-            let total = tracks.len();
-
-            for (i, track) in tracks.iter().enumerate() {
-                // Extract filename from path
-                let filename = std::path::Path::new(&track.path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
-
-                // Get cue point count for this track
-                let cue_count = CuePointQuery::get_for_track(db_service.db(), track.id)
-                    .map(|cues| cues.len() as u8)
-                    .unwrap_or(0);
-
-                let cached = CachedTrackMetadata {
-                    artist: track.artist.clone(),
-                    bpm: track.bpm,
-                    key: track.key.clone(),
-                    duration_seconds: Some(track.duration_seconds),
-                    cue_count,
-                    lufs: track.lufs,
-                };
-                metadata.insert(filename.to_string(), cached);
-
-                // Send progress every 10 tracks (avoid flooding messages)
-                if i % 10 == 0 || i == total - 1 {
-                    let _ = tx.send(UsbMessage::MetadataPreloadProgress {
-                        device_path: device_path.clone(),
-                        loaded: i + 1,
-                        total,
-                    });
-                }
-            }
-
-            log::info!(
-                "Preloaded metadata for {} tracks from USB database",
-                metadata.len()
-            );
-        } else {
-            log::warn!("Failed to read tracks from USB database");
+    // Get or open database from centralized cache
+    let db_service = match get_or_open_usb_database(&collection_root) {
+        Some(db) => db,
+        None => {
+            log::warn!("Failed to open USB database at {:?}", collection_root);
+            let _ = tx.send(UsbMessage::MetadataPreloaded {
+                device_path,
+                metadata,
+            });
+            return;
         }
+    };
+
+    // Get all tracks from USB database
+    if let Ok(tracks) = TrackQuery::get_all(db_service.db()) {
+        let total = tracks.len();
+
+        for (i, track) in tracks.iter().enumerate() {
+            // Extract filename from path
+            let filename = std::path::Path::new(&track.path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+
+            // Get cue point count for this track
+            let cue_count = CuePointQuery::get_for_track(db_service.db(), track.id)
+                .map(|cues| cues.len() as u8)
+                .unwrap_or(0);
+
+            let cached = CachedTrackMetadata {
+                artist: track.artist.clone(),
+                bpm: track.bpm,
+                key: track.key.clone(),
+                duration_seconds: Some(track.duration_seconds),
+                cue_count,
+                lufs: track.lufs,
+            };
+            metadata.insert(filename.to_string(), cached);
+
+            // Send progress every 10 tracks (avoid flooding messages)
+            if i % 10 == 0 || i == total - 1 {
+                let _ = tx.send(UsbMessage::MetadataPreloadProgress {
+                    device_path: device_path.clone(),
+                    loaded: i + 1,
+                    total,
+                });
+            }
+        }
+
+        log::info!(
+            "Preloaded metadata for {} tracks from USB database",
+            metadata.len()
+        );
     } else {
-        log::warn!("Failed to open USB database at {:?}, no metadata available", collection_root);
+        log::warn!("Failed to read tracks from USB database");
     }
 
     log::info!(

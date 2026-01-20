@@ -24,6 +24,7 @@ use crate::audio_file::{LoadedTrack, StemLinkReference};
 use crate::db::DatabaseService;
 use crate::engine::{gc::gc_handle, LinkedStemData, StemLink};
 use crate::types::{Stem, StereoBuffer};
+use crate::usb::cache as usb_cache;
 
 /// Width for high-resolution peaks (must match mesh-widgets HIGHRES_WIDTH = 65536)
 const HIGHRES_WIDTH: usize = 65536;
@@ -576,38 +577,7 @@ fn is_usb_path(path: &std::path::Path) -> bool {
 
 /// Get the DatabaseService for a USB path
 ///
-/// Attempts to find the mesh-collection directory containing the file
-/// and open its mesh.db database.
-fn get_usb_database_for_path(path: &std::path::Path) -> Option<std::sync::Arc<DatabaseService>> {
-    // Walk up the path to find mesh-collection directory
-    let mut current = path.parent()?;
-
-    while let Some(parent) = current.parent() {
-        // Check if this is the mesh-collection directory
-        if current.file_name()?.to_str()? == "mesh-collection" {
-            // Found it - open the database
-            log::info!("[LINKED] Found USB mesh-collection at {:?}", current);
-            match DatabaseService::new(current) {
-                Ok(db) => return Some(db),
-                Err(e) => {
-                    log::error!("[LINKED] Failed to open USB database at {:?}: {}", current, e);
-                    return None;
-                }
-            }
-        }
-
-        // Check if we've reached a mount point root
-        if parent.to_str() == Some("/run/media")
-            || parent.to_str() == Some("/media")
-            || parent.to_str() == Some("/mnt")
-        {
-            // Didn't find mesh-collection within the USB device
-            log::warn!("[LINKED] No mesh-collection found in USB device for {:?}", path);
-            return None;
-        }
-
-        current = parent;
-    }
-
-    None
+/// Delegates to the centralized USB cache in the usb module.
+fn get_usb_database_for_path(path: &std::path::Path) -> Option<Arc<DatabaseService>> {
+    usb_cache::get_usb_database_for_path(path)
 }
