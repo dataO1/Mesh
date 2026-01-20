@@ -12,9 +12,14 @@
       url = "github:acids-ircam/nn_tilde";
       flake = false;
     };
+    # AppImage bundling for portable Linux distribution
+    nix-appimage = {
+      url = "github:ralismark/nix-appimage";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-overlay, nn-tilde }:
+  outputs = { self, nixpkgs, flake-utils, rust-overlay, nn-tilde, nix-appimage }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         overlays = [ (import rust-overlay) ];
@@ -131,6 +136,7 @@
           jack2
           alsa-lib
           pipewire
+          pipewire.jack  # PipeWire JACK compatibility for AppImage distribution
 
           # Pure Data (libpd-rs builds libpd from source)
           puredata
@@ -156,6 +162,7 @@
 
         # Library paths for runtime
         libraryPath = pkgs.lib.makeLibraryPath buildInputs;
+
 
       in
       {
@@ -259,6 +266,9 @@
 
           default = self.packages.${system}.mesh-player;
         };
+
+        # AppImage bundler using nix-appimage
+        bundlers.default = nix-appimage.bundlers.${system}.default;
 
         devShells.default = pkgs.stdenv.mkDerivation {
           name = "mesh-dev-shell";

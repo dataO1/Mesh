@@ -58,6 +58,49 @@ Going to a gig without your laptop? Export playlists to a USB drive:
 
 ---
 
+## Installation
+
+### AppImage (Recommended for most Linux users)
+
+Download the latest release from [GitHub Releases](https://github.com/yourusername/mesh/releases):
+
+```bash
+# Download (replace with actual URL from releases page)
+wget https://github.com/yourusername/mesh/releases/latest/download/mesh-player-x86_64.AppImage
+wget https://github.com/yourusername/mesh/releases/latest/download/mesh-cue-x86_64.AppImage
+
+# Make executable
+chmod +x mesh-player-x86_64.AppImage mesh-cue-x86_64.AppImage
+
+# Run
+./mesh-player-x86_64.AppImage
+./mesh-cue-x86_64.AppImage
+```
+
+The AppImage bundles all dependencies and automatically detects whether you're using **PipeWire** (Ubuntu 22.04+, Fedora 34+) or **JACK** and configures audio accordingly.
+
+**Requirements:**
+- PipeWire (modern distros) or JACK2 audio server
+- GPU drivers for Vulkan (optional — falls back to software rendering)
+
+### NixOS / Nix
+
+```bash
+# Run directly without installing
+nix run github:yourusername/mesh#mesh-player
+nix run github:yourusername/mesh#mesh-cue
+
+# Or install to your profile
+nix profile install github:yourusername/mesh#mesh-player
+nix profile install github:yourusername/mesh#mesh-cue
+```
+
+### Building from Source
+
+See [Getting Started](#getting-started) for build instructions.
+
+---
+
 ## Overview
 
 ### What is Mesh?

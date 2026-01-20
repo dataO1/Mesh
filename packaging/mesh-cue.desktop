@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Mesh Cue
+GenericName=Track Preparation
+Comment=Track preparation, BPM analysis, and playlist management for DJs
+Exec=mesh-cue
+Icon=mesh-cue
+Terminal=false
+Categories=Audio;AudioVideo;Music;
+Keywords=DJ;Audio;Music;Cue;BPM;Analysis;Playlist;
+MimeType=audio/x-wav;audio/wav;
+StartupNotify=true
+StartupWMClass=mesh-cue

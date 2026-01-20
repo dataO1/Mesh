@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Mesh Player
+GenericName=DJ Player
+Comment=4-deck stem-based DJ mixing with neural effects
+Exec=mesh-player
+Icon=mesh-player
+Terminal=false
+Categories=Audio;AudioVideo;Music;
+Keywords=DJ;Mixer;Audio;Music;Stems;JACK;
+MimeType=audio/x-wav;audio/wav;
+StartupNotify=true
+StartupWMClass=mesh-player
