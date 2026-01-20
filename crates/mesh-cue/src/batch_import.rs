@@ -46,6 +46,40 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::Instant;
 
+/// RAII guard for temp file cleanup - deletes file on drop unless disarmed.
+///
+/// This ensures temp files are cleaned up even on early returns or panics.
+/// Use `disarm()` if you want to keep the file (e.g., after successful move).
+struct TempFileGuard {
+    path: PathBuf,
+    disarmed: bool,
+}
+
+impl TempFileGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path, disarmed: false }
+    }
+
+    /// Prevent cleanup on drop (call after successful move/rename)
+    #[allow(dead_code)]
+    fn disarm(&mut self) {
+        self.disarmed = true;
+    }
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        if !self.disarmed {
+            if let Err(e) = std::fs::remove_file(&self.path) {
+                // Only warn if file exists - it's OK if it was never created
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    log::warn!("Failed to cleanup temp file {:?}: {}", self.path, e);
+                }
+            }
+        }
+    }
+}
+
 /// Run audio analysis in an isolated subprocess.
 ///
 /// Essentia's C++ library is NOT thread-safe - it has global state for logging,
@@ -71,6 +105,9 @@ fn analyze_in_subprocess(samples: Vec<f32>, bpm_config: BpmConfig) -> Result<Ana
             .unwrap_or_default()
             .as_nanos() as u32)
     ));
+
+    // RAII guard ensures cleanup on any exit path (early return, panic, or normal)
+    let _temp_guard = TempFileGuard::new(temp_path.clone());
 
     // Write samples to temp file (raw f32 bytes)
     {
@@ -109,16 +146,11 @@ fn analyze_in_subprocess(samples: Vec<f32>, bpm_config: BpmConfig) -> Result<Ana
         analyze_audio(&samples, &config).map_err(|e| e.to_string())
     });
 
-    // Wait for result
-    let result = handle
+    // Wait for result - temp file cleanup is handled by _temp_guard on drop
+    handle
         .join()
         .map_err(|e| anyhow::anyhow!("Analysis subprocess failed: {:?}", e))?
-        .map_err(|e| anyhow::anyhow!("Analysis error: {}", e));
-
-    // Clean up temp file
-    let _ = std::fs::remove_file(&temp_path);
-
-    result
+        .map_err(|e| anyhow::anyhow!("Analysis error: {}", e))
 }
 
 /// Stem types supported by the import system
@@ -479,6 +511,9 @@ fn process_single_track(group: &StemGroup, config: &ImportConfig) -> TrackImport
     let sanitized_name = sanitize_filename(&base_name);
     let temp_path = temp_dir.join(format!("{}.wav", sanitized_name));
 
+    // RAII guard ensures temp file cleanup on any exit path (early return, panic, or normal)
+    let _temp_guard = TempFileGuard::new(temp_path.clone());
+
     // Calculate waveform gain from LUFS for loudness-normalized preview
     // The new LoudnessConfig API handles Option<f32> directly and returns 1.0 if None
     let waveform_gain = config.loudness_config.calculate_gain_linear(analysis.lufs);
@@ -507,9 +542,8 @@ fn process_single_track(group: &StemGroup, config: &ImportConfig) -> TrackImport
     let final_path = tracks_dir.join(format!("{}.wav", sanitized_name));
 
     // Copy from temp to collection (fs::rename might fail across filesystems)
+    // Temp file cleanup is handled by _temp_guard on drop
     if let Err(e) = fs::copy(&temp_path, &final_path) {
-        // Clean up temp file
-        let _ = fs::remove_file(&temp_path);
         return TrackImportResult {
             base_name,
             success: false,
@@ -517,9 +551,6 @@ fn process_single_track(group: &StemGroup, config: &ImportConfig) -> TrackImport
             output_path: None,
         };
     }
-
-    // Remove temp file
-    let _ = fs::remove_file(&temp_path);
 
     log::info!(
         "process_single_track: '{}' exported to {:?}",
