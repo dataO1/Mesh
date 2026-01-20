@@ -219,16 +219,18 @@ impl MeshCueApp {
             }
             UsbMsg::ExportTrackComplete {
                 filename: _,
-                track_index,
+                track_index: _, // Ignored - parallel processing means tracks complete out of order
                 total_tracks,
                 bytes_complete,
                 total_bytes,
             } => {
-                if let ExportPhase::Exporting { start_time, .. } = &self.export_state.phase {
+                // Increment completion count (don't use track_index - that's array position, not completion order)
+                if let ExportPhase::Exporting { tracks_complete, start_time, .. } = &self.export_state.phase {
+                    let new_count = tracks_complete + 1;
                     let start = *start_time;
                     self.export_state.phase = ExportPhase::Exporting {
                         current_track: String::new(), // Will be updated by next TrackStarted
-                        tracks_complete: track_index + 1,
+                        tracks_complete: new_count,
                         bytes_complete,
                         total_tracks,
                         total_bytes,
