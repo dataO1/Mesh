@@ -52,6 +52,10 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
                 // Check if we're waiting for encoder press
                 let awaiting_encoder_press = app.midi_learn.awaiting_encoder_press;
 
+                // Store potential encoder press events during sampling
+                // (Note events that don't match the CC buffer being sampled)
+                let mut pending_encoder_press = None;
+
                 // Drain raw events
                 for raw_event in controller.drain_raw_events() {
                     let captured = convert_midi_event_to_captured(&raw_event);
@@ -65,6 +69,10 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
                             // Buffer is complete - finalize mapping
                             app.midi_learn.finalize_mapping();
                             break;
+                        } else if captured.is_note && captured.value > 0 {
+                            // This Note event doesn't match the CC buffer being sampled.
+                            // Store it as a potential encoder press for after sampling completes.
+                            pending_encoder_press = Some(captured);
                         }
                     } else if awaiting_encoder_press {
                         // Waiting for encoder press - capture button event
@@ -107,6 +115,16 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
                 // Check if detection timed out (1 second elapsed)
                 if app.midi_learn.is_detection_complete() {
                     app.midi_learn.finalize_mapping();
+                }
+
+                // After sampling completes, if we're now waiting for encoder press
+                // and we captured a Note event during sampling, use it immediately
+                if app.midi_learn.awaiting_encoder_press {
+                    if let Some(press_event) = pending_encoder_press {
+                        // Skip debounce check for this event - it came during sampling
+                        // and the user clearly intended it as the encoder press
+                        app.midi_learn.record_encoder_press(press_event);
+                    }
                 }
             }
         }
