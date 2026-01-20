@@ -186,6 +186,8 @@ and mesh-widget and only if necessary in the ui.
        marked for cue playback (this needs to be a separate boolean field per
        deck) and sums them to the second audio out. so the cue output is
        parallel to the mix output.
+ - [ ] in the waveform canvas of the player, we need to mark decks, that are
+   currently marked for cue output. change the header color to a slight yellow.
 
 # Changes
 - [x] The waveform indicators of hot cues use colors, but the hot cue buttons
