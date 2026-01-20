@@ -4,8 +4,9 @@
 
 use super::message::{Message, SettingsMessage};
 use super::midi_learn::MidiLearnMessage;
+use crate::audio::{get_available_stereo_pairs, StereoPair};
 use crate::config::{LOOP_LENGTH_OPTIONS, StemColorPalette};
-use iced::widget::{button, column, container, row, scrollable, text, toggler, Space};
+use iced::widget::{button, column, container, pick_list, row, scrollable, text, toggler, Space};
 use iced::{Alignment, Element, Length};
 
 /// Target LUFS presets for loudness normalization
@@ -53,6 +54,12 @@ pub struct SettingsState {
     pub draft_target_lufs_index: usize,
     /// Draft show local collection in browser
     pub draft_show_local_collection: bool,
+    /// Draft master stereo pair index (for JACK routing)
+    pub draft_master_pair: usize,
+    /// Draft cue stereo pair index (for JACK routing)
+    pub draft_cue_pair: usize,
+    /// Available JACK stereo output pairs
+    pub available_stereo_pairs: Vec<StereoPair>,
     /// Status message (for save feedback)
     pub status: String,
 }
@@ -60,6 +67,10 @@ pub struct SettingsState {
 impl SettingsState {
     /// Create settings state from current config
     pub fn from_config(config: &crate::config::PlayerConfig) -> Self {
+        // Query available JACK ports
+        let available_stereo_pairs = get_available_stereo_pairs();
+        let num_pairs = available_stereo_pairs.len();
+
         Self {
             is_open: false,
             draft_loop_length_index: config.display.default_loop_length_index,
@@ -71,12 +82,20 @@ impl SettingsState {
             draft_auto_gain_enabled: config.audio.loudness.auto_gain_enabled,
             draft_target_lufs_index: lufs_to_index(config.audio.loudness.target_lufs),
             draft_show_local_collection: config.display.show_local_collection,
+            draft_master_pair: config.audio.jack_ports.master_pair.unwrap_or(0),
+            draft_cue_pair: config.audio.jack_ports.cue_pair.unwrap_or_else(|| {
+                if num_pairs >= 2 { 1 } else { 0 }
+            }),
+            available_stereo_pairs,
             status: String::new(),
         }
     }
 
     /// Create default settings state
     pub fn new() -> Self {
+        let available_stereo_pairs = get_available_stereo_pairs();
+        let num_pairs = available_stereo_pairs.len();
+
         Self {
             is_open: false,
             draft_loop_length_index: 2, // 4 beats (index 2 in new array)
@@ -88,8 +107,20 @@ impl SettingsState {
             draft_auto_gain_enabled: true, // Auto-gain on by default
             draft_target_lufs_index: 1, // -9 LUFS (balanced)
             draft_show_local_collection: false, // USB-only by default
+            draft_master_pair: 0, // First stereo pair (outputs 1-2)
+            draft_cue_pair: if num_pairs >= 2 { 1 } else { 0 }, // Second pair or fallback
+            available_stereo_pairs,
             status: String::new(),
         }
+    }
+
+    /// Refresh available JACK ports
+    pub fn refresh_jack_ports(&mut self) {
+        self.available_stereo_pairs = get_available_stereo_pairs();
+        // Clamp selections to valid range
+        let max_idx = self.available_stereo_pairs.len().saturating_sub(1);
+        self.draft_master_pair = self.draft_master_pair.min(max_idx);
+        self.draft_cue_pair = self.draft_cue_pair.min(max_idx);
     }
 
     /// Get the target LUFS value from the current index
@@ -117,6 +148,9 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
         .align_y(Alignment::Center)
         .width(Length::Fill);
 
+    // Audio output section (at top - important for DJ workflow)
+    let audio_output_section = view_audio_output_section(state);
+
     // Loop length section
     let loop_section = view_loop_section(state);
 
@@ -132,9 +166,9 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
     // MIDI settings section
     let midi_section = view_midi_section();
 
-    // Scrollable content area for all sections
+    // Scrollable content area for all sections (audio output first)
     let scrollable_content = scrollable(
-        column![loop_section, display_section, loudness_section, slicer_section, midi_section]
+        column![audio_output_section, loop_section, display_section, loudness_section, slicer_section, midi_section]
             .spacing(15)
             .width(Length::Fill)
     )
@@ -509,6 +543,80 @@ fn view_midi_section() -> Element<'static, Message> {
             hint,
             Space::new().height(5),
             learn_btn,
+        ]
+        .spacing(8),
+    )
+    .padding(15)
+    .width(Length::Fill)
+    .into()
+}
+
+/// Audio output settings section (JACK port routing)
+fn view_audio_output_section(state: &SettingsState) -> Element<'_, Message> {
+    let section_title = text("Audio Output").size(18);
+
+    let hint = text("Route master and cue to different physical outputs")
+        .size(12);
+
+    // Master output dropdown
+    let master_label = text("Master (Speakers):").size(14);
+    let master_dropdown: Element<'_, Message> = if state.available_stereo_pairs.is_empty() {
+        text("No JACK outputs available").size(12).into()
+    } else {
+        pick_list(
+            state.available_stereo_pairs.clone(),
+            state.available_stereo_pairs.get(state.draft_master_pair).cloned(),
+            |pair| {
+                // Find index of selected pair
+                let idx = state.available_stereo_pairs.iter()
+                    .position(|p| p == &pair)
+                    .unwrap_or(0);
+                Message::Settings(SettingsMessage::UpdateMasterPair(idx))
+            },
+        )
+        .width(Length::Fixed(180.0))
+        .into()
+    };
+    let master_row = row![master_label, Space::new().width(Length::Fill), master_dropdown]
+        .spacing(10)
+        .align_y(Alignment::Center);
+
+    // Cue output dropdown
+    let cue_label = text("Cue (Headphones):").size(14);
+    let cue_dropdown: Element<'_, Message> = if state.available_stereo_pairs.is_empty() {
+        text("No JACK outputs available").size(12).into()
+    } else {
+        pick_list(
+            state.available_stereo_pairs.clone(),
+            state.available_stereo_pairs.get(state.draft_cue_pair).cloned(),
+            |pair| {
+                let idx = state.available_stereo_pairs.iter()
+                    .position(|p| p == &pair)
+                    .unwrap_or(0);
+                Message::Settings(SettingsMessage::UpdateCuePair(idx))
+            },
+        )
+        .width(Length::Fixed(180.0))
+        .into()
+    };
+    let cue_row = row![cue_label, Space::new().width(Length::Fill), cue_dropdown]
+        .spacing(10)
+        .align_y(Alignment::Center);
+
+    // Refresh button
+    let refresh_btn = button(text("Refresh Ports").size(11))
+        .on_press(Message::Settings(SettingsMessage::RefreshJackPorts))
+        .style(button::secondary);
+
+    container(
+        column![
+            section_title,
+            hint,
+            Space::new().height(5),
+            master_row,
+            cue_row,
+            Space::new().height(5),
+            refresh_btn,
         ]
         .spacing(8),
     )

@@ -17,7 +17,7 @@ mod ui;
 
 use iced::{Size, Task};
 
-use audio::{start_jack_client, auto_connect_ports};
+use audio::{start_jack_client, connect_ports};
 use mesh_core::db::DatabaseService;
 use ui::{MeshApp, app::Message, midi_learn::MidiLearnMessage, theme};
 
@@ -73,9 +73,9 @@ fn main() -> iced::Result {
             Ok((handle, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, sample_rate)) => {
                 println!("JACK client started successfully (lock-free command queue, {} Hz)", sample_rate);
 
-                // Try to auto-connect to system outputs
-                if let Err(e) = auto_connect_ports(CLIENT_NAME) {
-                    eprintln!("Warning: Could not auto-connect ports: {}", e);
+                // Connect to system outputs using configured port routing
+                if let Err(e) = connect_ports(CLIENT_NAME, &config.audio.jack_ports) {
+                    eprintln!("Warning: Could not connect ports: {}", e);
                 }
 
                 (Some(handle), Some(sender), Some(deck_atomics), Some(slicer_atomics), Some(linked_stem_atomics), Some(linked_stem_receiver), sample_rate)

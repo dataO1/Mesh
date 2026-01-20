@@ -111,6 +111,8 @@ pub struct AudioConfig {
     pub phase_sync: bool,
     /// Loudness normalization settings
     pub loudness: LoudnessConfig,
+    /// JACK port routing configuration
+    pub jack_ports: JackPortConfig,
 }
 
 impl Default for AudioConfig {
@@ -119,8 +121,27 @@ impl Default for AudioConfig {
             global_bpm: 128.0, // Standard house/techno BPM
             phase_sync: true,  // Automatic beat sync enabled by default
             loudness: LoudnessConfig::default(),
+            jack_ports: JackPortConfig::default(),
         }
     }
+}
+
+/// JACK port routing configuration
+///
+/// Configures which physical audio outputs receive master (speakers)
+/// and cue (headphones) audio. Uses stereo pair indices:
+/// - Pair 0 = outputs 1-2
+/// - Pair 1 = outputs 3-4
+/// - etc.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct JackPortConfig {
+    /// Master stereo pair index (0 = outputs 1-2, 1 = outputs 3-4, etc.)
+    /// None = auto-detect first available pair
+    pub master_pair: Option<usize>,
+    /// Cue stereo pair index for headphone monitoring
+    /// None = auto-detect second available pair (or same as master if only 2 outputs)
+    pub cue_pair: Option<usize>,
 }
 
 // LoudnessConfig is re-exported from mesh_core::config

@@ -62,6 +62,18 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             app.settings.draft_show_local_collection = enabled;
             Task::none()
         }
+        UpdateMasterPair(index) => {
+            app.settings.draft_master_pair = index;
+            Task::none()
+        }
+        UpdateCuePair(index) => {
+            app.settings.draft_cue_pair = index;
+            Task::none()
+        }
+        RefreshJackPorts => {
+            app.settings.refresh_jack_ports();
+            Task::none()
+        }
         Save => {
             // Apply draft settings to config
             let mut new_config = (*app.config).clone();
@@ -79,8 +91,16 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             // Save loudness settings
             new_config.audio.loudness.auto_gain_enabled = app.settings.draft_auto_gain_enabled;
             new_config.audio.loudness.target_lufs = app.settings.target_lufs();
+            // Save JACK port routing
+            new_config.audio.jack_ports.master_pair = Some(app.settings.draft_master_pair);
+            new_config.audio.jack_ports.cue_pair = Some(app.settings.draft_cue_pair);
 
             app.config = Arc::new(new_config.clone());
+
+            // Reconnect JACK ports with new configuration
+            if let Err(e) = crate::audio::connect_ports("mesh-player", &new_config.audio.jack_ports) {
+                log::warn!("Failed to reconnect JACK ports: {}", e);
+            }
 
             // Apply stem color palette to waveform display immediately
             app.player_canvas_state.set_stem_colors(
