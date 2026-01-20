@@ -172,22 +172,8 @@ and mesh-widget and only if necessary in the ui.
      energy instead of exact key match (so the user has 3 options, lower energy,
      keep, or up the energy)?
    - [ ] backup of databse (without files, just db)
-   - [ ] ok so currently the dj has no way of previewing tracks they want to
-     play into the current mix with a cue channel mixer, we need this. there are
-     a few problems to solve here:
-     - [ ] multiple jack outputs. the physical cue output is independent of the
-       master mix output. so the mesh-player needs to be able to configure which
-       output is which. this needs to be added to the ui interface (add it to
-       the top, since this is very important). importantly the two audio threads
-       needs to be completely independant, each in its own thread i think!
-     - [ ] the actual audio channel computation should happen after the
-       timestretching and effects sections of the deck, but before summing to
-       mix output. so essentially the cue output takes all deck outs, which are
-       marked for cue playback (this needs to be a separate boolean field per
-       deck) and sums them to the second audio out. so the cue output is
-       parallel to the mix output.
- - [ ] in the waveform canvas of the player, we need to mark decks, that are
-   currently marked for cue output. change the header color to a slight yellow.
+- [x] in the waveform canvas of the player, we need to mark decks, that are
+ currently marked for cue output. change the header color to a slight yellow.
 
 # Changes
 - [x] The waveform indicators of hot cues use colors, but the hot cue buttons
@@ -321,9 +307,6 @@ and mesh-widget and only if necessary in the ui.
   release hot cue stops the playback again. when the deck is playing releasing
   the hot cue (same for normal cue button) should not stop preview, but keep the
   deck playing.
-- [ ] it seems the deck virtual deck toggle buttons need similar logic like the
-  action pad modes. on the ddj-sb2, the deck toggle buttons make the deck
-  specific buttons have their own channel (action buttons, mode switches)
 - [x] there is still problems with the interdeck syncing of two beats. when one
   track is playing and i add another by pressing hot cue, play, then hot cue
   release, they are not synced. either
@@ -353,6 +336,9 @@ and mesh-widget and only if necessary in the ui.
     a track where the vocal stem is stem linked to another vocal stem of another
     track, show this vocal stem initially in the bottom half, as soon as i
     switch, switch this stem to top and move the original stem to bottom half.
+- [ ] it seems the deck virtual deck toggle buttons need similar logic like the
+  action pad modes. on the ddj-sb2, the deck toggle buttons make the deck
+  specific buttons have their own channel (action buttons, mode switches)
 - [ ] when importing, tracks still dont directly come up in the collection (mesh-cue) right after they
   are done with analysis. i can see them finished in the status bar and written
   as a file but not directly in the collection list in the file browser.
@@ -393,8 +379,6 @@ and mesh-widget and only if necessary in the ui.
   stem using essentia or ebur128 or lufs crate ( i want stems after processing to be
   relatively comparable loudness as input stem loudness, since rave processing can either
   be very loud or silent ).
-- [ ] export ui progress x/x shows the tracks id not, the amount of tracks that
-  have been processed. the progress bar itself seems correct.
 
 
 
