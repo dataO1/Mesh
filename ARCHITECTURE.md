@@ -730,3 +730,187 @@ mesh-cue/
 │                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+### USB Export Architecture
+
+The USB export system provides atomic per-track exports with efficient database operations.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    USB EXPORT ARCHITECTURE                           │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  UI Layer (mesh-cue)                                                 │
+│  ────────────────────                                                │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │ ExportState                                                   │   │
+│  │ ├─ phase: ExportPhase (SelectDevice → Exporting → Complete)  │   │
+│  │ ├─ tracks_complete, total_tracks                             │   │
+│  │ └─ sync_plan: SyncPlan                                       │   │
+│  └────────────────────────────┬─────────────────────────────────┘   │
+│                               │ UsbMessage (via subscription)        │
+│                               ▼                                      │
+│  Domain Layer (UsbManager)                                           │
+│  ─────────────────────────                                           │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │ UsbManager (background thread)                                │   │
+│  │ ├─ Receives UsbCommand::StartExport                          │   │
+│  │ ├─ Creates ExportService (thread pool)                       │   │
+│  │ └─ Forwards ExportProgress → UsbMessage                      │   │
+│  └────────────────────────────┬─────────────────────────────────┘   │
+│                               │                                      │
+│                               ▼                                      │
+│  Export Service Layer (mesh-core/export/)                            │
+│  ────────────────────────────────────────                            │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │ ExportService                                                 │   │
+│  │ ├─ thread_pool: rayon::ThreadPool (4 threads)                │   │
+│  │ ├─ cancel_flag: Arc<AtomicBool>                              │   │
+│  │ └─ start_export() → Receiver<ExportProgress>                 │   │
+│  │                                                               │   │
+│  │ Per-Thread Worker (atomic export per track):                  │   │
+│  │ ┌─────────────────────────────────────────────────────────┐  │   │
+│  │ │ 1. Copy WAV with verification (3 retries)               │  │   │
+│  │ │ 2. Sync track to USB database (batch inserts)           │  │   │
+│  │ │ 3. Send ExportProgress::TrackComplete                   │  │   │
+│  │ └─────────────────────────────────────────────────────────┘  │   │
+│  └────────────────────────────┬─────────────────────────────────┘   │
+│                               │                                      │
+│                               ▼                                      │
+│  Database Layer (mesh-core/db/)                                      │
+│  ──────────────────────────────                                      │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │ DatabaseService::sync_track_atomic()                          │   │
+│  │                                                               │   │
+│  │ Uses BatchQuery for efficient bulk inserts:                   │   │
+│  │ ├─ batch_insert_cue_points()    (1 query for N cues)         │   │
+│  │ ├─ batch_insert_saved_loops()   (1 query for N loops)        │   │
+│  │ ├─ batch_insert_stem_links()    (1 query for N links)        │   │
+│  │ └─ batch_delete_track_metadata() (1 query)                   │   │
+│  │                                                               │   │
+│  │ Total: ~5 queries per track vs 18+ with individual inserts   │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Export Message Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    EXPORT MESSAGE FLOW                               │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ExportProgress (mesh-core/export/)     UsbMessage (mesh-core/usb/) │
+│  ─────────────────────────────────────  ─────────────────────────── │
+│                                                                      │
+│  ExportProgress::Started          ───►  UsbMessage::ExportStarted   │
+│    { total_tracks, total_bytes }          { total_tracks, ... }     │
+│                                                                      │
+│  ExportProgress::TrackStarted     ───►  UsbMessage::ExportTrackStarted│
+│    { filename, track_index }              { filename, track_index } │
+│                                                                      │
+│  ExportProgress::TrackComplete    ───►  UsbMessage::ExportTrackComplete│
+│    { filename, track_index,               { filename, track_index,  │
+│      total_tracks, bytes_complete,          total_tracks, ... }     │
+│      total_bytes }                                                   │
+│                                                                      │
+│  ExportProgress::TrackFailed      ───►  UsbMessage::ExportTrackFailed│
+│    { filename, track_index, error }       { filename, ... error }   │
+│                                                                      │
+│  ExportProgress::Complete         ───►  UsbMessage::ExportComplete  │
+│    { duration, tracks_exported,           { duration, ... }         │
+│      failed_files }                                                  │
+│                                                                      │
+│  ExportProgress::Cancelled        ───►  UsbMessage::ExportCancelled │
+│                                                                      │
+│  Key Insight: Progress is only sent AFTER both WAV copy AND         │
+│  database sync complete. This ensures the UI progress bar           │
+│  accurately reflects tracks that are fully exported.                │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Batch Insert Pattern (CozoDB)
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    BATCH INSERT OPTIMIZATION                         │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  Before (18+ queries per track):                                     │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │ for cue in cue_points:           # 8 queries                  │   │
+│  │     INSERT INTO cue_points ...                                │   │
+│  │ for loop in saved_loops:         # 8 queries                  │   │
+│  │     INSERT INTO saved_loops ...                               │   │
+│  │ for link in stem_links:          # 4 queries                  │   │
+│  │     INSERT INTO stem_links ...                                │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  After (5 queries per track):                                        │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │ 1. Upsert track row                                           │   │
+│  │ 2. DELETE FROM cue_points WHERE track_id = ?                  │   │
+│  │    DELETE FROM saved_loops WHERE track_id = ?                 │   │
+│  │    DELETE FROM stem_links WHERE track_id = ?                  │   │
+│  │ 3. ?[...] <- $cues :put cue_points {...}      # 1 batch query │   │
+│  │ 4. ?[...] <- $loops :put saved_loops {...}    # 1 batch query │   │
+│  │ 5. ?[...] <- $links :put stem_links {...}     # 1 batch query │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  CozoDB Batch Syntax:                                                │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │ ?[track_id, index, sample_position, label, color] <- $rows    │   │
+│  │ :put cue_points {track_id, index => sample_position, ...}     │   │
+│  │                                                               │   │
+│  │ Where $rows is a Vec<Vec<DataValue>> passed as parameter      │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  Performance: ~70% reduction in DB operations during export         │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Stem Link ID Remapping
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    STEM LINK REMAPPING                               │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  Problem: Stem links reference tracks by database ID, but IDs       │
+│           differ between local and USB databases.                    │
+│                                                                      │
+│  Local DB:                      USB DB:                              │
+│  ├─ track_id: 42               ├─ track_id: 7                       │
+│  │  path: ".../song.stems"     │  path: ".../tracks/song.wav"       │
+│  └─ stem_link → source: 42     └─ stem_link → source: ???           │
+│                                                                      │
+│  Solution (in sync_track_atomic):                                    │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │ fn remap_stem_links_for_export(                               │   │
+│  │     links: &[StemLink],                                       │   │
+│  │     source_db: &DatabaseService,  // local DB                 │   │
+│  │ ) -> Vec<StemLink> {                                          │   │
+│  │                                                               │   │
+│  │     for link in links:                                        │   │
+│  │         // 1. Get source track path from local DB             │   │
+│  │         local_track = source_db.get_track(link.source_id)     │   │
+│  │         filename = local_track.path.file_name()               │   │
+│  │                                                               │   │
+│  │         // 2. Find matching track in USB DB by filename       │   │
+│  │         usb_track = self.get_track_by_path(                   │   │
+│  │             "{usb_root}/tracks/{filename}"                    │   │
+│  │         )                                                     │   │
+│  │                                                               │   │
+│  │         // 3. Use USB track ID for the remapped link          │   │
+│  │         remapped_links.push(StemLink {                        │   │
+│  │             source_track_id: usb_track.id,                    │   │
+│  │             ...link                                           │   │
+│  │         })                                                    │   │
+│  │ }                                                             │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```

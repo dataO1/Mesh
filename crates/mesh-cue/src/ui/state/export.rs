@@ -34,12 +34,12 @@ pub enum ExportPhase {
         plan: SyncPlan,
     },
 
-    /// Exporting files
+    /// Exporting tracks
     Exporting {
-        current_file: String,
-        files_complete: usize,
+        current_track: String,
+        tracks_complete: usize,
         bytes_complete: u64,
-        total_files: usize,
+        total_tracks: usize,
         total_bytes: u64,
         start_time: Instant,
     },
@@ -47,8 +47,9 @@ pub enum ExportPhase {
     /// Export complete
     Complete {
         duration: Duration,
-        files_exported: usize,
-        failed_files: Vec<(std::path::PathBuf, String)>,
+        tracks_exported: usize,
+        /// Failed files: (filename, error_message)
+        failed_files: Vec<(String, String)>,
     },
 
     /// Error state
@@ -82,17 +83,17 @@ impl ExportPhase {
                 format!("Calculating changes: {}/{} files", files_scanned, total_files)
             }
             ExportPhase::ReadyToSync { plan } => plan.summary(),
-            ExportPhase::Exporting { files_complete, total_files, .. } => {
-                format!("Exporting: {}/{} files", files_complete, total_files)
+            ExportPhase::Exporting { tracks_complete, total_tracks, .. } => {
+                format!("Exporting: {}/{} tracks", tracks_complete, total_tracks)
             }
-            ExportPhase::Complete { files_exported, failed_files, .. } => {
+            ExportPhase::Complete { tracks_exported, failed_files, .. } => {
                 if failed_files.is_empty() {
-                    format!("Export complete! {} files exported", files_exported)
+                    format!("Export complete! {} tracks exported", tracks_exported)
                 } else {
                     format!(
-                        "Export complete with {} error(s). {} files exported",
+                        "Export complete with {} error(s). {} tracks exported",
                         failed_files.len(),
-                        files_exported
+                        tracks_exported
                     )
                 }
             }
@@ -375,5 +376,18 @@ mod tests {
             total_files: 10,
         };
         assert!(phase.status_message().contains("5/10"));
+    }
+
+    #[test]
+    fn test_exporting_phase_status() {
+        let phase = ExportPhase::Exporting {
+            current_track: "test.wav".to_string(),
+            tracks_complete: 3,
+            bytes_complete: 1000,
+            total_tracks: 10,
+            total_bytes: 5000,
+            start_time: Instant::now(),
+        };
+        assert!(phase.status_message().contains("3/10"));
     }
 }

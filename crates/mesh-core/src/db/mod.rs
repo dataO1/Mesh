@@ -15,8 +15,9 @@
 //! All queries are performed through typed Rust APIs that generate
 //! CozoScript (Datalog) queries internally.
 
-mod schema;
+mod batch;
 mod queries;
+mod schema;
 mod service;
 
 // Internal schema types (pub(crate) - only used within mesh-core)
@@ -27,6 +28,8 @@ pub use schema::{Playlist, AudioFeatures, CuePoint, SavedLoop, StemLink, Similar
 
 // Internal query module (pub(crate) - implementation detail)
 pub(crate) use queries::{TrackQuery, PlaylistQuery, SimilarityQuery, CuePointQuery, SavedLoopQuery};
+
+// Internal batch module (used directly by service.rs for efficient bulk inserts)
 
 // Public service API - the only interface for domain code
 pub use service::{DatabaseService, Track};

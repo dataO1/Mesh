@@ -14,5 +14,6 @@ pub mod usb;
 pub mod db;
 pub mod services;
 pub mod features;
+pub mod export;
 
 pub use types::*;

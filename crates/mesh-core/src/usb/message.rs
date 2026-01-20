@@ -163,38 +163,48 @@ pub enum UsbMessage {
     SyncPlanFailed(UsbError),
 
     // ─────────────────────────────────────────────────────────────────
-    // Export Operations
+    // Export Operations (atomic per-track progress)
     // ─────────────────────────────────────────────────────────────────
     /// Export started
     ExportStarted {
-        /// Total files to copy
-        total_files: usize,
+        /// Total tracks to export
+        total_tracks: usize,
         /// Total bytes to copy
         total_bytes: u64,
     },
 
-    /// Export progress update
-    ExportProgress {
-        /// Current file being copied
-        current_file: String,
-        /// Files completed so far
-        files_complete: usize,
-        /// Bytes copied so far
+    /// A track export started (WAV copy beginning)
+    ExportTrackStarted {
+        /// Filename of the track being exported
+        filename: String,
+        /// Index in the export queue (0-based)
+        track_index: usize,
+    },
+
+    /// A track was fully exported (WAV copied + DB synced)
+    ///
+    /// This is the atomic completion signal - only sent after both
+    /// the WAV file and all database metadata are written.
+    ExportTrackComplete {
+        /// Filename that was exported
+        filename: String,
+        /// Index in the export queue (0-based)
+        track_index: usize,
+        /// Total tracks in the export
+        total_tracks: usize,
+        /// Cumulative bytes exported so far
         bytes_complete: u64,
-        /// Total files to copy
-        total_files: usize,
-        /// Total bytes to copy
+        /// Total bytes to export
         total_bytes: u64,
     },
 
-    /// A single file was copied successfully
-    ExportFileComplete {
-        path: PathBuf,
-    },
-
-    /// A single file failed to copy
-    ExportFileFailed {
-        path: PathBuf,
+    /// A track failed to export
+    ExportTrackFailed {
+        /// Filename that failed
+        filename: String,
+        /// Index in the export queue (0-based)
+        track_index: usize,
+        /// Error description
         error: String,
     },
 
@@ -202,10 +212,10 @@ pub enum UsbMessage {
     ExportComplete {
         /// How long the export took
         duration: Duration,
-        /// Number of files exported
-        files_exported: usize,
+        /// Number of tracks exported
+        tracks_exported: usize,
         /// Any files that failed (with error messages)
-        failed_files: Vec<(PathBuf, String)>,
+        failed_files: Vec<(String, String)>,
     },
 
     /// Export failed with error
@@ -269,14 +279,24 @@ impl UsbMessage {
             UsbMessage::SyncPlanReady(plan) => {
                 plan.summary()
             }
-            UsbMessage::ExportStarted { total_files, .. } => {
-                format!("Starting export of {} files", total_files)
+            UsbMessage::ExportStarted { total_tracks, .. } => {
+                format!("Starting export of {} tracks", total_tracks)
             }
-            UsbMessage::ExportProgress { files_complete, total_files, .. } => {
-                format!("Exporting: {}/{}", files_complete, total_files)
+            UsbMessage::ExportTrackStarted { filename, .. } => {
+                format!("Exporting: {}", filename)
             }
-            UsbMessage::ExportComplete { files_exported, duration, .. } => {
-                format!("Export complete: {} files in {:.1}s", files_exported, duration.as_secs_f64())
+            UsbMessage::ExportTrackComplete { track_index, total_tracks, .. } => {
+                format!("Exported: {}/{}", track_index + 1, total_tracks)
+            }
+            UsbMessage::ExportTrackFailed { filename, error, .. } => {
+                format!("Failed: {} - {}", filename, error)
+            }
+            UsbMessage::ExportComplete { tracks_exported, duration, failed_files } => {
+                if failed_files.is_empty() {
+                    format!("Export complete: {} tracks in {:.1}s", tracks_exported, duration.as_secs_f64())
+                } else {
+                    format!("Export complete: {} tracks, {} failed in {:.1}s", tracks_exported, failed_files.len(), duration.as_secs_f64())
+                }
             }
             UsbMessage::ExportError(e) => format!("Export failed: {}", e),
             UsbMessage::ExportCancelled => "Export cancelled".to_string(),

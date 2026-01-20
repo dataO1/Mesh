@@ -35,25 +35,25 @@ pub fn view(state: &ExportState, playlist_tree: Vec<TreeNode<NodeId>>) -> Elemen
         } => view_building_plan(*files_scanned, *total_files),
         ExportPhase::ReadyToSync { plan } => view_ready_to_sync(state, &playlist_tree, plan),
         ExportPhase::Exporting {
-            current_file,
-            files_complete,
+            current_track,
+            tracks_complete,
             bytes_complete,
-            total_files,
+            total_tracks,
             total_bytes,
             start_time,
         } => view_exporting(
-            current_file,
-            *files_complete,
+            current_track,
+            *tracks_complete,
             *bytes_complete,
-            *total_files,
+            *total_tracks,
             *total_bytes,
             start_time,
         ),
         ExportPhase::Complete {
             duration,
-            files_exported,
+            tracks_exported,
             failed_files,
-        } => view_complete(duration, *files_exported, failed_files),
+        } => view_complete(duration, *tracks_exported, failed_files),
         ExportPhase::Error(msg) => view_error(msg),
     };
 
@@ -458,10 +458,10 @@ fn view_ready_to_sync(
 
 /// View while exporting
 fn view_exporting(
-    current_file: &str,
-    files_complete: usize,
+    current_track: &str,
+    tracks_complete: usize,
     bytes_complete: u64,
-    total_files: usize,
+    total_tracks: usize,
     total_bytes: u64,
     start_time: &std::time::Instant,
 ) -> Element<'static, Message> {
@@ -491,15 +491,15 @@ fn view_exporting(
     };
 
     // Truncate filename if too long
-    let display_name = if current_file.len() > 50 {
-        format!("...{}", &current_file[current_file.len() - 47..])
+    let display_name = if current_track.len() > 50 {
+        format!("...{}", &current_track[current_track.len() - 47..])
     } else {
-        current_file.to_string()
+        current_track.to_string()
     };
 
     let status = text(format!(
         "Exporting: {} ({}/{})",
-        display_name, files_complete, total_files
+        display_name, tracks_complete, total_tracks
     ))
     .size(14);
 
@@ -529,8 +529,8 @@ fn view_exporting(
 /// View when export is complete
 fn view_complete(
     duration: &std::time::Duration,
-    files_exported: usize,
-    failed_files: &[(std::path::PathBuf, String)],
+    tracks_exported: usize,
+    failed_files: &[(String, String)],
 ) -> Element<'static, Message> {
     let duration_text = if duration.as_secs() > 60 {
         format!(
@@ -553,11 +553,11 @@ fn view_complete(
     };
 
     let summary = if failed_files.is_empty() {
-        text(format!("{} files exported successfully", files_exported)).size(16)
+        text(format!("{} tracks exported successfully", tracks_exported)).size(16)
     } else {
         text(format!(
-            "{} files exported, {} failed",
-            files_exported,
+            "{} tracks exported, {} failed",
+            tracks_exported,
             failed_files.len()
         ))
         .size(16)
@@ -570,12 +570,8 @@ fn view_complete(
         let failed_items: Vec<Element<Message>> = failed_files
             .iter()
             .take(10)
-            .map(|(path, error)| {
-                let name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| path.display().to_string());
-                text(format!("• {}: {}", name, error))
+            .map(|(filename, error)| {
+                text(format!("• {}: {}", filename, error))
                     .size(12)
                     .color(iced::Color::from_rgb(0.9, 0.3, 0.3))
                     .into()
@@ -651,10 +647,10 @@ fn view_error(message: &str) -> Element<'static, Message> {
 pub fn view_progress_bar(state: &ExportState) -> Option<Element<'static, Message>> {
     match &state.phase {
         ExportPhase::Exporting {
-            current_file,
-            files_complete,
+            current_track,
+            tracks_complete,
             bytes_complete,
-            total_files,
+            total_tracks,
             total_bytes,
             start_time,
         } => {
@@ -670,16 +666,16 @@ pub fn view_progress_bar(state: &ExportState) -> Option<Element<'static, Message
                 let rate = *bytes_complete as f64 / elapsed.as_secs_f64();
                 let remaining = total_bytes.saturating_sub(*bytes_complete);
                 let eta_secs = remaining as f64 / rate;
-                format!("{}/{}  ETA: {:.0}s", files_complete, total_files, eta_secs)
+                format!("{}/{}  ETA: {:.0}s", tracks_complete, total_tracks, eta_secs)
             } else {
-                format!("{}/{}", files_complete, total_files)
+                format!("{}/{}", tracks_complete, total_tracks)
             };
 
             // Truncate filename if too long
-            let display_name = if current_file.len() > 40 {
-                format!("{}...", &current_file[..37])
+            let display_name = if current_track.len() > 40 {
+                format!("{}...", &current_track[..37])
             } else {
-                current_file.clone()
+                current_track.clone()
             };
 
             Some(super::import_modal::build_status_bar(

@@ -201,39 +201,49 @@ impl MeshCueApp {
                 self.export_state.sync_plan = Some(plan);
                 self.export_state.sync_plan_computing = false;
             }
-            UsbMsg::ExportStarted { total_files, total_bytes } => {
+            UsbMsg::ExportStarted { total_tracks, total_bytes } => {
                 self.export_state.phase = ExportPhase::Exporting {
-                    current_file: String::new(),
-                    files_complete: 0,
+                    current_track: String::new(),
+                    tracks_complete: 0,
                     bytes_complete: 0,
-                    total_files,
+                    total_tracks,
                     total_bytes,
                     start_time: std::time::Instant::now(),
                 };
             }
-            UsbMsg::ExportProgress {
-                current_file,
-                files_complete,
+            UsbMsg::ExportTrackStarted { filename, track_index: _ } => {
+                // Update current track being exported
+                if let ExportPhase::Exporting { current_track, .. } = &mut self.export_state.phase {
+                    *current_track = filename;
+                }
+            }
+            UsbMsg::ExportTrackComplete {
+                filename: _,
+                track_index,
+                total_tracks,
                 bytes_complete,
-                total_files,
                 total_bytes,
             } => {
                 if let ExportPhase::Exporting { start_time, .. } = &self.export_state.phase {
                     let start = *start_time;
                     self.export_state.phase = ExportPhase::Exporting {
-                        current_file,
-                        files_complete,
+                        current_track: String::new(), // Will be updated by next TrackStarted
+                        tracks_complete: track_index + 1,
                         bytes_complete,
-                        total_files,
+                        total_tracks,
                         total_bytes,
                         start_time: start,
                     };
                 }
             }
-            UsbMsg::ExportComplete { duration, files_exported, failed_files } => {
+            UsbMsg::ExportTrackFailed { filename, track_index: _, error } => {
+                log::warn!("Track export failed: {} - {}", filename, error);
+                // Don't change phase - let export continue with other tracks
+            }
+            UsbMsg::ExportComplete { duration, tracks_exported, failed_files } => {
                 self.export_state.phase = ExportPhase::Complete {
                     duration,
-                    files_exported,
+                    tracks_exported,
                     failed_files,
                 };
                 self.export_state.show_results = true;
