@@ -707,7 +707,7 @@ devices:
     deck_index: null
     params: {}
     behavior: momentary
-    shift_action: null
+    shift_action: browser.back
     encoder_mode: null
     hardware_type: button
   - control:

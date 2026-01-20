@@ -60,6 +60,8 @@ pub enum CollectionBrowserMessage {
     ScrollBy(i32),
     /// Select current item (enter folder or activate track)
     SelectCurrent,
+    /// Navigate back (exit playlist to tree, or go up hierarchy in tree)
+    Back,
 }
 
 impl CollectionBrowserState {
@@ -409,7 +411,71 @@ impl CollectionBrowserState {
                 }
                 None
             }
+            CollectionBrowserMessage::Back => {
+                // Navigate back in the browser hierarchy:
+                // 1. If viewing tracks in a playlist, go back to folder view (clear tracks)
+                // 2. If in folder view, go up to parent folder
+                // 3. If at root level, do nothing
+
+                if !self.tracks.is_empty() {
+                    // Currently viewing a playlist's tracks - go back to folder view
+                    self.tracks.clear();
+                    self.selected_track_path = None;
+                    self.browser.table_state.clear_selection();
+                    // Keep current_folder and tree selection so user can see where they were
+                    log::debug!("browser.back: exited playlist to folder view");
+                } else if let Some(ref current_folder) = self.browser.current_folder.clone() {
+                    // In folder view - try to go up to parent
+                    if let Some(parent_id) = self.get_parent_folder(&current_folder) {
+                        // Navigate to parent folder
+                        self.browser.current_folder = Some(parent_id.clone());
+                        self.browser.tree_state.selected = Some(parent_id.clone());
+                        log::debug!("browser.back: navigated to parent {:?}", parent_id);
+                    } else {
+                        // At root level - clear current folder to show top-level view
+                        self.browser.current_folder = None;
+                        self.browser.tree_state.selected = None;
+                        log::debug!("browser.back: at root, cleared selection");
+                    }
+                } else {
+                    log::debug!("browser.back: already at root level");
+                }
+                None
+            }
         }
+    }
+
+    /// Get the parent folder ID for a given folder
+    /// Returns None if the folder is at the root level
+    fn get_parent_folder(&self, folder_id: &NodeId) -> Option<NodeId> {
+        let id_str = &folder_id.0;
+
+        // Handle USB paths: "usb:/dev/sda/playlists/Detox" -> "usb:/dev/sda/playlists"
+        if id_str.starts_with("usb:") {
+            // Find the device prefix end (after "usb:/dev/xxx")
+            let without_prefix = id_str.strip_prefix("usb:")?;
+            // Split by '/' and find the last segment
+            let parts: Vec<&str> = without_prefix.split('/').collect();
+            if parts.len() <= 2 {
+                // At device root (e.g., "usb:/dev/sda") - no parent within USB
+                return None;
+            }
+            // Remove last segment to get parent
+            let parent_path = parts[..parts.len() - 1].join("/");
+            return Some(NodeId(format!("usb:{}", parent_path)));
+        }
+
+        // Handle local paths: "playlists/Detox" -> "playlists"
+        if let Some(slash_pos) = id_str.rfind('/') {
+            let parent = &id_str[..slash_pos];
+            if parent.is_empty() {
+                return None;
+            }
+            return Some(NodeId(parent.to_string()));
+        }
+
+        // No slash means it's a root-level item
+        None
     }
 
     /// Load tracks for a folder (handles both local and USB)

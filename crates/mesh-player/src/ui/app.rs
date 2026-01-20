@@ -534,9 +534,9 @@ impl MeshApp {
                         }
                     }
                     MidiBrowserAction::Back => {
-                        // Could implement folder navigation back, for now just log
-                        log::debug!("MIDI: Browser back (not implemented)");
-                        Task::none()
+                        self.update(Message::CollectionBrowser(
+                            CollectionBrowserMessage::Back,
+                        ))
                     }
                 };
             }
