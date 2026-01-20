@@ -27,7 +27,7 @@ pub(crate) use schema::TrackRow;
 pub use schema::{Playlist, AudioFeatures, CuePoint, SavedLoop, StemLink, SimilarTo, PlayedAfter, HarmonicMatch, HarmonicMatchType};
 
 // Internal query module (pub(crate) - implementation detail)
-pub(crate) use queries::{TrackQuery, PlaylistQuery, SimilarityQuery, CuePointQuery, SavedLoopQuery};
+pub(crate) use queries::{TrackQuery, PlaylistQuery, SimilarityQuery, CuePointQuery, SavedLoopQuery, StemLinkQuery};
 
 // Internal batch module (used directly by service.rs for efficient bulk inserts)
 

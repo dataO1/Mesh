@@ -8,7 +8,7 @@
 //!
 //! Both local and USB collections use CozoDB databases for track and playlist metadata.
 
-use crate::db::{MeshDb, PlaylistQuery, TrackRow, CuePoint, SavedLoop, CuePointQuery, SavedLoopQuery, TrackQuery};
+use crate::db::{MeshDb, PlaylistQuery, TrackRow, CuePoint, SavedLoop, StemLink, CuePointQuery, SavedLoopQuery, StemLinkQuery, TrackQuery};
 use super::cache::get_or_open_usb_database;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -34,6 +34,8 @@ pub struct TrackInfo {
     pub cue_points: Vec<CuePoint>,
     /// Saved loops for this track
     pub saved_loops: Vec<SavedLoop>,
+    /// Stem links for this track (linked stems for prepared mode)
+    pub stem_links: Vec<StemLink>,
 }
 
 /// A track membership in a playlist (database record)
@@ -182,15 +184,19 @@ pub fn scan_local_collection_from_db(
         }
     }
 
-    // Pre-fetch cue points and loops for all tracks (sequential DB queries)
+    // Pre-fetch cue points, loops, and stem links for all tracks (sequential DB queries)
     let mut cue_points_map: HashMap<i64, Vec<CuePoint>> = HashMap::new();
     let mut loops_map: HashMap<i64, Vec<SavedLoop>> = HashMap::new();
+    let mut stem_links_map: HashMap<i64, Vec<StemLink>> = HashMap::new();
     for (_, (_, track)) in &track_data {
         if let Ok(cues) = CuePointQuery::get_for_track(db, track.id) {
             cue_points_map.insert(track.id, cues);
         }
         if let Ok(loops) = SavedLoopQuery::get_for_track(db, track.id) {
             loops_map.insert(track.id, loops);
+        }
+        if let Ok(links) = StemLinkQuery::get_for_track(db, track.id) {
+            stem_links_map.insert(track.id, links);
         }
     }
 
@@ -215,9 +221,10 @@ pub fn scan_local_collection_from_db(
                 cb(current, total_files);
             }
 
-            // Get pre-fetched cue points and loops
+            // Get pre-fetched cue points, loops, and stem links
             let cue_points = cue_points_map.get(&db_track.id).cloned().unwrap_or_default();
             let saved_loops = loops_map.get(&db_track.id).cloned().unwrap_or_default();
+            let stem_links = stem_links_map.get(&db_track.id).cloned().unwrap_or_default();
 
             Ok(TrackInfo {
                 path,
@@ -227,6 +234,7 @@ pub fn scan_local_collection_from_db(
                 db_track: Some(db_track),
                 cue_points,
                 saved_loops,
+                stem_links,
             })
         })
         .collect();
@@ -271,8 +279,8 @@ pub fn scan_usb_collection(
     // Get USB database from cache for metadata comparison
     let usb_db_service = get_or_open_usb_database(collection_root);
 
-    // Build map of filename -> (TrackRow, cue_points, saved_loops) from USB database
-    let mut db_metadata: HashMap<String, (TrackRow, Vec<CuePoint>, Vec<SavedLoop>)> = HashMap::new();
+    // Build map of filename -> (TrackRow, cue_points, saved_loops, stem_links) from USB database
+    let mut db_metadata: HashMap<String, (TrackRow, Vec<CuePoint>, Vec<SavedLoop>, Vec<StemLink>)> = HashMap::new();
     if let Some(ref db_service) = usb_db_service {
         // Get all tracks from database
         if let Ok(all_tracks) = TrackQuery::get_all(db_service.db()) {
@@ -287,8 +295,10 @@ pub fn scan_usb_collection(
                     .unwrap_or_default();
                 let saved_loops = SavedLoopQuery::get_for_track(db_service.db(), track.id)
                     .unwrap_or_default();
+                let stem_links = StemLinkQuery::get_for_track(db_service.db(), track.id)
+                    .unwrap_or_default();
 
-                db_metadata.insert(filename, (track, cue_points, saved_loops));
+                db_metadata.insert(filename, (track, cue_points, saved_loops, stem_links));
             }
         }
 
@@ -339,10 +349,10 @@ pub fn scan_usb_collection(
             }
 
             // Get database metadata if available
-            let (db_track, cue_points, saved_loops) = db_metadata
+            let (db_track, cue_points, saved_loops, stem_links) = db_metadata
                 .get(&filename)
-                .map(|(t, c, l)| (Some(t.clone()), c.clone(), l.clone()))
-                .unwrap_or((None, Vec::new(), Vec::new()));
+                .map(|(t, c, l, s)| (Some(t.clone()), c.clone(), l.clone(), s.clone()))
+                .unwrap_or((None, Vec::new(), Vec::new(), Vec::new()));
 
             Ok(TrackInfo {
                 path,
@@ -352,6 +362,7 @@ pub fn scan_usb_collection(
                 db_track,
                 cue_points,
                 saved_loops,
+                stem_links,
             })
         })
         .collect();
@@ -368,15 +379,13 @@ pub fn scan_usb_collection(
 
 /// Check if metadata differs between local and USB tracks
 ///
-/// Compares track fields (BPM, key, artist, etc.), cue points, and saved loops.
+/// Compares track fields (BPM, key, artist, etc.), cue points, saved loops, and stem links.
 /// Returns true if any metadata field differs and requires re-export.
 fn metadata_differs(local: &TrackInfo, usb: &TrackInfo) -> bool {
     // Compare Track fields if both have db_track
     match (&local.db_track, &usb.db_track) {
         (Some(l), Some(u)) => {
-            // Compare only fields that are synced to USB database
-            // Note: drop_marker, cue_points, saved_loops are NOT synced to USB DB
-            // (drop_marker is always NULL, cue_points/loops go into WAV chunks)
+            // Compare analysis fields
             if l.bpm != u.bpm {
                 log::debug!("metadata_differs: bpm differs for {} ({:?} vs {:?})", local.filename, l.bpm, u.bpm);
                 return true;
@@ -397,8 +406,11 @@ fn metadata_differs(local: &TrackInfo, usb: &TrackInfo) -> bool {
                 log::debug!("metadata_differs: lufs differs for {} ({:?} vs {:?})", local.filename, l.lufs, u.lufs);
                 return true;
             }
-            // Skip drop_marker comparison - not synced to USB DB (always NULL)
-            // Skip cue_points/saved_loops comparison - stored in WAV chunks, not USB DB
+            // Compare drop marker (beat position for performance mode)
+            if l.drop_marker != u.drop_marker {
+                log::debug!("metadata_differs: drop_marker differs for {} ({:?} vs {:?})", local.filename, l.drop_marker, u.drop_marker);
+                return true;
+            }
         }
         (Some(_), None) => {
             // Local has metadata, USB doesn't - needs export
@@ -410,14 +422,86 @@ fn metadata_differs(local: &TrackInfo, usb: &TrackInfo) -> bool {
         }
     }
 
-    // TODO: cue_points and saved_loops are currently stored in WAV file chunks,
-    // not in USB database. To enable change detection for these, we need to:
-    // 1. Write cue_points/saved_loops to USB DB during export
-    // 2. Then compare them here
-    // For now, changes to cue points/loops will trigger re-export via WAV file
-    // modification (mtime change) when the WAV is re-rendered.
+    // Compare cue points (hot cues for performance)
+    if !cue_points_equal(&local.cue_points, &usb.cue_points) {
+        log::debug!("metadata_differs: cue_points differ for {} ({} local vs {} usb)",
+            local.filename, local.cue_points.len(), usb.cue_points.len());
+        return true;
+    }
+
+    // Compare saved loops
+    if !saved_loops_equal(&local.saved_loops, &usb.saved_loops) {
+        log::debug!("metadata_differs: saved_loops differ for {} ({} local vs {} usb)",
+            local.filename, local.saved_loops.len(), usb.saved_loops.len());
+        return true;
+    }
+
+    // Compare stem links (linked stems for prepared mode)
+    if !stem_links_equal(&local.stem_links, &usb.stem_links) {
+        log::debug!("metadata_differs: stem_links differ for {} ({} local vs {} usb)",
+            local.filename, local.stem_links.len(), usb.stem_links.len());
+        return true;
+    }
 
     false
+}
+
+/// Compare two cue point lists for equality (ignoring order)
+fn cue_points_equal(a: &[CuePoint], b: &[CuePoint]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    // Compare by index, sample_position, and label
+    for cue_a in a {
+        let found = b.iter().any(|cue_b| {
+            cue_a.index == cue_b.index
+                && cue_a.sample_position == cue_b.sample_position
+                && cue_a.label == cue_b.label
+        });
+        if !found {
+            return false;
+        }
+    }
+    true
+}
+
+/// Compare two saved loop lists for equality (ignoring order)
+fn saved_loops_equal(a: &[SavedLoop], b: &[SavedLoop]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    // Compare by index, start_sample, end_sample, and label
+    for loop_a in a {
+        let found = b.iter().any(|loop_b| {
+            loop_a.index == loop_b.index
+                && loop_a.start_sample == loop_b.start_sample
+                && loop_a.end_sample == loop_b.end_sample
+                && loop_a.label == loop_b.label
+        });
+        if !found {
+            return false;
+        }
+    }
+    true
+}
+
+/// Compare two stem link lists for equality (ignoring order)
+fn stem_links_equal(a: &[StemLink], b: &[StemLink]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    // Compare by stem_index and source_track_id (which stem slot links to which track)
+    for link_a in a {
+        let found = b.iter().any(|link_b| {
+            link_a.stem_index == link_b.stem_index
+                && link_a.source_track_id == link_b.source_track_id
+                && link_a.source_stem == link_b.source_stem
+        });
+        if !found {
+            return false;
+        }
+    }
+    true
 }
 
 /// Build a sync plan by comparing local state with USB state
@@ -633,6 +717,7 @@ mod tests {
                 db_track: None,
                 cue_points: Vec::new(),
                 saved_loops: Vec::new(),
+                stem_links: Vec::new(),
             },
         );
 
@@ -654,6 +739,7 @@ mod tests {
             db_track: None,
             cue_points: Vec::new(),
             saved_loops: Vec::new(),
+            stem_links: Vec::new(),
         };
 
         let mut local = CollectionState::default();
@@ -681,6 +767,7 @@ mod tests {
                 db_track: None,
                 cue_points: Vec::new(),
                 saved_loops: Vec::new(),
+                stem_links: Vec::new(),
             },
         );
 
@@ -695,6 +782,7 @@ mod tests {
                 db_track: None,
                 cue_points: Vec::new(),
                 saved_loops: Vec::new(),
+                stem_links: Vec::new(),
             },
         );
 
@@ -720,6 +808,7 @@ mod tests {
                 db_track: None,
                 cue_points: Vec::new(),
                 saved_loops: Vec::new(),
+                stem_links: Vec::new(),
             },
         );
 
@@ -734,6 +823,7 @@ mod tests {
                 db_track: None,
                 cue_points: Vec::new(),
                 saved_loops: Vec::new(),
+                stem_links: Vec::new(),
             },
         );
 
