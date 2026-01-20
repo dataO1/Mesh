@@ -405,7 +405,8 @@ impl MeshApp {
     }
 
     /// Handle a MIDI message by dispatching to existing message handlers
-    pub(crate) fn handle_midi_message(&mut self, msg: MidiMsg) {
+    /// Returns a Task that should be processed by the iced runtime (e.g., for scroll operations)
+    pub(crate) fn handle_midi_message(&mut self, msg: MidiMsg) -> Task<Message> {
         match msg {
             MidiMsg::Deck { deck, action } => {
                 // Map MIDI deck actions to existing DeckMessages
@@ -512,30 +513,32 @@ impl MeshApp {
             }
 
             MidiMsg::Browser(action) => {
-                match action {
+                return match action {
                     MidiBrowserAction::Scroll { delta } => {
-                        // Scroll the collection browser selection by delta
-                        let _ = self.update(Message::CollectionBrowser(
+                        // Scroll browser and return Task for auto-scroll
+                        self.update(Message::CollectionBrowser(
                             CollectionBrowserMessage::ScrollBy(delta),
-                        ));
+                        ))
                     }
                     MidiBrowserAction::Select => {
                         // Check if we're in stem link selection mode
                         if matches!(self.stem_link_state, StemLinkState::Selecting { .. }) {
                             // Confirm linked stem selection instead of loading track
                             self.confirm_stem_link_selection();
+                            Task::none()
                         } else {
                             // Normal: select current item (activates track -> loads to deck 0)
-                            let _ = self.update(Message::CollectionBrowser(
+                            self.update(Message::CollectionBrowser(
                                 CollectionBrowserMessage::SelectCurrent,
-                            ));
+                            ))
                         }
                     }
                     MidiBrowserAction::Back => {
                         // Could implement folder navigation back, for now just log
                         log::debug!("MIDI: Browser back (not implemented)");
+                        Task::none()
                     }
-                }
+                };
             }
 
             MidiMsg::Global(action) => {
@@ -568,6 +571,8 @@ impl MeshApp {
                 }
             }
         }
+
+        Task::none()
     }
 
     /// Subscribe to periodic updates and async results

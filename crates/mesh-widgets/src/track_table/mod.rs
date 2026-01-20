@@ -23,7 +23,79 @@ use std::sync::LazyLock;
 pub const TRACK_ROW_HEIGHT: f32 = 28.0;
 
 /// Scrollable ID for the track table (used for programmatic scrolling)
-pub static TRACK_TABLE_SCROLLABLE_ID: LazyLock<Id> = LazyLock::new(Id::unique);
+/// Uses a named ID for reliable matching in scroll operations
+pub static TRACK_TABLE_SCROLLABLE_ID: LazyLock<Id> = LazyLock::new(|| Id::new("mesh_track_table_scrollable"));
+
+/// Calculate scroll offset to keep selection centered in the viewport
+///
+/// This implements the following behavior:
+/// - Selection stays in the middle of visible tracks when possible
+/// - At top of list: don't scroll past 0, selection moves to top of view
+/// - At bottom of list: don't scroll past max, selection moves to bottom of view
+///
+/// # Arguments
+/// * `selected_index` - Index of the currently selected item (0-based)
+/// * `total_items` - Total number of items in the list
+/// * `visible_height` - Height of the visible viewport in pixels
+///
+/// # Returns
+/// The scroll offset (y position) in pixels
+pub fn calculate_scroll_offset_for_centered_selection(
+    selected_index: usize,
+    total_items: usize,
+    visible_height: f32,
+) -> f32 {
+    if total_items == 0 {
+        return 0.0;
+    }
+
+    let visible_rows = (visible_height / TRACK_ROW_HEIGHT).floor();
+    let total_content_height = total_items as f32 * TRACK_ROW_HEIGHT;
+    let max_scroll = (total_content_height - visible_height).max(0.0);
+
+    // Calculate offset to center the selection
+    let selected_y = selected_index as f32 * TRACK_ROW_HEIGHT;
+    let center_offset = (visible_rows / 2.0).floor() * TRACK_ROW_HEIGHT;
+    let target_scroll = selected_y - center_offset + TRACK_ROW_HEIGHT / 2.0;
+
+    // Clamp to valid scroll range [0, max_scroll]
+    target_scroll.clamp(0.0, max_scroll)
+}
+
+/// Create a Task to scroll the track table to keep selection centered
+///
+/// This is the recommended way to scroll after selection changes (e.g., encoder navigation).
+/// Uses `calculate_scroll_offset_for_centered_selection` internally.
+///
+/// # Arguments
+/// * `selected_index` - Index of the currently selected item
+/// * `total_items` - Total number of items in the list
+/// * `visible_height` - Height of the visible viewport in pixels
+///
+/// # Returns
+/// A Task that scrolls the track table to the calculated offset
+pub fn scroll_to_centered_selection<Message: 'static>(
+    selected_index: usize,
+    total_items: usize,
+    visible_height: f32,
+) -> iced::Task<Message> {
+    let target_y = calculate_scroll_offset_for_centered_selection(
+        selected_index,
+        total_items,
+        visible_height,
+    );
+
+    // Convert absolute offset to relative offset (0.0 = top, 1.0 = bottom)
+    let max_scroll = (total_items as f32 * TRACK_ROW_HEIGHT - visible_height).max(0.0);
+    let relative_y = if max_scroll > 0.0 {
+        (target_y / max_scroll).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+
+    let offset = iced::widget::operation::RelativeOffset { x: 0.0, y: relative_y };
+    iced::widget::operation::snap_to(TRACK_TABLE_SCROLLABLE_ID.clone(), offset)
+}
 
 /// Modifier keys held during a selection click
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

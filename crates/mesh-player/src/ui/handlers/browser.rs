@@ -5,7 +5,7 @@
 use iced::Task;
 
 use mesh_core::usb::UsbMessage as UsbMsg;
-use mesh_widgets::{TRACK_ROW_HEIGHT, TRACK_TABLE_SCROLLABLE_ID};
+use mesh_widgets::scroll_to_centered_selection;
 use crate::ui::app::MeshApp;
 use crate::ui::collection_browser::CollectionBrowserMessage;
 use crate::ui::message::Message;
@@ -39,25 +39,10 @@ pub fn handle_browser(app: &mut MeshApp, browser_msg: CollectionBrowserMessage) 
     // If it was a scroll, create a Task to auto-scroll the track list
     if is_scroll {
         if let Some(selected_idx) = app.collection_browser.get_selected_index() {
-            // Calculate scroll offset to keep selection centered in view
-            // Assume ~10 visible rows; center selection with some margin
-            let visible_rows = 10.0_f32;
-            let center_offset = (visible_rows / 2.0 - 1.0) * TRACK_ROW_HEIGHT;
-            let target_y = (selected_idx as f32 * TRACK_ROW_HEIGHT - center_offset)
-                .max(0.0);
-
-            // Create scroll operation
-            use iced::widget::scrollable;
-            let offset = scrollable::AbsoluteOffset { x: 0.0, y: target_y };
-            let scroll_id = TRACK_TABLE_SCROLLABLE_ID.clone();
-
-            // Use iced's widget operation system to scroll
-            return iced::advanced::widget::operate(
-                iced::advanced::widget::operation::scrollable::scroll_to(
-                    scroll_id.into(),
-                    offset.into(),
-                )
-            );
+            let total_tracks = app.collection_browser.track_count();
+            // Assumes ~280px visible height (10 rows at 28px each)
+            let visible_height = 280.0;
+            return scroll_to_centered_selection(selected_idx, total_tracks, visible_height);
         }
     }
 

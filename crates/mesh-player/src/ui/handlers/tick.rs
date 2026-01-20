@@ -24,8 +24,12 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
         .as_ref()
         .map(|m| m.drain().collect())
         .unwrap_or_default();
+
+    // Collect Tasks from MIDI message handling (most return Task::none, but scroll needs it)
+    let mut midi_tasks = Vec::new();
     for midi_msg in midi_messages {
-        app.handle_midi_message(midi_msg);
+        let task = app.handle_midi_message(midi_msg);
+        midi_tasks.push(task);
     }
 
     // MIDI Learn mode: capture raw events when waiting for input
@@ -365,5 +369,6 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
         controller.update_feedback(&feedback);
     }
 
-    Task::none()
+    // Return batched MIDI tasks (scroll operations need to be executed by iced runtime)
+    Task::batch(midi_tasks)
 }
