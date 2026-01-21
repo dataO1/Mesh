@@ -184,6 +184,17 @@
         # Library paths for runtime (excludes dev packages)
         libraryPath = pkgs.lib.makeLibraryPath runtimeInputs;
 
+        # Filter source to only include Rust files (prevents rebuilds when flake.nix changes)
+        rustSrc = pkgs.lib.cleanSourceWith {
+          src = ./.;
+          filter = path: type:
+            let baseName = builtins.baseNameOf path;
+            in (pkgs.lib.hasSuffix ".rs" baseName) ||
+               (pkgs.lib.hasSuffix ".toml" baseName) ||
+               (baseName == "Cargo.lock") ||
+               (type == "directory" && baseName != ".git" && baseName != "target" && baseName != "result" && baseName != ".direnv");
+        };
+
         # Common Cargo hash for buildRustPackage (update when Cargo.lock changes)
         cargoHash = "sha256-jMe47CJzn8W/fzTe0BNAUy+QsSMyeDSzp3866s67aeM=";
 
@@ -196,7 +207,7 @@
           mesh-player = pkgs.rustPlatform.buildRustPackage {
             pname = "mesh-player";
             version = "0.1.0";
-            src = ./.;
+            src = rustSrc;
 
             inherit cargoHash;
             cargoBuildFlags = [ "-p" "mesh-player" ];
@@ -256,7 +267,7 @@
           mesh-cue = pkgs.rustPlatform.buildRustPackage {
             pname = "mesh-cue";
             version = "0.1.0";
-            src = ./.;
+            src = rustSrc;
 
             inherit cargoHash;
             cargoBuildFlags = [ "-p" "mesh-cue" ];
@@ -348,7 +359,7 @@
           ]);
 
           shellHook = ''
-            # Rust
+            # Rust environment
             export RUST_BACKTRACE=1
 
             # Logging: only show mesh-* crate logs at info level, filter out noisy dependencies
@@ -406,24 +417,24 @@
             export VK_ICD_FILENAMES="${pkgs.vulkan-loader}/share/vulkan/icd.d/intel_icd.x86_64.json:${pkgs.vulkan-loader}/share/vulkan/icd.d/radeon_icd.x86_64.json"
 
             echo ""
-            echo "╔══════════════════════════════════════════════════════════════╗"
-            echo "║                  Mesh Development Shell                       ║"
-            echo "╠══════════════════════════════════════════════════════════════╣"
-            echo "║  Development:                                                ║"
-            echo "║    cargo run -p mesh-player      # DJ application            ║"
-            echo "║    cargo run -p mesh-cue         # Track preparation         ║"
-            echo "║    cargo test                    # Run all tests             ║"
-            echo "╠══════════════════════════════════════════════════════════════╣"
-            echo "║  Build AppImage:                                             ║"
-            echo "║    nix build .#mesh-player                                   ║"
-            echo "║    nix bundle --bundler .#default .#mesh-player \\            ║"
-            echo "║      -o mesh-player-x86_64.AppImage                          ║"
-            echo "╠══════════════════════════════════════════════════════════════╣"
-            echo "║  Release (after building AppImages locally):                 ║"
-            echo "║    git tag v0.1.0 && git push --tags                         ║"
-            echo "║    gh release upload v0.1.0 *.AppImage                       ║"
-            echo "║    gh release edit v0.1.0 --draft=false                      ║"
-            echo "╚══════════════════════════════════════════════════════════════╝"
+            echo "╔═══════════════════════════════════════════════════════════════════════╗"
+            echo "║                      Mesh Development Shell                           ║"
+            echo "╠═══════════════════════════════════════════════════════════════════════╣"
+            echo "║  Development:                                                         ║"
+            echo "║    cargo run -p mesh-player          # DJ application                 ║"
+            echo "║    cargo run -p mesh-cue             # Track preparation              ║"
+            echo "║    cargo test                        # Run all tests                  ║"
+            echo "╠═══════════════════════════════════════════════════════════════════════╣"
+            echo "║  Build AppImages (into target/appimage/):                             ║"
+            echo "║    mkdir -p target/appimage                                           ║"
+            echo "║    nix bundle --bundler .# .#mesh-player -o target/appimage/mesh-player"
+            echo "║    nix bundle --bundler .# .#mesh-cue -o target/appimage/mesh-cue     ║"
+            echo "╠═══════════════════════════════════════════════════════════════════════╣"
+            echo "║  Release (GitHub web UI):                                             ║"
+            echo "║    1. git tag v0.1.0 && git push --tags                               ║"
+            echo "║    2. Go to: https://github.com/OWNER/mesh/releases/new               ║"
+            echo "║    3. Select tag, drag & drop AppImages from target/appimage/, publish║"
+            echo "╚═══════════════════════════════════════════════════════════════════════╝"
             echo ""
           '';
         };
