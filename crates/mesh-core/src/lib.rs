@@ -5,7 +5,7 @@ pub mod types;
 pub mod effect;
 pub mod audio_file;
 pub mod timestretch;
-pub mod pd;
+// pub mod pd;  // Disabled: requires libffi which has build issues with naersk
 pub mod engine;
 pub mod playlist;
 pub mod music;

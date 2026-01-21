@@ -6,7 +6,7 @@ edition.workspace = true
 [dependencies]
 rtrb.workspace = true
 signalsmith-stretch.workspace = true
-libpd-rs.workspace = true
+# libpd-rs.workspace = true  # Disabled: requires libffi which has build issues with naersk
 serde.workspace = true
 serde_yaml.workspace = true
 anyhow.workspace = true

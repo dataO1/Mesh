@@ -85,7 +85,7 @@
             chromaprint
             libsamplerate
             libyaml
-            ffmpeg_4  # Essentia needs deprecated FFmpeg APIs (removed in FFmpeg 5+)
+            ffmpeg_4-headless  # Headless: no SDL/GUI deps (~700MB smaller closure)
             zlib      # Required for linking
           ];
 
@@ -117,9 +117,8 @@
           };
         };
 
-        # Common native dependencies
+        # Common native dependencies for building
         nativeBuildInputs = with pkgs; [
-          rustToolchain
           pkg-config
           cmake
           gcc
@@ -128,18 +127,23 @@
           autoconf
           automake
           libtool
+          gnumake
+          removeReferencesTo
         ];
 
         # Runtime dependencies (included in AppImage RPATH)
         runtimeInputs = with pkgs; [
-          # Audio
-          jack2
+          # Core runtime (C++ stdlib needed by many deps)
+          stdenv.cc.cc.lib  # libstdc++.so.6
+
+          # Audio (libjack2 = client library only, no Python/FireWire bloat)
+          libjack2
           alsa-lib
           pipewire
           pipewire.jack  # PipeWire JACK compatibility for AppImage distribution
 
-          # Pure Data (libpd-rs builds libpd from source)
-          puredata
+          # Pure Data disabled - libpd-rs has build issues with naersk (libffi autoconf)
+          # puredata
 
           # GUI (iced dependencies)
           wayland
@@ -153,21 +157,35 @@
 
           # Misc
           openssl
-          libffi
+          # libffi  # Only needed for libpd-rs (disabled)
         ];
 
         # Build-time only dependencies (NOT included in AppImage)
         buildOnlyInputs = with pkgs; [
-          libffi.dev   # pkg-config for libffi-sys
+          # libffi.dev   # Only needed for libpd-rs (disabled)
           glibc.dev    # Headers for cc-rs crates
         ];
 
-        # Combined for buildRustPackage (build needs both)
+        # Combined build inputs
         buildInputs = runtimeInputs ++ buildOnlyInputs;
+
+        # Essentia and its dependencies (shared between both packages)
+        essentiaInputs = [ essentia ] ++ (with pkgs; [
+          eigen
+          fftwFloat
+          taglib
+          chromaprint
+          libsamplerate
+          libyaml
+          ffmpeg_4-headless  # Headless: no SDL/GUI deps
+          zlib
+        ]);
 
         # Library paths for runtime (excludes dev packages)
         libraryPath = pkgs.lib.makeLibraryPath runtimeInputs;
 
+        # Common Cargo hash for buildRustPackage (update when Cargo.lock changes)
+        cargoHash = "sha256-jMe47CJzn8W/fzTe0BNAUy+QsSMyeDSzp3866s67aeM=";
 
       in
       {
@@ -180,85 +198,37 @@
             version = "0.1.0";
             src = ./.;
 
-            cargoLock = {
-              lockFile = ./Cargo.lock;
-            };
+            inherit cargoHash;
+            cargoBuildFlags = [ "-p" "mesh-player" ];
 
-            # bindgenHook handles LIBCLANG_PATH and helps bindgen find libraries
-            nativeBuildInputs = nativeBuildInputs ++ [
-              pkgs.rustPlatform.bindgenHook
-              pkgs.removeReferencesTo  # Remove Rust toolchain references from binary
-            ];
+            nativeBuildInputs = nativeBuildInputs;
+            buildInputs = buildInputs ++ essentiaInputs;
 
-            # Prevent accidental Rust toolchain in closure (build will fail if present)
+            # Environment variables for essentia and FFI crates
+            USE_TENSORFLOW = "0";
+            CPLUS_INCLUDE_PATH = "${pkgs.eigen}/include/eigen3:${essentia}/include";
+            LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+            PKG_CONFIG_PATH = "${essentia}/lib/pkgconfig";
+            CC = "${pkgs.clang}/bin/clang";
+            CXX = "${pkgs.clang}/bin/clang++";
+            LDFLAGS = "-L${pkgs.glibc}/lib -L${pkgs.gcc.cc.lib}/lib";
+            CFLAGS = "-idirafter ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/19/include";
+            CXXFLAGS = "-isystem ${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version} -isystem ${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version}/x86_64-unknown-linux-gnu -idirafter ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/19/include";
+            MAKE = "${pkgs.gnumake}/bin/make";
+
+            # Strip Nix store paths from binary to reduce closure size
+            RUSTFLAGS = "--remap-path-prefix=/nix/store=nix";
+
+            # Prevent accidental Rust toolchain in closure
             disallowedReferences = [ rustToolchain ];
 
-            # mesh-player needs essentia via mesh-core dependency
-            buildInputs = buildInputs ++ [ essentia ] ++ (with pkgs; [
-              eigen
-              fftwFloat
-              taglib
-              chromaprint
-              libsamplerate
-              libyaml
-              ffmpeg_4  # Essentia needs deprecated FFmpeg APIs
-              zlib
-            ]);
-
-            # Disable TensorFlow in essentia-sys
-            USE_TENSORFLOW = "0";
-
-            # Fix Eigen include path for essentia-sys (it incorrectly appends /eigen3)
-            # Also add essentia's parent include dir so <essentia/pool.h> resolves correctly
-            CPLUS_INCLUDE_PATH = "${pkgs.eigen}/include/eigen3:${essentia}/include";
-
-            preBuild = ''
-              # Required by libffi-sys: ensure GNU make is available and used
-              export PATH="${pkgs.gnumake}/bin:$PATH"
-              export MAKE="${pkgs.gnumake}/bin/make"
-
-              # Explicitly use Nix-wrapped clang which has proper system paths
-              export CC="${pkgs.clang}/bin/clang"
-              export CXX="${pkgs.clang}/bin/clang++"
-
-              # Linker flags for autotools builds (libffi-sys configure)
-              export LDFLAGS="-L${pkgs.glibc}/lib -L${pkgs.gcc.cc.lib}/lib"
-
-              # C/C++ headers for cc-rs crates
-              export CFLAGS="-idirafter ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/19/include"
-              export CXXFLAGS="-isystem ${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version} -isystem ${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version}/x86_64-unknown-linux-gnu -idirafter ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/19/include"
-
-              # pkg-config paths for essentia
-              export PKG_CONFIG_PATH="${essentia}/lib/pkgconfig:$PKG_CONFIG_PATH"
-
-              # Remove /nix/store paths from panic messages to prevent Rust toolchain closure reference
-              # Remap the entire store path (including hash) to a short string
-              # This prevents Nix from detecting the hash and adding rust to the closure
-              export RUSTFLAGS="--remap-path-prefix=$NIX_STORE=. $RUSTFLAGS"
-            '';
-
-            # Skip tests in nix build (run them separately with cargo test)
-            doCheck = false;
-
-            buildPhase = ''
-              runHook preBuild
-              cargo build --release -p mesh-player
-              runHook postBuild
-            '';
-
-            installPhase = ''
-              runHook preInstall
-
-              mkdir -p $out/bin
-              cp target/release/mesh-player $out/bin/
-
+            # Post-install: copy additional files and remove toolchain references
+            postInstall = ''
               # Install PD effects and externals
               mkdir -p $out/share/mesh/effects/pd/externals
               if [ -d effects/pd ]; then
                 cp -r effects/pd/* $out/share/mesh/effects/pd/
               fi
-              # nn-external is optional and requires manual build
-              # To enable RAVE effects, build nn-external separately and copy to externals
 
               # Install RAVE models if present
               if [ -d rave/rave-models ]; then
@@ -266,20 +236,18 @@
                 cp -r rave/rave-models/* $out/share/mesh/rave-models/
               fi
 
-              # Remove embedded Rust toolchain paths from binary (panic messages, etc.)
-              # This prevents Nix from adding ~2GB rustc to the runtime closure
+              # Remove embedded Rust toolchain paths from binary
               remove-references-to -t ${rustToolchain} $out/bin/mesh-player
-
-              runHook postInstall
             '';
 
+            # Fix RPATH to only include runtime libraries
             postFixup = ''
-              # Use only runtime libraries in RPATH (excludes dev packages and build tools)
               patchelf --set-rpath "${pkgs.lib.makeLibraryPath (runtimeInputs ++ [ essentia ])}:${essentia}/lib" $out/bin/mesh-player
             '';
 
             meta = with pkgs.lib; {
               description = "Mesh DJ Player - 4-deck stem-based mixing with neural effects";
+              mainProgram = "mesh-player";
               license = licenses.agpl3Plus;
               platforms = platforms.linux;
             };
@@ -290,92 +258,43 @@
             version = "0.1.0";
             src = ./.;
 
-            cargoLock = {
-              lockFile = ./Cargo.lock;
-            };
+            inherit cargoHash;
+            cargoBuildFlags = [ "-p" "mesh-cue" ];
 
-            # bindgenHook handles LIBCLANG_PATH and helps bindgen find libraries
-            nativeBuildInputs = nativeBuildInputs ++ [
-              pkgs.rustPlatform.bindgenHook
-              pkgs.removeReferencesTo  # Remove Rust toolchain references from binary
-            ];
+            nativeBuildInputs = nativeBuildInputs;
+            buildInputs = buildInputs ++ essentiaInputs;
 
-            # Prevent accidental Rust toolchain in closure (build will fail if present)
+            # Environment variables for essentia and FFI crates
+            USE_TENSORFLOW = "0";
+            CPLUS_INCLUDE_PATH = "${pkgs.eigen}/include/eigen3:${essentia}/include";
+            LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+            PKG_CONFIG_PATH = "${essentia}/lib/pkgconfig";
+            CC = "${pkgs.clang}/bin/clang";
+            CXX = "${pkgs.clang}/bin/clang++";
+            LDFLAGS = "-L${pkgs.glibc}/lib -L${pkgs.gcc.cc.lib}/lib";
+            CFLAGS = "-idirafter ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/19/include";
+            CXXFLAGS = "-isystem ${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version} -isystem ${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version}/x86_64-unknown-linux-gnu -idirafter ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/19/include";
+            MAKE = "${pkgs.gnumake}/bin/make";
+
+            # Strip Nix store paths from binary to reduce closure size
+            RUSTFLAGS = "--remap-path-prefix=/nix/store=nix";
+
+            # Prevent accidental Rust toolchain in closure
             disallowedReferences = [ rustToolchain ];
 
-            # mesh-cue needs essentia library and its dependencies
-            buildInputs = buildInputs ++ [ essentia ] ++ (with pkgs; [
-              eigen
-              fftwFloat
-              taglib
-              chromaprint
-              libsamplerate
-              libyaml
-              ffmpeg_4  # Essentia needs deprecated FFmpeg APIs (removed in FFmpeg 5+)
-              zlib      # Required for linking
-            ]);
-
-            # Disable TensorFlow in essentia-sys
-            USE_TENSORFLOW = "0";
-
-            # Fix Eigen include path for essentia-sys (it incorrectly appends /eigen3)
-            # Also add essentia's parent include dir so <essentia/pool.h> resolves correctly
-            CPLUS_INCLUDE_PATH = "${pkgs.eigen}/include/eigen3:${essentia}/include";
-
-            preBuild = ''
-              # Required by libffi-sys: ensure GNU make is available and used
-              export PATH="${pkgs.gnumake}/bin:$PATH"
-              export MAKE="${pkgs.gnumake}/bin/make"
-
-              # Explicitly use Nix-wrapped clang which has proper system paths
-              export CC="${pkgs.clang}/bin/clang"
-              export CXX="${pkgs.clang}/bin/clang++"
-
-              # Linker flags for autotools builds (libffi-sys configure)
-              export LDFLAGS="-L${pkgs.glibc}/lib -L${pkgs.gcc.cc.lib}/lib"
-
-              # C/C++ headers for cc-rs crates
-              export CFLAGS="-idirafter ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/19/include"
-              export CXXFLAGS="-isystem ${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version} -isystem ${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version}/x86_64-unknown-linux-gnu -idirafter ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/19/include"
-
-              # pkg-config paths for essentia
-              export PKG_CONFIG_PATH="${essentia}/lib/pkgconfig:$PKG_CONFIG_PATH"
-
-              # Remove /nix/store paths from panic messages to prevent Rust toolchain closure reference
-              # Remap the entire store path (including hash) to a short string
-              # This prevents Nix from detecting the hash and adding rust to the closure
-              export RUSTFLAGS="--remap-path-prefix=$NIX_STORE=. $RUSTFLAGS"
-            '';
-
-            # Skip tests in nix build (run them separately with cargo test)
-            doCheck = false;
-
-            buildPhase = ''
-              runHook preBuild
-              cargo build --release -p mesh-cue
-              runHook postBuild
-            '';
-
-            installPhase = ''
-              runHook preInstall
-
-              mkdir -p $out/bin
-              cp target/release/mesh-cue $out/bin/
-
-              # Remove embedded Rust toolchain paths from binary (panic messages, etc.)
-              # This prevents Nix from adding ~2GB rustc to the runtime closure
+            # Remove toolchain references
+            postInstall = ''
               remove-references-to -t ${rustToolchain} $out/bin/mesh-cue
-
-              runHook postInstall
             '';
 
+            # Fix RPATH
             postFixup = ''
-              # Use only runtime libraries in RPATH (excludes dev packages and build tools)
               patchelf --set-rpath "${pkgs.lib.makeLibraryPath (runtimeInputs ++ [ essentia ])}:${essentia}/lib" $out/bin/mesh-cue
             '';
 
             meta = with pkgs.lib; {
               description = "Mesh Cue Software - Track preparation and playlist management";
+              mainProgram = "mesh-cue";
               license = licenses.agpl3Plus;
               platforms = platforms.linux;
             };
@@ -401,7 +320,7 @@
             chromaprint
             libsamplerate
             libyaml
-            ffmpeg_4  # Essentia needs deprecated FFmpeg APIs (removed in FFmpeg 5+)
+            ffmpeg_4-headless  # Headless: no SDL/GUI deps (~700MB smaller closure)
             zlib      # Required for linking
 
             # Development tools
