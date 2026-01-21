@@ -761,14 +761,16 @@ impl MeshDomain {
         host_duration: u64,
     ) -> bool {
         if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::LoadLinkedStem {
-                deck,
-                stem_idx,
-                path,
-                host_bpm,
-                host_drop_marker,
-                host_duration,
-            });
+            let _ = sender.send(EngineCommand::LoadLinkedStem(Box::new(
+                mesh_core::engine::LoadLinkedStemRequest {
+                    deck,
+                    stem_idx,
+                    path,
+                    host_bpm,
+                    host_drop_marker,
+                    host_duration,
+                },
+            )));
             true
         } else {
             false

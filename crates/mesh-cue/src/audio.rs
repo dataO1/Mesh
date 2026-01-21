@@ -266,14 +266,16 @@ impl AudioState {
         host_drop_marker: u64,
         host_duration: u64,
     ) {
-        self.send(EngineCommand::LoadLinkedStem {
-            deck: PREVIEW_DECK,
-            stem_idx,
-            path,
-            host_bpm,
-            host_drop_marker,
-            host_duration,
-        });
+        self.send(EngineCommand::LoadLinkedStem(Box::new(
+            mesh_core::engine::LoadLinkedStemRequest {
+                deck: PREVIEW_DECK,
+                stem_idx,
+                path,
+                host_bpm,
+                host_drop_marker,
+                host_duration,
+            },
+        )));
     }
 
     // ─────────────────────────────────────────────────────────────────────────

@@ -896,19 +896,19 @@ impl AudioEngine {
                         log::warn!("[STEM_TOGGLE] Deck {} not found!", deck);
                     }
                 }
-                EngineCommand::LoadLinkedStem { deck, stem_idx, path, host_bpm, host_drop_marker, host_duration } => {
+                EngineCommand::LoadLinkedStem(req) => {
                     // Manual stem linking request from UI - route through our loader
                     log::info!(
                         "Engine received LoadLinkedStem: deck={}, stem={}, path={:?}",
-                        deck, stem_idx, path.file_name()
+                        req.deck, req.stem_idx, req.path.file_name()
                     );
                     if let Err(e) = self.linked_stem_loader.load_linked_stem(
-                        deck,
-                        stem_idx,
-                        path,
-                        host_bpm,
-                        host_drop_marker,
-                        host_duration,
+                        req.deck,
+                        req.stem_idx,
+                        req.path,
+                        req.host_bpm,
+                        req.host_drop_marker,
+                        req.host_duration,
                     ) {
                         log::error!("Failed to queue linked stem load: {}", e);
                     }

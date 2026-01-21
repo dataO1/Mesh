@@ -40,6 +40,19 @@ use super::{LinkedStemData, PreparedTrack};
 use super::slicer::{SlicerPreset, StepSequence};
 use crate::types::Stem;
 
+/// Request data for loading a linked stem from a file path
+///
+/// Separated into a struct so it can be boxed in the command enum,
+/// keeping the enum size small for cache-efficient lock-free queueing.
+pub struct LoadLinkedStemRequest {
+    pub deck: usize,
+    pub stem_idx: usize,
+    pub path: std::path::PathBuf,
+    pub host_bpm: f64,
+    pub host_drop_marker: u64,
+    pub host_duration: u64,
+}
+
 /// Commands sent from UI thread to audio thread
 ///
 /// Each variant represents an atomic operation on the engine.
@@ -212,14 +225,10 @@ pub enum EngineCommand {
     /// (both automatic from metadata and manual from this command).
     ///
     /// Results are delivered via the LinkedStemResultReceiver.
-    LoadLinkedStem {
-        deck: usize,
-        stem_idx: usize,
-        path: std::path::PathBuf,
-        host_bpm: f64,
-        host_drop_marker: u64,
-        host_duration: u64,
-    },
+    ///
+    /// Boxed because LoadLinkedStemRequest contains PathBuf (24 bytes) plus
+    /// multiple fields, totaling 64 bytes - too large for cache-efficient queueing.
+    LoadLinkedStem(Box<LoadLinkedStemRequest>),
 
     // ─────────────────────────────────────────────────────────────
     // Mixer Control
@@ -327,9 +336,10 @@ mod tests {
 
     #[test]
     fn test_command_size() {
-        // Ensure EngineCommand stays small for cache efficiency in the ringbuffer
-        // SlicerLoadPreset with [u8; 16] is the largest variant at 40 bytes
-        // This still fits comfortably within a 64-byte cache line
+        // Ensure EngineCommand stays small for cache efficiency in the ringbuffer.
+        // Largest variants are SetBeatGrid/SetTrackKey (deck + Vec/String = 32 bytes).
+        // Large data like LoadLinkedStemRequest (64 bytes) must be boxed.
+        // This still fits comfortably within a 64-byte cache line.
         let size = std::mem::size_of::<EngineCommand>();
         assert!(size <= 40, "EngineCommand is {} bytes, expected <= 40", size);
     }
