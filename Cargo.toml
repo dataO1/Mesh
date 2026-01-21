@@ -32,7 +32,6 @@ rayon = ">=1.9,<1.10"  # Pinned for graph_builder 0.4.1 compatibility (rayon 1.1
 
 # mesh-cue dependencies
 essentia = "0.1.5"
-rfd = "0.15"
 anyhow = "1.0"
 thiserror = { version = "2.0", default-features = false, features = ["std"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -45,9 +44,9 @@ dirs = "5.0"
 opt-level = 1
 
 # Release profile optimized for distribution
-# Strips debug info to remove Rust source paths from binary (saves ~2GB in AppImage closure)
+# Use RUSTFLAGS="--remap-path-prefix=/nix/store=nix" to remove Nix paths
 [profile.release]
-strip = "symbols"      # Strip debug symbols (removes Rust source paths)
+strip = "symbols"      # Strip debug symbols
 lto = "thin"           # Link-Time Optimization for smaller binaries
 panic = "abort"        # Smaller binary, no unwinding overhead
 codegen-units = 1      # Better optimization, slower compile
