@@ -226,6 +226,10 @@
 
               # pkg-config paths for essentia
               export PKG_CONFIG_PATH="${essentia}/lib/pkgconfig:$PKG_CONFIG_PATH"
+
+              # Remove /nix/store paths from panic messages to prevent Rust toolchain closure reference
+              # This saves ~2GB in AppImage size by not bundling rust-docs, rustc, etc.
+              export RUSTFLAGS="--remap-path-prefix=/nix/store=nix $RUSTFLAGS"
             '';
 
             # Skip tests in nix build (run them separately with cargo test)
@@ -319,6 +323,10 @@
 
               # pkg-config paths for essentia
               export PKG_CONFIG_PATH="${essentia}/lib/pkgconfig:$PKG_CONFIG_PATH"
+
+              # Remove /nix/store paths from panic messages to prevent Rust toolchain closure reference
+              # This saves ~2GB in AppImage size by not bundling rust-docs, rustc, etc.
+              export RUSTFLAGS="--remap-path-prefix=/nix/store=nix $RUSTFLAGS"
             '';
 
             # Skip tests in nix build (run them separately with cargo test)
@@ -456,16 +464,20 @@
             echo "╔══════════════════════════════════════════════════════════════╗"
             echo "║                  Mesh Development Shell                       ║"
             echo "╠══════════════════════════════════════════════════════════════╣"
-            echo "║  mesh-player (DJ application):                               ║"
-            echo "║    cargo build -p mesh-player                                ║"
-            echo "║    cargo run -p mesh-player                                  ║"
+            echo "║  Development:                                                ║"
+            echo "║    cargo run -p mesh-player      # DJ application            ║"
+            echo "║    cargo run -p mesh-cue         # Track preparation         ║"
+            echo "║    cargo test                    # Run all tests             ║"
             echo "╠══════════════════════════════════════════════════════════════╣"
-            echo "║  mesh-cue (track preparation):                               ║"
-            echo "║    cargo build -p mesh-cue                                   ║"
-            echo "║    cargo run -p mesh-cue                                     ║"
+            echo "║  Build AppImage:                                             ║"
+            echo "║    nix build .#mesh-player                                   ║"
+            echo "║    nix bundle --bundler .#default .#mesh-player \\            ║"
+            echo "║      -o mesh-player-x86_64.AppImage                          ║"
             echo "╠══════════════════════════════════════════════════════════════╣"
-            echo "║  cargo test          - run all tests                         ║"
-            echo "║  cargo watch -x ...  - auto-rebuild on changes               ║"
+            echo "║  Release (after building AppImages locally):                 ║"
+            echo "║    git tag v0.1.0 && git push --tags                         ║"
+            echo "║    gh release upload v0.1.0 *.AppImage                       ║"
+            echo "║    gh release edit v0.1.0 --draft=false                      ║"
             echo "╚══════════════════════════════════════════════════════════════╝"
             echo ""
           '';
