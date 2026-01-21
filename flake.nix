@@ -187,7 +187,11 @@
             # bindgenHook handles LIBCLANG_PATH and helps bindgen find libraries
             nativeBuildInputs = nativeBuildInputs ++ [
               pkgs.rustPlatform.bindgenHook
+              pkgs.removeReferencesTo  # Remove Rust toolchain references from binary
             ];
+
+            # Prevent accidental Rust toolchain in closure (build will fail if present)
+            disallowedReferences = [ rustToolchain ];
 
             # mesh-player needs essentia via mesh-core dependency
             buildInputs = buildInputs ++ [ essentia ] ++ (with pkgs; [
@@ -228,8 +232,9 @@
               export PKG_CONFIG_PATH="${essentia}/lib/pkgconfig:$PKG_CONFIG_PATH"
 
               # Remove /nix/store paths from panic messages to prevent Rust toolchain closure reference
-              # This saves ~2GB in AppImage size by not bundling rust-docs, rustc, etc.
-              export RUSTFLAGS="--remap-path-prefix=/nix/store=nix $RUSTFLAGS"
+              # Remap the entire store path (including hash) to a short string
+              # This prevents Nix from detecting the hash and adding rust to the closure
+              export RUSTFLAGS="--remap-path-prefix=$NIX_STORE=. $RUSTFLAGS"
             '';
 
             # Skip tests in nix build (run them separately with cargo test)
@@ -242,6 +247,8 @@
             '';
 
             installPhase = ''
+              runHook preInstall
+
               mkdir -p $out/bin
               cp target/release/mesh-player $out/bin/
 
@@ -258,6 +265,12 @@
                 mkdir -p $out/share/mesh/rave-models
                 cp -r rave/rave-models/* $out/share/mesh/rave-models/
               fi
+
+              # Remove embedded Rust toolchain paths from binary (panic messages, etc.)
+              # This prevents Nix from adding ~2GB rustc to the runtime closure
+              remove-references-to -t ${rustToolchain} $out/bin/mesh-player
+
+              runHook postInstall
             '';
 
             postFixup = ''
@@ -284,7 +297,11 @@
             # bindgenHook handles LIBCLANG_PATH and helps bindgen find libraries
             nativeBuildInputs = nativeBuildInputs ++ [
               pkgs.rustPlatform.bindgenHook
+              pkgs.removeReferencesTo  # Remove Rust toolchain references from binary
             ];
+
+            # Prevent accidental Rust toolchain in closure (build will fail if present)
+            disallowedReferences = [ rustToolchain ];
 
             # mesh-cue needs essentia library and its dependencies
             buildInputs = buildInputs ++ [ essentia ] ++ (with pkgs; [
@@ -325,8 +342,9 @@
               export PKG_CONFIG_PATH="${essentia}/lib/pkgconfig:$PKG_CONFIG_PATH"
 
               # Remove /nix/store paths from panic messages to prevent Rust toolchain closure reference
-              # This saves ~2GB in AppImage size by not bundling rust-docs, rustc, etc.
-              export RUSTFLAGS="--remap-path-prefix=/nix/store=nix $RUSTFLAGS"
+              # Remap the entire store path (including hash) to a short string
+              # This prevents Nix from detecting the hash and adding rust to the closure
+              export RUSTFLAGS="--remap-path-prefix=$NIX_STORE=. $RUSTFLAGS"
             '';
 
             # Skip tests in nix build (run them separately with cargo test)
@@ -339,8 +357,16 @@
             '';
 
             installPhase = ''
+              runHook preInstall
+
               mkdir -p $out/bin
               cp target/release/mesh-cue $out/bin/
+
+              # Remove embedded Rust toolchain paths from binary (panic messages, etc.)
+              # This prevents Nix from adding ~2GB rustc to the runtime closure
+              remove-references-to -t ${rustToolchain} $out/bin/mesh-cue
+
+              runHook postInstall
             '';
 
             postFixup = ''
