@@ -43,3 +43,11 @@ dirs = "5.0"
 # This speeds up audio loading from 6.8s to ~1s without affecting compile times much
 [profile.dev.package.mesh-core]
 opt-level = 1
+
+# Release profile optimized for distribution
+# Strips debug info to remove Rust source paths from binary (saves ~2GB in AppImage closure)
+[profile.release]
+strip = "symbols"      # Strip debug symbols (removes Rust source paths)
+lto = "thin"           # Link-Time Optimization for smaller binaries
+panic = "abort"        # Smaller binary, no unwinding overhead
+codegen-units = 1      # Better optimization, slower compile

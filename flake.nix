@@ -130,8 +130,8 @@
           libtool
         ];
 
-        # Runtime and build dependencies
-        buildInputs = with pkgs; [
+        # Runtime dependencies (included in AppImage RPATH)
+        runtimeInputs = with pkgs; [
           # Audio
           jack2
           alsa-lib
@@ -140,9 +140,6 @@
 
           # Pure Data (libpd-rs builds libpd from source)
           puredata
-
-          # ML/Neural (for nn~ and RAVE)
-          libtorch-bin
 
           # GUI (iced dependencies)
           wayland
@@ -157,12 +154,19 @@
           # Misc
           openssl
           libffi
-          libffi.dev  # pkg-config for libffi-sys
-          glibc.dev
         ];
 
-        # Library paths for runtime
-        libraryPath = pkgs.lib.makeLibraryPath buildInputs;
+        # Build-time only dependencies (NOT included in AppImage)
+        buildOnlyInputs = with pkgs; [
+          libffi.dev   # pkg-config for libffi-sys
+          glibc.dev    # Headers for cc-rs crates
+        ];
+
+        # Combined for buildRustPackage (build needs both)
+        buildInputs = runtimeInputs ++ buildOnlyInputs;
+
+        # Library paths for runtime (excludes dev packages)
+        libraryPath = pkgs.lib.makeLibraryPath runtimeInputs;
 
 
       in
@@ -253,7 +257,8 @@
             '';
 
             postFixup = ''
-              patchelf --set-rpath "${pkgs.lib.makeLibraryPath (buildInputs ++ [ essentia ])}:${essentia}/lib" $out/bin/mesh-player
+              # Use only runtime libraries in RPATH (excludes dev packages and build tools)
+              patchelf --set-rpath "${pkgs.lib.makeLibraryPath (runtimeInputs ++ [ essentia ])}:${essentia}/lib" $out/bin/mesh-player
             '';
 
             meta = with pkgs.lib; {
@@ -331,7 +336,8 @@
             '';
 
             postFixup = ''
-              patchelf --set-rpath "${pkgs.lib.makeLibraryPath (buildInputs ++ [ essentia ])}" $out/bin/mesh-cue
+              # Use only runtime libraries in RPATH (excludes dev packages and build tools)
+              patchelf --set-rpath "${pkgs.lib.makeLibraryPath (runtimeInputs ++ [ essentia ])}:${essentia}/lib" $out/bin/mesh-cue
             '';
 
             meta = with pkgs.lib; {
