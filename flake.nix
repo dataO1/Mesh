@@ -123,8 +123,8 @@
           pkg-config
           cmake
           gcc
-          llvmPackages.libclang
-          llvmPackages.clang
+          llvmPackages.libclang  # For bindgen (LIBCLANG_PATH)
+          clang                   # Nix-wrapped clang for C/C++ compilation
           autoconf
           automake
           libtool
@@ -157,6 +157,7 @@
           # Misc
           openssl
           libffi
+          libffi.dev  # pkg-config for libffi-sys
           glibc.dev
         ];
 
@@ -167,7 +168,8 @@
       in
       {
         packages = {
-          nn-external = nn-external;
+          # nn-external is disabled - requires fixing submodules in nn-tilde
+          # nn-external = nn-external;
 
           mesh-player = pkgs.rustPlatform.buildRustPackage {
             pname = "mesh-player";
@@ -178,10 +180,57 @@
               lockFile = ./Cargo.lock;
             };
 
-            inherit nativeBuildInputs buildInputs;
+            # bindgenHook handles LIBCLANG_PATH and helps bindgen find libraries
+            nativeBuildInputs = nativeBuildInputs ++ [
+              pkgs.rustPlatform.bindgenHook
+            ];
+
+            # mesh-player needs essentia via mesh-core dependency
+            buildInputs = buildInputs ++ [ essentia ] ++ (with pkgs; [
+              eigen
+              fftwFloat
+              taglib
+              chromaprint
+              libsamplerate
+              libyaml
+              ffmpeg_4  # Essentia needs deprecated FFmpeg APIs
+              zlib
+            ]);
+
+            # Disable TensorFlow in essentia-sys
+            USE_TENSORFLOW = "0";
+
+            # Fix Eigen include path for essentia-sys (it incorrectly appends /eigen3)
+            # Also add essentia's parent include dir so <essentia/pool.h> resolves correctly
+            CPLUS_INCLUDE_PATH = "${pkgs.eigen}/include/eigen3:${essentia}/include";
+
+            preBuild = ''
+              # Required by libffi-sys: ensure GNU make is available and used
+              export PATH="${pkgs.gnumake}/bin:$PATH"
+              export MAKE="${pkgs.gnumake}/bin/make"
+
+              # Explicitly use Nix-wrapped clang which has proper system paths
+              export CC="${pkgs.clang}/bin/clang"
+              export CXX="${pkgs.clang}/bin/clang++"
+
+              # Linker flags for autotools builds (libffi-sys configure)
+              export LDFLAGS="-L${pkgs.glibc}/lib -L${pkgs.gcc.cc.lib}/lib"
+
+              # C/C++ headers for cc-rs crates
+              export CFLAGS="-idirafter ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/19/include"
+              export CXXFLAGS="-isystem ${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version} -isystem ${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version}/x86_64-unknown-linux-gnu -idirafter ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/19/include"
+
+              # pkg-config paths for essentia
+              export PKG_CONFIG_PATH="${essentia}/lib/pkgconfig:$PKG_CONFIG_PATH"
+            '';
+
+            # Skip tests in nix build (run them separately with cargo test)
+            doCheck = false;
 
             buildPhase = ''
+              runHook preBuild
               cargo build --release -p mesh-player
+              runHook postBuild
             '';
 
             installPhase = ''
@@ -193,8 +242,8 @@
               if [ -d effects/pd ]; then
                 cp -r effects/pd/* $out/share/mesh/effects/pd/
               fi
-              # nn-external is optional; install if built
-              # cp ${nn-external}/lib/pd-externals/* $out/share/mesh/effects/pd/externals/ || true
+              # nn-external is optional and requires manual build
+              # To enable RAVE effects, build nn-external separately and copy to externals
 
               # Install RAVE models if present
               if [ -d rave/rave-models ]; then
@@ -204,7 +253,7 @@
             '';
 
             postFixup = ''
-              patchelf --set-rpath "${libraryPath}" $out/bin/mesh-player
+              patchelf --set-rpath "${pkgs.lib.makeLibraryPath (buildInputs ++ [ essentia ])}:${essentia}/lib" $out/bin/mesh-player
             '';
 
             meta = with pkgs.lib; {
@@ -223,7 +272,10 @@
               lockFile = ./Cargo.lock;
             };
 
-            inherit nativeBuildInputs;
+            # bindgenHook handles LIBCLANG_PATH and helps bindgen find libraries
+            nativeBuildInputs = nativeBuildInputs ++ [
+              pkgs.rustPlatform.bindgenHook
+            ];
 
             # mesh-cue needs essentia library and its dependencies
             buildInputs = buildInputs ++ [ essentia ] ++ (with pkgs; [
@@ -240,12 +292,37 @@
             # Disable TensorFlow in essentia-sys
             USE_TENSORFLOW = "0";
 
+            # Fix Eigen include path for essentia-sys (it incorrectly appends /eigen3)
+            # Also add essentia's parent include dir so <essentia/pool.h> resolves correctly
+            CPLUS_INCLUDE_PATH = "${pkgs.eigen}/include/eigen3:${essentia}/include";
+
             preBuild = ''
+              # Required by libffi-sys: ensure GNU make is available and used
+              export PATH="${pkgs.gnumake}/bin:$PATH"
+              export MAKE="${pkgs.gnumake}/bin/make"
+
+              # Explicitly use Nix-wrapped clang which has proper system paths
+              export CC="${pkgs.clang}/bin/clang"
+              export CXX="${pkgs.clang}/bin/clang++"
+
+              # Linker flags for autotools builds (libffi-sys configure)
+              export LDFLAGS="-L${pkgs.glibc}/lib -L${pkgs.gcc.cc.lib}/lib"
+
+              # C/C++ headers for cc-rs crates
+              export CFLAGS="-idirafter ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/19/include"
+              export CXXFLAGS="-isystem ${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version} -isystem ${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version}/x86_64-unknown-linux-gnu -idirafter ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/19/include"
+
+              # pkg-config paths for essentia
               export PKG_CONFIG_PATH="${essentia}/lib/pkgconfig:$PKG_CONFIG_PATH"
             '';
 
+            # Skip tests in nix build (run them separately with cargo test)
+            doCheck = false;
+
             buildPhase = ''
+              runHook preBuild
               cargo build --release -p mesh-cue
+              runHook postBuild
             '';
 
             installPhase = ''
