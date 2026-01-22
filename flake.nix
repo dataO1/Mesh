@@ -12,14 +12,9 @@
       url = "github:acids-ircam/nn_tilde";
       flake = false;
     };
-    # AppImage bundling for portable Linux distribution
-    nix-appimage = {
-      url = "github:ralismark/nix-appimage";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-overlay, nn-tilde, nix-appimage }:
+  outputs = { self, nixpkgs, flake-utils, rust-overlay, nn-tilde }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         overlays = [ (import rust-overlay) ];
@@ -117,21 +112,7 @@
           };
         };
 
-        # Common native dependencies for building
-        nativeBuildInputs = with pkgs; [
-          pkg-config
-          cmake
-          gcc
-          llvmPackages.libclang  # For bindgen (LIBCLANG_PATH)
-          clang                   # Nix-wrapped clang for C/C++ compilation
-          autoconf
-          automake
-          libtool
-          gnumake
-          removeReferencesTo
-        ];
-
-        # Runtime dependencies (included in AppImage RPATH)
+        # Runtime dependencies for development
         runtimeInputs = with pkgs; [
           # Core runtime (C++ stdlib needed by many deps)
           stdenv.cc.cc.lib  # libstdc++.so.6
@@ -140,10 +121,6 @@
           libjack2
           alsa-lib
           pipewire
-          pipewire.jack  # PipeWire JACK compatibility for AppImage distribution
-
-          # Pure Data disabled - libpd-rs has build issues with naersk (libffi autoconf)
-          # puredata
 
           # GUI (iced dependencies)
           wayland
@@ -157,170 +134,26 @@
 
           # Misc
           openssl
-          # libffi  # Only needed for libpd-rs (disabled)
         ];
 
-        # Build-time only dependencies (NOT included in AppImage)
+        # Build-time only dependencies
         buildOnlyInputs = with pkgs; [
-          # libffi.dev   # Only needed for libpd-rs (disabled)
           glibc.dev    # Headers for cc-rs crates
         ];
 
         # Combined build inputs
         buildInputs = runtimeInputs ++ buildOnlyInputs;
 
-        # Essentia and its dependencies (shared between both packages)
-        essentiaInputs = [ essentia ] ++ (with pkgs; [
-          eigen
-          fftwFloat
-          taglib
-          chromaprint
-          libsamplerate
-          libyaml
-          ffmpeg_4-headless  # Headless: no SDL/GUI deps
-          zlib
-        ]);
-
-        # Library paths for runtime (excludes dev packages)
+        # Library paths for runtime
         libraryPath = pkgs.lib.makeLibraryPath runtimeInputs;
-
-        # Filter source to only include Rust files (prevents rebuilds when flake.nix changes)
-        rustSrc = pkgs.lib.cleanSourceWith {
-          src = ./.;
-          filter = path: type:
-            let baseName = builtins.baseNameOf path;
-            in (pkgs.lib.hasSuffix ".rs" baseName) ||
-               (pkgs.lib.hasSuffix ".toml" baseName) ||
-               (baseName == "Cargo.lock") ||
-               (type == "directory" && baseName != ".git" && baseName != "target" && baseName != "result" && baseName != ".direnv");
-        };
-
-        # Common Cargo hash for buildRustPackage (update when Cargo.lock changes)
-        cargoHash = "sha256-jMe47CJzn8W/fzTe0BNAUy+QsSMyeDSzp3866s67aeM=";
 
       in
       {
-        packages = {
-          # nn-external is disabled - requires fixing submodules in nn-tilde
-          # nn-external = nn-external;
-
-          mesh-player = pkgs.rustPlatform.buildRustPackage {
-            pname = "mesh-player";
-            version = "0.1.0";
-            src = rustSrc;
-
-            inherit cargoHash;
-            cargoBuildFlags = [ "-p" "mesh-player" ];
-
-            nativeBuildInputs = nativeBuildInputs;
-            buildInputs = buildInputs ++ essentiaInputs;
-
-            # Environment variables for essentia and FFI crates
-            USE_TENSORFLOW = "0";
-            CPLUS_INCLUDE_PATH = "${pkgs.eigen}/include/eigen3:${essentia}/include";
-            LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-            PKG_CONFIG_PATH = "${essentia}/lib/pkgconfig";
-            CC = "${pkgs.clang}/bin/clang";
-            CXX = "${pkgs.clang}/bin/clang++";
-            LDFLAGS = "-L${pkgs.glibc}/lib -L${pkgs.gcc.cc.lib}/lib";
-            CFLAGS = "-idirafter ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/19/include";
-            CXXFLAGS = "-isystem ${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version} -isystem ${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version}/x86_64-unknown-linux-gnu -idirafter ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/19/include";
-            MAKE = "${pkgs.gnumake}/bin/make";
-
-            # Strip Nix store paths from binary to reduce closure size
-            RUSTFLAGS = "--remap-path-prefix=/nix/store=nix";
-
-            # Prevent accidental Rust toolchain in closure
-            disallowedReferences = [ rustToolchain ];
-
-            # Post-install: copy additional files and remove toolchain references
-            postInstall = ''
-              # Install PD effects and externals
-              mkdir -p $out/share/mesh/effects/pd/externals
-              if [ -d effects/pd ]; then
-                cp -r effects/pd/* $out/share/mesh/effects/pd/
-              fi
-
-              # Install RAVE models if present
-              if [ -d rave/rave-models ]; then
-                mkdir -p $out/share/mesh/rave-models
-                cp -r rave/rave-models/* $out/share/mesh/rave-models/
-              fi
-
-              # Remove embedded Rust toolchain paths from binary
-              remove-references-to -t ${rustToolchain} $out/bin/mesh-player
-            '';
-
-            # Fix RPATH to only include runtime libraries
-            postFixup = ''
-              patchelf --set-rpath "${pkgs.lib.makeLibraryPath (runtimeInputs ++ [ essentia ])}:${essentia}/lib" $out/bin/mesh-player
-            '';
-
-            meta = with pkgs.lib; {
-              description = "Mesh DJ Player - 4-deck stem-based mixing with neural effects";
-              mainProgram = "mesh-player";
-              license = licenses.agpl3Plus;
-              platforms = platforms.linux;
-            };
-          };
-
-          mesh-cue = pkgs.rustPlatform.buildRustPackage {
-            pname = "mesh-cue";
-            version = "0.1.0";
-            src = rustSrc;
-
-            inherit cargoHash;
-            cargoBuildFlags = [ "-p" "mesh-cue" ];
-
-            nativeBuildInputs = nativeBuildInputs;
-            buildInputs = buildInputs ++ essentiaInputs;
-
-            # Environment variables for essentia and FFI crates
-            USE_TENSORFLOW = "0";
-            CPLUS_INCLUDE_PATH = "${pkgs.eigen}/include/eigen3:${essentia}/include";
-            LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-            PKG_CONFIG_PATH = "${essentia}/lib/pkgconfig";
-            CC = "${pkgs.clang}/bin/clang";
-            CXX = "${pkgs.clang}/bin/clang++";
-            LDFLAGS = "-L${pkgs.glibc}/lib -L${pkgs.gcc.cc.lib}/lib";
-            CFLAGS = "-idirafter ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/19/include";
-            CXXFLAGS = "-isystem ${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version} -isystem ${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version}/x86_64-unknown-linux-gnu -idirafter ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/19/include";
-            MAKE = "${pkgs.gnumake}/bin/make";
-
-            # Strip Nix store paths from binary to reduce closure size
-            RUSTFLAGS = "--remap-path-prefix=/nix/store=nix";
-
-            # Prevent accidental Rust toolchain in closure
-            disallowedReferences = [ rustToolchain ];
-
-            # Remove toolchain references
-            postInstall = ''
-              remove-references-to -t ${rustToolchain} $out/bin/mesh-cue
-            '';
-
-            # Fix RPATH
-            postFixup = ''
-              patchelf --set-rpath "${pkgs.lib.makeLibraryPath (runtimeInputs ++ [ essentia ])}:${essentia}/lib" $out/bin/mesh-cue
-            '';
-
-            meta = with pkgs.lib; {
-              description = "Mesh Cue Software - Track preparation and playlist management";
-              mainProgram = "mesh-cue";
-              license = licenses.agpl3Plus;
-              platforms = platforms.linux;
-            };
-          };
-
-          default = self.packages.${system}.mesh-player;
-        };
-
-        # AppImage bundler using nix-appimage
-        bundlers.default = nix-appimage.bundlers.${system}.default;
-
-        devShells.default = pkgs.stdenv.mkDerivation {
+        devShells.default = pkgs.mkShell {
           name = "mesh-dev-shell";
 
-          buildInputs = buildInputs ++ [
+          # mkShell properly adds all packages to PATH (unlike stdenv.mkDerivation)
+          packages = buildInputs ++ [
             # Custom essentia library (built from source)
             essentia
           ] ++ (with pkgs; [
@@ -425,15 +258,12 @@
             echo "║    cargo run -p mesh-cue             # Track preparation              ║"
             echo "║    cargo test                        # Run all tests                  ║"
             echo "╠═══════════════════════════════════════════════════════════════════════╣"
-            echo "║  Build AppImages (into target/appimage/):                             ║"
-            echo "║    mkdir -p target/appimage                                           ║"
-            echo "║    nix bundle --bundler .# .#mesh-player -o target/appimage/mesh-player"
-            echo "║    nix bundle --bundler .# .#mesh-cue -o target/appimage/mesh-cue     ║"
-            echo "╠═══════════════════════════════════════════════════════════════════════╣"
-            echo "║  Release (GitHub web UI):                                             ║"
-            echo "║    1. git tag v0.1.0 && git push --tags                               ║"
-            echo "║    2. Go to: https://github.com/OWNER/mesh/releases/new               ║"
-            echo "║    3. Select tag, drag & drop AppImages from target/appimage/, publish║"
+            echo "║  Build packages (one-time: cargo install cargo-deb cargo-generate-rpm)║"
+            echo "║    cargo build --release                                              ║"
+            echo "║    cargo deb -p mesh-player --no-build   # .deb → target/debian/      ║"
+            echo "║    cargo deb -p mesh-cue --no-build                                   ║"
+            echo "║    cargo generate-rpm -p mesh-player     # .rpm → target/generate-rpm/║"
+            echo "║    cargo generate-rpm -p mesh-cue                                     ║"
             echo "╚═══════════════════════════════════════════════════════════════════════╝"
             echo ""
           '';

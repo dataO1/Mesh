@@ -2,10 +2,42 @@
 name = "mesh-player"
 version.workspace = true
 edition.workspace = true
+description = "4-deck stem-based DJ mixing with neural effects"
+license.workspace = true
+authors.workspace = true
 
 [[bin]]
 name = "mesh-player"
 path = "src/main.rs"
+
+# === Debian/Ubuntu packaging ===
+[package.metadata.deb]
+maintainer = "Mesh Team"
+section = "sound"
+priority = "optional"
+assets = [
+    ["target/release/mesh-player", "usr/bin/", "755"],
+    ["../../packaging/mesh-player.desktop", "usr/share/applications/", "644"],
+    # User should add icon: ["../../packaging/icons/mesh-player.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+]
+# $auto detects library dependencies, then we add explicit audio/graphics deps
+depends = "$auto, libjack-jackd2-0 (>= 1.9.12) | pipewire-jack, libvulkan1, libxkbcommon0, libwayland-client0, libasound2, libfontconfig1"
+
+# === Fedora/RHEL packaging ===
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/mesh-player", dest = "/usr/bin/mesh-player", mode = "755" },
+    { source = "../../packaging/mesh-player.desktop", dest = "/usr/share/applications/mesh-player.desktop", mode = "644" },
+    # User should add icon: { source = "../../packaging/icons/mesh-player.png", dest = "/usr/share/icons/hicolor/256x256/apps/mesh-player.png", mode = "644" },
+]
+
+[package.metadata.generate-rpm.requires]
+jack-audio-connection-kit = ">= 1.9.12"
+vulkan-loader = "*"
+libxkbcommon = "*"
+libwayland-client = "*"
+alsa-lib = "*"
+fontconfig = "*"
 
 [dependencies]
 rtrb.workspace = true

@@ -2,7 +2,9 @@
 name = "mesh-cue"
 version.workspace = true
 edition.workspace = true
-description = "Track preparation tool for mesh DJ software"
+description = "Track preparation, BPM analysis, and playlist management for DJs"
+license.workspace = true
+authors.workspace = true
 
 [lib]
 name = "mesh_cue"
@@ -11,6 +13,35 @@ path = "src/lib.rs"
 [[bin]]
 name = "mesh-cue"
 path = "src/main.rs"
+
+# === Debian/Ubuntu packaging ===
+[package.metadata.deb]
+maintainer = "Mesh Team"
+section = "sound"
+priority = "optional"
+assets = [
+    ["target/release/mesh-cue", "usr/bin/", "755"],
+    ["../../packaging/mesh-cue.desktop", "usr/share/applications/", "644"],
+    # User should add icon: ["../../packaging/icons/mesh-cue.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+]
+# $auto detects library dependencies, then we add explicit audio/graphics deps
+depends = "$auto, libjack-jackd2-0 (>= 1.9.12) | pipewire-jack, libvulkan1, libxkbcommon0, libwayland-client0, libasound2, libfontconfig1"
+
+# === Fedora/RHEL packaging ===
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/mesh-cue", dest = "/usr/bin/mesh-cue", mode = "755" },
+    { source = "../../packaging/mesh-cue.desktop", dest = "/usr/share/applications/mesh-cue.desktop", mode = "644" },
+    # User should add icon: { source = "../../packaging/icons/mesh-cue.png", dest = "/usr/share/icons/hicolor/256x256/apps/mesh-cue.png", mode = "644" },
+]
+
+[package.metadata.generate-rpm.requires]
+jack-audio-connection-kit = ">= 1.9.12"
+vulkan-loader = "*"
+libxkbcommon = "*"
+libwayland-client = "*"
+alsa-lib = "*"
+fontconfig = "*"
 
 [dependencies]
 mesh-core.workspace = true
