@@ -262,8 +262,8 @@
             echo "║    cargo build --release                                              ║"
             echo "║    cargo deb -p mesh-player --no-build   # .deb → target/debian/      ║"
             echo "║    cargo deb -p mesh-cue --no-build                                   ║"
-            echo "║    cargo generate-rpm -p mesh-player     # .rpm → target/generate-rpm/║"
-            echo "║    cargo generate-rpm -p mesh-cue                                     ║"
+            echo "║    cargo generate-rpm -p crates/mesh-player  # .rpm → target/gen-rpm/║"
+            echo "║    cargo generate-rpm -p crates/mesh-cue                             ║"
             echo "╚═══════════════════════════════════════════════════════════════════════╝"
             echo ""
           '';
