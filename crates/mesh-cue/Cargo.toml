@@ -22,10 +22,18 @@ priority = "optional"
 assets = [
     ["target/release/mesh-cue", "usr/bin/", "755"],
     ["../../packaging/mesh-cue.desktop", "usr/share/applications/", "644"],
+    # Bundled libraries in /usr/lib/mesh/ (not available in modern distro repos)
+    ["target/release/bundled/libessentia.so", "usr/lib/mesh/", "644"],
+    # FFmpeg 4.x libs (modern distros have FFmpeg 6.x which is ABI-incompatible)
+    ["target/release/bundled/libavcodec.so.58", "usr/lib/mesh/", "644"],
+    ["target/release/bundled/libavformat.so.58", "usr/lib/mesh/", "644"],
+    ["target/release/bundled/libavutil.so.56", "usr/lib/mesh/", "644"],
+    ["target/release/bundled/libswresample.so.3", "usr/lib/mesh/", "644"],
     # User should add icon: ["../../packaging/icons/mesh-cue.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
 ]
-# $auto detects library dependencies, then we add explicit audio/graphics deps
-depends = "$auto, libjack-jackd2-0 (>= 1.9.12) | pipewire-jack, libvulkan1, libxkbcommon0, libwayland-client0, libasound2, libfontconfig1"
+# Dependencies: essentia's other deps + audio/graphics
+# Note: libessentia and FFmpeg 4.x are bundled in /usr/lib/mesh/
+depends = "$auto, libjack-jackd2-0 (>= 1.9.12) | pipewire-jack, libvulkan1, libxkbcommon0, libwayland-client0, libasound2, libfontconfig1, libfftw3-single3, libtag1v5, libchromaprint1, libsamplerate0, libyaml-0-2"
 
 # === Fedora/RHEL packaging ===
 [package.metadata.generate-rpm]

@@ -364,6 +364,11 @@ and mesh-widget and only if necessary in the ui.
   not-frequently changing information into message/subscription instead of tick
   handlers.
 
+# Package Building
+- AppImage is not well supported with jack and real-time audio
+- So for now we build .deb and .rpm natively
+- We might want to try flatpack (mixxx uses this)
+
 # Future fields
 - [x] automatic gain staging for optimal headroom and that the dj doesnt
   manually need to configure the trim knob for each track( some older tracks are

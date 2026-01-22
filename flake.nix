@@ -147,8 +147,180 @@
         # Library paths for runtime
         libraryPath = pkgs.lib.makeLibraryPath runtimeInputs;
 
+        # =======================================================================
+        # Package Builds for Distribution (.deb/.rpm)
+        # =======================================================================
+
+        # Filtered source for Rust builds - only includes files needed for compilation
+        # This prevents rebuilds when unrelated files change (distrobox.ini, packaging/, etc.)
+        rustSrc = pkgs.lib.cleanSourceWith {
+          src = ./.;
+          filter = path: type:
+            let
+              baseName = baseNameOf path;
+              relPath = pkgs.lib.removePrefix (toString ./. + "/") path;
+            in
+            # Always include directories (filter will recurse into them)
+            type == "directory" ||
+            # Cargo files
+            baseName == "Cargo.toml" ||
+            baseName == "Cargo.lock" ||
+            # Rust source files
+            pkgs.lib.hasSuffix ".rs" baseName;
+        };
+
+        # Filtered source for .deb packaging - only Cargo.toml (metadata) and packaging/
+        # This is very small, so meshDeb rebuilds are fast even when triggered
+        debSrc = pkgs.lib.cleanSourceWith {
+          src = ./.;
+          filter = path: type:
+            let
+              baseName = baseNameOf path;
+              relPath = pkgs.lib.removePrefix (toString ./. + "/") path;
+            in
+            type == "directory" ||
+            baseName == "Cargo.toml" ||
+            baseName == "Cargo.lock" ||
+            pkgs.lib.hasPrefix "packaging/" relPath;
+        };
+
+        # Common build inputs for Rust packages
+        meshBuildInputs = runtimeInputs ++ [
+          essentia
+        ] ++ (with pkgs; [
+          eigen
+          fftwFloat
+          taglib
+          chromaprint
+          libsamplerate
+          libyaml
+          ffmpeg_4-headless
+          zlib
+        ]);
+
+        # Build the Rust workspace using rustPlatform (handles dependency fetching)
+        # Uses filtered rustSrc to avoid rebuilds when non-Rust files change
+        meshBuild = pkgs.rustPlatform.buildRustPackage {
+          pname = "mesh";
+          version = "0.1.0";
+          src = rustSrc;
+
+          # Cargo.lock hash - update this when deps change
+          # Run: nix build .#mesh-build 2>&1 | grep "got:" to get new hash
+          cargoHash = "sha256-jMe47CJzn8W/fzTe0BNAUy+QsSMyeDSzp3866s67aeM=";
+
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+            cmake
+            clang
+            llvmPackages.libclang
+            gnumake
+          ];
+
+          buildInputs = meshBuildInputs;
+
+          # Build environment
+          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/21/include";
+          PKG_CONFIG_PATH = "${essentia}/lib/pkgconfig";
+          USE_TENSORFLOW = "0";
+          CPLUS_INCLUDE_PATH = "${pkgs.eigen}/include/eigen3";
+
+          # Build specific packages
+          cargoBuildFlags = [ "-p" "mesh-player" "-p" "mesh-cue" ];
+
+          meta = with pkgs.lib; {
+            description = "DJ Player and Cue Software";
+            license = licenses.agpl3Plus;
+          };
+        };
+
+        # Create portable .deb packages with patchelf
+        # This uses the pre-built binaries from meshBuild
+        # Uses filtered debSrc (only Cargo.toml + packaging/) for fast rebuilds
+        meshDeb = pkgs.stdenv.mkDerivation {
+          pname = "mesh-deb";
+          version = "0.1.0";
+          src = debSrc;
+
+          nativeBuildInputs = with pkgs; [
+            patchelf
+            cargo-deb
+            rustToolchain  # For cargo-deb
+          ];
+
+          # No build phase - we use pre-built binaries
+          dontBuild = true;
+          dontConfigure = true;
+
+          installPhase = ''
+            runHook preInstall
+
+            # Create target directory structure that cargo-deb expects
+            mkdir -p target/release/bundled
+
+            # Copy pre-built binaries from meshBuild
+            cp ${meshBuild}/bin/mesh-player target/release/
+            cp ${meshBuild}/bin/mesh-cue target/release/
+
+            echo "=== Patching binaries for portability ==="
+            # Make binaries writable for patchelf
+            chmod +w target/release/mesh-player target/release/mesh-cue
+
+            # Remove Nix store paths from RUNPATH, set to standard Linux + bundled lib path
+            patchelf --set-rpath '/usr/lib/x86_64-linux-gnu:/usr/lib' target/release/mesh-player
+            patchelf --set-rpath '/usr/lib/mesh:/usr/lib/x86_64-linux-gnu:/usr/lib' target/release/mesh-cue
+
+            # Set interpreter to standard Linux path
+            patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 target/release/mesh-player
+            patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 target/release/mesh-cue
+
+            echo "=== Verifying patchelf results ==="
+            patchelf --print-rpath target/release/mesh-player
+            patchelf --print-rpath target/release/mesh-cue
+
+            echo "=== Staging bundled libraries ==="
+            # Bundle libessentia
+            cp ${essentia}/lib/libessentia.so target/release/bundled/
+            chmod +w target/release/bundled/libessentia.so
+
+            # Bundle FFmpeg 4.x libraries (essentia depends on these, modern distros have FFmpeg 6.x)
+            # Only copy the versioned .so files, not symlinks
+            cp ${pkgs.ffmpeg_4-headless.lib}/lib/libavcodec.so.58.134.100 target/release/bundled/libavcodec.so.58
+            cp ${pkgs.ffmpeg_4-headless.lib}/lib/libavformat.so.58.76.100 target/release/bundled/libavformat.so.58
+            cp ${pkgs.ffmpeg_4-headless.lib}/lib/libavutil.so.56.70.100 target/release/bundled/libavutil.so.56
+            cp ${pkgs.ffmpeg_4-headless.lib}/lib/libswresample.so.3.9.100 target/release/bundled/libswresample.so.3
+
+            # Patch libessentia to find FFmpeg in /usr/lib/mesh/ instead of Nix store
+            patchelf --set-rpath '/usr/lib/mesh:/usr/lib/x86_64-linux-gnu:/usr/lib' target/release/bundled/libessentia.so
+
+            echo "Bundled libraries:"
+            ls -lh target/release/bundled/
+
+            echo "=== Creating .deb packages ==="
+            cargo deb -p mesh-player --no-build --no-strip
+            cargo deb -p mesh-cue --no-build --no-strip
+
+            # Copy outputs
+            mkdir -p $out
+            cp target/debian/*.deb $out/
+
+            echo "=== Build complete ==="
+            ls -la $out/
+
+            runHook postInstall
+          '';
+        };
+
       in
       {
+        # Export packages
+        packages = {
+          mesh-build = meshBuild;
+          mesh-deb = meshDeb;
+          default = meshDeb;
+        };
+
         devShells.default = pkgs.mkShell {
           name = "mesh-dev-shell";
 
@@ -261,18 +433,13 @@
             echo "║    cargo run -p mesh-cue             # Track preparation              ║"
             echo "║    cargo test                        # Run all tests                  ║"
             echo "╠═══════════════════════════════════════════════════════════════════════╣"
-            echo "║  Build packages (one-time: cargo install cargo-deb cargo-generate-rpm)║"
-            echo "║    cargo build --release                                              ║"
-            echo "║    cargo deb -p mesh-player --no-build   # .deb → target/debian/      ║"
-            echo "║    cargo deb -p mesh-cue --no-build                                   ║"
-            echo "║    cargo generate-rpm -p crates/mesh-player  # .rpm → target/gen-rpm/║"
-            echo "║    cargo generate-rpm -p crates/mesh-cue                             ║"
+            echo "║  Build portable .deb packages:                                        ║"
+            echo "║    nix build .#mesh-deb             # Build .debs → ./result/         ║"
             echo "╠═══════════════════════════════════════════════════════════════════════╣"
             echo "║  Test .deb packages (requires: virtualisation.podman.enable = true)   ║"
-            echo "║    distrobox assemble create         # Create container + auto-install║"
-            echo "║    distrobox enter mesh-ubuntu       # Enter and test (mesh-player)   ║"
-            echo "║    distrobox assemble create --replace   # Recreate after rebuilding  ║"
-            echo "║    distrobox assemble rm             # Clean up when done             ║"
+            echo "║    distrobox assemble create        # Create container + auto-install ║"
+            echo "║    distrobox enter mesh-ubuntu      # Enter and test (mesh-player)    ║"
+            echo "║    distrobox assemble rm            # Clean up when done              ║"
             echo "╚═══════════════════════════════════════════════════════════════════════╝"
             echo ""
           '';
