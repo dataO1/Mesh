@@ -189,6 +189,9 @@
 
             # Database inspection (CozoDB uses SQLite backend)
             sqlite
+
+            # Package testing (requires podman on host, see shellHook)
+            distrobox
           ]);
 
           shellHook = ''
@@ -264,6 +267,12 @@
             echo "║    cargo deb -p mesh-cue --no-build                                   ║"
             echo "║    cargo generate-rpm -p crates/mesh-player  # .rpm → target/gen-rpm/║"
             echo "║    cargo generate-rpm -p crates/mesh-cue                             ║"
+            echo "╠═══════════════════════════════════════════════════════════════════════╣"
+            echo "║  Test .deb packages (requires: virtualisation.podman.enable = true)   ║"
+            echo "║    distrobox assemble create         # Create container + auto-install║"
+            echo "║    distrobox enter mesh-ubuntu       # Enter and test (mesh-player)   ║"
+            echo "║    distrobox assemble create --replace   # Recreate after rebuilding  ║"
+            echo "║    distrobox assemble rm             # Clean up when done             ║"
             echo "╚═══════════════════════════════════════════════════════════════════════╝"
             echo ""
           '';
