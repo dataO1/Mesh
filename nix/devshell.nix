@@ -106,7 +106,7 @@ pkgs.mkShell {
     echo "╠═══════════════════════════════════════════════════════════════════════╣"
     echo "║  Build portable packages:                                             ║"
     echo "║    nix build .#mesh-deb             # Build .debs → ./result/         ║"
-    echo "║    nix run .#build-windows          # Build .exe  → ./result/windows/ ║"
+    echo "║    nix run .#build-windows          # Build .exe  → ./dist/windows/   ║"
     echo "╠═══════════════════════════════════════════════════════════════════════╣"
     echo "║  Test .deb packages (requires: virtualisation.podman.enable = true)   ║"
     echo "║    distrobox assemble create        # Create container + auto-install ║"

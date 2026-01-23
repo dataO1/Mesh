@@ -2,7 +2,7 @@
 # Uses official Rust image + MinGW-w64 toolchain
 #
 # Usage: nix run .#build-windows
-# Output: result/windows/mesh-player.exe, mesh-cue.exe
+# Output: dist/windows/mesh-player.exe, mesh-cue.exe
 #
 # Prerequisites:
 #   - Podman or Docker installed and running
@@ -30,7 +30,7 @@ pkgs.writeShellApplication {
       exit 1
     fi
 
-    OUTPUT_DIR="$PROJECT_ROOT/result/windows"
+    OUTPUT_DIR="$PROJECT_ROOT/dist/windows"
     TARGET_DIR="$PROJECT_ROOT/target/windows"
     # Rust 1.88+ required for iced 0.14 and wgpu 27
     IMAGE="docker.io/library/rust:1.88"
@@ -286,9 +286,11 @@ TOOLCHAIN
           export AR=x86_64-w64-mingw32-ar
           export RANLIB=x86_64-w64-mingw32-ranlib
 
-          # Force C++14 to avoid std::byte conflict with MinGW Windows headers
-          # C++17 std::byte conflicts with Windows rpcndr.h byte typedef
-          export CXXFLAGS="-std=c++14"
+          # MinGW cross-compilation flags:
+          # - C++14: avoids std::byte conflict with Windows rpcndr.h byte typedef
+          # - _USE_MATH_DEFINES: exposes M_PI, M_LN2, etc. (POSIX math constants)
+          export CFLAGS="-D_USE_MATH_DEFINES"
+          export CXXFLAGS="-std=c++14 -D_USE_MATH_DEFINES"
 
           if ! python3 waf configure \
             --prefix="$ESSENTIA_PREFIX" \
@@ -367,7 +369,7 @@ TOOLCHAIN
     echo "╔═══════════════════════════════════════════════════════════════════════╗"
     echo "║                        Build Complete!                                ║"
     echo "╠═══════════════════════════════════════════════════════════════════════╣"
-    echo "║  Output directory: result/windows/                                     ║"
+    echo "║  Output directory: dist/windows/                                        ║"
     echo "╚═══════════════════════════════════════════════════════════════════════╝"
     ls -lh "$OUTPUT_DIR/"
   '';
