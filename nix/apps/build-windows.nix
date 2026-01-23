@@ -10,7 +10,56 @@
 #
 # Why container? Pure Nix cross-compilation fails due to MinGW-w64 pthreads
 # __ImageBase linker errors in nixpkgs. Container has working toolchain.
-{ pkgs }:
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+# ARCHITECTURE OVERVIEW
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# This build system cross-compiles two Rust applications for Windows:
+#   - mesh-player.exe: GUI DJ application (iced + wgpu)
+#   - mesh-cue.exe: Audio analysis tool (requires Essentia C++ library)
+#
+# The complexity comes from mesh-cue needing Essentia, a large C++ audio
+# analysis library with many dependencies. Cross-compiling C++ for Windows
+# from Linux requires careful handling of:
+#
+#   1. HOST vs TARGET distinction (Cargo build scripts run on HOST)
+#   2. Windows DLL export semantics (different from Linux .so)
+#   3. FFmpeg API compatibility (Essentia uses deprecated FFmpeg 4.x APIs)
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+# KEY INSIGHT: WINDOWS DLL SYMBOL EXPORTS
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Linux .so files export all non-static symbols by default.
+# Windows .dll files export NOTHING by default - each symbol must be marked
+# with __declspec(dllexport) or listed in a .def file.
+#
+# Essentia (like many C++ libraries) was written for Linux and does not use
+# __declspec(dllexport). The solution is the MinGW linker flag:
+#
+#   -Wl,--export-all-symbols
+#
+# This makes the linker behave like Linux, exporting all symbols. Without it,
+# you get hundreds of "undefined reference" errors at link time because the
+# Rust code cannot find Essentia functions in the DLL.
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+# BUILD PHASES
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Phase 1: Install MinGW-w64 toolchain in container
+# Phase 2: Build Essentia dependencies for Windows (FFmpeg, FFTW3, TagLib, etc.)
+# Phase 3: Build Essentia DLL for Windows with --export-all-symbols
+# Phase 4: Build mesh-player.exe (straightforward Rust cross-compilation)
+# Phase 5: Build native Linux Essentia for HOST builds (essentia-sys build.rs)
+# Phase 6: Build mesh-cue.exe with both HOST and TARGET essentia available
+#
+# Caching: Dependencies and Essentia are cached in target/windows/ for fast
+# subsequent builds. Delete target/windows/essentia-win/ to force rebuild.
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+{ pkgs, essentiaLinux }:
 
 pkgs.writeShellApplication {
   name = "build-windows";
@@ -35,9 +84,13 @@ pkgs.writeShellApplication {
     # Rust 1.88+ required for iced 0.14 and wgpu 27
     IMAGE="docker.io/library/rust:1.88"
 
-    echo "Project root: $PROJECT_ROOT"
-    echo "Output dir:   $OUTPUT_DIR"
-    echo "Container:    $IMAGE"
+    # Linux essentia (from Nix) for host builds during cross-compilation
+    ESSENTIA_LINUX="${essentiaLinux}"
+
+    echo "Project root:    $PROJECT_ROOT"
+    echo "Output dir:      $OUTPUT_DIR"
+    echo "Container:       $IMAGE"
+    echo "Linux essentia:  $ESSENTIA_LINUX"
     echo ""
 
     # Create output directory
@@ -60,7 +113,8 @@ pkgs.writeShellApplication {
     # - Install MinGW-w64 and Windows target on first run
     # - Mount source as /project
     # - Mount separate target dir (persisted for incremental builds)
-    # - Mount cargo registry for caching
+    # Note: We build BOTH Windows and Linux essentia inside the container to avoid
+    # glibc/gcc compatibility issues with Nix-built libraries
     podman run --rm \
       -v "$PROJECT_ROOT:/project:ro" \
       -v "$TARGET_DIR:/project/target:rw" \
@@ -123,8 +177,14 @@ pkgs.writeShellApplication {
         ESSENTIA_PREFIX=/project/target/essentia-win
         PKG_CONFIG_WIN="$ESSENTIA_PREFIX/lib/pkgconfig"
 
-        if [[ -f "$ESSENTIA_PREFIX/lib/libessentia.a" ]]; then
+        if [[ -f "$ESSENTIA_PREFIX/lib/essentia.dll" ]] || [[ -f "$ESSENTIA_PREFIX/bin/essentia.dll" ]]; then
           echo "==> Essentia already built (cached), skipping..."
+          # Ensure libessentia symlinks exist even for cached builds
+          if [[ -f "$ESSENTIA_PREFIX/lib/essentia.dll.a" ]] && [[ ! -f "$ESSENTIA_PREFIX/lib/libessentia.a" ]]; then
+            ln -sf essentia.dll.a "$ESSENTIA_PREFIX/lib/libessentia.dll.a"
+            ln -sf essentia.dll.a "$ESSENTIA_PREFIX/lib/libessentia.a"
+            echo "==> Created libessentia symlinks for MinGW linker (cached build)"
+          fi
         else
           echo "==> Building Essentia and dependencies for Windows..."
           echo "    (This takes a while on first run, but is cached for future builds)"
@@ -248,9 +308,6 @@ TOOLCHAIN
             rm -rf libsamplerate-0.2.2
           fi
 
-          # --- Chromaprint (simplified, optional) ---
-          echo "==> Skipping chromaprint (requires FFmpeg, optional for basic Essentia)..."
-
           # --- FFmpeg (simplified static build) ---
           if [[ -f "$DEPS_PREFIX/lib/libavcodec.a" ]]; then
             echo "==> FFmpeg already built (cached)"
@@ -273,8 +330,45 @@ TOOLCHAIN
             rm -rf ffmpeg-4.4.4
           fi
 
+          # --- Chromaprint (audio fingerprinting, uses FFTW3) ---
+          if [[ -f "$DEPS_PREFIX/lib/libchromaprint.a" ]]; then
+            echo "==> Chromaprint already built (cached)"
+          else
+            echo "==> Building Chromaprint for Windows..."
+            curl -sL https://github.com/acoustid/chromaprint/releases/download/v1.5.1/chromaprint-1.5.1.tar.gz | tar xz --no-same-owner
+            cd chromaprint-1.5.1
+            mkdir build && cd build
+            cat > toolchain.cmake << TOOLCHAIN
+set(CMAKE_SYSTEM_NAME Windows)
+set(CMAKE_C_COMPILER x86_64-w64-mingw32-gcc)
+set(CMAKE_CXX_COMPILER x86_64-w64-mingw32-g++)
+set(CMAKE_RC_COMPILER x86_64-w64-mingw32-windres)
+set(CMAKE_FIND_ROOT_PATH /usr/x86_64-w64-mingw32 $DEPS_PREFIX)
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_PREFIX_PATH $DEPS_PREFIX)
+TOOLCHAIN
+            cmake .. -DCMAKE_TOOLCHAIN_FILE=toolchain.cmake \
+              -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" \
+              -DBUILD_SHARED_LIBS=OFF \
+              -DBUILD_TOOLS=OFF \
+              -DBUILD_TESTS=OFF \
+              -DFFT_LIB=fftw3f \
+              -DFFTW3_DIR="$DEPS_PREFIX" \
+              -DCMAKE_BUILD_TYPE=Release 2>/dev/null
+            make -j$(nproc) 2>/dev/null
+            make install 2>/dev/null
+
+            cd ../..
+            rm -rf chromaprint-1.5.1
+          fi
+
           # ---------------------------------------------------------------
-          # Build Essentia
+          # Build Essentia DLL for Windows
+          # ---------------------------------------------------------------
+          # CRITICAL: See header comment about --export-all-symbols flag.
+          # Without it, the DLL exports nothing and Rust linking fails.
           # ---------------------------------------------------------------
           echo "==> Building Essentia library..."
           git clone --depth 1 https://github.com/MTG/essentia.git
@@ -288,9 +382,17 @@ TOOLCHAIN
 
           # MinGW cross-compilation flags:
           # - C++14: avoids std::byte conflict with Windows rpcndr.h byte typedef
-          # - _USE_MATH_DEFINES: exposes M_PI, M_LN2, etc. (POSIX math constants)
+          # - _USE_MATH_DEFINES: exposes M_PI, M_LN2, etc.
+          # - TAGLIB_STATIC: tells TagLib headers we link statically
+          # - CHROMAPRINT_NODLL: tells Chromaprint headers we link statically
           export CFLAGS="-D_USE_MATH_DEFINES"
-          export CXXFLAGS="-std=c++14 -D_USE_MATH_DEFINES"
+          export CXXFLAGS="-std=c++14 -D_USE_MATH_DEFINES -DTAGLIB_STATIC -DCHROMAPRINT_NODLL"
+          # Force link fftw3f for chromaprint static dependency
+          # *** CRITICAL FIX: --export-all-symbols ***
+          # This flag makes the Windows DLL export all symbols like Linux .so files do.
+          # Without it, essentia.dll exports nothing (Windows requires explicit exports),
+          # causing 100+ "undefined reference" errors when linking mesh-cue.exe.
+          export LDFLAGS="-L$DEPS_PREFIX/lib -lfftw3f -Wl,--export-all-symbols"
 
           if ! python3 waf configure \
             --prefix="$ESSENTIA_PREFIX" \
@@ -310,29 +412,188 @@ TOOLCHAIN
           fi
 
           python3 waf install
+
+          # Fix library naming for MinGW linker: -lessentia looks for libessentia.a or libessentia.dll.a
+          # waf creates essentia.dll.a, so we symlink it
+          if [[ -f "$ESSENTIA_PREFIX/lib/essentia.dll.a" ]]; then
+            ln -sf essentia.dll.a "$ESSENTIA_PREFIX/lib/libessentia.dll.a"
+            ln -sf essentia.dll.a "$ESSENTIA_PREFIX/lib/libessentia.a"
+            echo "==> Created libessentia symlinks for MinGW linker"
+          fi
+
           cd /project
           rm -rf /tmp/essentia-build
         fi
 
         # =====================================================================
-        # Phase 4: Build mesh-player (no Essentia needed)
+        # Phase 4: Build Rust crates
         # =====================================================================
+        # CRITICAL: Unset global CC/CXX that were set for Essentia build.
+        # Cargo uses target-specific vars (CC_x86_64_pc_windows_gnu) for Windows
+        # but needs native gcc for host builds (build scripts, proc-macros).
+        unset CC CXX AR RANLIB CFLAGS CXXFLAGS LDFLAGS
+
         echo ""
         echo "==> Building mesh-player..."
         cargo build --release --target x86_64-pc-windows-gnu -p mesh-player
 
         # =====================================================================
-        # Phase 5: Build mesh-cue (needs Essentia)
+        # Phase 5: Build mesh-cue (needs Essentia for both HOST and TARGET)
+        # =====================================================================
+        # KEY INSIGHT: Cargo cross-compilation has two environments:
+        #   - HOST: Where build scripts (build.rs) and proc-macros run (Linux)
+        #   - TARGET: Where the final binary runs (Windows)
+        #
+        # essentia-sys has a build.rs that compiles C++ bridge code. This code
+        # runs on HOST (Linux) but must also link against TARGET (Windows) libs.
+        # We need TWO essentia installations:
+        #   - $ESSENTIA_HOST: Native Linux build for HOST compilation
+        #   - $ESSENTIA_PREFIX: Cross-compiled Windows build for TARGET linking
         # =====================================================================
         echo ""
         echo "==> Building mesh-cue..."
-        export PKG_CONFIG_PATH="$PKG_CONFIG_WIN:$PKG_CONFIG_PATH"
+
+        # ---------------------------------------------------------------
+        # Build Essentia for Linux HOST (native, not cross-compiled)
+        # Cannot use Nix essentia due to glibc version mismatch with container
+        # ---------------------------------------------------------------
+        # Install native Linux dev packages needed for essentia-sys bridge compilation
+        # These must be installed even if essentia-host is cached (for eigen3.pc, etc.)
+        echo "==> Installing native Linux dev packages for essentia-sys..."
+        apt-get install -y -qq \
+          libfftw3-dev \
+          libtag1-dev \
+          libsamplerate0-dev \
+          libchromaprint-dev \
+          libyaml-dev \
+          libeigen3-dev \
+          python3 \
+          >/dev/null 2>&1
+
+        ESSENTIA_HOST=/project/target/essentia-host
+        if [[ -f "$ESSENTIA_HOST/lib/libessentia.so" ]]; then
+          echo "==> Host Essentia already built (cached)"
+        else
+          echo "==> Building Essentia for Linux (host builds)..."
+          echo "    (This builds a native Linux essentia compatible with container glibc)"
+
+          mkdir -p /tmp/essentia-host-build
+          cd /tmp/essentia-host-build
+
+          # Build FFmpeg 4.4.4 for host (container FFmpeg is too new, missing deprecated APIs)
+          # Essentia uses av_register_all(), AVStream->codec, avcodec_encode_audio2() etc.
+          if [[ -f "$ESSENTIA_HOST/lib/libavcodec.so" ]]; then
+            echo "==> Host FFmpeg already built (cached)"
+          else
+            echo "==> Building FFmpeg 4.4.4 for Linux (host, for essentia API compatibility)..."
+            curl -sL https://ffmpeg.org/releases/ffmpeg-4.4.4.tar.xz | tar xJ --no-same-owner
+            cd ffmpeg-4.4.4
+            ./configure --prefix="$ESSENTIA_HOST" \
+              --enable-shared --disable-static \
+              --disable-programs --disable-doc \
+              --disable-avdevice --disable-postproc --disable-avfilter \
+              --disable-network --disable-encoders --disable-muxers \
+              --disable-bsfs --disable-devices --disable-filters \
+              --enable-small 2>/dev/null
+            make -j$(nproc) 2>/dev/null
+            make install 2>/dev/null
+            cd ..
+            rm -rf ffmpeg-4.4.4
+          fi
+
+          # Export PKG_CONFIG_PATH so essentia finds our FFmpeg, not system one
+          export PKG_CONFIG_PATH="$ESSENTIA_HOST/lib/pkgconfig:$PKG_CONFIG_PATH"
+          export LD_LIBRARY_PATH="$ESSENTIA_HOST/lib:$LD_LIBRARY_PATH"
+          export LIBRARY_PATH="$ESSENTIA_HOST/lib:$LIBRARY_PATH"
+          export CPLUS_INCLUDE_PATH="$ESSENTIA_HOST/include:$CPLUS_INCLUDE_PATH"
+
+          # Clone essentia (reuse if possible from Windows build cache)
+          if [[ -d /project/target/essentia-src ]]; then
+            cp -r /project/target/essentia-src essentia
+          else
+            git clone --depth 1 https://github.com/MTG/essentia.git
+            mkdir -p /project/target/essentia-src
+            cp -r essentia/* /project/target/essentia-src/
+          fi
+          cd essentia
+
+          # Build with native compiler (container gcc/glibc)
+          # Use C++14 for essentia itself (same as Windows build)
+          export CFLAGS="-D_USE_MATH_DEFINES"
+          export CXXFLAGS="-std=c++14 -D_USE_MATH_DEFINES"
+
+          if ! python3 waf configure \
+            --prefix="$ESSENTIA_HOST" \
+            --fft=FFTW; then
+            echo "ERROR: Host Essentia configure failed"
+            exit 1
+          fi
+
+          if ! python3 waf build -j$(nproc); then
+            echo "ERROR: Host Essentia build failed"
+            exit 1
+          fi
+
+          python3 waf install
+
+          # Create pkg-config file
+          mkdir -p "$ESSENTIA_HOST/lib/pkgconfig"
+          cat > "$ESSENTIA_HOST/lib/pkgconfig/essentia.pc" << ESSPC
+prefix=$ESSENTIA_HOST
+exec_prefix=\''${prefix}
+libdir=\''${exec_prefix}/lib
+includedir=\''${prefix}/include/essentia
+
+Name: essentia
+Description: Audio analysis library
+Version: 2.1_beta6
+Libs: -L\''${libdir} -lessentia -lfftw3f -ltag -lsamplerate -lchromaprint -lavformat -lavcodec -lavutil -lswresample -lyaml
+Cflags: -I\''${includedir}
+ESSPC
+
+          cd /project
+          rm -rf /tmp/essentia-host-build
+          unset CFLAGS CXXFLAGS
+        fi
+
+        echo "==> Setting up cross-compilation environment..."
+        echo "    Host essentia:   $ESSENTIA_HOST"
+        echo "    Target essentia: $ESSENTIA_PREFIX"
+
+        # Set PKG_CONFIG_PATH for host builds (Linux essentia + system libraries)
+        # essentia-sys uses pkg-config to find essentia, eigen3, fftw3, etc.
+        SYS_PKG_CONFIG="/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
+        export PKG_CONFIG_PATH="$ESSENTIA_HOST/lib/pkgconfig:$SYS_PKG_CONFIG"
+        # Also set HOST_PKG_CONFIG_PATH for cross-compilation scenarios
+        export HOST_PKG_CONFIG_PATH="$PKG_CONFIG_PATH"
+
+        # Create pkg-config wrapper for target builds (Windows)
+        # When TARGET contains "windows", use Windows essentia
+        mkdir -p /tmp/pkg-config-wrapper
+        cat > /tmp/pkg-config-wrapper/pkg-config << PKGWRAPPER
+#!/bin/bash
+if [[ "\$TARGET" == *"dows"* ]]; then
+  export PKG_CONFIG_PATH="/project/target/essentia-win/lib/pkgconfig:$SYS_PKG_CONFIG"
+fi
+exec /usr/bin/pkg-config "\$@"
+PKGWRAPPER
+        chmod +x /tmp/pkg-config-wrapper/pkg-config
+        export PATH="/tmp/pkg-config-wrapper:$PATH"
+
+        # Set paths for host (Linux) builds
+        # Include Eigen3 path explicitly (system eigen3.pc may have wrong path)
+        export CPLUS_INCLUDE_PATH="$ESSENTIA_HOST/include:/usr/include/eigen3:$CPLUS_INCLUDE_PATH"
+        export LIBRARY_PATH="$ESSENTIA_HOST/lib:$LIBRARY_PATH"
+        export LD_LIBRARY_PATH="$ESSENTIA_HOST/lib:$LD_LIBRARY_PATH"
+
+        # Configure for cross-compilation
         export PKG_CONFIG_ALLOW_CROSS=1
-        export PKG_CONFIG_SYSROOT_DIR=/usr/x86_64-w64-mingw32
         export USE_TENSORFLOW=0
 
-        # Add library paths for linking
-        export LIBRARY_PATH="$ESSENTIA_PREFIX/lib:$LIBRARY_PATH"
+        # Set C++ flags for Windows TARGET builds only (not host builds):
+        # - C++17: required for std::variant in essentia-sys bridge code
+        # - _BYTE_DEFINED: prevents MinGW rpcndr.h byte typedef conflicting with std::byte
+        export CXXFLAGS_x86_64_pc_windows_gnu="-std=c++17 -D_USE_MATH_DEFINES -DTAGLIB_STATIC -DCHROMAPRINT_NODLL -D_BYTE_DEFINED"
 
         cargo build --release --target x86_64-pc-windows-gnu -p mesh-cue || {
           echo ""

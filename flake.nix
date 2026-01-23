@@ -49,7 +49,11 @@
         # =======================================================================
 
         # Windows cross-compilation (container-based)
-        buildWindowsApp = import ./nix/apps/build-windows.nix { inherit pkgs; };
+        # Pass Linux essentia for host builds (cross-compilation needs both)
+        buildWindowsApp = import ./nix/apps/build-windows.nix {
+          inherit pkgs;
+          essentiaLinux = common.essentia;
+        };
 
         # =======================================================================
         # Development Shell
