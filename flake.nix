@@ -312,12 +312,182 @@
           '';
         };
 
+        # =======================================================================
+        # Windows Cross-Compilation (.exe)
+        # =======================================================================
+        # Uses MinGW-w64 toolchain to cross-compile from Linux to Windows.
+        # Reference: https://essentia.upf.edu/FAQ.html#cross-compiling-for-windows-on-linux
+
+        # MinGW-w64 cross-compilation pkgset
+        pkgsWin = pkgs.pkgsCross.mingwW64;
+
+        # Rust toolchain with Windows target
+        rustToolchainWin = pkgs.rust-bin.stable.latest.default.override {
+          extensions = [ "rust-src" ];
+          targets = [ "x86_64-pc-windows-gnu" ];
+        };
+
+        # Essentia cross-compiled for Windows using MinGW
+        # WAF supports --cross-compile-mingw32 flag for this purpose
+        #
+        # This uses pkgs.stdenv (native Linux) with explicit cross-compilation
+        # rather than pkgsWin.stdenv, because we need to run build tools on Linux
+        # while producing Windows binaries.
+        essentiaWin = pkgs.stdenv.mkDerivation rec {
+          pname = "essentia-win";
+          version = "2.1_beta6-dev";
+
+          src = pkgs.fetchFromGitHub {
+            owner = "MTG";
+            repo = "essentia";
+            rev = "17484ff0256169f14a959d62aa89a1463fead13f";
+            hash = "sha256-q+TI03Y5Mw9W+ZNE8I1fEWvn3hjRyaxb7M6ZgntA8RA=";
+          };
+
+          # All build tools run on Linux
+          nativeBuildInputs = [
+            pkgs.python3      # WAF build system
+            pkgs.pkg-config
+            pkgsWin.stdenv.cc # MinGW cross-compiler
+          ];
+
+          # For cross-compilation, we need to explicitly handle each dependency:
+          # - Header-only libs (eigen): use native via include path
+          # - Windows libs: build from source or use pkgsWin
+
+          # Environment for cross-compilation
+          EIGEN_INCLUDE_PATH = "${pkgs.eigen}/include/eigen3";
+
+          # WAF configure for MinGW cross-compilation
+          configurePhase = ''
+            runHook preConfigure
+
+            # Set up cross-compilation environment
+            export CC=${pkgsWin.stdenv.cc}/bin/${pkgsWin.stdenv.cc.targetPrefix}gcc
+            export CXX=${pkgsWin.stdenv.cc}/bin/${pkgsWin.stdenv.cc.targetPrefix}g++
+            export AR=${pkgsWin.stdenv.cc}/bin/${pkgsWin.stdenv.cc.targetPrefix}ar
+            export RANLIB=${pkgsWin.stdenv.cc}/bin/${pkgsWin.stdenv.cc.targetPrefix}ranlib
+            export CPLUS_INCLUDE_PATH="${pkgs.eigen}/include/eigen3:$CPLUS_INCLUDE_PATH"
+
+            # Note: Essentia's WAF build needs Windows-compiled dependencies.
+            # This is a placeholder - full Windows build requires building
+            # all dependencies (fftw, ffmpeg, taglib, etc.) for MinGW first.
+            # See: https://essentia.upf.edu/FAQ.html#cross-compiling-for-windows-on-linux
+            python3 waf configure \
+              --prefix=$out \
+              --mode=release \
+              --cross-compile-mingw32 || {
+                echo "WARNING: Essentia Windows cross-compilation requires MinGW-built dependencies"
+                echo "This derivation is a work-in-progress placeholder"
+                exit 1
+              }
+
+            runHook postConfigure
+          '';
+
+          buildPhase = ''
+            runHook preBuild
+            python3 waf build -j $NIX_BUILD_CORES
+            runHook postBuild
+          '';
+
+          installPhase = ''
+            runHook preInstall
+            python3 waf install
+            runHook postInstall
+          '';
+
+          meta = with pkgs.lib; {
+            description = "Essentia audio analysis library (Windows/MinGW build)";
+            homepage = "https://essentia.upf.edu/";
+            license = licenses.agpl3Plus;
+            platforms = [ "x86_64-linux" ];  # Cross-compiled FROM Linux
+          };
+        };
+
+        # Build Rust workspace for Windows
+        # Uses cross-compilation with x86_64-pc-windows-gnu target
+        #
+        # This uses rustPlatform.buildRustPackage for proper dependency handling,
+        # with cross-compilation configured via environment variables.
+        #
+        # Note: mesh-player can be built without Essentia
+        # mesh-cue requires Essentia which needs additional work for Windows
+        # For Windows cross-compilation, we need to use makeRustPlatform with
+        # the Windows target configured at the platform level
+        rustPlatformWin = pkgs.makeRustPlatform {
+          cargo = rustToolchainWin;
+          rustc = rustToolchainWin;
+        };
+
+        meshWindowsBuild = rustPlatformWin.buildRustPackage {
+          pname = "mesh-windows";
+          version = "0.1.0";
+          src = rustSrc;
+
+          # Cargo.lock hash for Windows target - includes Windows-specific crates
+          # Run: nix build .#mesh-windows 2>&1 | grep "got:" to update
+          cargoHash = "sha256-EdZwaoQn/EgNSAa72y2q7cahwnTs17nrDLy4FDTToac=";
+
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+            cmake           # Needed for some Rust crates that use cmake
+            clang
+            llvmPackages.libclang
+            gnumake
+            # MinGW toolchain for linking
+            pkgsWin.buildPackages.gcc
+          ];
+
+          # No cross-compiled buildInputs needed for mesh-player
+          # (it uses pure Rust deps + iced which handles Windows natively)
+          buildInputs = [];
+
+          # Explicit target specification for cross-compilation
+          CARGO_BUILD_TARGET = "x86_64-pc-windows-gnu";
+
+          # Linker configuration for the Windows target
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = "${pkgsWin.buildPackages.gcc}/bin/x86_64-w64-mingw32-gcc";
+
+          # Add MinGW pthreads library path for linking
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS = "-L native=${pkgsWin.windows.pthreads}/lib";
+
+          # For bindgen (some crates need this for FFI generation)
+          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/21/include";
+          USE_TENSORFLOW = "0";
+
+          # Build only mesh-player for Windows (no Essentia needed)
+          # Use --target flag explicitly in case env var isn't picked up
+          buildPhase = ''
+            runHook preBuild
+            cargo build --release --target x86_64-pc-windows-gnu -p mesh-player
+            runHook postBuild
+          '';
+
+          installPhase = ''
+            runHook preInstall
+            mkdir -p $out/bin
+            cp target/x86_64-pc-windows-gnu/release/mesh-player.exe $out/bin/
+            echo "Windows build successful: mesh-player.exe"
+            runHook postInstall
+          '';
+
+          meta = with pkgs.lib; {
+            description = "Mesh DJ software (Windows build) - mesh-player only";
+            license = licenses.agpl3Plus;
+            platforms = [ "x86_64-linux" ];  # Cross-compiled FROM Linux
+          };
+        };
+
       in
       {
         # Export packages
         packages = {
           mesh-build = meshBuild;
           mesh-deb = meshDeb;
+          mesh-windows = meshWindowsBuild;
+          essentia-win = essentiaWin;
           default = meshDeb;
         };
 
@@ -433,8 +603,9 @@
             echo "║    cargo run -p mesh-cue             # Track preparation              ║"
             echo "║    cargo test                        # Run all tests                  ║"
             echo "╠═══════════════════════════════════════════════════════════════════════╣"
-            echo "║  Build portable .deb packages:                                        ║"
+            echo "║  Build portable packages:                                             ║"
             echo "║    nix build .#mesh-deb             # Build .debs → ./result/         ║"
+            echo "║    nix build .#mesh-windows         # Build .exe  → ./result/         ║"
             echo "╠═══════════════════════════════════════════════════════════════════════╣"
             echo "║  Test .deb packages (requires: virtualisation.podman.enable = true)   ║"
             echo "║    distrobox assemble create        # Create container + auto-install ║"
