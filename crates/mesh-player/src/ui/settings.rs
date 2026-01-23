@@ -197,7 +197,7 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
     // Layout: fixed header, scrollable middle, fixed footer
     let content = column![header, scrollable_content, status, actions]
         .spacing(15)
-        .width(Length::Fixed(450.0))
+        .width(Length::Fixed(550.0))  // Wider to fit long device names
         .height(Length::Fixed(600.0)); // Max height for modal
 
     container(content)
@@ -574,7 +574,7 @@ fn view_audio_output_section(state: &SettingsState) -> Element<'_, Message> {
                 Message::Settings(SettingsMessage::UpdateMasterPair(idx))
             },
         )
-        .width(Length::Fixed(180.0))
+        .width(Length::Fixed(280.0))
         .into()
     };
     let master_row = row![master_label, Space::new().width(Length::Fill), master_dropdown]
@@ -596,7 +596,7 @@ fn view_audio_output_section(state: &SettingsState) -> Element<'_, Message> {
                 Message::Settings(SettingsMessage::UpdateCuePair(idx))
             },
         )
-        .width(Length::Fixed(180.0))
+        .width(Length::Fixed(280.0))
         .into()
     };
     let cue_row = row![cue_label, Space::new().width(Length::Fill), cue_dropdown]

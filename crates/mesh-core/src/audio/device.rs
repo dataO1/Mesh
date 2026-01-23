@@ -1,11 +1,39 @@
 //! Audio device enumeration and management
 //!
 //! Provides functionality to list available audio devices and their capabilities.
+//!
+//! On Linux, this module prefers JACK over ALSA for better latency and routing.
+//! JACK provides descriptive port names like "system:playback_1" whereas ALSA
+//! uses hardware IDs like "hw:0,0".
 
 use cpal::traits::{DeviceTrait, HostTrait};
+use cpal::Host;
 
 use super::config::DeviceId;
 use super::error::{AudioError, AudioResult};
+
+/// Get the preferred audio host for the current platform.
+///
+/// On Linux, prefers JACK if available (for pro-audio routing and better names),
+/// falls back to ALSA. On other platforms, uses the system default.
+fn get_preferred_host() -> Host {
+    #[cfg(target_os = "linux")]
+    {
+        // Try JACK first for better latency and descriptive device names
+        if let Some(jack_host) = cpal::available_hosts()
+            .into_iter()
+            .find(|h| *h == cpal::HostId::Jack)
+        {
+            if let Ok(host) = cpal::host_from_id(jack_host) {
+                log::info!("Using JACK audio host");
+                return host;
+            }
+        }
+        log::info!("JACK not available, using default host (ALSA)");
+    }
+
+    get_preferred_host()
+}
 
 /// Information about an audio output device
 #[derive(Debug, Clone)]
@@ -24,7 +52,7 @@ pub struct AudioDevice {
 
 /// Get all available audio output devices
 pub fn get_output_devices() -> AudioResult<Vec<AudioDevice>> {
-    let host = cpal::default_host();
+    let host = get_preferred_host();
 
     let default_device_name = host
         .default_output_device()
@@ -95,7 +123,7 @@ pub fn get_default_device() -> AudioResult<AudioDevice> {
 
 /// Find a device by its ID
 pub fn find_device_by_id(id: &DeviceId) -> AudioResult<cpal::Device> {
-    let host = cpal::default_host();
+    let host = get_preferred_host();
 
     host.output_devices()
         .map_err(|e| AudioError::ConfigError(e.to_string()))?
@@ -105,7 +133,7 @@ pub fn find_device_by_id(id: &DeviceId) -> AudioResult<cpal::Device> {
 
 /// Get the CPAL default output device
 pub fn get_cpal_default_device() -> AudioResult<cpal::Device> {
-    let host = cpal::default_host();
+    let host = get_preferred_host();
     host.default_output_device()
         .ok_or_else(|| AudioError::NoDefaultDevice("No default output device".to_string()))
 }
