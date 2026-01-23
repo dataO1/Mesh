@@ -18,6 +18,9 @@ rubato = "0.16"   # High-quality sample rate conversion
 log = "0.4"
 thiserror.workspace = true
 
+# Cross-platform audio backend
+cpal.workspace = true
+
 # Database and messaging
 cozo = { workspace = true }
 crossbeam = { workspace = true }

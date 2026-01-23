@@ -1,4 +1,4 @@
-//! JACK audio client for mesh-cue
+//! Audio backend for mesh-cue
 //!
 //! Uses the shared AudioEngine from mesh-core with a single deck (deck 0)
 //! for preview playback. This gives mesh-cue full access to:
@@ -17,134 +17,32 @@
 
 use std::sync::Arc;
 
-use jack::{AudioOut, Client, ClientOptions, Control, Port, ProcessScope};
+use mesh_core::audio::{self, AudioConfig, AudioResult};
 use mesh_core::audio_file::LoadedTrack;
 use mesh_core::db::DatabaseService;
-use mesh_core::engine::{
-    command_channel, AudioEngine, DeckAtomics, EngineCommand, LinkedStemAtomics, PreparedTrack,
-    SlicerAtomics,
-};
+use mesh_core::engine::{DeckAtomics, EngineCommand, LinkedStemAtomics, PreparedTrack, SlicerAtomics};
 use mesh_core::loader::LinkedStemResultReceiver;
-use mesh_core::types::StereoBuffer;
 
 // Re-export for convenience
+pub use mesh_core::audio::{
+    get_available_stereo_pairs, AudioError, CommandSender, OutputDevice, StereoPair,
+};
 pub use mesh_core::engine::{SlicerPreset, StepSequence};
-
-/// Maximum buffer size to pre-allocate
-const MAX_BUFFER_SIZE: usize = 8192;
 
 /// The deck index used for preview (always deck 0)
 pub const PREVIEW_DECK: usize = 0;
 
-/// Handle to the active JACK client
-pub struct JackHandle {
-    _async_client: jack::AsyncClient<JackNotifications, JackProcessor>,
+/// Handle to the active audio system
+pub struct AudioHandle {
+    _handle: mesh_core::audio::AudioHandle,
 }
-
-/// Command sender for UI thread
-///
-/// Wraps the lock-free producer for sending EngineCommand to the audio thread.
-pub struct CommandSender {
-    producer: rtrb::Producer<EngineCommand>,
-}
-
-impl CommandSender {
-    /// Send a command to the audio engine (non-blocking)
-    pub fn send(&mut self, cmd: EngineCommand) -> Result<(), EngineCommand> {
-        self.producer.push(cmd).map_err(|e| match e {
-            rtrb::PushError::Full(value) => value,
-        })
-    }
-}
-
-/// JACK process handler - owns the AudioEngine exclusively
-struct JackProcessor {
-    /// Output ports (stereo only - no separate cue for editor)
-    left: Port<AudioOut>,
-    right: Port<AudioOut>,
-    /// The audio engine (OWNED, not shared)
-    engine: AudioEngine,
-    /// Command receiver from UI
-    command_rx: rtrb::Consumer<EngineCommand>,
-    /// Pre-allocated output buffer
-    master_buffer: StereoBuffer,
-    /// Cue buffer (required by engine, but we don't output it)
-    cue_buffer: StereoBuffer,
-}
-
-impl jack::ProcessHandler for JackProcessor {
-    fn process(&mut self, _client: &Client, ps: &ProcessScope) -> Control {
-        let n_frames = ps.n_frames() as usize;
-
-        // Set working buffer length (RT-safe: no allocation)
-        self.master_buffer.set_len_from_capacity(n_frames);
-        self.cue_buffer.set_len_from_capacity(n_frames);
-
-        // Process commands from UI (lock-free)
-        self.engine.process_commands(&mut self.command_rx);
-
-        // Process audio through the engine
-        self.engine.process(&mut self.master_buffer, &mut self.cue_buffer);
-
-        // Copy master output to JACK ports
-        let out_left = self.left.as_mut_slice(ps);
-        let out_right = self.right.as_mut_slice(ps);
-
-        for i in 0..n_frames {
-            let sample = self.master_buffer[i];
-            out_left[i] = sample.left;
-            out_right[i] = sample.right;
-        }
-
-        Control::Continue
-    }
-}
-
-/// JACK notification handler
-struct JackNotifications;
-
-impl jack::NotificationHandler for JackNotifications {
-    unsafe fn shutdown(&mut self, _status: jack::ClientStatus, reason: &str) {
-        log::warn!("JACK server shut down: {}", reason);
-    }
-
-    fn sample_rate(&mut self, _client: &Client, srate: jack::Frames) -> Control {
-        log::info!("JACK sample rate: {}", srate);
-        Control::Continue
-    }
-
-    fn xrun(&mut self, _client: &Client) -> Control {
-        log::warn!("JACK xrun (audio dropout)");
-        Control::Continue
-    }
-}
-
-/// Error type for JACK operations
-#[derive(Debug)]
-pub enum JackError {
-    ClientCreation(String),
-    PortRegistration(String),
-    Activation(String),
-}
-
-impl std::fmt::Display for JackError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            JackError::ClientCreation(msg) => write!(f, "Failed to create JACK client: {}", msg),
-            JackError::PortRegistration(msg) => write!(f, "Failed to register port: {}", msg),
-            JackError::Activation(msg) => write!(f, "Failed to activate client: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for JackError {}
 
 /// Audio state for UI interaction
 ///
 /// Provides high-level API for preview playback using deck 0.
 /// All operations are lock-free via command queue and atomics.
 pub struct AudioState {
-    /// Command sender (None if JACK unavailable)
+    /// Command sender (None if audio unavailable)
     command_sender: Option<CommandSender>,
     /// Deck atomics for reading playback state
     deck_atomics: Arc<DeckAtomics>,
@@ -152,14 +50,14 @@ pub struct AudioState {
     slicer_atomics: [Arc<SlicerAtomics>; 4],
     /// Linked stem atomics
     linked_stem_atomics: Arc<LinkedStemAtomics>,
-    /// JACK sample rate
+    /// Sample rate
     sample_rate: u32,
     /// Linked stem result receiver (engine owns the loader)
     linked_stem_receiver: Option<LinkedStemResultReceiver>,
 }
 
 impl AudioState {
-    /// Create audio state from JACK startup results
+    /// Create audio state from startup results
     fn new(
         command_sender: CommandSender,
         deck_atomics: Arc<DeckAtomics>,
@@ -178,7 +76,7 @@ impl AudioState {
         }
     }
 
-    /// Create a disconnected audio state (when JACK is unavailable)
+    /// Create a disconnected audio state (when audio is unavailable)
     pub fn disconnected() -> Self {
         Self {
             command_sender: None,
@@ -565,209 +463,51 @@ impl AudioState {
     }
 }
 
-/// Start the JACK audio client for mesh-cue
+/// Start the audio system for mesh-cue
 ///
-/// Returns AudioState for UI interaction and JackHandle to keep client alive.
+/// Returns AudioState for UI interaction and AudioHandle to keep audio alive.
 ///
 /// # Arguments
 /// * `db_service` - Database service for loading track metadata in background loaders
-pub fn start_jack_client(db_service: Arc<DatabaseService>) -> Result<(AudioState, JackHandle), JackError> {
-    let (client, _status) = Client::new("mesh-cue", ClientOptions::NO_START_SERVER)
-        .map_err(|e| JackError::ClientCreation(e.to_string()))?;
+pub fn start_audio_system(
+    db_service: Arc<DatabaseService>,
+) -> AudioResult<(AudioState, AudioHandle)> {
+    // Use master-only mode for mesh-cue (single stereo output for preview)
+    let config = AudioConfig::master_only();
 
-    let sample_rate = client.sample_rate() as u32;
+    let result = audio::start_audio_system(&config, db_service)?;
 
     log::info!(
-        "JACK client 'mesh-cue' created (sample rate: {}, buffer size: {})",
-        sample_rate,
-        client.buffer_size()
+        "Audio system started (sample rate: {}Hz)",
+        result.sample_rate
     );
 
-    // Register stereo output ports
-    let left = client
-        .register_port("out_left", AudioOut::default())
-        .map_err(|e| JackError::PortRegistration(e.to_string()))?;
-
-    let right = client
-        .register_port("out_right", AudioOut::default())
-        .map_err(|e| JackError::PortRegistration(e.to_string()))?;
-
-    // Create engine and extract atomics before moving to processor
-    let engine = AudioEngine::new_with_sample_rate(sample_rate, db_service);
-    let deck_atomics = engine.deck_atomics()[PREVIEW_DECK].clone();
-    // Get slicer atomics for all 4 stems on preview deck
-    let slicer_atomics = engine.slicer_atomics_for_deck(PREVIEW_DECK);
-    let linked_stem_atomics = engine.linked_stem_atomics()[PREVIEW_DECK].clone();
-    // Get linked stem result receiver before engine is moved to processor
-    let linked_stem_receiver = engine.linked_stem_result_receiver();
-
-    // Create lock-free command channel
-    let (command_tx, command_rx) = command_channel();
-
-    // Create processor with engine (OWNED, not shared)
-    let processor = JackProcessor {
-        left,
-        right,
-        engine,
-        command_rx,
-        master_buffer: StereoBuffer::silence(MAX_BUFFER_SIZE),
-        cue_buffer: StereoBuffer::silence(MAX_BUFFER_SIZE),
-    };
-
-    // Activate client
-    let async_client = client
-        .activate_async(JackNotifications, processor)
-        .map_err(|e| JackError::Activation(e.to_string()))?;
-
-    log::info!("JACK client activated - full AudioEngine ready");
-
-    // Auto-connect to system playback
-    if let Err(e) = auto_connect_ports() {
-        log::warn!("Could not auto-connect to system playback: {}", e);
-    }
+    // Get slicer atomics for preview deck (deck 0)
+    let slicer_atomics = [
+        result.slicer_atomics[PREVIEW_DECK].clone(),
+        result.slicer_atomics[PREVIEW_DECK].clone(),
+        result.slicer_atomics[PREVIEW_DECK].clone(),
+        result.slicer_atomics[PREVIEW_DECK].clone(),
+    ];
 
     // Set deck 0 volume to 1.0 (master) for preview
     let mut audio_state = AudioState::new(
-        CommandSender { producer: command_tx },
-        deck_atomics,
+        result.command_sender,
+        result.deck_atomics[PREVIEW_DECK].clone(),
         slicer_atomics,
-        linked_stem_atomics,
-        linked_stem_receiver,
-        sample_rate,
+        result.linked_stem_atomics[PREVIEW_DECK].clone(),
+        result.linked_stem_receiver,
+        result.sample_rate,
     );
     audio_state.set_volume(1.0);
 
     Ok((
         audio_state,
-        JackHandle {
-            _async_client: async_client,
+        AudioHandle {
+            _handle: result.handle,
         },
     ))
 }
 
-/// Auto-connect mesh-cue outputs to system playback (first available pair)
-fn auto_connect_ports() -> Result<(), JackError> {
-    let pairs = get_available_stereo_pairs();
-    if let Some(first_pair) = pairs.first() {
-        connect_to_stereo_pair(first_pair)?;
-    } else {
-        log::warn!("No JACK playback ports found for auto-connect");
-    }
-    Ok(())
-}
-
-/// Stereo output pair (L/R port names)
-///
-/// Represents a pair of JACK ports that together form a stereo output.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StereoPair {
-    /// Human-readable label (e.g., "Outputs 1-2")
-    pub label: String,
-    /// Left channel port name (e.g., "system:playback_1")
-    pub left: String,
-    /// Right channel port name (e.g., "system:playback_2")
-    pub right: String,
-}
-
-impl std::fmt::Display for StereoPair {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.label)
-    }
-}
-
-/// Get available JACK stereo output pairs
-///
-/// Queries the JACK server for available playback ports and groups them
-/// into stereo pairs. Returns an empty list if JACK is not running.
-pub fn get_available_stereo_pairs() -> Vec<StereoPair> {
-    let (client, _) = match Client::new("mesh_port_query", ClientOptions::NO_START_SERVER) {
-        Ok(c) => c,
-        Err(_) => return vec![],
-    };
-
-    let playback_ports = client.ports(None, None, jack::PortFlags::IS_INPUT);
-
-    // Group ports by device (everything before the colon)
-    let mut device_ports: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-    for port in playback_ports {
-        if let Some(colon_pos) = port.find(':') {
-            let device = port[..colon_pos].to_string();
-            let port_name = &port[colon_pos + 1..];
-            // Only include playback ports
-            if port_name.starts_with("playback_") || port_name.contains("playback") {
-                device_ports.entry(device).or_default().push(port);
-            }
-        }
-    }
-
-    let mut pairs = Vec::new();
-    for (device_name, mut ports) in device_ports {
-        ports.sort();
-
-        // Check for PipeWire surround naming (FL/FR/RL/RR)
-        let fl = ports.iter().find(|p| p.contains("_FL")).cloned();
-        let fr = ports.iter().find(|p| p.contains("_FR")).cloned();
-        let rl = ports.iter().find(|p| p.contains("_RL")).cloned();
-        let rr = ports.iter().find(|p| p.contains("_RR")).cloned();
-
-        let short_name = device_name.split(' ').next().unwrap_or(&device_name);
-
-        if fl.is_some() && fr.is_some() {
-            // PipeWire surround - Front pair
-            pairs.push(StereoPair {
-                label: format!("{} Front", short_name),
-                left: fl.unwrap(),
-                right: fr.unwrap(),
-            });
-
-            // Rear pair if available
-            if rl.is_some() && rr.is_some() {
-                pairs.push(StereoPair {
-                    label: format!("{} Rear", short_name),
-                    left: rl.unwrap(),
-                    right: rr.unwrap(),
-                });
-            }
-        } else {
-            // Traditional JACK naming (playback_1, playback_2, ...)
-            let device_ports: Vec<_> = ports.into_iter()
-                .filter(|p| !p.contains("_FL") && !p.contains("_FR") && !p.contains("_RL") && !p.contains("_RR"))
-                .collect();
-
-            device_ports
-                .chunks(2)
-                .enumerate()
-                .filter(|(_, chunk)| chunk.len() == 2)
-                .for_each(|(i, chunk)| {
-                    pairs.push(StereoPair {
-                        label: format!("{} {}-{}", short_name, i * 2 + 1, i * 2 + 2),
-                        left: chunk[0].clone(),
-                        right: chunk[1].clone(),
-                    });
-                });
-        }
-    }
-
-    pairs.sort_by(|a, b| a.label.cmp(&b.label));
-    pairs
-}
-
-/// Connect mesh-cue outputs to a specific stereo pair
-pub fn connect_to_stereo_pair(pair: &StereoPair) -> Result<(), JackError> {
-    let (client, _) = Client::new("mesh-cue_connect", ClientOptions::NO_START_SERVER)
-        .map_err(|e| JackError::ClientCreation(e.to_string()))?;
-
-    let our_left = "mesh-cue:out_left";
-    let our_right = "mesh-cue:out_right";
-
-    // Connect to new pair (JACK allows multiple connections, so we just add the new one)
-    if let Err(e) = client.connect_ports_by_name(our_left, &pair.left) {
-        log::warn!("Could not connect left output to {}: {}", pair.left, e);
-    }
-    if let Err(e) = client.connect_ports_by_name(our_right, &pair.right) {
-        log::warn!("Could not connect right output to {}: {}", pair.right, e);
-    }
-
-    log::info!("Connected outputs to {} ({} / {})", pair.label, pair.left, pair.right);
-    Ok(())
-}
+// Device types (OutputDevice, StereoPair, get_available_stereo_pairs) are
+// re-exported from mesh_core::audio at the top of this file.

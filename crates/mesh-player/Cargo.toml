@@ -21,7 +21,8 @@ assets = [
     # User should add icon: ["../../packaging/icons/mesh-player.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
 ]
 # $auto detects library dependencies, then we add explicit audio/graphics deps
-depends = "$auto, libjack-jackd2-0 (>= 1.9.12) | pipewire-jack, libvulkan1, libxkbcommon0, libwayland-client0, libasound2, libfontconfig1"
+# Uses ALSA via CPAL - works with PipeWire's ALSA compatibility layer
+depends = "$auto, libasound2, libvulkan1, libxkbcommon0, libwayland-client0, libfontconfig1"
 
 # === Fedora/RHEL packaging ===
 [package.metadata.generate-rpm]
@@ -32,7 +33,7 @@ assets = [
 ]
 
 [package.metadata.generate-rpm.requires]
-jack-audio-connection-kit = ">= 1.9.12"
+# Uses ALSA via CPAL - works with PipeWire's ALSA compatibility layer
 vulkan-loader = "*"
 libxkbcommon = "*"
 libwayland-client = "*"
@@ -44,7 +45,6 @@ rtrb.workspace = true
 mesh-core.workspace = true
 mesh-widgets.workspace = true
 mesh-midi = { path = "../mesh-midi" }
-jack.workspace = true
 iced.workspace = true
 tokio.workspace = true
 rayon.workspace = true

@@ -1,5 +1,6 @@
 //! Mesh Core - Shared library for DJ Player and Cue Software
 
+pub mod audio;
 pub mod config;
 pub mod types;
 pub mod effect;
