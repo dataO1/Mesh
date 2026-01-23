@@ -1,3 +1,7 @@
+// Hide console window on Windows (GUI application)
+// This sets the executable subsystem to WINDOWS instead of CONSOLE
+#![windows_subsystem = "windows"]
+
 //! Mesh DJ Player - 4-deck stem-based mixing with neural effects
 //!
 //! This is the main entry point for the GUI application. It:

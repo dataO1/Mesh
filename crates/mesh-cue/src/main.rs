@@ -1,3 +1,8 @@
+// Hide console window on Windows (GUI application)
+// This sets the executable subsystem to WINDOWS instead of CONSOLE
+// Note: Logs can still be viewed via file logging or debugger attachment
+#![windows_subsystem = "windows"]
+
 //! Mesh Cue - Track preparation GUI application
 
 use mesh_cue::ui::MeshCueApp;
