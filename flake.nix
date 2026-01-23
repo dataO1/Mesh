@@ -20,464 +20,43 @@
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
 
+        # Rust toolchain
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
           extensions = [ "rust-src" "rust-analyzer" ];
         };
 
-        # Build nn~ external for Pure Data
-        nn-external = pkgs.stdenv.mkDerivation {
-          pname = "nn-tilde";
-          version = "unstable";
-          src = nn-tilde;
-
-          nativeBuildInputs = with pkgs; [
-            cmake
-            pkg-config
-          ];
-
-          buildInputs = with pkgs; [
-            puredata
-            libtorch-bin
-          ];
-
-          # CMakeLists.txt is in src/ subdirectory
-          cmakeDir = "../src";
-
-          cmakeFlags = [
-            "-DCMAKE_BUILD_TYPE=Release"
-            "-DPD_INCLUDE_DIR=${pkgs.puredata}/include/pd"
-          ];
-
-          installPhase = ''
-            mkdir -p $out/lib/pd-externals
-            find . -name "*.pd_linux" -exec cp {} $out/lib/pd-externals/ \; || true
-          '';
-        };
-
-        # Build Essentia library from source (nixpkgs only has binary extractor)
-        # Required for mesh-cue's essentia-rs bindings
-        # Using master branch for Python 3.12+ compatibility (WAF updates)
-        essentia = pkgs.stdenv.mkDerivation rec {
-          pname = "essentia";
-          version = "2.1_beta6-dev";
-
-          src = pkgs.fetchFromGitHub {
-            owner = "MTG";
-            repo = "essentia";
-            rev = "17484ff0256169f14a959d62aa89a1463fead13f";
-            hash = "sha256-q+TI03Y5Mw9W+ZNE8I1fEWvn3hjRyaxb7M6ZgntA8RA=";
-          };
-
-          nativeBuildInputs = with pkgs; [
-            python3
-            pkg-config
-          ];
-
-          buildInputs = with pkgs; [
-            eigen
-            fftwFloat
-            taglib
-            chromaprint
-            libsamplerate
-            libyaml
-            ffmpeg_4-headless  # Headless: no SDL/GUI deps (~700MB smaller closure)
-            zlib      # Required for linking
-          ];
-
-          configurePhase = ''
-            runHook preConfigure
-            python3 waf configure \
-              --prefix=$out \
-              --mode=release
-            runHook postConfigure
-          '';
-
-          buildPhase = ''
-            runHook preBuild
-            python3 waf build -j $NIX_BUILD_CORES
-            runHook postBuild
-          '';
-
-          installPhase = ''
-            runHook preInstall
-            python3 waf install
-            runHook postInstall
-          '';
-
-          meta = with pkgs.lib; {
-            description = "Audio analysis and audio-based music information retrieval library";
-            homepage = "https://essentia.upf.edu/";
-            license = licenses.agpl3Plus;
-            platforms = platforms.linux;
-          };
-        };
-
-        # Runtime dependencies for development
-        runtimeInputs = with pkgs; [
-          # Core runtime (C++ stdlib needed by many deps)
-          stdenv.cc.cc.lib  # libstdc++.so.6
-
-          # Audio (libjack2 = client library only, no Python/FireWire bloat)
-          libjack2
-          alsa-lib
-          pipewire
-
-          # GUI (iced dependencies)
-          wayland
-          libxkbcommon
-          xorg.libX11
-          xorg.libXcursor
-          xorg.libXrandr
-          xorg.libXi
-          vulkan-loader
-          libGL
-
-          # Misc
-          openssl
-        ];
-
-        # Build-time only dependencies
-        buildOnlyInputs = with pkgs; [
-          glibc.dev    # Headers for cc-rs crates
-        ];
-
-        # Combined build inputs
-        buildInputs = runtimeInputs ++ buildOnlyInputs;
-
-        # Library paths for runtime
-        libraryPath = pkgs.lib.makeLibraryPath runtimeInputs;
+        # Import shared common definitions
+        common = import ./nix/common.nix { inherit pkgs; };
 
         # =======================================================================
-        # Package Builds for Distribution (.deb/.rpm)
+        # Packages
         # =======================================================================
 
-        # Filtered source for Rust builds - only includes files needed for compilation
-        # This prevents rebuilds when unrelated files change (distrobox.ini, packaging/, etc.)
-        rustSrc = pkgs.lib.cleanSourceWith {
+        # Native Rust build (Linux)
+        meshBuild = import ./nix/packages/mesh-build.nix {
+          inherit pkgs common;
           src = ./.;
-          filter = path: type:
-            let
-              baseName = baseNameOf path;
-              relPath = pkgs.lib.removePrefix (toString ./. + "/") path;
-            in
-            # Always include directories (filter will recurse into them)
-            type == "directory" ||
-            # Cargo files
-            baseName == "Cargo.toml" ||
-            baseName == "Cargo.lock" ||
-            # Rust source files
-            pkgs.lib.hasSuffix ".rs" baseName;
         };
 
-        # Filtered source for .deb packaging - only Cargo.toml (metadata) and packaging/
-        # This is very small, so meshDeb rebuilds are fast even when triggered
-        debSrc = pkgs.lib.cleanSourceWith {
+        # Debian packages (.deb)
+        meshDeb = import ./nix/packages/mesh-deb.nix {
+          inherit pkgs common meshBuild rustToolchain;
           src = ./.;
-          filter = path: type:
-            let
-              baseName = baseNameOf path;
-              relPath = pkgs.lib.removePrefix (toString ./. + "/") path;
-            in
-            type == "directory" ||
-            baseName == "Cargo.toml" ||
-            baseName == "Cargo.lock" ||
-            pkgs.lib.hasPrefix "packaging/" relPath;
-        };
-
-        # Common build inputs for Rust packages
-        meshBuildInputs = runtimeInputs ++ [
-          essentia
-        ] ++ (with pkgs; [
-          eigen
-          fftwFloat
-          taglib
-          chromaprint
-          libsamplerate
-          libyaml
-          ffmpeg_4-headless
-          zlib
-        ]);
-
-        # Build the Rust workspace using rustPlatform (handles dependency fetching)
-        # Uses filtered rustSrc to avoid rebuilds when non-Rust files change
-        meshBuild = pkgs.rustPlatform.buildRustPackage {
-          pname = "mesh";
-          version = "0.1.0";
-          src = rustSrc;
-
-          # Cargo.lock hash - update this when deps change
-          # Run: nix build .#mesh-build 2>&1 | grep "got:" to get new hash
-          cargoHash = "sha256-jMe47CJzn8W/fzTe0BNAUy+QsSMyeDSzp3866s67aeM=";
-
-          nativeBuildInputs = with pkgs; [
-            pkg-config
-            cmake
-            clang
-            llvmPackages.libclang
-            gnumake
-          ];
-
-          buildInputs = meshBuildInputs;
-
-          # Build environment
-          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-          BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/21/include";
-          PKG_CONFIG_PATH = "${essentia}/lib/pkgconfig";
-          USE_TENSORFLOW = "0";
-          CPLUS_INCLUDE_PATH = "${pkgs.eigen}/include/eigen3";
-
-          # Build specific packages
-          cargoBuildFlags = [ "-p" "mesh-player" "-p" "mesh-cue" ];
-
-          meta = with pkgs.lib; {
-            description = "DJ Player and Cue Software";
-            license = licenses.agpl3Plus;
-          };
-        };
-
-        # Create portable .deb packages with patchelf
-        # This uses the pre-built binaries from meshBuild
-        # Uses filtered debSrc (only Cargo.toml + packaging/) for fast rebuilds
-        meshDeb = pkgs.stdenv.mkDerivation {
-          pname = "mesh-deb";
-          version = "0.1.0";
-          src = debSrc;
-
-          nativeBuildInputs = with pkgs; [
-            patchelf
-            cargo-deb
-            rustToolchain  # For cargo-deb
-          ];
-
-          # No build phase - we use pre-built binaries
-          dontBuild = true;
-          dontConfigure = true;
-
-          installPhase = ''
-            runHook preInstall
-
-            # Create target directory structure that cargo-deb expects
-            mkdir -p target/release/bundled
-
-            # Copy pre-built binaries from meshBuild
-            cp ${meshBuild}/bin/mesh-player target/release/
-            cp ${meshBuild}/bin/mesh-cue target/release/
-
-            echo "=== Patching binaries for portability ==="
-            # Make binaries writable for patchelf
-            chmod +w target/release/mesh-player target/release/mesh-cue
-
-            # Remove Nix store paths from RUNPATH, set to standard Linux + bundled lib path
-            patchelf --set-rpath '/usr/lib/x86_64-linux-gnu:/usr/lib' target/release/mesh-player
-            patchelf --set-rpath '/usr/lib/mesh:/usr/lib/x86_64-linux-gnu:/usr/lib' target/release/mesh-cue
-
-            # Set interpreter to standard Linux path
-            patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 target/release/mesh-player
-            patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 target/release/mesh-cue
-
-            echo "=== Verifying patchelf results ==="
-            patchelf --print-rpath target/release/mesh-player
-            patchelf --print-rpath target/release/mesh-cue
-
-            echo "=== Staging bundled libraries ==="
-            # Bundle libessentia
-            cp ${essentia}/lib/libessentia.so target/release/bundled/
-            chmod +w target/release/bundled/libessentia.so
-
-            # Bundle FFmpeg 4.x libraries (essentia depends on these, modern distros have FFmpeg 6.x)
-            # Only copy the versioned .so files, not symlinks
-            cp ${pkgs.ffmpeg_4-headless.lib}/lib/libavcodec.so.58.134.100 target/release/bundled/libavcodec.so.58
-            cp ${pkgs.ffmpeg_4-headless.lib}/lib/libavformat.so.58.76.100 target/release/bundled/libavformat.so.58
-            cp ${pkgs.ffmpeg_4-headless.lib}/lib/libavutil.so.56.70.100 target/release/bundled/libavutil.so.56
-            cp ${pkgs.ffmpeg_4-headless.lib}/lib/libswresample.so.3.9.100 target/release/bundled/libswresample.so.3
-
-            # Patch libessentia to find FFmpeg in /usr/lib/mesh/ instead of Nix store
-            patchelf --set-rpath '/usr/lib/mesh:/usr/lib/x86_64-linux-gnu:/usr/lib' target/release/bundled/libessentia.so
-
-            echo "Bundled libraries:"
-            ls -lh target/release/bundled/
-
-            echo "=== Creating .deb packages ==="
-            cargo deb -p mesh-player --no-build --no-strip
-            cargo deb -p mesh-cue --no-build --no-strip
-
-            # Copy outputs
-            mkdir -p $out
-            cp target/debian/*.deb $out/
-
-            echo "=== Build complete ==="
-            ls -la $out/
-
-            runHook postInstall
-          '';
         };
 
         # =======================================================================
-        # Windows Cross-Compilation (.exe)
+        # Apps
         # =======================================================================
-        # Uses MinGW-w64 toolchain to cross-compile from Linux to Windows.
-        # Reference: https://essentia.upf.edu/FAQ.html#cross-compiling-for-windows-on-linux
 
-        # MinGW-w64 cross-compilation pkgset
-        pkgsWin = pkgs.pkgsCross.mingwW64;
+        # Windows cross-compilation (container-based)
+        buildWindowsApp = import ./nix/apps/build-windows.nix { inherit pkgs; };
 
-        # Rust toolchain with Windows target
-        rustToolchainWin = pkgs.rust-bin.stable.latest.default.override {
-          extensions = [ "rust-src" ];
-          targets = [ "x86_64-pc-windows-gnu" ];
-        };
+        # =======================================================================
+        # Development Shell
+        # =======================================================================
 
-        # Essentia cross-compiled for Windows using MinGW
-        # WAF supports --cross-compile-mingw32 flag for this purpose
-        #
-        # This uses pkgs.stdenv (native Linux) with explicit cross-compilation
-        # rather than pkgsWin.stdenv, because we need to run build tools on Linux
-        # while producing Windows binaries.
-        essentiaWin = pkgs.stdenv.mkDerivation rec {
-          pname = "essentia-win";
-          version = "2.1_beta6-dev";
-
-          src = pkgs.fetchFromGitHub {
-            owner = "MTG";
-            repo = "essentia";
-            rev = "17484ff0256169f14a959d62aa89a1463fead13f";
-            hash = "sha256-q+TI03Y5Mw9W+ZNE8I1fEWvn3hjRyaxb7M6ZgntA8RA=";
-          };
-
-          # All build tools run on Linux
-          nativeBuildInputs = [
-            pkgs.python3      # WAF build system
-            pkgs.pkg-config
-            pkgsWin.stdenv.cc # MinGW cross-compiler
-          ];
-
-          # For cross-compilation, we need to explicitly handle each dependency:
-          # - Header-only libs (eigen): use native via include path
-          # - Windows libs: build from source or use pkgsWin
-
-          # Environment for cross-compilation
-          EIGEN_INCLUDE_PATH = "${pkgs.eigen}/include/eigen3";
-
-          # WAF configure for MinGW cross-compilation
-          configurePhase = ''
-            runHook preConfigure
-
-            # Set up cross-compilation environment
-            export CC=${pkgsWin.stdenv.cc}/bin/${pkgsWin.stdenv.cc.targetPrefix}gcc
-            export CXX=${pkgsWin.stdenv.cc}/bin/${pkgsWin.stdenv.cc.targetPrefix}g++
-            export AR=${pkgsWin.stdenv.cc}/bin/${pkgsWin.stdenv.cc.targetPrefix}ar
-            export RANLIB=${pkgsWin.stdenv.cc}/bin/${pkgsWin.stdenv.cc.targetPrefix}ranlib
-            export CPLUS_INCLUDE_PATH="${pkgs.eigen}/include/eigen3:$CPLUS_INCLUDE_PATH"
-
-            # Note: Essentia's WAF build needs Windows-compiled dependencies.
-            # This is a placeholder - full Windows build requires building
-            # all dependencies (fftw, ffmpeg, taglib, etc.) for MinGW first.
-            # See: https://essentia.upf.edu/FAQ.html#cross-compiling-for-windows-on-linux
-            python3 waf configure \
-              --prefix=$out \
-              --mode=release \
-              --cross-compile-mingw32 || {
-                echo "WARNING: Essentia Windows cross-compilation requires MinGW-built dependencies"
-                echo "This derivation is a work-in-progress placeholder"
-                exit 1
-              }
-
-            runHook postConfigure
-          '';
-
-          buildPhase = ''
-            runHook preBuild
-            python3 waf build -j $NIX_BUILD_CORES
-            runHook postBuild
-          '';
-
-          installPhase = ''
-            runHook preInstall
-            python3 waf install
-            runHook postInstall
-          '';
-
-          meta = with pkgs.lib; {
-            description = "Essentia audio analysis library (Windows/MinGW build)";
-            homepage = "https://essentia.upf.edu/";
-            license = licenses.agpl3Plus;
-            platforms = [ "x86_64-linux" ];  # Cross-compiled FROM Linux
-          };
-        };
-
-        # Build Rust workspace for Windows
-        # Uses cross-compilation with x86_64-pc-windows-gnu target
-        #
-        # This uses rustPlatform.buildRustPackage for proper dependency handling,
-        # with cross-compilation configured via environment variables.
-        #
-        # Note: mesh-player can be built without Essentia
-        # mesh-cue requires Essentia which needs additional work for Windows
-        # For Windows cross-compilation, we need to use makeRustPlatform with
-        # the Windows target configured at the platform level
-        rustPlatformWin = pkgs.makeRustPlatform {
-          cargo = rustToolchainWin;
-          rustc = rustToolchainWin;
-        };
-
-        meshWindowsBuild = rustPlatformWin.buildRustPackage {
-          pname = "mesh-windows";
-          version = "0.1.0";
-          src = rustSrc;
-
-          # Cargo.lock hash for Windows target - includes Windows-specific crates
-          # Run: nix build .#mesh-windows 2>&1 | grep "got:" to update
-          cargoHash = "sha256-EdZwaoQn/EgNSAa72y2q7cahwnTs17nrDLy4FDTToac=";
-
-          nativeBuildInputs = with pkgs; [
-            pkg-config
-            cmake           # Needed for some Rust crates that use cmake
-            clang
-            llvmPackages.libclang
-            gnumake
-            # MinGW toolchain for linking
-            pkgsWin.buildPackages.gcc
-          ];
-
-          # No cross-compiled buildInputs needed for mesh-player
-          # (it uses pure Rust deps + iced which handles Windows natively)
-          buildInputs = [];
-
-          # Explicit target specification for cross-compilation
-          CARGO_BUILD_TARGET = "x86_64-pc-windows-gnu";
-
-          # Linker configuration for the Windows target
-          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = "${pkgsWin.buildPackages.gcc}/bin/x86_64-w64-mingw32-gcc";
-
-          # Add MinGW pthreads library path for linking
-          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS = "-L native=${pkgsWin.windows.pthreads}/lib";
-
-          # For bindgen (some crates need this for FFI generation)
-          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-          BINDGEN_EXTRA_CLANG_ARGS = "-isystem ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/21/include";
-          USE_TENSORFLOW = "0";
-
-          # Build only mesh-player for Windows (no Essentia needed)
-          # Use --target flag explicitly in case env var isn't picked up
-          buildPhase = ''
-            runHook preBuild
-            cargo build --release --target x86_64-pc-windows-gnu -p mesh-player
-            runHook postBuild
-          '';
-
-          installPhase = ''
-            runHook preInstall
-            mkdir -p $out/bin
-            cp target/x86_64-pc-windows-gnu/release/mesh-player.exe $out/bin/
-            echo "Windows build successful: mesh-player.exe"
-            runHook postInstall
-          '';
-
-          meta = with pkgs.lib; {
-            description = "Mesh DJ software (Windows build) - mesh-player only";
-            license = licenses.agpl3Plus;
-            platforms = [ "x86_64-linux" ];  # Cross-compiled FROM Linux
-          };
+        devShell = import ./nix/devshell.nix {
+          inherit pkgs common rustToolchain;
         };
 
       in
@@ -486,135 +65,10 @@
         packages = {
           mesh-build = meshBuild;
           mesh-deb = meshDeb;
-          mesh-windows = meshWindowsBuild;
-          essentia-win = essentiaWin;
           default = meshDeb;
         };
 
-        devShells.default = pkgs.mkShell {
-          name = "mesh-dev-shell";
-
-          # mkShell properly adds all packages to PATH (unlike stdenv.mkDerivation)
-          packages = buildInputs ++ [
-            # Custom essentia library (built from source)
-            essentia
-          ] ++ (with pkgs; [
-            # Essentia dependencies (needed for essentia-sys pkg-config)
-            eigen
-            fftwFloat
-            taglib
-            chromaprint
-            libsamplerate
-            libyaml
-            ffmpeg_4-headless  # Headless: no SDL/GUI deps (~700MB smaller closure)
-            zlib      # Required for linking
-
-            # Development tools
-            rustToolchain
-            rust-analyzer
-            cargo-watch
-            cargo-edit
-            cargo-expand
-            pkg-config
-            cmake
-            clang
-            llvmPackages.libclang
-            gcc.cc  # For C++ stdlib
-            gnumake  # For libffi-sys build
-            autoconf
-            automake
-            libtool
-
-            # Debugging
-            gdb
-            lldb
-
-            # Database inspection (CozoDB uses SQLite backend)
-            sqlite
-
-            # Package testing (requires podman on host, see shellHook)
-            distrobox
-          ]);
-
-          shellHook = ''
-            # Rust environment
-            export RUST_BACKTRACE=1
-
-            # Logging: only show mesh-* crate logs at info level, filter out noisy dependencies
-            export RUST_LOG="warn,mesh_core=debug,mesh_cue=debug,mesh_player=debug"
-
-            # Library paths
-            export LD_LIBRARY_PATH="${libraryPath}:$LD_LIBRARY_PATH"
-
-            # Ensure GNU make is in PATH first and used everywhere (required by libffi-sys)
-            # Create a temp bin dir with make symlink to ensure GNU make is used
-            export MESH_MAKE_DIR=$(mktemp -d)
-            ln -sf ${pkgs.gnumake}/bin/make $MESH_MAKE_DIR/make
-            ln -sf ${pkgs.gnumake}/bin/make $MESH_MAKE_DIR/gmake
-            ln -sf ${pkgs.cmake}/bin/cmake $MESH_MAKE_DIR/cmake
-            export PATH="$MESH_MAKE_DIR:${pkgs.gnumake}/bin:${pkgs.cmake}/bin:$PATH"
-            export MAKE="${pkgs.gnumake}/bin/make"
-
-            # Use clang for C/C++ compilation (better nix compatibility than gcc)
-            export CC="${pkgs.clang}/bin/clang"
-            export CXX="${pkgs.clang}/bin/clang++"
-
-            # Clang/LLVM for bindgen (only for Rust FFI generation)
-            export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
-
-            # Clang needs to know where headers and libs are in nix
-            # Use -idirafter for glibc so it comes AFTER C++ headers (for #include_next)
-            export CFLAGS="-idirafter ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/21/include"
-            export CXXFLAGS="-isystem ${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version} -isystem ${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version}/x86_64-unknown-linux-gnu -idirafter ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/21/include"
-            export LDFLAGS="-L${pkgs.glibc}/lib -L${pkgs.gcc.cc.lib}/lib"
-
-            # Bindgen needs to know where C headers are (glibc + clang builtins)
-            export BINDGEN_EXTRA_CLANG_ARGS="-isystem ${pkgs.glibc.dev}/include -isystem ${pkgs.llvmPackages.libclang.lib}/lib/clang/21/include"
-
-            # PD externals path (nn~ and others)
-            # nn-external will be built separately; for now just use local externals
-            export PD_EXTERNALS="./effects/pd/externals"
-
-            # JACK settings
-            export JACK_NO_AUDIO_RESERVATION=1
-
-            # Torch library path (for nn~)
-            export LIBTORCH="${pkgs.libtorch-bin}"
-            export LIBTORCH_LIB="${pkgs.libtorch-bin}/lib"
-            export LIBTORCH_INCLUDE="${pkgs.libtorch-bin}/include"
-
-            # Essentia library (built from source for mesh-cue)
-            export PKG_CONFIG_PATH="${essentia}/lib/pkgconfig:$PKG_CONFIG_PATH"
-            export LD_LIBRARY_PATH="${essentia}/lib:$LD_LIBRARY_PATH"
-            # Disable TensorFlow in essentia-sys (not needed for BPM/key detection)
-            export USE_TENSORFLOW=0
-            # Fix Eigen include path for essentia-sys (it incorrectly appends /eigen3)
-            export CPLUS_INCLUDE_PATH="${pkgs.eigen}/include/eigen3:$CPLUS_INCLUDE_PATH"
-
-            # Vulkan for iced
-            export VK_ICD_FILENAMES="${pkgs.vulkan-loader}/share/vulkan/icd.d/intel_icd.x86_64.json:${pkgs.vulkan-loader}/share/vulkan/icd.d/radeon_icd.x86_64.json"
-
-            echo ""
-            echo "╔═══════════════════════════════════════════════════════════════════════╗"
-            echo "║                      Mesh Development Shell                           ║"
-            echo "╠═══════════════════════════════════════════════════════════════════════╣"
-            echo "║  Development:                                                         ║"
-            echo "║    cargo run -p mesh-player          # DJ application                 ║"
-            echo "║    cargo run -p mesh-cue             # Track preparation              ║"
-            echo "║    cargo test                        # Run all tests                  ║"
-            echo "╠═══════════════════════════════════════════════════════════════════════╣"
-            echo "║  Build portable packages:                                             ║"
-            echo "║    nix build .#mesh-deb             # Build .debs → ./result/         ║"
-            echo "║    nix build .#mesh-windows         # Build .exe  → ./result/         ║"
-            echo "╠═══════════════════════════════════════════════════════════════════════╣"
-            echo "║  Test .deb packages (requires: virtualisation.podman.enable = true)   ║"
-            echo "║    distrobox assemble create        # Create container + auto-install ║"
-            echo "║    distrobox enter mesh-ubuntu      # Enter and test (mesh-player)    ║"
-            echo "║    distrobox assemble rm            # Clean up when done              ║"
-            echo "╚═══════════════════════════════════════════════════════════════════════╝"
-            echo ""
-          '';
-        };
+        devShells.default = devShell;
 
         # For CI/CD or quick checks
         checks = {
@@ -625,6 +79,14 @@
             cargo fmt --check
             touch $out
           '';
+        };
+
+        # Runnable apps
+        apps = {
+          build-windows = {
+            type = "app";
+            program = "${buildWindowsApp}/bin/build-windows";
+          };
         };
       }
     );
