@@ -707,6 +707,9 @@ PKGWRAPPER
       echo "  ✗ mesh-cue.exe (not built)"
     fi
 
+    # Clean up temporary folders - only keep the zips
+    rm -rf "$PLAYER_DIR" "$CUE_DIR"
+
     echo ""
     echo "╔═══════════════════════════════════════════════════════════════════════╗"
     echo "║                        Build Complete!                                ║"
