@@ -138,10 +138,9 @@ impl CollectionState {
 
 impl Default for CollectionState {
     fn default() -> Self {
-        // Default to ~/Music/mesh-collection
-        let default_path = std::env::var("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("."))
+        // Default to ~/Music/mesh-collection (cross-platform via dirs crate)
+        let default_path = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
             .join("Music")
             .join("mesh-collection");
 

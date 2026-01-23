@@ -729,10 +729,10 @@ fn sanitize_filename(name: &str) -> String {
 }
 
 /// Get the default import folder path
+/// Uses dirs::home_dir() for cross-platform compatibility (Windows, macOS, Linux)
 pub fn default_import_folder() -> PathBuf {
-    std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
         .join("Music")
         .join("mesh-collection")
         .join("import")
