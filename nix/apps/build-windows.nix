@@ -63,7 +63,7 @@
 
 pkgs.writeShellApplication {
   name = "build-windows";
-  runtimeInputs = with pkgs; [ podman coreutils ];
+  runtimeInputs = with pkgs; [ podman coreutils zip ];
   text = ''
     set -euo pipefail
 
@@ -392,7 +392,11 @@ TOOLCHAIN
           # This flag makes the Windows DLL export all symbols like Linux .so files do.
           # Without it, essentia.dll exports nothing (Windows requires explicit exports),
           # causing 100+ "undefined reference" errors when linking mesh-cue.exe.
-          export LDFLAGS="-L$DEPS_PREFIX/lib -lfftw3f -Wl,--export-all-symbols"
+          #
+          # -static-libgcc -static-libstdc++: Embed MinGW runtime INTO essentia.dll
+          # Without this, users would need libstdc++-6.dll and libgcc_s_seh-1.dll
+          # alongside mesh-cue.exe. With static linking, only essentia.dll is needed.
+          export LDFLAGS="-L$DEPS_PREFIX/lib -lfftw3f -Wl,--export-all-symbols -static-libgcc -static-libstdc++"
 
           if ! python3 waf configure \
             --prefix="$ESSENTIA_PREFIX" \
@@ -601,37 +605,124 @@ PKGWRAPPER
           echo "         mesh-player.exe was built successfully"
           echo ""
         }
+
+        # =====================================================================
+        # Phase 6: Gather runtime DLLs for distribution
+        # =====================================================================
+        # MinGW applications need these DLLs at runtime. Rather than fighting
+        # with static linking (especially pthread), we ship them alongside .exe
+        # Reference: https://discussion.fedoraproject.org/t/location-of-mingw64-mingw32-system-libraries
+        echo ""
+        echo "==> Gathering runtime DLLs for distribution..."
+        mkdir -p /project/target/dlls
+
+        # Find MinGW runtime DLLs using the compiler
+        for dll in libstdc++-6.dll libgcc_s_seh-1.dll libwinpthread-1.dll; do
+          dll_path=$(x86_64-w64-mingw32-gcc --print-file-name "$dll")
+          if [[ -f "$dll_path" ]]; then
+            cp "$dll_path" /project/target/dlls/
+            echo "  Found: $dll"
+          else
+            echo "  WARNING: $dll not found"
+          fi
+        done
+
+        # Copy essentia.dll (needed by mesh-cue.exe)
+        if [[ -f "$ESSENTIA_PREFIX/lib/essentia.dll" ]]; then
+          cp "$ESSENTIA_PREFIX/lib/essentia.dll" /project/target/dlls/
+          echo "  Found: essentia.dll"
+        elif [[ -f "$ESSENTIA_PREFIX/bin/essentia.dll" ]]; then
+          cp "$ESSENTIA_PREFIX/bin/essentia.dll" /project/target/dlls/
+          echo "  Found: essentia.dll"
+        fi
+
+        echo ""
+        echo "==> DLLs gathered in /project/target/dlls/"
+        ls -lh /project/target/dlls/
       '
 
     echo ""
-    echo "==> Copying outputs..."
+    echo "==> Creating distribution packages..."
 
-    # Copy mesh-player
+    # Create separate folders for each application
+    PLAYER_DIR="$OUTPUT_DIR/mesh-player"
+    CUE_DIR="$OUTPUT_DIR/mesh-cue"
+    DLL_DIR="$TARGET_DIR/dlls"
+
+    rm -rf "$PLAYER_DIR" "$CUE_DIR"
+    mkdir -p "$PLAYER_DIR" "$CUE_DIR"
+
+    # Runtime DLLs needed by both applications (MinGW C++ runtime)
+    RUNTIME_DLLS="libstdc++-6.dll libgcc_s_seh-1.dll libwinpthread-1.dll"
+
+    # --- mesh-player package ---
     PLAYER_EXE="$TARGET_DIR/x86_64-pc-windows-gnu/release/mesh-player.exe"
     if [[ -f "$PLAYER_EXE" ]]; then
-      cp "$PLAYER_EXE" "$OUTPUT_DIR/"
-      chmod 644 "$OUTPUT_DIR/mesh-player.exe"
+      echo "==> Packaging mesh-player..."
+      cp "$PLAYER_EXE" "$PLAYER_DIR/"
+
+      # Copy runtime DLLs
+      for dll in $RUNTIME_DLLS; do
+        if [[ -f "$DLL_DIR/$dll" ]]; then
+          cp "$DLL_DIR/$dll" "$PLAYER_DIR/"
+          echo "  ✓ $dll"
+        fi
+      done
       echo "  ✓ mesh-player.exe"
+
+      # Create zip
+      (cd "$OUTPUT_DIR" && zip -r mesh-player.zip mesh-player/)
+      echo "  ✓ Created dist/windows/mesh-player.zip"
     else
       echo "  ✗ mesh-player.exe (build failed)"
     fi
 
-    # Copy mesh-cue (if built)
+    # --- mesh-cue package ---
     CUE_EXE="$TARGET_DIR/x86_64-pc-windows-gnu/release/mesh-cue.exe"
     if [[ -f "$CUE_EXE" ]]; then
-      cp "$CUE_EXE" "$OUTPUT_DIR/"
-      chmod 644 "$OUTPUT_DIR/mesh-cue.exe"
+      echo ""
+      echo "==> Packaging mesh-cue..."
+      cp "$CUE_EXE" "$CUE_DIR/"
+
+      # Copy runtime DLLs
+      for dll in $RUNTIME_DLLS; do
+        if [[ -f "$DLL_DIR/$dll" ]]; then
+          cp "$DLL_DIR/$dll" "$CUE_DIR/"
+          echo "  ✓ $dll"
+        fi
+      done
+
+      # Copy essentia.dll (only needed by mesh-cue)
+      if [[ -f "$DLL_DIR/essentia.dll" ]]; then
+        cp "$DLL_DIR/essentia.dll" "$CUE_DIR/"
+        echo "  ✓ essentia.dll"
+      fi
       echo "  ✓ mesh-cue.exe"
+
+      # Create zip
+      (cd "$OUTPUT_DIR" && zip -r mesh-cue.zip mesh-cue/)
+      echo "  ✓ Created dist/windows/mesh-cue.zip"
     else
-      echo "  ✗ mesh-cue.exe (not built - Essentia cross-compilation pending)"
+      echo ""
+      echo "  ✗ mesh-cue.exe (not built)"
     fi
 
     echo ""
     echo "╔═══════════════════════════════════════════════════════════════════════╗"
     echo "║                        Build Complete!                                ║"
     echo "╠═══════════════════════════════════════════════════════════════════════╣"
-    echo "║  Output directory: dist/windows/                                        ║"
+    echo "║  Distribution packages ready in dist/windows/                         ║"
+    echo "║                                                                       ║"
+    echo "║  mesh-player.zip:                                                     ║"
+    echo "║    - mesh-player.exe + MinGW runtime DLLs                             ║"
+    echo "║                                                                       ║"
+    echo "║  mesh-cue.zip:                                                        ║"
+    echo "║    - mesh-cue.exe + MinGW runtime DLLs + essentia.dll                 ║"
+    echo "║                                                                       ║"
+    echo "║  Just extract and run on Windows - no installation needed!            ║"
     echo "╚═══════════════════════════════════════════════════════════════════════╝"
-    ls -lh "$OUTPUT_DIR/"
+    echo ""
+    echo "Distribution packages:"
+    ls -lh "$OUTPUT_DIR/"*.zip 2>/dev/null || echo "  (no zip files created)"
   '';
 }
