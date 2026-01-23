@@ -4,7 +4,7 @@
 //! - `MeshCueDomain` handles all business logic, services, and state
 //! - `MeshCueApp` handles display and user input only
 
-use crate::audio::{AudioState, JackHandle};
+use crate::audio::{AudioHandle, AudioState};
 use crate::config;
 use crate::domain::MeshCueDomain;
 use crate::keybindings::{self, KeybindingsConfig};
@@ -54,9 +54,9 @@ pub struct MeshCueApp {
     pub(crate) collection: CollectionState,
     /// Audio playback state
     pub(crate) audio: AudioState,
-    /// JACK client handle (keeps audio running)
+    /// Audio handle (keeps audio running)
     #[allow(dead_code)]
-    jack_client: Option<JackHandle>,
+    audio_handle: Option<AudioHandle>,
     /// Settings modal state
     pub(crate) settings: SettingsState,
     /// Whether shift key is currently held (for shift+click actions)
@@ -152,15 +152,15 @@ impl MeshCueApp {
             collection_state.left_tracks = tracks_to_rows(&tracks);
         }
 
-        // Start JACK client for audio preview (lock-free architecture)
+        // Start audio system for preview (lock-free architecture)
         // Domain owns the db_service internally
-        let (audio, jack_client) = match domain.init_audio_preview() {
+        let (audio, audio_handle) = match domain.init_audio_preview() {
             Ok((audio_state, handle)) => {
-                log::info!("JACK audio preview enabled (lock-free)");
+                log::info!("Audio preview enabled (lock-free)");
                 (audio_state, Some(handle))
             }
             Err(e) => {
-                log::warn!("JACK not available: {} - audio preview disabled", e);
+                log::warn!("Audio not available: {} - audio preview disabled", e);
                 (AudioState::disconnected(), None)
             }
         };
@@ -170,7 +170,7 @@ impl MeshCueApp {
             current_view: View::Collection,
             collection: collection_state,
             audio,
-            jack_client,
+            audio_handle,
             settings,
             shift_held: false,
             ctrl_held: false,
@@ -360,7 +360,7 @@ impl MeshCueApp {
             Message::UpdateSettingsBpmSource(source) => return self.handle_update_settings_bpm_source(source),
             Message::UpdateSettingsSlicerBufferBars(bars) => return self.handle_update_settings_slicer_buffer_bars(bars),
             Message::UpdateSettingsOutputPair(idx) => return self.handle_update_settings_output_pair(idx),
-            Message::RefreshJackPorts => return self.handle_refresh_jack_ports(),
+            Message::RefreshAudioDevices => return self.handle_refresh_audio_devices(),
             Message::SaveSettings => return self.handle_save_settings(),
             Message::SaveSettingsComplete(result) => return self.handle_save_settings_complete(result),
             // Keyboard input (delegated to handlers/keyboard.rs)

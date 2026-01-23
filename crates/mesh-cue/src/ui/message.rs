@@ -138,8 +138,8 @@ pub enum Message {
     UpdateSettingsSlicerBufferBars(u32),
     /// Update selected audio output pair
     UpdateSettingsOutputPair(usize),
-    /// Refresh available JACK ports
-    RefreshJackPorts,
+    /// Refresh available audio devices
+    RefreshAudioDevices,
     SaveSettings,
     SaveSettingsComplete(Result<(), String>),
 

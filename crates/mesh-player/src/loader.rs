@@ -3,8 +3,8 @@
 //! Moves expensive track loading operations (file I/O, waveform computation)
 //! off the UI thread to prevent audio stuttering during track loads.
 //!
-//! The loader thread automatically resamples tracks to match JACK's sample rate,
-//! ensuring correct playback speed regardless of the JACK server configuration.
+//! The loader thread automatically resamples tracks to match the audio system's
+//! sample rate, ensuring correct playback speed regardless of the system configuration.
 //!
 //! Note: Linked stem loading is handled separately by `mesh_core::loader::LinkedStemLoader`.
 //!
@@ -68,7 +68,7 @@ pub struct TrackLoader {
     tx: Sender<TrackLoadRequest>,
     /// Channel to receive load results (wrapped for subscription support)
     rx: TrackLoadResultReceiver,
-    /// Target sample rate for loading (JACK's sample rate)
+    /// Target sample rate for loading (audio system's sample rate)
     target_sample_rate: Arc<AtomicU32>,
     /// Thread handle (for graceful shutdown)
     _handle: JoinHandle<()>,
@@ -78,7 +78,7 @@ impl TrackLoader {
     /// Spawn the background loader thread
     ///
     /// # Arguments
-    /// * `target_sample_rate` - JACK's sample rate for resampling tracks on load
+    /// * `target_sample_rate` - Audio system's sample rate for resampling tracks on load
     ///
     /// Note: The loader is database-agnostic. Metadata is provided with each
     /// load request by the domain layer, which knows which database to query.
@@ -107,7 +107,7 @@ impl TrackLoader {
         }
     }
 
-    /// Update the target sample rate (if JACK rate changes)
+    /// Update the target sample rate (if audio system rate changes)
     pub fn set_sample_rate(&self, sample_rate: u32) {
         self.target_sample_rate.store(sample_rate, Ordering::SeqCst);
         log::info!("TrackLoader target sample rate updated to: {} Hz", sample_rate);

@@ -111,8 +111,8 @@ pub struct AudioConfig {
     pub phase_sync: bool,
     /// Loudness normalization settings
     pub loudness: LoudnessConfig,
-    /// JACK port routing configuration
-    pub jack_ports: JackPortConfig,
+    /// Audio output device configuration
+    pub outputs: AudioOutputConfig,
 }
 
 impl Default for AudioConfig {
@@ -121,27 +121,28 @@ impl Default for AudioConfig {
             global_bpm: 128.0, // Standard house/techno BPM
             phase_sync: true,  // Automatic beat sync enabled by default
             loudness: LoudnessConfig::default(),
-            jack_ports: JackPortConfig::default(),
+            outputs: AudioOutputConfig::default(),
         }
     }
 }
 
-/// JACK port routing configuration
+/// Audio output device configuration
 ///
-/// Configures which physical audio outputs receive master (speakers)
-/// and cue (headphones) audio. Uses stereo pair indices:
-/// - Pair 0 = outputs 1-2
-/// - Pair 1 = outputs 3-4
-/// - etc.
+/// Configures which audio devices are used for master (speakers)
+/// and cue (headphones) output. Uses device indices from the available
+/// devices list.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
-pub struct JackPortConfig {
-    /// Master stereo pair index (0 = outputs 1-2, 1 = outputs 3-4, etc.)
-    /// None = auto-detect first available pair
-    pub master_pair: Option<usize>,
-    /// Cue stereo pair index for headphone monitoring
-    /// None = auto-detect second available pair (or same as master if only 2 outputs)
-    pub cue_pair: Option<usize>,
+pub struct AudioOutputConfig {
+    /// Master output device index (0 = first device, 1 = second, etc.)
+    /// None = use system default device
+    pub master_device: Option<usize>,
+    /// Cue/headphone output device index
+    /// None = use system default (same device as master, different channels if possible)
+    pub cue_device: Option<usize>,
+    /// Preferred buffer size in frames (64, 128, 256, 512, 1024, etc.)
+    /// None = use system default (~512 frames)
+    pub buffer_size: Option<u32>,
 }
 
 // LoudnessConfig is re-exported from mesh_core::config

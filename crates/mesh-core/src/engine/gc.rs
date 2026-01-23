@@ -9,7 +9,7 @@
 //!
 //! Memory deallocation involves system calls (munmap, madvise) that can take
 //! 100ms+ for large buffers like `StemBuffers` (~450MB). This would cause
-//! JACK xruns if done on the RT audio thread.
+//! audio underruns if done on the RT audio thread.
 //!
 //! With `basedrop::Shared<T>`:
 //! - Drop on RT thread: ~50ns (just enqueues a pointer)
@@ -39,7 +39,7 @@
 //! ┌─────────────────────────────────────────────────────────────────────┐
 //! │                        Runtime Operation                            │
 //! │                                                                     │
-//! │   UI Thread                         JACK RT Thread                  │
+//! │   UI Thread                         Audio RT Thread                 │
 //! │   ┌────────────────┐                ┌────────────────┐              │
 //! │   │ Load new track │                │ Replace deck   │              │
 //! │   │                │                │ track with new │              │
@@ -67,7 +67,7 @@
 //!
 //! **Rule of thumb**: Use `Shared<T>` for any data that:
 //! 1. Is large (>1MB)
-//! 2. Might be dropped on the JACK process callback thread
+//! 2. Might be dropped on the audio callback thread
 //! 3. Would cause latency spikes if deallocated synchronously
 //!
 //! ## Performance Characteristics

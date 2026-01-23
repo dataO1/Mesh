@@ -54,12 +54,12 @@ pub struct SettingsState {
     pub draft_target_lufs_index: usize,
     /// Draft show local collection in browser
     pub draft_show_local_collection: bool,
-    /// Draft master stereo pair index (for JACK routing)
-    pub draft_master_pair: usize,
-    /// Draft cue stereo pair index (for JACK routing)
-    pub draft_cue_pair: usize,
-    /// Available JACK stereo output pairs
-    pub available_stereo_pairs: Vec<StereoPair>,
+    /// Draft master device index (for audio routing)
+    pub draft_master_device: usize,
+    /// Draft cue device index (for audio routing)
+    pub draft_cue_device: usize,
+    /// Available audio output devices
+    pub available_devices: Vec<StereoPair>,
     /// Status message (for save feedback)
     pub status: String,
 }
@@ -67,9 +67,9 @@ pub struct SettingsState {
 impl SettingsState {
     /// Create settings state from current config
     pub fn from_config(config: &crate::config::PlayerConfig) -> Self {
-        // Query available JACK ports
-        let available_stereo_pairs = get_available_stereo_pairs();
-        let num_pairs = available_stereo_pairs.len();
+        // Query available audio devices
+        let available_devices = get_available_stereo_pairs();
+        let num_devices = available_devices.len();
 
         Self {
             is_open: false,
@@ -82,19 +82,19 @@ impl SettingsState {
             draft_auto_gain_enabled: config.audio.loudness.auto_gain_enabled,
             draft_target_lufs_index: lufs_to_index(config.audio.loudness.target_lufs),
             draft_show_local_collection: config.display.show_local_collection,
-            draft_master_pair: config.audio.jack_ports.master_pair.unwrap_or(0),
-            draft_cue_pair: config.audio.jack_ports.cue_pair.unwrap_or_else(|| {
-                if num_pairs >= 2 { 1 } else { 0 }
+            draft_master_device: config.audio.outputs.master_device.unwrap_or(0),
+            draft_cue_device: config.audio.outputs.cue_device.unwrap_or_else(|| {
+                if num_devices >= 2 { 1 } else { 0 }
             }),
-            available_stereo_pairs,
+            available_devices,
             status: String::new(),
         }
     }
 
     /// Create default settings state
     pub fn new() -> Self {
-        let available_stereo_pairs = get_available_stereo_pairs();
-        let num_pairs = available_stereo_pairs.len();
+        let available_devices = get_available_stereo_pairs();
+        let num_devices = available_devices.len();
 
         Self {
             is_open: false,
@@ -107,20 +107,20 @@ impl SettingsState {
             draft_auto_gain_enabled: true, // Auto-gain on by default
             draft_target_lufs_index: 1, // -9 LUFS (balanced)
             draft_show_local_collection: false, // USB-only by default
-            draft_master_pair: 0, // First stereo pair (outputs 1-2)
-            draft_cue_pair: if num_pairs >= 2 { 1 } else { 0 }, // Second pair or fallback
-            available_stereo_pairs,
+            draft_master_device: 0, // First device
+            draft_cue_device: if num_devices >= 2 { 1 } else { 0 }, // Second device or fallback
+            available_devices,
             status: String::new(),
         }
     }
 
-    /// Refresh available JACK ports
-    pub fn refresh_jack_ports(&mut self) {
-        self.available_stereo_pairs = get_available_stereo_pairs();
+    /// Refresh available audio devices
+    pub fn refresh_audio_devices(&mut self) {
+        self.available_devices = get_available_stereo_pairs();
         // Clamp selections to valid range
-        let max_idx = self.available_stereo_pairs.len().saturating_sub(1);
-        self.draft_master_pair = self.draft_master_pair.min(max_idx);
-        self.draft_cue_pair = self.draft_cue_pair.min(max_idx);
+        let max_idx = self.available_devices.len().saturating_sub(1);
+        self.draft_master_device = self.draft_master_device.min(max_idx);
+        self.draft_cue_device = self.draft_cue_device.min(max_idx);
     }
 
     /// Get the target LUFS value from the current index
@@ -551,24 +551,24 @@ fn view_midi_section() -> Element<'static, Message> {
     .into()
 }
 
-/// Audio output settings section (JACK port routing)
+/// Audio output settings section (device routing)
 fn view_audio_output_section(state: &SettingsState) -> Element<'_, Message> {
     let section_title = text("Audio Output").size(18);
 
-    let hint = text("Route master and cue to different physical outputs")
+    let hint = text("Route master and cue to different audio devices")
         .size(12);
 
     // Master output dropdown
     let master_label = text("Master (Speakers):").size(14);
-    let master_dropdown: Element<'_, Message> = if state.available_stereo_pairs.is_empty() {
-        text("No JACK outputs available").size(12).into()
+    let master_dropdown: Element<'_, Message> = if state.available_devices.is_empty() {
+        text("No audio devices available").size(12).into()
     } else {
         pick_list(
-            state.available_stereo_pairs.clone(),
-            state.available_stereo_pairs.get(state.draft_master_pair).cloned(),
+            state.available_devices.clone(),
+            state.available_devices.get(state.draft_master_device).cloned(),
             |pair| {
                 // Find index of selected pair
-                let idx = state.available_stereo_pairs.iter()
+                let idx = state.available_devices.iter()
                     .position(|p| p == &pair)
                     .unwrap_or(0);
                 Message::Settings(SettingsMessage::UpdateMasterPair(idx))
@@ -583,14 +583,14 @@ fn view_audio_output_section(state: &SettingsState) -> Element<'_, Message> {
 
     // Cue output dropdown
     let cue_label = text("Cue (Headphones):").size(14);
-    let cue_dropdown: Element<'_, Message> = if state.available_stereo_pairs.is_empty() {
-        text("No JACK outputs available").size(12).into()
+    let cue_dropdown: Element<'_, Message> = if state.available_devices.is_empty() {
+        text("No audio devices available").size(12).into()
     } else {
         pick_list(
-            state.available_stereo_pairs.clone(),
-            state.available_stereo_pairs.get(state.draft_cue_pair).cloned(),
+            state.available_devices.clone(),
+            state.available_devices.get(state.draft_cue_device).cloned(),
             |pair| {
-                let idx = state.available_stereo_pairs.iter()
+                let idx = state.available_devices.iter()
                     .position(|p| p == &pair)
                     .unwrap_or(0);
                 Message::Settings(SettingsMessage::UpdateCuePair(idx))
@@ -604,8 +604,8 @@ fn view_audio_output_section(state: &SettingsState) -> Element<'_, Message> {
         .align_y(Alignment::Center);
 
     // Refresh button
-    let refresh_btn = button(text("Refresh Ports").size(11))
-        .on_press(Message::Settings(SettingsMessage::RefreshJackPorts))
+    let refresh_btn = button(text("Refresh Devices").size(11))
+        .on_press(Message::Settings(SettingsMessage::RefreshAudioDevices))
         .style(button::secondary);
 
     container(

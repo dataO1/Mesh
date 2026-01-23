@@ -20,7 +20,7 @@ pub const DEFAULT_BPM: f64 = 128.0;
 pub const BUFFER_SIZE: usize = 256;
 
 /// Maximum buffer size to pre-allocate for real-time safety
-/// Covers all common JACK configurations (64, 128, 256, 512, 1024, 2048, 4096)
+/// Covers all common audio configurations (64, 128, 256, 512, 1024, 2048, 4096)
 /// Pre-allocating to this size eliminates allocations in the audio callback
 pub const MAX_BUFFER_SIZE: usize = 8192;
 
@@ -43,7 +43,7 @@ pub struct AudioEngine {
     deck_buffers: [StereoBuffer; NUM_DECKS],
     /// Pre-allocated buffer for time-stretched output
     stretch_input: StereoBuffer,
-    /// Output sample rate (from JACK) - used for sample rate conversion
+    /// Output sample rate (from audio backend) - used for sample rate conversion
     output_sample_rate: u32,
 
     // ─────────────────────────────────────────────────────────────
@@ -79,7 +79,7 @@ pub struct AudioEngine {
 impl AudioEngine {
     /// Create a new audio engine with the specified output sample rate
     ///
-    /// The sample rate should come from JACK (or other audio backend).
+    /// The sample rate should come from the audio backend (CPAL).
     /// Audio files will be resampled to match this rate on load.
     ///
     /// # Arguments

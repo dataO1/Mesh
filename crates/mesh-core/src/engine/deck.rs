@@ -332,7 +332,7 @@ pub struct Deck {
     atomics: Arc<DeckAtomics>,
     /// Pre-allocated buffers for parallel stem processing (real-time safe)
     /// One buffer per stem enables parallel processing with Rayon
-    /// Capacity is MAX_BUFFER_SIZE to handle any JACK buffer size
+    /// Capacity is MAX_BUFFER_SIZE to handle any audio buffer size
     stem_buffers: [StereoBuffer; NUM_STEMS],
     /// Accumulated fractional samples for time stretch accuracy
     ///
@@ -1298,7 +1298,7 @@ impl Deck {
     /// ## Parameters
     ///
     /// - `stretch_input`: Buffer to fill with processed audio (will be resized to samples_to_read)
-    /// - `output_len`: Target output length (JACK buffer size) - used with stretch_ratio
+    /// - `output_len`: Target output length (audio buffer size) - used with stretch_ratio
     /// - `compensator`: Optional per-stem latency compensation
     /// - `deck_id`: Deck index for latency compensator
     ///

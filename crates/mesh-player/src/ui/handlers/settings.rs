@@ -63,15 +63,15 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             Task::none()
         }
         UpdateMasterPair(index) => {
-            app.settings.draft_master_pair = index;
+            app.settings.draft_master_device = index;
             Task::none()
         }
         UpdateCuePair(index) => {
-            app.settings.draft_cue_pair = index;
+            app.settings.draft_cue_device = index;
             Task::none()
         }
-        RefreshJackPorts => {
-            app.settings.refresh_jack_ports();
+        RefreshAudioDevices => {
+            app.settings.refresh_audio_devices();
             Task::none()
         }
         Save => {
@@ -91,16 +91,14 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             // Save loudness settings
             new_config.audio.loudness.auto_gain_enabled = app.settings.draft_auto_gain_enabled;
             new_config.audio.loudness.target_lufs = app.settings.target_lufs();
-            // Save JACK port routing
-            new_config.audio.jack_ports.master_pair = Some(app.settings.draft_master_pair);
-            new_config.audio.jack_ports.cue_pair = Some(app.settings.draft_cue_pair);
+            // Save audio output device configuration
+            new_config.audio.outputs.master_device = Some(app.settings.draft_master_device);
+            new_config.audio.outputs.cue_device = Some(app.settings.draft_cue_device);
 
             app.config = Arc::new(new_config.clone());
 
-            // Reconnect JACK ports with new configuration
-            if let Err(e) = crate::audio::connect_ports("mesh-player", &new_config.audio.jack_ports) {
-                log::warn!("Failed to reconnect JACK ports: {}", e);
-            }
+            // Note: Audio device changes require app restart with CPAL
+            // Device selection is applied at stream creation time
 
             // Apply stem color palette to waveform display immediately
             app.player_canvas_state.set_stem_colors(

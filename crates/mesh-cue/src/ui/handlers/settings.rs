@@ -14,8 +14,8 @@ impl MeshCueApp {
         // Reset draft values from current config
         self.settings = SettingsState::from_config(self.domain.config());
         self.settings.is_open = true;
-        // Refresh available JACK ports
-        self.settings.refresh_jack_ports();
+        // Refresh available audio devices
+        self.settings.refresh_audio_devices();
         Task::none()
     }
 
@@ -69,20 +69,23 @@ impl MeshCueApp {
     }
 
     /// Handle UpdateSettingsOutputPair message
+    ///
+    /// Note: In CPAL mode, device selection requires restarting the audio system.
+    /// For now, we just record the selection for future implementation.
     pub fn handle_update_settings_output_pair(&mut self, idx: usize) -> Task<Message> {
         self.settings.selected_output_pair = idx;
-        // Connect to the selected output pair immediately
-        if let Some(pair) = self.settings.available_stereo_pairs.get(idx) {
-            if let Err(e) = crate::audio::connect_to_stereo_pair(pair) {
-                log::error!("Failed to connect to output pair: {}", e);
-            }
-        }
+        // Note: CPAL doesn't support runtime device switching
+        // Device selection requires restarting the audio system
+        log::info!(
+            "Audio device selected: {:?} (restart required to apply)",
+            self.settings.available_stereo_pairs.get(idx).map(|p| &p.label)
+        );
         Task::none()
     }
 
-    /// Handle RefreshJackPorts message
-    pub fn handle_refresh_jack_ports(&mut self) -> Task<Message> {
-        self.settings.refresh_jack_ports();
+    /// Handle RefreshAudioDevices message
+    pub fn handle_refresh_audio_devices(&mut self) -> Task<Message> {
+        self.settings.refresh_audio_devices();
         Task::none()
     }
 

@@ -2,7 +2,7 @@
 //!
 //! Exports stem buffers to the mesh format:
 //! - 8 channels (4 stereo stems interleaved)
-//! - 48 kHz, 16-bit (matches JACK default)
+//! - 48 kHz, 16-bit (professional audio standard)
 //! - Waveform preview in wvfm chunk (for fast display)
 //!
 //! All metadata (BPM, key, cue points, loops, etc.) is stored in the database,

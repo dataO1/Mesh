@@ -37,12 +37,12 @@ pub enum SettingsMessage {
     UpdateTargetLufs(usize),
     /// Update draft show local collection
     UpdateShowLocalCollection(bool),
-    /// Update master stereo pair index
+    /// Update master device index
     UpdateMasterPair(usize),
-    /// Update cue stereo pair index
+    /// Update cue device index
     UpdateCuePair(usize),
-    /// Refresh available JACK ports
-    RefreshJackPorts,
+    /// Refresh available audio devices
+    RefreshAudioDevices,
     /// Save settings to disk
     Save,
     /// Settings save completed

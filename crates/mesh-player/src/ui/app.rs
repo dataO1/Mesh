@@ -91,7 +91,7 @@ impl MeshApp {
     /// - `slicer_atomics`: Lock-free slicer state for UI reads (None for offline mode)
     /// - `linked_stem_atomics`: Lock-free linked stem state for UI reads (None for offline mode)
     /// - `linked_stem_receiver`: Receiver for linked stem load results (engine owns the loader)
-    /// - `jack_sample_rate`: JACK's sample rate for track loading (e.g., 48000 or 44100)
+    /// - `sample_rate`: Audio system's sample rate for track loading (e.g., 48000 or 44100)
     pub fn new(
         db_service: Arc<DatabaseService>,
         command_sender: Option<CommandSender>,
@@ -99,7 +99,7 @@ impl MeshApp {
         slicer_atomics: Option<[Arc<SlicerAtomics>; NUM_DECKS]>,
         linked_stem_atomics: Option<[Arc<LinkedStemAtomics>; NUM_DECKS]>,
         linked_stem_receiver: Option<mesh_core::loader::LinkedStemResultReceiver>,
-        jack_sample_rate: u32,
+        sample_rate: u32,
         mapping_mode: bool,
     ) -> Self {
         // Load configuration
@@ -135,7 +135,7 @@ impl MeshApp {
             config.collection_path.clone(),
             command_sender,
             linked_stem_receiver,
-            jack_sample_rate,
+            sample_rate,
             config.audio.global_bpm,
         );
 
@@ -775,9 +775,9 @@ impl MeshApp {
             .width(200);
 
         let connection_status = if self.domain.is_audio_connected() {
-            text("● JACK Connected").size(12)
+            text("● Audio Connected").size(12)
         } else {
-            text("○ JACK Disconnected").size(12)
+            text("○ Audio Disconnected").size(12)
         };
 
         // Settings gear icon (⚙ U+2699)

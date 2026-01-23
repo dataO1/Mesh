@@ -22,9 +22,9 @@ pub struct SettingsState {
     pub draft_bpm_source: BpmSource,
     /// Draft slicer buffer bars (1, 4, 8, or 16)
     pub draft_slicer_buffer_bars: u32,
-    /// Available JACK stereo output pairs
+    /// Available audio output devices (for display only in CPAL mode)
     pub available_stereo_pairs: Vec<StereoPair>,
-    /// Selected output pair index
+    /// Selected output pair index (for future device selection)
     pub selected_output_pair: usize,
     /// Status message for save feedback
     pub status: String,
@@ -48,8 +48,11 @@ impl SettingsState {
         }
     }
 
-    /// Refresh available JACK ports
-    pub fn refresh_jack_ports(&mut self) {
+    /// Refresh available audio devices
+    ///
+    /// Note: In CPAL mode, device selection requires restarting the audio system.
+    /// This is informational only - actual device selection is not yet implemented.
+    pub fn refresh_audio_devices(&mut self) {
         self.available_stereo_pairs = crate::audio::get_available_stereo_pairs();
         // Keep selection in bounds
         if self.selected_output_pair >= self.available_stereo_pairs.len() {

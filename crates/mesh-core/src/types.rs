@@ -6,7 +6,7 @@
 use std::ops::{Index, IndexMut};
 
 /// Default sample rate used throughout Mesh (48kHz - standard professional audio rate)
-/// This is the default; actual rate is read from JACK at runtime.
+/// This is the default; actual rate is read from the audio backend at runtime.
 pub const SAMPLE_RATE: u32 = 48000;
 
 /// Number of decks in the DJ player

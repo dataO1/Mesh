@@ -28,7 +28,7 @@ use mesh_core::usb::{UsbManager, UsbCommand, UsbMessage, SyncPlan, ExportableCon
 use mesh_widgets::TreeNode;
 
 use crate::analysis::{AnalysisType, ReanalysisProgress};
-use crate::audio::{AudioState, JackHandle, JackError, start_jack_client};
+use crate::audio::{AudioError, AudioHandle, AudioState, start_audio_system};
 use crate::batch_import::{ImportProgress, StemGroup};
 use crate::config::Config;
 use crate::reanalysis::run_batch_reanalysis;
@@ -331,12 +331,12 @@ impl MeshCueDomain {
     // Audio System
     // ═══════════════════════════════════════════════════════════════════════
 
-    /// Initialize audio preview system (JACK)
+    /// Initialize audio preview system (CPAL)
     ///
-    /// Returns AudioState and JackHandle for UI to store.
+    /// Returns AudioState and AudioHandle for UI to store.
     /// Domain owns the db_service internally.
-    pub fn init_audio_preview(&self) -> Result<(AudioState, JackHandle), JackError> {
-        start_jack_client(self.db_service.clone())
+    pub fn init_audio_preview(&self) -> Result<(AudioState, AudioHandle), AudioError> {
+        start_audio_system(self.db_service.clone())
     }
 
     // ═══════════════════════════════════════════════════════════════════════

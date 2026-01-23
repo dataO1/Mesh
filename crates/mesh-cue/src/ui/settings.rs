@@ -76,7 +76,7 @@ fn view_audio_output_section(state: &SettingsState) -> Element<'_, Message> {
     // Output device dropdown
     let output_label = text("Output:").size(14);
     let output_dropdown: Element<'_, Message> = if state.available_stereo_pairs.is_empty() {
-        text("No JACK outputs available").size(12).into()
+        text("No audio outputs available").size(12).into()
     } else {
         pick_list(
             state.available_stereo_pairs.clone(),
@@ -99,7 +99,7 @@ fn view_audio_output_section(state: &SettingsState) -> Element<'_, Message> {
 
     // Refresh button
     let refresh_btn = button(text("Refresh Ports").size(11))
-        .on_press(Message::RefreshJackPorts)
+        .on_press(Message::RefreshAudioDevices)
         .style(button::secondary);
 
     container(

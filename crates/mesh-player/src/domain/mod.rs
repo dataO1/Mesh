@@ -141,14 +141,14 @@ impl MeshDomain {
     /// * `local_collection_path` - Path to local collection root
     /// * `command_sender` - Lock-free command channel for engine control (None for offline mode)
     /// * `linked_stem_receiver` - Receiver for linked stem load results (engine owns the loader)
-    /// * `jack_sample_rate` - JACK's sample rate for track loading
+    /// * `sample_rate` - Audio system's sample rate for track loading
     /// * `initial_global_bpm` - Initial global BPM from config
     pub fn new(
         local_db: Arc<DatabaseService>,
         local_collection_path: PathBuf,
         command_sender: Option<CommandSender>,
         linked_stem_receiver: Option<LinkedStemResultReceiver>,
-        jack_sample_rate: u32,
+        sample_rate: u32,
         initial_global_bpm: f64,
     ) -> Self {
         Self {
@@ -157,7 +157,7 @@ impl MeshDomain {
             local_collection_path,
             // Services
             command_sender,
-            track_loader: TrackLoader::spawn(jack_sample_rate),
+            track_loader: TrackLoader::spawn(sample_rate),
             peaks_computer: PeaksComputer::spawn(),
             usb_manager: UsbManager::spawn(Some(local_db)),
             linked_stem_receiver,
@@ -390,7 +390,7 @@ impl MeshDomain {
             .map_err(|e| format!("Failed to request track load: {}", e))
     }
 
-    /// Update track loader's sample rate (if JACK rate changes)
+    /// Update track loader's sample rate (if audio system rate changes)
     pub fn set_track_loader_sample_rate(&self, sample_rate: u32) {
         self.track_loader.set_sample_rate(sample_rate);
     }

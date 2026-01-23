@@ -1,7 +1,7 @@
 //! Mesh DJ Player - 4-deck stem-based mixing with neural effects
 //!
 //! This is the main entry point for the GUI application. It:
-//! 1. Starts the JACK audio client in a background thread
+//! 1. Starts the CPAL audio system in background threads
 //! 2. Launches the iced GUI application
 //! 3. Passes shared state between UI and audio
 //!
@@ -17,7 +17,7 @@ mod ui;
 
 use iced::{Size, Task};
 
-use audio::{start_jack_client, connect_ports};
+use audio::start_audio_system;
 use mesh_core::db::DatabaseService;
 use ui::{MeshApp, app::Message, midi_learn::MidiLearnMessage, theme};
 
@@ -42,7 +42,7 @@ fn main() -> iced::Result {
 
     // Initialize Rayon thread pool before audio starts
     // This prevents lazy initialization from causing latency in the audio callback
-    // (Rayon's default lazy init would happen on first parallel call, which is in JACK callback)
+    // (Rayon's default lazy init would happen on first parallel call, which is in audio callback)
     rayon::ThreadPoolBuilder::new()
         .num_threads(4) // Match NUM_DECKS for optimal stem parallelism
         .thread_name(|i| format!("rayon-audio-{}", i))
@@ -65,30 +65,22 @@ fn main() -> iced::Result {
         .expect("Failed to create database service - this is required for mesh-player");
     log::info!("Database service initialized at {:?}", config.collection_path);
 
-    // Try to start JACK client
-    // Returns CommandSender (lock-free queue), DeckAtomics, SlicerAtomics, LinkedStemAtomics,
-    // LinkedStemResultReceiver, and sample rate
-    let (jack_handle, command_sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, jack_sample_rate) =
-        match start_jack_client(CLIENT_NAME, db_service.clone()) {
+    // Try to start audio system
+    // Returns AudioHandle, CommandSender (lock-free queue), DeckAtomics, SlicerAtomics,
+    // LinkedStemAtomics, LinkedStemResultReceiver, and sample rate
+    let (audio_handle, command_sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, audio_sample_rate) =
+        match start_audio_system(CLIENT_NAME, db_service.clone()) {
             Ok((handle, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, sample_rate)) => {
-                println!("JACK client started successfully (lock-free command queue, {} Hz)", sample_rate);
-
-                // Connect to system outputs using configured port routing
-                if let Err(e) = connect_ports(CLIENT_NAME, &config.audio.jack_ports) {
-                    eprintln!("Warning: Could not connect ports: {}", e);
-                }
-
+                println!("Audio system started successfully ({} Hz)", sample_rate);
                 (Some(handle), Some(sender), Some(deck_atomics), Some(slicer_atomics), Some(linked_stem_atomics), Some(linked_stem_receiver), sample_rate)
             }
             Err(e) => {
-                eprintln!("Warning: Could not start JACK client: {}", e);
+                eprintln!("Warning: Could not start audio system: {}", e);
                 eprintln!("Running in UI-only mode (no audio output)");
                 eprintln!();
-                eprintln!("To enable audio, make sure JACK server is running:");
-                eprintln!("  jackd -d alsa -r 44100");
-                eprintln!("or use QjackCtl/Cadence to start it.");
-                // Default to 48000 Hz when JACK is not available (matches SAMPLE_RATE constant)
-                (None, None, None, None, None, None, 48000)
+                eprintln!("Check that audio devices are available and not in use by other applications.");
+                // Default to 44100 Hz when audio is not available
+                (None, None, None, None, None, None, 44100)
             }
         };
 
@@ -119,7 +111,7 @@ fn main() -> iced::Result {
             let linked_stem_atomics = linked_stem_atomics_cell.borrow_mut().take();
             let linked_stem_receiver = linked_stem_receiver_cell.borrow_mut().take();
             // mapping_mode = true shows full UI with controls, false = performance mode
-            let app = MeshApp::new(db_service, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, jack_sample_rate, start_midi_learn);
+            let app = MeshApp::new(db_service, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, audio_sample_rate, start_midi_learn);
 
             // If --midi-learn flag was passed, start MIDI learn mode (opens the drawer)
             let startup_task = if start_midi_learn {
@@ -139,8 +131,8 @@ fn main() -> iced::Result {
     .window_size(Size::new(1200.0, 800.0))
     .run();
 
-    // Keep JACK handle alive until we're done (it will be dropped here)
-    drop(jack_handle);
+    // Keep audio handle alive until we're done (it will be dropped here)
+    drop(audio_handle);
     println!("Mesh DJ Player stopped.");
 
     result
