@@ -175,14 +175,24 @@ impl BeatGrid {
     ///
     /// This creates a uniform beat grid based on tempo and first beat,
     /// which is more efficient than storing all beat positions.
+    ///
+    /// Uses the default SAMPLE_RATE (48kHz). For other sample rates,
+    /// use `regenerate_with_rate()` instead.
     pub fn regenerate(first_beat_sample: u64, bpm: f64, duration_samples: u64) -> Self {
         use crate::types::SAMPLE_RATE;
+        Self::regenerate_with_rate(first_beat_sample, bpm, duration_samples, SAMPLE_RATE)
+    }
 
+    /// Regenerate beat grid with a specific sample rate
+    ///
+    /// Use this when the audio has been resampled to a different rate than 48kHz.
+    /// The sample positions will be calculated using the provided sample rate.
+    pub fn regenerate_with_rate(first_beat_sample: u64, bpm: f64, duration_samples: u64, sample_rate: u32) -> Self {
         if bpm <= 0.0 || duration_samples == 0 {
             return Self::new();
         }
 
-        let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
+        let samples_per_beat = (sample_rate as f64 * 60.0 / bpm) as u64;
         if samples_per_beat == 0 {
             return Self::new();
         }
@@ -196,6 +206,21 @@ impl BeatGrid {
         Self {
             beats,
             first_beat_sample: Some(first_beat_sample),
+        }
+    }
+
+    /// Scale all sample positions by a ratio (for sample rate conversion)
+    ///
+    /// When audio is resampled from one rate to another, all sample positions
+    /// need to be scaled by (target_rate / source_rate) to remain accurate.
+    pub fn scale_positions(&mut self, ratio: f64) {
+        // Scale all beat positions
+        for beat in &mut self.beats {
+            *beat = ((*beat as f64) * ratio).round() as u64;
+        }
+        // Scale first beat sample
+        if let Some(ref mut fbs) = self.first_beat_sample {
+            *fbs = ((*fbs as f64) * ratio).round() as u64;
         }
     }
 
@@ -249,6 +274,84 @@ pub struct TrackMetadata {
     /// These are pre-configured links to stems from other tracks.
     /// When the track loads, these linked stems can be loaded in the background.
     pub stem_links: Vec<StemLinkReference>,
+}
+
+impl TrackMetadata {
+    /// Scale all sample-based positions for sample rate conversion
+    ///
+    /// When audio is resampled from `source_rate` to `target_rate`, all sample
+    /// positions (cue points, loops, beat grid, drop marker) must be scaled
+    /// by the ratio `target_rate / source_rate` to remain accurate.
+    ///
+    /// # Arguments
+    /// * `source_rate` - Original sample rate of the audio file
+    /// * `target_rate` - Target sample rate after resampling
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Audio resampled from 48kHz to 44.1kHz
+    /// metadata.scale_sample_positions(48000, 44100);
+    /// ```
+    pub fn scale_sample_positions(&mut self, source_rate: u32, target_rate: u32) {
+        if source_rate == target_rate || source_rate == 0 {
+            return; // No scaling needed
+        }
+
+        let ratio = target_rate as f64 / source_rate as f64;
+        log::info!(
+            "[METADATA] Scaling sample positions: {}Hz -> {}Hz (ratio={:.6})",
+            source_rate, target_rate, ratio
+        );
+
+        // Scale cue points
+        for cue in &mut self.cue_points {
+            let old_pos = cue.sample_position;
+            cue.sample_position = ((cue.sample_position as f64) * ratio).round() as u64;
+            log::debug!(
+                "[METADATA] Cue {} scaled: {} -> {}",
+                cue.index, old_pos, cue.sample_position
+            );
+        }
+
+        // Scale saved loops
+        for saved_loop in &mut self.saved_loops {
+            saved_loop.start_sample = ((saved_loop.start_sample as f64) * ratio).round() as u64;
+            saved_loop.end_sample = ((saved_loop.end_sample as f64) * ratio).round() as u64;
+        }
+
+        // Scale beat grid
+        self.beat_grid.scale_positions(ratio);
+
+        // Scale drop marker
+        if let Some(ref mut dm) = self.drop_marker {
+            let old_dm = *dm;
+            *dm = ((*dm as f64) * ratio).round() as u64;
+            log::debug!("[METADATA] Drop marker scaled: {} -> {}", old_dm, *dm);
+        }
+
+        // Scale stem link references (source drop markers)
+        for stem_link in &mut self.stem_links {
+            stem_link.source_drop_marker =
+                ((stem_link.source_drop_marker as f64) * ratio).round() as u64;
+        }
+    }
+
+    /// Regenerate the beat grid for a specific sample rate
+    ///
+    /// This is useful after resampling when you want to recalculate beat positions
+    /// using the correct samples-per-beat for the new sample rate.
+    pub fn regenerate_beat_grid(&mut self, duration_samples: u64, sample_rate: u32) {
+        if let Some(bpm) = self.bpm {
+            if let Some(first_beat) = self.beat_grid.first_beat_sample {
+                self.beat_grid = BeatGrid::regenerate_with_rate(
+                    first_beat,
+                    bpm,
+                    duration_samples,
+                    sample_rate,
+                );
+            }
+        }
+    }
 }
 
 /// Reference to a linked stem stored in a WAV file
@@ -817,17 +920,17 @@ impl StemBuffers {
     /// Create new stem buffers with the given length
     ///
     /// Allocates stems SEQUENTIALLY with yields between each allocation.
-    /// This prevents page fault storms from blocking the JACK RT thread.
+    /// This prevents page fault storms from blocking the audio RT thread.
     ///
     /// ## Why Sequential?
     ///
     /// The previous parallel allocation (via Rayon) triggered ~452,000 page faults
     /// simultaneously across 4 threads. This overwhelmed the kernel's page fault
-    /// handler, causing scheduling delays that blocked the JACK RT thread.
+    /// handler, causing scheduling delays that blocked the audio RT thread.
     ///
     /// Sequential allocation with yields:
     /// - 113K faults → yield → 113K faults → yield → ...
-    /// - Each yield gives the JACK RT thread a chance to run
+    /// - Each yield gives the audio RT thread a chance to run
     pub fn with_length(len: usize) -> Self {
         use std::time::Instant;
 
@@ -1195,7 +1298,7 @@ impl AudioFileReader {
     /// Read all audio data into stem buffers
     ///
     /// This uses the default target sample rate (SAMPLE_RATE constant, 48kHz).
-    /// For JACK-aware loading, use `read_all_stems_to(target_rate)` instead.
+    /// For sample-rate-aware loading, use `read_all_stems_to(target_rate)` instead.
     pub fn read_all_stems(&mut self) -> Result<StemBuffers, AudioFileError> {
         self.read_all_stems_to(SAMPLE_RATE)
     }
@@ -1203,9 +1306,9 @@ impl AudioFileReader {
     /// Read all audio data into stem buffers, resampling to target rate
     ///
     /// # Arguments
-    /// * `target_sample_rate` - The target sample rate (typically JACK's sample rate)
+    /// * `target_sample_rate` - The target sample rate (from the audio backend)
     ///
-    /// This allows loading tracks to match whatever sample rate JACK is running at.
+    /// This allows loading tracks to match whatever sample rate the audio system is running at.
     /// If the file's sample rate differs from target, audio is automatically resampled.
     pub fn read_all_stems_to(&mut self, target_sample_rate: u32) -> Result<StemBuffers, AudioFileError> {
         use std::time::Instant;
@@ -1255,7 +1358,7 @@ impl AudioFileReader {
             throughput_mb_s
         );
 
-        // Resample if file sample rate differs from target rate (e.g., 48kHz -> 44.1kHz for JACK)
+        // Resample if file sample rate differs from target rate (e.g., 48kHz -> 44.1kHz)
         if self.format.sample_rate != target_sample_rate {
             log::info!(
                 "    File sample rate ({} Hz) differs from target rate ({} Hz), resampling...",
@@ -1474,7 +1577,7 @@ impl AudioFileReader {
 /// Unlike `Arc`, when a `Shared` is dropped on the audio thread, it doesn't
 /// immediately free memory. Instead, it enqueues the pointer for collection
 /// by a background GC thread. This prevents 100+ms deallocations from causing
-/// JACK xruns when replacing tracks.
+/// audio underruns when replacing tracks.
 pub struct LoadedTrack {
     /// Path to the source file
     pub path: std::path::PathBuf,
@@ -1504,7 +1607,7 @@ impl LoadedTrack {
     /// Load a track from a file path with metadata from the database
     ///
     /// Uses the default system sample rate (48kHz).
-    /// For JACK-aware loading, use `load_to(path, db, target_rate)` instead.
+    /// For sample-rate-aware loading, use `load_to(path, db, target_rate)` instead.
     pub fn load<P: AsRef<Path>>(path: P, db: &crate::db::DatabaseService) -> Result<Self, AudioFileError> {
         Self::load_to(path, db, SAMPLE_RATE)
     }
@@ -1514,9 +1617,9 @@ impl LoadedTrack {
     /// # Arguments
     /// * `path` - Path to the audio file
     /// * `db` - Database service for loading metadata
-    /// * `target_sample_rate` - Target sample rate (typically JACK's sample rate)
+    /// * `target_sample_rate` - Target sample rate (from the audio backend)
     ///
-    /// This allows loading tracks to match whatever sample rate JACK is running at.
+    /// This allows loading tracks to match whatever sample rate the audio system is running at.
     /// Metadata (BPM, key, cue points, etc.) is loaded from the database.
     /// Waveform preview is loaded from the WAV file's wvfm chunk.
     pub fn load_to<P: AsRef<Path>>(path: P, db: &crate::db::DatabaseService, target_sample_rate: u32) -> Result<Self, AudioFileError> {
@@ -1549,7 +1652,7 @@ impl LoadedTrack {
     /// # Arguments
     /// * `path` - Path to the audio file
     /// * `metadata` - Pre-loaded track metadata (from any source: local DB, USB DB, etc.)
-    /// * `target_sample_rate` - Target sample rate (typically JACK's sample rate)
+    /// * `target_sample_rate` - Target sample rate (from the audio backend)
     ///
     /// This is the core loading function that doesn't depend on any database.
     /// The caller is responsible for loading metadata from the appropriate source.
@@ -1585,6 +1688,9 @@ impl LoadedTrack {
         let mut reader = AudioFileReader::open(path_ref)?;
         log::info!("  [PERF] File opened in {:?}", open_start.elapsed());
 
+        // Get the source sample rate before reading (for metadata conversion)
+        let source_sample_rate = reader.format().sample_rate;
+
         let stems_start = Instant::now();
         let stems = reader.read_all_stems_to(target_sample_rate)?;
         log::info!(
@@ -1596,6 +1702,14 @@ impl LoadedTrack {
 
         let duration_samples = stems.len();
         let duration_seconds = stems.duration_seconds();
+
+        // If audio was resampled, scale all metadata sample positions to match
+        // This ensures cue points, beat grid, loops, and drop markers remain accurate
+        if source_sample_rate != target_sample_rate {
+            metadata.scale_sample_positions(source_sample_rate, target_sample_rate);
+            // Regenerate beat grid with correct samples-per-beat for target rate
+            metadata.regenerate_beat_grid(duration_samples as u64, target_sample_rate);
+        }
 
         // Wrap in Shared for RT-safe deallocation (defers drop to GC thread)
         let stems = basedrop::Shared::new(&crate::engine::gc::gc_handle(), stems);
@@ -1614,7 +1728,7 @@ impl LoadedTrack {
     /// Load only audio stems from a file (slow, loads all audio data)
     ///
     /// Uses the default system sample rate (48kHz).
-    /// For JACK-aware loading, use `load_stems_to(path, target_rate)` instead.
+    /// For sample-rate-aware loading, use `load_stems_to(path, target_rate)` instead.
     pub fn load_stems<P: AsRef<Path>>(path: P) -> Result<StemBuffers, AudioFileError> {
         Self::load_stems_to(path, SAMPLE_RATE)
     }
@@ -1623,9 +1737,9 @@ impl LoadedTrack {
     ///
     /// # Arguments
     /// * `path` - Path to the audio file
-    /// * `target_sample_rate` - Target sample rate (typically JACK's sample rate)
+    /// * `target_sample_rate` - Target sample rate (from the audio backend)
     ///
-    /// This allows loading tracks to match whatever sample rate JACK is running at.
+    /// This allows loading tracks to match whatever sample rate the audio system is running at.
     pub fn load_stems_to<P: AsRef<Path>>(path: P, target_sample_rate: u32) -> Result<StemBuffers, AudioFileError> {
         let mut reader = AudioFileReader::open(path.as_ref())?;
         reader.read_all_stems_to(target_sample_rate)
