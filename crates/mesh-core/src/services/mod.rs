@@ -65,7 +65,6 @@
 pub mod messages;
 pub mod query;
 pub mod watch;
-pub mod feature_extraction;
 
 pub use messages::{
     // Commands
@@ -80,7 +79,3 @@ pub use messages::{
 
 pub use query::{QueryService, QueryClient};
 pub use watch::{FileWatchService, WatchServiceConfig, WatchClient};
-pub use feature_extraction::{
-    FeatureExtractionService, FeatureExtractionConfig, FeatureExtractionClient,
-    FeatureCommand,
-};

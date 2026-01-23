@@ -26,5 +26,5 @@ pub use extraction::{
     FeatureExtractionError,
 };
 
-// Re-export AudioFeatures from db for convenience
-pub use crate::db::AudioFeatures;
+// Re-export AudioFeatures from mesh_core for convenience
+pub use mesh_core::db::AudioFeatures;

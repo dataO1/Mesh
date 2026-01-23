@@ -2,8 +2,8 @@
 //!
 //! Extracts a 16-dimensional feature vector for similarity search.
 
-use crate::db::AudioFeatures;
-use crate::types::SAMPLE_RATE;
+use mesh_core::db::AudioFeatures;
+use mesh_core::types::SAMPLE_RATE;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

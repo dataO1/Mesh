@@ -184,7 +184,7 @@ impl Default for AnalysisResult {
 /// # Returns
 /// Complete analysis result with BPM, key, beat grid, LUFS, and audio features
 pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<AnalysisResult> {
-    use mesh_core::features::extract_audio_features;
+    use crate::features::extract_audio_features;
     use mesh_core::types::SAMPLE_RATE;
 
     log::info!(

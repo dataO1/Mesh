@@ -21,6 +21,7 @@ pub mod batch_import;
 pub mod config;
 pub mod domain;
 pub mod export;
+pub mod features;
 pub mod import;
 pub mod keybindings;
 pub mod reanalysis;
