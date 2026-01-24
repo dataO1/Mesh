@@ -29,11 +29,6 @@ thiserror.workspace = true
 # Cross-platform audio backend
 cpal.workspace = true
 
-# Native JACK backend for Linux (optional, pro-audio port routing)
-# This dependency is Linux-only - on other platforms, jack-backend feature is a no-op
-[target.'cfg(target_os = "linux")'.dependencies]
-jack = { version = "0.11", optional = true }
-
 # Database and messaging
 cozo = { workspace = true }
 crossbeam = { workspace = true }
@@ -45,6 +40,11 @@ pathdiff = "0.2"    # Relative path computation for symlinks
 sysinfo = "0.33"    # Cross-platform disk detection (replaces udev/sysfs/blkid)
 walkdir = "2"       # Cross-platform recursive directory traversal
 symlink = "0.1"     # Cross-platform symlink creation
+
+# Native JACK backend for Linux (optional, pro-audio port routing)
+# This dependency is Linux-only - on other platforms, jack-backend feature is a no-op
+[target.'cfg(target_os = "linux")'.dependencies]
+jack = { version = "0.11", optional = true }
 
 [dev-dependencies]
 tempfile = "3.15"

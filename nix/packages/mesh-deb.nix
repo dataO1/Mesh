@@ -3,8 +3,8 @@
 { pkgs, common, meshBuild, rustToolchain, src }:
 
 let
-  # Filtered source for .deb packaging - only Cargo.toml (metadata) and packaging/
-  # This is very small, so meshDeb rebuilds are fast even when triggered
+  # Filtered source for .deb packaging - Cargo manifests, source files, and packaging/
+  # cargo-deb needs .rs files to validate manifest targets even though we use pre-built binaries
   debSrc = pkgs.lib.cleanSourceWith {
     inherit src;
     filter = path: type:
@@ -15,6 +15,7 @@ let
       type == "directory" ||
       baseName == "Cargo.toml" ||
       baseName == "Cargo.lock" ||
+      pkgs.lib.hasSuffix ".rs" baseName ||
       pkgs.lib.hasPrefix "packaging/" relPath;
   };
 
