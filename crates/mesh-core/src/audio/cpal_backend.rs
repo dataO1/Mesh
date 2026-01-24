@@ -5,6 +5,7 @@
 //!
 //! # Architecture
 //!
+//! ## Single Output (Master Only)
 //! ```text
 //! ┌──────────────────┐                     ┌─────────────────────┐
 //! │     UI Thread    │───push()───────────►│   Command Queue     │
@@ -18,8 +19,31 @@
 //! │   (lock-free)    │     sync writes     │  (owns AudioEngine) │
 //! └──────────────────┘                     └─────────────────────┘
 //! ```
+//!
+//! ## Dual Output (Master + Cue)
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────────┐
+//! │                        LOCK-FREE DESIGN                         │
+//! │  Master and Cue streams run independently without blocking      │
+//! └─────────────────────────────────────────────────────────────────┘
+//!
+//!                    ┌───────────────────────┐
+//!   UI Commands ────►│   Master Stream       │
+//!                    │  (owns AudioEngine)   │
+//!                    │  processes audio      │
+//!                    └───────────┬───────────┘
+//!                                │
+//!                    ┌───────────▼───────────┐
+//!                    │  Cue Sample Queue     │  <── lock-free ring buffer
+//!                    │  (SPSC, ~8K samples)  │      master produces, cue consumes
+//!                    └───────────┬───────────┘
+//!                                │
+//!                    ┌───────────▼───────────┐
+//!                    │    Cue Stream         │  <── reads from queue only
+//!                    │  (independent thread) │      never blocks on master
+//!                    └───────────────────────┘
+//! ```
 
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use cpal::traits::{DeviceTrait, StreamTrait};
@@ -29,16 +53,15 @@ use super::config::{AudioConfig, BufferSize, OutputMode, DEFAULT_BUFFER_SIZE, MA
 use super::device::{find_device_by_id, get_cpal_default_device};
 use super::error::{AudioError, AudioResult};
 use crate::db::DatabaseService;
-use crate::engine::{
-    command_channel, AudioEngine, DeckAtomics, EngineCommand, LinkedStemAtomics, SlicerAtomics,
-};
-use crate::loader::LinkedStemResultReceiver;
-use crate::types::{StereoBuffer, StereoSample, NUM_DECKS};
+use crate::engine::{command_channel, AudioEngine, EngineCommand};
+use crate::types::{StereoBuffer, StereoSample};
 
-/// Handle to the active audio system
+use super::backend::{AudioHandle, AudioSystemResult, CommandSender, StereoPair};
+
+/// CPAL-specific audio handle
 ///
 /// Keeps the audio streams alive. Drop this to stop audio.
-pub struct AudioHandle {
+pub struct CpalAudioHandle {
     /// Master output stream
     _master_stream: Stream,
     /// Cue output stream (only present in MasterAndCue mode)
@@ -49,7 +72,7 @@ pub struct AudioHandle {
     buffer_size: u32,
 }
 
-impl AudioHandle {
+impl CpalAudioHandle {
     /// Get the sample rate of the audio system
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
@@ -66,53 +89,6 @@ impl AudioHandle {
     }
 }
 
-/// Command sender for the UI thread
-///
-/// Wraps the lock-free producer for sending EngineCommand to the audio thread.
-/// All operations are non-blocking (~50ns per command).
-pub struct CommandSender {
-    producer: rtrb::Producer<EngineCommand>,
-}
-
-impl CommandSender {
-    /// Send a command to the audio engine (non-blocking, ~50ns)
-    ///
-    /// Returns `Ok(())` if the command was queued successfully,
-    /// or `Err(cmd)` if the queue is full (command is returned).
-    pub fn send(&mut self, cmd: EngineCommand) -> Result<(), EngineCommand> {
-        self.producer.push(cmd).map_err(|e| match e {
-            rtrb::PushError::Full(value) => value,
-        })
-    }
-
-    /// Check if the queue has space for more commands
-    #[allow(dead_code)]
-    pub fn has_space(&self) -> bool {
-        self.producer.slots() > 0
-    }
-}
-
-/// Result of starting the audio system
-pub struct AudioSystemResult {
-    /// Handle to keep audio alive (drop to stop)
-    pub handle: AudioHandle,
-    /// Command sender for UI thread
-    pub command_sender: CommandSender,
-    /// Deck atomics for lock-free UI reads
-    pub deck_atomics: [Arc<DeckAtomics>; NUM_DECKS],
-    /// Slicer atomics for lock-free UI reads
-    pub slicer_atomics: [Arc<SlicerAtomics>; NUM_DECKS],
-    /// Linked stem atomics for lock-free UI reads
-    pub linked_stem_atomics: [Arc<LinkedStemAtomics>; NUM_DECKS],
-    /// Receiver for linked stem load results
-    pub linked_stem_receiver: LinkedStemResultReceiver,
-    /// Sample rate of the audio system
-    pub sample_rate: u32,
-    /// Actual buffer size in frames
-    pub buffer_size: u32,
-    /// Audio latency in milliseconds (one-way, output only)
-    pub latency_ms: f32,
-}
 
 /// Start the audio system with the given configuration
 ///
@@ -193,13 +169,15 @@ fn start_master_only(
 
     log::info!("Audio stream started (master-only mode)");
 
+    let handle = CpalAudioHandle {
+        _master_stream: stream,
+        _cue_stream: None,
+        sample_rate,
+        buffer_size,
+    };
+
     Ok(AudioSystemResult {
-        handle: AudioHandle {
-            _master_stream: stream,
-            _cue_stream: None,
-            sample_rate,
-            buffer_size,
-        },
+        handle: AudioHandle::Cpal(handle),
         command_sender: CommandSender { producer: command_tx },
         deck_atomics,
         slicer_atomics,
@@ -212,6 +190,11 @@ fn start_master_only(
 }
 
 /// Start audio system in master+cue mode (dual stereo outputs)
+///
+/// This uses a lock-free architecture where:
+/// - Master stream owns the AudioEngine and processes audio
+/// - Cue samples are sent to the cue stream via a lock-free ring buffer
+/// - Cue stream never blocks waiting for master
 fn start_master_and_cue(
     config: &AudioConfig,
     db_service: Arc<DatabaseService>,
@@ -289,23 +272,30 @@ fn start_master_and_cue(
     // Create command channel
     let (command_tx, command_rx) = command_channel();
 
-    // Create shared callback state for both streams
-    // Actual buffer size is tracked atomically for synchronization
-    let actual_buffer_size = Arc::new(AtomicU32::new(buffer_size));
-    let callback_state = AudioCallbackState::new_with_buffer_tracking(
-        engine,
-        command_rx,
-        OutputMode::MasterAndCue,
-        actual_buffer_size.clone(),
+    // Create lock-free ring buffer for cue samples
+    // Capacity: 4x buffer size to handle timing jitter between streams
+    // Using StereoSample directly for efficient transfer
+    let cue_buffer_capacity = (buffer_size as usize) * 4;
+    let (cue_producer, cue_consumer) = rtrb::RingBuffer::<StereoSample>::new(cue_buffer_capacity);
+    log::debug!(
+        "Cue sample ring buffer created with capacity {} samples",
+        cue_buffer_capacity
     );
+
+    // Create callback state for master stream (owns the engine)
+    let callback_state = AudioCallbackState::new(engine, command_rx, OutputMode::MasterAndCue);
     let callback_state = Arc::new(std::sync::Mutex::new(callback_state));
 
-    // Build master stream
-    let master_stream =
-        build_output_stream(&master_device, &master_stream_config, callback_state.clone())?;
+    // Build master stream with cue producer
+    let master_stream = build_master_stream_dual(
+        &master_device,
+        &master_stream_config,
+        callback_state,
+        cue_producer,
+    )?;
 
-    // Build cue stream (shares state with master)
-    let cue_stream = build_cue_stream(&cue_device, &cue_stream_config, callback_state)?;
+    // Build cue stream with cue consumer (lock-free, no shared state)
+    let cue_stream = build_cue_stream_lockfree(&cue_device, &cue_stream_config, cue_consumer)?;
 
     // Start both streams
     master_stream
@@ -315,15 +305,17 @@ fn start_master_and_cue(
         .play()
         .map_err(|e| AudioError::StreamPlayError(format!("Cue: {}", e)))?;
 
-    log::info!("Audio streams started (master+cue mode)");
+    log::info!("Audio streams started (master+cue mode, lock-free)");
+
+    let handle = CpalAudioHandle {
+        _master_stream: master_stream,
+        _cue_stream: Some(cue_stream),
+        sample_rate,
+        buffer_size,
+    };
 
     Ok(AudioSystemResult {
-        handle: AudioHandle {
-            _master_stream: master_stream,
-            _cue_stream: Some(cue_stream),
-            sample_rate,
-            buffer_size,
-        },
+        handle: AudioHandle::Cpal(handle),
         command_sender: CommandSender { producer: command_tx },
         deck_atomics,
         slicer_atomics,
@@ -335,7 +327,10 @@ fn start_master_and_cue(
     })
 }
 
-/// State shared between audio callbacks
+/// State for audio callbacks
+///
+/// In single-output mode: owned exclusively by the master stream callback
+/// In dual-output mode: owned by master stream, cue samples sent via ring buffer
 struct AudioCallbackState {
     /// The audio engine (owned exclusively by audio thread)
     engine: AudioEngine,
@@ -345,55 +340,24 @@ struct AudioCallbackState {
     master_buffer: StereoBuffer,
     /// Pre-allocated cue buffer
     cue_buffer: StereoBuffer,
-    /// Output mode
-    output_mode: OutputMode,
-    /// Whether we've processed this frame (for dual-stream mode)
-    frame_processed: bool,
-    /// Actual buffer size tracking (for dual-stream synchronization)
-    actual_buffer_size: Option<Arc<AtomicU32>>,
 }
 
 impl AudioCallbackState {
     fn new(
         engine: AudioEngine,
         command_rx: rtrb::Consumer<EngineCommand>,
-        output_mode: OutputMode,
+        _output_mode: OutputMode,
     ) -> Self {
         Self {
             engine,
             command_rx,
             master_buffer: StereoBuffer::silence(MAX_BUFFER_SIZE),
             cue_buffer: StereoBuffer::silence(MAX_BUFFER_SIZE),
-            output_mode,
-            frame_processed: false,
-            actual_buffer_size: None,
-        }
-    }
-
-    fn new_with_buffer_tracking(
-        engine: AudioEngine,
-        command_rx: rtrb::Consumer<EngineCommand>,
-        output_mode: OutputMode,
-        actual_buffer_size: Arc<AtomicU32>,
-    ) -> Self {
-        Self {
-            engine,
-            command_rx,
-            master_buffer: StereoBuffer::silence(MAX_BUFFER_SIZE),
-            cue_buffer: StereoBuffer::silence(MAX_BUFFER_SIZE),
-            output_mode,
-            frame_processed: false,
-            actual_buffer_size: Some(actual_buffer_size),
         }
     }
 
     /// Process audio and fill buffers (called by master stream)
     fn process(&mut self, n_frames: usize) {
-        // Update actual buffer size if tracking
-        if let Some(ref size) = self.actual_buffer_size {
-            size.store(n_frames as u32, Ordering::Relaxed);
-        }
-
         // Set working buffer length (RT-safe: no allocation)
         self.master_buffer.set_len_from_capacity(n_frames);
         self.cue_buffer.set_len_from_capacity(n_frames);
@@ -404,8 +368,6 @@ impl AudioCallbackState {
         // Process audio through the engine
         self.engine
             .process(&mut self.master_buffer, &mut self.cue_buffer);
-
-        self.frame_processed = true;
     }
 
     /// Get master output samples
@@ -565,7 +527,9 @@ fn build_output_stream(
     Ok(stream)
 }
 
-/// Build the cue output stream (for dual-output mode)
+/// Build the cue output stream (for dual-output mode) - LEGACY, uses shared mutex
+/// Deprecated: Use build_cue_stream_lockfree instead for better performance
+#[allow(dead_code)]
 fn build_cue_stream(
     device: &cpal::Device,
     config: &StreamConfig,
@@ -609,4 +573,144 @@ fn build_cue_stream(
         .map_err(|e| AudioError::StreamBuildError(e.to_string()))?;
 
     Ok(stream)
+}
+
+/// Build the master output stream for dual-output mode
+///
+/// This version also pushes cue samples to the lock-free ring buffer
+/// so the cue stream can read them without blocking.
+fn build_master_stream_dual(
+    device: &cpal::Device,
+    config: &StreamConfig,
+    state: Arc<std::sync::Mutex<AudioCallbackState>>,
+    mut cue_producer: rtrb::Producer<StereoSample>,
+) -> AudioResult<Stream> {
+    let channels = config.channels as usize;
+
+    let stream = device
+        .build_output_stream(
+            config,
+            move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
+                let mut state = state.lock().unwrap();
+                let n_frames = data.len() / channels;
+
+                // Process audio (fills both master and cue buffers)
+                state.process(n_frames);
+
+                // Copy master output to device buffer
+                let master_samples = state.master_samples();
+                for (i, frame) in data.chunks_mut(channels).enumerate() {
+                    if i < master_samples.len() {
+                        let sample = master_samples[i];
+                        frame[0] = sample.left;
+                        if channels > 1 {
+                            frame[1] = sample.right;
+                        }
+                        for ch in frame.iter_mut().skip(2) {
+                            *ch = 0.0;
+                        }
+                    } else {
+                        for ch in frame.iter_mut() {
+                            *ch = 0.0;
+                        }
+                    }
+                }
+
+                // Push cue samples to the lock-free ring buffer
+                // The cue stream will read these independently
+                let cue_samples = state.cue_samples();
+                for sample in cue_samples {
+                    // If buffer is full, drop oldest samples (cue stream is behind)
+                    // This is better than blocking or dropping new samples
+                    if cue_producer.push(*sample).is_err() {
+                        // Buffer full - could log this but it's RT-safe not to
+                        // In practice, if cue is behind, it will catch up
+                        break;
+                    }
+                }
+            },
+            move |err| {
+                log::error!("Master audio stream error: {}", err);
+            },
+            None,
+        )
+        .map_err(|e| AudioError::StreamBuildError(e.to_string()))?;
+
+    Ok(stream)
+}
+
+/// Build the cue output stream using lock-free ring buffer
+///
+/// This stream reads cue samples from a ring buffer without any blocking.
+/// If samples aren't available (master hasn't produced them yet), plays silence.
+fn build_cue_stream_lockfree(
+    device: &cpal::Device,
+    config: &StreamConfig,
+    mut cue_consumer: rtrb::Consumer<StereoSample>,
+) -> AudioResult<Stream> {
+    let channels = config.channels as usize;
+
+    let stream = device
+        .build_output_stream(
+            config,
+            move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
+                let n_frames = data.len() / channels;
+
+                // Read cue samples from ring buffer (non-blocking)
+                for (i, frame) in data.chunks_mut(channels).enumerate() {
+                    if i >= n_frames {
+                        break;
+                    }
+
+                    // Try to pop a sample from the ring buffer
+                    match cue_consumer.pop() {
+                        Ok(sample) => {
+                            frame[0] = sample.left;
+                            if channels > 1 {
+                                frame[1] = sample.right;
+                            }
+                            for ch in frame.iter_mut().skip(2) {
+                                *ch = 0.0;
+                            }
+                        }
+                        Err(_) => {
+                            // No samples available - play silence
+                            // This happens briefly at startup or if master is slow
+                            for ch in frame.iter_mut() {
+                                *ch = 0.0;
+                            }
+                        }
+                    }
+                }
+            },
+            move |err| {
+                log::error!("Cue audio stream error: {}", err);
+            },
+            None,
+        )
+        .map_err(|e| AudioError::StreamBuildError(e.to_string()))?;
+
+    Ok(stream)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Device Enumeration for UI
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Get available stereo output pairs for UI dropdown
+///
+/// For CPAL, each device is treated as a stereo pair since CPAL handles
+/// channel routing internally. The left/right fields contain the device ID.
+pub fn get_available_stereo_pairs() -> Vec<StereoPair> {
+    super::device::get_available_output_devices()
+        .into_iter()
+        .map(|d| {
+            let device_id = d.id.display_label();
+            StereoPair {
+                label: format!("[{}] {}", d.host, d.name),
+                left: device_id.clone(),
+                right: device_id,
+            }
+        })
+        .collect()
 }

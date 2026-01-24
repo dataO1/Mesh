@@ -77,15 +77,41 @@ impl BufferSize {
 }
 
 /// Audio device identifier
+///
+/// Includes both the device name and the host backend (JACK, ALSA, etc.)
+/// This allows selecting devices from different hosts on systems with multiple
+/// audio backends available.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceId {
     /// Device name as reported by the system
     pub name: String,
+    /// Audio host identifier (e.g., "Jack", "Alsa", "CoreAudio")
+    /// If None, uses the default/preferred host
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
 impl DeviceId {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into() }
+        Self {
+            name: name.into(),
+            host: None,
+        }
+    }
+
+    pub fn with_host(name: &str, host: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            host: Some(host.to_string()),
+        }
+    }
+
+    /// Get a display label that includes the host if available
+    pub fn display_label(&self) -> String {
+        match &self.host {
+            Some(host) => format!("[{}] {}", host, self.name),
+            None => self.name.clone(),
+        }
     }
 }
 
@@ -96,11 +122,23 @@ pub struct AudioConfig {
     pub output_mode: OutputMode,
 
     /// Master output device (None = use system default)
+    /// Used by CPAL backend
     pub master_device: Option<DeviceId>,
 
     /// Cue/headphone output device (only used if output_mode is MasterAndCue)
     /// None = use system default (different from master if available)
+    /// Used by CPAL backend
     pub cue_device: Option<DeviceId>,
+
+    /// Master stereo pair index for JACK backend
+    /// 0 = first available pair, 1 = second, etc.
+    #[serde(default)]
+    pub master_pair_index: Option<usize>,
+
+    /// Cue stereo pair index for JACK backend
+    /// None = auto-detect (uses second pair if available)
+    #[serde(default)]
+    pub cue_pair_index: Option<usize>,
 
     /// Preferred buffer size
     pub buffer_size: BufferSize,
@@ -115,6 +153,8 @@ impl Default for AudioConfig {
             output_mode: OutputMode::default(),
             master_device: None,
             cue_device: None,
+            master_pair_index: None,
+            cue_pair_index: None,
             buffer_size: BufferSize::default(),
             sample_rate: None,
         }

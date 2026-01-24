@@ -3,6 +3,12 @@ name = "mesh-core"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+# Use native JACK backend on Linux for pro-audio port routing
+# When disabled, uses CPAL (which supports ALSA/PipeWire on Linux)
+jack-backend = ["dep:jack"]
+
 [dependencies]
 rtrb.workspace = true
 signalsmith-stretch.workspace = true
@@ -20,6 +26,9 @@ thiserror.workspace = true
 
 # Cross-platform audio backend
 cpal.workspace = true
+
+# Native JACK backend for Linux (optional, pro-audio port routing)
+jack = { version = "0.11", optional = true }
 
 # Database and messaging
 cozo = { workspace = true }

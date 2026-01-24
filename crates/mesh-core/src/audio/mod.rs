@@ -1,7 +1,8 @@
 //! Cross-platform audio backend for Mesh
 //!
-//! Provides a unified audio system using CPAL that works on Linux (ALSA/PipeWire),
-//! Windows (WASAPI), and macOS (CoreAudio).
+//! Provides a unified audio system with platform-specific backends:
+//! - **Linux**: Native JACK for pro-audio with port-level routing (with jack-backend feature)
+//! - **Windows/macOS**: CPAL for cross-platform device support
 //!
 //! # Architecture
 //!
@@ -36,18 +37,30 @@
 //! let position = result.deck_atomics[0].position();
 //! ```
 
+mod backend;
 mod config;
-mod cpal_backend;
 mod device;
 mod error;
+
+// Platform-specific backends
+#[cfg(not(all(target_os = "linux", feature = "jack-backend")))]
+mod cpal_backend;
+
+#[cfg(all(target_os = "linux", feature = "jack-backend"))]
+mod jack_backend;
 
 // Re-export public API
 pub use config::{
     AudioConfig, BufferSize, DeviceId, OutputMode, DEFAULT_BUFFER_SIZE, MAX_BUFFER_SIZE,
 };
-pub use cpal_backend::{start_audio_system, AudioHandle, AudioSystemResult, CommandSender};
-pub use device::{
-    get_available_output_devices, get_available_stereo_pairs, get_default_device,
-    get_output_devices, AudioDevice, OutputDevice, StereoPair,
+
+// Re-export from the unified backend module
+pub use backend::{
+    connect_ports, get_available_stereo_pairs, start_audio_system, AudioHandle, AudioSystemResult,
+    CommandSender, StereoPair,
 };
+
+// Re-export device types for UI
+pub use device::{get_available_output_devices, get_default_device, get_output_devices, AudioDevice, OutputDevice};
+
 pub use error::{AudioError, AudioResult};

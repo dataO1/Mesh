@@ -2,47 +2,57 @@
 //!
 //! Provides functionality to list available audio devices and their capabilities.
 //!
-//! On Linux, this module prefers JACK over ALSA for better latency and routing.
-//! JACK provides descriptive port names like "system:playback_1" whereas ALSA
-//! uses hardware IDs like "hw:0,0".
+//! This module enumerates devices from ALL available audio hosts (JACK, ALSA,
+//! PulseAudio, etc.) to give users full control over device selection.
+//!
+//! On Linux with JACK running, JACK typically shows only one "device" (the JACK
+//! server itself) while ALSA shows individual hardware devices. For DJ applications
+//! requiring dual outputs (master + headphones), ALSA device selection is often needed.
 
 use cpal::traits::{DeviceTrait, HostTrait};
-use cpal::Host;
+use cpal::{Host, HostId};
 
 use super::config::DeviceId;
 use super::error::{AudioError, AudioResult};
 
-/// Get the preferred audio host for the current platform.
-///
-/// On Linux, prefers JACK if available (for pro-audio routing and better names),
-/// falls back to ALSA. On other platforms, uses the system default.
-fn get_preferred_host() -> Host {
-    #[cfg(target_os = "linux")]
-    {
-        // Try JACK first for better latency and descriptive device names
-        if let Some(jack_host) = cpal::available_hosts()
-            .into_iter()
-            .find(|h| *h == cpal::HostId::Jack)
-        {
-            if let Ok(host) = cpal::host_from_id(jack_host) {
-                log::info!("Using JACK audio host");
-                return host;
-            }
-        }
-        log::info!("JACK not available, using default host (ALSA)");
+/// Get a human-readable name for a host ID
+fn host_name(host_id: HostId) -> String {
+    // Use the debug representation which gives us the variant name
+    let name = format!("{:?}", host_id);
+    // Capitalize common names for better display
+    match name.as_str() {
+        "Alsa" => "ALSA".to_string(),
+        "Jack" => "JACK".to_string(),
+        "Wasapi" => "WASAPI".to_string(),
+        _ => name,
     }
+}
 
-    get_preferred_host()
+/// Get a host by its name string
+fn get_host_by_name(name: &str) -> Option<Host> {
+    for host_id in cpal::available_hosts() {
+        if host_name(host_id) == name {
+            return cpal::host_from_id(host_id).ok();
+        }
+    }
+    None
+}
+
+/// Get the default/fallback audio host for the current platform.
+fn get_default_host() -> Host {
+    cpal::default_host()
 }
 
 /// Information about an audio output device
 #[derive(Debug, Clone)]
 pub struct AudioDevice {
-    /// Device identifier for configuration
+    /// Device identifier for configuration (includes host info)
     pub id: DeviceId,
     /// Human-readable device name
     pub name: String,
-    /// Whether this is the system default device
+    /// Host backend name (e.g., "ALSA", "JACK")
+    pub host: String,
+    /// Whether this is the system default device for its host
     pub is_default: bool,
     /// Supported sample rates (common ones)
     pub sample_rates: Vec<u32>,
@@ -50,25 +60,54 @@ pub struct AudioDevice {
     pub max_channels: u16,
 }
 
-/// Get all available audio output devices
+/// Get all available audio output devices from ALL hosts
+///
+/// This enumerates devices from every available audio host (JACK, ALSA, etc.)
+/// to give users full control over device selection. On Linux, this typically
+/// means you'll see both JACK's single device and ALSA's hardware devices.
 pub fn get_output_devices() -> AudioResult<Vec<AudioDevice>> {
-    let host = get_preferred_host();
+    let mut all_devices: Vec<AudioDevice> = Vec::new();
 
-    let default_device_name = host
-        .default_output_device()
-        .and_then(|d| d.name().ok());
+    // Enumerate devices from all available hosts
+    for host_id in cpal::available_hosts() {
+        let host = match cpal::host_from_id(host_id) {
+            Ok(h) => h,
+            Err(e) => {
+                log::debug!("Could not initialize host {:?}: {}", host_id, e);
+                continue;
+            }
+        };
 
-    let devices: Vec<AudioDevice> = host
-        .output_devices()
-        .map_err(|e| AudioError::ConfigError(e.to_string()))?
-        .filter_map(|device| {
-            let name = device.name().ok()?;
+        let host_name_str = host_name(host_id);
+
+        let default_device_name = host
+            .default_output_device()
+            .and_then(|d: cpal::Device| d.name().ok());
+
+        let devices_iter = match host.output_devices() {
+            Ok(d) => d,
+            Err(e) => {
+                log::debug!("Could not enumerate devices for {:?}: {}", host_id, e);
+                continue;
+            }
+        };
+
+        for device in devices_iter {
+            let name = match device.name() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+
             let is_default = default_device_name.as_ref() == Some(&name);
 
             // Get supported configurations
-            let configs: Vec<_> = device.supported_output_configs().ok()?.collect();
+            let configs: Vec<_> = match device.supported_output_configs() {
+                Ok(c) => c.collect(),
+                Err(_) => continue,
+            };
+
             if configs.is_empty() {
-                return None;
+                continue;
             }
 
             // Extract sample rates and channels from supported configs
@@ -91,21 +130,36 @@ pub fn get_output_devices() -> AudioResult<Vec<AudioDevice>> {
 
             sample_rates.sort();
 
-            Some(AudioDevice {
-                id: DeviceId::new(&name),
-                name,
+            all_devices.push(AudioDevice {
+                id: DeviceId::with_host(&name, &host_name_str),
+                name: name.clone(),
+                host: host_name_str.clone(),
                 is_default,
                 sample_rates,
                 max_channels,
-            })
-        })
-        .collect();
+            });
+        }
+    }
 
-    if devices.is_empty() {
+    if all_devices.is_empty() {
         return Err(AudioError::NoDevices);
     }
 
-    Ok(devices)
+    // Sort: default devices first, then by host, then by name
+    all_devices.sort_by(|a, b| {
+        b.is_default
+            .cmp(&a.is_default)
+            .then_with(|| a.host.cmp(&b.host))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+
+    log::info!(
+        "Enumerated {} audio devices from {} hosts",
+        all_devices.len(),
+        cpal::available_hosts().len()
+    );
+
+    Ok(all_devices)
 }
 
 /// Get the default audio output device
@@ -122,18 +176,41 @@ pub fn get_default_device() -> AudioResult<AudioDevice> {
 }
 
 /// Find a device by its ID
+///
+/// Uses the host specified in the DeviceId if available, otherwise
+/// searches all available hosts.
 pub fn find_device_by_id(id: &DeviceId) -> AudioResult<cpal::Device> {
-    let host = get_preferred_host();
+    // If a host is specified, use that specific host
+    if let Some(ref host_name) = id.host {
+        if let Some(host) = get_host_by_name(host_name) {
+            return host
+                .output_devices()
+                .map_err(|e| AudioError::ConfigError(e.to_string()))?
+                .find(|d: &cpal::Device| d.name().ok().as_ref() == Some(&id.name))
+                .ok_or_else(|| AudioError::DeviceNotFound(id.name.clone()));
+        }
+    }
 
-    host.output_devices()
-        .map_err(|e| AudioError::ConfigError(e.to_string()))?
-        .find(|d| d.name().ok().as_ref() == Some(&id.name))
-        .ok_or_else(|| AudioError::DeviceNotFound(id.name.clone()))
+    // Otherwise, search all hosts for the device by name
+    for host_id in cpal::available_hosts() {
+        if let Ok(host) = cpal::host_from_id(host_id) {
+            if let Ok(devices) = host.output_devices() {
+                if let Some(device) = devices
+                    .filter(|d: &cpal::Device| d.name().ok().as_ref() == Some(&id.name))
+                    .next()
+                {
+                    return Ok(device);
+                }
+            }
+        }
+    }
+
+    Err(AudioError::DeviceNotFound(id.name.clone()))
 }
 
-/// Get the CPAL default output device
+/// Get the CPAL default output device from the default host
 pub fn get_cpal_default_device() -> AudioResult<cpal::Device> {
-    let host = get_preferred_host();
+    let host = get_default_host();
     host.default_output_device()
         .ok_or_else(|| AudioError::NoDefaultDevice("No default output device".to_string()))
 }
@@ -147,10 +224,12 @@ pub fn get_cpal_default_device() -> AudioResult<cpal::Device> {
 /// This is a lightweight version of `AudioDevice` for use in settings UI.
 #[derive(Debug, Clone)]
 pub struct OutputDevice {
-    /// Device identifier
+    /// Device identifier (includes host info)
     pub id: DeviceId,
-    /// Human-readable name
+    /// Human-readable device name
     pub name: String,
+    /// Host backend name (e.g., "ALSA", "JACK")
+    pub host: String,
     /// Whether this is the system default
     pub is_default: bool,
 }
@@ -160,6 +239,7 @@ impl From<AudioDevice> for OutputDevice {
         Self {
             id: device.id,
             name: device.name,
+            host: device.host,
             is_default: device.is_default,
         }
     }
@@ -167,25 +247,8 @@ impl From<AudioDevice> for OutputDevice {
 
 impl std::fmt::Display for OutputDevice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.name)
-    }
-}
-
-/// Stereo output pair for settings UI compatibility
-///
-/// In CPAL mode, this represents a single audio device.
-/// The "pair" terminology is kept for settings UI consistency.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StereoPair {
-    /// Human-readable label
-    pub label: String,
-    /// Device ID
-    pub device_id: DeviceId,
-}
-
-impl std::fmt::Display for StereoPair {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.label)
+        // Show host prefix for clarity, e.g., "[ALSA] hw:0,0"
+        write!(f, "[{}] {}", self.host, self.name)
     }
 }
 
@@ -200,19 +263,6 @@ pub fn get_available_output_devices() -> Vec<OutputDevice> {
     }
 }
 
-/// Get available devices as StereoPair (for settings UI dropdowns)
-///
-/// This provides a simple list of devices for UI pick_list widgets.
-pub fn get_available_stereo_pairs() -> Vec<StereoPair> {
-    get_available_output_devices()
-        .into_iter()
-        .map(|d| StereoPair {
-            label: d.name.clone(),
-            device_id: d.id,
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,8 +275,12 @@ mod tests {
                 println!("Found {} audio devices:", devices.len());
                 for device in &devices {
                     println!(
-                        "  - {} (default: {}, channels: {}, rates: {:?})",
-                        device.name, device.is_default, device.max_channels, device.sample_rates
+                        "  - [{}] {} (default: {}, channels: {}, rates: {:?})",
+                        device.host,
+                        device.name,
+                        device.is_default,
+                        device.max_channels,
+                        device.sample_rates
                     );
                 }
             }
