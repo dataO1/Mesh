@@ -6,6 +6,12 @@ description = "4-deck stem-based DJ mixing with neural effects"
 license.workspace = true
 authors.workspace = true
 
+[features]
+default = []
+# Use native JACK backend on Linux for pro-audio port routing
+# Enables port-level selection (e.g., Scarlett 18i20 outputs 1-2 vs 3-4)
+jack-backend = ["mesh-core/jack-backend"]
+
 [[bin]]
 name = "mesh-player"
 path = "src/main.rs"
