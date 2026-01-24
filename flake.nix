@@ -32,20 +32,14 @@
         # Packages
         # =======================================================================
 
-        # Native Rust build (Linux)
+        # Native Rust build (Linux/NixOS)
         meshBuild = import ./nix/packages/mesh-build.nix {
           inherit pkgs common;
           src = ./.;
         };
 
-        # Debian packages (.deb)
-        meshDeb = import ./nix/packages/mesh-deb.nix {
-          inherit pkgs common meshBuild rustToolchain;
-          src = ./.;
-        };
-
         # =======================================================================
-        # Apps
+        # Apps (container-based builds for portability)
         # =======================================================================
 
         # Windows cross-compilation (container-based)
@@ -53,6 +47,11 @@
         buildWindowsApp = import ./nix/apps/build-windows.nix {
           inherit pkgs;
           essentiaLinux = common.essentia;
+        };
+
+        # Portable .deb build (container-based, Ubuntu 22.04 for glibc 2.35)
+        buildDebApp = import ./nix/apps/build-deb.nix {
+          inherit pkgs;
         };
 
         # =======================================================================
@@ -68,8 +67,7 @@
         # Export packages
         packages = {
           mesh-build = meshBuild;
-          mesh-deb = meshDeb;
-          default = meshDeb;
+          default = meshBuild;
         };
 
         devShells.default = devShell;
@@ -90,6 +88,10 @@
           build-windows = {
             type = "app";
             program = "${buildWindowsApp}/bin/build-windows";
+          };
+          build-deb = {
+            type = "app";
+            program = "${buildDebApp}/bin/build-deb";
           };
         };
       }

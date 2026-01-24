@@ -29,12 +29,14 @@ assets = [
     ["target/release/bundled/libavformat.so.58", "usr/lib/mesh/", "644"],
     ["target/release/bundled/libavutil.so.56", "usr/lib/mesh/", "644"],
     ["target/release/bundled/libswresample.so.3", "usr/lib/mesh/", "644"],
+    # TagLib 2.x (older distros only have TagLib 1.x)
+    ["target/release/bundled/libtag.so.2", "usr/lib/mesh/", "644"],
     # User should add icon: ["../../packaging/icons/mesh-cue.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
 ]
 # Dependencies: essentia's other deps + audio/graphics
-# Note: libessentia and FFmpeg 4.x are bundled in /usr/lib/mesh/
+# Note: libessentia, FFmpeg 4.x, and TagLib 2.x are bundled in /usr/lib/mesh/
 # Uses ALSA via CPAL - works with PipeWire's ALSA compatibility layer
-depends = "$auto, libasound2, libvulkan1, libxkbcommon0, libwayland-client0, libfontconfig1, libfftw3-single3, libtag1v5, libchromaprint1, libsamplerate0, libyaml-0-2"
+depends = "$auto, libasound2, libvulkan1, libxkbcommon0, libwayland-client0, libfontconfig1, libfftw3-single3, libchromaprint1, libsamplerate0, libyaml-0-2"
 
 # === Fedora/RHEL packaging ===
 [package.metadata.generate-rpm]
