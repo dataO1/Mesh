@@ -79,6 +79,11 @@ pkgs.mkShell {
     # JACK settings
     export JACK_NO_AUDIO_RESERVATION=1
 
+    # Enable native JACK backend by default for Linux development
+    # This provides port-level routing control (e.g., Scarlett 18i20 outputs 1-2 vs 3-4)
+    # To use CPAL instead: cargo run -p mesh-player --no-default-features
+    export CARGO_BUILD_FEATURES="jack-backend"
+
     # Torch library path (for nn~)
     export LIBTORCH="${pkgs.libtorch-bin}"
     export LIBTORCH_LIB="${pkgs.libtorch-bin}/lib"
@@ -99,8 +104,11 @@ pkgs.mkShell {
     echo "╔═══════════════════════════════════════════════════════════════════════╗"
     echo "║                      Mesh Development Shell                           ║"
     echo "╠═══════════════════════════════════════════════════════════════════════╣"
+    echo "║  Audio: Native JACK backend enabled (jack-backend feature)            ║"
+    echo "║         For CPAL instead: cargo run -p mesh-player --no-default-features"
+    echo "╠═══════════════════════════════════════════════════════════════════════╣"
     echo "║  Development:                                                         ║"
-    echo "║    cargo run -p mesh-player          # DJ application                 ║"
+    echo "║    cargo run -p mesh-player          # DJ application (JACK)          ║"
     echo "║    cargo run -p mesh-cue             # Track preparation              ║"
     echo "║    cargo test                        # Run all tests                  ║"
     echo "╠═══════════════════════════════════════════════════════════════════════╣"
