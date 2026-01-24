@@ -350,6 +350,9 @@ and mesh-widget and only if necessary in the ui.
 - [ ] usbmanager should invalidate db connection, cache and notify ui to return
   to root in the file browser (currently its still in the playlist), if it detects, that
   a usb stick is removed.
+- [ ] The beat grid analysis is not really good, we need to check if we can fine
+  tune this. research the essentia beatgrid/rythm section and check if we can
+  use edm specific beat grid detection, ive read this exists.
 
 # Performance
 - [ ] Can we optimize how stems are stored, this is currently roughly 200-300 mb
@@ -362,7 +365,7 @@ and mesh-widget and only if necessary in the ui.
 - [ ] analyse how to reduce code in the tick handler of the ui (both player and cue), to reduce
   the computational overhead for each frame and how we can factor out some
   not-frequently changing information into message/subscription instead of tick
-  handlers.
+  handlers. currently the canvas sometimes skips frames.
 
 # Package Building
 - AppImage is not well supported with jack and real-time audio
@@ -395,7 +398,8 @@ and mesh-widget and only if necessary in the ui.
   potential target user hardware spectrum, but if we go embedded, we know our
   environment, we can optimize this for there (ie 48, or 96 khz sample rate fixed
   everywhere)
-- [ ] use cpal instead of jack for full cross-compatability
+- [x] use cpal instead of jack for full cross-compatability (jack as default for
+  linux, cpal rest)
 
 
 
