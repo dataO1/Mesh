@@ -2,6 +2,34 @@
 
 All notable changes to Mesh are documented in this file.
 
+## [0.4.2] - 2026-01-24
+
+### Changed
+
+- **Container-based .deb packaging** — Replaced Nix-based .deb derivation with Ubuntu 22.04 container build. Ensures compatibility with Pop!_OS 22.04+, Ubuntu 22.04+, Debian 12+, and Linux Mint 21+ by targeting glibc 2.35.
+
+- **Bundled TagLib 2.x** — Added `libtag.so.2` to bundled libraries for mesh-cue. Older distros only ship TagLib 1.x, which is ABI-incompatible.
+
+### Added
+
+- **New build command** — `nix run .#build-deb` builds portable .deb packages in `dist/deb/`. First build takes ~15 minutes (caches Rust toolchain and dependencies), subsequent builds ~1-2 minutes.
+
+- **Build caching** — Container builds cache Rust toolchain, cargo registry, compiled dependencies, FFmpeg 4.x, TagLib 2.x, and Essentia in `target/deb-build/` for fast incremental builds.
+
+- **Verbose build output** — Build progress shows numbered phases [1/8] through [8/8] with detailed status messages.
+
+### Removed
+
+- **Nix .deb derivation** — Removed `nix/packages/mesh-deb.nix` and `nix build .#mesh-deb`. The Nix-based build used the host's glibc (2.39+), causing "GLIBC_2.39 not found" errors on older distros.
+
+### Fixed
+
+- **glibc compatibility** — .deb packages now work on systems with glibc 2.35+ (previously required 2.39+).
+
+- **TagLib dependency** — Fixed "libtag.so.2 not found" error by bundling TagLib 2.x instead of depending on system package.
+
+---
+
 ## [0.4.1] - 2026-01-24
 
 ### Added
