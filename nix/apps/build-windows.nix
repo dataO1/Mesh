@@ -439,7 +439,8 @@ TOOLCHAIN
 
         echo ""
         echo "==> Building mesh-player..."
-        cargo build --release --target x86_64-pc-windows-gnu -p mesh-player
+        # Use --no-default-features to disable JACK backend (Linux-only, uses CPAL on Windows)
+        cargo build --release --target x86_64-pc-windows-gnu -p mesh-player --no-default-features
 
         # =====================================================================
         # Phase 5: Build mesh-cue (needs Essentia for both HOST and TARGET)
@@ -599,7 +600,8 @@ PKGWRAPPER
         # - _BYTE_DEFINED: prevents MinGW rpcndr.h byte typedef conflicting with std::byte
         export CXXFLAGS_x86_64_pc_windows_gnu="-std=c++17 -D_USE_MATH_DEFINES -DTAGLIB_STATIC -DCHROMAPRINT_NODLL -D_BYTE_DEFINED"
 
-        cargo build --release --target x86_64-pc-windows-gnu -p mesh-cue || {
+        # Use --no-default-features to disable JACK backend (Linux-only, uses CPAL on Windows)
+        cargo build --release --target x86_64-pc-windows-gnu -p mesh-cue --no-default-features || {
           echo ""
           echo "WARNING: mesh-cue build failed (Essentia cross-compilation is complex)"
           echo "         mesh-player.exe was built successfully"

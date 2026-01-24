@@ -7,7 +7,9 @@ license.workspace = true
 authors.workspace = true
 
 [features]
-default = []
+# JACK backend is default for Linux; on Windows/macOS it's a no-op (uses CPAL)
+# Use --no-default-features for CPAL-only builds
+default = ["jack-backend"]
 # Use native JACK backend on Linux for pro-audio port routing
 # Enables port-level selection (e.g., Scarlett 18i20 outputs 1-2 vs 3-4)
 jack-backend = ["mesh-core/jack-backend"]

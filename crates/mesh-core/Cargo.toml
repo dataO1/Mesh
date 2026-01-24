@@ -4,7 +4,9 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-default = []
+# JACK backend is default for Linux pro-audio; on other platforms it's a no-op
+# Use --no-default-features for CPAL-only builds (Windows/macOS cross-compile)
+default = ["jack-backend"]
 # Use native JACK backend on Linux for pro-audio port routing
 # When disabled, uses CPAL (which supports ALSA/PipeWire on Linux)
 jack-backend = ["dep:jack"]
@@ -28,6 +30,8 @@ thiserror.workspace = true
 cpal.workspace = true
 
 # Native JACK backend for Linux (optional, pro-audio port routing)
+# This dependency is Linux-only - on other platforms, jack-backend feature is a no-op
+[target.'cfg(target_os = "linux")'.dependencies]
 jack = { version = "0.11", optional = true }
 
 # Database and messaging

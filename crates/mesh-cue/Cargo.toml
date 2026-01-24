@@ -80,8 +80,8 @@ procspawn = "1.0"
 serde_json = "1.0"
 
 [features]
-default = []
+# JACK backend is default for Linux; on Windows/macOS it's a no-op (uses CPAL)
+# Use --no-default-features for CPAL-only builds
+default = ["jack-backend"]
 # Use native JACK backend on Linux for audio preview
-# Note: mesh-cue primarily uses CPAL for simple preview, but this enables
-# JACK in mesh-core if needed for future features
 jack-backend = ["mesh-core/jack-backend"]

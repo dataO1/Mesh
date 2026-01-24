@@ -413,37 +413,34 @@ cargo run -p mesh-player
 
 ### Audio Backend Feature Flags
 
-Mesh supports multiple audio backends depending on your platform and needs:
+Mesh supports multiple audio backends depending on your platform:
 
 | Feature | Platform | Description |
 |---------|----------|-------------|
-| `jack-backend` | Linux | Native JACK with full port-level routing (default in devshell) |
-| (none) | All | CPAL backend (ALSA/PulseAudio on Linux, WASAPI on Windows, CoreAudio on macOS) |
+| `jack-backend` | Linux | Native JACK with full port-level routing **(default)** |
+| (none) | Windows/macOS | CPAL backend (WASAPI on Windows, CoreAudio on macOS) |
 
-**Linux with JACK (recommended for DJ use):**
+**Linux with JACK (default):**
 
-The `jack-backend` feature provides direct JACK integration with port-level control. This is essential for pro-audio setups where you need to route master and cue to different physical outputs (e.g., Scarlett 18i20 outputs 1-2 vs 3-4).
+The `jack-backend` feature is enabled by default and provides direct JACK integration with port-level control. This is essential for pro-audio setups where you need to route master and cue to different physical outputs (e.g., Scarlett 18i20 outputs 1-2 vs 3-4).
 
 ```bash
-# Enabled by default in the nix devshell
+# JACK backend is used by default on Linux
 cargo run -p mesh-player
-
-# Or explicitly enable when building outside the devshell
-cargo run -p mesh-player --features jack-backend
 ```
 
 **Cross-platform (CPAL backend):**
 
-Without the `jack-backend` feature, Mesh uses CPAL which provides cross-platform audio through the system's default audio API. This is used for Windows and macOS builds.
+For CPAL-only builds (used for Windows and macOS), disable the default features:
 
 ```bash
 # Build without JACK (CPAL backend)
 cargo run -p mesh-player --no-default-features
 ```
 
-> **Note:** When using PipeWire with JACK compatibility, you can run mesh-player under `pw-jack` to enable JACK routing:
+> **Note:** When using PipeWire with JACK compatibility, run mesh-player under `pw-jack`:
 > ```bash
-> pw-jack cargo run -p mesh-player --features jack-backend
+> pw-jack cargo run -p mesh-player
 > ```
 
 ### Building without Nix

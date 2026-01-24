@@ -1,10 +1,9 @@
 # Build the Rust workspace using rustPlatform
 # Outputs: mesh-player and mesh-cue binaries
 #
-# Feature flags:
-#   jackBackend (default: true) - Enable native JACK backend for port-level routing
-#                                 Set to false for CPAL-only builds (cross-platform)
-{ pkgs, common, src, jackBackend ? true }:
+# Default features include jack-backend for Linux (JACK audio with port routing)
+# The jack dependency is Linux-only, so this works correctly on all platforms
+{ pkgs, common, src }:
 
 let
   # Filtered source - only includes files needed for Rust compilation
@@ -55,9 +54,8 @@ in pkgs.rustPlatform.buildRustPackage {
   USE_TENSORFLOW = "0";
   CPLUS_INCLUDE_PATH = "${pkgs.eigen}/include/eigen3";
 
-  # Build specific packages with optional JACK backend
-  cargoBuildFlags = [ "-p" "mesh-player" "-p" "mesh-cue" ]
-    ++ pkgs.lib.optionals jackBackend [ "--features" "jack-backend" ];
+  # Build specific packages (default features include jack-backend for Linux)
+  cargoBuildFlags = [ "-p" "mesh-player" "-p" "mesh-cue" ];
 
   meta = with pkgs.lib; {
     description = "DJ Player and Cue Software";
