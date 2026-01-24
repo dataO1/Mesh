@@ -411,6 +411,41 @@ cargo build --release
 cargo run -p mesh-player
 ```
 
+### Audio Backend Feature Flags
+
+Mesh supports multiple audio backends depending on your platform and needs:
+
+| Feature | Platform | Description |
+|---------|----------|-------------|
+| `jack-backend` | Linux | Native JACK with full port-level routing (default in devshell) |
+| (none) | All | CPAL backend (ALSA/PulseAudio on Linux, WASAPI on Windows, CoreAudio on macOS) |
+
+**Linux with JACK (recommended for DJ use):**
+
+The `jack-backend` feature provides direct JACK integration with port-level control. This is essential for pro-audio setups where you need to route master and cue to different physical outputs (e.g., Scarlett 18i20 outputs 1-2 vs 3-4).
+
+```bash
+# Enabled by default in the nix devshell
+cargo run -p mesh-player
+
+# Or explicitly enable when building outside the devshell
+cargo run -p mesh-player --features jack-backend
+```
+
+**Cross-platform (CPAL backend):**
+
+Without the `jack-backend` feature, Mesh uses CPAL which provides cross-platform audio through the system's default audio API. This is used for Windows and macOS builds.
+
+```bash
+# Build without JACK (CPAL backend)
+cargo run -p mesh-player --no-default-features
+```
+
+> **Note:** When using PipeWire with JACK compatibility, you can run mesh-player under `pw-jack` to enable JACK routing:
+> ```bash
+> pw-jack cargo run -p mesh-player --features jack-backend
+> ```
+
 ### Building without Nix
 
 You'll need to install the following dependencies:
