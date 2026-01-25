@@ -174,6 +174,10 @@ and mesh-widget and only if necessary in the ui.
    - [ ] backup of databse (without files, just db)
 - [x] in the waveform canvas of the player, we need to mark decks, that are
  currently marked for cue output. change the header color to a slight yellow.
+- [ ] stem splitting in the import process
+- [ ] in mesh-cue users need to be able to scrub in the zoomed waveform, like in
+  the overview waveform.
+- [ ] plus and minus button s next to the bpm edit field.
 
 # Changes
 - [x] The waveform indicators of hot cues use colors, but the hot cue buttons
@@ -353,6 +357,13 @@ and mesh-widget and only if necessary in the ui.
 - [ ] The beat grid analysis is not really good, we need to check if we can fine
   tune this. research the essentia beatgrid/rythm section and check if we can
   use edm specific beat grid detection, ive read this exists.
+- [ ] make text in filebrowser wrapped
+- [ ] shift+click should delete linked stem
+- [ ] file browser both in mesh-cue and mesh-player sometimes takes up to much
+  space, it should just be as big without blocking the rest of the ui. for
+  example the hot cue buttons should have a fixed size in mesh-cue.
+- [ ] drag and drop should also work on the file list of the file browser (right
+  column), not only the playlist label(left column)
 
 # Performance
 - [ ] Can we optimize how stems are stored, this is currently roughly 200-300 mb
@@ -368,9 +379,10 @@ and mesh-widget and only if necessary in the ui.
   handlers. currently the canvas sometimes skips frames.
 
 # Package Building
-- AppImage is not well supported with jack and real-time audio
-- So for now we build .deb and .rpm natively
-- We might want to try flatpack (mixxx uses this)
+- debian now builds for older target (ubuntu 22.04, works on older popos as well)
+- windows works as well
+- we need to bundle uvr5 and extraction into the process! uvr is compilable for
+  linux and for windows.
 
 # Future fields
 - [x] automatic gain staging for optimal headroom and that the dj doesnt
