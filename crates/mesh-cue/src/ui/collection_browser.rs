@@ -1,10 +1,10 @@
 //! Collection browser view with hierarchical playlist navigation
 
-use super::app::{CollectionState, ImportState, Message};
+use super::app::{BrowserSide, CollectionState, ImportState, Message};
 use super::editor;
 use iced::widget::{button, column, container, row, rule, text, Space};
 use iced::{Alignment, Element, Length};
-use mesh_widgets::playlist_browser;
+use mesh_widgets::playlist_browser_with_drop_highlight;
 
 /// Render the collection view (editor + dual browsers below)
 /// Note: Progress bar moved to main app view (always visible at bottom of screen)
@@ -83,18 +83,30 @@ fn view_editor(state: &CollectionState, stem_link_selection: Option<usize>) -> E
 fn view_browsers(state: &CollectionState) -> Element<'_, Message> {
     // Use cached tracks from state (updated when folder changes in message handlers)
     // Note: Modifier key handling (Shift/Ctrl) is done in app's update() handler
-    let left_browser = playlist_browser(
+
+    // Determine which browser is the drop target (opposite of drag source)
+    let (left_is_drop_target, right_is_drop_target) = match &state.dragging_track {
+        Some(drag) => match drag.source_browser {
+            BrowserSide::Left => (false, true),   // Dragging from left, drop on right
+            BrowserSide::Right => (true, false),  // Dragging from right, drop on left
+        },
+        None => (false, false),
+    };
+
+    let left_browser = playlist_browser_with_drop_highlight(
         &state.tree_nodes,
         &state.left_tracks,
         &state.browser_left,
         |msg| Message::BrowserLeft(msg),
+        left_is_drop_target,
     );
 
-    let right_browser = playlist_browser(
+    let right_browser = playlist_browser_with_drop_highlight(
         &state.tree_nodes,
         &state.right_tracks,
         &state.browser_right,
         |msg| Message::BrowserRight(msg),
+        right_is_drop_target,
     );
 
     row![

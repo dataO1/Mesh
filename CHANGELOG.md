@@ -14,6 +14,8 @@ All notable changes to Mesh are documented in this file.
 
 - **Drag indicator** — When dragging tracks, a semi-transparent label appears near the cursor showing the track name (or "name..." for multiple tracks).
 
+- **Drop zone highlight** — The target file browser shows a teal border outline while dragging tracks, indicating where tracks will be dropped.
+
 - **Automatic port name capture** — During MIDI learn, the actual system port name is captured and stored as `learned_port_name` for precise device matching on reconnection.
 
 - **Port name normalization** — Hardware IDs like `[hw:3,0,0]` are stripped from port names, so devices match regardless of which USB port they're connected to.
@@ -22,7 +24,7 @@ All notable changes to Mesh are documented in this file.
 
 - **New MidiController methods** — `connected_count()`, `connected_device_names()`, `first_connected_port()`, and `drain_raw_events_with_source()` for multi-device management.
 
-- **Dynamic audio output switching (JACK)** — On Linux with JACK, audio outputs can now be changed in settings without restarting the app. Master and cue outputs are hot-swapped to the new port pairs.
+- **Dynamic audio output switching (JACK)** — On Linux with JACK, audio outputs can now be changed in settings without restarting the app. Works in both mesh-player (master/cue outputs) and mesh-cue (single output). Device selection is saved to config.
 
 ### Changed
 

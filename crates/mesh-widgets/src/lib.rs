@@ -89,8 +89,8 @@ pub use track_table::{
 
 // Combined playlist browser (tree + table)
 pub use playlist_browser::{
-    playlist_browser, table_browser, tree_browser, PlaylistBrowserMessage, PlaylistBrowserState,
-    TREE_PANEL_WIDTH,
+    playlist_browser, playlist_browser_with_drop_highlight, table_browser, tree_browser,
+    PlaylistBrowserMessage, PlaylistBrowserState, TREE_PANEL_WIDTH,
 };
 
 // Slice editor widget for slicer preset editing

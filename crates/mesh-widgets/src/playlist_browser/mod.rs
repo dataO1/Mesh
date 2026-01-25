@@ -19,7 +19,7 @@ use crate::track_table::{
 };
 use crate::tree::{tree_view, TreeMessage, TreeNode, TreeState};
 use iced::widget::{container, row, rule};
-use iced::{Background, Element, Length, Theme};
+use iced::{Background, Border, Color, Element, Length, Theme};
 use std::hash::Hash;
 
 /// State for the combined playlist browser widget
@@ -213,6 +213,25 @@ where
     TrackId: Clone + PartialEq + Eq + Hash + 'a,
     Message: Clone + 'a,
 {
+    playlist_browser_with_drop_highlight(tree_nodes, tracks, state, on_message, false)
+}
+
+/// Build a combined playlist browser with optional drop zone highlighting
+///
+/// Same as `playlist_browser`, but with an `is_drop_target` flag to highlight
+/// the table area when tracks are being dragged over it.
+pub fn playlist_browser_with_drop_highlight<'a, NodeId, TrackId, Message>(
+    tree_nodes: &'a [TreeNode<NodeId>],
+    tracks: &'a [TrackRow<TrackId>],
+    state: &'a PlaylistBrowserState<NodeId, TrackId>,
+    on_message: impl Fn(PlaylistBrowserMessage<NodeId, TrackId>) -> Message + 'a + Clone,
+    is_drop_target: bool,
+) -> Element<'a, Message>
+where
+    NodeId: Clone + Eq + Hash + 'a,
+    TrackId: Clone + PartialEq + Eq + Hash + 'a,
+    Message: Clone + 'a,
+{
     let on_msg_tree = on_message.clone();
     let tree = tree_view(tree_nodes, &state.tree_state, move |msg| {
         on_msg_tree(PlaylistBrowserMessage::Tree(msg))
@@ -236,11 +255,25 @@ where
     let table_container = container(table)
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(|theme: &Theme| container::Style {
-            background: Some(Background::Color(
-                theme.extended_palette().background.base.color,
-            )),
-            ..Default::default()
+        .style(move |theme: &Theme| {
+            let bg = theme.extended_palette().background.base.color;
+            if is_drop_target {
+                // Highlight with a subtle teal/cyan border when dragging
+                container::Style {
+                    background: Some(Background::Color(bg)),
+                    border: Border {
+                        color: Color::from_rgb(0.3, 0.6, 0.7),
+                        width: 2.0,
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                }
+            } else {
+                container::Style {
+                    background: Some(Background::Color(bg)),
+                    ..Default::default()
+                }
+            }
         });
 
     row![tree_container, rule::vertical(1), table_container,]
