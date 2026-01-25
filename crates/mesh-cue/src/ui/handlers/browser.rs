@@ -9,7 +9,7 @@ use mesh_core::playlist::{NodeId, NodeKind};
 use mesh_widgets::{PlaylistBrowserMessage, TrackTableMessage, TrackColumn, sort_tracks, TreeMessage};
 use super::super::app::MeshCueApp;
 use super::super::message::Message;
-use super::super::state::{BrowserSide, CollectionState};
+use super::super::state::{BrowserSide, CollectionState, PendingDragState};
 
 impl MeshCueApp {
     /// Handle BrowserLeft message - delegates to parameterized handler
@@ -66,6 +66,8 @@ impl MeshCueApp {
                     }
                     TreeMessage::DropReceived(target_id) => {
                         log::debug!("{} tree: DropReceived on {:?}", side_name, target_id);
+                        // Clear pending drag on mouse release
+                        self.collection.pending_drag = None;
                         if let Some(ref drag) = self.collection.dragging_track {
                             log::debug!("  Currently dragging: {}", drag.display_text());
                             if let Some(target_node) = self.domain.get_node(target_id) {
@@ -108,7 +110,10 @@ impl MeshCueApp {
                         }
                     }
                     TreeMessage::MouseMoved(_) => {
-                        // Widget-relative position, not used
+                        // Track which browser we're hovering over during drag
+                        if self.collection.dragging_track.is_some() {
+                            self.collection.drag_hover_browser = Some(side);
+                        }
                     }
                     _ => {
                         let folder_changed = self.collection.browser_mut(side).handle_tree_message(tree_msg);
@@ -190,19 +195,42 @@ impl MeshCueApp {
             }
         }
 
-        // Handle drag initiation
+        // Handle pending drag initiation (actual drag starts after mouse moves threshold)
         if let TrackTableMessage::Select(_) = &table_msg {
             let selected_ids: Vec<NodeId> = self.collection.browser(side).table_state.selected.iter().cloned().collect();
             if !selected_ids.is_empty() {
                 let track_names: Vec<String> = selected_ids.iter()
                     .filter_map(|id| self.domain.get_node(id).map(|n| n.name.clone()))
                     .collect();
-                log::debug!("{} table: initiating drag for {} track(s)", side_name, selected_ids.len());
-                return self.update(Message::DragTrackStart {
+                log::debug!("{} table: creating pending drag for {} track(s)", side_name, selected_ids.len());
+                // Store pending drag - actual drag starts when mouse moves past threshold
+                self.collection.pending_drag = Some(PendingDragState {
+                    start_position: self.global_mouse_position,
                     track_ids: selected_ids,
                     track_names,
-                    browser: side,
+                    source_browser: side,
                 });
+            }
+        }
+
+        // Handle mouse movement - check if pending drag should become active
+        if let TrackTableMessage::MouseMoved(_) = &table_msg {
+            // Track which browser we're hovering over during drag
+            if self.collection.dragging_track.is_some() {
+                self.collection.drag_hover_browser = Some(side);
+            }
+
+            if let Some(ref pending) = self.collection.pending_drag {
+                if pending.should_start_drag(self.global_mouse_position) {
+                    log::debug!("{} table: threshold reached, starting drag", side_name);
+                    let drag_state = pending.clone().into_drag_state();
+                    self.collection.pending_drag = None;
+                    return self.update(Message::DragTrackStart {
+                        track_ids: drag_state.track_ids,
+                        track_names: drag_state.track_names,
+                        browser: drag_state.source_browser,
+                    });
+                }
             }
         }
 
@@ -219,6 +247,8 @@ impl MeshCueApp {
         // Handle drop on table (both on track rows and empty table space)
         if matches!(table_msg, TrackTableMessage::DropReceived(_) | TrackTableMessage::DropReceivedOnTable) {
             log::debug!("{} table: DropReceived", side_name);
+            // Clear pending drag on mouse release (whether or not we had an active drag)
+            self.collection.pending_drag = None;
             if let Some(ref drag) = self.collection.dragging_track {
                 let current_folder = self.collection.browser(side).current_folder.clone();
                 if let Some(ref folder) = current_folder {
@@ -311,6 +341,8 @@ impl MeshCueApp {
     /// Handle DragTrackEnd message
     pub fn handle_drag_track_end(&mut self) -> Task<Message> {
         self.collection.dragging_track = None;
+        self.collection.pending_drag = None;
+        self.collection.drag_hover_browser = None;
         Task::none()
     }
 

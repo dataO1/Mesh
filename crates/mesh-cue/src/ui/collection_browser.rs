@@ -84,13 +84,17 @@ fn view_browsers(state: &CollectionState) -> Element<'_, Message> {
     // Use cached tracks from state (updated when folder changes in message handlers)
     // Note: Modifier key handling (Shift/Ctrl) is done in app's update() handler
 
-    // Determine which browser is the drop target (opposite of drag source)
-    let (left_is_drop_target, right_is_drop_target) = match &state.dragging_track {
-        Some(drag) => match drag.source_browser {
-            BrowserSide::Left => (false, true),   // Dragging from left, drop on right
-            BrowserSide::Right => (true, false),  // Dragging from right, drop on left
-        },
-        None => (false, false),
+    // Determine which browser to highlight as drop target:
+    // - Must be actively dragging
+    // - Must be hovering over the browser
+    // - Can't be the source browser (can't drop on itself)
+    let (left_is_drop_target, right_is_drop_target) = match (&state.dragging_track, &state.drag_hover_browser) {
+        (Some(drag), Some(hover)) => {
+            let left_hovering = *hover == BrowserSide::Left && drag.source_browser != BrowserSide::Left;
+            let right_hovering = *hover == BrowserSide::Right && drag.source_browser != BrowserSide::Right;
+            (left_hovering, right_hovering)
+        }
+        _ => (false, false),
     };
 
     let left_browser = playlist_browser_with_drop_highlight(

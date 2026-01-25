@@ -20,7 +20,8 @@ pub use super::message::Message;
 pub use super::state::{
     BrowserSide, CollectionState, DragState, ExportPhase, ExportState,
     ImportPhase, ImportState, LinkedStemLoadedMsg, LoadedTrackState,
-    ReanalysisState, SettingsState, StemsLoadResult, View,
+    PendingDragState, ReanalysisState, SettingsState, StemsLoadResult, View,
+    DRAG_THRESHOLD,
 };
 pub use super::utils::{
     build_tree_nodes, get_tracks_for_folder, nudge_beat_grid, regenerate_beat_grid,

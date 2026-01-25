@@ -14,7 +14,9 @@ All notable changes to Mesh are documented in this file.
 
 - **Drag indicator** — When dragging tracks, a semi-transparent label appears near the cursor showing the track name (or "name..." for multiple tracks).
 
-- **Drop zone highlight** — The target file browser shows a teal border outline while dragging tracks, indicating where tracks will be dropped.
+- **Drop zone highlight** — The file browser shows a teal border outline when hovering over it while dragging tracks, indicating where tracks will be dropped.
+
+- **Drag threshold** — Dragging only starts after moving 8 pixels from the initial click, preventing accidental drags and preserving double-click to load tracks.
 
 - **Automatic port name capture** — During MIDI learn, the actual system port name is captured and stored as `learned_port_name` for precise device matching on reconnection.
 

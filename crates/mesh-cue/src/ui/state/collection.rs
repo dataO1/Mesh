@@ -4,16 +4,52 @@
 //! Database service and playlist storage are owned by the domain layer.
 
 use std::path::PathBuf;
+use iced::Point;
 use mesh_core::playlist::NodeId;
 use mesh_widgets::{PlaylistBrowserState, TrackRow, TreeNode};
 
 use super::loaded_track::LoadedTrackState;
+
+/// Minimum distance (in pixels) mouse must move before drag starts
+pub const DRAG_THRESHOLD: f32 = 8.0;
 
 /// Which browser panel a drag operation originated from
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrowserSide {
     Left,
     Right,
+}
+
+/// State for a pending drag (click happened, waiting for mouse movement)
+#[derive(Debug, Clone)]
+pub struct PendingDragState {
+    /// Mouse position when click occurred
+    pub start_position: Point,
+    /// The tracks that would be dragged
+    pub track_ids: Vec<NodeId>,
+    /// Display names of the tracks
+    pub track_names: Vec<String>,
+    /// Which browser the click happened in
+    pub source_browser: BrowserSide,
+}
+
+impl PendingDragState {
+    /// Check if mouse has moved past the drag threshold
+    pub fn should_start_drag(&self, current_position: Point) -> bool {
+        let dx = current_position.x - self.start_position.x;
+        let dy = current_position.y - self.start_position.y;
+        let distance = (dx * dx + dy * dy).sqrt();
+        distance >= DRAG_THRESHOLD
+    }
+
+    /// Convert to active drag state
+    pub fn into_drag_state(self) -> DragState {
+        DragState {
+            track_ids: self.track_ids,
+            track_names: self.track_names,
+            source_browser: self.source_browser,
+        }
+    }
 }
 
 /// State for an in-progress drag operation (supports multi-track drag)
@@ -81,6 +117,10 @@ pub struct CollectionState {
     pub right_tracks: Vec<TrackRow<NodeId>>,
     /// Track currently being dragged (if any)
     pub dragging_track: Option<DragState>,
+    /// Pending drag state (click happened, waiting for threshold movement)
+    pub pending_drag: Option<PendingDragState>,
+    /// Which browser the mouse is currently hovering over (during drag)
+    pub drag_hover_browser: Option<BrowserSide>,
 }
 
 impl std::fmt::Debug for CollectionState {
@@ -156,6 +196,8 @@ impl Default for CollectionState {
             left_tracks: Vec::new(),
             right_tracks: Vec::new(),
             dragging_track: None,
+            pending_drag: None,
+            drag_hover_browser: None,
         }
     }
 }
