@@ -19,6 +19,7 @@ use super::state::{
     WAVEFORM_HEIGHT, ZOOMED_WAVEFORM_HEIGHT, ZOOM_PIXELS_PER_LEVEL,
 };
 use crate::{STEM_COLORS, CueMarker};
+use mesh_core::types::SAMPLE_RATE;
 use iced::widget::canvas::{self, Event, Frame, Geometry, Path, Program, Stroke};
 use iced::{mouse, Color, Point, Rectangle, Size, Theme};
 
@@ -176,13 +177,32 @@ pub struct ZoomedInteraction {
     pub drag_start_zoom: u32,
 }
 
+/// Gesture mode for zoomed waveform drag
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ZoomedGestureMode {
+    /// No gesture active
+    #[default]
+    None,
+    /// Drag started, waiting to detect direction
+    Pending,
+    /// Horizontal drag = scrubbing
+    Scrubbing,
+    /// Vertical drag = zooming
+    Zooming,
+}
+
 /// Canvas state for combined waveform (tracks both interactions)
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CombinedInteraction {
-    /// Zoom gesture state for zoomed region
+    /// Current gesture mode in zoomed region
+    pub zoomed_gesture: ZoomedGestureMode,
+    /// Starting position when drag began
+    pub drag_start_x: Option<f32>,
     pub drag_start_y: Option<f32>,
     /// Zoom level when drag started
     pub drag_start_zoom: u32,
+    /// Playhead position (as ratio 0.0-1.0) when scrub started
+    pub scrub_start_ratio: f64,
     /// Whether dragging in overview region for seeking
     pub is_seeking: bool,
 }
@@ -528,19 +548,78 @@ where
             height: ZOOMED_WAVEFORM_HEIGHT,
         };
 
-        // Handle zoom gestures in zoomed region (disabled in FixedBuffer mode)
+        // Handle interactions in zoomed region:
+        // - Horizontal drag = scrub (seek by dragging)
+        // - Vertical drag = zoom (disabled in FixedBuffer mode)
+        // Direction is detected on first movement, then locked for the gesture
         let zoom_enabled = self.state.zoomed.view_mode != ZoomedViewMode::FixedBuffer;
-        if zoom_enabled {
-            if let Some(position) = cursor.position_in(zoomed_bounds) {
-                match event {
-                    Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                        interaction.drag_start_y = Some(position.y);
-                        interaction.drag_start_zoom = self.state.zoomed.zoom_bars;
+        let has_track = self.state.zoomed.has_track && self.state.zoomed.duration_samples > 0;
+
+        if let Some(position) = cursor.position_in(zoomed_bounds) {
+            match event {
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                    // Start gesture in pending state - direction detected on first move
+                    interaction.zoomed_gesture = ZoomedGestureMode::Pending;
+                    interaction.drag_start_x = Some(position.x);
+                    interaction.drag_start_y = Some(position.y);
+                    interaction.drag_start_zoom = self.state.zoomed.zoom_bars;
+                    // Store playhead ratio for potential scrubbing
+                    if has_track {
+                        let playhead_ratio = self.playhead as f64 / self.state.zoomed.duration_samples as f64;
+                        interaction.scrub_start_ratio = playhead_ratio;
                     }
-                    Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                        interaction.drag_start_y = None;
+                }
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                    interaction.zoomed_gesture = ZoomedGestureMode::None;
+                    interaction.drag_start_x = None;
+                    interaction.drag_start_y = None;
+                }
+                Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                    // Detect direction if pending
+                    if interaction.zoomed_gesture == ZoomedGestureMode::Pending {
+                        if let (Some(start_x), Some(start_y)) = (interaction.drag_start_x, interaction.drag_start_y) {
+                            let delta_x = (position.x - start_x).abs();
+                            let delta_y = (position.y - start_y).abs();
+                            // Need minimum movement to detect direction (5 pixels)
+                            if delta_x > 5.0 || delta_y > 5.0 {
+                                if delta_x > delta_y && has_track {
+                                    // Horizontal = scrubbing
+                                    interaction.zoomed_gesture = ZoomedGestureMode::Scrubbing;
+                                } else if zoom_enabled {
+                                    // Vertical = zooming
+                                    interaction.zoomed_gesture = ZoomedGestureMode::Zooming;
+                                }
+                            }
+                        }
                     }
-                    Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+
+                    // Handle scrubbing
+                    if interaction.zoomed_gesture == ZoomedGestureMode::Scrubbing && has_track {
+                        if let Some(start_x) = interaction.drag_start_x {
+                            let delta_x = position.x - start_x;
+                            // Calculate visible samples based on zoom level
+                            // zoom_bars BARS at current BPM (4 beats per bar)
+                            let beats_per_bar = 4.0;
+                            let samples_per_beat = if self.state.zoomed.bpm > 0.0 {
+                                (60.0 / self.state.zoomed.bpm) * SAMPLE_RATE as f64
+                            } else {
+                                22050.0 // fallback: 0.5 seconds
+                            };
+                            let visible_samples = samples_per_beat * beats_per_bar * self.state.zoomed.zoom_bars as f64;
+                            // Convert pixel delta to sample delta
+                            let samples_per_pixel = visible_samples / bounds.width as f64;
+                            let sample_delta = delta_x as f64 * samples_per_pixel;
+                            // Calculate new position ratio
+                            // Drag right = waveform moves right = earlier content = playhead backward (subtract)
+                            let delta_ratio = sample_delta / self.state.zoomed.duration_samples as f64;
+                            let new_ratio = (interaction.scrub_start_ratio - delta_ratio).clamp(0.0, 1.0);
+
+                            return Some(canvas::Action::publish((self.on_seek)(new_ratio)));
+                        }
+                    }
+
+                    // Handle zooming
+                    if interaction.zoomed_gesture == ZoomedGestureMode::Zooming && zoom_enabled {
                         if let Some(start_y) = interaction.drag_start_y {
                             let delta = start_y - position.y;
                             let zoom_change = (delta / ZOOM_PIXELS_PER_LEVEL) as i32;
@@ -553,11 +632,13 @@ where
                             }
                         }
                     }
-                    _ => {}
                 }
-            } else if matches!(event, Event::Mouse(mouse::Event::ButtonReleased(_))) {
-                interaction.drag_start_y = None;
+                _ => {}
             }
+        } else if matches!(event, Event::Mouse(mouse::Event::ButtonReleased(_))) {
+            interaction.zoomed_gesture = ZoomedGestureMode::None;
+            interaction.drag_start_x = None;
+            interaction.drag_start_y = None;
         }
 
         // Overview waveform region (bottom)
@@ -611,10 +692,10 @@ where
         };
 
         if cursor.is_over(zoomed_bounds) {
-            if interaction.drag_start_y.is_some() {
-                mouse::Interaction::ResizingVertically
-            } else {
-                mouse::Interaction::Grab
+            match interaction.zoomed_gesture {
+                ZoomedGestureMode::Zooming => mouse::Interaction::ResizingVertically,
+                ZoomedGestureMode::Scrubbing => mouse::Interaction::Grabbing,
+                _ => mouse::Interaction::Grab,
             }
         } else {
             let overview_y = ZOOMED_WAVEFORM_HEIGHT + COMBINED_WAVEFORM_GAP;

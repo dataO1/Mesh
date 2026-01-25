@@ -28,6 +28,10 @@ All notable changes to Mesh are documented in this file.
 
 - **Dynamic audio output switching (JACK)** — On Linux with JACK, audio outputs can now be changed in settings without restarting the app. Works in both mesh-player (master/cue outputs) and mesh-cue (single output). Device selection is saved to config.
 
+- **Zoomed waveform scrubbing** — Click and drag horizontally on the zoomed waveform to scrub through the track. Drag direction is auto-detected: horizontal = scrub, vertical = zoom. Waveform moves 1:1 with mouse like grabbing vinyl.
+
+- **BPM adjustment buttons** — Plus and minus buttons next to the BPM field for quick ±1 BPM adjustments. Beat grid is automatically recalculated.
+
 ### Changed
 
 - **MidiController architecture** — Refactored from single-device (`Option<MidiInputHandler>`) to multi-device (`HashMap<String, ConnectedDevice>`) support.
