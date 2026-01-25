@@ -374,6 +374,9 @@ pub struct Deck {
     scratch_mode: bool,
     /// Play state before scratch started (to restore on scratch end)
     scratch_previous_state: PlayState,
+    /// Previous scratch position for velocity calculation
+    /// Velocity = (current_position - scratch_last_position) determines playback speed
+    scratch_last_position: usize,
 }
 
 impl Deck {
@@ -408,6 +411,7 @@ impl Deck {
             host_lufs: None,
             scratch_mode: false,
             scratch_previous_state: PlayState::Stopped,
+            scratch_last_position: 0,
         }
     }
 
@@ -792,8 +796,9 @@ impl Deck {
     /// Enter scratch mode - like touching a vinyl record
     ///
     /// Saves current play state and enters a mode where:
-    /// - Audio plays at the current position
-    /// - Playhead doesn't advance naturally (position controlled externally)
+    /// - Audio playback speed is derived from position velocity (delta per frame)
+    /// - When stationary (no mouse movement), output is silence
+    /// - When moving, audio plays at speed proportional to movement
     /// - On exit, previous play state is restored
     pub fn scratch_start(&mut self) {
         if self.track.is_none() {
@@ -801,7 +806,8 @@ impl Deck {
         }
         self.scratch_previous_state = self.state;
         self.scratch_mode = true;
-        // Enter a playing-like state so audio outputs
+        self.scratch_last_position = self.position;
+        // Enter a playing-like state so audio callback runs
         self.state = PlayState::Playing;
         self.sync_state_atomic();
     }
@@ -1385,6 +1391,94 @@ impl Deck {
         if self.state == PlayState::Stopped {
             stretch_input.set_len_from_capacity(output_len);
             stretch_input.fill_silence();
+            return;
+        }
+
+        // Scratch mode: velocity-based playback (vinyl emulation)
+        // When scratching, audio speed is derived from position delta (velocity)
+        // Stationary = silence, moving = audio at proportional speed
+        if self.scratch_mode {
+            // Calculate velocity: how much position changed since last frame
+            let velocity = self.position as i64 - self.scratch_last_position as i64;
+            self.scratch_last_position = self.position;
+
+            // Minimum velocity threshold to avoid noise from tiny movements
+            // ~50 samples at 44.1kHz ≈ 1ms of audio
+            const VELOCITY_THRESHOLD: i64 = 50;
+
+            if velocity.abs() < VELOCITY_THRESHOLD {
+                // Stationary or near-stationary: output silence (like vinyl not moving)
+                stretch_input.set_len_from_capacity(output_len);
+                stretch_input.fill_silence();
+                return;
+            }
+
+            // Read samples based on velocity magnitude
+            // Clamp to reasonable range to prevent buffer overruns
+            let samples_to_read = (velocity.unsigned_abs() as usize).clamp(1, output_len * 2);
+            stretch_input.set_len_from_capacity(samples_to_read);
+
+            // Determine read direction and starting position
+            let (read_start, reverse) = if velocity > 0 {
+                // Moving forward: read from previous position
+                (self.scratch_last_position.saturating_sub(velocity.unsigned_abs() as usize), false)
+            } else {
+                // Moving backward: read backward from current position
+                (self.position, true)
+            };
+
+            // Read samples from track
+            let duration_samples = track.duration_samples;
+            let any_soloed = self.any_stem_soloed();
+
+            // Fill stem buffers with scratch audio
+            for buf in &mut self.stem_buffers {
+                buf.set_len_from_capacity(samples_to_read);
+            }
+
+            // Read and sum stems (simplified path for scratch - no effects/slicer)
+            for (stem_idx, stem_buffer) in self.stem_buffers.iter_mut().enumerate() {
+                let stem = Stem::ALL[stem_idx];
+                let stem_state = &self.stems[stem_idx];
+
+                if stem_state.muted || (any_soloed && !stem_state.soloed) {
+                    stem_buffer.fill_silence();
+                    continue;
+                }
+
+                let stem_data = track.stems.get(stem);
+                let buf_slice = stem_buffer.as_mut_slice();
+
+                for i in 0..samples_to_read {
+                    let read_pos = if reverse {
+                        // Read backward: start from read_start and go backward
+                        read_start.saturating_sub(i)
+                    } else {
+                        // Read forward
+                        read_start + i
+                    };
+
+                    if read_pos < duration_samples {
+                        buf_slice[i] = stem_data[read_pos];
+                    } else {
+                        buf_slice[i] = StereoSample::silence();
+                    }
+                }
+            }
+
+            // Sum stems to output
+            stretch_input.fill_silence();
+            for stem_buffer in &self.stem_buffers {
+                stretch_input.add_buffer(stem_buffer);
+            }
+
+            // Apply LUFS gain if needed
+            if self.lufs_gain != 1.0 {
+                stretch_input.scale(self.lufs_gain);
+            }
+
+            // Sync position for UI
+            self.sync_position_atomic();
             return;
         }
 

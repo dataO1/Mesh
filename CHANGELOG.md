@@ -34,7 +34,7 @@ All notable changes to Mesh are documented in this file.
 
 - **Beat grid align button** — New "│" button next to grid nudge controls sets the current playhead position as a downbeat. Scrub to where you hear the "1" of the bar, click the button (or press "m"), and the grid aligns to that position.
 
-- **Vinyl-style scratch audio** — During zoomed waveform scrubbing, audio now plays at the scrubbed position like scratching vinyl. When scrubbing ends, the previous play state is restored (resumes playing if was playing, stays paused if was paused).
+- **Vinyl-style scratch audio** — During zoomed waveform scrubbing, audio plays based on mouse velocity like real vinyl. Moving the mouse plays audio at proportional speed; stopping outputs silence (not a looped buffer). Backward movement plays audio in reverse. Previous play state is restored when scrubbing ends.
 
 ### Changed
 
