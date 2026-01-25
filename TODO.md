@@ -174,7 +174,16 @@ and mesh-widget and only if necessary in the ui.
    - [ ] backup of databse (without files, just db)
 - [x] in the waveform canvas of the player, we need to mark decks, that are
  currently marked for cue output. change the header color to a slight yellow.
-- [ ] stem splitting in the import process
+- [ ] stem splitting in the import process: we should use demucsv4 or uvr5
+  without gui. research how we can effectively include stem splitting (using a
+  gpu if available) into the import process, such that the user doesnt need to
+  put stems into the import folder, but can import normal audio files (flac, wav
+  and mp3) directly. ideally this is directly a rust crate, but if not available
+  this can also spawn its own thread with a subprocess/shell running python code
+  or the release build source code for demucs or uvr5. keep in mind that we need
+  to bundle this into the final packages/binaries/executables for mesh-cue, so
+  this needs to be compatible with that and support our current methods of
+  building packages (ie deb and windows).
 - [ ] in mesh-cue users need to be able to scrub in the zoomed waveform, like in
   the overview waveform.
 - [ ] plus and minus button s next to the bpm edit field.
@@ -357,12 +366,12 @@ and mesh-widget and only if necessary in the ui.
 - [ ] The beat grid analysis is not really good, we need to check if we can fine
   tune this. research the essentia beatgrid/rythm section and check if we can
   use edm specific beat grid detection, ive read this exists.
-- [ ] make text in filebrowser wrapped
-- [ ] shift+click should delete linked stem
-- [ ] file browser both in mesh-cue and mesh-player sometimes takes up to much
+- [x] make text in filebrowser wrapped
+- [x] shift+click should delete linked stem
+- [x] file browser both in mesh-cue and mesh-player sometimes takes up to much
   space, it should just be as big without blocking the rest of the ui. for
   example the hot cue buttons should have a fixed size in mesh-cue.
-- [ ] drag and drop should also work on the file list of the file browser (right
+- [x] drag and drop should also work on the file list of the file browser (right
   column), not only the playlist label(left column)
 
 # Performance
