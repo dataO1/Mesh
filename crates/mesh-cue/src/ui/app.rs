@@ -530,6 +530,32 @@ impl MeshCueApp {
             } else {
                 base
             }
+        } else if let Some(ref drag) = self.collection.dragging_track {
+            // Show drag indicator near the cursor when dragging tracks
+            let drag_text = drag.display_text();
+            let indicator = container(text(drag_text).size(12))
+                .padding([4, 8])
+                .style(|_theme| container::Style {
+                    background: Some(iced::Color::from_rgba(0.2, 0.2, 0.2, 0.85).into()),
+                    border: iced::Border {
+                        color: iced::Color::from_rgba(0.4, 0.4, 0.4, 0.8),
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                });
+
+            // Position indicator slightly below and right of the cursor
+            let pos = self.global_mouse_position;
+            let positioned_indicator = column![
+                Space::new().height(Length::Fixed(pos.y + 16.0)),
+                row![
+                    Space::new().width(Length::Fixed(pos.x + 12.0)),
+                    indicator,
+                ]
+            ];
+
+            stack![base, positioned_indicator].into()
         } else {
             base
         }

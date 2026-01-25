@@ -12,6 +12,8 @@ All notable changes to Mesh are documented in this file.
 
 - **Shift+click to delete stem links** — Hold Shift and click a linked stem button to remove the link.
 
+- **Drag indicator** — When dragging tracks, a semi-transparent label appears near the cursor showing the track name (or "name..." for multiple tracks).
+
 - **Automatic port name capture** — During MIDI learn, the actual system port name is captured and stored as `learned_port_name` for precise device matching on reconnection.
 
 - **Port name normalization** — Hardware IDs like `[hw:3,0,0]` are stripped from port names, so devices match regardless of which USB port they're connected to.
@@ -19,6 +21,8 @@ All notable changes to Mesh are documented in this file.
 - **Device matching with fallback** — Exact match against `learned_port_name` is tried first, falling back to substring match against `port_match` for backwards compatibility.
 
 - **New MidiController methods** — `connected_count()`, `connected_device_names()`, `first_connected_port()`, and `drain_raw_events_with_source()` for multi-device management.
+
+- **Dynamic audio output switching (JACK)** — On Linux with JACK, audio outputs can now be changed in settings without restarting the app. Master and cue outputs are hot-swapped to the new port pairs.
 
 ### Changed
 
@@ -36,7 +40,7 @@ All notable changes to Mesh are documented in this file.
 
 - **Text overlap in file browser** — Long track names and labels are now clipped instead of overlapping adjacent columns.
 
-- **File browser layout** — Editor and browser panels now use proportional sizing (3:1 ratio) to prevent the browser from squeezing hot cue buttons. Hot cue buttons have fixed width.
+- **File browser layout** — Editor and browser panels now use proportional sizing (3:1 ratio) to prevent the browser from squeezing hot cue buttons.
 
 ---
 

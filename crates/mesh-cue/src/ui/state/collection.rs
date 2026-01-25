@@ -47,11 +47,13 @@ impl DragState {
     }
 
     /// Get display text for the drag operation
+    /// Single track: shows track name
+    /// Multiple tracks: shows "first track name..."
     pub fn display_text(&self) -> String {
         match self.track_names.len() {
             0 => String::new(),
             1 => self.track_names[0].clone(),
-            n => format!("{} tracks", n),
+            _ => format!("{}...", self.track_names[0]),
         }
     }
 }
