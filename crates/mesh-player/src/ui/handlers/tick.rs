@@ -56,9 +56,15 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
                 // (Note events that don't match the CC buffer being sampled)
                 let mut pending_encoder_press = None;
 
-                // Drain raw events
-                for raw_event in controller.drain_raw_events() {
+                // Drain raw events with source device info (for port name capture)
+                for (raw_event, source_port) in controller.drain_raw_events_with_source() {
                     let captured = convert_midi_event_to_captured(&raw_event);
+
+                    // Capture the port name on first event (for device identification)
+                    if app.midi_learn.captured_port_name.is_none() {
+                        log::info!("MIDI Learn: Captured source port '{}'", source_port);
+                        app.midi_learn.captured_port_name = Some(source_port);
+                    }
 
                     // Always update display so user sees what's happening
                     app.midi_learn.last_captured = Some(captured.clone());

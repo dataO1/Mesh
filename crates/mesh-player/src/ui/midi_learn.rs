@@ -275,6 +275,10 @@ pub struct MidiLearnState {
 
     /// Status message
     pub status: String,
+
+    /// Actual port name captured from first MIDI event (normalized, without hardware ID)
+    /// Used for precise device matching on reconnection
+    pub captured_port_name: Option<String>,
 }
 
 impl Default for MidiLearnState {
@@ -306,6 +310,7 @@ impl MidiLearnState {
             shift_mapping: None,
             setup_step: SetupStep::ControllerName,
             status: String::new(),
+            captured_port_name: None,
         }
     }
 
@@ -1162,7 +1167,9 @@ impl MidiLearnState {
 
         let profile = DeviceProfile {
             name: self.controller_name.clone(),
-            port_match: self.controller_name.clone(), // Use name as port match hint
+            // Use captured port name for exact matching, fall back to user-entered name for fuzzy match
+            port_match: self.captured_port_name.clone().unwrap_or_else(|| self.controller_name.clone()),
+            learned_port_name: self.captured_port_name.clone(),
             deck_target,
             pad_mode_source: self.pad_mode_source,
             shift,

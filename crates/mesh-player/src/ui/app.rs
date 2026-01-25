@@ -112,18 +112,39 @@ impl MeshApp {
         // Load slicer presets (shared with both engine and UI)
         let slicer_config = mesh_widgets::load_slicer_presets(&config.collection_path);
 
-        // Initialize MIDI controller with raw event capture enabled (for MIDI learn mode)
-        // Raw capture has minimal overhead when not actively reading
-        let midi_controller = match MidiController::new_with_options(None, true) {
-            Ok(controller) => {
-                if controller.is_connected() {
-                    log::info!("MIDI controller connected (raw capture enabled)");
+        // Initialize MIDI controller
+        // In mapping mode: connect to ALL available ports (for device discovery)
+        // In normal mode: connect only to devices matching config (with raw capture for live learning)
+        let midi_controller = if mapping_mode {
+            match MidiController::new_for_learn_mode() {
+                Ok(controller) => {
+                    if controller.is_connected() {
+                        log::info!(
+                            "MIDI Learn: Connected to {} device(s)",
+                            controller.connected_count()
+                        );
+                    } else {
+                        log::warn!("MIDI Learn: No MIDI devices found - connect a controller");
+                    }
+                    Some(controller)
                 }
-                Some(controller)
+                Err(e) => {
+                    log::warn!("MIDI Learn: Failed to initialize: {}", e);
+                    None
+                }
             }
-            Err(e) => {
-                log::warn!("MIDI not available: {}", e);
-                None
+        } else {
+            match MidiController::new_with_options(None, true) {
+                Ok(controller) => {
+                    if controller.is_connected() {
+                        log::info!("MIDI controller connected (raw capture enabled)");
+                    }
+                    Some(controller)
+                }
+                Err(e) => {
+                    log::warn!("MIDI not available: {}", e);
+                    None
+                }
             }
         };
 

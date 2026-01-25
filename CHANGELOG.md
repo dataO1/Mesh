@@ -2,6 +2,34 @@
 
 All notable changes to Mesh are documented in this file.
 
+## [0.4.3] - 2026-01-25
+
+### Added
+
+- **Multi-device MIDI support** — Connect multiple MIDI controllers simultaneously. All configured devices are connected at startup, not just the first match.
+
+- **Automatic port name capture** — During MIDI learn, the actual system port name is captured and stored as `learned_port_name` for precise device matching on reconnection.
+
+- **Port name normalization** — Hardware IDs like `[hw:3,0,0]` are stripped from port names, so devices match regardless of which USB port they're connected to.
+
+- **Device matching with fallback** — Exact match against `learned_port_name` is tried first, falling back to substring match against `port_match` for backwards compatibility.
+
+- **New MidiController methods** — `connected_count()`, `connected_device_names()`, `first_connected_port()`, and `drain_raw_events_with_source()` for multi-device management.
+
+### Changed
+
+- **MidiController architecture** — Refactored from single-device (`Option<MidiInputHandler>`) to multi-device (`HashMap<String, ConnectedDevice>`) support.
+
+- **Global shift state** — Shift state is now shared across all connected MIDI devices for consistent behavior.
+
+- **LED feedback** — Feedback is now sent to all connected devices, not just the first one.
+
+### Fixed
+
+- **Cross-system MIDI compatibility** — Devices now connect correctly when hardware enumeration differs between systems (e.g., `hw:1,0,0` on Pop!_OS vs `hw:3,0,0` on NixOS).
+
+---
+
 ## [0.4.2] - 2026-01-24
 
 ### Changed

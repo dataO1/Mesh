@@ -22,7 +22,13 @@ pub struct DeviceProfile {
     pub name: String,
 
     /// Port name substring to match (case-insensitive)
+    /// Used as fallback when learned_port_name doesn't match
     pub port_match: String,
+
+    /// Exact port name captured during MIDI learn (normalized, without hardware ID)
+    /// e.g., "DDJ-SB2 MIDI 1" - used for precise matching before falling back to port_match
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub learned_port_name: Option<String>,
 
     /// Deck targeting configuration
     #[serde(default)]
@@ -357,6 +363,70 @@ pub fn save_midi_config(config: &MidiConfig, path: &Path) -> anyhow::Result<()> 
     Ok(())
 }
 
+/// Normalize a MIDI port name by removing hardware-specific identifiers
+///
+/// ALSA port names include dynamic IDs that change between systems/reconnections:
+///
+/// 1. Bracketed hardware IDs: `[hw:3,0,0]`
+/// 2. ALSA sequencer client:port IDs: trailing `28:0` or `20:0`
+///
+/// Examples:
+/// - "DDJ-SB2 MIDI 1 [hw:3,0,0]" -> "DDJ-SB2 MIDI 1"
+/// - "DDJ-SB2:DDJ-SB2 MIDI 1 28:0" -> "DDJ-SB2:DDJ-SB2 MIDI 1"
+/// - "Launchpad Mini MK3 [hw:1,0,0]" -> "Launchpad Mini MK3"
+///
+/// This allows matching devices by their stable name portion.
+pub fn normalize_port_name(name: &str) -> String {
+    let mut result = name.trim();
+
+    // Remove bracketed hardware ID suffix (e.g., "[hw:3,0,0]")
+    if let Some(bracket_pos) = result.rfind('[') {
+        result = result[..bracket_pos].trim();
+    }
+
+    // Remove trailing ALSA sequencer client:port ID (e.g., "28:0" or "20:0")
+    // Pattern: space followed by digits, colon, digits at end of string
+    if let Some(last_space) = result.rfind(' ') {
+        let suffix = &result[last_space + 1..];
+        // Check if suffix matches pattern: digits:digits
+        if suffix.contains(':') {
+            let parts: Vec<&str> = suffix.split(':').collect();
+            if parts.len() == 2
+                && parts[0].chars().all(|c| c.is_ascii_digit())
+                && parts[1].chars().all(|c| c.is_ascii_digit())
+            {
+                result = result[..last_space].trim();
+            }
+        }
+    }
+
+    result.to_string()
+}
+
+/// Check if a port name matches a learned port name or port_match pattern
+///
+/// First tries exact match against normalized port name, then falls back
+/// to case-insensitive substring match against port_match.
+/// Both sides are normalized to handle hardware ID differences.
+pub fn port_matches(actual_port: &str, profile: &DeviceProfile) -> bool {
+    let normalized_actual = normalize_port_name(actual_port);
+
+    // First: try exact match against learned_port_name (if set)
+    // Normalize both sides to handle config files with old hardware IDs
+    if let Some(ref learned) = profile.learned_port_name {
+        let normalized_learned = normalize_port_name(learned);
+        if normalized_actual.eq_ignore_ascii_case(&normalized_learned) {
+            return true;
+        }
+    }
+
+    // Fallback: substring match against port_match (also normalize it)
+    let normalized_port_match = normalize_port_name(&profile.port_match);
+    normalized_actual
+        .to_lowercase()
+        .contains(&normalized_port_match.to_lowercase())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -413,5 +483,98 @@ devices:
         assert_eq!(config.devices[0].name, "Test Controller");
         assert_eq!(config.devices[0].mappings.len(), 1);
         assert_eq!(config.devices[0].mappings[0].action, "deck.play");
+    }
+
+    #[test]
+    fn test_normalize_port_name() {
+        use super::normalize_port_name;
+
+        // With hardware ID in brackets
+        assert_eq!(
+            normalize_port_name("DDJ-SB2 MIDI 1 [hw:3,0,0]"),
+            "DDJ-SB2 MIDI 1"
+        );
+        assert_eq!(
+            normalize_port_name("Launchpad Mini MK3 [hw:1,0,0]"),
+            "Launchpad Mini MK3"
+        );
+
+        // ALSA sequencer client:port ID format (e.g., "28:0" or "20:0")
+        assert_eq!(
+            normalize_port_name("DDJ-SB2:DDJ-SB2 MIDI 1 28:0"),
+            "DDJ-SB2:DDJ-SB2 MIDI 1"
+        );
+        assert_eq!(
+            normalize_port_name("DDJ-SB2:DDJ-SB2 MIDI 1 20:0"),
+            "DDJ-SB2:DDJ-SB2 MIDI 1"
+        );
+        assert_eq!(
+            normalize_port_name("Midi Through:Midi Through Port-0 14:0"),
+            "Midi Through:Midi Through Port-0"
+        );
+
+        // Without hardware ID (no change except trim)
+        assert_eq!(normalize_port_name("DDJ-SB2 MIDI 1"), "DDJ-SB2 MIDI 1");
+        assert_eq!(normalize_port_name("  Padded Name  "), "Padded Name");
+
+        // Edge cases
+        assert_eq!(normalize_port_name(""), "");
+        assert_eq!(normalize_port_name("[only brackets]"), "");
+    }
+
+    #[test]
+    fn test_port_matches() {
+        use super::port_matches;
+
+        let profile_with_learned = DeviceProfile {
+            name: "My SB2".to_string(),
+            port_match: "sb2".to_string(),
+            learned_port_name: Some("DDJ-SB2:DDJ-SB2 MIDI 1".to_string()),
+            deck_target: DeckTargetConfig::default(),
+            pad_mode_source: PadModeSource::default(),
+            shift: None,
+            mappings: vec![],
+            feedback: vec![],
+        };
+
+        // Exact match with learned_port_name (different ALSA client IDs)
+        assert!(port_matches("DDJ-SB2:DDJ-SB2 MIDI 1 28:0", &profile_with_learned));
+        assert!(port_matches("DDJ-SB2:DDJ-SB2 MIDI 1 20:0", &profile_with_learned));
+
+        // Case-insensitive exact match
+        assert!(port_matches("ddj-sb2:ddj-sb2 midi 1", &profile_with_learned));
+
+        // Also works with bracket format
+        let profile_bracket_format = DeviceProfile {
+            name: "My SB2".to_string(),
+            port_match: "sb2".to_string(),
+            learned_port_name: Some("DDJ-SB2 MIDI 1".to_string()),
+            deck_target: DeckTargetConfig::default(),
+            pad_mode_source: PadModeSource::default(),
+            shift: None,
+            mappings: vec![],
+            feedback: vec![],
+        };
+        assert!(port_matches("DDJ-SB2 MIDI 1 [hw:3,0,0]", &profile_bracket_format));
+        assert!(port_matches("DDJ-SB2 MIDI 1 [hw:1,0,0]", &profile_bracket_format));
+
+        let profile_without_learned = DeviceProfile {
+            name: "My SB2".to_string(),
+            port_match: "sb2".to_string(),
+            learned_port_name: None,
+            deck_target: DeckTargetConfig::default(),
+            pad_mode_source: PadModeSource::default(),
+            shift: None,
+            mappings: vec![],
+            feedback: vec![],
+        };
+
+        // Fallback to substring match
+        assert!(port_matches("DDJ-SB2:DDJ-SB2 MIDI 1 20:0", &profile_without_learned));
+        assert!(port_matches("DDJ-SB2 MIDI 1 [hw:3,0,0]", &profile_without_learned));
+        assert!(port_matches("Pioneer DDJ-SB2", &profile_without_learned));
+
+        // No match
+        assert!(!port_matches("Launchpad Mini", &profile_without_learned));
     }
 }
