@@ -43,5 +43,8 @@ pub fn view_combined_waveform(state: &CombinedWaveformView, playhead: u64) -> El
         playhead,
         Message::Seek,
         Message::SetZoomBars,
+        || Message::ScratchStart,
+        Message::ScratchMove,
+        || Message::ScratchEnd,
     )
 }

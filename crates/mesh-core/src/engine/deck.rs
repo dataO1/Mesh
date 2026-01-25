@@ -368,6 +368,12 @@ pub struct Deck {
     /// Host track's measured LUFS (from WAV file bext chunk)
     /// Used to calculate gain correction for linked stems
     host_lufs: Option<f32>,
+
+    /// Whether scratch mode is active (vinyl-style scrubbing)
+    /// When true, audio plays at current position but playhead doesn't advance naturally
+    scratch_mode: bool,
+    /// Play state before scratch started (to restore on scratch end)
+    scratch_previous_state: PlayState,
 }
 
 impl Deck {
@@ -400,6 +406,8 @@ impl Deck {
             drop_marker: None,
             lufs_gain: 1.0, // Unity gain (no compensation)
             host_lufs: None,
+            scratch_mode: false,
+            scratch_previous_state: PlayState::Stopped,
         }
     }
 
@@ -777,6 +785,59 @@ impl Deck {
             self.fractional_position = 0.0; // Reset stretch accumulator on seek
             self.sync_position_atomic();
         }
+    }
+
+    // --- Scratch mode (vinyl-style scrubbing) ---
+
+    /// Enter scratch mode - like touching a vinyl record
+    ///
+    /// Saves current play state and enters a mode where:
+    /// - Audio plays at the current position
+    /// - Playhead doesn't advance naturally (position controlled externally)
+    /// - On exit, previous play state is restored
+    pub fn scratch_start(&mut self) {
+        if self.track.is_none() {
+            return;
+        }
+        self.scratch_previous_state = self.state;
+        self.scratch_mode = true;
+        // Enter a playing-like state so audio outputs
+        self.state = PlayState::Playing;
+        self.sync_state_atomic();
+    }
+
+    /// Update scratch position - like moving a vinyl record
+    ///
+    /// Moves playhead to new position. The audio output will reflect
+    /// this position, creating a vinyl scratch sound effect.
+    pub fn scratch_move(&mut self, position: usize) {
+        if !self.scratch_mode || self.track.is_none() {
+            return;
+        }
+        if let Some(track) = &self.track {
+            self.position = position.min(track.duration_samples.saturating_sub(1));
+            self.fractional_position = 0.0;
+            self.sync_position_atomic();
+        }
+    }
+
+    /// Exit scratch mode - like releasing a vinyl record
+    ///
+    /// Restores the play state from before scratch started:
+    /// - If was playing, resumes playing from current position
+    /// - If was stopped, stays stopped at current position
+    pub fn scratch_end(&mut self) {
+        if !self.scratch_mode {
+            return;
+        }
+        self.scratch_mode = false;
+        self.state = self.scratch_previous_state;
+        self.sync_state_atomic();
+    }
+
+    /// Check if scratch mode is active
+    pub fn is_scratching(&self) -> bool {
+        self.scratch_mode
     }
 
     /// Get the current beat jump size in beats (equals loop length)
@@ -1489,7 +1550,8 @@ impl Deck {
 
         // Advance playhead by samples actually read (not output_len!)
         // This ensures playback speed matches the stretch ratio
-        if self.state == PlayState::Playing || self.state == PlayState::Cueing {
+        // Skip advancement in scratch mode - position is controlled externally
+        if !self.scratch_mode && (self.state == PlayState::Playing || self.state == PlayState::Cueing) {
             self.position += samples_to_read;
 
             // Update slip position if slip mode is enabled and we're looping

@@ -86,6 +86,19 @@ pub enum EngineCommand {
     Seek { deck: usize, position: usize },
 
     // ─────────────────────────────────────────────────────────────
+    // Scratch Mode (Vinyl-style scrubbing)
+    // ─────────────────────────────────────────────────────────────
+    /// Enter scratch mode - saves current play state, outputs audio at position
+    /// without natural playhead progression (like touching a vinyl record)
+    ScratchStart { deck: usize },
+    /// Update scratch position - moves playhead and outputs audio
+    /// The audio output will sound like vinyl scratching
+    ScratchMove { deck: usize, position: usize },
+    /// Exit scratch mode - restores previous play state
+    /// (resumes playing if was playing, stays paused if was paused)
+    ScratchEnd { deck: usize },
+
+    // ─────────────────────────────────────────────────────────────
     // CDJ-Style Cueing
     // ─────────────────────────────────────────────────────────────
     /// CDJ-style cue button press (sets cue point or returns to it)

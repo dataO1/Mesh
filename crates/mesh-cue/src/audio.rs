@@ -205,6 +205,36 @@ impl AudioState {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Scratch mode (vinyl-style scrubbing)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Enter scratch mode - like touching a vinyl record
+    ///
+    /// Audio plays at the current position but the playhead doesn't advance.
+    /// Position is controlled via scratch_move() calls.
+    pub fn scratch_start(&mut self) {
+        self.send(EngineCommand::ScratchStart { deck: PREVIEW_DECK });
+    }
+
+    /// Update scratch position - like moving a vinyl record
+    ///
+    /// Moves the playhead to the new position. Audio output will reflect
+    /// this position, creating a vinyl scratch sound effect.
+    pub fn scratch_move(&mut self, position: u64) {
+        self.send(EngineCommand::ScratchMove {
+            deck: PREVIEW_DECK,
+            position: position as usize,
+        });
+    }
+
+    /// Exit scratch mode - like releasing a vinyl record
+    ///
+    /// Restores the play state from before scratch started.
+    pub fn scratch_end(&mut self) {
+        self.send(EngineCommand::ScratchEnd { deck: PREVIEW_DECK });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // Track loading
     // ─────────────────────────────────────────────────────────────────────────
 

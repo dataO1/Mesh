@@ -512,24 +512,34 @@ where
 
 /// Canvas program for combined waveform rendering (zoomed + overview)
 ///
-/// Takes callback closures for both seek and zoom operations.
+/// Takes callback closures for seek, zoom, and scratch operations.
 /// This workaround combines both views into a single canvas due to iced bug #3040.
-pub struct CombinedCanvas<'a, Message, SeekFn, ZoomFn>
+pub struct CombinedCanvas<'a, Message, SeekFn, ZoomFn, ScratchStartFn, ScratchMoveFn, ScratchEndFn>
 where
     SeekFn: Fn(f64) -> Message,
     ZoomFn: Fn(u32) -> Message,
+    ScratchStartFn: Fn() -> Message,
+    ScratchMoveFn: Fn(f64) -> Message,
+    ScratchEndFn: Fn() -> Message,
 {
     pub state: &'a CombinedState,
     pub playhead: u64,
     pub on_seek: SeekFn,
     pub on_zoom: ZoomFn,
+    pub on_scratch_start: ScratchStartFn,
+    pub on_scratch_move: ScratchMoveFn,
+    pub on_scratch_end: ScratchEndFn,
 }
 
-impl<'a, Message, SeekFn, ZoomFn> Program<Message> for CombinedCanvas<'a, Message, SeekFn, ZoomFn>
+impl<'a, Message, SeekFn, ZoomFn, ScratchStartFn, ScratchMoveFn, ScratchEndFn> Program<Message>
+    for CombinedCanvas<'a, Message, SeekFn, ZoomFn, ScratchStartFn, ScratchMoveFn, ScratchEndFn>
 where
     Message: Clone,
     SeekFn: Fn(f64) -> Message,
     ZoomFn: Fn(u32) -> Message,
+    ScratchStartFn: Fn() -> Message,
+    ScratchMoveFn: Fn(f64) -> Message,
+    ScratchEndFn: Fn() -> Message,
 {
     type State = CombinedInteraction;
 
@@ -570,9 +580,14 @@ where
                     }
                 }
                 Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                    // If we were scrubbing, send scratch end event
+                    let was_scrubbing = interaction.zoomed_gesture == ZoomedGestureMode::Scrubbing;
                     interaction.zoomed_gesture = ZoomedGestureMode::None;
                     interaction.drag_start_x = None;
                     interaction.drag_start_y = None;
+                    if was_scrubbing && has_track {
+                        return Some(canvas::Action::publish((self.on_scratch_end)()));
+                    }
                 }
                 Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                     // Detect direction if pending
@@ -583,8 +598,10 @@ where
                             // Need minimum movement to detect direction (5 pixels)
                             if delta_x > 5.0 || delta_y > 5.0 {
                                 if delta_x > delta_y && has_track {
-                                    // Horizontal = scrubbing
+                                    // Horizontal = scrubbing - enter scratch mode
                                     interaction.zoomed_gesture = ZoomedGestureMode::Scrubbing;
+                                    // Send scratch start event (vinyl touched)
+                                    return Some(canvas::Action::publish((self.on_scratch_start)()));
                                 } else if zoom_enabled {
                                     // Vertical = zooming
                                     interaction.zoomed_gesture = ZoomedGestureMode::Zooming;
@@ -593,7 +610,7 @@ where
                         }
                     }
 
-                    // Handle scrubbing
+                    // Handle scrubbing (vinyl-style scratching)
                     if interaction.zoomed_gesture == ZoomedGestureMode::Scrubbing && has_track {
                         if let Some(start_x) = interaction.drag_start_x {
                             let delta_x = position.x - start_x;
@@ -614,7 +631,8 @@ where
                             let delta_ratio = sample_delta / self.state.zoomed.duration_samples as f64;
                             let new_ratio = (interaction.scrub_start_ratio - delta_ratio).clamp(0.0, 1.0);
 
-                            return Some(canvas::Action::publish((self.on_seek)(new_ratio)));
+                            // Send scratch move event (vinyl being moved)
+                            return Some(canvas::Action::publish((self.on_scratch_move)(new_ratio)));
                         }
                     }
 
@@ -636,9 +654,14 @@ where
                 _ => {}
             }
         } else if matches!(event, Event::Mouse(mouse::Event::ButtonReleased(_))) {
+            // If we were scrubbing, send scratch end event
+            let was_scrubbing = interaction.zoomed_gesture == ZoomedGestureMode::Scrubbing;
             interaction.zoomed_gesture = ZoomedGestureMode::None;
             interaction.drag_start_x = None;
             interaction.drag_start_y = None;
+            if was_scrubbing && has_track {
+                return Some(canvas::Action::publish((self.on_scratch_end)()));
+            }
         }
 
         // Overview waveform region (bottom)

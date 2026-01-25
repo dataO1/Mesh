@@ -32,6 +32,10 @@ All notable changes to Mesh are documented in this file.
 
 - **BPM adjustment buttons** — Plus and minus buttons next to the BPM field for quick ±1 BPM adjustments. Beat grid is automatically recalculated.
 
+- **Beat grid align button** — New "│" button next to grid nudge controls sets the current playhead position as a downbeat. Scrub to where you hear the "1" of the bar, click the button (or press "m"), and the grid aligns to that position.
+
+- **Vinyl-style scratch audio** — During zoomed waveform scrubbing, audio now plays at the scrubbed position like scratching vinyl. When scrubbing ends, the previous play state is restored (resumes playing if was playing, stays paused if was paused).
+
 ### Changed
 
 - **MidiController architecture** — Refactored from single-device (`Option<MidiInputHandler>`) to multi-device (`HashMap<String, ConnectedDevice>`) support.

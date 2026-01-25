@@ -125,6 +125,9 @@ where
 ///     self.playhead_samples,
 ///     |pos| Message::Seek(pos),
 ///     |bars| Message::SetZoomBars(bars),
+///     || Message::ScratchStart,
+///     |pos| Message::ScratchMove(pos),
+///     || Message::ScratchEnd,
 /// );
 /// ```
 pub fn waveform_combined<'a, Message>(
@@ -132,6 +135,9 @@ pub fn waveform_combined<'a, Message>(
     playhead: u64,
     on_seek: impl Fn(f64) -> Message + 'a,
     on_zoom: impl Fn(u32) -> Message + 'a,
+    on_scratch_start: impl Fn() -> Message + 'a,
+    on_scratch_move: impl Fn(f64) -> Message + 'a,
+    on_scratch_end: impl Fn() -> Message + 'a,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
@@ -143,6 +149,9 @@ where
         playhead,
         on_seek,
         on_zoom,
+        on_scratch_start,
+        on_scratch_move,
+        on_scratch_end,
     })
     .width(Length::Fill)
     .height(Length::Fixed(combined_height))

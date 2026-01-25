@@ -628,6 +628,23 @@ impl AudioEngine {
                     }
                 }
 
+                // Scratch Mode (vinyl-style scrubbing)
+                EngineCommand::ScratchStart { deck } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        d.scratch_start();
+                    }
+                }
+                EngineCommand::ScratchMove { deck, position } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        d.scratch_move(position);
+                    }
+                }
+                EngineCommand::ScratchEnd { deck } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        d.scratch_end();
+                    }
+                }
+
                 // CDJ-Style Cueing (with inter-deck phase sync on preview)
                 EngineCommand::CuePress { deck } => {
                     if deck < NUM_DECKS {

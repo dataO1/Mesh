@@ -55,6 +55,12 @@ pub enum Message {
     Pause,
     Stop,
     Seek(f64),
+    /// Enter scratch mode (vinyl-style scrubbing)
+    ScratchStart,
+    /// Update scratch position (0.0-1.0 ratio)
+    ScratchMove(f64),
+    /// Exit scratch mode
+    ScratchEnd,
     /// CDJ-style cue button pressed (set cue point, start preview)
     Cue,
     /// CDJ-style cue button released (stop preview, return to cue point)
