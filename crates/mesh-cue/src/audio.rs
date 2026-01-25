@@ -25,7 +25,8 @@ use mesh_core::loader::LinkedStemResultReceiver;
 
 // Re-export for convenience
 pub use mesh_core::audio::{
-    get_available_stereo_pairs, AudioError, CommandSender, OutputDevice, StereoPair,
+    get_available_stereo_pairs, reconnect_ports, AudioError, CommandSender, OutputDevice,
+    StereoPair,
 };
 pub use mesh_core::engine::{SlicerPreset, StepSequence};
 

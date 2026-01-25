@@ -205,3 +205,32 @@ pub fn connect_ports(
         Ok(())
     }
 }
+
+/// Reconnect audio outputs to different stereo pairs (hot-swap)
+///
+/// On JACK: Disconnects existing connections and reconnects to new pairs
+/// On CPAL: Returns false (requires app restart for device changes)
+///
+/// Returns true if hot-swap succeeded, false if restart is required.
+pub fn reconnect_ports(
+    _client_name: &str,
+    _master_pair: Option<usize>,
+    _cue_pair: Option<usize>,
+) -> bool {
+    #[cfg(all(target_os = "linux", feature = "jack-backend"))]
+    {
+        match super::jack_backend::reconnect_ports(_client_name, _master_pair, _cue_pair) {
+            Ok(()) => true,
+            Err(e) => {
+                log::error!("Failed to reconnect JACK ports: {}", e);
+                false
+            }
+        }
+    }
+
+    #[cfg(not(all(target_os = "linux", feature = "jack-backend")))]
+    {
+        // CPAL doesn't support hot-swapping devices
+        false
+    }
+}

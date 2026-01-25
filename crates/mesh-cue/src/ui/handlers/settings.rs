@@ -70,14 +70,11 @@ impl MeshCueApp {
 
     /// Handle UpdateSettingsOutputPair message
     ///
-    /// Note: In CPAL mode, device selection requires restarting the audio system.
-    /// For now, we just record the selection for future implementation.
+    /// Updates the draft selection. The actual device change is applied on Save.
     pub fn handle_update_settings_output_pair(&mut self, idx: usize) -> Task<Message> {
         self.settings.selected_output_pair = idx;
-        // Note: CPAL doesn't support runtime device switching
-        // Device selection requires restarting the audio system
         log::info!(
-            "Audio device selected: {:?} (restart required to apply)",
+            "Audio device selected: {:?}",
             self.settings.available_stereo_pairs.get(idx).map(|p| &p.label)
         );
         Task::none()
@@ -95,6 +92,11 @@ impl MeshCueApp {
         let min = self.settings.draft_min_tempo.parse::<i32>().unwrap_or(40);
         let max = self.settings.draft_max_tempo.parse::<i32>().unwrap_or(208);
         let parallel = self.settings.draft_parallel_processes.parse::<u8>().unwrap_or(4);
+
+        // Check if audio output device changed
+        let old_device = self.domain.config().audio.output_device;
+        let new_device = Some(self.settings.selected_output_pair);
+        let audio_changed = old_device != new_device;
 
         // Update config via domain
         {
@@ -114,10 +116,27 @@ impl MeshCueApp {
             // Update slicer buffer bars
             config.slicer.buffer_bars = self.settings.draft_slicer_buffer_bars;
 
+            // Update audio output device
+            config.audio.output_device = new_device;
+
             // Update drafts to show validated values
             self.settings.draft_min_tempo = config.analysis.bpm.min_tempo.to_string();
             self.settings.draft_max_tempo = config.analysis.bpm.max_tempo.to_string();
             self.settings.draft_parallel_processes = config.analysis.parallel_processes.to_string();
+        }
+
+        // Hot-swap audio output if device changed
+        if audio_changed {
+            // mesh-cue uses master-only mode, so pass the same device for both master and cue
+            let success = crate::audio::reconnect_ports(
+                "mesh-player",  // JACK client name (shared with mesh-player in mesh-core)
+                new_device,
+                new_device,  // Same device for cue in master-only mode
+            );
+            if !success {
+                // CPAL backend requires restart
+                self.settings.status = "Audio device changed. Restart app to apply.".to_string();
+            }
         }
 
         // Save to file

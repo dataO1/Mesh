@@ -21,6 +21,8 @@ pub struct Config {
     pub analysis: AnalysisConfig,
     /// Display settings (waveform, grid, etc.)
     pub display: DisplayConfig,
+    /// Audio output settings
+    pub audio: AudioConfig,
     /// Track name format template
     ///
     /// Supports placeholders:
@@ -33,11 +35,21 @@ pub struct Config {
     pub slicer: SlicerConfig,
 }
 
+/// Audio output configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct AudioConfig {
+    /// Output device index (0 = first device, 1 = second, etc.)
+    /// None = use system default device
+    pub output_device: Option<usize>,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             analysis: AnalysisConfig::default(),
             display: DisplayConfig::default(),
+            audio: AudioConfig::default(),
             track_name_format: String::from("{artist} - {name}"),
             slicer: SlicerConfig::default(),
         }
@@ -279,6 +291,7 @@ mod tests {
                 parallel_processes: 4,
             },
             display: DisplayConfig::default(),
+            audio: AudioConfig::default(),
             track_name_format: String::from("{artist} - {name}"),
             slicer: SlicerConfig::default(),
         };

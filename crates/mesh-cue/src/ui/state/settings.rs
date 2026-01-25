@@ -43,7 +43,7 @@ impl SettingsState {
             draft_bpm_source: config.analysis.bpm.source,
             draft_slicer_buffer_bars: config.slicer.validated_buffer_bars(),
             available_stereo_pairs: Vec::new(),
-            selected_output_pair: 0,
+            selected_output_pair: config.audio.output_device.unwrap_or(0),
             status: String::new(),
         }
     }

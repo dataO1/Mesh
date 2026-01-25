@@ -91,14 +91,29 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             // Save loudness settings
             new_config.audio.loudness.auto_gain_enabled = app.settings.draft_auto_gain_enabled;
             new_config.audio.loudness.target_lufs = app.settings.target_lufs();
+            // Check if audio output devices changed
+            let master_changed = app.config.audio.outputs.master_device != Some(app.settings.draft_master_device);
+            let cue_changed = app.config.audio.outputs.cue_device != Some(app.settings.draft_cue_device);
+            let audio_changed = master_changed || cue_changed;
+
             // Save audio output device configuration
             new_config.audio.outputs.master_device = Some(app.settings.draft_master_device);
             new_config.audio.outputs.cue_device = Some(app.settings.draft_cue_device);
 
             app.config = Arc::new(new_config.clone());
 
-            // Note: Audio device changes require app restart with CPAL
-            // Device selection is applied at stream creation time
+            // Hot-swap audio outputs if device selection changed
+            if audio_changed {
+                let success = mesh_core::audio::reconnect_ports(
+                    "mesh-player",
+                    Some(app.settings.draft_master_device),
+                    Some(app.settings.draft_cue_device),
+                );
+                if !success {
+                    // CPAL backend requires restart - show message to user
+                    app.status = "Audio device changed. Restart app to apply.".to_string();
+                }
+            }
 
             // Apply stem color palette to waveform display immediately
             app.player_canvas_state.set_stem_colors(

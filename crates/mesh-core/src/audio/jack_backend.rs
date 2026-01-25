@@ -394,3 +394,72 @@ pub fn connect_ports(
 
     Ok(())
 }
+
+/// Reconnect audio outputs to different stereo pairs (hot-swap)
+///
+/// Disconnects existing connections first, then connects to new pairs.
+/// This allows changing output routing without restarting the audio system.
+pub fn reconnect_ports(
+    client_name: &str,
+    master_pair: Option<usize>,
+    cue_pair: Option<usize>,
+) -> AudioResult<()> {
+    let pairs = get_available_stereo_pairs();
+    if pairs.is_empty() {
+        log::warn!("No JACK playback ports found for reconnection");
+        return Ok(());
+    }
+
+    // Create a temporary client for port management
+    let (client, _) = Client::new(
+        &format!("{}_reconnect", client_name),
+        ClientOptions::NO_START_SERVER,
+    )
+    .map_err(|e| AudioError::ConfigError(format!("Failed to create JACK client: {}", e)))?;
+
+    // Our port names
+    let master_left_port = format!("{}:{}", client_name, MASTER_LEFT);
+    let master_right_port = format!("{}:{}", client_name, MASTER_RIGHT);
+    let cue_left_port = format!("{}:{}", client_name, CUE_LEFT);
+    let cue_right_port = format!("{}:{}", client_name, CUE_RIGHT);
+
+    // Disconnect all existing connections from our ports
+    // Try disconnecting from all system input ports (JACK ignores if not connected)
+    let input_ports = client.ports(None, None, jack::PortFlags::IS_INPUT);
+    for our_port in [&master_left_port, &master_right_port, &cue_left_port, &cue_right_port] {
+        for target_port in &input_ports {
+            // Try to disconnect (ignore errors - port might not be connected)
+            let _ = client.disconnect_ports_by_name(our_port, target_port);
+        }
+    }
+
+    log::info!("Disconnected existing JACK port connections");
+
+    // Now connect to new pairs
+    let master_idx = master_pair.unwrap_or(0);
+    let cue_idx = cue_pair.unwrap_or_else(|| if pairs.len() >= 2 { 1 } else { 0 });
+
+    // Connect master outputs
+    if let Some(master) = pairs.get(master_idx) {
+        if let Err(e) = client.connect_ports_by_name(&master_left_port, &master.left) {
+            log::warn!("Could not connect master left: {}", e);
+        }
+        if let Err(e) = client.connect_ports_by_name(&master_right_port, &master.right) {
+            log::warn!("Could not connect master right: {}", e);
+        }
+        log::info!("Reconnected master to {} and {}", master.left, master.right);
+    }
+
+    // Connect cue outputs
+    if let Some(cue) = pairs.get(cue_idx) {
+        if let Err(e) = client.connect_ports_by_name(&cue_left_port, &cue.left) {
+            log::warn!("Could not connect cue left: {}", e);
+        }
+        if let Err(e) = client.connect_ports_by_name(&cue_right_port, &cue.right) {
+            log::warn!("Could not connect cue right: {}", e);
+        }
+        log::info!("Reconnected cue to {} and {}", cue.left, cue.right);
+    }
+
+    Ok(())
+}
