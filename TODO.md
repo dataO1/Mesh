@@ -187,6 +187,12 @@ and mesh-widget and only if necessary in the ui.
 - [ ] in mesh-cue users need to be able to scrub in the zoomed waveform, like in
   the overview waveform.
 - [ ] plus and minus button s next to the bpm edit field.
+- [ ] changing the bpm in mesh-cue currently recomputes the beatgrid on the
+  first beat marker. this means that after moving the beatgrid (nuding), then
+  changing the bpm the beatgrid is completely wrong again. we can solve this by
+  using the current playhead positions nearest beat marker as a center point,
+  which should not change when changing the bpm (it should be guidance for the
+  first beat marker, which should be updated accordingly)
 
 # Changes
 - [x] The waveform indicators of hot cues use colors, but the hot cue buttons
