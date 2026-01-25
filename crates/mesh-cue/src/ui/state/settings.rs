@@ -2,6 +2,7 @@
 
 use crate::audio::StereoPair;
 use crate::config::{BpmSource, Config};
+use mesh_core::engine::InterpolationMethod;
 
 /// State for the settings modal
 #[derive(Debug, Default)]
@@ -26,6 +27,8 @@ pub struct SettingsState {
     pub available_stereo_pairs: Vec<StereoPair>,
     /// Selected output pair index (for future device selection)
     pub selected_output_pair: usize,
+    /// Draft scratch interpolation method
+    pub draft_scratch_interpolation: InterpolationMethod,
     /// Status message for save feedback
     pub status: String,
 }
@@ -44,6 +47,7 @@ impl SettingsState {
             draft_slicer_buffer_bars: config.slicer.validated_buffer_bars(),
             available_stereo_pairs: Vec::new(),
             selected_output_pair: config.audio.output_device.unwrap_or(0),
+            draft_scratch_interpolation: config.audio.scratch_interpolation,
             status: String::new(),
         }
     }

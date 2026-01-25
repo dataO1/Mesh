@@ -37,6 +37,7 @@
 //! ```
 
 use super::{LinkedStemData, PreparedTrack};
+use super::scratch::InterpolationMethod;
 use super::slicer::{SlicerPreset, StepSequence};
 use crate::types::Stem;
 
@@ -97,6 +98,9 @@ pub enum EngineCommand {
     /// Exit scratch mode - restores previous play state
     /// (resumes playing if was playing, stays paused if was paused)
     ScratchEnd { deck: usize },
+    /// Set scratch interpolation method for a deck
+    /// Linear = fast, acceptable quality; Cubic = better quality, more CPU
+    SetScratchInterpolation { deck: usize, method: InterpolationMethod },
 
     // ─────────────────────────────────────────────────────────────
     // CDJ-Style Cueing

@@ -36,6 +36,8 @@ All notable changes to Mesh are documented in this file.
 
 - **Vinyl-style scratch audio** — During zoomed waveform scrubbing, audio plays based on mouse velocity like real vinyl. Moving the mouse plays audio at proportional speed; stopping outputs silence (not a looped buffer). Backward movement plays audio in reverse. Previous play state is restored when scrubbing ends.
 
+- **Scratch interpolation setting** — Choose between Linear (fast, acceptable quality) and Cubic (Catmull-Rom, smoother audio) interpolation for scratch audio in Settings > Audio Output. Cubic interpolation provides higher quality variable-speed playback at the cost of slightly more CPU usage.
+
 ### Changed
 
 - **MidiController architecture** — Refactored from single-device (`Option<MidiInputHandler>`) to multi-device (`HashMap<String, ConnectedDevice>`) support.

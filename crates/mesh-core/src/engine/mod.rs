@@ -63,6 +63,7 @@ pub mod gc;
 mod latency;
 mod linked_stem;
 mod mixer;
+pub mod scratch;
 mod slicer;
 
 pub use command::*;
@@ -71,4 +72,5 @@ pub use engine::*;
 pub use latency::*;
 pub use linked_stem::*;
 pub use mixer::*;
+pub use scratch::{InterpolationMethod, ScratchState};
 pub use slicer::*;

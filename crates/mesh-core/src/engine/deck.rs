@@ -369,14 +369,10 @@ pub struct Deck {
     /// Used to calculate gain correction for linked stems
     host_lufs: Option<f32>,
 
-    /// Whether scratch mode is active (vinyl-style scrubbing)
-    /// When true, audio plays at current position but playhead doesn't advance naturally
-    scratch_mode: bool,
+    /// Scratch state (vinyl-style scrubbing with interpolation)
+    scratch: super::scratch::ScratchState,
     /// Play state before scratch started (to restore on scratch end)
     scratch_previous_state: PlayState,
-    /// Previous scratch position for velocity calculation
-    /// Velocity = (current_position - scratch_last_position) determines playback speed
-    scratch_last_position: usize,
 }
 
 impl Deck {
@@ -409,9 +405,8 @@ impl Deck {
             drop_marker: None,
             lufs_gain: 1.0, // Unity gain (no compensation)
             host_lufs: None,
-            scratch_mode: false,
+            scratch: super::scratch::ScratchState::new(),
             scratch_previous_state: PlayState::Stopped,
-            scratch_last_position: 0,
         }
     }
 
@@ -805,8 +800,7 @@ impl Deck {
             return;
         }
         self.scratch_previous_state = self.state;
-        self.scratch_mode = true;
-        self.scratch_last_position = self.position;
+        self.scratch.start(self.position);
         // Enter a playing-like state so audio callback runs
         self.state = PlayState::Playing;
         self.sync_state_atomic();
@@ -817,7 +811,7 @@ impl Deck {
     /// Moves playhead to new position. The audio output will reflect
     /// this position, creating a vinyl scratch sound effect.
     pub fn scratch_move(&mut self, position: usize) {
-        if !self.scratch_mode || self.track.is_none() {
+        if !self.scratch.active || self.track.is_none() {
             return;
         }
         if let Some(track) = &self.track {
@@ -833,17 +827,22 @@ impl Deck {
     /// - If was playing, resumes playing from current position
     /// - If was stopped, stays stopped at current position
     pub fn scratch_end(&mut self) {
-        if !self.scratch_mode {
+        if !self.scratch.active {
             return;
         }
-        self.scratch_mode = false;
+        self.scratch.end();
         self.state = self.scratch_previous_state;
         self.sync_state_atomic();
     }
 
     /// Check if scratch mode is active
     pub fn is_scratching(&self) -> bool {
-        self.scratch_mode
+        self.scratch.active
+    }
+
+    /// Set scratch interpolation method
+    pub fn set_scratch_interpolation(&mut self, method: super::scratch::InterpolationMethod) {
+        self.scratch.set_interpolation(method);
     }
 
     /// Get the current beat jump size in beats (equals loop length)
@@ -1394,49 +1393,49 @@ impl Deck {
             return;
         }
 
-        // Scratch mode: velocity-based playback (vinyl emulation)
+        // Scratch mode: velocity-based playback with interpolation (vinyl emulation)
         // When scratching, audio speed is derived from position delta (velocity)
-        // Stationary = silence, moving = audio at proportional speed
-        if self.scratch_mode {
-            // Calculate velocity: how much position changed since last frame
-            let velocity = self.position as i64 - self.scratch_last_position as i64;
-            self.scratch_last_position = self.position;
+        // Stationary = silence, moving = audio at proportional speed with interpolation
+        if self.scratch.active {
+            // Calculate velocity and determine if we should output audio
+            let (should_output, velocity_samples, is_reverse) =
+                self.scratch.calculate_velocity(self.position, output_len);
 
-            // Minimum velocity threshold to avoid noise from tiny movements
-            // ~50 samples at 44.1kHz ≈ 1ms of audio
-            const VELOCITY_THRESHOLD: i64 = 50;
-
-            if velocity.abs() < VELOCITY_THRESHOLD {
+            if !should_output {
                 // Stationary or near-stationary: output silence (like vinyl not moving)
                 stretch_input.set_len_from_capacity(output_len);
                 stretch_input.fill_silence();
                 return;
             }
 
-            // Read samples based on velocity magnitude
-            // Clamp to reasonable range to prevent buffer overruns
-            let samples_to_read = (velocity.unsigned_abs() as usize).clamp(1, output_len * 2);
-            stretch_input.set_len_from_capacity(samples_to_read);
+            // We output fixed-size buffers, using interpolation to handle variable speed
+            stretch_input.set_len_from_capacity(output_len);
+            stretch_input.fill_silence();
 
-            // Determine read direction and starting position
-            let (read_start, reverse) = if velocity > 0 {
-                // Moving forward: read from previous position
-                (self.scratch_last_position.saturating_sub(velocity.unsigned_abs() as usize), false)
+            // Calculate velocity as a ratio (samples per output sample)
+            // This determines the "speed" of playback for interpolation
+            let velocity_ratio = if is_reverse {
+                -(velocity_samples as f64 / output_len as f64)
             } else {
-                // Moving backward: read backward from current position
-                (self.position, true)
+                velocity_samples as f64 / output_len as f64
             };
 
-            // Read samples from track
-            let duration_samples = track.duration_samples;
-            let any_soloed = self.any_stem_soloed();
+            // Starting position for reading (fractional for interpolation)
+            let start_pos = if is_reverse {
+                self.position as f64
+            } else {
+                (self.position as i64 - velocity_samples as i64).max(0) as f64
+            };
 
-            // Fill stem buffers with scratch audio
+            let any_soloed = self.any_stem_soloed();
+            let interpolation = self.scratch.interpolation;
+
+            // Fill stem buffers with scratch audio using interpolation
             for buf in &mut self.stem_buffers {
-                buf.set_len_from_capacity(samples_to_read);
+                buf.set_len_from_capacity(output_len);
             }
 
-            // Read and sum stems (simplified path for scratch - no effects/slicer)
+            // Process each stem with interpolation (sequential for scratch - simpler)
             for (stem_idx, stem_buffer) in self.stem_buffers.iter_mut().enumerate() {
                 let stem = Stem::ALL[stem_idx];
                 let stem_state = &self.stems[stem_idx];
@@ -1447,27 +1446,18 @@ impl Deck {
                 }
 
                 let stem_data = track.stems.get(stem);
-                let buf_slice = stem_buffer.as_mut_slice();
 
-                for i in 0..samples_to_read {
-                    let read_pos = if reverse {
-                        // Read backward: start from read_start and go backward
-                        read_start.saturating_sub(i)
-                    } else {
-                        // Read forward
-                        read_start + i
-                    };
-
-                    if read_pos < duration_samples {
-                        buf_slice[i] = stem_data[read_pos];
-                    } else {
-                        buf_slice[i] = StereoSample::silence();
-                    }
-                }
+                // Use the scratch module's interpolated reading function
+                super::scratch::process_scratch_stem(
+                    stem_buffer,
+                    stem_data.as_slice(),
+                    start_pos,
+                    velocity_ratio,
+                    interpolation,
+                );
             }
 
             // Sum stems to output
-            stretch_input.fill_silence();
             for stem_buffer in &self.stem_buffers {
                 stretch_input.add_buffer(stem_buffer);
             }
@@ -1645,7 +1635,7 @@ impl Deck {
         // Advance playhead by samples actually read (not output_len!)
         // This ensures playback speed matches the stretch ratio
         // Skip advancement in scratch mode - position is controlled externally
-        if !self.scratch_mode && (self.state == PlayState::Playing || self.state == PlayState::Cueing) {
+        if !self.scratch.active && (self.state == PlayState::Playing || self.state == PlayState::Cueing) {
             self.position += samples_to_read;
 
             // Update slip position if slip mode is enabled and we're looping

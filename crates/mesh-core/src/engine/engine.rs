@@ -644,6 +644,11 @@ impl AudioEngine {
                         d.scratch_end();
                     }
                 }
+                EngineCommand::SetScratchInterpolation { deck, method } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        d.set_scratch_interpolation(method);
+                    }
+                }
 
                 // CDJ-Style Cueing (with inter-deck phase sync on preview)
                 EngineCommand::CuePress { deck } => {

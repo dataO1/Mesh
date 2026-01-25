@@ -5,6 +5,7 @@
 use super::app::{Message, SettingsState};
 use crate::config::BpmSource;
 use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_input, Space};
+use mesh_core::engine::InterpolationMethod;
 use iced::{Alignment, Element, Length};
 
 /// Render the settings modal content
@@ -102,6 +103,40 @@ fn view_audio_output_section(state: &SettingsState) -> Element<'_, Message> {
         .on_press(Message::RefreshAudioDevices)
         .style(button::secondary);
 
+    // Scratch interpolation subsection
+    let scratch_title = text("Scratch Interpolation").size(14);
+    let scratch_hint = text("Audio quality when scrubbing waveform (Linear = fast, Cubic = smooth)")
+        .size(12);
+
+    let scratch_options = [InterpolationMethod::Linear, InterpolationMethod::Cubic];
+    let scratch_buttons: Vec<Element<Message>> = scratch_options
+        .iter()
+        .map(|&method| {
+            let is_selected = state.draft_scratch_interpolation == method;
+            let label = match method {
+                InterpolationMethod::Linear => "Linear",
+                InterpolationMethod::Cubic => "Cubic",
+            };
+            let btn = button(text(label).size(12))
+                .on_press(Message::UpdateSettingsScratchInterpolation(method))
+                .style(if is_selected {
+                    iced::widget::button::primary
+                } else {
+                    iced::widget::button::secondary
+                })
+                .width(Length::Fixed(70.0));
+            btn.into()
+        })
+        .collect();
+
+    let scratch_label = text("Method:").size(14);
+    let scratch_row = row![
+        scratch_label,
+        row(scratch_buttons).spacing(4).align_y(Alignment::Center),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+
     container(
         column![
             section_title,
@@ -110,6 +145,10 @@ fn view_audio_output_section(state: &SettingsState) -> Element<'_, Message> {
             output_row,
             Space::new().height(5),
             refresh_btn,
+            Space::new().height(10),
+            scratch_title,
+            scratch_hint,
+            scratch_row,
         ]
         .spacing(8),
     )

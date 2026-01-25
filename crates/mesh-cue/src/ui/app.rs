@@ -155,7 +155,7 @@ impl MeshCueApp {
 
         // Start audio system for preview (lock-free architecture)
         // Domain owns the db_service internally
-        let (audio, audio_handle) = match domain.init_audio_preview() {
+        let (mut audio, audio_handle) = match domain.init_audio_preview() {
             Ok((audio_state, handle)) => {
                 log::info!("Audio preview enabled (lock-free)");
                 (audio_state, Some(handle))
@@ -165,6 +165,9 @@ impl MeshCueApp {
                 (AudioState::disconnected(), None)
             }
         };
+
+        // Apply initial config settings to audio engine
+        audio.set_scratch_interpolation(settings.draft_scratch_interpolation);
 
         let app = Self {
             domain,
@@ -367,6 +370,7 @@ impl MeshCueApp {
             Message::UpdateSettingsBpmSource(source) => return self.handle_update_settings_bpm_source(source),
             Message::UpdateSettingsSlicerBufferBars(bars) => return self.handle_update_settings_slicer_buffer_bars(bars),
             Message::UpdateSettingsOutputPair(idx) => return self.handle_update_settings_output_pair(idx),
+            Message::UpdateSettingsScratchInterpolation(method) => return self.handle_update_settings_scratch_interpolation(method),
             Message::RefreshAudioDevices => return self.handle_refresh_audio_devices(),
             Message::SaveSettings => return self.handle_save_settings(),
             Message::SaveSettingsComplete(result) => return self.handle_save_settings_complete(result),

@@ -80,6 +80,15 @@ impl MeshCueApp {
         Task::none()
     }
 
+    /// Handle UpdateSettingsScratchInterpolation message
+    pub fn handle_update_settings_scratch_interpolation(
+        &mut self,
+        method: mesh_core::engine::InterpolationMethod,
+    ) -> Task<Message> {
+        self.settings.draft_scratch_interpolation = method;
+        Task::none()
+    }
+
     /// Handle RefreshAudioDevices message
     pub fn handle_refresh_audio_devices(&mut self) -> Task<Message> {
         self.settings.refresh_audio_devices();
@@ -119,11 +128,17 @@ impl MeshCueApp {
             // Update audio output device
             config.audio.output_device = new_device;
 
+            // Update scratch interpolation
+            config.audio.scratch_interpolation = self.settings.draft_scratch_interpolation;
+
             // Update drafts to show validated values
             self.settings.draft_min_tempo = config.analysis.bpm.min_tempo.to_string();
             self.settings.draft_max_tempo = config.analysis.bpm.max_tempo.to_string();
             self.settings.draft_parallel_processes = config.analysis.parallel_processes.to_string();
         }
+
+        // Apply scratch interpolation to audio engine immediately
+        self.audio.set_scratch_interpolation(self.settings.draft_scratch_interpolation);
 
         // Hot-swap audio output if device changed
         if audio_changed {

@@ -234,6 +234,16 @@ impl AudioState {
         self.send(EngineCommand::ScratchEnd { deck: PREVIEW_DECK });
     }
 
+    /// Set scratch interpolation method
+    ///
+    /// Linear = fast, acceptable quality; Cubic = better quality, more CPU
+    pub fn set_scratch_interpolation(&mut self, method: mesh_core::engine::InterpolationMethod) {
+        self.send(EngineCommand::SetScratchInterpolation {
+            deck: PREVIEW_DECK,
+            method,
+        });
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Track loading
     // ─────────────────────────────────────────────────────────────────────────

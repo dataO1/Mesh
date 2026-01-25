@@ -42,6 +42,9 @@ pub struct AudioConfig {
     /// Output device index (0 = first device, 1 = second, etc.)
     /// None = use system default device
     pub output_device: Option<usize>,
+    /// Scratch interpolation method for waveform scrubbing
+    /// Linear = fast, acceptable quality; Cubic = better quality, more CPU
+    pub scratch_interpolation: mesh_core::engine::InterpolationMethod,
 }
 
 impl Default for Config {

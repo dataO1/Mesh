@@ -150,6 +150,8 @@ pub enum Message {
     UpdateSettingsSlicerBufferBars(u32),
     /// Update selected audio output pair
     UpdateSettingsOutputPair(usize),
+    /// Update scratch interpolation method
+    UpdateSettingsScratchInterpolation(mesh_core::engine::InterpolationMethod),
     /// Refresh available audio devices
     RefreshAudioDevices,
     SaveSettings,
