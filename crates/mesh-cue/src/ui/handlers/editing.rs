@@ -32,6 +32,15 @@ impl MeshCueApp {
         Task::none()
     }
 
+    /// Handle BPM adjustment (+/- delta)
+    pub fn handle_adjust_bpm(&mut self, delta: f64) -> Task<Message> {
+        if let Some(ref state) = self.collection.loaded_track {
+            let new_bpm = (state.bpm + delta).max(1.0); // Don't go below 1 BPM
+            return self.handle_set_bpm(new_bpm);
+        }
+        Task::none()
+    }
+
     /// Handle SetKey message
     pub fn handle_set_key(&mut self, key: String) -> Task<Message> {
         if let Some(ref mut state) = self.collection.loaded_track {

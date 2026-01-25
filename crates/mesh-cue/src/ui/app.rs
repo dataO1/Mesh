@@ -291,6 +291,8 @@ impl MeshCueApp {
 
             // Collection: Editor (delegated to handlers/editing.rs)
             Message::SetBpm(bpm) => return self.handle_set_bpm(bpm),
+            Message::IncreaseBpm => return self.handle_adjust_bpm(1.0),
+            Message::DecreaseBpm => return self.handle_adjust_bpm(-1.0),
             Message::SetKey(key) => return self.handle_set_key(key),
             Message::AddCuePoint(position) => return self.handle_add_cue_point(position),
             Message::DeleteCuePoint(index) => return self.handle_delete_cue_point(index),

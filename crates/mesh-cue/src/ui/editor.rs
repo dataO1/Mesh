@@ -86,6 +86,9 @@ fn view_header(state: &LoadedTrackState) -> Element<'_, Message> {
     let title = text(track_name).size(20);
 
     let bpm_label = text("BPM:");
+    let bpm_minus = button(text("-").size(12))
+        .padding([4, 8])
+        .on_press(Message::DecreaseBpm);
     let bpm_input = text_input("BPM", &format!("{:.2}", state.bpm))
         .on_input(|s| {
             s.parse::<f64>()
@@ -93,6 +96,9 @@ fn view_header(state: &LoadedTrackState) -> Element<'_, Message> {
                 .unwrap_or(Message::SetBpm(state.bpm))
         })
         .width(Length::Fixed(80.0));
+    let bpm_plus = button(text("+").size(12))
+        .padding([4, 8])
+        .on_press(Message::IncreaseBpm);
 
     let key_label = text("Key:");
     let key_input = text_input("Key", &state.key)
@@ -119,7 +125,9 @@ fn view_header(state: &LoadedTrackState) -> Element<'_, Message> {
         modified_indicator,
         Space::new().width(Length::Fill),
         bpm_label,
+        bpm_minus,
         bpm_input,
+        bpm_plus,
         key_label,
         key_input,
         grid_label,

@@ -39,6 +39,10 @@ pub enum Message {
 
     // Collection: Editor
     SetBpm(f64),
+    /// Increase BPM by 1
+    IncreaseBpm,
+    /// Decrease BPM by 1
+    DecreaseBpm,
     SetKey(String),
     AddCuePoint(u64),
     DeleteCuePoint(usize),
