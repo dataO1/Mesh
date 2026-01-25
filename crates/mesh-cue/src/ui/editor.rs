@@ -105,7 +105,7 @@ fn view_header(state: &LoadedTrackState) -> Element<'_, Message> {
         .on_input(Message::SetKey)
         .width(Length::Fixed(60.0));
 
-    // Beat grid nudge controls
+    // Beat grid controls
     let grid_label = text("Grid:").size(14);
     let nudge_left = button(text("<<").size(12))
         .padding([4, 8])
@@ -113,6 +113,9 @@ fn view_header(state: &LoadedTrackState) -> Element<'_, Message> {
     let nudge_right = button(text(">>").size(12))
         .padding([4, 8])
         .on_press(Message::NudgeBeatGridRight);
+    let align_grid = button(text("│").size(14))
+        .padding([4, 10])
+        .on_press(Message::AlignBeatGridToPlayhead);
 
     let modified_indicator = if state.modified {
         text("*").size(20)
@@ -133,6 +136,7 @@ fn view_header(state: &LoadedTrackState) -> Element<'_, Message> {
         grid_label,
         nudge_left,
         nudge_right,
+        align_grid,
     ]
     .spacing(10)
     .align_y(Alignment::Center)

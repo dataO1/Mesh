@@ -36,6 +36,8 @@ pub struct EditingKeybindings {
     pub grid_nudge_forward: Vec<String>,
     /// Nudge beat grid backward (earlier)
     pub grid_nudge_backward: Vec<String>,
+    /// Align beat grid - set current playhead as downbeat
+    pub align_beat_grid: Vec<String>,
     /// Increase beat jump size
     pub increase_jump_size: Vec<String>,
     /// Decrease beat jump size
@@ -70,6 +72,7 @@ impl Default for EditingKeybindings {
             beat_jump_backward: vec!["Left".into()],
             grid_nudge_forward: vec!["Shift+Right".into()],
             grid_nudge_backward: vec!["Shift+Left".into()],
+            align_beat_grid: vec!["m".into()],
             increase_jump_size: vec!["Up".into()],
             decrease_jump_size: vec!["Down".into()],
             cue_button: vec!["c".into()],

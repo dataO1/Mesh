@@ -352,4 +352,41 @@ impl MeshCueApp {
         }
         Task::none()
     }
+
+    /// Handle AlignBeatGridToPlayhead message
+    ///
+    /// Aligns the beat grid so that a downbeat falls on the current playhead position.
+    /// The first beat is placed at the start of the file such that with the current BPM,
+    /// a beat aligns exactly with the playhead. This allows DJs to scrub to where they
+    /// hear the downbeat and align the grid to it, with beats extending from the beginning.
+    pub fn handle_align_beat_grid_to_playhead(&mut self) -> Task<Message> {
+        if let Some(ref mut state) = self.collection.loaded_track {
+            if state.bpm <= 0.0 || state.duration_samples == 0 {
+                return Task::none();
+            }
+
+            let playhead = state.playhead_position();
+            let samples_per_beat =
+                (mesh_core::types::SAMPLE_RATE as f64 * 60.0 / state.bpm) as u64;
+
+            // Calculate first beat position at start of file such that
+            // a beat aligns with the playhead: first_beat = playhead % samples_per_beat
+            let first_beat = playhead % samples_per_beat;
+
+            log::debug!(
+                "Aligning beat grid: playhead {} -> first_beat {} (BPM: {:.2}, samples_per_beat: {})",
+                playhead, first_beat, state.bpm, samples_per_beat
+            );
+
+            // Regenerate beat grid starting from the calculated first beat
+            state.beat_grid = regenerate_beat_grid(first_beat, state.bpm, state.duration_samples);
+            update_waveform_beat_grid(state);
+
+            // Propagate to deck so snapping uses updated grid
+            self.audio.set_beat_grid(state.beat_grid.clone());
+
+            state.modified = true;
+        }
+        Task::none()
+    }
 }

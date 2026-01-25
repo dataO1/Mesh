@@ -129,6 +129,8 @@ pub enum Message {
     NudgeBeatGridLeft,
     /// Nudge beat grid right (later) by small increment
     NudgeBeatGridRight,
+    /// Align beat grid so the nearest beat matches the current playhead
+    AlignBeatGridToPlayhead,
 
     // Settings
     OpenSettings,

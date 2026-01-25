@@ -116,6 +116,11 @@ impl MeshCueApp {
             return self.update(Message::NudgeBeatGridLeft);
         }
 
+        // Beat grid align to playhead (ignore repeat)
+        if !repeat && bindings.align_beat_grid.iter().any(|b| b == &key_str) {
+            return self.update(Message::AlignBeatGridToPlayhead);
+        }
+
         // Increase/decrease loop length (also affects beat jump size, ignore repeat)
         if !repeat && bindings.increase_jump_size.iter().any(|b| b == &key_str) {
             if self.collection.loaded_track.is_some() {

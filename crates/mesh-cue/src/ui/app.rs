@@ -348,9 +348,10 @@ impl MeshCueApp {
             // Zoomed Waveform (delegated to handlers/editing.rs)
             Message::SetZoomBars(bars) => return self.handle_set_zoom_bars(bars),
 
-            // Beat Grid Nudge (delegated to handlers/editing.rs)
+            // Beat Grid (delegated to handlers/editing.rs)
             Message::NudgeBeatGridLeft => return self.handle_nudge_beat_grid_left(),
             Message::NudgeBeatGridRight => return self.handle_nudge_beat_grid_right(),
+            Message::AlignBeatGridToPlayhead => return self.handle_align_beat_grid_to_playhead(),
 
             // Settings (delegated to handlers/settings.rs)
             Message::OpenSettings => return self.handle_open_settings(),
