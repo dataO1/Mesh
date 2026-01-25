@@ -8,6 +8,10 @@ All notable changes to Mesh are documented in this file.
 
 - **Multi-device MIDI support** — Connect multiple MIDI controllers simultaneously. All configured devices are connected at startup, not just the first match.
 
+- **Drag-and-drop on file list** — Tracks can now be dropped onto the file list panel (right column) in mesh-cue, not just playlist labels.
+
+- **Shift+click to delete stem links** — Hold Shift and click a linked stem button to remove the link.
+
 - **Automatic port name capture** — During MIDI learn, the actual system port name is captured and stored as `learned_port_name` for precise device matching on reconnection.
 
 - **Port name normalization** — Hardware IDs like `[hw:3,0,0]` are stripped from port names, so devices match regardless of which USB port they're connected to.
@@ -27,6 +31,12 @@ All notable changes to Mesh are documented in this file.
 ### Fixed
 
 - **Cross-system MIDI compatibility** — Devices now connect correctly when hardware enumeration differs between systems (e.g., `hw:1,0,0` on Pop!_OS vs `hw:3,0,0` on NixOS).
+
+- **Collection auto-refresh after import** — Newly imported tracks now appear in the file browser immediately after analysis completes.
+
+- **Text overlap in file browser** — Long track names and labels are now clipped instead of overlapping adjacent columns.
+
+- **File browser layout** — Editor and browser panels now use proportional sizing (3:1 ratio) to prevent the browser from squeezing hot cue buttons. Hot cue buttons have fixed width.
 
 ---
 

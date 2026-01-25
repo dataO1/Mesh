@@ -71,7 +71,7 @@ pub fn view(state: &LoadedTrackState, stem_link_selection: Option<usize>) -> Ele
     )
     .padding(15)
     .width(Length::Fill)
-    .height(Length::Fill)
+    .height(Length::FillPortion(3))  // Editor gets 3/4 of space (vs 1/4 for browsers)
     .into()
 }
 

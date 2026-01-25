@@ -527,6 +527,9 @@ pub enum TrackTableMessage<Id> {
     /// Mouse released over track row (for drop detection)
     /// Used to detect when dragged tracks are dropped onto this track/folder
     DropReceived(Id),
+    /// Mouse released over the table container (for drop on empty space)
+    /// Used to detect when dragged tracks are dropped onto the table area
+    DropReceivedOnTable,
     /// Right-click on a track (for context menu)
     /// Contains the track ID and cursor position for menu placement
     RightClick(Id, Point),
@@ -593,7 +596,7 @@ where
         .map(|track| build_track_row(track, state, on_message.clone()))
         .collect();
 
-    let track_list: Element<'a, Message> = if rows.is_empty() {
+    let track_list_inner: Element<'a, Message> = if rows.is_empty() {
         let empty_msg = if state.search_query.is_empty() {
             "No tracks in this folder"
         } else {
@@ -615,6 +618,16 @@ where
             .height(Length::Fill)
             .into()
     };
+
+    // Wrap track list in mouse_area for drop detection on empty space
+    let on_msg_table_drop = on_message.clone();
+    let track_list: Element<'a, Message> = mouse_area(
+        container(track_list_inner)
+            .width(Length::Fill)
+            .height(Length::Fill),
+    )
+    .on_release(on_msg_table_drop(TrackTableMessage::DropReceivedOnTable))
+    .into();
 
     column![
         search,
@@ -738,18 +751,28 @@ where
             _ => String::new(),
         };
 
+        // Use clipping to prevent text overlap
+        let txt = text(display_value)
+            .size(12)
+            .wrapping(iced::widget::text::Wrapping::None);
+
         mouse_area(
-            text(display_value)  // Move ownership to text widget
-                .size(12)
-                .width(column.width()),
+            container(txt)
+                .width(column.width())
+                .clip(true),
         )
         .on_double_click(on_msg(TrackTableMessage::StartEdit(id, column, current_value)))
         .into()
     } else {
-        // Non-editable cell - just display text
-        text(display_value)
+        // Non-editable cell - display text with clipping to prevent overlap
+        // Use Wrapping::None + container clip to truncate long text
+        let txt = text(display_value)
             .size(12)
+            .wrapping(iced::widget::text::Wrapping::None);
+
+        container(txt)
             .width(column.width())
+            .clip(true)
             .into()
     }
 }

@@ -129,7 +129,12 @@ impl MeshCueApp {
                 // Refresh collection immediately when track imports successfully
                 // so user sees new tracks appear in browser as they complete
                 if was_success {
-                    return Task::perform(async {}, |_| Message::RefreshPlaylists);
+                    // Ensure left browser has a folder selected (default to tracks)
+                    if self.collection.browser_left.current_folder.is_none() {
+                        self.collection.browser_left.set_current_folder(mesh_core::playlist::NodeId::tracks());
+                    }
+                    // Refresh both tree and track lists
+                    return Task::perform(async {}, |_| Message::RefreshCollection);
                 }
             }
             ImportProgress::AllComplete { results } => {

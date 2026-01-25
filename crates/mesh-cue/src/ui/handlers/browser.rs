@@ -216,8 +216,8 @@ impl MeshCueApp {
             }
         }
 
-        // Handle drop on table
-        if let TrackTableMessage::DropReceived(_) = table_msg {
+        // Handle drop on table (both on track rows and empty table space)
+        if matches!(table_msg, TrackTableMessage::DropReceived(_) | TrackTableMessage::DropReceivedOnTable) {
             log::debug!("{} table: DropReceived", side_name);
             if let Some(ref drag) = self.collection.dragging_track {
                 let current_folder = self.collection.browser(side).current_folder.clone();

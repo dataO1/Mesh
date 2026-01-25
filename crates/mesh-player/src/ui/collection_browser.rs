@@ -336,6 +336,7 @@ impl CollectionBrowserState {
                             | TrackTableMessage::CommitEdit
                             | TrackTableMessage::CancelEdit
                             | TrackTableMessage::DropReceived(_)
+                            | TrackTableMessage::DropReceivedOnTable
                             | TrackTableMessage::RightClick(_, _)
                             | TrackTableMessage::MouseMoved(_) => {
                                 // Silently ignore edit, drop, and context menu operations

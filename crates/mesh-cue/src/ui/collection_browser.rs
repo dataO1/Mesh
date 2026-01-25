@@ -107,6 +107,6 @@ fn view_browsers(state: &CollectionState) -> Element<'_, Message> {
             .height(Length::Fill),
     ]
     .spacing(0)
-    .height(Length::Fixed(300.0))
+    .height(Length::FillPortion(1))  // Take remaining space proportionally
     .into()
 }

@@ -88,9 +88,15 @@ impl MeshCueApp {
 
     /// Handle ToggleStemLinkActive message
     ///
-    /// Toggle between original and linked stem for playback
+    /// Toggle between original and linked stem for playback.
+    /// Shift+click clears the stem link entirely.
     pub fn handle_toggle_stem_link_active(&mut self, stem_idx: usize) -> Task<Message> {
-        // The audio engine handles the actual toggling
+        // Shift+click = clear stem link (delete the link)
+        if self.shift_held {
+            return self.handle_clear_stem_link(stem_idx);
+        }
+
+        // Normal click = toggle between original and linked stem
         if let Some(stem) = Stem::from_index(stem_idx) {
             self.audio.toggle_linked_stem(stem);
             log::info!("Toggled linked stem active for stem {}", stem_idx);

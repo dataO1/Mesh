@@ -13,7 +13,7 @@
 //! );
 //! ```
 
-use iced::widget::{button, column, mouse_area, row, scrollable, text, text_input, Space};
+use iced::widget::{button, column, container, mouse_area, row, scrollable, text, text_input, Space};
 use iced::{Background, Border, Color, Element, Length, Padding, Point, Theme};
 use std::collections::HashSet;
 use std::hash::Hash;
@@ -346,7 +346,16 @@ where
             let id_clone = node.id.clone();
             let on_msg = on_message.clone();
 
-            let label_content = row![text(icon).size(14), text(&node.label).size(12),].spacing(6);
+            // Use Wrapping::None + clip to truncate long labels without overlap
+            let label_text = text(&node.label)
+                .size(12)
+                .wrapping(iced::widget::text::Wrapping::None);
+
+            let label_content = row![
+                text(icon).size(14),
+                container(label_text).clip(true),
+            ]
+            .spacing(6);
 
             let label_btn = button(label_content)
                 .padding(Padding::from([3, 6]))

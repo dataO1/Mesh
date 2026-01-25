@@ -152,7 +152,7 @@ where
                 self.table_state.cancel_edit();
                 None
             }
-            TrackTableMessage::DropReceived(_) => {
+            TrackTableMessage::DropReceived(_) | TrackTableMessage::DropReceivedOnTable => {
                 // Drop handling is done by the app layer (needs access to drag state)
                 None
             }
