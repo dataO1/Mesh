@@ -50,6 +50,8 @@ All notable changes to Mesh are documented in this file.
 
 - **File browser layout** — Editor and browser panels now use proportional sizing (3:1 ratio) to prevent the browser from squeezing hot cue buttons.
 
+- **Beat grid preserved on BPM change** — Changing BPM now anchors the grid on the beat nearest to the playhead instead of the first beat. This preserves nudge adjustments — the beat you're listening to stays in place while others recalculate.
+
 ---
 
 ## [0.4.2] - 2026-01-24

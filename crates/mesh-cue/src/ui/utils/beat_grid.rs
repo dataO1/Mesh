@@ -94,3 +94,35 @@ pub fn snap_to_nearest_beat(position: u64, beat_grid: &[u64]) -> u64 {
         .copied()
         .unwrap_or(position)
 }
+
+/// Find the nearest beat to a position, returning both its index and position
+///
+/// Returns (index, position) of the beat closest to the given sample position.
+/// If the grid is empty, returns (0, 0).
+pub fn find_nearest_beat_with_index(beat_grid: &[u64], position: u64) -> (usize, u64) {
+    if beat_grid.is_empty() {
+        return (0, 0);
+    }
+
+    // Binary search to find insertion point
+    match beat_grid.binary_search(&position) {
+        Ok(idx) => (idx, beat_grid[idx]),
+        Err(idx) => {
+            if idx == 0 {
+                (0, beat_grid[0])
+            } else if idx >= beat_grid.len() {
+                let last_idx = beat_grid.len() - 1;
+                (last_idx, beat_grid[last_idx])
+            } else {
+                // Between two beats - pick the closer one
+                let before = beat_grid[idx - 1];
+                let after = beat_grid[idx];
+                if position - before <= after - position {
+                    (idx - 1, before)
+                } else {
+                    (idx, after)
+                }
+            }
+        }
+    }
+}

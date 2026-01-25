@@ -8,19 +8,39 @@ use iced::Task;
 use mesh_core::audio_file::{CuePoint, SavedLoop};
 use super::super::app::MeshCueApp;
 use super::super::message::Message;
-use super::super::utils::{regenerate_beat_grid, snap_to_nearest_beat, update_waveform_beat_grid};
+use super::super::utils::{find_nearest_beat_with_index, regenerate_beat_grid, snap_to_nearest_beat, update_waveform_beat_grid};
 
 impl MeshCueApp {
     /// Handle SetBpm message
+    ///
+    /// When BPM changes, the beat grid is recalculated anchored on the beat
+    /// nearest to the current playhead. This preserves nudge adjustments —
+    /// the beat you're listening to stays in place while other beats shift.
     pub fn handle_set_bpm(&mut self, bpm: f64) -> Task<Message> {
         if let Some(ref mut state) = self.collection.loaded_track {
+            let old_bpm = state.bpm;
             state.bpm = bpm;
 
-            // Regenerate beat grid keeping current first beat position
-            // This allows: nudge grid to align → change BPM → grid recalculates
+            // Regenerate beat grid anchored on the beat nearest to playhead
             if !state.beat_grid.is_empty() && state.duration_samples > 0 {
-                let first_beat = state.beat_grid[0];
-                state.beat_grid = regenerate_beat_grid(first_beat, bpm, state.duration_samples);
+                let playhead = state.playhead_position();
+
+                // Find the index of the beat nearest to the playhead
+                let (anchor_idx, anchor_pos) = find_nearest_beat_with_index(&state.beat_grid, playhead);
+
+                // Calculate new samples per beat
+                let new_samples_per_beat = (mesh_core::types::SAMPLE_RATE as f64 * 60.0 / bpm) as i64;
+
+                // Calculate new first beat position, keeping anchor beat fixed
+                // new_first_beat = anchor_pos - (anchor_idx * new_samples_per_beat)
+                let new_first_beat = (anchor_pos as i64 - (anchor_idx as i64 * new_samples_per_beat)).max(0) as u64;
+
+                log::debug!(
+                    "BPM change {:.2} → {:.2}: anchor beat {} at {} (playhead {}), new first beat {}",
+                    old_bpm, bpm, anchor_idx, anchor_pos, playhead, new_first_beat
+                );
+
+                state.beat_grid = regenerate_beat_grid(new_first_beat, bpm, state.duration_samples);
                 update_waveform_beat_grid(state);
 
                 // Propagate to deck so snapping uses updated grid
