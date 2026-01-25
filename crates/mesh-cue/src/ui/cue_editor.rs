@@ -83,7 +83,7 @@ fn create_hot_cue_button(
     };
 
     let btn = button(text(label_text).size(11).center())
-        .width(Length::Fixed(70.0))  // Fixed width for consistent button size
+        .width(Length::Fill)  // Dynamic width to match waveform
         .height(Length::Fixed(44.0));
 
     // If cue exists, use CDJ-style preview (hold to play, release to return)
