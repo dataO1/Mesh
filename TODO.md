@@ -174,6 +174,22 @@ and mesh-widget and only if necessary in the ui.
    - [ ] backup of databse (without files, just db)
 - [x] in the waveform canvas of the player, we need to mark decks, that are
  currently marked for cue output. change the header color to a slight yellow.
+- [x] in mesh-cue users need to be able to scrub in the zoomed waveform, like in
+  the overview waveform.
+- [x] plus and minus button s next to the bpm edit field.
+- [x] changing the bpm in mesh-cue currently recomputes the beatgrid on the
+  first beat marker. this means that after moving the beatgrid (nuding), then
+  changing the bpm the beatgrid is completely wrong again. we can solve this by
+  using the current playhead positions nearest beat marker as a center point,
+  which should not change when changing the bpm (it should be guidance for the
+  first beat marker, which should be updated accordingly)
+- [ ] while scrubbing if the track is playing stop progress of the audio buffer,
+  but still play the audio. so the sound comes out as like scratching a vinyl.
+  same for when track is not playing, this should start audio, but not change
+  the playback state.
+- [ ] add a button to adjust the beatgrid to the current playhead. so
+  additionally to nudging while cueing djs can scrub in the waveform and click
+  the button to set the beatgrit to align the current playheader.
 - [ ] stem splitting in the import process: we should use demucsv4 or uvr5
   without gui. research how we can effectively include stem splitting (using a
   gpu if available) into the import process, such that the user doesnt need to
@@ -184,15 +200,6 @@ and mesh-widget and only if necessary in the ui.
   to bundle this into the final packages/binaries/executables for mesh-cue, so
   this needs to be compatible with that and support our current methods of
   building packages (ie deb and windows).
-- [ ] in mesh-cue users need to be able to scrub in the zoomed waveform, like in
-  the overview waveform.
-- [ ] plus and minus button s next to the bpm edit field.
-- [ ] changing the bpm in mesh-cue currently recomputes the beatgrid on the
-  first beat marker. this means that after moving the beatgrid (nuding), then
-  changing the bpm the beatgrid is completely wrong again. we can solve this by
-  using the current playhead positions nearest beat marker as a center point,
-  which should not change when changing the bpm (it should be guidance for the
-  first beat marker, which should be updated accordingly)
 
 # Changes
 - [x] The waveform indicators of hot cues use colors, but the hot cue buttons
