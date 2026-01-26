@@ -215,7 +215,7 @@ mod tests {
         let manager = ModelManager::with_cache_dir(cache_dir.clone());
 
         let path = manager.model_path(ModelType::Demucs4Stems);
-        assert_eq!(path, cache_dir.join("demucs-4stems.onnx"));
+        assert_eq!(path, cache_dir.join("htdemucs.onnx"));
     }
 
     #[test]

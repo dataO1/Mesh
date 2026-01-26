@@ -116,11 +116,12 @@ impl ModelType {
         }
     }
 
-    /// Model filename
+    /// Model filename (must match the name used during ONNX export, since external data
+    /// files reference it by name)
     pub fn filename(&self) -> &'static str {
         match self {
-            Self::Demucs4Stems => "demucs-4stems.onnx",
-            Self::Demucs6Stems => "demucs-6stems.onnx",
+            Self::Demucs4Stems => "htdemucs.onnx",
+            Self::Demucs6Stems => "htdemucs_6s.onnx",
         }
     }
 
@@ -129,11 +130,11 @@ impl ModelType {
         match self {
             Self::Demucs4Stems => {
                 // Hosted on Mesh GitHub releases (MIT licensed, converted from Meta's Demucs)
-                "https://github.com/dataO1/Mesh/releases/download/models/demucs-4stems.onnx"
+                "https://github.com/dataO1/Mesh/releases/download/models/htdemucs.onnx"
             }
             Self::Demucs6Stems => {
                 // TODO: Find or create 6-stem ONNX model
-                "https://github.com/dataO1/Mesh/releases/download/models/demucs-6stems.onnx"
+                "https://github.com/dataO1/Mesh/releases/download/models/htdemucs_6s.onnx"
             }
         }
     }
