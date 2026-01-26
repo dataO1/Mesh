@@ -666,9 +666,18 @@ fn run_demucs_inference(
                 SeparationError::SeparationFailed("Output tensor 'add_67' not found".to_string())
             })?;
 
-        let (_shape, data) = output.try_extract_tensor::<f32>().map_err(|e| {
+        let (shape, data) = output.try_extract_tensor::<f32>().map_err(|e| {
             SeparationError::SeparationFailed(format!("Failed to extract output: {}", e))
         })?;
+
+        // Log shape on first segment to verify expected [1, 4, 2, samples]
+        if seg_idx == 0 {
+            log::info!(
+                "Output tensor shape: {:?}, total elements: {}",
+                shape.as_ref(),
+                data.len()
+            );
+        }
 
         // Overlap-add: accumulate with triangular window for smooth blending
         for i in 0..segment_len {
@@ -728,10 +737,22 @@ fn run_demucs_inference(
         vocals: std::mem::take(&mut stem_accum[3]),
     };
 
+    // Log RMS energy per stem for debugging stem order
+    let rms = |samples: &[f32]| -> f32 {
+        let sum: f32 = samples.iter().map(|s| s * s).sum();
+        (sum / samples.len() as f32).sqrt()
+    };
     log::info!(
         "Separation complete: {} samples per stem ({} segments processed)",
         stems.samples_per_channel(),
         num_segments
+    );
+    log::info!(
+        "Stem RMS levels - drums: {:.4}, bass: {:.4}, other: {:.4}, vocals: {:.4}",
+        rms(&stems.drums),
+        rms(&stems.bass),
+        rms(&stems.other),
+        rms(&stems.vocals)
     );
 
     Ok(stems)
@@ -741,21 +762,32 @@ fn run_demucs_inference(
 ///
 /// Matches the preprocessing in Demucs' `standalone_spec` and `standalone_magnitude`:
 /// - n_fft = 4096, hop_length = 1024
-/// - Reflection padding for proper alignment
-/// - Returns [channels*2, freq_bins, time_frames] where channels*2 includes real/imag parts
+/// - torch.stft with normalized=True, center=True, Hann window
+/// - Demucs adds extra padding and crops frames
+/// - Returns [batch=1, channels*2=4, freq_bins=2048, time_frames=336]
 fn compute_stft_for_demucs(left: &[f32], right: &[f32]) -> ndarray::Array4<f32> {
     use ndarray::Array4;
     use realfft::RealFftPlanner;
 
-    let n_fft = DEMUCS_NFFT;
-    let hop = DEMUCS_HOP_LENGTH;
-    let freq_bins = n_fft / 2; // 2048
+    let n_fft = DEMUCS_NFFT; // 4096
+    let hop = DEMUCS_HOP_LENGTH; // 1024
+    let freq_bins = n_fft / 2; // 2048 (excludes DC and Nyquist effectively)
 
-    // Calculate padding to match Demucs' standalone_spec behavior
-    // pad = hop_length // 2 * 3 = 1024 // 2 * 3 = 1536
-    let pad = hop / 2 * 3;
+    // Demucs standalone_spec padding:
+    // le = ceil(input_len / hop)
+    // pad = hop // 2 * 3 = 1536
+    // Then pads: (pad, pad + le * hop - input_len) with reflect
+    // After STFT, crops to frames [2 : 2 + le] (removes first 2 and last frames)
     let input_len = left.len();
-    let num_frames = (input_len + 2 * pad) / hop; // Number of frames we'll compute
+    let le = (input_len + hop - 1) / hop; // ceil division
+    let demucs_pad = hop / 2 * 3; // 1536
+
+    // torch.stft center=True adds n_fft//2 padding on each side
+    let center_pad = n_fft / 2; // 2048
+
+    // Total padding for our manual STFT (combining both)
+    let total_left_pad = demucs_pad + center_pad;
+    let total_right_pad = demucs_pad + le * hop - input_len + center_pad;
 
     // Use exactly DEMUCS_STFT_FRAMES frames (336) to match model expectation
     let target_frames = DEMUCS_STFT_FRAMES;
@@ -764,13 +796,17 @@ fn compute_stft_for_demucs(left: &[f32], right: &[f32]) -> ndarray::Array4<f32> 
     let mut planner = RealFftPlanner::<f32>::new();
     let fft = planner.plan_fft_forward(n_fft);
 
-    // Pre-compute Hann window
+    // Pre-compute periodic Hann window (matches torch.hann_window default)
+    // w[n] = 0.5 * (1 - cos(2*pi*n/N)) for n in 0..N
     let window: Vec<f32> = (0..n_fft)
         .map(|i| {
-            let phase = std::f32::consts::PI * i as f32 / (n_fft - 1) as f32;
-            phase.sin().powi(2)
+            let phase = 2.0 * std::f32::consts::PI * i as f32 / n_fft as f32;
+            0.5 * (1.0 - phase.cos())
         })
         .collect();
+
+    // Normalization factor for torch.stft normalized=True
+    let norm_factor = 1.0 / (n_fft as f32).sqrt();
 
     // Output array: [batch=1, channels*2=4, freq_bins=2048, frames=336]
     let mut stft_output = Array4::<f32>::zeros((1, 4, freq_bins, target_frames));
@@ -778,25 +814,34 @@ fn compute_stft_for_demucs(left: &[f32], right: &[f32]) -> ndarray::Array4<f32> 
     // Process each channel
     for (ch_idx, channel) in [left, right].iter().enumerate() {
         // Create padded signal with reflection padding
-        let padded_len = input_len + 2 * pad;
+        let padded_len = total_left_pad + input_len + total_right_pad;
         let mut padded = vec![0.0f32; padded_len];
 
         // Left reflection padding
-        for i in 0..pad {
-            let reflect_idx = pad - i;
-            if reflect_idx < input_len {
-                padded[i] = channel[reflect_idx];
+        for i in 0..total_left_pad {
+            let reflect_idx = total_left_pad - 1 - i;
+            let src_idx = reflect_idx % (2 * input_len);
+            let src_idx = if src_idx < input_len {
+                src_idx
+            } else {
+                2 * input_len - 1 - src_idx
+            };
+            if src_idx < input_len {
+                padded[i] = channel[src_idx];
             }
         }
 
         // Copy original signal
-        padded[pad..pad + input_len].copy_from_slice(channel);
+        for i in 0..input_len {
+            padded[total_left_pad + i] = channel[i];
+        }
 
         // Right reflection padding
-        for i in 0..pad {
-            let src_idx = input_len.saturating_sub(2 + i);
+        for i in 0..total_right_pad {
+            let reflect_idx = i;
+            let src_idx = input_len - 1 - (reflect_idx % input_len);
             if src_idx < input_len {
-                padded[pad + input_len + i] = channel[src_idx];
+                padded[total_left_pad + input_len + i] = channel[src_idx];
             }
         }
 
@@ -805,7 +850,18 @@ fn compute_stft_for_demucs(left: &[f32], right: &[f32]) -> ndarray::Array4<f32> 
         let mut frame_input = vec![0.0f32; n_fft];
         let mut frame_output = fft.make_output_vec();
 
-        for frame_idx in 0..target_frames.min(num_frames) {
+        // Total frames before cropping
+        let total_frames = (padded_len - n_fft) / hop + 1;
+
+        // Demucs crops: z[..., 2: 2 + le] - skip first 2 frames
+        let frame_offset = 2;
+
+        for out_frame_idx in 0..target_frames {
+            let frame_idx = frame_offset + out_frame_idx;
+            if frame_idx >= total_frames {
+                break;
+            }
+
             let start = frame_idx * hop;
 
             // Extract frame with windowing
@@ -822,14 +878,14 @@ fn compute_stft_for_demucs(left: &[f32], right: &[f32]) -> ndarray::Array4<f32> 
             fft.process_with_scratch(&mut frame_input, &mut frame_output, &mut scratch)
                 .ok();
 
-            // Store real and imaginary parts
+            // Store real and imaginary parts with normalization
             // Layout: [left_real, left_imag, right_real, right_imag] in channel dimension
             let real_ch = ch_idx * 2;
             let imag_ch = ch_idx * 2 + 1;
 
             for freq in 0..freq_bins {
-                stft_output[[0, real_ch, freq, frame_idx]] = frame_output[freq].re;
-                stft_output[[0, imag_ch, freq, frame_idx]] = frame_output[freq].im;
+                stft_output[[0, real_ch, freq, out_frame_idx]] = frame_output[freq].re * norm_factor;
+                stft_output[[0, imag_ch, freq, out_frame_idx]] = frame_output[freq].im * norm_factor;
             }
         }
     }
