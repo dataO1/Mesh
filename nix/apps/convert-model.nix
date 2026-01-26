@@ -5,6 +5,7 @@
 let
   # Python environment with all dependencies for conversion
   pythonEnv = pkgs.python311.withPackages (ps: with ps; [
+    pip
     torch
     numpy
     onnxruntime
@@ -16,10 +17,8 @@ let
   convertScript = pkgs.writeShellScriptBin "convert-model" ''
     set -euo pipefail
 
-    # Output directory in repo root
-    SCRIPT_DIR="$(cd "$(dirname "''${BASH_SOURCE[0]}")" && pwd)"
-    # When run via nix run, we're in the repo root
-    OUTPUT_DIR="''${1:-./models}"
+    # Output directory - convert to absolute path for later use after cd
+    OUTPUT_DIR="$(realpath -m "''${1:-./models}")"
 
     echo "╔═══════════════════════════════════════════════════════════════════════╗"
     echo "║              Demucs ONNX Model Conversion                             ║"
@@ -44,23 +43,26 @@ let
     TEMP_DIR=$(mktemp -d)
     trap "rm -rf $TEMP_DIR" EXIT
 
-    # Install dependencies and the local demucs fork (required for conversion)
-    echo "[1/3] Installing demucs fork and dependencies..."
-    ${pythonEnv}/bin/pip install --quiet --target "$TEMP_DIR/site-packages" dora-search 2>/dev/null || true
-    cd "${demucs-onnx}/demucs-for-onnx"
-    ${pythonEnv}/bin/pip install --quiet --target "$TEMP_DIR/site-packages" -e . 2>/dev/null || true
+    # Install Python dependencies to temp directory
+    # Use --no-deps on dora-search to avoid re-downloading torch (~2GB)
+    echo "[1/3] Installing dependencies..."
+    ${pythonEnv}/bin/pip install --target "$TEMP_DIR/site-packages" --no-warn-script-location \
+      omegaconf retrying treetable submitit cloudpickle openunmix julius diffq einops onnxscript
+    ${pythonEnv}/bin/pip install --target "$TEMP_DIR/site-packages" --no-deps dora-search
 
-    # Set up Python path
-    export PYTHONPATH="$TEMP_DIR/site-packages:${demucs-onnx}/demucs-for-onnx:''${PYTHONPATH:-}"
+    # Set up Python path (include demucs fork directly, no install needed)
+    export PYTHONPATH="${demucs-onnx}/demucs-for-onnx:$TEMP_DIR/site-packages:''${PYTHONPATH:-}"
 
-    # Run conversion
+    # Run conversion (patch script to use opset 18 instead of 17 for compatibility)
     echo "[2/3] Converting model (this may take a few minutes)..."
     cd "$TEMP_DIR"
-    ${pythonEnv}/bin/python "${demucs-onnx}/scripts/convert-pth-to-onnx.py" ./onnx-output 2>&1 | \
-      grep -v "^$" | head -20
+    sed 's/opset_version=17/opset_version=18/' "${demucs-onnx}/scripts/convert-pth-to-onnx.py" > convert.py
+    ${pythonEnv}/bin/python convert.py ./onnx-output 2>&1 | \
+      grep -v "^$" | head -30
 
     # Copy to output
     echo "[3/3] Copying model to $OUTPUT_DIR..."
+    mkdir -p "$OUTPUT_DIR"
     if [ -f "./onnx-output/htdemucs.onnx" ]; then
       cp "./onnx-output/htdemucs.onnx" "$OUTPUT_DIR/demucs-4stems.onnx"
       SIZE=$(du -h "$OUTPUT_DIR/demucs-4stems.onnx" | cut -f1)
