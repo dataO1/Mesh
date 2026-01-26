@@ -81,11 +81,16 @@ impl MeshCueApp {
     }
 
     /// Handle UpdateSettingsScratchInterpolation message
+    ///
+    /// Applies the interpolation change immediately for instant feedback.
     pub fn handle_update_settings_scratch_interpolation(
         &mut self,
         method: mesh_core::engine::InterpolationMethod,
     ) -> Task<Message> {
         self.settings.draft_scratch_interpolation = method;
+        // Apply immediately for instant feedback (don't wait for save)
+        self.audio.set_scratch_interpolation(method);
+        log::info!("Scratch interpolation changed to {:?}", method);
         Task::none()
     }
 

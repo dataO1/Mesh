@@ -9,7 +9,13 @@
 //!
 //! - **Linear**: Fast, acceptable quality. Interpolates between 2 adjacent samples.
 //! - **Cubic**: Better quality, uses Catmull-Rom spline (4 samples).
-//! - **Sinc**: Highest quality, band-limited interpolation (configurable taps).
+//! - **Sinc**: Highest quality, band-limited interpolation (8 taps).
+//!
+//! ## Key Design: Continuous Read Position
+//!
+//! To avoid clicks at buffer boundaries, we maintain a **continuous read position**
+//! that advances smoothly based on velocity. The UI target position is used only
+//! to calculate velocity, not as a direct read position.
 //!
 //! ## References
 //!
@@ -20,13 +26,19 @@ use crate::types::{StereoBuffer, StereoSample};
 use serde::{Deserialize, Serialize};
 
 /// Minimum velocity threshold to produce audio (as ratio)
-/// Below this, output is silence. 0.02 ≈ 2% of normal speed
-const VELOCITY_THRESHOLD: f64 = 0.02;
+/// Below this, output is silence. 0.01 ≈ 1% of normal speed
+const VELOCITY_THRESHOLD: f64 = 0.01;
 
 /// Velocity smoothing factor (exponential moving average)
-/// Lower = smoother but more latent, Higher = more responsive but jittery
-/// 0.3 provides good balance between responsiveness and smoothness
-const VELOCITY_SMOOTHING: f64 = 0.3;
+/// Higher = more responsive, Lower = smoother
+const VELOCITY_SMOOTHING: f64 = 0.4;
+
+/// Position catch-up rate when read position drifts too far from target
+/// This gently pulls the read position towards the target without causing clicks
+const POSITION_CORRECTION_RATE: f64 = 0.001;
+
+/// Maximum drift allowed between read position and target before correction kicks in
+const MAX_POSITION_DRIFT: f64 = 44100.0; // ~1 second at 44.1kHz
 
 /// Interpolation method for variable-speed playback
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -62,14 +74,14 @@ impl InterpolationMethod {
 pub struct ScratchState {
     /// Whether scratch mode is active
     pub active: bool,
-    /// Target position from UI (sample position)
+    /// Target position from UI (where the user is dragging to)
     target_position: f64,
-    /// Current smoothed position (for velocity calculation)
-    smoothed_position: f64,
+    /// Previous target position (for velocity calculation)
+    prev_target_position: f64,
+    /// Continuous read position (advances smoothly to avoid clicks)
+    read_position: f64,
     /// Current smoothed velocity (samples per output sample, 1.0 = normal speed)
     smoothed_velocity: f64,
-    /// Last frame's smoothed position (for velocity calculation)
-    last_smoothed_position: f64,
     /// Current interpolation method
     pub interpolation: InterpolationMethod,
 }
@@ -79,9 +91,9 @@ impl Default for ScratchState {
         Self {
             active: false,
             target_position: 0.0,
-            smoothed_position: 0.0,
+            prev_target_position: 0.0,
+            read_position: 0.0,
             smoothed_velocity: 0.0,
-            last_smoothed_position: 0.0,
             interpolation: InterpolationMethod::default(),
         }
     }
@@ -97,8 +109,8 @@ impl ScratchState {
     pub fn start(&mut self, position: usize) {
         self.active = true;
         self.target_position = position as f64;
-        self.smoothed_position = position as f64;
-        self.last_smoothed_position = position as f64;
+        self.prev_target_position = position as f64;
+        self.read_position = position as f64;
         self.smoothed_velocity = 0.0;
     }
 
@@ -121,39 +133,49 @@ impl ScratchState {
     /// Update scratch state and calculate playback parameters
     ///
     /// This should be called once per audio frame (in process()).
-    /// It smooths the target position and calculates velocity.
+    /// It calculates velocity from target position changes and advances
+    /// the continuous read position.
     ///
     /// Returns (should_output, velocity_ratio, read_position)
     /// - should_output: false if velocity is below threshold (output silence)
     /// - velocity_ratio: playback speed (1.0 = normal, 2.0 = 2x, -1.0 = reverse normal)
-    /// - read_position: starting position for this frame
+    /// - read_position: starting position for this frame (continuous, no clicks)
     pub fn update(&mut self, output_len: usize) -> (bool, f64, f64) {
-        // Smooth position towards target (exponential moving average)
-        // This creates smooth velocity even with irregular UI updates
-        self.smoothed_position += (self.target_position - self.smoothed_position) * VELOCITY_SMOOTHING;
-
-        // Calculate velocity as position change per output buffer
-        // Normalize to 1.0 = normal playback speed
-        let position_delta = self.smoothed_position - self.last_smoothed_position;
-        let raw_velocity = position_delta / output_len as f64;
+        // Calculate raw velocity from target position change
+        let target_delta = self.target_position - self.prev_target_position;
+        let raw_velocity = target_delta / output_len as f64;
+        self.prev_target_position = self.target_position;
 
         // Smooth velocity to reduce jitter
         self.smoothed_velocity += (raw_velocity - self.smoothed_velocity) * VELOCITY_SMOOTHING;
 
-        // Update for next frame
-        self.last_smoothed_position = self.smoothed_position;
-
         // Check if velocity is above threshold
         if self.smoothed_velocity.abs() < VELOCITY_THRESHOLD {
-            return (false, 0.0, self.smoothed_position);
+            // Below threshold: output silence, but keep read position ready
+            return (false, 0.0, self.read_position);
         }
 
-        (true, self.smoothed_velocity, self.smoothed_position)
+        // Store current read position for this frame
+        let frame_start_position = self.read_position;
+
+        // Advance read position by velocity * buffer_size
+        // This is the key: read position advances continuously, not jumping to target
+        self.read_position += self.smoothed_velocity * output_len as f64;
+
+        // Gentle position correction if we've drifted too far from target
+        // This prevents the read position from getting permanently out of sync
+        let drift = self.target_position - self.read_position;
+        if drift.abs() > MAX_POSITION_DRIFT {
+            // Apply gentle correction towards target
+            self.read_position += drift * POSITION_CORRECTION_RATE;
+        }
+
+        (true, self.smoothed_velocity, frame_start_position)
     }
 
-    /// Get current smoothed position (for deck position sync)
+    /// Get current read position (for deck position sync)
     pub fn current_position(&self) -> usize {
-        self.smoothed_position as usize
+        self.read_position.max(0.0) as usize
     }
 }
 
@@ -358,26 +380,25 @@ mod tests {
     }
 
     #[test]
-    fn test_velocity_smoothing() {
+    fn test_continuous_read_position() {
         let mut state = ScratchState::new();
         state.start(1000);
 
-        // Simulate moving to position 1256 (256 samples, 1x speed for 256 buffer)
+        // Simulate steady movement at ~1x speed (256 samples per 256-sample buffer)
         state.move_to(1256);
+        let (_, vel1, pos1) = state.update(256);
 
-        // First update - velocity should start ramping up
-        let (should_output, velocity, _) = state.update(256);
-        // Velocity is smoothed, so won't hit 1.0 immediately
-        assert!(velocity > 0.0);
+        state.move_to(1512);
+        let (_, vel2, pos2) = state.update(256);
 
-        // Keep updating - velocity should approach 0 as position stabilizes
-        for _ in 0..10 {
-            state.update(256);
-        }
+        state.move_to(1768);
+        let (_, vel3, pos3) = state.update(256);
 
-        // After stabilizing at same target, velocity should be near 0
-        let (should_output, velocity, _) = state.update(256);
-        assert!(velocity.abs() < 0.1);
+        // Read positions should be continuous (no jumps)
+        // pos2 should be close to pos1 + (vel1 * 256)
+        // This ensures no clicks at buffer boundaries
+        let expected_pos2 = pos1 + vel1 * 256.0;
+        assert!((pos2 - expected_pos2).abs() < 1.0, "pos2={} expected={}", pos2, expected_pos2);
     }
 
     #[test]
