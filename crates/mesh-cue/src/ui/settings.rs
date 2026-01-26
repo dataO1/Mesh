@@ -108,7 +108,7 @@ fn view_audio_output_section(state: &SettingsState) -> Element<'_, Message> {
     let scratch_hint = text("Audio quality when scrubbing waveform (Linear = fast, Cubic = smooth)")
         .size(12);
 
-    let scratch_options = [InterpolationMethod::Linear, InterpolationMethod::Cubic];
+    let scratch_options = [InterpolationMethod::Linear, InterpolationMethod::Cubic, InterpolationMethod::Sinc];
     let scratch_buttons: Vec<Element<Message>> = scratch_options
         .iter()
         .map(|&method| {
@@ -116,6 +116,7 @@ fn view_audio_output_section(state: &SettingsState) -> Element<'_, Message> {
             let label = match method {
                 InterpolationMethod::Linear => "Linear",
                 InterpolationMethod::Cubic => "Cubic",
+                InterpolationMethod::Sinc => "Sinc",
             };
             let btn = button(text(label).size(12))
                 .on_press(Message::UpdateSettingsScratchInterpolation(method))

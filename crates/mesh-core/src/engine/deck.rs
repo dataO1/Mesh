@@ -808,15 +808,18 @@ impl Deck {
 
     /// Update scratch position - like moving a vinyl record
     ///
-    /// Moves playhead to new position. The audio output will reflect
-    /// this position, creating a vinyl scratch sound effect.
+    /// Sets the target position for scratch. The scratch system uses
+    /// smoothing and velocity calculation internally to create vinyl-like audio.
     pub fn scratch_move(&mut self, position: usize) {
         if !self.scratch.active || self.track.is_none() {
             return;
         }
         if let Some(track) = &self.track {
-            self.position = position.min(track.duration_samples.saturating_sub(1));
-            self.fractional_position = 0.0;
+            let clamped = position.min(track.duration_samples.saturating_sub(1));
+            // Update scratch target position (smoothing happens in process())
+            self.scratch.move_to(clamped);
+            // Also update deck position for UI display
+            self.position = clamped;
             self.sync_position_atomic();
         }
     }
@@ -1394,12 +1397,12 @@ impl Deck {
         }
 
         // Scratch mode: velocity-based playback with interpolation (vinyl emulation)
-        // When scratching, audio speed is derived from position delta (velocity)
-        // Stationary = silence, moving = audio at proportional speed with interpolation
+        // The scratch system smooths position updates and calculates velocity internally.
+        // Stationary = silence, moving = audio at proportional speed with interpolation.
         if self.scratch.active {
-            // Calculate velocity and determine if we should output audio
-            let (should_output, velocity_samples, is_reverse) =
-                self.scratch.calculate_velocity(self.position, output_len);
+            // Update scratch state and get playback parameters
+            // velocity_ratio: 1.0 = normal speed, 2.0 = 2x, -1.0 = reverse
+            let (should_output, velocity_ratio, read_position) = self.scratch.update(output_len);
 
             if !should_output {
                 // Stationary or near-stationary: output silence (like vinyl not moving)
@@ -1412,20 +1415,10 @@ impl Deck {
             stretch_input.set_len_from_capacity(output_len);
             stretch_input.fill_silence();
 
-            // Calculate velocity as a ratio (samples per output sample)
-            // This determines the "speed" of playback for interpolation
-            let velocity_ratio = if is_reverse {
-                -(velocity_samples as f64 / output_len as f64)
-            } else {
-                velocity_samples as f64 / output_len as f64
-            };
-
-            // Starting position for reading (fractional for interpolation)
-            let start_pos = if is_reverse {
-                self.position as f64
-            } else {
-                (self.position as i64 - velocity_samples as i64).max(0) as f64
-            };
+            // For velocity_ratio, calculate where to start reading:
+            // If velocity is positive (forward), read from read_position going forward
+            // If velocity is negative (reverse), read from read_position going backward
+            let start_pos = read_position;
 
             let any_soloed = self.any_stem_soloed();
             let interpolation = self.scratch.interpolation;
