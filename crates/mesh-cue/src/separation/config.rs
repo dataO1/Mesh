@@ -90,9 +90,13 @@ impl BackendType {
 #[serde(rename_all = "kebab-case")]
 pub enum ModelType {
     /// Standard Demucs with 4 stems (vocals, drums, bass, other)
-    /// ~150MB, fastest option
+    /// ~163MB, fastest option
     #[default]
     Demucs4Stems,
+
+    /// Fine-tuned Demucs with 4 stems - better quality
+    /// ~163MB, same speed as standard but ~1-3% better SDR
+    Demucs4StemsFt,
 
     /// Demucs with 6 stems (+ piano, guitar)
     /// ~200MB, slightly slower
@@ -103,16 +107,18 @@ impl ModelType {
     /// Display name for UI
     pub fn display_name(&self) -> &'static str {
         match self {
-            Self::Demucs4Stems => "Demucs 4-stem (150MB)",
-            Self::Demucs6Stems => "Demucs 6-stem (200MB)",
+            Self::Demucs4Stems => "Demucs 4-stem",
+            Self::Demucs4StemsFt => "Demucs 4-stem Fine-tuned",
+            Self::Demucs6Stems => "Demucs 6-stem",
         }
     }
 
     /// Description for UI
     pub fn description(&self) -> &'static str {
         match self {
-            Self::Demucs4Stems => "Vocals, Drums, Bass, Other - fast and efficient",
-            Self::Demucs6Stems => "Adds Piano and Guitar stems - slightly slower",
+            Self::Demucs4Stems => "Vocals, Drums, Bass, Other - fast (~163MB)",
+            Self::Demucs4StemsFt => "Fine-tuned for better quality (~163MB)",
+            Self::Demucs6Stems => "Adds Piano and Guitar stems (~200MB)",
         }
     }
 
@@ -121,6 +127,7 @@ impl ModelType {
     pub fn filename(&self) -> &'static str {
         match self {
             Self::Demucs4Stems => "htdemucs.onnx",
+            Self::Demucs4StemsFt => "htdemucs_ft.onnx",
             Self::Demucs6Stems => "htdemucs_6s.onnx",
         }
     }
@@ -129,11 +136,12 @@ impl ModelType {
     pub fn download_url(&self) -> &'static str {
         match self {
             Self::Demucs4Stems => {
-                // Hosted on Mesh GitHub releases (MIT licensed, converted from Meta's Demucs)
                 "https://github.com/dataO1/Mesh/releases/download/models/htdemucs.onnx"
             }
+            Self::Demucs4StemsFt => {
+                "https://github.com/dataO1/Mesh/releases/download/models/htdemucs_ft.onnx"
+            }
             Self::Demucs6Stems => {
-                // TODO: Find or create 6-stem ONNX model
                 "https://github.com/dataO1/Mesh/releases/download/models/htdemucs_6s.onnx"
             }
         }
@@ -142,20 +150,22 @@ impl ModelType {
     /// Approximate model size in bytes
     pub fn size_bytes(&self) -> u64 {
         match self {
-            Self::Demucs4Stems => 171_000_000, // ~171MB
-            Self::Demucs6Stems => 200_000_000, // ~200MB
+            Self::Demucs4Stems => 163_000_000,    // ~163MB
+            Self::Demucs4StemsFt => 163_000_000,  // ~163MB (same architecture)
+            Self::Demucs6Stems => 200_000_000,    // ~200MB
         }
     }
 
     /// All available models
     pub fn all() -> &'static [Self] {
-        &[Self::Demucs4Stems, Self::Demucs6Stems]
+        &[Self::Demucs4Stems, Self::Demucs4StemsFt, Self::Demucs6Stems]
     }
 
     /// Number of output stems
     pub fn stem_count(&self) -> usize {
         match self {
             Self::Demucs4Stems => 4,
+            Self::Demucs4StemsFt => 4,
             Self::Demucs6Stems => 6,
         }
     }
