@@ -335,15 +335,17 @@ fn load_stereo_wav(path: &Path) -> Result<(Vec<StereoSample>, u32)> {
     let bytes_per_frame = format.channels as u64 * (format.bits_per_sample as u64 / 8);
     let frame_count = data_size / bytes_per_frame;
 
-    // Read samples based on bit depth
-    let samples = match (format.format_tag, format.bits_per_sample) {
+    // Read samples based on sub_format (handles both regular and extensible WAV)
+    // sub_format is the actual format: 1 = PCM, 3 = IEEE float
+    let samples = match (format.sub_format, format.bits_per_sample) {
         (1, 16) => read_16bit_stereo(&mut reader, frame_count as usize)?,
         (1, 24) => read_24bit_stereo(&mut reader, frame_count as usize)?,
         (1, 32) => read_32bit_int_stereo(&mut reader, frame_count as usize)?,
         (3, 32) => read_32bit_float_stereo(&mut reader, frame_count as usize)?,
         _ => bail!(
-            "Unsupported format: tag={}, bits={}",
+            "Unsupported format: tag={} (sub={}), bits={}",
             format.format_tag,
+            format.sub_format,
             format.bits_per_sample
         ),
     };
@@ -355,10 +357,11 @@ fn load_stereo_wav(path: &Path) -> Result<(Vec<StereoSample>, u32)> {
 /// WAV format information
 #[derive(Debug)]
 struct WavFormat {
-    format_tag: u16,      // 1 = PCM, 3 = IEEE float
+    format_tag: u16,      // 1 = PCM, 3 = IEEE float, 0xfffe = extensible
     channels: u16,        // Should be 2 for stereo
     sample_rate: u32,     // e.g., 44100
     bits_per_sample: u16, // 16, 24, or 32
+    sub_format: u16,      // For extensible: actual format (1 = PCM, 3 = float)
 }
 
 /// Read and parse the fmt chunk
@@ -370,11 +373,27 @@ fn read_fmt_chunk<R: std::io::Read>(reader: &mut R, size: u32) -> Result<WavForm
     let mut fmt_data = vec![0u8; size as usize];
     reader.read_exact(&mut fmt_data)?;
 
+    let format_tag = u16::from_le_bytes([fmt_data[0], fmt_data[1]]);
+    let channels = u16::from_le_bytes([fmt_data[2], fmt_data[3]]);
+    let sample_rate = u32::from_le_bytes([fmt_data[4], fmt_data[5], fmt_data[6], fmt_data[7]]);
+    let bits_per_sample = u16::from_le_bytes([fmt_data[14], fmt_data[15]]);
+
+    // For WAVE_FORMAT_EXTENSIBLE (0xfffe), extract the actual format from SubFormat GUID
+    // The first two bytes of the SubFormat GUID contain the actual format tag
+    let sub_format = if format_tag == 0xfffe && size >= 40 {
+        // SubFormat GUID starts at offset 24 in the fmt chunk data
+        // First two bytes are the format code (1 = PCM, 3 = IEEE float)
+        u16::from_le_bytes([fmt_data[24], fmt_data[25]])
+    } else {
+        format_tag // For non-extensible, sub_format equals format_tag
+    };
+
     Ok(WavFormat {
-        format_tag: u16::from_le_bytes([fmt_data[0], fmt_data[1]]),
-        channels: u16::from_le_bytes([fmt_data[2], fmt_data[3]]),
-        sample_rate: u32::from_le_bytes([fmt_data[4], fmt_data[5], fmt_data[6], fmt_data[7]]),
-        bits_per_sample: u16::from_le_bytes([fmt_data[14], fmt_data[15]]),
+        format_tag,
+        channels,
+        sample_rate,
+        bits_per_sample,
+        sub_format,
     })
 }
 
