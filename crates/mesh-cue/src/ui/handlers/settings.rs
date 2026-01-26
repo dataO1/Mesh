@@ -100,6 +100,15 @@ impl MeshCueApp {
         Task::none()
     }
 
+    /// Handle UpdateSettingsSeparationModel message
+    pub fn handle_update_settings_separation_model(
+        &mut self,
+        model: crate::config::ModelType,
+    ) -> Task<Message> {
+        self.settings.draft_separation_model = model;
+        Task::none()
+    }
+
     /// Handle SaveSettings message
     pub fn handle_save_settings(&mut self) -> Task<Message> {
         // Parse and validate values
@@ -135,6 +144,9 @@ impl MeshCueApp {
 
             // Update scratch interpolation
             config.audio.scratch_interpolation = self.settings.draft_scratch_interpolation;
+
+            // Update separation model
+            config.analysis.separation.model = self.settings.draft_separation_model;
 
             // Update drafts to show validated values
             self.settings.draft_min_tempo = config.analysis.bpm.min_tempo.to_string();

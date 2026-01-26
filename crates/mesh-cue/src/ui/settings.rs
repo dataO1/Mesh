@@ -3,7 +3,7 @@
 //! Provides a modal dialog for editing application configuration.
 
 use super::app::{Message, SettingsState};
-use crate::config::BpmSource;
+use crate::config::{BpmSource, ModelType};
 use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_input, Space};
 use mesh_core::engine::InterpolationMethod;
 use iced::{Alignment, Element, Length};
@@ -360,8 +360,54 @@ fn view_track_name_format_section(state: &SettingsState) -> Element<'_, Message>
     let tags_hint = text("Tags: {artist}, {name}")
         .size(12);
 
+    // Stem separation model subsection
+    let separation_title = text("Stem Separation Model").size(14);
+    let separation_hint = text("Model used for automatic stem separation during import")
+        .size(12);
+
+    // Model selection buttons
+    let model_options = ModelType::all();
+    let model_buttons: Vec<Element<Message>> = model_options
+        .iter()
+        .map(|&model| {
+            let is_selected = state.draft_separation_model == model;
+            let btn = button(text(model.display_name()).size(11))
+                .on_press(Message::UpdateSettingsSeparationModel(model))
+                .style(if is_selected {
+                    iced::widget::button::primary
+                } else {
+                    iced::widget::button::secondary
+                })
+                .width(Length::Fixed(130.0));
+            btn.into()
+        })
+        .collect();
+
+    let model_label = text("Model:").size(14);
+    let model_row = row![
+        model_label,
+        row(model_buttons).spacing(4).align_y(Alignment::Center),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+
+    let model_description = text(state.draft_separation_model.description())
+        .size(12);
+
     container(
-        column![section_title, subsection_title, hint, format_row, tags_hint].spacing(10),
+        column![
+            section_title,
+            subsection_title,
+            hint,
+            format_row,
+            tags_hint,
+            Space::new().height(10),
+            separation_title,
+            separation_hint,
+            model_row,
+            model_description,
+        ]
+        .spacing(10),
     )
     .padding(15)
     .width(Length::Fill)
