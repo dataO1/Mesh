@@ -534,13 +534,20 @@ fn decode_audio(path: &Path) -> Result<(Vec<f32>, u32, u16)> {
 // ONNX Inference (Demucs model)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Run Demucs ONNX model inference
+/// Demucs htdemucs model expects exactly this many samples per segment
+/// This is segment_length (7.8 seconds) * sample_rate (44100) from the model config
+const DEMUCS_SEGMENT_SAMPLES: usize = 343980;
+
+/// Overlap between segments for smooth blending (25% of segment)
+const DEMUCS_OVERLAP_SAMPLES: usize = DEMUCS_SEGMENT_SAMPLES / 4;
+
+/// Run Demucs ONNX model inference with chunked processing
 fn run_demucs_inference(
     audio: &[f32],
     sample_rate: u32,
     channels: u16,
     model_path: &Path,
-    config: &SeparationConfig,
+    _config: &SeparationConfig,
     progress: Option<&ProgressCallback>,
 ) -> Result<StemData> {
     use super::error::SeparationError;
@@ -580,90 +587,129 @@ fn run_demucs_inference(
         cb(0.2);
     }
 
-    // Reshape audio for model: [batch=1, channels=2, samples]
-    // Demucs expects shape [1, 2, N]
-    let mut input_array = Array3::<f32>::zeros((1, 2, num_samples));
-    for (i, chunk) in stereo_audio.chunks(2).enumerate() {
-        input_array[[0, 0, i]] = chunk[0]; // Left
-        input_array[[0, 1, i]] = chunk[1]; // Right
+    // Calculate segments for chunked processing
+    let step_size = DEMUCS_SEGMENT_SAMPLES - DEMUCS_OVERLAP_SAMPLES;
+    let num_segments = if num_samples <= DEMUCS_SEGMENT_SAMPLES {
+        1
+    } else {
+        (num_samples - DEMUCS_OVERLAP_SAMPLES + step_size - 1) / step_size
+    };
+
+    log::info!(
+        "Processing {} samples in {} segments (segment={}, overlap={})",
+        num_samples,
+        num_segments,
+        DEMUCS_SEGMENT_SAMPLES,
+        DEMUCS_OVERLAP_SAMPLES
+    );
+
+    // Initialize output accumulators for overlap-add
+    // 4 stems, each with stereo interleaved samples
+    let mut stem_accum: [Vec<f32>; 4] = [
+        vec![0.0; num_samples * 2],
+        vec![0.0; num_samples * 2],
+        vec![0.0; num_samples * 2],
+        vec![0.0; num_samples * 2],
+    ];
+    let mut weight_accum = vec![0.0f32; num_samples];
+
+    // Process each segment
+    for seg_idx in 0..num_segments {
+        let start_sample = seg_idx * step_size;
+        let end_sample = (start_sample + DEMUCS_SEGMENT_SAMPLES).min(num_samples);
+        let segment_len = end_sample - start_sample;
+
+        // Create input array for this segment, padding if necessary
+        let mut input_array = Array3::<f32>::zeros((1, 2, DEMUCS_SEGMENT_SAMPLES));
+        for i in 0..segment_len {
+            let src_idx = start_sample + i;
+            input_array[[0, 0, i]] = stereo_audio[src_idx * 2];     // Left
+            input_array[[0, 1, i]] = stereo_audio[src_idx * 2 + 1]; // Right
+        }
+        // Remaining samples (if any) are zero-padded
+
+        // Run inference on this segment
+        let input_tensor = Tensor::from_array(input_array).map_err(|e| {
+            SeparationError::SeparationFailed(format!("Failed to create input tensor: {}", e))
+        })?;
+
+        let outputs = session
+            .run(ort::inputs!["input" => input_tensor])
+            .map_err(|e| SeparationError::SeparationFailed(format!("Inference failed: {}", e)))?;
+
+        // Extract output
+        let output = outputs
+            .iter()
+            .next()
+            .ok_or_else(|| SeparationError::SeparationFailed("No output tensor".to_string()))?
+            .1;
+
+        let (_shape, data) = output.try_extract_tensor::<f32>().map_err(|e| {
+            SeparationError::SeparationFailed(format!("Failed to extract output: {}", e))
+        })?;
+
+        // Overlap-add: accumulate with triangular window for smooth blending
+        for i in 0..segment_len {
+            let out_idx = start_sample + i;
+
+            // Triangular window weight for overlap blending
+            let weight = if i < DEMUCS_OVERLAP_SAMPLES && seg_idx > 0 {
+                // Fade in at start (except first segment)
+                i as f32 / DEMUCS_OVERLAP_SAMPLES as f32
+            } else if i >= segment_len - DEMUCS_OVERLAP_SAMPLES && seg_idx < num_segments - 1 {
+                // Fade out at end (except last segment)
+                (segment_len - i) as f32 / DEMUCS_OVERLAP_SAMPLES as f32
+            } else {
+                1.0
+            };
+
+            weight_accum[out_idx] += weight;
+
+            // Accumulate each stem (output shape: [1, 4, 2, samples])
+            for stem in 0..4 {
+                let left_idx = i + DEMUCS_SEGMENT_SAMPLES * (0 + 2 * stem);
+                let right_idx = i + DEMUCS_SEGMENT_SAMPLES * (1 + 2 * stem);
+                stem_accum[stem][out_idx * 2] += data[left_idx] * weight;
+                stem_accum[stem][out_idx * 2 + 1] += data[right_idx] * weight;
+            }
+        }
+
+        // Update progress
+        if let Some(cb) = progress {
+            let prog = 0.2 + 0.7 * (seg_idx + 1) as f32 / num_segments as f32;
+            cb(prog);
+        }
     }
 
-    log::info!("Running inference on {} samples...", num_samples);
-
-    // Process in segments if audio is very long
-    let _segment_samples = (config.segment_length_secs * sample_rate as f64) as usize;
-    // TODO: Implement overlapped segment processing for long files
-
-    // Convert ndarray to ort Tensor, then run inference
-    let input_tensor = Tensor::from_array(input_array).map_err(|e| {
-        SeparationError::SeparationFailed(format!("Failed to create input tensor: {}", e))
-    })?;
-
-    let outputs = session
-        .run(ort::inputs!["input" => input_tensor])
-        .map_err(|e| SeparationError::SeparationFailed(format!("Inference failed: {}", e)))?;
+    // Normalize by accumulated weights
+    for i in 0..num_samples {
+        let w = weight_accum[i];
+        if w > 0.0 {
+            for stem in 0..4 {
+                stem_accum[stem][i * 2] /= w;
+                stem_accum[stem][i * 2 + 1] /= w;
+            }
+        }
+    }
 
     if let Some(cb) = progress {
-        cb(0.9);
+        cb(0.95);
     }
-
-    // Extract output: [batch=1, stems=4, channels=2, samples]
-    // Stem order in htdemucs: drums, bass, other, vocals
-    let output = outputs
-        .iter()
-        .next()
-        .ok_or_else(|| SeparationError::SeparationFailed("No output tensor".to_string()))?
-        .1;
-
-    // Extract shape and data from tensor
-    let (shape, data) = output.try_extract_tensor::<f32>().map_err(|e| {
-        SeparationError::SeparationFailed(format!("Failed to extract output: {}", e))
-    })?;
-
-    // Convert shape to Vec<i64>
-    let output_shape: Vec<i64> = shape.iter().copied().collect();
-    log::info!("Output shape: {:?}", output_shape);
-
-    // Expected shape: [1, 4, 2, N] for htdemucs
-    if output_shape.len() != 4 || output_shape[1] < 4 {
-        return Err(SeparationError::SeparationFailed(format!(
-            "Unexpected output shape: {:?}, expected [1, 4, 2, N]",
-            output_shape
-        )));
-    }
-
-    let _num_stems = output_shape[1] as usize;
-    let num_channels = output_shape[2] as usize;
-    let output_samples = output_shape[3] as usize;
-
-    // Helper to calculate flat index into [1, stems, channels, samples] tensor (row-major)
-    let flat_idx = |stem: usize, channel: usize, sample: usize| -> usize {
-        sample + output_samples * (channel + num_channels * stem)
-    };
-
-    // Extract stems and interleave channels
-    let extract_stem = |stem_idx: usize| -> Vec<f32> {
-        let mut interleaved = Vec::with_capacity(output_samples * 2);
-        for i in 0..output_samples {
-            interleaved.push(data[flat_idx(stem_idx, 0, i)]); // Left
-            interleaved.push(data[flat_idx(stem_idx, 1, i)]); // Right
-        }
-        interleaved
-    };
 
     // htdemucs order: drums=0, bass=1, other=2, vocals=3
     let stems = StemData {
         sample_rate,
         channels: 2,
-        drums: extract_stem(0),
-        bass: extract_stem(1),
-        other: extract_stem(2),
-        vocals: extract_stem(3),
+        drums: std::mem::take(&mut stem_accum[0]),
+        bass: std::mem::take(&mut stem_accum[1]),
+        other: std::mem::take(&mut stem_accum[2]),
+        vocals: std::mem::take(&mut stem_accum[3]),
     };
 
     log::info!(
-        "Separation complete: {} samples per stem",
-        stems.samples_per_channel()
+        "Separation complete: {} samples per stem ({} segments processed)",
+        stems.samples_per_channel(),
+        num_segments
     );
 
     Ok(stems)
