@@ -44,8 +44,9 @@ let
     TEMP_DIR=$(mktemp -d)
     trap "rm -rf $TEMP_DIR" EXIT
 
-    # Install the local demucs fork (required for conversion)
-    echo "[1/3] Installing demucs fork..."
+    # Install dependencies and the local demucs fork (required for conversion)
+    echo "[1/3] Installing demucs fork and dependencies..."
+    ${pythonEnv}/bin/pip install --quiet --target "$TEMP_DIR/site-packages" dora-search 2>/dev/null || true
     cd "${demucs-onnx}/demucs-for-onnx"
     ${pythonEnv}/bin/pip install --quiet --target "$TEMP_DIR/site-packages" -e . 2>/dev/null || true
 
