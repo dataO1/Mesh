@@ -50,7 +50,7 @@ let
     ${pythonEnv}/bin/pip install --quiet --target "$TEMP_DIR/site-packages" -e . 2>/dev/null || true
 
     # Set up Python path
-    export PYTHONPATH="$TEMP_DIR/site-packages:${demucs-onnx}/demucs-for-onnx:$PYTHONPATH"
+    export PYTHONPATH="$TEMP_DIR/site-packages:${demucs-onnx}/demucs-for-onnx:''${PYTHONPATH:-}"
 
     # Run conversion
     echo "[2/3] Converting model (this may take a few minutes)..."
