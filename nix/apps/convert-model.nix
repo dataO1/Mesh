@@ -55,21 +55,33 @@ let
     ${pythonEnv}/bin/python convert.py ./onnx-output 2>&1 | \
       grep -v "^$" | head -30
 
-    # Copy to output
+    # Copy to output (include external data file if present)
     echo "[3/3] Copying model to $OUTPUT_DIR..."
     mkdir -p "$OUTPUT_DIR"
     if [ -f "./onnx-output/htdemucs.onnx" ]; then
       cp "./onnx-output/htdemucs.onnx" "$OUTPUT_DIR/demucs-4stems.onnx"
-      SIZE=$(du -h "$OUTPUT_DIR/demucs-4stems.onnx" | cut -f1)
-      echo ""
-      echo "✓ Success! Model saved to: $OUTPUT_DIR/demucs-4stems.onnx ($SIZE)"
+
+      # Copy external data file if it exists (large models store weights separately)
+      if [ -f "./onnx-output/htdemucs.onnx.data" ]; then
+        cp "./onnx-output/htdemucs.onnx.data" "$OUTPUT_DIR/demucs-4stems.onnx.data"
+        # Patch the .onnx file to reference the renamed .data file
+        sed -i 's/htdemucs\.onnx\.data/demucs-4stems.onnx.data/g' "$OUTPUT_DIR/demucs-4stems.onnx"
+        TOTAL_SIZE=$(du -ch "$OUTPUT_DIR/demucs-4stems.onnx" "$OUTPUT_DIR/demucs-4stems.onnx.data" | tail -1 | cut -f1)
+        echo ""
+        echo "✓ Success! Model saved to: $OUTPUT_DIR/demucs-4stems.onnx ($TOTAL_SIZE total)"
+        echo "  (includes external data file: demucs-4stems.onnx.data)"
+      else
+        SIZE=$(du -h "$OUTPUT_DIR/demucs-4stems.onnx" | cut -f1)
+        echo ""
+        echo "✓ Success! Model saved to: $OUTPUT_DIR/demucs-4stems.onnx ($SIZE)"
+      fi
       echo ""
       echo "To use immediately, copy to cache:"
       echo "  mkdir -p ~/.cache/mesh-cue/models"
-      echo "  cp $OUTPUT_DIR/demucs-4stems.onnx ~/.cache/mesh-cue/models/"
+      echo "  cp $OUTPUT_DIR/demucs-4stems.onnx* ~/.cache/mesh-cue/models/"
       echo ""
       echo "For releases, upload to GitHub:"
-      echo "  gh release upload models $OUTPUT_DIR/demucs-4stems.onnx"
+      echo "  gh release upload models $OUTPUT_DIR/demucs-4stems.onnx*"
     else
       echo "✗ Conversion failed - ONNX file not found"
       echo "Check the output above for errors."
