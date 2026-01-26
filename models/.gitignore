@@ -1,0 +1,3 @@
+# ONNX models for stem separation
+# Run 'nix run .#convert-model' to generate demucs-4stems.onnx
+*.onnx
