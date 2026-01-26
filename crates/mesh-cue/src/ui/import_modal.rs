@@ -1,16 +1,23 @@
 //! Import modal UI
 //!
-//! Provides a modal dialog for batch importing stem files from the import folder.
-//! Shows detected track groups and allows starting the import process.
+//! Provides a modal dialog for batch importing audio files from the import folder.
+//! Supports two modes:
+//! - **Stems mode**: Import pre-separated stem files (Artist - Track_(Vocals).wav, etc.)
+//! - **Mixed audio mode**: Import regular audio files and auto-separate into stems
 
 use super::app::{ImportPhase, ImportState, Message};
-use crate::batch_import::StemGroup;
+use super::state::ImportMode;
+use crate::batch_import::{MixedAudioFile, StemGroup};
 use iced::widget::{button, column, container, progress_bar, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 
 /// Render the import modal content
 pub fn view(state: &ImportState) -> Element<'_, Message> {
-    let title = text("Import Stems").size(24);
+    let title_text = match state.import_mode {
+        ImportMode::Stems => "Import Stems",
+        ImportMode::MixedAudio => "Import Audio (Auto-Separate)",
+    };
+    let title = text(title_text).size(24);
     let close_btn = button(text("×").size(20))
         .on_press(Message::CloseImport)
         .style(button::secondary);
@@ -18,6 +25,27 @@ pub fn view(state: &ImportState) -> Element<'_, Message> {
     let header = row![title, Space::new().width(Length::Fill), close_btn]
         .align_y(Alignment::Center)
         .width(Length::Fill);
+
+    // Mode toggle buttons
+    let stems_btn_base = button(text("Pre-separated Stems"));
+    let stems_btn: Element<Message> = if state.import_mode == ImportMode::Stems {
+        stems_btn_base.style(button::primary).into()
+    } else {
+        stems_btn_base
+            .on_press(Message::SetImportMode(ImportMode::Stems))
+            .style(button::secondary)
+            .into()
+    };
+    let mixed_btn_base = button(text("Mixed Audio"));
+    let mixed_btn: Element<Message> = if state.import_mode == ImportMode::MixedAudio {
+        mixed_btn_base.style(button::primary).into()
+    } else {
+        mixed_btn_base
+            .on_press(Message::SetImportMode(ImportMode::MixedAudio))
+            .style(button::secondary)
+            .into()
+    };
+    let mode_toggle = row![stems_btn, mixed_btn].spacing(8);
 
     // Import folder display
     let folder_label = text("Import Folder:").size(14);
@@ -35,7 +63,7 @@ pub fn view(state: &ImportState) -> Element<'_, Message> {
         Some(ImportPhase::Complete { duration }) => view_complete(duration, &state.results),
     };
 
-    let body = column![header, folder_section, content]
+    let body = column![header, mode_toggle, folder_section, content]
         .spacing(20)
         .width(Length::Fixed(550.0));
 
@@ -47,6 +75,14 @@ pub fn view(state: &ImportState) -> Element<'_, Message> {
 
 /// View when not importing - show scan results and action buttons
 fn view_scan_results(state: &ImportState) -> Element<'_, Message> {
+    match state.import_mode {
+        ImportMode::Stems => view_scan_results_stems(state),
+        ImportMode::MixedAudio => view_scan_results_mixed(state),
+    }
+}
+
+/// View scan results for stem files
+fn view_scan_results_stems(state: &ImportState) -> Element<'_, Message> {
     let groups = &state.detected_groups;
 
     // Groups list
@@ -112,6 +148,75 @@ fn view_scan_results(state: &ImportState) -> Element<'_, Message> {
         .into()
 }
 
+/// View scan results for mixed audio files
+fn view_scan_results_mixed(state: &ImportState) -> Element<'_, Message> {
+    let files = &state.detected_mixed_files;
+
+    // Files list
+    let files_title = text("Detected Audio Files").size(18);
+
+    let files_list: Element<Message> = if files.is_empty() {
+        column![
+            text("No audio files found in import folder.").size(14),
+            text("Supported formats: MP3, FLAC, WAV, OGG, M4A").size(12),
+            text("Files with _(Vocals), _(Drums), etc. are skipped (use Stems mode).").size(11),
+        ]
+        .spacing(5)
+        .into()
+    } else {
+        let items: Vec<Element<Message>> = files
+            .iter()
+            .map(|file| view_mixed_audio_file(file))
+            .collect();
+
+        scrollable(column(items).spacing(8))
+            .height(Length::Fixed(300.0))
+            .into()
+    };
+
+    let file_count = files.len();
+    let status = if files.is_empty() {
+        text("").size(12)
+    } else {
+        text(format!(
+            "{} audio {} ready for stem separation",
+            file_count,
+            if file_count == 1 { "file" } else { "files" }
+        ))
+        .size(12)
+    };
+
+    // Note about stem separation
+    let note = text("⚠ Stem separation requires ~4GB RAM per track and may take several minutes.")
+        .size(11)
+        .color(iced::Color::from_rgb(0.8, 0.6, 0.2));
+
+    // Action buttons
+    let refresh_btn = button(text("Refresh"))
+        .on_press(Message::ScanImportFolder)
+        .style(button::secondary);
+
+    let cancel_btn = button(text("Cancel"))
+        .on_press(Message::CloseImport)
+        .style(button::secondary);
+
+    let start_btn = if file_count > 0 {
+        button(text("Start Import"))
+            .on_press(Message::StartMixedAudioImport)
+            .style(button::primary)
+    } else {
+        button(text("Start Import")).style(button::secondary)
+    };
+
+    let actions = row![refresh_btn, Space::new().width(Length::Fill), cancel_btn, start_btn]
+        .spacing(10)
+        .width(Length::Fill);
+
+    column![files_title, files_list, status, note, actions]
+        .spacing(15)
+        .into()
+}
+
 /// View a single stem group
 fn view_stem_group(group: &StemGroup) -> Element<'_, Message> {
     let name = text(&group.base_name).size(14);
@@ -137,6 +242,45 @@ fn view_stem_group(group: &StemGroup) -> Element<'_, Message> {
 
     container(
         row![name, Space::new().width(Length::Fill), stems_text, status_icon]
+            .spacing(10)
+            .align_y(Alignment::Center),
+    )
+    .padding(8)
+    .width(Length::Fill)
+    .style(|theme: &iced::Theme| {
+        let palette = theme.extended_palette();
+        container::Style {
+            background: Some(iced::Background::Color(palette.background.weak.color)),
+            border: iced::Border {
+                radius: 4.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    })
+    .into()
+}
+
+/// View a single mixed audio file
+fn view_mixed_audio_file(file: &MixedAudioFile) -> Element<'_, Message> {
+    let name = text(&file.base_name).size(14);
+
+    // Get file extension
+    let ext = file.path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("?")
+        .to_uppercase();
+    let ext_text = text(ext)
+        .size(11)
+        .color(iced::Color::from_rgb(0.5, 0.5, 0.5));
+
+    let status_icon = text("♪")
+        .size(14)
+        .color(iced::Color::from_rgb(0.4, 0.6, 0.9));
+
+    container(
+        row![name, Space::new().width(Length::Fill), ext_text, status_icon]
             .spacing(10)
             .align_y(Alignment::Center),
     )

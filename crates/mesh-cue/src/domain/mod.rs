@@ -29,7 +29,7 @@ use mesh_widgets::TreeNode;
 
 use crate::analysis::{AnalysisType, ReanalysisProgress};
 use crate::audio::{AudioError, AudioHandle, AudioState, start_audio_system};
-use crate::batch_import::{ImportProgress, StemGroup};
+use crate::batch_import::{ImportProgress, MixedAudioFile, StemGroup};
 use crate::config::Config;
 use crate::reanalysis::run_batch_reanalysis;
 
@@ -847,6 +847,7 @@ impl MeshCueDomain {
             bpm_config: self.config.analysis.bpm.clone(),
             loudness_config: self.config.analysis.loudness.clone(),
             parallel_processes: self.config.analysis.parallel_processes,
+            separation_config: Some(self.config.analysis.separation.clone()),
         };
 
         let cancel = cancel_flag.clone();
@@ -864,6 +865,54 @@ impl MeshCueDomain {
         self.import_cancel_flag = Some(cancel_flag);
 
         Ok(())
+    }
+
+    /// Start batch import for mixed audio files (with stem separation) in background thread
+    ///
+    /// Similar to `start_batch_import`, but handles mixed audio files that need
+    /// automatic stem separation before import.
+    pub fn start_batch_import_mixed(
+        &mut self,
+        files: Vec<MixedAudioFile>,
+        import_folder: PathBuf,
+    ) -> Result<()> {
+        use crate::batch_import::ImportConfig;
+
+        let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+
+        // Build ImportConfig from domain state
+        let import_config = ImportConfig {
+            import_folder,
+            collection_path: self.collection_root.clone(),
+            db_service: self.db_service.clone(),
+            bpm_config: self.config.analysis.bpm.clone(),
+            loudness_config: self.config.analysis.loudness.clone(),
+            parallel_processes: self.config.analysis.parallel_processes,
+            separation_config: Some(self.config.analysis.separation.clone()),
+        };
+
+        let cancel = cancel_flag.clone();
+
+        std::thread::spawn(move || {
+            crate::batch_import::run_batch_import_mixed(
+                files,
+                import_config,
+                progress_tx,
+                cancel,
+            );
+        });
+
+        self.import_progress_rx = Some(progress_rx);
+        self.import_cancel_flag = Some(cancel_flag);
+
+        Ok(())
+    }
+
+    /// Scan a folder for mixed audio files (MP3, FLAC, WAV without stem suffix)
+    pub fn scan_mixed_audio_files(&self, folder: &Path) -> Result<Vec<MixedAudioFile>> {
+        crate::batch_import::scan_mixed_audio_files(folder)
+            .map_err(|e| anyhow!("Failed to scan mixed audio files: {}", e))
     }
 
     /// Cancel an in-progress import

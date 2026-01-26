@@ -12,11 +12,11 @@ use mesh_core::playlist::NodeId;
 use mesh_widgets::PlaylistBrowserMessage;
 
 use crate::analysis::{AnalysisType, ReanalysisProgress, ReanalysisScope};
-use crate::batch_import::{ImportProgress, StemGroup};
+use crate::batch_import::{ImportProgress, MixedAudioFile, StemGroup};
 use crate::config::BpmSource;
 use mesh_core::usb::UsbMessage;
 use super::context_menu::ContextMenuKind;
-use super::state::{BrowserSide, LinkedStemLoadedMsg, StemsLoadResult, View};
+use super::state::{BrowserSide, ImportMode, LinkedStemLoadedMsg, StemsLoadResult, View};
 
 /// Application messages
 #[derive(Debug, Clone)]
@@ -198,12 +198,18 @@ pub enum Message {
     OpenImport,
     /// Close the import modal
     CloseImport,
+    /// Switch import mode (stems vs mixed audio)
+    SetImportMode(ImportMode),
     /// Scan the import folder for stem groups
     ScanImportFolder,
-    /// Import folder scan complete
+    /// Import folder scan complete (stem groups)
     ImportFolderScanned(Vec<StemGroup>),
-    /// Start the batch import process
+    /// Mixed audio folder scan complete
+    MixedAudioFolderScanned(Vec<MixedAudioFile>),
+    /// Start the batch import process (stems)
     StartBatchImport,
+    /// Start the mixed audio import process (with stem separation)
+    StartMixedAudioImport,
     /// Progress update from import thread
     ImportProgressUpdate(ImportProgress),
     /// Cancel the current import

@@ -81,6 +81,15 @@ rayon.workspace = true
 procspawn = "1.0"
 serde_json = "1.0"
 
+# Audio stem separation
+# Note: charon-audio requires rayon 1.10+ which conflicts with graph_builder
+# Using ort directly for ONNX-based separation instead
+ort = { version = "2.0.0-rc.11", features = ["ndarray"] }  # ONNX Runtime for model inference
+ndarray = "0.17"  # Array operations for audio processing (ort requires 0.17.x)
+ureq = "2.9"  # HTTP client for model downloads
+hound = "3.5"  # WAV file handling for temp stems
+symphonia = { version = "0.5", features = ["all"] }  # Audio decoding
+
 [features]
 # JACK backend is default for Linux; on Windows/macOS it's a no-op (uses CPAL)
 # Use --no-default-features for CPAL-only builds

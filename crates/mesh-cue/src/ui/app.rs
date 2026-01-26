@@ -418,9 +418,12 @@ impl MeshCueApp {
             // Batch Import (delegated to handlers/import.rs)
             Message::OpenImport => return self.handle_open_import(),
             Message::CloseImport => return self.handle_close_import(),
+            Message::SetImportMode(mode) => return self.handle_set_import_mode(mode),
             Message::ScanImportFolder => return self.handle_scan_import_folder(),
             Message::ImportFolderScanned(groups) => return self.handle_import_folder_scanned(groups),
+            Message::MixedAudioFolderScanned(files) => return self.handle_mixed_audio_folder_scanned(files),
             Message::StartBatchImport => return self.handle_start_batch_import(),
+            Message::StartMixedAudioImport => return self.handle_start_mixed_audio_import(),
             Message::ImportProgressUpdate(progress) => return self.handle_import_progress_update(progress),
             Message::CancelImport => return self.handle_cancel_import(),
             Message::DismissImportResults => return self.handle_dismiss_import_results(),

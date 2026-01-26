@@ -1,7 +1,7 @@
 //! Settings modal state
 
 use crate::audio::StereoPair;
-use crate::config::{BpmSource, Config};
+use crate::config::{BackendType, BpmSource, Config, ModelType};
 use mesh_core::engine::InterpolationMethod;
 
 /// State for the settings modal
@@ -31,6 +31,13 @@ pub struct SettingsState {
     pub draft_scratch_interpolation: InterpolationMethod,
     /// Status message for save feedback
     pub status: String,
+    // ── Separation Settings ──────────────────────────────────────────────────
+    /// Draft separation backend type
+    pub draft_separation_backend: BackendType,
+    /// Draft separation model type
+    pub draft_separation_model: ModelType,
+    /// Draft GPU acceleration flag
+    pub draft_separation_use_gpu: bool,
 }
 
 impl SettingsState {
@@ -49,6 +56,10 @@ impl SettingsState {
             selected_output_pair: config.audio.output_device.unwrap_or(0),
             draft_scratch_interpolation: config.audio.scratch_interpolation,
             status: String::new(),
+            // Separation settings
+            draft_separation_backend: config.analysis.separation.backend,
+            draft_separation_model: config.analysis.separation.model,
+            draft_separation_use_gpu: config.analysis.separation.use_gpu,
         }
     }
 

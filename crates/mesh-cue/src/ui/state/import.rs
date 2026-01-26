@@ -1,9 +1,19 @@
 //! Batch import state
 
-use crate::batch_import::{self, ImportProgress, StemGroup, TrackImportResult};
+use crate::batch_import::{self, ImportProgress, MixedAudioFile, StemGroup, TrackImportResult};
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
+
+/// Import mode - determines what type of files to import
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImportMode {
+    /// Import pre-separated stem files (Artist - Track_(Vocals).wav, etc.)
+    #[default]
+    Stems,
+    /// Import mixed audio files and auto-separate into stems
+    MixedAudio,
+}
 
 /// Phase of the batch import process
 #[derive(Debug, Clone)]
@@ -35,8 +45,12 @@ pub struct ImportState {
     pub is_open: bool,
     /// Path to the import folder
     pub import_folder: std::path::PathBuf,
-    /// Detected stem groups from scan
+    /// Current import mode (stems vs mixed audio)
+    pub import_mode: ImportMode,
+    /// Detected stem groups from scan (for Stems mode)
     pub detected_groups: Vec<StemGroup>,
+    /// Detected mixed audio files from scan (for MixedAudio mode)
+    pub detected_mixed_files: Vec<MixedAudioFile>,
     /// Current import phase (None if not importing)
     pub phase: Option<ImportPhase>,
     /// Results from completed import (for final popup)
@@ -54,7 +68,9 @@ impl Default for ImportState {
         Self {
             is_open: false,
             import_folder: batch_import::default_import_folder(),
+            import_mode: ImportMode::default(),
             detected_groups: Vec::new(),
+            detected_mixed_files: Vec::new(),
             phase: None,
             results: Vec::new(),
             show_results: false,

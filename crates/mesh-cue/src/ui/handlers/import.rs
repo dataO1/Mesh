@@ -1,13 +1,14 @@
 //! Batch import message handlers
 //!
-//! Handles: OpenImport, CloseImport, ScanImportFolder, ImportFolderScanned,
-//! StartBatchImport, ImportProgressUpdate, CancelImport, DismissImportResults
+//! Handles: OpenImport, CloseImport, SetImportMode, ScanImportFolder, ImportFolderScanned,
+//! MixedAudioFolderScanned, StartBatchImport, StartMixedAudioImport, ImportProgressUpdate,
+//! CancelImport, DismissImportResults
 
 use iced::Task;
-use crate::batch_import::{self, ImportProgress};
+use crate::batch_import::{self, ImportProgress, MixedAudioFile};
 use super::super::app::MeshCueApp;
 use super::super::message::Message;
-use super::super::state::{ImportPhase, ImportState};
+use super::super::state::{ImportMode, ImportPhase, ImportState};
 
 impl MeshCueApp {
     /// Handle OpenImport message
@@ -33,26 +34,63 @@ impl MeshCueApp {
         Task::none()
     }
 
+    /// Handle SetImportMode message - switch between stems and mixed audio
+    pub fn handle_set_import_mode(&mut self, mode: ImportMode) -> Task<Message> {
+        if self.import_state.import_mode == mode {
+            return Task::none();
+        }
+
+        self.import_state.import_mode = mode;
+        // Trigger a rescan with the new mode
+        self.update(Message::ScanImportFolder)
+    }
+
     /// Handle ScanImportFolder message
     pub fn handle_scan_import_folder(&mut self) -> Task<Message> {
         self.import_state.phase = Some(ImportPhase::Scanning);
         let import_folder = self.import_state.import_folder.clone();
-        Task::perform(
-            async move {
-                batch_import::scan_and_group_stems(&import_folder)
-                    .unwrap_or_else(|e| {
-                        log::error!("Failed to scan import folder: {}", e);
-                        Vec::new()
-                    })
-            },
-            Message::ImportFolderScanned,
-        )
+        let import_mode = self.import_state.import_mode;
+
+        match import_mode {
+            ImportMode::Stems => {
+                Task::perform(
+                    async move {
+                        batch_import::scan_and_group_stems(&import_folder)
+                            .unwrap_or_else(|e| {
+                                log::error!("Failed to scan import folder for stems: {}", e);
+                                Vec::new()
+                            })
+                    },
+                    Message::ImportFolderScanned,
+                )
+            }
+            ImportMode::MixedAudio => {
+                Task::perform(
+                    async move {
+                        batch_import::scan_mixed_audio_files(&import_folder)
+                            .unwrap_or_else(|e| {
+                                log::error!("Failed to scan import folder for mixed audio: {}", e);
+                                Vec::new()
+                            })
+                    },
+                    Message::MixedAudioFolderScanned,
+                )
+            }
+        }
     }
 
-    /// Handle ImportFolderScanned message
+    /// Handle ImportFolderScanned message (stem groups)
     pub fn handle_import_folder_scanned(&mut self, groups: Vec<batch_import::StemGroup>) -> Task<Message> {
-        log::info!("Import folder scanned: {} groups found", groups.len());
+        log::info!("Import folder scanned: {} stem groups found", groups.len());
         self.import_state.detected_groups = groups;
+        self.import_state.phase = None;
+        Task::none()
+    }
+
+    /// Handle MixedAudioFolderScanned message (mixed audio files)
+    pub fn handle_mixed_audio_folder_scanned(&mut self, files: Vec<MixedAudioFile>) -> Task<Message> {
+        log::info!("Import folder scanned: {} mixed audio files found", files.len());
+        self.import_state.detected_mixed_files = files;
         self.import_state.phase = None;
         Task::none()
     }
@@ -92,6 +130,42 @@ impl MeshCueApp {
         Task::none()
     }
 
+    /// Handle StartMixedAudioImport message
+    ///
+    /// Starts the mixed audio import process with automatic stem separation.
+    pub fn handle_start_mixed_audio_import(&mut self) -> Task<Message> {
+        let files: Vec<_> = self
+            .import_state
+            .detected_mixed_files
+            .iter()
+            .cloned()
+            .collect();
+
+        if files.is_empty() {
+            log::warn!("No mixed audio files to import");
+            return Task::none();
+        }
+
+        log::info!("Starting mixed audio import of {} tracks (with stem separation)", files.len());
+
+        // Set initial UI phase
+        self.import_state.results.clear();
+        self.import_state.phase = Some(ImportPhase::Processing {
+            current_track: String::new(),
+            completed: 0,
+            total: files.len(),
+            start_time: std::time::Instant::now(),
+        });
+
+        // Start import through domain (owns db_service, config, spawns thread)
+        let import_folder = self.import_state.import_folder.clone();
+        if let Err(e) = self.domain.start_batch_import_mixed(files, import_folder) {
+            log::error!("Failed to start mixed audio import: {:?}", e);
+            self.import_state.phase = None;
+        }
+        Task::none()
+    }
+
     /// Handle ImportProgressUpdate message
     pub fn handle_import_progress_update(&mut self, progress: ImportProgress) -> Task<Message> {
         match progress {
@@ -110,6 +184,15 @@ impl MeshCueApp {
                     self.import_state.phase
                 {
                     *current_track = base_name;
+                }
+            }
+            ImportProgress::Separating { base_name, progress } => {
+                log::debug!("Separating {}: {:.0}%", base_name, progress * 100.0);
+                // Update current track name to show separation progress
+                if let Some(ImportPhase::Processing { ref mut current_track, .. }) =
+                    self.import_state.phase
+                {
+                    *current_track = format!("{} (separating {:.0}%)", base_name, progress * 100.0);
                 }
             }
             ImportProgress::TrackCompleted(result) => {

@@ -12,14 +12,26 @@ Mesh is an open-source DJ application designed for live performance with a focus
 
 ### 1. Prepare Your Tracks (mesh-cue)
 
-Before you can DJ with Mesh, your tracks need to be split into stems (Vocals, Drums, Bass, Other). Use a tool like [Demucs](https://github.com/facebookresearch/demucs) or [Ultimate Vocal Remover](https://ultimatevocalremover.com/) to separate your tracks.
+Mesh supports **two ways** to prepare your tracks:
 
-```bash
-# Example with Demucs
-demucs --two-stems=vocals "My Track.mp3"
+#### Option A: Import Mixed Audio (Automatic Separation)
+
+Drop any audio file into the import folder and mesh-cue will **automatically separate it into stems**:
+
+```
+~/Music/mesh-collection/import/
+├── Daft Punk - One More Time.mp3
+├── Justice - Genesis.flac
+└── Deadmau5 - Strobe.wav
 ```
 
-Then drop the stems into your import folder and let mesh-cue handle the rest:
+Click **Import** → Select **"Mixed Audio"** mode → Tracks are separated (Vocals, Drums, Bass, Other), analyzed (BPM, key, beats), and combined into the stem format.
+
+> **Note:** Stem separation requires ~4GB RAM per track and may take several minutes. Uses the Demucs neural network model.
+
+#### Option B: Import Pre-Separated Stems
+
+If you've already separated your tracks using [Demucs](https://github.com/facebookresearch/demucs), [Ultimate Vocal Remover](https://ultimatevocalremover.com/), or similar tools:
 
 ```
 ~/Music/mesh-collection/import/
@@ -29,7 +41,7 @@ Then drop the stems into your import folder and let mesh-cue handle the rest:
 └── Artist - Track_(Other).wav
 ```
 
-Click **Import** in mesh-cue → All tracks are analyzed (BPM, key, beats) and combined into a single stem file.
+Click **Import** → Select **"Pre-separated Stems"** mode → Tracks are analyzed and combined.
 
 ### 2. Play Your Set (mesh-player)
 
@@ -1082,7 +1094,12 @@ You can edit track metadata directly in the browser without loading the track:
 
 ## Batch Import
 
-The Batch Import system allows you to quickly import multiple tracks at once. Instead of manually loading stems one by one, you can drop all your pre-separated stems into a folder and import them in batch.
+The Batch Import system allows you to quickly import multiple tracks at once. Mesh supports two import modes:
+
+| Mode | Input | Use When |
+|------|-------|----------|
+| **Mixed Audio** | Regular audio files (MP3, FLAC, WAV) | You have normal music files and want automatic stem separation |
+| **Pre-separated Stems** | 4 WAV files per track | You've already separated stems using Demucs, UVR, etc. |
 
 ### Import Folder Location
 
@@ -1090,9 +1107,37 @@ The Batch Import system allows you to quickly import multiple tracks at once. In
 ~/Music/mesh-collection/import/
 ```
 
-Place your stem files here before importing. The folder is automatically created when you first run mesh-cue.
+Place your files here before importing. The folder is automatically created when you first run mesh-cue.
 
-### Stem File Naming
+### Mixed Audio Mode (Automatic Separation)
+
+For regular audio files that need to be separated into stems:
+
+1. **Copy audio files** to the import folder:
+   ```bash
+   cp "My Track.mp3" "Another Song.flac" ~/Music/mesh-collection/import/
+   ```
+
+2. **Open mesh-cue** and click **Import**
+
+3. **Select "Mixed Audio"** mode using the toggle buttons
+
+4. **Review detected files** — The modal shows all detected audio files (MP3, FLAC, WAV, OGG, M4A)
+
+5. **Click "Start Import"** — Each track is processed sequentially:
+   - Audio is loaded and decoded
+   - **Neural stem separation** extracts Vocals, Drums, Bass, and Other
+   - BPM, key, and beat grid are analyzed
+   - 8-channel WAV is exported with embedded metadata
+   - Original file is deleted on success
+
+> **⚠ Resource Requirements:** Stem separation uses the Demucs neural network and requires approximately **4GB RAM per track**. Processing is sequential (one track at a time) to manage memory usage. Expect 2-5 minutes per track depending on length and CPU.
+
+### Pre-separated Stems Mode
+
+For stems you've already separated using external tools:
+
+#### Stem File Naming
 
 Stems must follow this naming pattern:
 
@@ -1111,7 +1156,7 @@ BaseName_(StemType).wav
 
 The `BaseName` can be anything — typically `Artist - Track` format. Stems with the same base name are automatically grouped together.
 
-### Import Workflow
+#### Import Workflow
 
 1. **Prepare stems** — Use a stem separation tool (Demucs, Ultimate Vocal Remover, etc.) to split your tracks into 4 stems
 
@@ -1120,24 +1165,26 @@ The `BaseName` can be anything — typically `Artist - Track` format. Stems with
    cp *_(Vocals).wav *_(Drums).wav *_(Bass).wav *_(Other).wav ~/Music/mesh-collection/import/
    ```
 
-3. **Open mesh-cue** and click the **Import** button (above the playlist browsers)
+3. **Open mesh-cue** and click the **Import** button
 
-4. **Review detected tracks** — The modal shows all detected track groups with completion status:
+4. **Select "Pre-separated Stems"** mode (default)
+
+5. **Review detected tracks** — The modal shows all detected track groups with completion status:
    - ✓ = All 4 stems present (ready to import)
    - 2/4 = Missing stems (will be skipped)
 
-5. **Click "Start Import"** — Tracks are processed in parallel:
+6. **Click "Start Import"** — Tracks are processed in parallel:
    - Stems are loaded and combined
    - BPM, key, and beat grid are analyzed
    - 8-channel WAV is exported with embedded metadata
    - Original stems are deleted on success
 
-6. **View results** — A summary popup shows successful and failed imports
+7. **View results** — A summary popup shows successful and failed imports
 
 ### Progress Bar
 
 During import, a progress bar appears at the bottom of the collection view showing:
-- Current track being processed
+- Current track being processed (with separation % for mixed audio mode)
 - Progress (X/Y completed)
 - Estimated time remaining
 

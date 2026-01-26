@@ -25,4 +25,5 @@ pub mod features;
 pub mod import;
 pub mod keybindings;
 pub mod reanalysis;
+pub mod separation;
 pub mod ui;

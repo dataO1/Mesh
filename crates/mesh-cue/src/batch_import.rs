@@ -34,6 +34,7 @@ use crate::analysis::{analyze_audio, AnalysisResult};
 use crate::config::{BpmConfig, BpmSource, LoudnessConfig};
 use crate::export::export_stem_file_with_gain;
 use crate::import::StemImporter;
+use crate::separation::{SeparationConfig, SeparationService};
 use anyhow::{Context, Result};
 use mesh_core::db::{DatabaseService, Track};
 use mesh_core::types::SAMPLE_RATE;
@@ -268,6 +269,11 @@ pub enum ImportProgress {
         index: usize,
         total: usize,
     },
+    /// Separating a mixed audio file into stems
+    Separating {
+        base_name: String,
+        progress: f32,
+    },
     /// Finished processing a track
     TrackCompleted(TrackImportResult),
     /// All imports complete
@@ -291,6 +297,89 @@ pub struct ImportConfig {
     pub loudness_config: LoudnessConfig,
     /// Number of parallel analysis processes (1-16)
     pub parallel_processes: u8,
+    /// Stem separation configuration (for mixed audio files)
+    pub separation_config: Option<SeparationConfig>,
+}
+
+/// A mixed audio file to be separated into stems
+#[derive(Debug, Clone)]
+pub struct MixedAudioFile {
+    /// Path to the audio file
+    pub path: PathBuf,
+    /// Base name extracted from filename (without extension)
+    pub base_name: String,
+}
+
+/// Scan import folder for mixed audio files (MP3, FLAC, WAV without stem suffix)
+///
+/// These files will be separated into stems before import.
+pub fn scan_mixed_audio_files(import_folder: &Path) -> Result<Vec<MixedAudioFile>> {
+    log::info!("scan_mixed_audio_files: Scanning {:?}", import_folder);
+
+    if !import_folder.exists() {
+        fs::create_dir_all(import_folder)
+            .with_context(|| format!("Failed to create import folder: {:?}", import_folder))?;
+        return Ok(Vec::new());
+    }
+
+    let mut files = Vec::new();
+    let supported_extensions = ["mp3", "flac", "wav", "ogg", "m4a", "aac"];
+
+    let entries = fs::read_dir(import_folder)
+        .with_context(|| format!("Failed to read import folder: {:?}", import_folder))?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+
+        // Skip directories
+        if path.is_dir() {
+            continue;
+        }
+
+        // Check extension
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase());
+
+        if !ext.as_ref().map_or(false, |e| supported_extensions.contains(&e.as_str())) {
+            continue;
+        }
+
+        // Get filename
+        let filename = match path.file_stem().and_then(|n| n.to_str()) {
+            Some(name) => name,
+            None => continue,
+        };
+
+        // Skip files that look like stems (have _(Vocals), _(Drums), etc.)
+        if filename.contains("_(") && filename.contains(")") {
+            // Check if it's a stem file pattern
+            let lower = filename.to_lowercase();
+            if lower.contains("_(vocals)")
+                || lower.contains("_(drums)")
+                || lower.contains("_(bass)")
+                || lower.contains("_(other)")
+                || lower.contains("_(instrumental)")
+            {
+                continue;
+            }
+        }
+
+        files.push(MixedAudioFile {
+            path: path.clone(),
+            base_name: filename.to_string(),
+        });
+    }
+
+    files.sort_by(|a, b| a.base_name.cmp(&b.base_name));
+
+    log::info!(
+        "scan_mixed_audio_files: Found {} mixed audio files",
+        files.len()
+    );
+
+    Ok(files)
 }
 
 /// Parse a stem filename to extract base name and stem type
@@ -606,6 +695,120 @@ fn process_single_track(group: &StemGroup, config: &ImportConfig) -> TrackImport
     }
 }
 
+/// Process a mixed audio file: separate into stems, then import
+///
+/// This function:
+/// 1. Runs stem separation on the mixed audio file
+/// 2. Writes stems to temp WAV files
+/// 3. Uses the existing import pipeline via process_single_track
+/// 4. Cleans up temp stem files
+fn process_mixed_track(
+    file: &MixedAudioFile,
+    config: &ImportConfig,
+    progress_tx: &Sender<ImportProgress>,
+) -> TrackImportResult {
+    let base_name = file.base_name.clone();
+    log::info!("process_mixed_track: Separating '{}'", base_name);
+
+    // Get separation config
+    let sep_config = match &config.separation_config {
+        Some(cfg) => cfg.clone(),
+        None => {
+            return TrackImportResult {
+                base_name,
+                success: false,
+                error: Some("Separation not configured".to_string()),
+                output_path: None,
+            };
+        }
+    };
+
+    // Create separation service
+    let service = match SeparationService::with_config(sep_config) {
+        Ok(s) => s,
+        Err(e) => {
+            return TrackImportResult {
+                base_name,
+                success: false,
+                error: Some(format!("Failed to create separation service: {}", e)),
+                output_path: None,
+            };
+        }
+    };
+
+    // Create progress callback that sends updates
+    let base_name_clone = base_name.clone();
+    let progress_tx_clone = progress_tx.clone();
+    let progress_cb = std::sync::Arc::new(move |progress: crate::separation::SeparationProgress| {
+        let _ = progress_tx_clone.send(ImportProgress::Separating {
+            base_name: base_name_clone.clone(),
+            progress: progress.progress,
+        });
+    });
+
+    // Run separation
+    let stems = match service.separate(&file.path, Some(progress_cb)) {
+        Ok(s) => s,
+        Err(e) => {
+            return TrackImportResult {
+                base_name,
+                success: false,
+                error: Some(format!("Separation failed: {}", e)),
+                output_path: None,
+            };
+        }
+    };
+
+    log::info!(
+        "process_mixed_track: '{}' separated, {} samples per stem",
+        base_name,
+        stems.samples_per_channel()
+    );
+
+    // Write stems to temp directory
+    let temp_dir = std::env::temp_dir().join("mesh-separation");
+    if let Err(e) = fs::create_dir_all(&temp_dir) {
+        return TrackImportResult {
+            base_name,
+            success: false,
+            error: Some(format!("Failed to create temp directory: {}", e)),
+            output_path: None,
+        };
+    }
+
+    let sanitized = sanitize_filename(&base_name);
+    let (vocals_path, drums_path, bass_path, other_path) =
+        match stems.write_to_wav_files(&temp_dir, &sanitized) {
+            Ok(paths) => paths,
+            Err(e) => {
+                return TrackImportResult {
+                    base_name,
+                    success: false,
+                    error: Some(format!("Failed to write temp stems: {}", e)),
+                    output_path: None,
+                };
+            }
+        };
+
+    // Create RAII guards for cleanup
+    let _vocals_guard = TempFileGuard::new(vocals_path.clone());
+    let _drums_guard = TempFileGuard::new(drums_path.clone());
+    let _bass_guard = TempFileGuard::new(bass_path.clone());
+    let _other_guard = TempFileGuard::new(other_path.clone());
+
+    // Create a StemGroup from the temp files
+    let mut group = StemGroup::new(base_name.clone());
+    group.vocals = Some(vocals_path);
+    group.drums = Some(drums_path);
+    group.bass = Some(bass_path);
+    group.other = Some(other_path);
+
+    // Process using existing pipeline
+    // Note: We don't delete source files from group.all_paths() since they're temp files
+    // that will be cleaned up by the guards
+    process_single_track(&group, config)
+}
+
 /// Run the batch import process
 ///
 /// This is meant to be called from a delegation thread.
@@ -709,6 +912,125 @@ pub fn run_batch_import(
 
     log::info!(
         "run_batch_import: Complete in {:.1}s - {} succeeded, {} failed",
+        duration.as_secs_f64(),
+        success_count,
+        fail_count
+    );
+
+    // Send completion notification
+    let _ = progress_tx.send(ImportProgress::AllComplete { results });
+}
+
+/// Run batch import for mixed audio files (with automatic stem separation)
+///
+/// Similar to `run_batch_import`, but processes mixed audio files by:
+/// 1. Separating each file into stems using the configured backend
+/// 2. Importing the separated stems using the standard pipeline
+///
+/// Requires `config.separation_config` to be set.
+///
+/// # Arguments
+///
+/// * `files` - Mixed audio files to import
+/// * `config` - Import configuration (must include separation_config)
+/// * `progress_tx` - Channel to send progress updates
+/// * `cancel_flag` - Atomic flag to signal cancellation
+pub fn run_batch_import_mixed(
+    files: Vec<MixedAudioFile>,
+    config: ImportConfig,
+    progress_tx: Sender<ImportProgress>,
+    cancel_flag: Arc<AtomicBool>,
+) {
+    let start_time = Instant::now();
+    let total = files.len();
+
+    log::info!(
+        "run_batch_import_mixed: Starting import of {} mixed audio files",
+        total
+    );
+
+    // Send start notification
+    let _ = progress_tx.send(ImportProgress::Started { total });
+
+    // Check for early cancellation
+    if cancel_flag.load(Ordering::Relaxed) {
+        log::info!("run_batch_import_mixed: Cancelled before processing");
+        let _ = progress_tx.send(ImportProgress::AllComplete {
+            results: Vec::new(),
+        });
+        return;
+    }
+
+    // Verify separation config is present
+    if config.separation_config.is_none() {
+        log::error!("run_batch_import_mixed: No separation config provided");
+        let results: Vec<TrackImportResult> = files
+            .iter()
+            .map(|f| TrackImportResult {
+                base_name: f.base_name.clone(),
+                success: false,
+                error: Some("Separation not configured".to_string()),
+                output_path: None,
+            })
+            .collect();
+        let _ = progress_tx.send(ImportProgress::AllComplete { results });
+        return;
+    }
+
+    // Process files sequentially (separation is memory-intensive)
+    // TODO: Consider parallel processing with memory limits
+    let mut results = Vec::with_capacity(total);
+
+    for (index, file) in files.iter().enumerate() {
+        // Check for cancellation
+        if cancel_flag.load(Ordering::Relaxed) {
+            results.push(TrackImportResult {
+                base_name: file.base_name.clone(),
+                success: false,
+                error: Some("Cancelled".to_string()),
+                output_path: None,
+            });
+            break;
+        }
+
+        // Send track started notification
+        let _ = progress_tx.send(ImportProgress::TrackStarted {
+            base_name: file.base_name.clone(),
+            index,
+            total,
+        });
+
+        // Process the track (separation + import)
+        let result = process_mixed_track(file, &config, &progress_tx);
+
+        // Delete source file on success
+        if result.success {
+            if let Err(e) = fs::remove_file(&file.path) {
+                log::warn!(
+                    "run_batch_import_mixed: Failed to delete source file {:?}: {}",
+                    file.path,
+                    e
+                );
+            } else {
+                log::debug!(
+                    "run_batch_import_mixed: Deleted source file {:?}",
+                    file.path
+                );
+            }
+        }
+
+        // Send track completed notification
+        let _ = progress_tx.send(ImportProgress::TrackCompleted(result.clone()));
+
+        results.push(result);
+    }
+
+    let duration = start_time.elapsed();
+    let success_count = results.iter().filter(|r| r.success).count();
+    let fail_count = results.len() - success_count;
+
+    log::info!(
+        "run_batch_import_mixed: Complete in {:.1}s - {} succeeded, {} failed",
         duration.as_secs_f64(),
         success_count,
         fail_count

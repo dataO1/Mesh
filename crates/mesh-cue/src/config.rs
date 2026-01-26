@@ -6,6 +6,9 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+// Re-export separation config for convenience
+pub use crate::separation::{BackendType, ModelType, SeparationConfig};
+
 // Re-export shared config utilities from mesh-core
 // Note: load_config is NOT re-exported - we have a local wrapper that validates
 pub use mesh_core::config::{
@@ -116,6 +119,8 @@ pub struct AnalysisConfig {
     /// Essentia's C++ library is not thread-safe. This controls how many
     /// subprocesses run concurrently during batch import.
     pub parallel_processes: u8,
+    /// Stem separation settings (for mixed audio import)
+    pub separation: SeparationConfig,
 }
 
 impl Default for AnalysisConfig {
@@ -124,6 +129,7 @@ impl Default for AnalysisConfig {
             bpm: BpmConfig::default(),
             loudness: LoudnessConfig::default(),
             parallel_processes: 4,
+            separation: SeparationConfig::default(),
         }
     }
 }
@@ -133,6 +139,7 @@ impl AnalysisConfig {
     pub fn validate(&mut self) {
         self.parallel_processes = self.parallel_processes.clamp(1, 16);
         self.bpm.validate();
+        self.separation.validate();
     }
 }
 
@@ -292,6 +299,7 @@ mod tests {
                 },
                 loudness: LoudnessConfig::default(),
                 parallel_processes: 4,
+                separation: SeparationConfig::default(),
             },
             display: DisplayConfig::default(),
             audio: AudioConfig::default(),

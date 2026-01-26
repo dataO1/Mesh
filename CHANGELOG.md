@@ -2,6 +2,26 @@
 
 All notable changes to Mesh are documented in this file.
 
+## [0.4.4] - 2026-01-26
+
+### Added
+
+- **Automatic stem separation** — Import regular audio files (MP3, FLAC, WAV, OGG, M4A) and mesh-cue will automatically separate them into stems using the Demucs neural network. No external tools required!
+
+- **Import mode toggle** — Switch between "Pre-separated Stems" and "Mixed Audio" modes in the import modal. Mixed audio mode handles stem separation automatically.
+
+- **Separation progress display** — During mixed audio import, the progress bar shows real-time separation progress (e.g., "Track Name (separating 45%)").
+
+- **Modular separation backend** — Architecture supports swappable backends (ONNX Runtime, future Charon). Models are downloaded automatically on first use (~171MB, cached in `~/.cache/mesh-cue/models/`).
+
+### Changed
+
+- **Import modal redesigned** — New dual-mode UI with toggle buttons for selecting import type. Mixed audio mode shows detected audio files with format indicators (MP3, FLAC, etc.).
+
+- **README Quick Start updated** — Now explains both import options (automatic separation vs. pre-separated stems) for new users.
+
+---
+
 ## [0.4.3] - 2026-01-25
 
 ### Added

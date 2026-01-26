@@ -13,7 +13,7 @@ pub mod settings;
 // Re-export all types for convenient access
 pub use collection::{BrowserSide, CollectionState, DragState, PendingDragState, DRAG_THRESHOLD};
 pub use export::{ExportPhase, ExportState};
-pub use import::{ImportPhase, ImportState};
+pub use import::{ImportMode, ImportPhase, ImportState};
 pub use loaded_track::{LinkedStemLoadedMsg, LoadedTrackState, StemsLoadResult};
 pub use reanalysis::ReanalysisState;
 pub use settings::SettingsState;
