@@ -3,14 +3,9 @@
 { pkgs, demucs-onnx }:
 
 let
-  # Python environment with all dependencies for conversion
+  # Minimal Python environment - dependencies installed via pip at runtime
   pythonEnv = pkgs.python311.withPackages (ps: with ps; [
     pip
-    torch
-    numpy
-    onnxruntime
-    onnx
-    tqdm
   ]);
 
   # The conversion script
