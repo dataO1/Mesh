@@ -541,6 +541,13 @@ const DEMUCS_SEGMENT_SAMPLES: usize = 343980;
 /// Overlap between segments for smooth blending (25% of segment)
 const DEMUCS_OVERLAP_SAMPLES: usize = DEMUCS_SEGMENT_SAMPLES / 4;
 
+/// STFT parameters matching Demucs htdemucs model
+const DEMUCS_NFFT: usize = 4096;
+const DEMUCS_HOP_LENGTH: usize = DEMUCS_NFFT / 4; // 1024
+/// Number of STFT frames for the fixed segment length
+/// Calculated as: ceil(DEMUCS_SEGMENT_SAMPLES / DEMUCS_HOP_LENGTH) with proper padding
+const DEMUCS_STFT_FRAMES: usize = 336;
+
 /// Run Demucs ONNX model inference with chunked processing
 fn run_demucs_inference(
     audio: &[f32],
@@ -619,30 +626,45 @@ fn run_demucs_inference(
         let end_sample = (start_sample + DEMUCS_SEGMENT_SAMPLES).min(num_samples);
         let segment_len = end_sample - start_sample;
 
-        // Create input array for this segment, padding if necessary
-        let mut input_array = Array3::<f32>::zeros((1, 2, DEMUCS_SEGMENT_SAMPLES));
+        // Extract left and right channels for this segment (with zero-padding)
+        let mut left_channel = vec![0.0f32; DEMUCS_SEGMENT_SAMPLES];
+        let mut right_channel = vec![0.0f32; DEMUCS_SEGMENT_SAMPLES];
         for i in 0..segment_len {
             let src_idx = start_sample + i;
-            input_array[[0, 0, i]] = stereo_audio[src_idx * 2];     // Left
-            input_array[[0, 1, i]] = stereo_audio[src_idx * 2 + 1]; // Right
+            left_channel[i] = stereo_audio[src_idx * 2];
+            right_channel[i] = stereo_audio[src_idx * 2 + 1];
         }
-        // Remaining samples (if any) are zero-padded
 
-        // Run inference on this segment
+        // Create waveform input tensor [1, 2, samples]
+        let mut input_array = Array3::<f32>::zeros((1, 2, DEMUCS_SEGMENT_SAMPLES));
+        for i in 0..DEMUCS_SEGMENT_SAMPLES {
+            input_array[[0, 0, i]] = left_channel[i];
+            input_array[[0, 1, i]] = right_channel[i];
+        }
+
+        // Compute STFT spectrogram (required by Demucs hybrid model)
+        let stft_array = compute_stft_for_demucs(&left_channel, &right_channel);
+
+        // Create input tensors
         let input_tensor = Tensor::from_array(input_array).map_err(|e| {
             SeparationError::SeparationFailed(format!("Failed to create input tensor: {}", e))
         })?;
+        let stft_tensor = Tensor::from_array(stft_array).map_err(|e| {
+            SeparationError::SeparationFailed(format!("Failed to create STFT tensor: {}", e))
+        })?;
 
+        // Run inference with both waveform and STFT inputs
         let outputs = session
-            .run(ort::inputs!["input" => input_tensor])
+            .run(ort::inputs!["input" => input_tensor, "x" => stft_tensor])
             .map_err(|e| SeparationError::SeparationFailed(format!("Inference failed: {}", e)))?;
 
-        // Extract output
+        // Extract time-domain output "add_67" [1, 4, 2, samples]
+        // Model outputs: "output" (spectrogram) and "add_67" (waveform stems)
         let output = outputs
-            .iter()
-            .next()
-            .ok_or_else(|| SeparationError::SeparationFailed("No output tensor".to_string()))?
-            .1;
+            .get("add_67")
+            .ok_or_else(|| {
+                SeparationError::SeparationFailed("Output tensor 'add_67' not found".to_string())
+            })?;
 
         let (_shape, data) = output.try_extract_tensor::<f32>().map_err(|e| {
             SeparationError::SeparationFailed(format!("Failed to extract output: {}", e))
@@ -713,6 +735,106 @@ fn run_demucs_inference(
     );
 
     Ok(stems)
+}
+
+/// Compute STFT for Demucs model input
+///
+/// Matches the preprocessing in Demucs' `standalone_spec` and `standalone_magnitude`:
+/// - n_fft = 4096, hop_length = 1024
+/// - Reflection padding for proper alignment
+/// - Returns [channels*2, freq_bins, time_frames] where channels*2 includes real/imag parts
+fn compute_stft_for_demucs(left: &[f32], right: &[f32]) -> ndarray::Array4<f32> {
+    use ndarray::Array4;
+    use realfft::RealFftPlanner;
+
+    let n_fft = DEMUCS_NFFT;
+    let hop = DEMUCS_HOP_LENGTH;
+    let freq_bins = n_fft / 2; // 2048
+
+    // Calculate padding to match Demucs' standalone_spec behavior
+    // pad = hop_length // 2 * 3 = 1024 // 2 * 3 = 1536
+    let pad = hop / 2 * 3;
+    let input_len = left.len();
+    let num_frames = (input_len + 2 * pad) / hop; // Number of frames we'll compute
+
+    // Use exactly DEMUCS_STFT_FRAMES frames (336) to match model expectation
+    let target_frames = DEMUCS_STFT_FRAMES;
+
+    // Create FFT planner
+    let mut planner = RealFftPlanner::<f32>::new();
+    let fft = planner.plan_fft_forward(n_fft);
+
+    // Pre-compute Hann window
+    let window: Vec<f32> = (0..n_fft)
+        .map(|i| {
+            let phase = std::f32::consts::PI * i as f32 / (n_fft - 1) as f32;
+            phase.sin().powi(2)
+        })
+        .collect();
+
+    // Output array: [batch=1, channels*2=4, freq_bins=2048, frames=336]
+    let mut stft_output = Array4::<f32>::zeros((1, 4, freq_bins, target_frames));
+
+    // Process each channel
+    for (ch_idx, channel) in [left, right].iter().enumerate() {
+        // Create padded signal with reflection padding
+        let padded_len = input_len + 2 * pad;
+        let mut padded = vec![0.0f32; padded_len];
+
+        // Left reflection padding
+        for i in 0..pad {
+            let reflect_idx = pad - i;
+            if reflect_idx < input_len {
+                padded[i] = channel[reflect_idx];
+            }
+        }
+
+        // Copy original signal
+        padded[pad..pad + input_len].copy_from_slice(channel);
+
+        // Right reflection padding
+        for i in 0..pad {
+            let src_idx = input_len.saturating_sub(2 + i);
+            if src_idx < input_len {
+                padded[pad + input_len + i] = channel[src_idx];
+            }
+        }
+
+        // Compute STFT frames
+        let mut scratch = fft.make_scratch_vec();
+        let mut frame_input = vec![0.0f32; n_fft];
+        let mut frame_output = fft.make_output_vec();
+
+        for frame_idx in 0..target_frames.min(num_frames) {
+            let start = frame_idx * hop;
+
+            // Extract frame with windowing
+            for i in 0..n_fft {
+                let sample_idx = start + i;
+                frame_input[i] = if sample_idx < padded_len {
+                    padded[sample_idx] * window[i]
+                } else {
+                    0.0
+                };
+            }
+
+            // Compute FFT
+            fft.process_with_scratch(&mut frame_input, &mut frame_output, &mut scratch)
+                .ok();
+
+            // Store real and imaginary parts
+            // Layout: [left_real, left_imag, right_real, right_imag] in channel dimension
+            let real_ch = ch_idx * 2;
+            let imag_ch = ch_idx * 2 + 1;
+
+            for freq in 0..freq_bins {
+                stft_output[[0, real_ch, freq, frame_idx]] = frame_output[freq].re;
+                stft_output[[0, imag_ch, freq, frame_idx]] = frame_output[freq].im;
+            }
+        }
+    }
+
+    stft_output
 }
 
 #[cfg(test)]

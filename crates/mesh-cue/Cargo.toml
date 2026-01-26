@@ -89,6 +89,7 @@ ndarray = "0.17"  # Array operations for audio processing (ort requires 0.17.x)
 ureq = "2.9"  # HTTP client for model downloads
 hound = "3.5"  # WAV file handling for temp stems
 symphonia = { version = "0.5", features = ["all"] }  # Audio decoding
+realfft = "3.4"  # FFT for STFT preprocessing (Demucs requires spectrogram input)
 
 [features]
 # JACK backend is default for Linux; on Windows/macOS it's a no-op (uses CPAL)

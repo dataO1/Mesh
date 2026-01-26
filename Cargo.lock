@@ -3232,6 +3232,7 @@ dependencies = [
  "ort",
  "procspawn",
  "rayon",
+ "realfft",
  "rtrb",
  "serde",
  "serde_json",
