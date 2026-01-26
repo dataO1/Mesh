@@ -2,6 +2,19 @@
 # Provides all tools needed for local development
 { pkgs, common, rustToolchain }:
 
+let
+  # Python environment for ONNX model conversion (demucs PyTorch → ONNX)
+  pythonEnv = pkgs.python311.withPackages (ps: with ps; [
+    torch
+    numpy
+    librosa
+    onnxruntime
+    onnx
+    soundfile
+    tqdm
+  ]);
+in
+
 pkgs.mkShell {
   name = "mesh-dev-shell";
 
@@ -35,6 +48,9 @@ pkgs.mkShell {
 
     # Package testing (requires podman on host, see shellHook)
     distrobox
+
+    # Python for ONNX model conversion
+    pythonEnv
   ]);
 
   shellHook = ''
@@ -115,6 +131,9 @@ pkgs.mkShell {
     echo "║    distrobox assemble create        # Create test container           ║"
     echo "║    distrobox enter mesh-ubuntu      # Enter and test (mesh-player)    ║"
     echo "║    distrobox assemble rm            # Clean up when done              ║"
+    echo "╠═══════════════════════════════════════════════════════════════════════╣"
+    echo "║  ONNX Model Conversion (for stem separation):                         ║"
+    echo "║    nix run .#convert-model        # Convert Demucs → models/ folder   ║"
     echo "╚═══════════════════════════════════════════════════════════════════════╝"
     echo ""
   '';

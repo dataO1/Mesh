@@ -124,15 +124,16 @@ impl ModelType {
         }
     }
 
-    /// Download URL (Hugging Face)
+    /// Download URL (GitHub releases)
     pub fn download_url(&self) -> &'static str {
         match self {
             Self::Demucs4Stems => {
-                "https://huggingface.co/webai-community/models/resolve/main/demucs.onnx"
+                // Hosted on Mesh GitHub releases (MIT licensed, converted from Meta's Demucs)
+                "https://github.com/dataO1/Mesh/releases/download/models/demucs-4stems.onnx"
             }
             Self::Demucs6Stems => {
                 // TODO: Find or create 6-stem ONNX model
-                "https://huggingface.co/webai-community/models/resolve/main/demucs.onnx"
+                "https://github.com/dataO1/Mesh/releases/download/models/demucs-6stems.onnx"
             }
         }
     }

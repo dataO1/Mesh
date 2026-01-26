@@ -12,9 +12,13 @@
       url = "github:acids-ircam/nn_tilde";
       flake = false;
     };
+    demucs-onnx = {
+      url = "github:sevagh/demucs.onnx";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-overlay, nn-tilde }:
+  outputs = { self, nixpkgs, flake-utils, rust-overlay, nn-tilde, demucs-onnx }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         overlays = [ (import rust-overlay) ];
@@ -52,6 +56,11 @@
         # Portable .deb build (container-based, Ubuntu 22.04 for glibc 2.35)
         buildDebApp = import ./nix/apps/build-deb.nix {
           inherit pkgs;
+        };
+
+        # ONNX model conversion (Demucs PyTorch → ONNX)
+        convertModelApp = import ./nix/apps/convert-model.nix {
+          inherit pkgs demucs-onnx;
         };
 
         # =======================================================================
@@ -92,6 +101,10 @@
           build-deb = {
             type = "app";
             program = "${buildDebApp}/bin/build-deb";
+          };
+          convert-model = {
+            type = "app";
+            program = "${convertModelApp}/bin/convert-model";
           };
         };
       }

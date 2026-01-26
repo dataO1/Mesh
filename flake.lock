@@ -1,5 +1,21 @@
 {
   "nodes": {
+    "demucs-onnx": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1741715849,
+        "narHash": "sha256-PA4QxYMWa3Obm+cpeqUUuzdQ5ymQYivIHJC3C7JJ5Mk=",
+        "owner": "sevagh",
+        "repo": "demucs.onnx",
+        "rev": "265a3297a3c15f2cd30906c803d158bc35947a2e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "sevagh",
+        "repo": "demucs.onnx",
+        "type": "github"
+      }
+    },
     "flake-utils": {
       "inputs": {
         "systems": "systems"
@@ -52,6 +68,7 @@
     },
     "root": {
       "inputs": {
+        "demucs-onnx": "demucs-onnx",
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs",
         "nn-tilde": "nn-tilde",
