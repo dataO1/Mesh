@@ -78,7 +78,8 @@ impl SeparationConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum BackendType {
-    /// charon-audio crate (currently unavailable due to rayon version conflict)
+    /// charon-audio crate - pure Rust implementation
+    /// Available when compiled with --features charon-backend
     Charon,
 
     /// Direct ONNX Runtime via ort crate (recommended)
@@ -90,7 +91,7 @@ impl BackendType {
     /// Display name for UI
     pub fn display_name(&self) -> &'static str {
         match self {
-            Self::Charon => "Charon (unavailable)",
+            Self::Charon => "Charon (not ready)",
             Self::OnnxRuntime => "ONNX Runtime",
         }
     }
@@ -98,7 +99,8 @@ impl BackendType {
     /// Description for UI
     pub fn description(&self) -> &'static str {
         match self {
-            Self::Charon => "Pure Rust via charon-audio (blocked by rayon conflict)",
+            // charon-audio v0.1.0 has placeholder inference - not usable
+            Self::Charon => "charon-audio v0.1.0 inference not implemented yet",
             Self::OnnxRuntime => "Direct ONNX Runtime inference - recommended",
         }
     }
@@ -106,7 +108,9 @@ impl BackendType {
     /// Check if this backend is currently available
     pub fn is_available(&self) -> bool {
         match self {
-            Self::Charon => false, // Blocked by rayon version conflict
+            // charon-audio v0.1.0 has placeholder inference (returns input copies)
+            // Real inference not implemented yet - use OrtBackend instead
+            Self::Charon => false,
             Self::OnnxRuntime => true,
         }
     }

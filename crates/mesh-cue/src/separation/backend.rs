@@ -6,10 +6,16 @@
 //!
 //! ## Available Backends
 //!
-//! - **OrtBackend**: Direct ONNX Runtime via `ort` crate - currently recommended
-//! - **CharonBackend**: Uses `charon-audio` crate - blocked by rayon version conflict
+//! - **OrtBackend**: Direct ONNX Runtime via `ort` crate - default, recommended
+//! - **CharonBackend**: Pure Rust via `charon-audio` crate - optional, requires `charon-backend` feature
 //!
 //! The backend can be selected at runtime via `SeparationConfig::backend`.
+//!
+//! ## Enabling CharonBackend
+//!
+//! ```bash
+//! cargo build -p mesh-cue --features charon-backend
+//! ```
 
 use std::path::Path;
 
@@ -176,7 +182,7 @@ pub trait SeparationBackend: Send + Sync {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Charon Backend (blocked by rayon version conflict)
+// Charon Backend (pure Rust via charon-audio)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Backend using the charon-audio crate
@@ -186,9 +192,9 @@ pub trait SeparationBackend: Send + Sync {
 /// - Symphonia for audio decoding
 /// - Rayon for parallel processing
 ///
-/// **Status**: Currently unavailable due to rayon version conflict.
-/// charon-audio requires rayon >=1.10, but graph_builder (via cozo) requires <1.10.
-/// This will be resolved when graph_builder updates its rayon compatibility.
+/// **Status**: Available when compiled with `--features charon-backend`
+/// Requires patched graph_builder for rayon 1.10+ compatibility.
+/// See: <https://github.com/neo4j-labs/graph/pull/139>
 pub struct CharonBackend {
     /// Whether GPU was detected as available
     gpu_available: bool,
@@ -198,12 +204,14 @@ impl CharonBackend {
     /// Create a new Charon backend
     pub fn new() -> Self {
         let gpu_available = Self::probe_gpu();
+        log::info!("CharonBackend initialized, GPU available: {}", gpu_available);
         Self { gpu_available }
     }
 
     /// Probe for GPU availability
     fn probe_gpu() -> bool {
-        // Would check via charon-audio when available
+        // charon-audio handles GPU detection internally
+        // For now, assume GPU might be available
         true
     }
 }
@@ -214,6 +222,7 @@ impl Default for CharonBackend {
     }
 }
 
+#[cfg(feature = "charon-backend")]
 impl SeparationBackend for CharonBackend {
     fn separate(
         &self,
@@ -223,6 +232,7 @@ impl SeparationBackend for CharonBackend {
         progress: Option<ProgressCallback>,
     ) -> Result<StemData> {
         use super::error::SeparationError;
+        use charon_audio::{Separator, SeparatorConfig};
 
         // Verify input file exists
         if !input_path.exists() {
@@ -248,34 +258,48 @@ impl SeparationBackend for CharonBackend {
             model_path
         );
         log::info!(
-            "Config: use_gpu={}, segment_length={}s",
+            "Config: use_gpu={}, segment_length={}s, shifts={}",
             config.use_gpu,
-            config.segment_length_secs
+            config.segment_length_secs,
+            config.shifts
         );
 
         if let Some(cb) = &progress {
             cb(0.0);
         }
 
-        // TODO: Implement when charon-audio dependency conflict is resolved
-        // The implementation will look like:
-        // ```rust
-        // use charon_audio::{Separator, SeparatorConfig};
-        //
-        // let mut charon_config = SeparatorConfig::default();
-        // charon_config.model_path = model_path.to_path_buf();
-        // charon_config.use_gpu = config.use_gpu;
-        // charon_config.segment_length = config.segment_length_secs;
-        //
-        // let separator = Separator::new(charon_config)?;
-        // let stems = separator.separate_file(input_path)?;
-        // ```
+        // Configure charon-audio separator
+        let charon_config = SeparatorConfig::onnx(model_path)
+            .with_shifts(config.shifts as usize)
+            .with_segment_length(config.segment_length_secs);
 
-        Err(SeparationError::BackendInitFailed(
-            "CharonBackend unavailable: rayon version conflict with graph_builder. \
-             Use OrtBackend instead."
-                .to_string(),
-        ))
+        // Create separator
+        let separator = Separator::new(charon_config).map_err(|e| {
+            SeparationError::BackendInitFailed(format!("Charon init failed: {}", e))
+        })?;
+
+        if let Some(cb) = &progress {
+            cb(0.1);
+        }
+
+        // Run separation
+        let stems = separator.separate_file(input_path).map_err(|e| {
+            SeparationError::SeparationFailed(format!("Charon separation failed: {}", e))
+        })?;
+
+        if let Some(cb) = &progress {
+            cb(0.9);
+        }
+
+        // Convert charon Stems to our StemData format
+        // charon-audio outputs stems as separate audio buffers
+        let stem_data = convert_charon_stems_to_stem_data(stems)?;
+
+        if let Some(cb) = &progress {
+            cb(1.0);
+        }
+
+        Ok(stem_data)
     }
 
     fn supports_gpu(&self) -> bool {
@@ -287,12 +311,93 @@ impl SeparationBackend for CharonBackend {
     }
 
     fn is_available(&self) -> bool {
-        false // Blocked by dependency conflict
+        true // Available when feature is enabled
     }
 
     fn unavailable_reason(&self) -> Option<&'static str> {
-        Some("Requires rayon >=1.10, but graph_builder requires <1.10")
+        None
     }
+}
+
+#[cfg(not(feature = "charon-backend"))]
+impl SeparationBackend for CharonBackend {
+    fn separate(
+        &self,
+        _input_path: &Path,
+        _model_path: &Path,
+        _config: &SeparationConfig,
+        _progress: Option<ProgressCallback>,
+    ) -> Result<StemData> {
+        use super::error::SeparationError;
+        Err(SeparationError::BackendInitFailed(
+            "CharonBackend not available: compile with --features charon-backend".to_string(),
+        ))
+    }
+
+    fn supports_gpu(&self) -> bool {
+        false
+    }
+
+    fn name(&self) -> &'static str {
+        "Charon"
+    }
+
+    fn is_available(&self) -> bool {
+        false
+    }
+
+    fn unavailable_reason(&self) -> Option<&'static str> {
+        Some("Compile with --features charon-backend to enable")
+    }
+}
+
+/// Convert charon-audio Stems to our StemData format
+#[cfg(feature = "charon-backend")]
+fn convert_charon_stems_to_stem_data(stems: charon_audio::Stems) -> Result<StemData> {
+    use super::error::SeparationError;
+
+    // charon-audio provides stems as named audio buffers
+    // Standard 4-stem model outputs: vocals, drums, bass, other
+    let vocals = stems.get("vocals").ok_or_else(|| {
+        SeparationError::SeparationFailed("Missing vocals stem".to_string())
+    })?;
+    let drums = stems.get("drums").ok_or_else(|| {
+        SeparationError::SeparationFailed("Missing drums stem".to_string())
+    })?;
+    let bass = stems.get("bass").ok_or_else(|| {
+        SeparationError::SeparationFailed("Missing bass stem".to_string())
+    })?;
+    let other = stems.get("other").ok_or_else(|| {
+        SeparationError::SeparationFailed("Missing other stem".to_string())
+    })?;
+
+    // Get sample rate from any stem (they should all be the same)
+    let sample_rate = vocals.sample_rate;
+    let channels = vocals.channels() as u16;
+
+    // Convert from charon's channel-first ndarray format [channels, samples]
+    // to our interleaved format [sample0_L, sample0_R, sample1_L, sample1_R, ...]
+    fn interleave_audio_buffer(buffer: &charon_audio::AudioBuffer) -> Vec<f32> {
+        let num_channels = buffer.channels();
+        let num_samples = buffer.samples();
+        let mut interleaved = Vec::with_capacity(num_channels * num_samples);
+
+        for sample_idx in 0..num_samples {
+            for ch in 0..num_channels {
+                interleaved.push(buffer.data[[ch, sample_idx]]);
+            }
+        }
+        interleaved
+    }
+
+    Ok(StemData {
+        sample_rate,
+        channels,
+        vocals: interleave_audio_buffer(vocals),
+        drums: interleave_audio_buffer(drums),
+        bass: interleave_audio_buffer(bass),
+        other: interleave_audio_buffer(other),
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

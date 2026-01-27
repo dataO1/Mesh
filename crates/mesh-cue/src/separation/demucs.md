@@ -240,9 +240,40 @@ converges to ~1.5 in steady state. To prevent edge artifacts:
 - Use a minimum threshold based on expected window sum
 - At edges with partial coverage, scale down rather than amplifying noise
 
+## Alternative Backends
+
+### charon-audio
+
+[charon-audio](https://crates.io/crates/charon-audio) is a pure-Rust audio separation library using ONNX Runtime
+or Candle backends.
+
+**⚠️ Status: NOT USABLE (as of v0.1.0)**
+
+Investigation revealed that charon-audio v0.1.0 has **placeholder inference** - it returns copies
+of the input instead of performing actual separation:
+
+```rust
+// From charon-audio/src/models.rs
+pub fn infer(&self, input: &Array2<f32>) -> Result<Vec<Array2<f32>>> {
+    // Placeholder: return copies of input as "separated" sources
+    let separated = vec![input.clone(); num_sources];
+    Ok(separated)
+}
+```
+
+**Infrastructure is in place:**
+- Dependency added with `--features charon-backend`
+- `CharonBackend` implementation ready
+- Backend selection UI works
+- Uses patched `graph_builder` via [PR #139](https://github.com/neo4j-labs/graph/pull/139) for rayon 1.10+
+
+**Waiting for:** charon-audio to implement actual ONNX/Candle inference.
+Monitor releases at https://crates.io/crates/charon-audio
+
 ## References
 
 - [sevagh/demucs.onnx](https://github.com/sevagh/demucs.onnx) - C++ ONNX implementation
 - [Mixxx GSoC 2025](https://mixxx.org/news/2025-10-27-gsoc2025-demucs-to-onnx-dhunstack/) - Achieved <0.01 dB difference
 - [facebookresearch/demucs](https://github.com/facebookresearch/demucs) - Original PyTorch model
 - [UVR5](https://github.com/Anjok07/ultimatevocalremovergui) - Reference for quality comparison
+- [charon-audio](https://docs.rs/charon-audio) - Pure Rust separation library (blocked by rayon conflict)

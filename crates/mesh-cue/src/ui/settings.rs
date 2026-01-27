@@ -3,7 +3,7 @@
 //! Provides a modal dialog for editing application configuration.
 
 use super::app::{Message, SettingsState};
-use crate::config::{BpmSource, ModelType, SeparationConfig};
+use crate::config::{BackendType, BpmSource, ModelType, SeparationConfig};
 use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_input, Space};
 use mesh_core::engine::InterpolationMethod;
 use iced::{Alignment, Element, Length};
@@ -360,6 +360,40 @@ fn view_track_name_format_section(state: &SettingsState) -> Element<'_, Message>
     let tags_hint = text("Tags: {artist}, {name}")
         .size(12);
 
+    // Stem separation backend subsection
+    let backend_title = text("Separation Backend").size(14);
+    let backend_hint = text("Engine used for stem separation (Charon = pure Rust, ORT = ONNX Runtime)")
+        .size(12);
+
+    // Backend selection buttons - only show available backends
+    let backend_options = BackendType::available();
+    let backend_buttons: Vec<Element<Message>> = backend_options
+        .iter()
+        .map(|&backend| {
+            let is_selected = state.draft_separation_backend == backend;
+            let btn = button(text(backend.display_name()).size(11))
+                .on_press(Message::UpdateSettingsSeparationBackend(backend))
+                .style(if is_selected {
+                    iced::widget::button::primary
+                } else {
+                    iced::widget::button::secondary
+                })
+                .width(Length::Fixed(130.0));
+            btn.into()
+        })
+        .collect();
+
+    let backend_label = text("Backend:").size(14);
+    let backend_row = row![
+        backend_label,
+        row(backend_buttons).spacing(4).align_y(Alignment::Center),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+
+    let backend_description = text(state.draft_separation_backend.description())
+        .size(12);
+
     // Stem separation model subsection
     let separation_title = text("Stem Separation Model").size(14);
     let separation_hint = text("Model used for automatic stem separation during import")
@@ -436,6 +470,11 @@ fn view_track_name_format_section(state: &SettingsState) -> Element<'_, Message>
             hint,
             format_row,
             tags_hint,
+            Space::new().height(10),
+            backend_title,
+            backend_hint,
+            backend_row,
+            backend_description,
             Space::new().height(10),
             separation_title,
             separation_hint,

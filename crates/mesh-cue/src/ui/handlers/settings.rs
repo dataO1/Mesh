@@ -100,6 +100,15 @@ impl MeshCueApp {
         Task::none()
     }
 
+    /// Handle UpdateSettingsSeparationBackend message
+    pub fn handle_update_settings_separation_backend(
+        &mut self,
+        backend: crate::config::BackendType,
+    ) -> Task<Message> {
+        self.settings.draft_separation_backend = backend;
+        Task::none()
+    }
+
     /// Handle UpdateSettingsSeparationModel message
     pub fn handle_update_settings_separation_model(
         &mut self,
@@ -151,7 +160,8 @@ impl MeshCueApp {
             // Update scratch interpolation
             config.audio.scratch_interpolation = self.settings.draft_scratch_interpolation;
 
-            // Update separation model and shifts
+            // Update separation backend, model and shifts
+            config.analysis.separation.backend = self.settings.draft_separation_backend;
             config.analysis.separation.model = self.settings.draft_separation_model;
             config.analysis.separation.shifts = self.settings.draft_separation_shifts;
 

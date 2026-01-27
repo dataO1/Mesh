@@ -371,6 +371,7 @@ impl MeshCueApp {
             Message::UpdateSettingsSlicerBufferBars(bars) => return self.handle_update_settings_slicer_buffer_bars(bars),
             Message::UpdateSettingsOutputPair(idx) => return self.handle_update_settings_output_pair(idx),
             Message::UpdateSettingsScratchInterpolation(method) => return self.handle_update_settings_scratch_interpolation(method),
+            Message::UpdateSettingsSeparationBackend(backend) => return self.handle_update_settings_separation_backend(backend),
             Message::UpdateSettingsSeparationModel(model) => return self.handle_update_settings_separation_model(model),
             Message::UpdateSettingsSeparationShifts(shifts) => return self.handle_update_settings_separation_shifts(shifts),
             Message::RefreshAudioDevices => return self.handle_refresh_audio_devices(),

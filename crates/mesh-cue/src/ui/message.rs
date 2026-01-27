@@ -13,7 +13,7 @@ use mesh_widgets::PlaylistBrowserMessage;
 
 use crate::analysis::{AnalysisType, ReanalysisProgress, ReanalysisScope};
 use crate::batch_import::{ImportProgress, MixedAudioFile, StemGroup};
-use crate::config::{BpmSource, ModelType};
+use crate::config::{BackendType, BpmSource, ModelType};
 use mesh_core::usb::UsbMessage;
 use super::context_menu::ContextMenuKind;
 use super::state::{BrowserSide, ImportMode, LinkedStemLoadedMsg, StemsLoadResult, View};
@@ -152,6 +152,8 @@ pub enum Message {
     UpdateSettingsOutputPair(usize),
     /// Update scratch interpolation method
     UpdateSettingsScratchInterpolation(mesh_core::engine::InterpolationMethod),
+    /// Update separation backend type
+    UpdateSettingsSeparationBackend(BackendType),
     /// Update separation model type
     UpdateSettingsSeparationModel(ModelType),
     /// Update separation shift augmentation (1-5)
