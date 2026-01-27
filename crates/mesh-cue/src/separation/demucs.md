@@ -276,4 +276,4 @@ Monitor releases at https://crates.io/crates/charon-audio
 - [Mixxx GSoC 2025](https://mixxx.org/news/2025-10-27-gsoc2025-demucs-to-onnx-dhunstack/) - Achieved <0.01 dB difference
 - [facebookresearch/demucs](https://github.com/facebookresearch/demucs) - Original PyTorch model
 - [UVR5](https://github.com/Anjok07/ultimatevocalremovergui) - Reference for quality comparison
-- [charon-audio](https://docs.rs/charon-audio) - Pure Rust separation library (blocked by rayon conflict)
+- [charon-audio](https://docs.rs/charon-audio) - Pure Rust separation library (placeholder inference in v0.1.0)

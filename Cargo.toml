@@ -30,7 +30,7 @@ mesh-widgets = { path = "crates/mesh-widgets" }
 cozo = { version = "0.7.6", features = ["storage-sqlite", "graph-algo"] }
 crossbeam = "0.8"
 notify = "6"
-rayon = ">=1.9,<1.10"  # Pinned for graph_builder 0.4.1 compatibility (rayon 1.10+ broke ParallelIterator::copied())
+rayon = "1.10"  # Using patched graph_builder for rayon 1.10+ compatibility
 
 # mesh-cue dependencies
 essentia = "0.1.5"
@@ -52,3 +52,10 @@ strip = "symbols"      # Strip debug symbols
 lto = "thin"           # Link-Time Optimization for smaller binaries
 panic = "abort"        # Smaller binary, no unwinding overhead
 codegen-units = 1      # Better optimization, slower compile
+
+# Patch graph crates to use PR #139 fix for rayon 1.10+ compatibility
+# See: https://github.com/neo4j-labs/graph/pull/139
+# Using thief-sty's fork which has the fix (adds .as_ref() before into_par_iter())
+[patch.crates-io]
+graph = { git = "https://github.com/thief-sty/graph", branch = "main" }
+graph_builder = { git = "https://github.com/thief-sty/graph", branch = "main" }

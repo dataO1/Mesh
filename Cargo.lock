@@ -726,6 +726,34 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
+name = "charon-audio"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "143d94ae49d528418141205d1f19771f596fb3ad906ac261687c5473f0f7df14"
+dependencies = [
+ "anyhow",
+ "console_error_panic_hook",
+ "cpal",
+ "env_logger 0.11.8",
+ "hound",
+ "indicatif",
+ "log",
+ "ndarray 0.15.6",
+ "num-traits",
+ "ort",
+ "rayon",
+ "rubato 0.15.0",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "symphonia",
+ "thiserror 1.0.69",
+ "walkdir",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -881,6 +909,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
 dependencies = [
  "crossbeam-utils",
+]
+
+[[package]]
+name = "console"
+version = "0.15.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "054ccb5b10f9f2cbf51eb355ca1d05c2d279ce1804688d0db74b4733a5aeafd8"
+dependencies = [
+ "encode_unicode",
+ "libc",
+ "once_cell",
+ "unicode-width 0.2.2",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "console_error_panic_hook"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a06aeb73f470f66dcdbf7223caeebb85984942f22f1adb2a088cf9668146bbbc"
+dependencies = [
+ "cfg-if",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1554,6 +1605,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
+name = "encode_unicode"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
+
+[[package]]
 name = "encoding_rs"
 version = "0.8.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2197,9 +2254,8 @@ dependencies = [
 
 [[package]]
 name = "graph"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e5a6f21cf3fabb758f26cea0f3b5854189d435d4337d85226020e3869fcc8b3"
+version = "0.3.2"
+source = "git+https://github.com/thief-sty/graph?branch=main#5527fc1f857763f2781e2ba41f38eadcc43155fc"
 dependencies = [
  "ahash 0.8.12",
  "atomic_float",
@@ -2213,8 +2269,7 @@ dependencies = [
 [[package]]
 name = "graph_builder"
 version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24f006b0c4bba033c1a7fc7644612c6ec53894c353956d94820a28fc6e8a571f"
+source = "git+https://github.com/thief-sty/graph?branch=main#5527fc1f857763f2781e2ba41f38eadcc43155fc"
 dependencies = [
  "atoi",
  "atomic 0.5.3",
@@ -2686,6 +2741,19 @@ checksum = "0ad4bb2b565bca0645f4d68c5c9af97fba094e9791da685bf83cb5f3ce74acf2"
 dependencies = [
  "equivalent",
  "hashbrown 0.16.1",
+]
+
+[[package]]
+name = "indicatif"
+version = "0.17.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "183b3088984b400f4cfac3620d5e076c84da5364016b4f49473de574b2586235"
+dependencies = [
+ "console",
+ "number_prefix",
+ "portable-atomic",
+ "unicode-width 0.2.2",
+ "web-time",
 ]
 
 [[package]]
@@ -3201,7 +3269,7 @@ dependencies = [
  "pathdiff",
  "rayon",
  "rtrb",
- "rubato",
+ "rubato 0.16.2",
  "serde",
  "serde_yaml",
  "signalsmith-stretch",
@@ -3219,6 +3287,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "basedrop",
+ "charon-audio",
  "dirs",
  "env_logger 0.11.8",
  "essentia",
@@ -3513,6 +3582,7 @@ dependencies = [
  "num-integer",
  "num-traits",
  "rawpointer",
+ "rayon",
  "serde",
 ]
 
@@ -3776,6 +3846,12 @@ dependencies = [
  "quote",
  "syn 2.0.112",
 ]
+
+[[package]]
+name = "number_prefix"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
 
 [[package]]
 name = "objc"
@@ -4718,9 +4794,9 @@ checksum = "60a357793950651c4ed0f3f52338f53b2f809f32d83a07f72909fa13e4c6c1e3"
 
 [[package]]
 name = "rayon"
-version = "1.9.0"
+version = "1.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4963ed1bc86e4f3ee217022bd855b297cef07fb9eac5dfa1f788b220b49b3bd"
+checksum = "368f01d005bf8fd9b1206fb6fa653e6c4a81ceb1466406b81792d87c5677a58f"
 dependencies = [
  "either",
  "rayon-core",
@@ -4882,6 +4958,18 @@ name = "rtrb"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ad8388ea1a9e0ea807e442e8263a699e7edcb320ecbcd21b4fa8ff859acce3ba"
+
+[[package]]
+name = "rubato"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5d18b486e7d29a408ef3f825bc1327d8f87af091c987ca2f5b734625940e234"
+dependencies = [
+ "num-complex",
+ "num-integer",
+ "num-traits",
+ "realfft",
+]
 
 [[package]]
 name = "rubato"
@@ -5128,6 +5216,17 @@ checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
 dependencies = [
  "serde_core",
  "serde_derive",
+]
+
+[[package]]
+name = "serde-wasm-bindgen"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8302e169f0eddcc139c70f139d19d6467353af16f9fce27e8c30158036a1e16b"
+dependencies = [
+ "js-sys",
+ "serde",
+ "wasm-bindgen",
 ]
 
 [[package]]
