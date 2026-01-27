@@ -635,6 +635,10 @@ fn run_demucs_inference(
             right_channel[i] = stereo_audio[src_idx * 2 + 1];
         }
 
+        // NOTE: No external normalization needed - HTDemucs normalizes internally
+        // (both time-domain and spectrogram branches are normalized inside the model)
+        // Reference: sevagh/demucs.onnx apply.py
+
         // Create waveform input tensor [1, 2, samples]
         let mut input_array = Array3::<f32>::zeros((1, 2, DEMUCS_SEGMENT_SAMPLES));
         for i in 0..DEMUCS_SEGMENT_SAMPLES {
@@ -658,26 +662,54 @@ fn run_demucs_inference(
             .run(ort::inputs!["input" => input_tensor, "x" => stft_tensor])
             .map_err(|e| SeparationError::SeparationFailed(format!("Inference failed: {}", e)))?;
 
+        // ═══════════════════════════════════════════════════════════════════════
+        // HTDemucs HYBRID model outputs TWO branches:
+        // 1. "output" - frequency branch (masked spectrogram in CaC format)
+        // 2. "add_67" - time branch (direct waveform)
+        // Final separation = time_branch + istft(frequency_branch)
+        // Reference: sevagh/demucs.onnx model_inference.cpp
+        // ═══════════════════════════════════════════════════════════════════════
+
         // Extract time-domain output "add_67" [1, 4, 2, samples]
-        // Model outputs: "output" (spectrogram) and "add_67" (waveform stems)
-        let output = outputs
+        let time_output = outputs
             .get("add_67")
             .ok_or_else(|| {
                 SeparationError::SeparationFailed("Output tensor 'add_67' not found".to_string())
             })?;
 
-        let (shape, data) = output.try_extract_tensor::<f32>().map_err(|e| {
-            SeparationError::SeparationFailed(format!("Failed to extract output: {}", e))
+        let (time_shape, time_data) = time_output.try_extract_tensor::<f32>().map_err(|e| {
+            SeparationError::SeparationFailed(format!("Failed to extract time output: {}", e))
         })?;
 
-        // Log shape on first segment to verify expected [1, 4, 2, samples]
+        // Extract frequency-domain output "output" [1, 4*2*2, freq_bins, frames]
+        // Shape: [batch, stems*channels*2(real/imag), freq_bins, frames]
+        let freq_output = outputs
+            .get("output")
+            .ok_or_else(|| {
+                SeparationError::SeparationFailed("Output tensor 'output' not found".to_string())
+            })?;
+
+        let (freq_shape, freq_data) = freq_output.try_extract_tensor::<f32>().map_err(|e| {
+            SeparationError::SeparationFailed(format!("Failed to extract freq output: {}", e))
+        })?;
+
+        // Log shapes on first segment
         if seg_idx == 0 {
             log::info!(
-                "Output tensor shape: {:?}, total elements: {}",
-                shape.as_ref(),
-                data.len()
+                "Time output shape: {:?}, Freq output shape: {:?}",
+                time_shape.as_ref(),
+                freq_shape.as_ref()
             );
         }
+
+        // Convert frequency branch from CaC format to waveform via ISTFT
+        // and combine with time branch
+        let combined_stems = combine_hybrid_outputs(
+            &time_data,
+            &freq_data,
+            freq_shape.as_ref(),
+            DEMUCS_SEGMENT_SAMPLES,
+        );
 
         // Overlap-add: accumulate with triangular window for smooth blending
         for i in 0..segment_len {
@@ -696,12 +728,24 @@ fn run_demucs_inference(
 
             weight_accum[out_idx] += weight;
 
-            // Accumulate each stem (output shape: [1, 4, 2, samples])
+            // Accumulate each stem from combined hybrid output
+            // Layout: [stems * channels * samples] = [4 * 2 * segment_samples]
             for stem in 0..4 {
-                let left_idx = i + DEMUCS_SEGMENT_SAMPLES * (0 + 2 * stem);
-                let right_idx = i + DEMUCS_SEGMENT_SAMPLES * (1 + 2 * stem);
-                stem_accum[stem][out_idx * 2] += data[left_idx] * weight;
-                stem_accum[stem][out_idx * 2 + 1] += data[right_idx] * weight;
+                let stem_offset = stem * 2 * DEMUCS_SEGMENT_SAMPLES;
+                let left_idx = stem_offset + i;
+                let right_idx = stem_offset + DEMUCS_SEGMENT_SAMPLES + i;
+                let left_val = if left_idx < combined_stems.len() {
+                    combined_stems[left_idx]
+                } else {
+                    0.0
+                };
+                let right_val = if right_idx < combined_stems.len() {
+                    combined_stems[right_idx]
+                } else {
+                    0.0
+                };
+                stem_accum[stem][out_idx * 2] += left_val * weight;
+                stem_accum[stem][out_idx * 2 + 1] += right_val * weight;
             }
         }
 
@@ -756,6 +800,235 @@ fn run_demucs_inference(
     );
 
     Ok(stems)
+}
+
+/// Combine time and frequency branch outputs from HTDemucs hybrid model
+///
+/// The HTDemucs model outputs:
+/// - Time branch: direct waveform [1, stems, channels, samples]
+/// - Frequency branch: masked spectrogram in CaC format [1, stems*channels*2, freq, frames]
+///
+/// Final output = time_branch + istft(frequency_branch)
+///
+/// Reference: sevagh/demucs.onnx model_inference.cpp
+fn combine_hybrid_outputs(
+    time_data: &[f32],
+    freq_data: &[f32],
+    freq_shape: &[i64],
+    segment_samples: usize,
+) -> Vec<f32> {
+    use realfft::RealFftPlanner;
+
+    let n_fft = DEMUCS_NFFT;
+    let hop = DEMUCS_HOP_LENGTH;
+
+    // Parse frequency output shape: [batch, stems, ch*2, freq_bins, frames]
+    // Actual shape: [1, 4, 4, 2048, 336]
+    let num_stems = if freq_shape.len() >= 2 {
+        freq_shape[1] as usize
+    } else {
+        4
+    };
+    let num_channels = 2; // stereo
+    let cac_channels = if freq_shape.len() >= 3 {
+        freq_shape[2] as usize // Should be 4 (2 channels * 2 for real/imag)
+    } else {
+        4
+    };
+    let freq_bins = if freq_shape.len() >= 4 {
+        freq_shape[3] as usize
+    } else {
+        n_fft / 2
+    };
+    let num_frames = if freq_shape.len() >= 5 {
+        freq_shape[4] as usize
+    } else {
+        DEMUCS_STFT_FRAMES
+    };
+
+    log::debug!(
+        "ISTFT params: stems={}, cac_channels={}, freq_bins={}, frames={}",
+        num_stems, cac_channels, freq_bins, num_frames
+    );
+
+    // Prepare inverse FFT
+    let mut planner = RealFftPlanner::<f32>::new();
+    let ifft = planner.plan_fft_inverse(n_fft);
+
+    // Pre-compute Hann window
+    let window: Vec<f32> = (0..n_fft)
+        .map(|i| {
+            let phase = 2.0 * std::f32::consts::PI * i as f32 / n_fft as f32;
+            0.5 * (1.0 - phase.cos())
+        })
+        .collect();
+
+    // Normalization factor (matches torch.stft normalized=True)
+    let norm_factor = (n_fft as f32).sqrt();
+
+    // Output: [stems, channels, samples] flattened as [stems * channels * samples]
+    let mut combined = vec![0.0f32; num_stems * num_channels * segment_samples];
+
+    // First, copy time branch data directly
+    // Time branch shape: [1, 4, 2, samples] = [batch, stems, channels, samples]
+    for i in 0..time_data.len().min(combined.len()) {
+        combined[i] = time_data[i];
+    }
+
+    // Debug: Log RMS of time branch per stem (first segment only logged later)
+    if log::log_enabled!(log::Level::Debug) {
+        for s in 0..num_stems.min(4) {
+            let stem_start = s * num_channels * segment_samples;
+            let stem_end = stem_start + num_channels * segment_samples;
+            if stem_end <= time_data.len() {
+                let rms: f32 = time_data[stem_start..stem_end]
+                    .iter()
+                    .map(|x| x * x)
+                    .sum::<f32>()
+                    / (num_channels * segment_samples) as f32;
+                log::debug!("Time branch stem {} RMS: {:.6}", s, rms.sqrt());
+            }
+        }
+    }
+
+    // Process frequency branch: convert CaC to complex, apply ISTFT, add to time
+    // Frequency output layout: [batch, stems, ch*2, freq, frames] = [1, 4, 4, 2048, 336]
+    // For each stem s and channel c (0=left, 1=right):
+    //   real at ch_idx = c*2, imag at ch_idx = c*2+1
+    //   index = s * stem_stride + ch_idx * ch_stride + freq * frame_stride + frame
+
+    // Strides for 5D tensor [1, stems, ch*2, freq, frames]
+    let frame_stride = 1usize;
+    let freq_stride_5d = num_frames;
+    let ch_stride = freq_bins * num_frames;
+    let stem_stride = cac_channels * ch_stride;
+
+    for stem in 0..num_stems {
+        for ch in 0..num_channels {
+            // Calculate padded output length for ISTFT
+            // We need to account for the 2-frame offset and padding
+            let padded_len = (num_frames + 4) * hop + n_fft;
+            let mut istft_output = vec![0.0f32; padded_len];
+            let mut window_sum = vec![0.0f32; padded_len];
+
+            // Channel indices in CaC format: [left_real, left_imag, right_real, right_imag]
+            let real_ch_idx = ch * 2;       // 0 for left, 2 for right
+            let imag_ch_idx = ch * 2 + 1;   // 1 for left, 3 for right
+
+            // Prepare buffers for IFFT
+            let mut scratch = ifft.make_scratch_vec();
+            let mut complex_frame = ifft.make_input_vec();
+            let mut time_frame = vec![0.0f32; n_fft];
+
+            // Process each frame
+            for frame in 0..num_frames {
+                // Extract complex spectrum for this frame
+                // Zero the first 2 and last 2 frequency bins as per sevagh's implementation
+                // This removes DC/near-DC and near-Nyquist content that can cause artifacts
+                for freq in 0..complex_frame.len() {
+                    if freq < 2 || freq >= freq_bins - 2 {
+                        // Zero: bins 0, 1 (DC area), bins 2046, 2047 (near-Nyquist), bin 2048 (Nyquist)
+                        complex_frame[freq] = realfft::num_complex::Complex::new(0.0, 0.0);
+                    } else {
+                        // Index into 5D tensor [batch, stems, ch*2, freq, frames]
+                        let real_idx = stem * stem_stride
+                            + real_ch_idx * ch_stride
+                            + freq * freq_stride_5d
+                            + frame * frame_stride;
+                        let imag_idx = stem * stem_stride
+                            + imag_ch_idx * ch_stride
+                            + freq * freq_stride_5d
+                            + frame * frame_stride;
+
+                        let re = if real_idx < freq_data.len() {
+                            freq_data[real_idx]
+                        } else {
+                            0.0
+                        };
+                        let im = if imag_idx < freq_data.len() {
+                            freq_data[imag_idx]
+                        } else {
+                            0.0
+                        };
+
+                        complex_frame[freq] = realfft::num_complex::Complex::new(re, im);
+                    }
+                }
+
+                // Apply inverse FFT
+                if ifft
+                    .process_with_scratch(&mut complex_frame, &mut time_frame, &mut scratch)
+                    .is_ok()
+                {
+                    // Apply window and accumulate with overlap-add
+                    // No frame offset needed - the pad extraction handles alignment
+                    let frame_start = frame * hop;
+
+                    for i in 0..n_fft {
+                        let out_idx = frame_start + i;
+                        if out_idx < istft_output.len() {
+                            // Apply window and normalize
+                            let sample = time_frame[i] * window[i] * norm_factor / n_fft as f32;
+                            istft_output[out_idx] += sample;
+                            window_sum[out_idx] += window[i] * window[i];
+                        }
+                    }
+                }
+            }
+
+            // Normalize by window sum and extract the valid region
+            // The valid region starts after the demucs padding (hop/2 * 3 = 1536)
+            let pad = hop / 2 * 3;
+            let output_offset = stem * num_channels * segment_samples + ch * segment_samples;
+
+            // Calculate expected window sum for full 75% overlap (4 frames contribute)
+            // For Hann window with 75% overlap, the sum of squared windows ≈ 1.5
+            let expected_window_sum: f32 = (0..n_fft)
+                .map(|i| {
+                    let w = window[i];
+                    w * w
+                })
+                .sum::<f32>()
+                / hop as f32; // Normalize per hop
+            let min_window_sum = expected_window_sum * 0.5; // Use 50% of expected as minimum
+
+            for i in 0..segment_samples {
+                let src_idx = pad + i;
+                if src_idx < istft_output.len() {
+                    let w = window_sum[src_idx];
+                    // Use minimum threshold to avoid amplifying noise at edges
+                    let freq_sample = if w > min_window_sum {
+                        istft_output[src_idx] / w
+                    } else if w > 1e-8 {
+                        // Partial coverage - scale down to avoid edge artifacts
+                        istft_output[src_idx] / min_window_sum
+                    } else {
+                        0.0 // No window coverage - output silence
+                    };
+                    // Add frequency branch to time branch
+                    combined[output_offset + i] += freq_sample;
+                }
+            }
+        }
+    }
+
+    // Debug: Log RMS of combined output per stem
+    if log::log_enabled!(log::Level::Debug) {
+        for s in 0..num_stems.min(4) {
+            let stem_start = s * num_channels * segment_samples;
+            let stem_end = stem_start + num_channels * segment_samples;
+            if stem_end <= combined.len() {
+                let rms: f32 = combined[stem_start..stem_end]
+                    .iter()
+                    .map(|x| x * x)
+                    .sum::<f32>()
+                    / (num_channels * segment_samples) as f32;
+                log::debug!("Combined stem {} RMS: {:.6}", s, rms.sqrt());
+            }
+        }
+    }
+
+    combined
 }
 
 /// Compute STFT for Demucs model input
