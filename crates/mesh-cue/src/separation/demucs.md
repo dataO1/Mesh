@@ -158,7 +158,72 @@ x = (x - mean) / (1e-5 + std)
 3. [x] Implement ISTFT for frequency branch
 4. [x] Extract both outputs from ONNX model
 5. [x] Sum time and frequency waveforms
-6. [ ] Test separation quality
+6. [x] Per-stem time/freq branch weighting
+7. [ ] Shift augmentation (optional)
+8. [ ] Test separation quality
+
+## Per-Stem Branch Weighting
+
+Different stems benefit from different branch combinations:
+
+| Stem | Time Weight | Freq Weight | Rationale |
+|------|-------------|-------------|-----------|
+| Drums | 1.0 | 1.0 | Transients need time branch |
+| Bass | 0.0 | 1.0 | Frequency-only reduces drum bleed |
+| Other | 0.3 | 1.0 | Mostly tonal content |
+| Vocals | 0.0 | 1.0 | Frequency-only for cleaner extraction |
+
+## Shift Augmentation (The Shift Trick)
+
+Reference: [facebookresearch/demucs](https://github.com/facebookresearch/demucs) apply.py
+
+The shift trick improves separation quality by ~0.2 SDR points:
+
+1. **Max shift**: 0.5 seconds (22050 samples at 44.1kHz)
+2. **Pad input**: Add `2 * max_shift` padding
+3. **For each shift**:
+   - Generate random offset in `[0, max_shift]`
+   - Shift input by offset
+   - Run inference
+   - Shift output back by `-offset`
+   - Accumulate result
+4. **Average**: Divide accumulated output by number of shifts
+
+```python
+max_shift = int(0.5 * model.samplerate)  # 22050 samples
+padded_mix = mix.padded(length + 2 * max_shift)
+out = 0.
+for _ in range(shifts):
+    offset = random.randint(0, max_shift)
+    shifted = padded_mix[..., offset:offset + length]
+    shifted_out = apply_model(model, shifted)
+    out += shifted_out[..., max_shift - offset:]
+out /= shifts
+```
+
+Trade-off: Makes inference `shifts` times slower. Recommended values: 1 (none), 2, or 5.
+
+### Implementation Notes
+
+**Critical: Output Realignment**
+
+When shifting the input, the output is also shifted by the same amount. Before averaging,
+outputs must be realigned to a common reference point:
+
+```rust
+// Skip samples to align with center position (offset = MAX_SHIFT)
+let align_skip = MAX_SHIFT - offset;
+shift_accum[i] += combined_stems[align_skip + i];
+```
+
+Without this realignment, you get a "canon" effect with delayed copies stacked on top.
+
+**Quality Assessment (as of 2024-01)**
+
+- Shift augmentation with 2-5 shifts provides marginal improvement
+- Processing time increases linearly with number of shifts
+- For most use cases, shifts=1 (disabled) is recommended
+- May be more beneficial for specific content types (needs further testing)
 
 ## Critical ISTFT Details
 

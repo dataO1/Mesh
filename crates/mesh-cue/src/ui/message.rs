@@ -154,6 +154,8 @@ pub enum Message {
     UpdateSettingsScratchInterpolation(mesh_core::engine::InterpolationMethod),
     /// Update separation model type
     UpdateSettingsSeparationModel(ModelType),
+    /// Update separation shift augmentation (1-5)
+    UpdateSettingsSeparationShifts(u8),
     /// Refresh available audio devices
     RefreshAudioDevices,
     SaveSettings,

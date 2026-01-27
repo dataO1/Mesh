@@ -3,7 +3,7 @@
 //! Provides a modal dialog for editing application configuration.
 
 use super::app::{Message, SettingsState};
-use crate::config::{BpmSource, ModelType};
+use crate::config::{BpmSource, ModelType, SeparationConfig};
 use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_input, Space};
 use mesh_core::engine::InterpolationMethod;
 use iced::{Alignment, Element, Length};
@@ -394,6 +394,41 @@ fn view_track_name_format_section(state: &SettingsState) -> Element<'_, Message>
     let model_description = text(state.draft_separation_model.description())
         .size(12);
 
+    // Shift augmentation subsection
+    let shifts_title = text("Shift Augmentation").size(14);
+    let shifts_hint = text("Run model multiple times with random shifts for better quality (slower)")
+        .size(12);
+
+    // Shifts selection buttons (1-5)
+    let shifts_options: [u8; 5] = [1, 2, 3, 4, 5];
+    let shifts_buttons: Vec<Element<Message>> = shifts_options
+        .iter()
+        .map(|&shifts| {
+            let is_selected = state.draft_separation_shifts == shifts;
+            let label = SeparationConfig::shifts_display_name(shifts);
+            let btn = button(text(label).size(11))
+                .on_press(Message::UpdateSettingsSeparationShifts(shifts))
+                .style(if is_selected {
+                    iced::widget::button::primary
+                } else {
+                    iced::widget::button::secondary
+                })
+                .width(Length::Fixed(85.0));
+            btn.into()
+        })
+        .collect();
+
+    let shifts_label = text("Quality:").size(14);
+    let shifts_row = row![
+        shifts_label,
+        row(shifts_buttons).spacing(4).align_y(Alignment::Center),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+
+    let shifts_description = text(SeparationConfig::shifts_description(state.draft_separation_shifts))
+        .size(12);
+
     container(
         column![
             section_title,
@@ -406,6 +441,11 @@ fn view_track_name_format_section(state: &SettingsState) -> Element<'_, Message>
             separation_hint,
             model_row,
             model_description,
+            Space::new().height(10),
+            shifts_title,
+            shifts_hint,
+            shifts_row,
+            shifts_description,
         ]
         .spacing(10),
     )

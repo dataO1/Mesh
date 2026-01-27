@@ -548,19 +548,25 @@ const DEMUCS_HOP_LENGTH: usize = DEMUCS_NFFT / 4; // 1024
 /// Calculated as: ceil(DEMUCS_SEGMENT_SAMPLES / DEMUCS_HOP_LENGTH) with proper padding
 const DEMUCS_STFT_FRAMES: usize = 336;
 
+/// Maximum shift in samples for shift augmentation (0.5 seconds at 44.1kHz)
+const DEMUCS_MAX_SHIFT: usize = 22050;
+
 /// Run Demucs ONNX model inference with chunked processing
 fn run_demucs_inference(
     audio: &[f32],
     sample_rate: u32,
     channels: u16,
     model_path: &Path,
-    _config: &SeparationConfig,
+    config: &SeparationConfig,
     progress: Option<&ProgressCallback>,
 ) -> Result<StemData> {
     use super::error::SeparationError;
     use ndarray::Array3;
     use ort::session::{builder::GraphOptimizationLevel, Session};
     use ort::value::Tensor;
+
+    // Number of shifts for shift augmentation (from config, clamped to 1-5)
+    let num_shifts = (config.shifts as usize).clamp(1, 5);
 
     // Demucs expects stereo input
     let stereo_audio = if channels == 1 {
@@ -620,96 +626,190 @@ fn run_demucs_inference(
     ];
     let mut weight_accum = vec![0.0f32; num_samples];
 
+    // Log shift augmentation settings
+    if num_shifts > 1 {
+        log::info!(
+            "Shift augmentation enabled: {} shifts, max_shift={} samples ({:.2}s)",
+            num_shifts,
+            DEMUCS_MAX_SHIFT,
+            DEMUCS_MAX_SHIFT as f64 / 44100.0
+        );
+    }
+
+    // RNG for shift augmentation
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut rng_state: u64 = {
+        let mut hasher = DefaultHasher::new();
+        std::time::SystemTime::now().hash(&mut hasher);
+        hasher.finish()
+    };
+    let next_random = |state: &mut u64| -> usize {
+        // Simple LCG random number generator
+        *state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        ((*state >> 33) as usize) % (DEMUCS_MAX_SHIFT + 1)
+    };
+
     // Process each segment
     for seg_idx in 0..num_segments {
         let start_sample = seg_idx * step_size;
         let end_sample = (start_sample + DEMUCS_SEGMENT_SAMPLES).min(num_samples);
         let segment_len = end_sample - start_sample;
 
-        // Extract left and right channels for this segment (with zero-padding)
-        let mut left_channel = vec![0.0f32; DEMUCS_SEGMENT_SAMPLES];
-        let mut right_channel = vec![0.0f32; DEMUCS_SEGMENT_SAMPLES];
-        for i in 0..segment_len {
-            let src_idx = start_sample + i;
-            left_channel[i] = stereo_audio[src_idx * 2];
-            right_channel[i] = stereo_audio[src_idx * 2 + 1];
+        // For shift augmentation, we need a padded segment
+        // Pad by max_shift on each side to allow shifting
+        let padded_start = start_sample.saturating_sub(DEMUCS_MAX_SHIFT);
+        let padded_end = (start_sample + DEMUCS_SEGMENT_SAMPLES + DEMUCS_MAX_SHIFT).min(num_samples);
+
+        // Extract padded segment (with zero-padding at boundaries)
+        let padded_len = DEMUCS_SEGMENT_SAMPLES + 2 * DEMUCS_MAX_SHIFT;
+        let mut padded_left = vec![0.0f32; padded_len];
+        let mut padded_right = vec![0.0f32; padded_len];
+
+        // Calculate offset into padded buffer where actual audio starts
+        let pad_offset = if start_sample < DEMUCS_MAX_SHIFT {
+            DEMUCS_MAX_SHIFT - start_sample
+        } else {
+            0
+        };
+
+        // Copy available audio into padded buffer
+        for i in padded_start..padded_end {
+            let buf_idx = pad_offset + (i - padded_start);
+            if buf_idx < padded_len {
+                padded_left[buf_idx] = stereo_audio[i * 2];
+                padded_right[buf_idx] = stereo_audio[i * 2 + 1];
+            }
         }
 
-        // NOTE: No external normalization needed - HTDemucs normalizes internally
-        // (both time-domain and spectrogram branches are normalized inside the model)
-        // Reference: sevagh/demucs.onnx apply.py
+        // Accumulator for shift-averaged results
+        let combined_size = 4 * 2 * DEMUCS_SEGMENT_SAMPLES;
+        let mut shift_accum = vec![0.0f32; combined_size];
 
-        // Create waveform input tensor [1, 2, samples]
-        let mut input_array = Array3::<f32>::zeros((1, 2, DEMUCS_SEGMENT_SAMPLES));
-        for i in 0..DEMUCS_SEGMENT_SAMPLES {
-            input_array[[0, 0, i]] = left_channel[i];
-            input_array[[0, 1, i]] = right_channel[i];
-        }
+        // Run inference for each shift
+        for shift_idx in 0..num_shifts {
+            // Generate random offset (0 for first shift if only 1 shift)
+            let offset = if num_shifts == 1 {
+                DEMUCS_MAX_SHIFT // No shift - use center
+            } else {
+                next_random(&mut rng_state)
+            };
 
-        // Compute STFT spectrogram (required by Demucs hybrid model)
-        let stft_array = compute_stft_for_demucs(&left_channel, &right_channel);
+            // Extract shifted segment from padded buffer
+            let shift_start = offset;
+            let mut left_channel = vec![0.0f32; DEMUCS_SEGMENT_SAMPLES];
+            let mut right_channel = vec![0.0f32; DEMUCS_SEGMENT_SAMPLES];
+            for i in 0..DEMUCS_SEGMENT_SAMPLES {
+                let src_idx = shift_start + i;
+                if src_idx < padded_len {
+                    left_channel[i] = padded_left[src_idx];
+                    right_channel[i] = padded_right[src_idx];
+                }
+            }
 
-        // Create input tensors
-        let input_tensor = Tensor::from_array(input_array).map_err(|e| {
-            SeparationError::SeparationFailed(format!("Failed to create input tensor: {}", e))
-        })?;
-        let stft_tensor = Tensor::from_array(stft_array).map_err(|e| {
-            SeparationError::SeparationFailed(format!("Failed to create STFT tensor: {}", e))
-        })?;
+            // Create waveform input tensor [1, 2, samples]
+            let mut input_array = Array3::<f32>::zeros((1, 2, DEMUCS_SEGMENT_SAMPLES));
+            for i in 0..DEMUCS_SEGMENT_SAMPLES {
+                input_array[[0, 0, i]] = left_channel[i];
+                input_array[[0, 1, i]] = right_channel[i];
+            }
 
-        // Run inference with both waveform and STFT inputs
-        let outputs = session
-            .run(ort::inputs!["input" => input_tensor, "x" => stft_tensor])
-            .map_err(|e| SeparationError::SeparationFailed(format!("Inference failed: {}", e)))?;
+            // Compute STFT spectrogram (required by Demucs hybrid model)
+            let stft_array = compute_stft_for_demucs(&left_channel, &right_channel);
 
-        // ═══════════════════════════════════════════════════════════════════════
-        // HTDemucs HYBRID model outputs TWO branches:
-        // 1. "output" - frequency branch (masked spectrogram in CaC format)
-        // 2. "add_67" - time branch (direct waveform)
-        // Final separation = time_branch + istft(frequency_branch)
-        // Reference: sevagh/demucs.onnx model_inference.cpp
-        // ═══════════════════════════════════════════════════════════════════════
-
-        // Extract time-domain output "add_67" [1, 4, 2, samples]
-        let time_output = outputs
-            .get("add_67")
-            .ok_or_else(|| {
-                SeparationError::SeparationFailed("Output tensor 'add_67' not found".to_string())
+            // Create input tensors
+            let input_tensor = Tensor::from_array(input_array).map_err(|e| {
+                SeparationError::SeparationFailed(format!("Failed to create input tensor: {}", e))
+            })?;
+            let stft_tensor = Tensor::from_array(stft_array).map_err(|e| {
+                SeparationError::SeparationFailed(format!("Failed to create STFT tensor: {}", e))
             })?;
 
-        let (time_shape, time_data) = time_output.try_extract_tensor::<f32>().map_err(|e| {
-            SeparationError::SeparationFailed(format!("Failed to extract time output: {}", e))
-        })?;
+            // Run inference with both waveform and STFT inputs
+            let outputs = session
+                .run(ort::inputs!["input" => input_tensor, "x" => stft_tensor])
+                .map_err(|e| SeparationError::SeparationFailed(format!("Inference failed: {}", e)))?;
 
-        // Extract frequency-domain output "output" [1, 4*2*2, freq_bins, frames]
-        // Shape: [batch, stems*channels*2(real/imag), freq_bins, frames]
-        let freq_output = outputs
-            .get("output")
-            .ok_or_else(|| {
-                SeparationError::SeparationFailed("Output tensor 'output' not found".to_string())
+            // ═══════════════════════════════════════════════════════════════════════
+            // HTDemucs HYBRID model outputs TWO branches:
+            // 1. "output" - frequency branch (masked spectrogram in CaC format)
+            // 2. "add_67" - time branch (direct waveform)
+            // Final separation = time_branch + istft(frequency_branch)
+            // Reference: sevagh/demucs.onnx model_inference.cpp
+            // ═══════════════════════════════════════════════════════════════════════
+
+            // Extract time-domain output "add_67" [1, 4, 2, samples]
+            let time_output = outputs
+                .get("add_67")
+                .ok_or_else(|| {
+                    SeparationError::SeparationFailed("Output tensor 'add_67' not found".to_string())
+                })?;
+
+            let (time_shape, time_data) = time_output.try_extract_tensor::<f32>().map_err(|e| {
+                SeparationError::SeparationFailed(format!("Failed to extract time output: {}", e))
             })?;
 
-        let (freq_shape, freq_data) = freq_output.try_extract_tensor::<f32>().map_err(|e| {
-            SeparationError::SeparationFailed(format!("Failed to extract freq output: {}", e))
-        })?;
+            // Extract frequency-domain output "output" [1, 4*2*2, freq_bins, frames]
+            let freq_output = outputs
+                .get("output")
+                .ok_or_else(|| {
+                    SeparationError::SeparationFailed("Output tensor 'output' not found".to_string())
+                })?;
 
-        // Log shapes on first segment
-        if seg_idx == 0 {
-            log::info!(
-                "Time output shape: {:?}, Freq output shape: {:?}",
-                time_shape.as_ref(),
-                freq_shape.as_ref()
+            let (freq_shape, freq_data) = freq_output.try_extract_tensor::<f32>().map_err(|e| {
+                SeparationError::SeparationFailed(format!("Failed to extract freq output: {}", e))
+            })?;
+
+            // Log shapes on first segment, first shift
+            if seg_idx == 0 && shift_idx == 0 {
+                log::info!(
+                    "Time output shape: {:?}, Freq output shape: {:?}",
+                    time_shape.as_ref(),
+                    freq_shape.as_ref()
+                );
+            }
+
+            // Convert frequency branch from CaC format to waveform via ISTFT
+            // and combine with time branch
+            let combined_stems = combine_hybrid_outputs(
+                &time_data,
+                &freq_data,
+                freq_shape.as_ref(),
+                DEMUCS_SEGMENT_SAMPLES,
             );
+
+            // Accumulate shifted output with proper alignment
+            // The output corresponds to the shifted input position. To align all
+            // outputs to the "center" position (offset = MAX_SHIFT), we need to
+            // skip the first (MAX_SHIFT - offset) samples of the output.
+            //
+            // Reference: demucs apply.py: out += shifted_out[..., max_shift - offset:]
+            let align_skip = DEMUCS_MAX_SHIFT.saturating_sub(offset);
+            let valid_samples = DEMUCS_SEGMENT_SAMPLES.saturating_sub(align_skip);
+
+            // Accumulate each stem with proper alignment
+            // Layout: [stems * channels * samples] where stems=4, channels=2
+            for stem in 0..4 {
+                for ch in 0..2 {
+                    let stem_ch_offset = (stem * 2 + ch) * DEMUCS_SEGMENT_SAMPLES;
+                    for i in 0..valid_samples {
+                        let src_idx = stem_ch_offset + align_skip + i;
+                        let dst_idx = stem_ch_offset + i;
+                        if src_idx < combined_stems.len() && dst_idx < shift_accum.len() {
+                            shift_accum[dst_idx] += combined_stems[src_idx];
+                        }
+                    }
+                }
+            }
         }
 
-        // Convert frequency branch from CaC format to waveform via ISTFT
-        // and combine with time branch
-        let combined_stems = combine_hybrid_outputs(
-            &time_data,
-            &freq_data,
-            freq_shape.as_ref(),
-            DEMUCS_SEGMENT_SAMPLES,
-        );
+        // Average the accumulated shifts
+        // Note: edge samples have fewer contributions, but for simplicity we divide by num_shifts
+        // This may cause slight amplitude reduction at edges, but segment overlap-add compensates
+        let shift_divisor = num_shifts as f32;
+        for val in &mut shift_accum {
+            *val /= shift_divisor;
+        }
 
         // Overlap-add: accumulate with triangular window for smooth blending
         for i in 0..segment_len {
@@ -734,13 +834,13 @@ fn run_demucs_inference(
                 let stem_offset = stem * 2 * DEMUCS_SEGMENT_SAMPLES;
                 let left_idx = stem_offset + i;
                 let right_idx = stem_offset + DEMUCS_SEGMENT_SAMPLES + i;
-                let left_val = if left_idx < combined_stems.len() {
-                    combined_stems[left_idx]
+                let left_val = if left_idx < shift_accum.len() {
+                    shift_accum[left_idx]
                 } else {
                     0.0
                 };
-                let right_val = if right_idx < combined_stems.len() {
-                    combined_stems[right_idx]
+                let right_val = if right_idx < shift_accum.len() {
+                    shift_accum[right_idx]
                 } else {
                     0.0
                 };
@@ -869,13 +969,13 @@ fn combine_hybrid_outputs(
     // Output: [stems, channels, samples] flattened as [stems * channels * samples]
     let mut combined = vec![0.0f32; num_stems * num_channels * segment_samples];
 
-    // First, copy time branch data directly
+    // Copy time branch data directly
     // Time branch shape: [1, 4, 2, samples] = [batch, stems, channels, samples]
     for i in 0..time_data.len().min(combined.len()) {
         combined[i] = time_data[i];
     }
 
-    // Debug: Log RMS of time branch per stem (first segment only logged later)
+    // Debug: Log RMS of time branch per stem
     if log::log_enabled!(log::Level::Debug) {
         for s in 0..num_stems.min(4) {
             let stem_start = s * num_channels * segment_samples;

@@ -16,6 +16,16 @@ pub struct SeparationConfig {
 
     /// Segment length in seconds for processing (affects memory usage)
     pub segment_length_secs: f64,
+
+    /// Number of random time shifts for improved quality (1-5)
+    /// Higher values improve separation quality (~0.2 SDR per shift) but
+    /// increase processing time proportionally. Set to 1 to disable.
+    #[serde(default = "default_shifts")]
+    pub shifts: u8,
+}
+
+fn default_shifts() -> u8 {
+    1
 }
 
 impl Default for SeparationConfig {
@@ -25,6 +35,7 @@ impl Default for SeparationConfig {
             model: ModelType::Demucs4Stems,
             use_gpu: true, // Try GPU, fall back to CPU
             segment_length_secs: 10.0,
+            shifts: 1, // Disabled by default (1 = no averaging)
         }
     }
 }
@@ -34,6 +45,32 @@ impl SeparationConfig {
     pub fn validate(&mut self) {
         // Clamp segment length to reasonable range
         self.segment_length_secs = self.segment_length_secs.clamp(5.0, 60.0);
+        // Clamp shifts to reasonable range (1-5)
+        self.shifts = self.shifts.clamp(1, 5);
+    }
+
+    /// Display name for shifts value
+    pub fn shifts_display_name(shifts: u8) -> &'static str {
+        match shifts {
+            1 => "Off (1×)",
+            2 => "Low (2×)",
+            3 => "Medium (3×)",
+            4 => "High (4×)",
+            5 => "Maximum (5×)",
+            _ => "Unknown",
+        }
+    }
+
+    /// Description for shifts value
+    pub fn shifts_description(shifts: u8) -> &'static str {
+        match shifts {
+            1 => "Fastest - no shift averaging",
+            2 => "2× slower, slightly better quality",
+            3 => "3× slower, better quality",
+            4 => "4× slower, high quality",
+            5 => "5× slower, best quality (~0.2 SDR improvement)",
+            _ => "",
+        }
     }
 }
 
