@@ -40,37 +40,86 @@ impl ModelManager {
 
     /// Get the path to a model, downloading if necessary
     ///
+    /// Downloads both the .onnx file and accompanying .onnx.data file if the model
+    /// uses external data storage (most large models do).
+    ///
     /// # Arguments
     /// * `model` - The model type to get
     /// * `progress` - Optional progress callback (0.0 to 1.0)
     ///
     /// # Returns
-    /// Path to the model file
+    /// Path to the model file (.onnx)
     pub fn ensure_model(
         &self,
         model: ModelType,
         progress: Option<Box<dyn Fn(f32) + Send>>,
     ) -> Result<PathBuf> {
         let model_path = self.model_path(model);
+        let data_path = self.data_path(model);
+        let needs_data = model.has_external_data();
 
-        // Check if model already exists
-        if model_path.exists() {
+        // Check if all required files exist
+        let model_exists = model_path.exists();
+        let data_exists = !needs_data || data_path.exists();
+
+        if model_exists && data_exists {
             log::info!("Model {} found at {:?}", model.display_name(), model_path);
-            if let Some(cb) = progress {
+            if let Some(cb) = &progress {
                 cb(1.0);
             }
             return Ok(model_path);
         }
 
-        // Download the model
-        log::info!(
-            "Model {} not found, downloading from {}",
-            model.display_name(),
-            model.download_url()
-        );
-        self.download_model(model, progress)?;
+        // Determine what needs to be downloaded
+        let download_model = !model_exists;
+        let download_data = needs_data && !data_exists;
+
+        // Download the .onnx file if needed (small, ~2-5MB)
+        if download_model {
+            log::info!(
+                "Downloading model {} from {}",
+                model.display_name(),
+                model.download_url()
+            );
+            // For .onnx file, don't report progress (it's fast)
+            self.download_file(model.download_url(), &model_path, None)?;
+
+            // Report 2% progress after .onnx download
+            if let Some(ref cb) = progress {
+                if download_data {
+                    cb(0.02);
+                }
+            }
+        }
+
+        // Download the .data file if needed (large, ~160MB)
+        if download_data {
+            log::info!(
+                "Downloading model data from {}",
+                model.data_download_url()
+            );
+            // Pass progress directly for the large .data file
+            // Scale 0-100% of data download to 2-100% overall
+            let data_progress: Option<Box<dyn Fn(f32) + Send>> = if download_model {
+                // Both files: .data progress maps to 2%-100%
+                progress.map(|cb| {
+                    Box::new(move |p: f32| cb(0.02 + p * 0.98)) as Box<dyn Fn(f32) + Send>
+                })
+            } else {
+                // Only .data file: full 0-100%
+                progress
+            };
+            self.download_file(model.data_download_url(), &data_path, data_progress)?;
+        } else if let Some(ref cb) = progress {
+            cb(1.0);
+        }
 
         Ok(model_path)
+    }
+
+    /// Get the local path for the external data file
+    pub fn data_path(&self, model: ModelType) -> PathBuf {
+        self.cache_dir.join(model.data_filename())
     }
 
     /// Get the local path where a model would be stored
@@ -78,23 +127,25 @@ impl ModelManager {
         self.cache_dir.join(model.filename())
     }
 
-    /// Check if a model is already downloaded
+    /// Check if a model is already downloaded (including external data file)
     pub fn is_model_available(&self, model: ModelType) -> bool {
-        self.model_path(model).exists()
+        let model_exists = self.model_path(model).exists();
+        let data_exists = !model.has_external_data() || self.data_path(model).exists();
+        model_exists && data_exists
     }
 
-    /// Download a model from Hugging Face
-    fn download_model(
+    /// Download a file from a URL to the cache directory
+    fn download_file(
         &self,
-        model: ModelType,
+        url: &str,
+        target_path: &std::path::Path,
         progress: Option<Box<dyn Fn(f32) + Send>>,
     ) -> Result<()> {
         // Ensure cache directory exists
         fs::create_dir_all(&self.cache_dir).map_err(SeparationError::Io)?;
 
-        let url = model.download_url();
-        let target_path = self.model_path(model);
-        let temp_path = target_path.with_extension("onnx.tmp");
+        // Create temp file with unique suffix
+        let temp_path = target_path.with_extension("tmp");
 
         log::info!("Downloading {} to {:?}", url, target_path);
 
@@ -153,11 +204,11 @@ impl ModelManager {
         }
 
         // Rename temp to final
-        fs::rename(&temp_path, &target_path).map_err(SeparationError::Io)?;
+        fs::rename(&temp_path, target_path).map_err(SeparationError::Io)?;
 
         log::info!(
-            "Successfully downloaded {} ({} bytes)",
-            model.display_name(),
+            "Successfully downloaded {:?} ({} bytes)",
+            target_path.file_name().unwrap_or_default(),
             actual_size
         );
 
@@ -168,23 +219,43 @@ impl ModelManager {
         Ok(())
     }
 
-    /// Delete a cached model
+    /// Delete a cached model (including external data file)
     pub fn delete_model(&self, model: ModelType) -> Result<()> {
-        let path = self.model_path(model);
-        if path.exists() {
-            fs::remove_file(&path).map_err(SeparationError::Io)?;
-            log::info!("Deleted cached model: {:?}", path);
+        let model_path = self.model_path(model);
+        if model_path.exists() {
+            fs::remove_file(&model_path).map_err(SeparationError::Io)?;
+            log::info!("Deleted cached model: {:?}", model_path);
+        }
+
+        // Also delete external data file if it exists
+        if model.has_external_data() {
+            let data_path = self.data_path(model);
+            if data_path.exists() {
+                fs::remove_file(&data_path).map_err(SeparationError::Io)?;
+                log::info!("Deleted model data: {:?}", data_path);
+            }
         }
         Ok(())
     }
 
-    /// Get total size of all cached models
+    /// Get total size of all cached models (including external data files)
     pub fn cache_size(&self) -> u64 {
         ModelType::all()
             .iter()
-            .filter_map(|model| {
-                let path = self.model_path(*model);
-                fs::metadata(&path).ok().map(|m| m.len())
+            .map(|model| {
+                let model_size = fs::metadata(self.model_path(*model))
+                    .ok()
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                let data_size = if model.has_external_data() {
+                    fs::metadata(self.data_path(*model))
+                        .ok()
+                        .map(|m| m.len())
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                model_size + data_size
             })
             .sum()
     }

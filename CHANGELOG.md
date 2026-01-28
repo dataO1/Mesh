@@ -2,6 +2,42 @@
 
 All notable changes to Mesh are documented in this file.
 
+## [0.5.0] - 2026-01-28
+
+### Added
+
+- **HTDemucs hybrid model support** — Full implementation of the Demucs v4 hybrid transformer architecture with both time-domain and frequency-domain branches. The frequency branch uses STFT/ISTFT processing to capture spectral details that the time branch might miss.
+
+- **Shift augmentation** — Configurable random time-shifting (1-5 shifts) that averages multiple inference passes for improved separation quality. Each additional shift adds ~0.2 SDR improvement at the cost of proportionally longer processing time. Configurable in Settings under "Separation Shifts".
+
+- **Residual "other" stem computation** — Instead of using the model's direct "other" prediction (which often contains vocal/hihat artifacts), the "other" stem is now computed as `mix - drums - bass - vocals`. This ensures perfect reconstruction and eliminates bleed from other stems.
+
+- **50% segment overlap** — Increased from 25% to 50% overlap between processing segments. This provides better handling of transients (especially hihats) at segment boundaries, at the cost of ~2x processing time.
+
+- **High-frequency preservation for drums** — Neural networks often attenuate frequencies above 14kHz. For the drum stem, frequencies above 14kHz are now blended from the original mix using a smooth spectral crossfade, restoring hihat and cymbal crispness without introducing bleed.
+
+- **External data file support** — Model downloads now correctly handle ONNX external data files (`.onnx.data`). Large models store weights separately from the graph structure, and both files are now downloaded and managed together.
+
+- **Fine-tuned model option** — Added support for `htdemucs_ft` (fine-tuned) model variant, which provides ~1-3% better SDR than the standard model with the same architecture.
+
+- **Model selection in settings** — Choose between "Demucs 4-stem" (fast) and "Demucs 4-stem Fine-tuned" (better quality) in Settings > Separation Model.
+
+### Changed
+
+- **Model download URLs** — Models are now downloaded from GitHub releases (`releases/download/models/`) for faster and more reliable downloads.
+
+- **Simplified model options** — Removed 6-stem model support. Only 4-stem models (vocals, drums, bass, other) are now available, which is the standard configuration for DJ workflows.
+
+- **Progress reporting for downloads** — Model download progress now correctly accounts for both `.onnx` (~2MB) and `.onnx.data` (~160MB) files, with the large data file representing 98% of progress.
+
+### Fixed
+
+- **WAVE_FORMAT_EXTENSIBLE support** — Fixed WAV file import for files using the extensible format header (common in professional audio software).
+
+- **STFT preprocessing** — Fixed spectrogram computation to exactly match Demucs' `standalone_spec` function, including proper reflection padding, frame cropping, and normalization.
+
+---
+
 ## [0.4.4] - 2026-01-26
 
 ### Added

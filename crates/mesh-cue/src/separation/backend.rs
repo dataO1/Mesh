@@ -643,8 +643,10 @@ fn decode_audio(path: &Path) -> Result<(Vec<f32>, u32, u16)> {
 /// This is segment_length (7.8 seconds) * sample_rate (44100) from the model config
 const DEMUCS_SEGMENT_SAMPLES: usize = 343980;
 
-/// Overlap between segments for smooth blending (25% of segment)
-const DEMUCS_OVERLAP_SAMPLES: usize = DEMUCS_SEGMENT_SAMPLES / 4;
+/// Overlap between segments for smooth blending (50% of segment)
+/// UVR5 uses 50% overlap for Demucs - provides better transient handling
+/// at segment boundaries (especially for hihats) at the cost of ~2x processing time
+const DEMUCS_OVERLAP_SAMPLES: usize = DEMUCS_SEGMENT_SAMPLES / 2;
 
 /// STFT parameters matching Demucs htdemucs model
 const DEMUCS_NFFT: usize = 4096;
@@ -972,6 +974,52 @@ fn run_demucs_inference(
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Compute "other" stem as residual: other = mix - (drums + bass + vocals)
+    // This ensures perfect reconstruction and eliminates bleed from other stems
+    // into the "other" category. The model's direct "other" prediction often
+    // contains vocal/hihat artifacts that this residual computation eliminates.
+    // Reference: UVR5 uses similar residual computation for cleaner separation.
+    // ═══════════════════════════════════════════════════════════════════════════
+    log::debug!("Computing 'other' stem as residual (mix - drums - bass - vocals)");
+    for i in 0..num_samples {
+        let left_idx = i * 2;
+        let right_idx = i * 2 + 1;
+
+        // Original mix
+        let mix_l = stereo_audio[left_idx];
+        let mix_r = stereo_audio[right_idx];
+
+        // Subtract drums (stem 0), bass (stem 1), and vocals (stem 3)
+        let drums_l = stem_accum[0][left_idx];
+        let drums_r = stem_accum[0][right_idx];
+        let bass_l = stem_accum[1][left_idx];
+        let bass_r = stem_accum[1][right_idx];
+        let vocals_l = stem_accum[3][left_idx];
+        let vocals_r = stem_accum[3][right_idx];
+
+        // other = mix - drums - bass - vocals
+        stem_accum[2][left_idx] = mix_l - drums_l - bass_l - vocals_l;
+        stem_accum[2][right_idx] = mix_r - drums_r - bass_r - vocals_r;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Preserve high frequencies in drums stem for crisp hihats
+    // Neural networks often attenuate >14kHz content. We blend the original
+    // mix's high frequencies back into the drum stem since hihats have
+    // significant energy there and other instruments typically don't.
+    // ═══════════════════════════════════════════════════════════════════════════
+    if let Err(e) = super::postprocess::preserve_high_frequencies(
+        &mut stem_accum[0], // drums
+        &stereo_audio,
+        14000.0,  // cutoff Hz - start blending above 14kHz
+        2000.0,   // blend width Hz - full mix by 16kHz
+        sample_rate,
+    ) {
+        log::warn!("High-frequency preservation failed: {}", e);
+        // Continue without HF preservation - drums will just sound slightly duller
+    }
+
     if let Some(cb) = progress {
         cb(0.95);
     }
@@ -985,6 +1033,10 @@ fn run_demucs_inference(
         other: std::mem::take(&mut stem_accum[2]),
         vocals: std::mem::take(&mut stem_accum[3]),
     };
+
+    if let Some(cb) = progress {
+        cb(0.98);
+    }
 
     // Log RMS energy per stem for debugging stem order
     let rms = |samples: &[f32]| -> f32 {

@@ -138,10 +138,6 @@ pub enum ModelType {
     /// Fine-tuned Demucs with 4 stems - better quality
     /// ~163MB, same speed as standard but ~1-3% better SDR
     Demucs4StemsFt,
-
-    /// Demucs with 6 stems (+ piano, guitar)
-    /// ~200MB, slightly slower
-    Demucs6Stems,
 }
 
 impl ModelType {
@@ -150,7 +146,6 @@ impl ModelType {
         match self {
             Self::Demucs4Stems => "Demucs 4-stem",
             Self::Demucs4StemsFt => "Demucs 4-stem Fine-tuned",
-            Self::Demucs6Stems => "Demucs 6-stem",
         }
     }
 
@@ -159,7 +154,6 @@ impl ModelType {
         match self {
             Self::Demucs4Stems => "Vocals, Drums, Bass, Other - fast (~163MB)",
             Self::Demucs4StemsFt => "Fine-tuned for better quality (~163MB)",
-            Self::Demucs6Stems => "Adds Piano and Guitar stems (~200MB)",
         }
     }
 
@@ -169,11 +163,11 @@ impl ModelType {
         match self {
             Self::Demucs4Stems => "htdemucs.onnx",
             Self::Demucs4StemsFt => "htdemucs_ft.onnx",
-            Self::Demucs6Stems => "htdemucs_6s.onnx",
         }
     }
 
-    /// Download URL (GitHub releases)
+    /// Base download URL (GitHub releases) - returns the .onnx file URL
+    /// The .onnx.data file is at the same URL with .data appended
     pub fn download_url(&self) -> &'static str {
         match self {
             Self::Demucs4Stems => {
@@ -182,32 +176,51 @@ impl ModelType {
             Self::Demucs4StemsFt => {
                 "https://github.com/dataO1/Mesh/releases/download/models/htdemucs_ft.onnx"
             }
-            Self::Demucs6Stems => {
-                "https://github.com/dataO1/Mesh/releases/download/models/htdemucs_6s.onnx"
+        }
+    }
+
+    /// Whether this model has an external data file (.onnx.data)
+    /// ONNX models >2GB use external data storage for weights
+    pub fn has_external_data(&self) -> bool {
+        // All HTDemucs models use external data storage
+        true
+    }
+
+    /// External data filename (e.g., "htdemucs.onnx.data")
+    pub fn data_filename(&self) -> &'static str {
+        match self {
+            Self::Demucs4Stems => "htdemucs.onnx.data",
+            Self::Demucs4StemsFt => "htdemucs_ft.onnx.data",
+        }
+    }
+
+    /// Download URL for the external data file
+    pub fn data_download_url(&self) -> &'static str {
+        match self {
+            Self::Demucs4Stems => {
+                "https://github.com/dataO1/Mesh/releases/download/models/htdemucs.onnx.data"
+            }
+            Self::Demucs4StemsFt => {
+                "https://github.com/dataO1/Mesh/releases/download/models/htdemucs_ft.onnx.data"
             }
         }
     }
 
-    /// Approximate model size in bytes
+    /// Approximate model size in bytes (both .onnx and .onnx.data combined)
     pub fn size_bytes(&self) -> u64 {
         match self {
-            Self::Demucs4Stems => 163_000_000,    // ~163MB
-            Self::Demucs4StemsFt => 163_000_000,  // ~163MB (same architecture)
-            Self::Demucs6Stems => 200_000_000,    // ~200MB
+            Self::Demucs4Stems => 163_000_000,   // ~163MB
+            Self::Demucs4StemsFt => 163_000_000, // ~163MB (same architecture)
         }
     }
 
     /// All available models
     pub fn all() -> &'static [Self] {
-        &[Self::Demucs4Stems, Self::Demucs4StemsFt, Self::Demucs6Stems]
+        &[Self::Demucs4Stems, Self::Demucs4StemsFt]
     }
 
-    /// Number of output stems
+    /// Number of output stems (always 4 for supported models)
     pub fn stem_count(&self) -> usize {
-        match self {
-            Self::Demucs4Stems => 4,
-            Self::Demucs4StemsFt => 4,
-            Self::Demucs6Stems => 6,
-        }
+        4
     }
 }

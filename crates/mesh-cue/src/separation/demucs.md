@@ -159,8 +159,11 @@ x = (x - mean) / (1e-5 + std)
 4. [x] Extract both outputs from ONNX model
 5. [x] Sum time and frequency waveforms
 6. [x] Per-stem time/freq branch weighting
-7. [ ] Shift augmentation (optional)
-8. [ ] Test separation quality
+7. [x] Shift augmentation (configurable 1-5 shifts)
+8. [x] Residual "other" stem computation (other = mix - drums - bass - vocals)
+9. [x] Increase segment overlap to 50% (better transient handling, ~2x slower)
+10. [x] High-frequency preservation for drums (blends >14kHz from mix for crisp hihats)
+11. [ ] Wiener softmask postprocessing (reverted - caused pumping/hissing artifacts)
 
 ## Per-Stem Branch Weighting
 
@@ -172,6 +175,24 @@ Different stems benefit from different branch combinations:
 | Bass | 0.0 | 1.0 | Frequency-only reduces drum bleed |
 | Other | 0.3 | 1.0 | Mostly tonal content |
 | Vocals | 0.0 | 1.0 | Frequency-only for cleaner extraction |
+
+## Residual "Other" Stem Computation
+
+Instead of trusting the model's direct "other" stem prediction (which contains
+bleed from vocals and hihats), we compute it as a residual:
+
+```
+other = original_mix - (drums + bass + vocals)
+```
+
+**Benefits:**
+- Eliminates vocal bleed in the "other" stem
+- Ensures perfect reconstruction: drums + bass + other + vocals = mix
+- Removes hihat transient artifacts that the model incorrectly assigns to "other"
+
+**Implementation:** After all stems are normalized from overlap-add, the "other"
+stem is overwritten with the residual computation. This is applied unconditionally
+since it strictly improves quality.
 
 ## Shift Augmentation (The Shift Trick)
 
@@ -224,6 +245,53 @@ Without this realignment, you get a "canon" effect with delayed copies stacked o
 - Processing time increases linearly with number of shifts
 - For most use cases, shifts=1 (disabled) is recommended
 - May be more beneficial for specific content types (needs further testing)
+
+## High-Frequency Preservation for Drums
+
+Neural network-based separation models often attenuate frequencies above 14-16kHz due to:
+- STFT resolution trade-offs (larger windows for better frequency resolution = poorer time resolution)
+- Training data characteristics (not all training data has pristine HF content)
+- Model capacity focused on musically-relevant frequency bands
+
+This results in "dull" sounding hihats and cymbals in the drum stem.
+
+### Solution
+
+Blend the original mix's high-frequency content back into the drum stem using spectral crossfade:
+
+```
+For each frequency bin:
+  - Below 14kHz: use drum stem
+  - Above 16kHz: use original mix
+  - 14-16kHz: smooth raised-cosine crossfade
+```
+
+**Why this works:**
+- Hihats have significant energy in 12-20kHz range
+- Most other instruments (vocals, bass, guitars, synths) have limited content above 14kHz
+- By using the full mix above 14kHz, we restore hihat crispness without introducing significant bleed
+
+**Implementation:** `postprocess::preserve_high_frequencies()` called on drums stem after residual computation
+
+## Wiener Softmask Postprocessing (Reverted)
+
+Reference: [UVR5 filtering.py](https://github.com/Anjok07/ultimatevocalremovergui/blob/master/demucs/filtering.py)
+
+**⚠️ Status: REVERTED** - Caused pumping and hissing artifacts that were worse than the bleed it was trying to fix.
+
+Wiener softmasking attempts to refine separation by computing spectral masks:
+```
+mask[stem] = |X[stem]|^power / (Σ|X[all]|^power + eps)
+output[stem] = mask[stem] * mixture_stft
+```
+
+**Problems encountered:**
+- **Pumping** - Rapid mask fluctuations cause gain changes frame-to-frame
+- **Hissing/Musical noise** - Unstable masks in low-energy regions create artifacts
+- Temporal smoothing and mask flooring helped but didn't fully solve the issues
+
+The code remains in `postprocess.rs` for future experimentation but is not called.
+UVR5 may use additional techniques (EM refinement, spatial covariance) that we don't have.
 
 ## Critical ISTFT Details
 

@@ -33,6 +33,7 @@ mod backend;
 mod config;
 mod error;
 mod model;
+mod postprocess;
 mod service;
 
 pub use backend::{CharonBackend, OrtBackend, SeparationBackend, StemData};

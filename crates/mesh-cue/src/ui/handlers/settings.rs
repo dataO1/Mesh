@@ -160,7 +160,7 @@ impl MeshCueApp {
             // Update scratch interpolation
             config.audio.scratch_interpolation = self.settings.draft_scratch_interpolation;
 
-            // Update separation backend, model and shifts
+            // Update separation backend, model, and shifts
             config.analysis.separation.backend = self.settings.draft_separation_backend;
             config.analysis.separation.model = self.settings.draft_separation_model;
             config.analysis.separation.shifts = self.settings.draft_separation_shifts;
