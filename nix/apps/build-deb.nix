@@ -1,12 +1,16 @@
 # Container-based portable .deb packaging
 # Uses Ubuntu 22.04 for glibc 2.35 compatibility (Pop!_OS 22.04, Ubuntu 22.04+)
 #
-# Usage: nix run .#build-deb
-# Output: dist/deb/mesh-player_*.deb, mesh-cue_*.deb
+# Usage:
+#   nix run .#build-deb           # CPU-only build (works everywhere)
+#   nix run .#build-deb-cuda      # NVIDIA CUDA 12 GPU acceleration
+#
+# Output: dist/deb/mesh-player_*.deb, mesh-cue_*.deb (or mesh-cue-cuda_*.deb)
 #
 # Prerequisites:
 #   - Podman or Docker installed and running
 #   - NixOS: virtualisation.podman.enable = true (or docker)
+#   - For CUDA builds: NVIDIA drivers + CUDA 12 toolkit on target system
 #
 # Why container? Nix uses a newer glibc than most distros. Building in Ubuntu 22.04
 # ensures the binaries work on Pop!_OS 22.04, Ubuntu 22.04, Debian 12, etc.
@@ -23,18 +27,32 @@
 #      - libtag.so.2 (TagLib 2.x, older distros have 1.x)
 #   3. Setting rpath to /usr/lib/mesh/ for bundled libs
 #
+# GPU Acceleration:
+#   - CPU build (default): Works on any system, no external dependencies
+#   - CUDA build: Requires NVIDIA GPU + CUDA 12 toolkit installed on target
+#
 # ═══════════════════════════════════════════════════════════════════════════════
-{ pkgs }:
+{ pkgs, enableCuda ? false }:
 
 pkgs.writeShellApplication {
-  name = "build-deb";
+  name = "build-deb${if enableCuda then "-cuda" else ""}";
   runtimeInputs = with pkgs; [ podman coreutils ];
   text = ''
     set -euo pipefail
 
-    echo "╔═══════════════════════════════════════════════════════════════════════╗"
-    echo "║           Portable .deb Build (Ubuntu 22.04 Container)                ║"
-    echo "╚═══════════════════════════════════════════════════════════════════════╝"
+    # GPU acceleration settings (set at Nix build time)
+    ENABLE_CUDA="${if enableCuda then "1" else "0"}"
+    GPU_SUFFIX="${if enableCuda then "-cuda" else ""}"
+
+    if [[ "$ENABLE_CUDA" == "1" ]]; then
+      echo "╔═══════════════════════════════════════════════════════════════════════╗"
+      echo "║       Portable .deb Build (Ubuntu 22.04 + NVIDIA CUDA 12)             ║"
+      echo "╚═══════════════════════════════════════════════════════════════════════╝"
+    else
+      echo "╔═══════════════════════════════════════════════════════════════════════╗"
+      echo "║           Portable .deb Build (Ubuntu 22.04 Container)                ║"
+      echo "╚═══════════════════════════════════════════════════════════════════════╝"
+    fi
     echo ""
 
     # Determine project root (where Cargo.toml is)
@@ -75,6 +93,8 @@ pkgs.writeShellApplication {
       -v "$PROJECT_ROOT:/project:ro" \
       -v "$TARGET_DIR:/build:rw" \
       -v "$OUTPUT_DIR:/output:rw" \
+      -e "ENABLE_CUDA=$ENABLE_CUDA" \
+      -e "GPU_SUFFIX=$GPU_SUFFIX" \
       -w /project \
       "$IMAGE" \
       bash << 'CONTAINER_SCRIPT'
@@ -283,7 +303,13 @@ pkgs.writeShellApplication {
 
         echo ""
         echo "    Building mesh-cue..."
-        cargo build --release -p mesh-cue
+        # GPU feature is passed from Nix via environment variable
+        if [[ "''${ENABLE_CUDA:-0}" == "1" ]]; then
+          echo "    (with CUDA 12 GPU acceleration)"
+          cargo build --release -p mesh-cue --features cuda
+        else
+          cargo build --release -p mesh-cue
+        fi
         echo "    Rust builds complete!"
 
         # =====================================================================
@@ -347,6 +373,11 @@ CONTAINER_SCRIPT
     echo "║    - Ubuntu 22.04+                                                    ║"
     echo "║    - Debian 12+                                                       ║"
     echo "║    - Linux Mint 21+                                                   ║"
+    if [[ "$ENABLE_CUDA" == "1" ]]; then
+    echo "║                                                                       ║"
+    echo "║  GPU: NVIDIA CUDA 12 acceleration enabled                             ║"
+    echo "║       Requires: NVIDIA driver 525+ and CUDA 12 toolkit                ║"
+    fi
     echo "║                                                                       ║"
     echo "║  Install with: sudo dpkg -i mesh-*.deb                                ║"
     echo "║                sudo apt-get install -f  # fix dependencies            ║"

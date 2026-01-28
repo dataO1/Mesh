@@ -2,11 +2,15 @@
 # Uses official Rust image + MinGW-w64 toolchain
 #
 # Usage: nix run .#build-windows
-# Output: dist/windows/mesh-player.exe, mesh-cue.exe
+# Output: dist/windows/mesh-player.zip, mesh-cue.zip
 #
 # Prerequisites:
 #   - Podman or Docker installed and running
 #   - NixOS: virtualisation.podman.enable = true (or docker)
+#
+# GPU Acceleration:
+#   - mesh-cue includes DirectML support (AMD/NVIDIA/Intel via DirectX 12)
+#   - DirectML is built into Windows 10+, no additional installation needed
 #
 # Why container? Pure Nix cross-compilation fails due to MinGW-w64 pthreads
 # __ImageBase linker errors in nixpkgs. Container has working toolchain.
@@ -601,7 +605,9 @@ PKGWRAPPER
         export CXXFLAGS_x86_64_pc_windows_gnu="-std=c++17 -D_USE_MATH_DEFINES -DTAGLIB_STATIC -DCHROMAPRINT_NODLL -D_BYTE_DEFINED"
 
         # Use --no-default-features to disable JACK backend (Linux-only, uses CPAL on Windows)
-        cargo build --release --target x86_64-pc-windows-gnu -p mesh-cue --no-default-features || {
+        # Enable DirectML for GPU acceleration (AMD/NVIDIA/Intel via DirectX 12)
+        echo "    (with DirectML GPU acceleration)"
+        cargo build --release --target x86_64-pc-windows-gnu -p mesh-cue --no-default-features --features directml || {
           echo ""
           echo "WARNING: mesh-cue build failed (Essentia cross-compilation is complex)"
           echo "         mesh-player.exe was built successfully"
@@ -723,8 +729,9 @@ PKGWRAPPER
     echo "║                                                                       ║"
     echo "║  mesh-cue.zip:                                                        ║"
     echo "║    - mesh-cue.exe + MinGW runtime DLLs + essentia.dll                 ║"
+    echo "║    - DirectML GPU acceleration (AMD/NVIDIA/Intel via DirectX 12)      ║"
     echo "║                                                                       ║"
-    echo "║  Just extract and run on Windows - no installation needed!            ║"
+    echo "║  Just extract and run on Windows 10+ - no installation needed!        ║"
     echo "╚═══════════════════════════════════════════════════════════════════════╝"
     echo ""
     echo "Distribution packages:"

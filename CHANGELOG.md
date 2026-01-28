@@ -36,6 +36,17 @@ All notable changes to Mesh are documented in this file.
 
 - **STFT preprocessing** — Fixed spectrogram computation to exactly match Demucs' `standalone_spec` function, including proper reflection padding, frame cropping, and normalization.
 
+### Build System
+
+- **GPU-accelerated builds** — Added compile-time GPU acceleration support for stem separation:
+  - `nix run .#build-deb` — CPU-only Linux build (works everywhere)
+  - `nix run .#build-deb-cuda` — Linux build with NVIDIA CUDA 12 support
+  - `nix run .#build-windows` — Windows build with DirectML (AMD/NVIDIA/Intel via DirectX 12)
+
+- **DirectML for Windows** — Windows builds now include DirectML support by default. DirectML is built into Windows 10+ and provides GPU acceleration for any DirectX 12 capable GPU without additional driver installation.
+
+- **CUDA for Linux** — Optional CUDA 12 builds available for NVIDIA GPU users. Requires NVIDIA driver 525+ and CUDA toolkit on target system.
+
 ---
 
 ## [0.4.4] - 2026-01-26

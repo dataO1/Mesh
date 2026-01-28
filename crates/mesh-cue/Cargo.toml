@@ -98,3 +98,12 @@ default = ["jack-backend"]
 jack-backend = ["mesh-core/jack-backend"]
 # Enable charon-audio separation backend (pure Rust alternative to ORT)
 charon-backend = ["dep:charon-audio"]
+
+# GPU acceleration for stem separation (ONNX Runtime execution providers)
+# These are compile-time features - enable the one matching your hardware
+#
+# Linux: Use 'cuda' for NVIDIA GPUs (requires CUDA 12+ toolkit installed)
+# Windows: Use 'directml' for any DirectX 12 GPU (AMD, NVIDIA, Intel)
+# CPU fallback is always available when GPU is unavailable at runtime
+cuda = ["ort/cuda"]       # NVIDIA CUDA 12+ (Linux/Windows)
+directml = ["ort/directml"]  # DirectX 12 ML (Windows - AMD/NVIDIA/Intel)

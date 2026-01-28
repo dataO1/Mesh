@@ -428,12 +428,33 @@ impl OrtBackend {
         Self { gpu_available }
     }
 
-    /// Probe for GPU availability via ONNX Runtime
+    /// Check if GPU support was compiled in
+    ///
+    /// Note: This is a compile-time check. Runtime availability depends on
+    /// whether the required drivers/libraries (CUDA toolkit, DirectX 12) are installed.
     fn probe_gpu() -> bool {
-        // For now, assume CPU-only and let ort handle execution provider selection
-        // GPU support can be added via CUDA/DirectML/CoreML execution providers
-        // TODO: Actually probe available execution providers
-        false
+        #[cfg(any(feature = "cuda", feature = "directml"))]
+        {
+            true
+        }
+        #[cfg(not(any(feature = "cuda", feature = "directml")))]
+        {
+            false
+        }
+    }
+
+    /// Get the name of the GPU execution provider compiled in (if any)
+    pub fn gpu_provider_name() -> Option<&'static str> {
+        #[cfg(feature = "cuda")]
+        {
+            return Some("CUDA");
+        }
+        #[cfg(feature = "directml")]
+        {
+            return Some("DirectML");
+        }
+        #[allow(unreachable_code)]
+        None
     }
 }
 
@@ -691,10 +712,39 @@ fn run_demucs_inference(
 
     let num_samples = stereo_audio.len() / 2;
 
-    // Create ONNX session
+    // Create ONNX session with GPU acceleration if available
     log::info!("Loading ONNX model from {:?}", model_path);
 
+    // Build execution providers list based on compiled features
+    // Order matters: first available provider is used, CPU is always last as fallback
+    #[allow(unused_mut)]
+    let mut execution_providers: Vec<ort::execution_providers::ExecutionProviderDispatch> = Vec::new();
+
+    // CUDA for NVIDIA GPUs (Linux/Windows with CUDA 12+ installed)
+    #[cfg(feature = "cuda")]
+    {
+        use ort::execution_providers::CUDAExecutionProvider;
+        log::info!("CUDA execution provider enabled (compile-time)");
+        execution_providers.push(CUDAExecutionProvider::default().build());
+    }
+
+    // DirectML for DirectX 12 GPUs (Windows - AMD/NVIDIA/Intel)
+    #[cfg(feature = "directml")]
+    {
+        use ort::execution_providers::DirectMLExecutionProvider;
+        log::info!("DirectML execution provider enabled (compile-time)");
+        execution_providers.push(DirectMLExecutionProvider::default().build());
+    }
+
+    // CPU fallback is always available
+    {
+        use ort::execution_providers::CPUExecutionProvider;
+        execution_providers.push(CPUExecutionProvider::default().build());
+    }
+
     let mut session = Session::builder()
+        .map_err(|e| SeparationError::BackendInitFailed(e.to_string()))?
+        .with_execution_providers(execution_providers)
         .map_err(|e| SeparationError::BackendInitFailed(e.to_string()))?
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(|e| SeparationError::BackendInitFailed(e.to_string()))?

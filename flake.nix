@@ -54,8 +54,16 @@
         };
 
         # Portable .deb build (container-based, Ubuntu 22.04 for glibc 2.35)
+        # CPU-only version (works everywhere)
         buildDebApp = import ./nix/apps/build-deb.nix {
           inherit pkgs;
+          enableCuda = false;
+        };
+
+        # CUDA-enabled .deb build (requires NVIDIA GPU + CUDA 12 on target)
+        buildDebCudaApp = import ./nix/apps/build-deb.nix {
+          inherit pkgs;
+          enableCuda = true;
         };
 
         # ONNX model conversion (Demucs PyTorch → ONNX)
@@ -101,6 +109,10 @@
           build-deb = {
             type = "app";
             program = "${buildDebApp}/bin/build-deb";
+          };
+          build-deb-cuda = {
+            type = "app";
+            program = "${buildDebCudaApp}/bin/build-deb-cuda";
           };
           convert-model = {
             type = "app";
