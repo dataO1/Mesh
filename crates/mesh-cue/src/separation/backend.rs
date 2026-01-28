@@ -22,6 +22,35 @@ use std::path::Path;
 use super::config::SeparationConfig;
 use super::error::Result;
 
+/// Initialize ONNX Runtime for runtime DLL loading (Windows cross-compilation)
+///
+/// When built with `load-dynamic` feature, this loads onnxruntime.dll from the
+/// same directory as the executable. This enables MinGW cross-compiled builds
+/// to use pre-built MSVC DirectML binaries from Microsoft.
+#[cfg(feature = "load-dynamic")]
+fn init_ort_runtime() {
+    use std::sync::Once;
+    static ORT_INIT: Once = Once::new();
+
+    ORT_INIT.call_once(|| {
+        // Find onnxruntime.dll relative to executable
+        let dll_path = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|p| p.to_path_buf()))
+            .map(|dir| dir.join("onnxruntime.dll"))
+            .unwrap_or_else(|| std::path::PathBuf::from("onnxruntime.dll"));
+
+        log::info!("Initializing ONNX Runtime from {:?}", dll_path);
+
+        if let Err(e) = ort::init_from(&dll_path).commit() {
+            log::error!("Failed to initialize ONNX Runtime: {}", e);
+            // Can't return error from Once::call_once, will fail later at session creation
+        } else {
+            log::info!("ONNX Runtime initialized successfully (load-dynamic)");
+        }
+    });
+}
+
 /// Represents separated audio stems (mono, not interleaved)
 #[derive(Debug, Clone)]
 pub struct StemData {
@@ -692,6 +721,10 @@ fn run_demucs_inference(
     use ndarray::Array3;
     use ort::session::{builder::GraphOptimizationLevel, Session};
     use ort::value::Tensor;
+
+    // Initialize ONNX Runtime DLL loading (Windows cross-compilation with load-dynamic feature)
+    #[cfg(feature = "load-dynamic")]
+    init_ort_runtime();
 
     // Number of shifts for shift augmentation (from config, clamped to 1-5)
     let num_shifts = (config.shifts as usize).clamp(1, 5);

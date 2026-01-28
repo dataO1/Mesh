@@ -107,3 +107,9 @@ charon-backend = ["dep:charon-audio"]
 # CPU fallback is always available when GPU is unavailable at runtime
 cuda = ["ort/cuda"]       # NVIDIA CUDA 12+ (Linux/Windows)
 directml = ["ort/directml"]  # DirectX 12 ML (Windows - AMD/NVIDIA/Intel)
+
+# Runtime loading of ONNX Runtime DLLs (for Windows cross-compilation)
+# This avoids link-time dependency on MSVC-compiled onnxruntime.dll
+# The DLL is loaded at runtime via LoadLibrary(), enabling MinGW builds
+# to use pre-built DirectML binaries from Microsoft
+load-dynamic = ["ort/load-dynamic"]

@@ -9,10 +9,10 @@
 #   - NixOS: virtualisation.podman.enable = true (or docker)
 #
 # GPU Acceleration:
-#   - Currently CPU-only for cross-compiled Windows builds
-#   - Reason: ort (ONNX Runtime) only provides MSVC binaries, not MinGW
-#   - DirectML would require building ONNX Runtime from source for MinGW
-#   - Native Windows builds (with MSVC) could use DirectML in the future
+#   - DirectML support enabled via runtime DLL loading (load-dynamic feature)
+#   - Pre-built ONNX Runtime DirectML DLLs downloaded from Microsoft NuGet
+#   - Works with any DirectX 12 GPU (AMD, NVIDIA, Intel integrated/discrete)
+#   - DLLs (onnxruntime.dll, DirectML.dll) bundled in mesh-cue.zip
 #
 # Why container? Pure Nix cross-compilation fails due to MinGW-w64 pthreads
 # __ImageBase linker errors in nixpkgs. Container has working toolchain.
@@ -149,6 +149,7 @@ pkgs.writeShellApplication {
           libtool \
           curl \
           xz-utils \
+          unzip \
           >/dev/null 2>&1
 
         echo "==> Adding Windows target..."
@@ -613,9 +614,9 @@ PKGWRAPPER
         export CXXFLAGS_x86_64_pc_windows_gnu="-std=c++17 -D_USE_MATH_DEFINES -DTAGLIB_STATIC -DCHROMAPRINT_NODLL -D_BYTE_DEFINED"
 
         # Use --no-default-features to disable JACK backend (Linux-only, uses CPAL on Windows)
-        # Note: GPU acceleration (DirectML) not available for MinGW cross-compilation
-        # ort only provides MSVC binaries; would need to build ONNX Runtime from source
-        cargo build --release --target x86_64-pc-windows-gnu -p mesh-cue --no-default-features || {
+        # Use load-dynamic feature to load ONNX Runtime DLL at runtime instead of link time
+        # This avoids the MinGW/MSVC ABI incompatibility since we use the C API via dlopen
+        cargo build --release --target x86_64-pc-windows-gnu -p mesh-cue --no-default-features --features load-dynamic || {
           echo ""
           echo "WARNING: mesh-cue build failed (Essentia cross-compilation is complex)"
           echo "         mesh-player.exe was built successfully"
@@ -623,7 +624,35 @@ PKGWRAPPER
         }
 
         # =====================================================================
-        # Phase 6: Gather runtime DLLs for distribution
+        # Phase 6: Download ONNX Runtime DirectML (pre-built from Microsoft)
+        # =====================================================================
+        # Since we use load-dynamic feature, we need to bundle the DLLs.
+        # Download from Microsoft NuGet: Microsoft.ML.OnnxRuntime.DirectML
+        # This provides GPU acceleration for any DirectX 12 GPU (AMD/NVIDIA/Intel)
+        echo ""
+        echo "==> Downloading ONNX Runtime DirectML..."
+        ORT_VERSION="1.20.0"
+        ORT_CACHE="/project/target/onnxruntime-directml"
+        mkdir -p "$ORT_CACHE"
+
+        if [[ -f "$ORT_CACHE/onnxruntime.dll" ]]; then
+          echo "  ONNX Runtime already downloaded (cached)"
+        else
+          echo "  Downloading Microsoft.ML.OnnxRuntime.DirectML $ORT_VERSION..."
+          cd /tmp
+          # NuGet packages are just ZIP files with .nupkg extension
+          curl -sL "https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.DirectML/$ORT_VERSION" -o ort.nupkg
+          unzip -q ort.nupkg -d ort-package
+          # DLLs are in runtimes/win-x64/native/
+          cp ort-package/runtimes/win-x64/native/onnxruntime.dll "$ORT_CACHE/"
+          cp ort-package/runtimes/win-x64/native/DirectML.dll "$ORT_CACHE/" 2>/dev/null || true
+          rm -rf ort.nupkg ort-package
+          cd /project
+          echo "  Downloaded ONNX Runtime DirectML $ORT_VERSION"
+        fi
+
+        # =====================================================================
+        # Phase 7: Gather runtime DLLs for distribution
         # =====================================================================
         # MinGW applications need these DLLs at runtime. Rather than fighting
         # with static linking (especially pthread), we ship them alongside .exe
@@ -650,6 +679,16 @@ PKGWRAPPER
         elif [[ -f "$ESSENTIA_PREFIX/bin/essentia.dll" ]]; then
           cp "$ESSENTIA_PREFIX/bin/essentia.dll" /project/target/dlls/
           echo "  Found: essentia.dll"
+        fi
+
+        # Copy ONNX Runtime DirectML DLLs (needed for GPU-accelerated stem separation)
+        if [[ -f "$ORT_CACHE/onnxruntime.dll" ]]; then
+          cp "$ORT_CACHE/onnxruntime.dll" /project/target/dlls/
+          echo "  Found: onnxruntime.dll (DirectML)"
+        fi
+        if [[ -f "$ORT_CACHE/DirectML.dll" ]]; then
+          cp "$ORT_CACHE/DirectML.dll" /project/target/dlls/
+          echo "  Found: DirectML.dll"
         fi
 
         echo ""
@@ -713,6 +752,16 @@ PKGWRAPPER
         cp "$DLL_DIR/essentia.dll" "$CUE_DIR/"
         echo "  ✓ essentia.dll"
       fi
+
+      # Copy ONNX Runtime DirectML DLLs (GPU-accelerated stem separation)
+      if [[ -f "$DLL_DIR/onnxruntime.dll" ]]; then
+        cp "$DLL_DIR/onnxruntime.dll" "$CUE_DIR/"
+        echo "  ✓ onnxruntime.dll (DirectML)"
+      fi
+      if [[ -f "$DLL_DIR/DirectML.dll" ]]; then
+        cp "$DLL_DIR/DirectML.dll" "$CUE_DIR/"
+        echo "  ✓ DirectML.dll"
+      fi
       echo "  ✓ mesh-cue.exe"
 
       # Create zip
@@ -736,8 +785,8 @@ PKGWRAPPER
     echo "║    - mesh-player.exe + MinGW runtime DLLs                             ║"
     echo "║                                                                       ║"
     echo "║  mesh-cue.zip:                                                        ║"
-    echo "║    - mesh-cue.exe + MinGW runtime DLLs + essentia.dll                 ║"
-    echo "║    - Stem separation: CPU-only (GPU requires native MSVC build)       ║"
+    echo "║    - mesh-cue.exe + essentia.dll + onnxruntime.dll + DirectML.dll    ║"
+    echo "║    - GPU acceleration via DirectML (AMD/NVIDIA/Intel DirectX 12)     ║"
     echo "║                                                                       ║"
     echo "║  Just extract and run on Windows 10+ - no installation needed!        ║"
     echo "╚═══════════════════════════════════════════════════════════════════════╝"
