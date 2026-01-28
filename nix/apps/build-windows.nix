@@ -9,8 +9,10 @@
 #   - NixOS: virtualisation.podman.enable = true (or docker)
 #
 # GPU Acceleration:
-#   - mesh-cue includes DirectML support (AMD/NVIDIA/Intel via DirectX 12)
-#   - DirectML is built into Windows 10+, no additional installation needed
+#   - Currently CPU-only for cross-compiled Windows builds
+#   - Reason: ort (ONNX Runtime) only provides MSVC binaries, not MinGW
+#   - DirectML would require building ONNX Runtime from source for MinGW
+#   - Native Windows builds (with MSVC) could use DirectML in the future
 #
 # Why container? Pure Nix cross-compilation fails due to MinGW-w64 pthreads
 # __ImageBase linker errors in nixpkgs. Container has working toolchain.
@@ -605,9 +607,9 @@ PKGWRAPPER
         export CXXFLAGS_x86_64_pc_windows_gnu="-std=c++17 -D_USE_MATH_DEFINES -DTAGLIB_STATIC -DCHROMAPRINT_NODLL -D_BYTE_DEFINED"
 
         # Use --no-default-features to disable JACK backend (Linux-only, uses CPAL on Windows)
-        # Enable DirectML for GPU acceleration (AMD/NVIDIA/Intel via DirectX 12)
-        echo "    (with DirectML GPU acceleration)"
-        cargo build --release --target x86_64-pc-windows-gnu -p mesh-cue --no-default-features --features directml || {
+        # Note: GPU acceleration (DirectML) not available for MinGW cross-compilation
+        # ort only provides MSVC binaries; would need to build ONNX Runtime from source
+        cargo build --release --target x86_64-pc-windows-gnu -p mesh-cue --no-default-features || {
           echo ""
           echo "WARNING: mesh-cue build failed (Essentia cross-compilation is complex)"
           echo "         mesh-player.exe was built successfully"
@@ -729,7 +731,7 @@ PKGWRAPPER
     echo "║                                                                       ║"
     echo "║  mesh-cue.zip:                                                        ║"
     echo "║    - mesh-cue.exe + MinGW runtime DLLs + essentia.dll                 ║"
-    echo "║    - DirectML GPU acceleration (AMD/NVIDIA/Intel via DirectX 12)      ║"
+    echo "║    - Stem separation: CPU-only (GPU requires native MSVC build)       ║"
     echo "║                                                                       ║"
     echo "║  Just extract and run on Windows 10+ - no installation needed!        ║"
     echo "╚═══════════════════════════════════════════════════════════════════════╝"
