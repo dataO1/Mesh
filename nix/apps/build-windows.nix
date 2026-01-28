@@ -443,6 +443,12 @@ TOOLCHAIN
         # but needs native gcc for host builds (build scripts, proc-macros).
         unset CC CXX AR RANLIB CFLAGS CXXFLAGS LDFLAGS
 
+        # Force rebuild of mesh crates (dependencies stay cached)
+        # Container mounts can confuse cargo mtime-based fingerprinting
+        echo ""
+        echo "==> Cleaning mesh crates to force rebuild..."
+        cargo clean -p mesh-player -p mesh-cue --target x86_64-pc-windows-gnu 2>/dev/null || true
+
         echo ""
         echo "==> Building mesh-player..."
         # Use --no-default-features to disable JACK backend (Linux-only, uses CPAL on Windows)
