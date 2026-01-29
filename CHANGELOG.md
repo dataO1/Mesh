@@ -2,6 +2,32 @@
 
 All notable changes to Mesh are documented in this file.
 
+## Release Packages
+
+| Package | Platform | Description |
+|---------|----------|-------------|
+| `mesh-cue_amd64.deb` | Linux (Debian/Ubuntu) | Full DJ application with stem separation (CPU) |
+| `mesh-cue-cuda_amd64.deb` | Linux (Debian/Ubuntu) | Full DJ application with NVIDIA CUDA acceleration |
+| `mesh-cue_win.zip` | Windows 10/11 | Full DJ application with DirectML GPU acceleration |
+| `mesh-player_amd64.deb` | Linux (Debian/Ubuntu) | Lightweight stem player |
+| `mesh-player_win.zip` | Windows 10/11 | Lightweight stem player |
+
+### Installation
+
+**Linux (.deb):**
+```bash
+sudo dpkg -i mesh-cue_amd64.deb      # or mesh-cue-cuda_amd64.deb for NVIDIA GPUs
+sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
+```
+
+**Windows (.zip):**
+1. Extract the zip file to a folder (e.g., `C:\Program Files\Mesh`)
+2. Run `mesh-cue.exe` or `mesh-player.exe`
+
+> **GPU Notes:** The CUDA build requires NVIDIA driver 525+ and CUDA 12. The Windows build uses DirectML which works with any DirectX 12 capable GPU (AMD, NVIDIA, Intel) without additional drivers.
+
+---
+
 ## [0.5.0] - 2026-01-28
 
 > **⚠️ Note:** Stem separation features in this release are experimental. GPU acceleration (CUDA on Linux, DirectML on Windows) is untested and may not work on all systems.
