@@ -4,6 +4,8 @@ All notable changes to Mesh are documented in this file.
 
 ## [0.5.0] - 2026-01-28
 
+> **⚠️ Note:** Stem separation features in this release are experimental. GPU acceleration (CUDA on Linux, DirectML on Windows) is untested and may not work on all systems.
+
 ### Added
 
 - **HTDemucs hybrid model support** — Full implementation of the Demucs v4 hybrid transformer architecture with both time-domain and frequency-domain branches. The frequency branch uses STFT/ISTFT processing to capture spectral details that the time branch might miss.

@@ -1194,6 +1194,8 @@ You can continue browsing your collection while the import runs in the backgroun
 
 ## Stem Separation
 
+> **⚠️ Experimental Feature:** Stem separation is experimental. Quality may vary depending on the source material. GPU acceleration (CUDA/DirectML) is untested and may not work on all systems.
+
 Mesh includes built-in **neural stem separation** powered by [Demucs](https://github.com/facebookresearch/demucs) (Meta AI). When you import regular audio files, Mesh automatically separates them into 4 stems: **Vocals**, **Drums**, **Bass**, and **Other**.
 
 ### How It Works

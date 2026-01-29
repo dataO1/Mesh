@@ -186,8 +186,8 @@ fn view_scan_results_mixed(state: &ImportState) -> Element<'_, Message> {
         .size(12)
     };
 
-    // Note about stem separation
-    let note = text("⚠ Stem separation requires ~4GB RAM per track and may take several minutes.")
+    // Note about stem separation (experimental feature)
+    let note = text("⚠ Experimental: Stem separation requires ~4GB RAM. GPU acceleration is untested.")
         .size(11)
         .color(iced::Color::from_rgb(0.8, 0.6, 0.2));
 
