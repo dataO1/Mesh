@@ -307,6 +307,11 @@ pkgs.writeShellApplication {
         # Always use load-dynamic to avoid glibc version mismatch with ort's pre-built binaries
         # (pyke.io binaries are built against glibc 2.38+, Ubuntu 22.04 has 2.35)
         #
+        # IMPORTANT: Clean mesh-cue and ort to prevent feature flag contamination
+        # If cuda build ran previously, incremental compilation would reuse cuda-enabled ort
+        echo "    Cleaning mesh-cue and ort (prevents cuda/non-cuda feature mixing)..."
+        cargo clean --release -p mesh-cue -p ort 2>/dev/null || true
+        #
         # WORKAROUND: Build essentia first without load-dynamic feature
         # load-dynamic causes essentia-codegen to fail (cargo feature/build order issue)
         echo "    Building essentia first (without load-dynamic)..."
@@ -329,19 +334,29 @@ pkgs.writeShellApplication {
         mkdir -p "$CARGO_TARGET_DIR/release/bundled"
 
         # Download ONNX Runtime from Microsoft (compatible with older glibc)
+        # Use GPU version for CUDA builds, CPU version otherwise
         ORT_VERSION="1.20.0"
-        ORT_CACHE="/build/onnxruntime"
-        if [[ -f "$ORT_CACHE/libonnxruntime.so" ]]; then
-          echo "    ONNX Runtime already downloaded (cached)"
+        if [[ "''${ENABLE_CUDA:-0}" == "1" ]]; then
+          ORT_VARIANT="gpu"
+          ORT_CACHE="/build/onnxruntime-gpu"
+          ORT_TARBALL="onnxruntime-linux-x64-gpu-$ORT_VERSION"
         else
-          echo "    Downloading ONNX Runtime $ORT_VERSION from Microsoft..."
+          ORT_VARIANT="cpu"
+          ORT_CACHE="/build/onnxruntime-cpu"
+          ORT_TARBALL="onnxruntime-linux-x64-$ORT_VERSION"
+        fi
+
+        if [[ -f "$ORT_CACHE/libonnxruntime.so" ]]; then
+          echo "    ONNX Runtime ($ORT_VARIANT) already downloaded (cached)"
+        else
+          echo "    Downloading ONNX Runtime $ORT_VERSION ($ORT_VARIANT) from Microsoft..."
           mkdir -p "$ORT_CACHE"
           cd /tmp
-          curl -sL "https://github.com/microsoft/onnxruntime/releases/download/v$ORT_VERSION/onnxruntime-linux-x64-$ORT_VERSION.tgz" | tar xz
-          cp "onnxruntime-linux-x64-$ORT_VERSION/lib/libonnxruntime.so.$ORT_VERSION" "$ORT_CACHE/libonnxruntime.so"
-          rm -rf "onnxruntime-linux-x64-$ORT_VERSION"
+          curl -sL "https://github.com/microsoft/onnxruntime/releases/download/v$ORT_VERSION/$ORT_TARBALL.tgz" | tar xz
+          cp "$ORT_TARBALL/lib/libonnxruntime.so.$ORT_VERSION" "$ORT_CACHE/libonnxruntime.so"
+          rm -rf "$ORT_TARBALL"
           cd /build/src
-          echo "    Downloaded ONNX Runtime $ORT_VERSION"
+          echo "    Downloaded ONNX Runtime $ORT_VERSION ($ORT_VARIANT)"
         fi
 
         echo "    Copying libraries to bundle..."

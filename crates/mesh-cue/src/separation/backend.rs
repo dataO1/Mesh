@@ -24,21 +24,26 @@ use super::error::Result;
 
 /// Initialize ONNX Runtime for runtime library loading
 ///
-/// When built with `load-dynamic` feature, this loads the ONNX Runtime library
-/// at runtime instead of linking at compile time. This enables:
+/// When built with `load-dynamic` feature, this sets the ORT_DYLIB_PATH environment
+/// variable so ort can find the library at runtime. This enables:
 /// - Windows: MinGW builds using MSVC DirectML binaries from Microsoft
 /// - Linux: Builds using bundled ONNX Runtime with compatible glibc
 ///
 /// The library is searched for in the following locations:
 /// 1. Same directory as executable (bundled with app)
 /// 2. /usr/lib/mesh/ (Debian package install location)
-/// 3. System library paths (LD_LIBRARY_PATH on Linux)
 #[cfg(feature = "load-dynamic")]
 fn init_ort_runtime() {
     use std::sync::Once;
     static ORT_INIT: Once = Once::new();
 
     ORT_INIT.call_once(|| {
+        // Skip if ORT_DYLIB_PATH is already set
+        if std::env::var("ORT_DYLIB_PATH").is_ok() {
+            log::info!("ORT_DYLIB_PATH already set, using existing value");
+            return;
+        }
+
         // Platform-specific library name
         #[cfg(target_os = "windows")]
         let lib_name = "onnxruntime.dll";
@@ -53,40 +58,34 @@ fn init_ort_runtime() {
             .and_then(|exe| exe.parent().map(|p| p.to_path_buf()));
 
         let search_paths: Vec<std::path::PathBuf> = [
-            // 1. Same directory as executable
+            // 1. Same directory as executable (Windows zip distribution)
             exe_dir.as_ref().map(|d| d.join(lib_name)),
             // 2. /usr/lib/mesh/ (Debian package location)
             #[cfg(target_os = "linux")]
             Some(std::path::PathBuf::from("/usr/lib/mesh").join(lib_name)),
             #[cfg(not(target_os = "linux"))]
             None,
-            // 3. Just the library name (system search paths)
-            Some(std::path::PathBuf::from(lib_name)),
         ]
         .into_iter()
         .flatten()
         .collect();
 
-        // Try each path until one works
+        // Find the first path that exists
         for lib_path in &search_paths {
-            log::info!("Trying ONNX Runtime at {:?}", lib_path);
-            match ort::init_from(lib_path) {
-                Ok(builder) => {
-                    builder.commit();
-                    log::info!("ONNX Runtime initialized successfully from {:?}", lib_path);
-                    return;
-                }
-                Err(e) => {
-                    log::debug!("Failed to load from {:?}: {}", lib_path, e);
-                }
+            if lib_path.exists() {
+                log::info!("Setting ORT_DYLIB_PATH to {:?}", lib_path);
+                std::env::set_var("ORT_DYLIB_PATH", lib_path);
+                return;
+            } else {
+                log::debug!("ONNX Runtime not found at {:?}", lib_path);
             }
         }
 
-        log::error!(
-            "Failed to initialize ONNX Runtime from any location. Searched: {:?}",
+        log::warn!(
+            "Could not find ONNX Runtime library. Searched: {:?}. \
+             Will try system library paths.",
             search_paths
         );
-        // Will fail later at session creation with a more specific error
     });
 }
 
@@ -488,6 +487,10 @@ pub struct OrtBackend {
 impl OrtBackend {
     /// Create a new ORT backend
     pub fn new() -> Self {
+        // Initialize ONNX Runtime library path early (before any ort calls)
+        #[cfg(feature = "load-dynamic")]
+        init_ort_runtime();
+
         let gpu_available = Self::probe_gpu();
         log::info!(
             "OrtBackend initialized, GPU available: {}",
