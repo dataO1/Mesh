@@ -790,43 +790,74 @@ fn run_demucs_inference(
     // Create ONNX session with GPU acceleration if available
     log::info!("Loading ONNX model from {:?}", model_path);
 
-    // Build execution providers list based on compiled features
-    // Order matters: first available provider is used, CPU is always last as fallback
-    #[allow(unused_mut)]
-    let mut execution_providers: Vec<ort::execution_providers::ExecutionProviderDispatch> = Vec::new();
+    // Try GPU execution providers first, fall back to CPU if they fail
+    // Some models (like HTDemucs hybrid) use operators not supported by DirectML/CUDA
+    let mut session = None;
+    let mut used_provider = "CPU";
 
     // CUDA for NVIDIA GPUs (Linux/Windows with CUDA 12+ installed)
     #[cfg(feature = "cuda")]
-    {
+    if session.is_none() {
         use ort::execution_providers::CUDAExecutionProvider;
-        log::info!("CUDA execution provider enabled (compile-time)");
-        execution_providers.push(CUDAExecutionProvider::default().build());
+        log::info!("Trying CUDA execution provider...");
+        match Session::builder()
+            .and_then(|b| b.with_execution_providers([CUDAExecutionProvider::default().build()]))
+            .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
+            .and_then(|b| b.commit_from_file(model_path))
+        {
+            Ok(s) => {
+                log::info!("CUDA execution provider initialized successfully");
+                session = Some(s);
+                used_provider = "CUDA";
+            }
+            Err(e) => {
+                log::warn!("CUDA execution provider failed, will try fallback: {}", e);
+            }
+        }
     }
 
     // DirectML for DirectX 12 GPUs (Windows - AMD/NVIDIA/Intel)
     #[cfg(feature = "directml")]
-    {
+    if session.is_none() {
         use ort::execution_providers::DirectMLExecutionProvider;
-        log::info!("DirectML execution provider enabled (compile-time)");
-        execution_providers.push(DirectMLExecutionProvider::default().build());
+        log::info!("Trying DirectML execution provider...");
+        match Session::builder()
+            .and_then(|b| b.with_execution_providers([DirectMLExecutionProvider::default().build()]))
+            .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
+            .and_then(|b| b.commit_from_file(model_path))
+        {
+            Ok(s) => {
+                log::info!("DirectML execution provider initialized successfully");
+                session = Some(s);
+                used_provider = "DirectML";
+            }
+            Err(e) => {
+                log::warn!("DirectML execution provider failed, falling back to CPU: {}", e);
+            }
+        }
     }
 
     // CPU fallback is always available
-    {
+    if session.is_none() {
         use ort::execution_providers::CPUExecutionProvider;
-        execution_providers.push(CPUExecutionProvider::default().build());
+        log::info!("Using CPU execution provider");
+        session = Some(
+            Session::builder()
+                .map_err(|e| SeparationError::BackendInitFailed(e.to_string()))?
+                .with_execution_providers([CPUExecutionProvider::default().build()])
+                .map_err(|e| SeparationError::BackendInitFailed(e.to_string()))?
+                .with_optimization_level(GraphOptimizationLevel::Level3)
+                .map_err(|e| SeparationError::BackendInitFailed(e.to_string()))?
+                .commit_from_file(model_path)
+                .map_err(|e| {
+                    SeparationError::BackendInitFailed(format!("Failed to load ONNX model: {}", e))
+                })?,
+        );
+        used_provider = "CPU";
     }
 
-    let mut session = Session::builder()
-        .map_err(|e| SeparationError::BackendInitFailed(e.to_string()))?
-        .with_execution_providers(execution_providers)
-        .map_err(|e| SeparationError::BackendInitFailed(e.to_string()))?
-        .with_optimization_level(GraphOptimizationLevel::Level3)
-        .map_err(|e| SeparationError::BackendInitFailed(e.to_string()))?
-        .commit_from_file(model_path)
-        .map_err(|e| {
-            SeparationError::BackendInitFailed(format!("Failed to load ONNX model: {}", e))
-        })?;
+    let mut session = session.expect("Session should be initialized");
+    log::info!("ONNX session created with {} execution provider", used_provider);
 
     if let Some(cb) = progress {
         cb(0.2);

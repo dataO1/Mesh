@@ -4,6 +4,9 @@
 # Usage: nix run .#build-windows
 # Output: dist/windows/mesh-player_win.zip, mesh-cue_win.zip
 #
+# Options:
+#   DEBUG_CONSOLE=1 nix run .#build-windows   # Enable console window for debugging
+#
 # Prerequisites:
 #   - Podman or Docker installed and running
 #   - NixOS: virtualisation.podman.enable = true (or docker)
@@ -93,6 +96,16 @@ pkgs.writeShellApplication {
     # Linux essentia (from Nix) for host builds during cross-compilation
     ESSENTIA_LINUX="${essentiaLinux}"
 
+    # Debug mode: show console window on Windows for stdout/stderr output
+    DEBUG_CONSOLE="''${DEBUG_CONSOLE:-}"
+    if [[ -n "$DEBUG_CONSOLE" ]]; then
+      CONSOLE_FEATURE=",console"
+      echo "Debug mode:      ENABLED (console window visible)"
+    else
+      CONSOLE_FEATURE=""
+      echo "Debug mode:      disabled (use DEBUG_CONSOLE=1 to enable)"
+    fi
+
     echo "Project root:    $PROJECT_ROOT"
     echo "Output dir:      $OUTPUT_DIR"
     echo "Container:       $IMAGE"
@@ -124,6 +137,7 @@ pkgs.writeShellApplication {
     podman run --rm \
       -v "$PROJECT_ROOT:/project:ro" \
       -v "$TARGET_DIR:/project/target:rw" \
+      -e "CONSOLE_FEATURE=$CONSOLE_FEATURE" \
       -w /project \
       "$IMAGE" \
       bash -c '
@@ -447,7 +461,12 @@ TOOLCHAIN
         echo ""
         echo "==> Building mesh-player..."
         # Use --no-default-features to disable JACK backend (Linux-only, uses CPAL on Windows)
-        cargo build --release --target x86_64-pc-windows-gnu -p mesh-player --no-default-features
+        # CONSOLE_FEATURE adds ",console" when DEBUG_CONSOLE=1 to show stdout/stderr
+        if [[ -n "$CONSOLE_FEATURE" ]]; then
+          cargo build --release --target x86_64-pc-windows-gnu -p mesh-player --no-default-features --features console
+        else
+          cargo build --release --target x86_64-pc-windows-gnu -p mesh-player --no-default-features
+        fi
 
         # =====================================================================
         # Phase 5: Build mesh-cue (needs Essentia for both HOST and TARGET)
@@ -613,9 +632,16 @@ PKGWRAPPER
         echo "    Building essentia first (without load-dynamic)..."
         cargo build --release --target x86_64-pc-windows-gnu -p essentia -p essentia-sys --no-default-features 2>/dev/null || true
 
-        # Now build mesh-cue with load-dynamic (essentia is already cached)
-        # load-dynamic enables runtime DLL loading for ONNX Runtime (DirectML GPU acceleration)
-        cargo build --release --target x86_64-pc-windows-gnu -p mesh-cue --no-default-features --features load-dynamic || {
+        # Now build mesh-cue with load-dynamic and directml (essentia is already cached)
+        # load-dynamic: enables runtime DLL loading for ONNX Runtime (avoids MinGW/MSVC ABI issues)
+        # directml: enables DirectML execution provider for GPU acceleration on Windows
+        # CONSOLE_FEATURE adds ",console" when DEBUG_CONSOLE=1 to show stdout/stderr
+        if [[ -n "$CONSOLE_FEATURE" ]]; then
+          MESH_CUE_FEATURES="load-dynamic,directml,console"
+        else
+          MESH_CUE_FEATURES="load-dynamic,directml"
+        fi
+        cargo build --release --target x86_64-pc-windows-gnu -p mesh-cue --no-default-features --features "$MESH_CUE_FEATURES" || {
           echo ""
           echo "WARNING: mesh-cue build failed (Essentia cross-compilation is complex)"
           echo "         mesh-player.exe was built successfully"

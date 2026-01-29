@@ -133,6 +133,7 @@ pkgs.mkShell {
     echo "║    nix run .#build-deb              # Linux .deb (CPU only)           ║"
     echo "║    nix run .#build-deb-cuda         # Linux .deb (NVIDIA CUDA 12)     ║"
     echo "║    nix run .#build-windows          # Windows .exe (DirectML auto)    ║"
+    echo "║    DEBUG_CONSOLE=1 nix run .#build-windows  # With console for debug  ║"
     echo "╠═══════════════════════════════════════════════════════════════════════╣"
     echo "║  Test packages in container:                                          ║"
     echo "║    distrobox assemble create        # Create test container           ║"
@@ -140,7 +141,9 @@ pkgs.mkShell {
     echo "║    distrobox assemble rm            # Clean up when done              ║"
     echo "╠═══════════════════════════════════════════════════════════════════════╣"
     echo "║  ONNX Model Conversion (for stem separation):                         ║"
-    echo "║    nix run .#convert-model        # Convert Demucs → models/ folder   ║"
+    echo "║    nix run .#convert-model                  # Standard export (CPU)   ║"
+    echo "║    DIRECTML_COMPAT=1 nix run .#convert-model  # DirectML (opset 20)   ║"
+    echo "║  DirectML models use _directml suffix and native GroupNormalization   ║"
     echo "╚═══════════════════════════════════════════════════════════════════════╝"
     echo ""
   '';

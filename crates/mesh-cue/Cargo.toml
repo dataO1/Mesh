@@ -115,3 +115,7 @@ directml = ["ort/directml"]  # DirectX 12 ML (Windows - AMD/NVIDIA/Intel)
 # The DLL is loaded at runtime via LoadLibrary(), enabling MinGW builds
 # to use pre-built DirectML binaries from Microsoft
 load-dynamic = ["ort/load-dynamic"]
+
+# Show console window on Windows (for debugging - shows stdout/stderr)
+# Without this feature, Windows builds hide the console (GUI-only)
+console = []

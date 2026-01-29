@@ -1,6 +1,10 @@
 // Hide console window on Windows (GUI application)
 // This sets the executable subsystem to WINDOWS instead of CONSOLE
-#![windows_subsystem = "windows"]
+// Use --features console to show the console for debugging
+#![cfg_attr(
+    all(target_os = "windows", not(feature = "console")),
+    windows_subsystem = "windows"
+)]
 
 //! Mesh DJ Player - 4-deck stem-based mixing with neural effects
 //!
