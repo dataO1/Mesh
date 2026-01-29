@@ -335,14 +335,14 @@ pkgs.writeShellApplication {
 
         # Download ONNX Runtime from Microsoft (compatible with older glibc)
         # Use GPU version for CUDA builds, CPU version otherwise
-        ORT_VERSION="1.20.0"
+        ORT_VERSION="1.23.2"
         if [[ "''${ENABLE_CUDA:-0}" == "1" ]]; then
           ORT_VARIANT="gpu"
-          ORT_CACHE="/build/onnxruntime-gpu"
+          ORT_CACHE="/build/onnxruntime-gpu-$ORT_VERSION"
           ORT_TARBALL="onnxruntime-linux-x64-gpu-$ORT_VERSION"
         else
           ORT_VARIANT="cpu"
-          ORT_CACHE="/build/onnxruntime-cpu"
+          ORT_CACHE="/build/onnxruntime-cpu-$ORT_VERSION"
           ORT_TARBALL="onnxruntime-linux-x64-$ORT_VERSION"
         fi
 

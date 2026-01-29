@@ -630,8 +630,8 @@ PKGWRAPPER
         # This provides GPU acceleration for any DirectX 12 GPU (AMD/NVIDIA/Intel)
         echo ""
         echo "==> Downloading ONNX Runtime DirectML..."
-        ORT_VERSION="1.20.0"
-        ORT_CACHE="/project/target/onnxruntime-directml"
+        ORT_VERSION="1.23.2"
+        ORT_CACHE="/project/target/onnxruntime-directml-$ORT_VERSION"
         mkdir -p "$ORT_CACHE"
 
         if [[ -f "$ORT_CACHE/onnxruntime.dll" ]]; then
