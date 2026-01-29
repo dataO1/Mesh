@@ -2,7 +2,7 @@
 # Uses official Rust image + MinGW-w64 toolchain
 #
 # Usage: nix run .#build-windows
-# Output: dist/windows/mesh-player.zip, mesh-cue.zip
+# Output: dist/windows/mesh-player_win.zip, mesh-cue_win.zip
 #
 # Prerequisites:
 #   - Podman or Docker installed and running
@@ -12,7 +12,7 @@
 #   - DirectML support enabled via runtime DLL loading (load-dynamic feature)
 #   - Pre-built ONNX Runtime DirectML DLLs downloaded from Microsoft NuGet
 #   - Works with any DirectX 12 GPU (AMD, NVIDIA, Intel integrated/discrete)
-#   - DLLs (onnxruntime.dll, DirectML.dll) bundled in mesh-cue.zip
+#   - DLLs (onnxruntime.dll, DirectML.dll) bundled in mesh-cue_win.zip
 #
 # Why container? Pure Nix cross-compilation fails due to MinGW-w64 pthreads
 # __ImageBase linker errors in nixpkgs. Container has working toolchain.
@@ -725,9 +725,9 @@ PKGWRAPPER
       echo "  ✓ mesh-player.exe"
 
       # Create zip (remove old zip first to avoid update errors)
-      rm -f "$OUTPUT_DIR/mesh-player.zip"
-      (cd "$OUTPUT_DIR" && zip -r mesh-player.zip mesh-player/)
-      echo "  ✓ Created dist/windows/mesh-player.zip"
+      rm -f "$OUTPUT_DIR/mesh-player_win.zip"
+      (cd "$OUTPUT_DIR" && zip -r mesh-player_win.zip mesh-player/)
+      echo "  ✓ Created dist/windows/mesh-player_win.zip"
     else
       echo "  ✗ mesh-player.exe (build failed)"
     fi
@@ -765,9 +765,9 @@ PKGWRAPPER
       echo "  ✓ mesh-cue.exe"
 
       # Create zip (remove old zip first to avoid update errors)
-      rm -f "$OUTPUT_DIR/mesh-cue.zip"
-      (cd "$OUTPUT_DIR" && zip -r mesh-cue.zip mesh-cue/)
-      echo "  ✓ Created dist/windows/mesh-cue.zip"
+      rm -f "$OUTPUT_DIR/mesh-cue_win.zip"
+      (cd "$OUTPUT_DIR" && zip -r mesh-cue_win.zip mesh-cue/)
+      echo "  ✓ Created dist/windows/mesh-cue_win.zip"
     else
       echo ""
       echo "  ✗ mesh-cue.exe (not built)"
@@ -782,10 +782,10 @@ PKGWRAPPER
     echo "╠═══════════════════════════════════════════════════════════════════════╣"
     echo "║  Distribution packages ready in dist/windows/                         ║"
     echo "║                                                                       ║"
-    echo "║  mesh-player.zip:                                                     ║"
+    echo "║  mesh-player_win.zip:                                                     ║"
     echo "║    - mesh-player.exe + MinGW runtime DLLs                             ║"
     echo "║                                                                       ║"
-    echo "║  mesh-cue.zip:                                                        ║"
+    echo "║  mesh-cue_win.zip:                                                        ║"
     echo "║    - mesh-cue.exe + essentia.dll + onnxruntime.dll + DirectML.dll    ║"
     echo "║    - GPU acceleration via DirectML (AMD/NVIDIA/Intel DirectX 12)     ║"
     echo "║                                                                       ║"
