@@ -378,6 +378,15 @@ pkgs.writeShellApplication {
         echo "    Building mesh-cue.deb..."
         cargo deb -p mesh-cue --no-build --no-strip
 
+        # Rename mesh-cue package for CUDA builds to avoid overwriting CPU build
+        if [[ -n "$GPU_SUFFIX" ]]; then
+          for deb in "$CARGO_TARGET_DIR/debian/"mesh-cue_*.deb; do
+            newname=$(echo "$deb" | sed "s/mesh-cue_/mesh-cue''${GPU_SUFFIX}_/")
+            mv "$deb" "$newname"
+            echo "    Renamed: $(basename "$deb") → $(basename "$newname")"
+          done
+        fi
+
         # Copy to output
         cp "$CARGO_TARGET_DIR/debian/"*.deb /output/
 
