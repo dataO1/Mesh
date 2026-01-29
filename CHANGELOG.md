@@ -47,6 +47,10 @@ All notable changes to Mesh are documented in this file.
 
 - **CUDA for Linux** — Optional CUDA 12 builds available for NVIDIA GPU users. Requires NVIDIA driver 525+ and CUDA toolkit on target system.
 
+- **Runtime DLL loading for Windows** — Windows builds now use the `load-dynamic` ort feature, which loads `onnxruntime.dll` at runtime via `LoadLibrary()` instead of linking at compile time. This bypasses MinGW/MSVC ABI incompatibility and enables MinGW cross-compiled builds to use Microsoft's pre-built DirectML binaries.
+
+- **Fixed Windows packaging** — Zip package creation now removes old zip files before creating new ones, preventing "missing end signature" errors from corrupted partial builds.
+
 ---
 
 ## [0.4.4] - 2026-01-26

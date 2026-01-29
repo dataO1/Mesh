@@ -42,11 +42,15 @@ fn init_ort_runtime() {
 
         log::info!("Initializing ONNX Runtime from {:?}", dll_path);
 
-        if let Err(e) = ort::init_from(&dll_path).commit() {
-            log::error!("Failed to initialize ONNX Runtime: {}", e);
-            // Can't return error from Once::call_once, will fail later at session creation
-        } else {
-            log::info!("ONNX Runtime initialized successfully (load-dynamic)");
+        match ort::init_from(&dll_path) {
+            Ok(builder) => {
+                builder.commit();
+                log::info!("ONNX Runtime initialized successfully (load-dynamic)");
+            }
+            Err(e) => {
+                log::error!("Failed to initialize ONNX Runtime: {}", e);
+                // Can't return error from Once::call_once, will fail later at session creation
+            }
         }
     });
 }
