@@ -304,11 +304,20 @@ pkgs.writeShellApplication {
         echo ""
         echo "    Building mesh-cue..."
         # GPU feature is passed from Nix via environment variable
+        # Always use load-dynamic to avoid glibc version mismatch with ort's pre-built binaries
+        # (pyke.io binaries are built against glibc 2.38+, Ubuntu 22.04 has 2.35)
+        #
+        # WORKAROUND: Build essentia first without load-dynamic feature
+        # load-dynamic causes essentia-codegen to fail (cargo feature/build order issue)
+        echo "    Building essentia first (without load-dynamic)..."
+        cargo build --release -p essentia -p essentia-sys 2>/dev/null || true
+
         if [[ "''${ENABLE_CUDA:-0}" == "1" ]]; then
-          echo "    (with CUDA 12 GPU acceleration)"
-          cargo build --release -p mesh-cue --features cuda
+          echo "    (with CUDA 12 GPU acceleration + load-dynamic)"
+          cargo build --release -p mesh-cue --features cuda,load-dynamic
         else
-          cargo build --release -p mesh-cue
+          echo "    (with load-dynamic for ONNX Runtime)"
+          cargo build --release -p mesh-cue --features load-dynamic
         fi
         echo "    Rust builds complete!"
 
@@ -319,6 +328,22 @@ pkgs.writeShellApplication {
         echo "==> [7/8] Bundling libraries for portability..."
         mkdir -p "$CARGO_TARGET_DIR/release/bundled"
 
+        # Download ONNX Runtime from Microsoft (compatible with older glibc)
+        ORT_VERSION="1.20.0"
+        ORT_CACHE="/build/onnxruntime"
+        if [[ -f "$ORT_CACHE/libonnxruntime.so" ]]; then
+          echo "    ONNX Runtime already downloaded (cached)"
+        else
+          echo "    Downloading ONNX Runtime $ORT_VERSION from Microsoft..."
+          mkdir -p "$ORT_CACHE"
+          cd /tmp
+          curl -sL "https://github.com/microsoft/onnxruntime/releases/download/v$ORT_VERSION/onnxruntime-linux-x64-$ORT_VERSION.tgz" | tar xz
+          cp "onnxruntime-linux-x64-$ORT_VERSION/lib/libonnxruntime.so.$ORT_VERSION" "$ORT_CACHE/libonnxruntime.so"
+          rm -rf "onnxruntime-linux-x64-$ORT_VERSION"
+          cd /build/src
+          echo "    Downloaded ONNX Runtime $ORT_VERSION"
+        fi
+
         echo "    Copying libraries to bundle..."
         cp -v "$DEPS_PREFIX/lib/libessentia.so" "$CARGO_TARGET_DIR/release/bundled/"
         cp -v "$DEPS_PREFIX/lib/libavcodec.so.58" "$CARGO_TARGET_DIR/release/bundled/"
@@ -326,6 +351,7 @@ pkgs.writeShellApplication {
         cp -v "$DEPS_PREFIX/lib/libavutil.so.56" "$CARGO_TARGET_DIR/release/bundled/"
         cp -v "$DEPS_PREFIX/lib/libswresample.so.3" "$CARGO_TARGET_DIR/release/bundled/"
         cp -v "$DEPS_PREFIX/lib/libtag.so.2" "$CARGO_TARGET_DIR/release/bundled/"
+        cp -v "$ORT_CACHE/libonnxruntime.so" "$CARGO_TARGET_DIR/release/bundled/"
 
         echo ""
         echo "    Patching rpath for portability..."

@@ -1192,6 +1192,104 @@ You can continue browsing your collection while the import runs in the backgroun
 
 ---
 
+## Stem Separation
+
+Mesh includes built-in **neural stem separation** powered by [Demucs](https://github.com/facebookresearch/demucs) (Meta AI). When you import regular audio files, Mesh automatically separates them into 4 stems: **Vocals**, **Drums**, **Bass**, and **Other**.
+
+### How It Works
+
+The separation uses the **HTDemucs** (Hybrid Transformer Demucs) model — a state-of-the-art neural network that processes audio in both the time and frequency domains:
+
+```
+Input Audio ──► Time Branch ──────────┐
+                                      ├──► Merged ──► 4 Stems
+            ──► Frequency Branch ─────┘
+                (STFT → Transformer → ISTFT)
+```
+
+This hybrid architecture captures both transient details (drums, percussion) and harmonic content (vocals, bass) with high accuracy.
+
+### Quality Options
+
+Configure separation quality in **Settings → Separation**:
+
+| Setting | Options | Effect |
+|---------|---------|--------|
+| **Model** | Standard / Fine-tuned | Fine-tuned has ~1-3% better SDR (signal-to-distortion ratio) |
+| **Shifts** | 1-5 | More shifts = better quality but slower. Each shift adds ~0.2 SDR improvement |
+
+**Recommended settings:**
+- **Quick preview**: 1 shift (fastest, good enough for auditioning)
+- **Final library**: 3-5 shifts (best quality for your main collection)
+
+### GPU Acceleration
+
+Stem separation is computationally intensive. GPU acceleration dramatically reduces processing time:
+
+| Hardware | Approximate Time (4-min track) |
+|----------|-------------------------------|
+| CPU (8-core) | 3-5 minutes |
+| NVIDIA RTX 3070 | 20-30 seconds |
+| NVIDIA RTX 4090 | 10-15 seconds |
+
+#### Linux with NVIDIA GPU (CUDA)
+
+For NVIDIA GPU acceleration on Linux, use the CUDA-enabled build:
+
+```bash
+# Build from source with CUDA support
+nix run .#build-deb-cuda
+
+# Or install the CUDA .deb package
+sudo dpkg -i mesh-cue-cuda_*.deb
+```
+
+**Requirements:**
+- NVIDIA GPU with CUDA Compute Capability 6.0+ (GTX 1000 series or newer)
+- NVIDIA driver 525 or newer
+- CUDA 12 toolkit installed on your system
+
+**Verify CUDA is working:**
+```bash
+# Check NVIDIA driver
+nvidia-smi
+
+# Check CUDA toolkit
+nvcc --version
+```
+
+If CUDA is not available at runtime, Mesh automatically falls back to CPU processing.
+
+#### Windows with DirectX 12 GPU
+
+Windows builds include **DirectML** support, which provides GPU acceleration for any DirectX 12 capable GPU (NVIDIA, AMD, or Intel):
+
+- No additional drivers needed (DirectML is built into Windows 10+)
+- Works automatically if a compatible GPU is detected
+- Falls back to CPU if no GPU is available
+
+### Resource Requirements
+
+| Resource | Minimum | Recommended |
+|----------|---------|-------------|
+| **RAM** | 4 GB per track | 8 GB+ for comfortable headroom |
+| **Disk** | ~50 MB per track (output) | SSD recommended for faster I/O |
+| **Model Download** | ~170 MB (one-time) | Cached in `~/.cache/mesh-cue/models/` |
+
+**Memory management:** Tracks are processed sequentially (one at a time) to manage memory usage. The model is loaded once and reused for all tracks in a batch.
+
+### Separation Quality Tips
+
+1. **Higher-quality source files** produce better separations. Prefer FLAC/WAV over low-bitrate MP3.
+
+2. **Shifts setting** is the biggest quality lever. Use 3+ shifts for tracks you'll play frequently.
+
+3. **Check the "other" stem** — it contains everything that isn't vocals, drums, or bass (guitars, synths, FX). If you hear unwanted bleed, the source audio may have challenging content.
+
+4. **Residual computation** ensures stems sum back to the original mix perfectly. There's no energy loss or added artifacts.
+
+---
+
 ## USB Export
 
 Mesh supports exporting your playlists to USB drives for portable DJ setups. Export from mesh-cue, then browse and play from mesh-player — no laptop needed at the venue.

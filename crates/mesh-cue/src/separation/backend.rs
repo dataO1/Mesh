@@ -22,36 +22,71 @@ use std::path::Path;
 use super::config::SeparationConfig;
 use super::error::Result;
 
-/// Initialize ONNX Runtime for runtime DLL loading (Windows cross-compilation)
+/// Initialize ONNX Runtime for runtime library loading
 ///
-/// When built with `load-dynamic` feature, this loads onnxruntime.dll from the
-/// same directory as the executable. This enables MinGW cross-compiled builds
-/// to use pre-built MSVC DirectML binaries from Microsoft.
+/// When built with `load-dynamic` feature, this loads the ONNX Runtime library
+/// at runtime instead of linking at compile time. This enables:
+/// - Windows: MinGW builds using MSVC DirectML binaries from Microsoft
+/// - Linux: Builds using bundled ONNX Runtime with compatible glibc
+///
+/// The library is searched for in the following locations:
+/// 1. Same directory as executable (bundled with app)
+/// 2. /usr/lib/mesh/ (Debian package install location)
+/// 3. System library paths (LD_LIBRARY_PATH on Linux)
 #[cfg(feature = "load-dynamic")]
 fn init_ort_runtime() {
     use std::sync::Once;
     static ORT_INIT: Once = Once::new();
 
     ORT_INIT.call_once(|| {
-        // Find onnxruntime.dll relative to executable
-        let dll_path = std::env::current_exe()
+        // Platform-specific library name
+        #[cfg(target_os = "windows")]
+        let lib_name = "onnxruntime.dll";
+        #[cfg(target_os = "linux")]
+        let lib_name = "libonnxruntime.so";
+        #[cfg(target_os = "macos")]
+        let lib_name = "libonnxruntime.dylib";
+
+        // Try multiple locations
+        let exe_dir = std::env::current_exe()
             .ok()
-            .and_then(|exe| exe.parent().map(|p| p.to_path_buf()))
-            .map(|dir| dir.join("onnxruntime.dll"))
-            .unwrap_or_else(|| std::path::PathBuf::from("onnxruntime.dll"));
+            .and_then(|exe| exe.parent().map(|p| p.to_path_buf()));
 
-        log::info!("Initializing ONNX Runtime from {:?}", dll_path);
+        let search_paths: Vec<std::path::PathBuf> = [
+            // 1. Same directory as executable
+            exe_dir.as_ref().map(|d| d.join(lib_name)),
+            // 2. /usr/lib/mesh/ (Debian package location)
+            #[cfg(target_os = "linux")]
+            Some(std::path::PathBuf::from("/usr/lib/mesh").join(lib_name)),
+            #[cfg(not(target_os = "linux"))]
+            None,
+            // 3. Just the library name (system search paths)
+            Some(std::path::PathBuf::from(lib_name)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
 
-        match ort::init_from(&dll_path) {
-            Ok(builder) => {
-                builder.commit();
-                log::info!("ONNX Runtime initialized successfully (load-dynamic)");
-            }
-            Err(e) => {
-                log::error!("Failed to initialize ONNX Runtime: {}", e);
-                // Can't return error from Once::call_once, will fail later at session creation
+        // Try each path until one works
+        for lib_path in &search_paths {
+            log::info!("Trying ONNX Runtime at {:?}", lib_path);
+            match ort::init_from(lib_path) {
+                Ok(builder) => {
+                    builder.commit();
+                    log::info!("ONNX Runtime initialized successfully from {:?}", lib_path);
+                    return;
+                }
+                Err(e) => {
+                    log::debug!("Failed to load from {:?}: {}", lib_path, e);
+                }
             }
         }
+
+        log::error!(
+            "Failed to initialize ONNX Runtime from any location. Searched: {:?}",
+            search_paths
+        );
+        // Will fail later at session creation with a more specific error
     });
 }
 

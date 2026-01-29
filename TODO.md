@@ -183,14 +183,14 @@ and mesh-widget and only if necessary in the ui.
   using the current playhead positions nearest beat marker as a center point,
   which should not change when changing the bpm (it should be guidance for the
   first beat marker, which should be updated accordingly)
-- [ ] while scrubbing if the track is playing stop progress of the audio buffer,
+- [x] while scrubbing if the track is playing stop progress of the audio buffer,
   but still play the audio. so the sound comes out as like scratching a vinyl.
   same for when track is not playing, this should start audio, but not change
   the playback state.
-- [ ] add a button to adjust the beatgrid to the current playhead. so
+- [x] add a button to adjust the beatgrid to the current playhead. so
   additionally to nudging while cueing djs can scrub in the waveform and click
   the button to set the beatgrit to align the current playheader.
-- [ ] stem splitting in the import process: we should use demucsv4 or uvr5
+- [x] stem splitting in the import process: we should use demucsv4 or uvr5
   without gui. research how we can effectively include stem splitting (using a
   gpu if available) into the import process, such that the user doesnt need to
   put stems into the import folder, but can import normal audio files (flac, wav
@@ -355,6 +355,13 @@ and mesh-widget and only if necessary in the ui.
   tracks can also be present in several playlists, so this should never
   duplicate tracks, but first check if the track is present in /tracks, if not
   copy, then symlink it (for ext4).
+- [x] make text in filebrowser wrapped
+- [x] shift+click should delete linked stem
+- [x] file browser both in mesh-cue and mesh-player sometimes takes up to much
+  space, it should just be as big without blocking the rest of the ui. for
+  example the hot cue buttons should have a fixed size in mesh-cue.
+- [x] drag and drop should also work on the file list of the file browser (right
+  column), not only the playlist label(left column)
 - [x] stem linking visuals:
   - [x] for overview wvaeform: always show on top half the currently running
     stems together, on bottom half any non-running stems. this needs to be
@@ -379,13 +386,6 @@ and mesh-widget and only if necessary in the ui.
 - [ ] The beat grid analysis is not really good, we need to check if we can fine
   tune this. research the essentia beatgrid/rythm section and check if we can
   use edm specific beat grid detection, ive read this exists.
-- [x] make text in filebrowser wrapped
-- [x] shift+click should delete linked stem
-- [x] file browser both in mesh-cue and mesh-player sometimes takes up to much
-  space, it should just be as big without blocking the rest of the ui. for
-  example the hot cue buttons should have a fixed size in mesh-cue.
-- [x] drag and drop should also work on the file list of the file browser (right
-  column), not only the playlist label(left column)
 
 # Performance
 - [ ] Can we optimize how stems are stored, this is currently roughly 200-300 mb
