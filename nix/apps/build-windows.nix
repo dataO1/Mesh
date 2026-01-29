@@ -630,7 +630,9 @@ PKGWRAPPER
         # This provides GPU acceleration for any DirectX 12 GPU (AMD/NVIDIA/Intel)
         echo ""
         echo "==> Downloading ONNX Runtime DirectML..."
-        ORT_VERSION="1.23.2"
+        # Note: DirectML package versioning lags behind main ORT releases
+        # Check available versions: curl -s https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.directml/index.json
+        ORT_VERSION="1.23.0"
         ORT_CACHE="/project/target/onnxruntime-directml-$ORT_VERSION"
         mkdir -p "$ORT_CACHE"
 
@@ -640,7 +642,11 @@ PKGWRAPPER
           echo "  Downloading Microsoft.ML.OnnxRuntime.DirectML $ORT_VERSION..."
           cd /tmp
           # NuGet packages are just ZIP files with .nupkg extension
-          curl -sL "https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.DirectML/$ORT_VERSION" -o ort.nupkg
+          # Use NuGet v3 flat container API (most reliable, lowercase package ID required)
+          ORT_PKG_ID="microsoft.ml.onnxruntime.directml"
+          ORT_URL="https://api.nuget.org/v3-flatcontainer/$ORT_PKG_ID/$ORT_VERSION/$ORT_PKG_ID.$ORT_VERSION.nupkg"
+          echo "  URL: $ORT_URL"
+          curl -fSL "$ORT_URL" -o ort.nupkg
           unzip -q ort.nupkg -d ort-package
           # DLLs are in runtimes/win-x64/native/
           cp ort-package/runtimes/win-x64/native/onnxruntime.dll "$ORT_CACHE/"
