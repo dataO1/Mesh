@@ -179,6 +179,16 @@ Configure in **Settings → Separation**.
 
 ---
 
+## Pure Data Effects
+
+Mesh supports custom audio effects written in [Pure Data](https://puredata.info/), a visual programming language for audio. Create your own filters, delays, distortions, or even neural audio effects.
+
+Place effects in `~/Music/mesh-collection/effects/` and they'll appear in the effect picker.
+
+See [examples/pd-effects/](examples/pd-effects/) for templates, documentation, and working examples.
+
+---
+
 ## Roadmap
 
 ### Working Now
@@ -197,6 +207,7 @@ Configure in **Settings → Separation**.
 - [x] Track similarity search (audio fingerprinting)
 - [x] Auto-gain loudness normalization
 - [x] Effects: filter, delay, reverb
+- [x] Pure Data effect patches (custom DSP via PD)
 
 ### Coming Soon
 
@@ -212,7 +223,6 @@ Configure in **Settings → Separation**.
 - [ ] macOS support
 - [ ] Recording to file
 - [ ] RAVE neural effects integration
-- [ ] Pure Data effect patches
 
 ---
 

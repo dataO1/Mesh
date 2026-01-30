@@ -28,6 +28,26 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 ---
 
+## [0.5.1] - 2026-01-30
+
+### Added
+
+- **Pure Data effect plugins** — Create custom audio effects using [Pure Data](https://puredata.info/) patches. Effects are loaded from `~/Music/mesh-collection/effects/` and can be added to any stem's effect chain via the new effect picker UI. Supports up to 8 parameters per effect with real-time knob control.
+
+- **Effect picker modal** — New UI for browsing and adding effects to stems. Click the "+" button on any stem's effect chain to open the picker. Effects are grouped by category with availability status.
+
+- **nn~ build script** — `nix run .#build-nn-tilde` builds the nn~ external for RAVE neural audio effects. Outputs to `dist/nn~/`.
+
+- **PD effect examples** — Added `examples/pd-effects/` with templates and working examples including a simple gain effect and RAVE percussion template.
+
+### Technical
+
+- **libpd-rs integration** — Per-deck PD instances with thread-safe audio processing
+- **Lock-free parameter control** — UI knob changes sent via command queue, no audio thread blocking
+- **Effect discovery** — Automatic scanning of effects folder with dependency checking
+
+---
+
 ## [0.5.0] - 2026-01-28
 
 > **⚠️ Note:** Stem separation features in this release are experimental. GPU acceleration (CUDA on Linux, DirectML on Windows) is untested and may not work on all systems.
