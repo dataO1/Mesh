@@ -817,12 +817,16 @@ fn run_demucs_inference(
     }
 
     // DirectML for DirectX 12 GPUs (Windows - AMD/NVIDIA/Intel)
+    // Note: DirectML has compatibility issues with HTDemucs model (InstanceNorm 3D tensors,
+    // ScatterND operators). It will attempt GPU but gracefully fall back to CPU if needed.
     #[cfg(feature = "directml")]
     if session.is_none() {
         use ort::execution_providers::DirectMLExecutionProvider;
         log::info!("Trying DirectML execution provider...");
         match Session::builder()
-            .and_then(|b| b.with_execution_providers([DirectMLExecutionProvider::default().build()]))
+            .and_then(|b| {
+                b.with_execution_providers([DirectMLExecutionProvider::default().build()])
+            })
             .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
             .and_then(|b| b.commit_from_file(model_path))
         {

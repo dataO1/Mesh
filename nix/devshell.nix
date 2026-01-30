@@ -141,9 +141,7 @@ pkgs.mkShell {
     echo "║    distrobox assemble rm            # Clean up when done              ║"
     echo "╠═══════════════════════════════════════════════════════════════════════╣"
     echo "║  ONNX Model Conversion (for stem separation):                         ║"
-    echo "║    nix run .#convert-model                  # Standard export (CPU)   ║"
-    echo "║    DIRECTML_COMPAT=1 nix run .#convert-model  # DirectML (opset 20)   ║"
-    echo "║  DirectML models use _directml suffix and native GroupNormalization   ║"
+    echo "║    nix run .#convert-model        # Convert Demucs → models/ folder   ║"
     echo "╚═══════════════════════════════════════════════════════════════════════╝"
     echo ""
   '';

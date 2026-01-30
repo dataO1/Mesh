@@ -62,6 +62,14 @@ impl ModelManager {
         let model_exists = model_path.exists();
         let data_exists = !needs_data || data_path.exists();
 
+        log::debug!(
+            "Model resolution: {} -> {:?} (exists: {}, data: {})",
+            model.filename(),
+            model_path,
+            model_exists,
+            data_exists
+        );
+
         if model_exists && data_exists {
             log::info!("Model {} found at {:?}", model.display_name(), model_path);
             if let Some(cb) = &progress {
@@ -158,6 +166,12 @@ impl ModelManager {
         let content_length: Option<u64> = response
             .header("Content-Length")
             .and_then(|s| s.parse().ok());
+        log::debug!(
+            "  Content-Length: {}",
+            content_length
+                .map(|l| format!("{} bytes ({:.1} MB)", l, l as f64 / 1_000_000.0))
+                .unwrap_or_else(|| "unknown".to_string())
+        );
 
         // Create temp file
         let mut file = fs::File::create(&temp_path).map_err(SeparationError::Io)?;

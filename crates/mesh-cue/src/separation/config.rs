@@ -159,59 +159,22 @@ impl ModelType {
 
     /// Model filename (must match the name used during ONNX export, since external data
     /// files reference it by name)
-    ///
-    /// On Windows with DirectML, uses the DirectML-compatible model variants which are
-    /// exported with opset 20 and native GroupNormalization instead of InstanceNorm workarounds.
     pub fn filename(&self) -> &'static str {
         match self {
-            Self::Demucs4Stems => {
-                #[cfg(all(target_os = "windows", feature = "directml"))]
-                {
-                    "htdemucs_directml.onnx"
-                }
-                #[cfg(not(all(target_os = "windows", feature = "directml")))]
-                {
-                    "htdemucs.onnx"
-                }
-            }
-            Self::Demucs4StemsFt => {
-                #[cfg(all(target_os = "windows", feature = "directml"))]
-                {
-                    "htdemucs_ft_directml.onnx"
-                }
-                #[cfg(not(all(target_os = "windows", feature = "directml")))]
-                {
-                    "htdemucs_ft.onnx"
-                }
-            }
+            Self::Demucs4Stems => "htdemucs.onnx",
+            Self::Demucs4StemsFt => "htdemucs_ft.onnx",
         }
     }
 
     /// Base download URL (GitHub releases) - returns the .onnx file URL
     /// The .onnx.data file is at the same URL with .data appended
-    ///
-    /// On Windows with DirectML, downloads the DirectML-compatible model variants.
     pub fn download_url(&self) -> &'static str {
         match self {
             Self::Demucs4Stems => {
-                #[cfg(all(target_os = "windows", feature = "directml"))]
-                {
-                    "https://github.com/dataO1/Mesh/releases/download/models/htdemucs_directml.onnx"
-                }
-                #[cfg(not(all(target_os = "windows", feature = "directml")))]
-                {
-                    "https://github.com/dataO1/Mesh/releases/download/models/htdemucs.onnx"
-                }
+                "https://github.com/dataO1/Mesh/releases/download/models/htdemucs.onnx"
             }
             Self::Demucs4StemsFt => {
-                #[cfg(all(target_os = "windows", feature = "directml"))]
-                {
-                    "https://github.com/dataO1/Mesh/releases/download/models/htdemucs_ft_directml.onnx"
-                }
-                #[cfg(not(all(target_os = "windows", feature = "directml")))]
-                {
-                    "https://github.com/dataO1/Mesh/releases/download/models/htdemucs_ft.onnx"
-                }
+                "https://github.com/dataO1/Mesh/releases/download/models/htdemucs_ft.onnx"
             }
         }
     }
@@ -224,57 +187,21 @@ impl ModelType {
     }
 
     /// External data filename (e.g., "htdemucs.onnx.data")
-    ///
-    /// On Windows with DirectML, uses the DirectML-compatible model data file.
     pub fn data_filename(&self) -> &'static str {
         match self {
-            Self::Demucs4Stems => {
-                #[cfg(all(target_os = "windows", feature = "directml"))]
-                {
-                    "htdemucs_directml.onnx.data"
-                }
-                #[cfg(not(all(target_os = "windows", feature = "directml")))]
-                {
-                    "htdemucs.onnx.data"
-                }
-            }
-            Self::Demucs4StemsFt => {
-                #[cfg(all(target_os = "windows", feature = "directml"))]
-                {
-                    "htdemucs_ft_directml.onnx.data"
-                }
-                #[cfg(not(all(target_os = "windows", feature = "directml")))]
-                {
-                    "htdemucs_ft.onnx.data"
-                }
-            }
+            Self::Demucs4Stems => "htdemucs.onnx.data",
+            Self::Demucs4StemsFt => "htdemucs_ft.onnx.data",
         }
     }
 
     /// Download URL for the external data file
-    ///
-    /// On Windows with DirectML, downloads the DirectML-compatible data file.
     pub fn data_download_url(&self) -> &'static str {
         match self {
             Self::Demucs4Stems => {
-                #[cfg(all(target_os = "windows", feature = "directml"))]
-                {
-                    "https://github.com/dataO1/Mesh/releases/download/models/htdemucs_directml.onnx.data"
-                }
-                #[cfg(not(all(target_os = "windows", feature = "directml")))]
-                {
-                    "https://github.com/dataO1/Mesh/releases/download/models/htdemucs.onnx.data"
-                }
+                "https://github.com/dataO1/Mesh/releases/download/models/htdemucs.onnx.data"
             }
             Self::Demucs4StemsFt => {
-                #[cfg(all(target_os = "windows", feature = "directml"))]
-                {
-                    "https://github.com/dataO1/Mesh/releases/download/models/htdemucs_ft_directml.onnx.data"
-                }
-                #[cfg(not(all(target_os = "windows", feature = "directml")))]
-                {
-                    "https://github.com/dataO1/Mesh/releases/download/models/htdemucs_ft.onnx.data"
-                }
+                "https://github.com/dataO1/Mesh/releases/download/models/htdemucs_ft.onnx.data"
             }
         }
     }

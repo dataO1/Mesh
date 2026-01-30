@@ -460,9 +460,13 @@ TOOLCHAIN
 
         echo ""
         echo "==> Building mesh-player..."
+        echo "    CONSOLE_FEATURE='$CONSOLE_FEATURE'"
         # Use --no-default-features to disable JACK backend (Linux-only, uses CPAL on Windows)
         # CONSOLE_FEATURE adds ",console" when DEBUG_CONSOLE=1 to show stdout/stderr
+        # Force rebuild when features change by cleaning the package first
         if [[ -n "$CONSOLE_FEATURE" ]]; then
+          echo "    Console mode: ENABLED - cleaning cached binary to force rebuild..."
+          cargo clean -p mesh-player --release --target x86_64-pc-windows-gnu 2>/dev/null || true
           cargo build --release --target x86_64-pc-windows-gnu -p mesh-player --no-default-features --features console
         else
           cargo build --release --target x86_64-pc-windows-gnu -p mesh-player --no-default-features
@@ -638,9 +642,12 @@ PKGWRAPPER
         # CONSOLE_FEATURE adds ",console" when DEBUG_CONSOLE=1 to show stdout/stderr
         if [[ -n "$CONSOLE_FEATURE" ]]; then
           MESH_CUE_FEATURES="load-dynamic,directml,console"
+          echo "    Console mode: ENABLED - cleaning cached binary to force rebuild..."
+          cargo clean -p mesh-cue --release --target x86_64-pc-windows-gnu 2>/dev/null || true
         else
           MESH_CUE_FEATURES="load-dynamic,directml"
         fi
+        echo "    Features: $MESH_CUE_FEATURES"
         cargo build --release --target x86_64-pc-windows-gnu -p mesh-cue --no-default-features --features "$MESH_CUE_FEATURES" || {
           echo ""
           echo "WARNING: mesh-cue build failed (Essentia cross-compilation is complex)"
