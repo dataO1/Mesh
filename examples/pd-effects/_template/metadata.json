@@ -1,23 +1,16 @@
 {
   "name": "Template Effect",
   "category": "Template",
-  "description": "A starting template for creating custom PD effects. Copy this folder and modify.",
+  "description": "Starting template for custom PD effects. Copy this folder and modify.",
+  "author": "mesh",
+  "version": "1.0.0",
   "latency_samples": 0,
-  "sample_rate": 48000,
-  "requires_externals": [],
   "params": [
     {
-      "name": "Mix",
+      "name": "Gain",
+      "default": 0.5,
       "min": 0.0,
       "max": 1.0,
-      "default": 1.0,
-      "unit": "%"
-    },
-    {
-      "name": "Gain",
-      "min": 0.0,
-      "max": 2.0,
-      "default": 1.0,
       "unit": "x"
     }
   ]

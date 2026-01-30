@@ -1,67 +1,94 @@
-#N canvas 0 0 800 600 12;
-#N canvas 0 0 450 300 params 0;
+#N canvas 0 0 900 700 12;
+
+#X text 50 20 =============== MESH EFFECT TEMPLATE ===============;
+#X text 50 45 Copy this folder and rename to create a new effect.;
+#X text 50 65 The folder name must match the .pd filename.;
+
+#X text 50 100 --- AUDIO I/O ---;
+#X obj 100 130 adc~ 1;
+#X obj 200 130 adc~ 2;
+#X text 100 115 Left in;
+#X text 200 115 Right in;
+
+#X obj 100 600 dac~ 1;
+#X obj 200 600 dac~ 2;
+#X text 100 620 Left out;
+#X text 200 620 Right out;
+
+#X text 400 100 --- PARAMETER RECEIVERS ---;
+#X text 400 120 All params receive 0.0-1.0 normalized values;
+
+#N canvas 0 0 600 400 params 0;
 #X obj 50 50 r \$0-param0;
-#X obj 50 80 s mix;
-#X obj 150 50 r \$0-param1;
-#X obj 150 80 s gain;
-#X obj 250 50 r \$0-bypass;
-#X obj 250 80 s bypass;
+#X obj 50 80 outlet;
+#X obj 120 50 r \$0-param1;
+#X obj 120 80 outlet;
+#X obj 190 50 r \$0-param2;
+#X obj 190 80 outlet;
+#X obj 260 50 r \$0-param3;
+#X obj 260 80 outlet;
+#X obj 330 50 r \$0-param4;
+#X obj 330 80 outlet;
+#X obj 400 50 r \$0-param5;
+#X obj 400 80 outlet;
+#X obj 470 50 r \$0-param6;
+#X obj 470 80 outlet;
+#X obj 540 50 r \$0-param7;
+#X obj 540 80 outlet;
 #X connect 0 0 1 0;
 #X connect 2 0 3 0;
 #X connect 4 0 5 0;
-#X restore 600 50 pd params;
-#X text 600 30 Parameter receives;
-#X text 50 20 ============ TEMPLATE EFFECT ============;
-#X text 50 40 This is a starting point for PD effects.;
-#X text 50 60 Modify the signal path below to create your effect.;
-#X obj 100 150 inlet~;
-#X obj 200 150 inlet~;
-#X text 100 130 Left in;
-#X text 200 130 Right in;
-#X obj 100 450 outlet~;
-#X obj 200 450 outlet~;
-#X text 100 470 Left out;
-#X text 200 470 Right out;
-#X obj 100 200 *~;
-#X obj 200 200 *~;
-#X obj 300 200 r gain;
-#X obj 100 250 *~;
-#X obj 200 250 *~;
-#X obj 300 250 r mix;
-#X obj 100 300 +~;
-#X obj 200 300 +~;
-#X obj 100 350 *~;
-#X obj 200 350 *~;
-#X obj 300 350 r bypass;
-#X obj 300 380 expr 1-$f1;
-#X text 350 380 Invert bypass;
-#X text 350 200 Gain control;
-#X text 350 250 Mix (wet/dry);
-#X text 350 350 Bypass mute;
-#X text 50 520 Instance-scoped receives (\$0-*) are used for parameters.;
-#X text 50 540 This enables multiple instances to run independently.;
-#X obj 100 400 *~;
-#X obj 200 400 *~;
-#X connect 5 0 13 0;
-#X connect 5 0 19 1;
-#X connect 6 0 14 0;
-#X connect 6 0 20 1;
-#X connect 13 0 16 0;
-#X connect 14 0 17 0;
-#X connect 15 0 13 1;
-#X connect 15 0 14 1;
-#X connect 16 0 19 0;
-#X connect 17 0 20 0;
-#X connect 18 0 16 1;
-#X connect 18 0 17 1;
-#X connect 19 0 21 0;
-#X connect 20 0 22 0;
-#X connect 21 0 31 0;
-#X connect 22 0 32 0;
-#X connect 23 0 24 0;
-#X connect 24 0 21 1;
-#X connect 24 0 22 1;
-#X connect 24 0 31 1;
-#X connect 24 0 32 1;
-#X connect 31 0 9 0;
-#X connect 32 0 10 0;
+#X connect 6 0 7 0;
+#X connect 8 0 9 0;
+#X connect 10 0 11 0;
+#X connect 12 0 13 0;
+#X connect 14 0 15 0;
+#X restore 400 150 pd params;
+#X text 500 150 <- All 8 param receivers;
+
+#X obj 400 200 r \$0-bypass;
+#X text 500 200 <- Bypass (0=active, 1=bypassed);
+
+#X text 400 240 --- PARAMETER SMOOTHING ---;
+#X text 400 260 Use [pack 0 TIME] -> [line~] to smooth;
+#X text 400 280 parameter changes and avoid clicks.;
+#X text 400 300 TIME = ramp time in ms (e.g. 50);
+
+#X text 50 180 --- YOUR EFFECT PROCESSING GOES HERE ---;
+
+#X obj 100 220 *~;
+#X obj 200 220 *~;
+#X text 100 205 Example: gain control;
+
+#X obj 350 220 pack 0 50;
+#X obj 350 250 line~;
+#X text 430 220 <- 50ms smoothing;
+
+#X obj 100 300 *~;
+#X obj 200 300 *~;
+#X text 250 300 <- Bypass gate;
+
+#X obj 350 300 expr 1-$f1;
+#X text 430 300 <- Invert: 0->1, 1->0;
+
+#X text 50 350 --- SIGNAL FLOW ---;
+#X text 50 370 adc~ -> your processing -> bypass gate -> dac~;
+
+#X connect 4 0 22 0;
+#X connect 5 0 23 0;
+
+#X connect 13 0 24 0;
+
+#X connect 24 0 25 0;
+#X connect 25 0 22 1;
+#X connect 25 0 23 1;
+
+#X connect 22 0 27 0;
+#X connect 23 0 28 0;
+
+#X connect 15 0 30 0;
+#X connect 30 0 27 1;
+#X connect 30 0 28 1;
+
+#X connect 27 0 8 0;
+#X connect 28 0 9 0;
