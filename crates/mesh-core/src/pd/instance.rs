@@ -4,10 +4,44 @@
 //! This wrapper provides a simplified API over libpd-rs tailored for mesh's needs.
 
 use std::path::Path;
+use std::sync::Once;
 
 use libpd_rs::{Pd, PdAudioContext};
+use libpd_rs::functions::receive::on_print;
+use libpd_rs::functions::verbose_print_state;
 
 use super::error::{PdError, PdResult};
+
+/// Global flag to ensure print hook is only registered once
+static PRINT_HOOK_INIT: Once = Once::new();
+
+/// Initialize the global PD print hook (called once across all instances)
+fn init_print_hook() {
+    PRINT_HOOK_INIT.call_once(|| {
+        // Enable verbose printing from PD
+        verbose_print_state(true);
+
+        // Register print hook to capture all PD console output
+        on_print(|msg: &str| {
+            // Trim whitespace and skip empty messages
+            let msg = msg.trim();
+            if msg.is_empty() {
+                return;
+            }
+
+            // Route to appropriate log level based on content
+            if msg.contains("error") || msg.contains("can't") || msg.contains("couldn't") {
+                log::error!("[PD] {}", msg);
+            } else if msg.contains("warning") || msg.contains("deprecated") {
+                log::warn!("[PD] {}", msg);
+            } else {
+                log::info!("[PD] {}", msg);
+            }
+        });
+
+        log::debug!("PD print hook initialized");
+    });
+}
 
 /// Handle to an open PD patch
 #[derive(Debug)]
@@ -55,6 +89,9 @@ impl PdInstance {
     /// * `deck_index` - The deck this instance belongs to (0-3)
     /// * `sample_rate` - Audio sample rate (typically 48000)
     pub fn new(deck_index: usize, sample_rate: i32) -> PdResult<Self> {
+        // Initialize print hook before any PD operations (only happens once)
+        init_print_hook();
+
         // Initialize libpd with stereo I/O (2 in, 2 out)
         let pd = Pd::init_and_configure(2, 2, sample_rate).map_err(|e| {
             PdError::InitializationFailed(format!("libpd init failed: {}", e))
