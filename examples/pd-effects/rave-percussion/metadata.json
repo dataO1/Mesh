@@ -8,57 +8,57 @@
   "params": [
     {
       "name": "Latent 1",
-      "min": -3.0,
-      "max": 3.0,
+      "min": -10.0,
+      "max": 10.0,
       "default": 0.0,
       "unit": ""
     },
     {
       "name": "Latent 2",
-      "min": -3.0,
-      "max": 3.0,
+      "min": -10.0,
+      "max": 10.0,
       "default": 0.0,
       "unit": ""
     },
     {
       "name": "Latent 3",
-      "min": -3.0,
-      "max": 3.0,
+      "min": -10.0,
+      "max": 10.0,
       "default": 0.0,
       "unit": ""
     },
     {
       "name": "Latent 4",
-      "min": -3.0,
-      "max": 3.0,
+      "min": -10.0,
+      "max": 10.0,
       "default": 0.0,
       "unit": ""
     },
     {
       "name": "Latent 5",
-      "min": -3.0,
-      "max": 3.0,
+      "min": -10.0,
+      "max": 10.0,
       "default": 0.0,
       "unit": ""
     },
     {
       "name": "Latent 6",
-      "min": -3.0,
-      "max": 3.0,
+      "min": -10.0,
+      "max": 10.0,
       "default": 0.0,
       "unit": ""
     },
     {
       "name": "Latent 7",
-      "min": -3.0,
-      "max": 3.0,
+      "min": -10.0,
+      "max": 10.0,
       "default": 0.0,
       "unit": ""
     },
     {
       "name": "Latent 8",
-      "min": -3.0,
-      "max": 3.0,
+      "min": -10.0,
+      "max": 10.0,
       "default": 0.0,
       "unit": ""
     }

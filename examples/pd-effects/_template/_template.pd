@@ -1,94 +1,80 @@
-#N canvas 0 0 900 700 12;
-
+#N canvas 0 0 1920 1050 12;
 #X text 50 20 =============== MESH EFFECT TEMPLATE ===============;
 #X text 50 45 Copy this folder and rename to create a new effect.;
 #X text 50 65 The folder name must match the .pd filename.;
-
 #X text 50 100 --- AUDIO I/O ---;
-#X obj 100 130 adc~ 1;
-#X obj 200 130 adc~ 2;
-#X text 100 115 Left in;
-#X text 200 115 Right in;
-
-#X obj 100 600 dac~ 1;
-#X obj 200 600 dac~ 2;
-#X text 100 620 Left out;
-#X text 200 620 Right out;
-
-#X text 400 100 --- PARAMETER RECEIVERS ---;
-#X text 400 120 All params receive 0.0-1.0 normalized values;
-
-#N canvas 0 0 600 400 params 0;
+#X obj 54 150 adc~ 1, f 4;
+#X obj 88 150 adc~ 2, f 5;
+#X text 51 117 Left in, f 5;
+#X text 88 116 Right in, f 6;
+#X obj 53 392 dac~ 1;
+#X obj 153 392 dac~ 2;
+#X text 53 412 Left out;
+#X text 153 412 Right out;
+#X text 120 181 --- PARAMETER RECEIVERS ---;
+#X text 120 201 All params receive 0.0-1.0 normalized values;
+#N canvas 1446 824 457 209 params 1;
 #X obj 50 50 r \$0-param0;
-#X obj 50 80 outlet;
-#X obj 120 50 r \$0-param1;
-#X obj 120 80 outlet;
-#X obj 190 50 r \$0-param2;
-#X obj 190 80 outlet;
-#X obj 260 50 r \$0-param3;
-#X obj 260 80 outlet;
-#X obj 330 50 r \$0-param4;
-#X obj 330 80 outlet;
-#X obj 400 50 r \$0-param5;
-#X obj 400 80 outlet;
-#X obj 470 50 r \$0-param6;
-#X obj 470 80 outlet;
-#X obj 540 50 r \$0-param7;
-#X obj 540 80 outlet;
-#X connect 0 0 1 0;
-#X connect 2 0 3 0;
-#X connect 4 0 5 0;
-#X connect 6 0 7 0;
-#X connect 8 0 9 0;
-#X connect 10 0 11 0;
-#X connect 12 0 13 0;
-#X connect 14 0 15 0;
-#X restore 400 150 pd params;
-#X text 500 150 <- All 8 param receivers;
-
-#X obj 400 200 r \$0-bypass;
-#X text 500 200 <- Bypass (0=active, 1=bypassed);
-
-#X text 400 240 --- PARAMETER SMOOTHING ---;
-#X text 400 260 Use [pack 0 TIME] -> [line~] to smooth;
-#X text 400 280 parameter changes and avoid clicks.;
-#X text 400 300 TIME = ramp time in ms (e.g. 50);
-
-#X text 50 180 --- YOUR EFFECT PROCESSING GOES HERE ---;
-
-#X obj 100 220 *~;
-#X obj 200 220 *~;
-#X text 100 205 Example: gain control;
-
-#X obj 350 220 pack 0 50;
-#X obj 350 250 line~;
-#X text 430 220 <- 50ms smoothing;
-
-#X obj 100 300 *~;
-#X obj 200 300 *~;
-#X text 250 300 <- Bypass gate;
-
-#X obj 350 300 expr 1-$f1;
-#X text 430 300 <- Invert: 0->1, 1->0;
-
-#X text 50 350 --- SIGNAL FLOW ---;
-#X text 50 370 adc~ -> your processing -> bypass gate -> dac~;
-
-#X connect 4 0 22 0;
-#X connect 5 0 23 0;
-
-#X connect 13 0 24 0;
-
-#X connect 24 0 25 0;
-#X connect 25 0 22 1;
-#X connect 25 0 23 1;
-
-#X connect 22 0 27 0;
-#X connect 23 0 28 0;
-
-#X connect 15 0 30 0;
-#X connect 30 0 27 1;
-#X connect 30 0 28 1;
-
-#X connect 27 0 8 0;
-#X connect 28 0 9 0;
+#X obj 147 51 r \$0-param1;
+#X obj 245 51 r \$0-param2;
+#X obj 342 51 r \$0-param3;
+#X obj 439 51 r \$0-param4;
+#X obj 535 51 r \$0-param5;
+#X obj 635 51 r \$0-param6;
+#X obj 734 51 r \$0-param7;
+#X obj 50 160 outlet;
+#X obj 147 161 outlet;
+#X obj 245 160 outlet;
+#X obj 342 161 outlet;
+#X obj 439 160 outlet;
+#X obj 535 161 outlet;
+#X obj 635 160 outlet;
+#X obj 734 161 outlet;
+#X connect 0 0 8 0;
+#X connect 1 0 9 0;
+#X connect 2 0 10 0;
+#X connect 3 0 11 0;
+#X connect 4 0 12 0;
+#X connect 5 0 13 0;
+#X connect 6 0 14 0;
+#X connect 7 0 15 0;
+#X restore 123 231 pd params;
+#X f 36;
+#X obj 434 293 r \$0-bypass;
+#X text 534 290 <- Bypass (0=active;
+#X obj 54 313 *~;
+#X obj 154 313 *~;
+#X text 204 313 <- Bypass gate;
+#N canvas 0 0 1920 1050 procesing 0;
+#X obj 65 83 inlet~;
+#X obj 123 82 inlet~;
+#X obj 64 194 outlet~;
+#X obj 124 194 outlet~;
+#X obj 265 131 inlet;
+#X obj 314 131 inlet;
+#X obj 363 131 inlet;
+#X obj 410 131 inlet;
+#X obj 457 131 inlet;
+#X obj 503 131 inlet;
+#X obj 551 131 inlet;
+#X obj 599 131 inlet;
+#X connect 0 0 2 0;
+#X connect 1 0 3 0;
+#X restore 53 269 pd procesing;
+#X f 46;
+#X connect 4 0 20 0;
+#X connect 5 0 20 1;
+#X connect 14 0 20 2;
+#X connect 14 1 20 3;
+#X connect 14 2 20 4;
+#X connect 14 3 20 5;
+#X connect 14 4 20 6;
+#X connect 14 5 20 7;
+#X connect 14 6 20 8;
+#X connect 14 7 20 9;
+#X connect 15 0 17 1;
+#X connect 15 0 18 1;
+#X connect 17 0 8 0;
+#X connect 18 0 9 0;
+#X connect 20 0 17 0;
+#X connect 20 1 18 0;
