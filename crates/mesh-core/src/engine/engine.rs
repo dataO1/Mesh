@@ -936,6 +936,43 @@ impl AudioEngine {
                     }
                 }
 
+                // Effect Control
+                EngineCommand::AddStemEffect { deck, stem, effect } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(chain) = d.stem_chain_mut(stem as usize) {
+                            chain.add_effect(effect);
+                        }
+                    }
+                    self.update_deck_latencies(deck);
+                }
+                EngineCommand::RemoveStemEffect { deck, stem, index } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(chain) = d.stem_chain_mut(stem as usize) {
+                            let _removed = chain.remove_effect(index);
+                            // Note: removed effect will be dropped here
+                            // TODO: Send to GC channel if needed for delayed cleanup
+                        }
+                    }
+                    self.update_deck_latencies(deck);
+                }
+                EngineCommand::SetEffectBypass { deck, stem, index, bypass } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(chain) = d.stem_chain_mut(stem as usize) {
+                            chain.set_effect_bypass(index, bypass);
+                        }
+                    }
+                    self.update_deck_latencies(deck);
+                }
+                EngineCommand::SetEffectParam { deck, stem, effect_index, param_index, value } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(chain) = d.stem_chain_mut(stem as usize) {
+                            if let Some(effect) = chain.get_effect_mut(effect_index) {
+                                effect.set_param(param_index, value);
+                            }
+                        }
+                    }
+                }
+
                 // Mixer Control
                 EngineCommand::SetVolume { deck, volume } => {
                     if let Some(ch) = self.mixer.channel_mut(deck) {

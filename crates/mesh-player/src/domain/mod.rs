@@ -31,8 +31,10 @@ use basedrop::Shared;
 use mesh_core::audio_file::{StemBuffers, TrackMetadata};
 use mesh_core::config::LoudnessConfig;
 use mesh_core::db::DatabaseService;
+use mesh_core::effect::Effect;
 use mesh_core::engine::{EngineCommand, LinkedStemData, PreparedTrack, SlicerPreset};
 use mesh_core::loader::LinkedStemResultReceiver;
+use mesh_core::pd::{DiscoveredEffect, PdManager};
 use mesh_core::usb::get_or_open_usb_database;
 use mesh_core::types::{Stem, StereoBuffer};
 use mesh_core::usb::{UsbCommand, UsbManager, UsbMessage};
@@ -114,6 +116,9 @@ pub struct MeshDomain {
     /// Linked stem result receiver (engine owns the loader, we receive results)
     linked_stem_receiver: Option<LinkedStemResultReceiver>,
 
+    /// PD effect manager (discovers and creates Pure Data effects)
+    pd_manager: PdManager,
+
     // =========================================================================
     // Domain State (caches and computed values)
     // =========================================================================
@@ -151,6 +156,13 @@ impl MeshDomain {
         sample_rate: u32,
         initial_global_bpm: f64,
     ) -> Self {
+        // Initialize PD effect manager (discovers effects at startup)
+        let pd_manager = PdManager::new(&local_collection_path)
+            .unwrap_or_else(|e| {
+                log::warn!("Failed to initialize PdManager: {}. PD effects will be unavailable.", e);
+                PdManager::default()
+            });
+
         Self {
             local_db: local_db.clone(),
             active_storage: StorageSource::Local,
@@ -161,6 +173,7 @@ impl MeshDomain {
             peaks_computer: PeaksComputer::spawn(),
             usb_manager: UsbManager::spawn(Some(local_db)),
             linked_stem_receiver,
+            pd_manager,
             // Domain state
             deck_stems: [None, None, None, None],
             deck_linked_stems: std::array::from_fn(|_| [None, None, None, None]),
@@ -854,5 +867,120 @@ impl MeshDomain {
 
         // Set loudness config
         self.set_loudness_config(loudness_config);
+    }
+
+    // =========================================================================
+    // Effect Management (PD effects and generic effects)
+    // =========================================================================
+
+    /// Get the list of discovered PD effects
+    ///
+    /// Returns all effects found in the collection's effects/ folder.
+    /// Effects with missing dependencies are included but marked unavailable.
+    pub fn discovered_effects(&self) -> &[DiscoveredEffect] {
+        self.pd_manager.discovered_effects()
+    }
+
+    /// Get only available effects (no missing dependencies)
+    pub fn available_effects(&self) -> Vec<&DiscoveredEffect> {
+        self.pd_manager.available_effects()
+    }
+
+    /// Add a PD effect to a stem's effect chain
+    ///
+    /// Creates the effect via PdManager and sends it to the audio engine.
+    /// Returns Ok(()) on success, or an error message on failure.
+    ///
+    /// # Arguments
+    /// * `deck` - Deck index (0-3)
+    /// * `stem` - Which stem to add the effect to
+    /// * `effect_id` - Effect identifier (folder name in effects/)
+    pub fn add_pd_effect(&mut self, deck: usize, stem: Stem, effect_id: &str) -> Result<(), String> {
+        // Create the effect via PdManager (this does the non-RT-safe work)
+        let effect = self.pd_manager
+            .create_effect(deck, effect_id)
+            .map_err(|e| format!("Failed to create PD effect '{}': {}", effect_id, e))?;
+
+        // Send to audio engine via command
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(EngineCommand::AddStemEffect {
+                deck,
+                stem,
+                effect,
+            });
+            log::info!("Added PD effect '{}' to deck {} stem {:?}", effect_id, deck, stem);
+            Ok(())
+        } else {
+            Err("Audio engine not connected".to_string())
+        }
+    }
+
+    /// Add a generic effect to a stem's effect chain
+    ///
+    /// This accepts any Box<dyn Effect>, allowing both PD effects and
+    /// native Rust effects to be added through the same interface.
+    pub fn add_effect(&mut self, deck: usize, stem: Stem, effect: Box<dyn Effect>) {
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(EngineCommand::AddStemEffect {
+                deck,
+                stem,
+                effect,
+            });
+        }
+    }
+
+    /// Remove an effect from a stem's effect chain by index
+    pub fn remove_effect(&mut self, deck: usize, stem: Stem, index: usize) {
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(EngineCommand::RemoveStemEffect {
+                deck,
+                stem,
+                index,
+            });
+        }
+    }
+
+    /// Set bypass state for an effect in a stem's chain
+    pub fn set_effect_bypass(&mut self, deck: usize, stem: Stem, index: usize, bypass: bool) {
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(EngineCommand::SetEffectBypass {
+                deck,
+                stem,
+                index,
+                bypass,
+            });
+        }
+    }
+
+    /// Set a parameter value on an effect
+    ///
+    /// # Arguments
+    /// * `deck` - Deck index
+    /// * `stem` - Stem the effect is on
+    /// * `effect_index` - Index of the effect in the chain
+    /// * `param_index` - Parameter index (0-7 for PD effects)
+    /// * `value` - Normalized value (typically 0.0-1.0)
+    pub fn set_effect_param(
+        &mut self,
+        deck: usize,
+        stem: Stem,
+        effect_index: usize,
+        param_index: usize,
+        value: f32,
+    ) {
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(EngineCommand::SetEffectParam {
+                deck,
+                stem,
+                effect_index,
+                param_index,
+                value,
+            });
+        }
+    }
+
+    /// Rescan for effects (e.g., after user adds new effects to the folder)
+    pub fn rescan_effects(&mut self) {
+        self.pd_manager.rescan_effects();
     }
 }

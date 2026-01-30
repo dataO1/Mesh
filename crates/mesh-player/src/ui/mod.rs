@@ -7,6 +7,7 @@ pub mod app;
 pub mod handlers;
 pub mod collection_browser;
 pub mod deck_view;
+pub mod effect_picker;
 pub mod message;
 pub mod midi_learn;
 pub mod mixer_view;

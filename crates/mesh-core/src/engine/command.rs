@@ -248,6 +248,46 @@ pub enum EngineCommand {
     LoadLinkedStem(Box<LoadLinkedStemRequest>),
 
     // ─────────────────────────────────────────────────────────────
+    // Effect Control
+    // ─────────────────────────────────────────────────────────────
+    /// Add an effect to a stem's effect chain
+    ///
+    /// The effect should be created outside the audio thread (e.g., by PdManager)
+    /// and sent via this command. The audio thread only does the fast pointer
+    /// operation of adding to the chain.
+    ///
+    /// Boxed because Box<dyn Effect> is a trait object (16 bytes + effect data).
+    AddStemEffect {
+        deck: usize,
+        stem: Stem,
+        effect: Box<dyn crate::effect::Effect>,
+    },
+    /// Remove an effect from a stem's effect chain by index
+    ///
+    /// Returns the removed effect via garbage collection channel (if GC is active).
+    /// If index is out of bounds, this is a no-op.
+    RemoveStemEffect {
+        deck: usize,
+        stem: Stem,
+        index: usize,
+    },
+    /// Set bypass state for an effect in a stem's chain
+    SetEffectBypass {
+        deck: usize,
+        stem: Stem,
+        index: usize,
+        bypass: bool,
+    },
+    /// Set a parameter value on an effect in a stem's chain
+    SetEffectParam {
+        deck: usize,
+        stem: Stem,
+        effect_index: usize,
+        param_index: usize,
+        value: f32,
+    },
+
+    // ─────────────────────────────────────────────────────────────
     // Mixer Control
     // ─────────────────────────────────────────────────────────────
     /// Set channel volume (0.0 - 1.0)

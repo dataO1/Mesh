@@ -134,6 +134,12 @@ pub enum DeckMessage {
     SetStemKnob(usize, usize, f32),
     /// Toggle effect bypass in chain (stem_idx, effect_idx)
     ToggleEffectBypass(usize, usize),
+    /// Remove effect from chain (stem_idx, effect_idx)
+    RemoveEffect(usize, usize),
+    /// Open effect picker for a stem (stem_idx)
+    OpenEffectPicker(usize),
+    /// Add effect to stem (stem_idx, effect_id)
+    AddEffect(usize, String),
     /// Set action button mode (HotCue or Slicer)
     SetActionMode(ActionButtonMode),
     /// Select slicer preset (0-7) - normal click on slicer pad
@@ -313,6 +319,13 @@ impl DeckView {
         }
     }
 
+    /// Set effect chain knob value for a stem
+    pub fn set_stem_knob(&mut self, stem_idx: usize, knob_idx: usize, value: f32) {
+        if stem_idx < 4 && knob_idx < 8 {
+            self.stem_knobs[stem_idx][knob_idx] = value;
+        }
+    }
+
     /// Check if key matching is enabled
     pub fn key_match_enabled(&self) -> bool {
         self.key_match_enabled
@@ -471,6 +484,15 @@ impl DeckView {
                         effect.set_bypass(!effect.is_bypassed());
                     }
                 }
+            }
+            DeckMessage::RemoveEffect(_stem_idx, _effect_idx) => {
+                // Handled at app level via EngineCommand::RemoveStemEffect
+            }
+            DeckMessage::OpenEffectPicker(_stem_idx) => {
+                // Handled at app level - opens effect selection UI
+            }
+            DeckMessage::AddEffect(_stem_idx, _effect_id) => {
+                // Handled at app level via domain.add_pd_effect()
             }
             DeckMessage::SetActionMode(mode) => {
                 self.action_mode = mode;
@@ -787,7 +809,9 @@ impl DeckView {
             return row![
                 text("Chain: ").size(10),
                 text("(empty)").size(10),
-                button(text("+").size(10)).padding(3),
+                button(text("+").size(10))
+                    .on_press(DeckMessage::OpenEffectPicker(stem_idx))
+                    .padding(3),
             ]
             .spacing(3)
             .align_y(Center)
@@ -820,7 +844,12 @@ impl DeckView {
 
         // Add button for adding new effects
         chain_elements.push(text("─").size(10).into());
-        chain_elements.push(button(text("+").size(10)).padding(3).into());
+        chain_elements.push(
+            button(text("+").size(10))
+                .on_press(DeckMessage::OpenEffectPicker(stem_idx))
+                .padding(3)
+                .into()
+        );
 
         Row::with_children(chain_elements)
             .spacing(2)
@@ -1363,7 +1392,12 @@ impl DeckView {
 
         if effects.is_empty() {
             chain_elements.push(text("Chain: (empty)").size(9).into());
-            chain_elements.push(button(text("+").size(9)).padding(2).into());
+            chain_elements.push(
+                button(text("+").size(9))
+                    .on_press(DeckMessage::OpenEffectPicker(stem_idx))
+                    .padding(2)
+                    .into()
+            );
         } else {
             for (i, name) in effects.iter().enumerate() {
                 let is_bypassed = bypassed.get(i).copied().unwrap_or(false);
@@ -1381,7 +1415,12 @@ impl DeckView {
                 }
             }
             chain_elements.push(text("→").size(9).into());
-            chain_elements.push(button(text("+").size(9)).padding(2).into());
+            chain_elements.push(
+                button(text("+").size(9))
+                    .on_press(DeckMessage::OpenEffectPicker(stem_idx))
+                    .padding(2)
+                    .into()
+            );
         }
 
         Row::with_children(chain_elements)

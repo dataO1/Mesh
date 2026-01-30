@@ -71,6 +71,11 @@
           inherit pkgs demucs-onnx;
         };
 
+        # Build nn~ Pure Data external for neural audio effects
+        buildNnTildeApp = import ./nix/apps/build-nn-tilde.nix {
+          inherit pkgs;
+        };
+
         # =======================================================================
         # Development Shell
         # =======================================================================
@@ -117,6 +122,10 @@
           convert-model = {
             type = "app";
             program = "${convertModelApp}/bin/convert-model";
+          };
+          build-nn-tilde = {
+            type = "app";
+            program = "${buildNnTildeApp}/bin/build-nn-tilde";
           };
         };
       }

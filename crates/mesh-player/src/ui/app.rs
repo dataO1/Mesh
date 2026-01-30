@@ -29,6 +29,7 @@ use mesh_core::types::NUM_DECKS;
 use mesh_widgets::{mpsc_subscription, SliceEditorState};
 use super::collection_browser::{CollectionBrowserState, CollectionBrowserMessage};
 use super::deck_view::{DeckView, DeckMessage};
+use super::effect_picker::{EffectPickerState, EffectPickerMessage};
 use super::midi_learn::{MidiLearnState, HighlightTarget};
 use super::mixer_view::{MixerView, MixerMessage};
 use super::player_canvas::{view_player_canvas, PlayerCanvasState};
@@ -76,6 +77,8 @@ pub struct MeshApp {
     pub(crate) stem_link_state: StemLinkState,
     /// Slice editor state (shared presets and per-stem patterns)
     pub(crate) slice_editor: SliceEditorState,
+    /// Effect picker modal state
+    pub(crate) effect_picker: EffectPickerState,
 }
 
 // Message enum moved to message.rs
@@ -205,6 +208,7 @@ impl MeshApp {
             midi_learn: MidiLearnState::new(),
             app_mode: if mapping_mode { AppMode::Mapping } else { AppMode::Performance },
             stem_link_state: StemLinkState::Idle,
+            effect_picker: EffectPickerState::new(),
         }
     }
 
@@ -292,6 +296,30 @@ impl MeshApp {
             Message::MidiLearn(learn_msg) => super::handlers::midi_learn::handle(self, learn_msg),
 
             Message::Usb(usb_msg) => super::handlers::browser::handle_usb(self, usb_msg),
+
+            Message::EffectPicker(picker_msg) => {
+                match picker_msg {
+                    EffectPickerMessage::Open { deck, stem } => {
+                        self.effect_picker.open(deck, stem);
+                    }
+                    EffectPickerMessage::Close => {
+                        self.effect_picker.close();
+                    }
+                    EffectPickerMessage::SelectEffect(effect_id) => {
+                        // Add the effect to the target deck/stem
+                        let deck = self.effect_picker.target_deck;
+                        let stem = self.effect_picker.target_stem_enum();
+                        if let Err(e) = self.domain.add_pd_effect(deck, stem, &effect_id) {
+                            log::error!("Failed to add effect '{}': {}", effect_id, e);
+                            self.status = format!("Failed to add effect: {}", e);
+                        } else {
+                            self.status = format!("Added {} to deck {} {}", effect_id, deck + 1, stem.name());
+                        }
+                        self.effect_picker.close();
+                    }
+                }
+                Task::none()
+            }
         }
     }
 
@@ -774,6 +802,28 @@ impl MeshApp {
             .on_press(Message::Settings(SettingsMessage::Close));
 
             let modal = center(opaque(super::settings::view(&self.settings)))
+                .width(Length::Fill)
+                .height(Length::Fill);
+
+            stack![with_drawer, backdrop, modal].into()
+        } else if self.effect_picker.is_open {
+            // Overlay effect picker modal
+            let backdrop = mouse_area(
+                container(Space::new())
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .style(|_theme| container::Style {
+                        background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.6).into()),
+                        ..Default::default()
+                    }),
+            )
+            .on_press(Message::EffectPicker(EffectPickerMessage::Close));
+
+            let effects = self.domain.available_effects();
+            let picker_view = self.effect_picker.view(&effects)
+                .map(Message::EffectPicker);
+
+            let modal = center(opaque(picker_view))
                 .width(Length::Fill)
                 .height(Length::Fill);
 

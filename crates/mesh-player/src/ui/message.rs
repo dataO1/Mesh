@@ -7,6 +7,7 @@ use mesh_widgets::PeaksComputeResult;
 use crate::config::StemColorPalette;
 use super::collection_browser::CollectionBrowserMessage;
 use super::deck_view::DeckMessage;
+use super::effect_picker::EffectPickerMessage;
 use super::midi_learn::MidiLearnMessage;
 use super::mixer_view::MixerMessage;
 use super::state::{LinkedStemLoadedMsg, TrackLoadedMsg};
@@ -80,6 +81,9 @@ pub enum Message {
 
     /// MIDI learn mode message
     MidiLearn(MidiLearnMessage),
+
+    /// Effect picker message
+    EffectPicker(EffectPickerMessage),
 
     /// USB manager message received
     Usb(UsbMessage),

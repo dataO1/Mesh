@@ -16,7 +16,7 @@ license = "AGPL-3.0-or-later"
 
 [workspace.dependencies]
 rtrb = "0.3"
-# libpd-rs = "0.2.0"  # Disabled: requires libffi which has build issues with naersk
+libpd-rs = "0.2.0"
 signalsmith-stretch = "0.1.3"
 # CPAL for cross-platform audio (ALSA/JACK on Linux, WASAPI on Windows, CoreAudio on macOS)
 # The "jack" feature enables JACK backend on Linux for pro-audio routing

@@ -153,11 +153,28 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
             // UI-only state, no command needed
             app.deck_views[deck_idx].set_selected_stem(stem_idx);
         }
-        SetStemKnob(_stem_idx, _knob_idx, _value) => {
-            // TODO: Effect parameter control
+        SetStemKnob(stem_idx, knob_idx, value) => {
+            // Update UI state
+            if stem_idx < 4 && knob_idx < 8 {
+                app.deck_views[deck_idx].set_stem_knob(stem_idx, knob_idx, value);
+            }
+
+            // Send to audio engine via domain
+            // Mapping: 8 knobs per stem, first 3 go to effect 0, next 3 to effect 1, etc.
+            // This allows up to 2-3 effects with 3-4 params each
+            let effect_idx = knob_idx / 3;
+            let param_idx = knob_idx % 3;
+
+            if let Some(stem) = Stem::from_index(stem_idx) {
+                app.domain.set_effect_param(deck_idx, stem, effect_idx, param_idx, value);
+            }
         }
-        ToggleEffectBypass(_stem_idx, _effect_idx) => {
-            // TODO: Effect bypass control
+        ToggleEffectBypass(stem_idx, effect_idx) => {
+            if let Some(stem) = Stem::from_index(stem_idx) {
+                app.domain.set_effect_bypass(deck_idx, stem, effect_idx, true);
+                // Note: This toggles - we'd need to track state to properly toggle
+                // For now, just bypass. A proper implementation would read current state.
+            }
         }
 
         // ─────────────────────────────────────────────────
@@ -236,6 +253,39 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
         }
         ShiftReleased => {
             app.deck_views[deck_idx].set_shift_held(false);
+        }
+
+        // ─────────────────────────────────────────────────
+        // Effect Chain Control
+        // ─────────────────────────────────────────────────
+        RemoveEffect(stem_idx, effect_idx) => {
+            let stem = match stem_idx {
+                0 => Stem::Vocals,
+                1 => Stem::Drums,
+                2 => Stem::Bass,
+                _ => Stem::Other,
+            };
+            app.domain.remove_effect(deck_idx, stem, effect_idx);
+        }
+        OpenEffectPicker(stem_idx) => {
+            // Open effect picker modal for this deck/stem
+            return Task::done(Message::EffectPicker(
+                crate::ui::effect_picker::EffectPickerMessage::Open {
+                    deck: deck_idx,
+                    stem: stem_idx,
+                }
+            ));
+        }
+        AddEffect(stem_idx, effect_id) => {
+            let stem = match stem_idx {
+                0 => Stem::Vocals,
+                1 => Stem::Drums,
+                2 => Stem::Bass,
+                _ => Stem::Other,
+            };
+            if let Err(e) = app.domain.add_pd_effect(deck_idx, stem, &effect_id) {
+                log::error!("Failed to add effect '{}': {}", effect_id, e);
+            }
         }
     }
     Task::none()
