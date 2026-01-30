@@ -964,12 +964,24 @@ impl AudioEngine {
                     self.update_deck_latencies(deck);
                 }
                 EngineCommand::SetEffectParam { deck, stem, effect_index, param_index, value } => {
+                    log::debug!(
+                        "SetEffectParam: deck={}, stem={:?}, effect={}, param={}, value={}",
+                        deck, stem, effect_index, param_index, value
+                    );
                     if let Some(d) = self.decks.get_mut(deck) {
                         if let Some(chain) = d.stem_chain_mut(stem as usize) {
+                            log::debug!("  Chain has {} effects", chain.effect_count());
                             if let Some(effect) = chain.get_effect_mut(effect_index) {
+                                log::debug!("  Calling set_param on effect");
                                 effect.set_param(param_index, value);
+                            } else {
+                                log::debug!("  No effect at index {}", effect_index);
                             }
+                        } else {
+                            log::debug!("  No stem chain for stem {:?}", stem);
                         }
+                    } else {
+                        log::debug!("  No deck {}", deck);
                     }
                 }
 
