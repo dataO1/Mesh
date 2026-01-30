@@ -294,6 +294,11 @@ impl Effect for PdEffect {
     }
 
     fn set_param(&mut self, index: usize, value: f32) {
+        // Only process params that exist in this effect
+        if index >= self.base.get_params().len() {
+            return;
+        }
+
         self.base.set_param(index, value);
 
         // Send to PD (ignore errors during param updates)
