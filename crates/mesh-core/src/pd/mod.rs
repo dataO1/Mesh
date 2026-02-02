@@ -68,7 +68,7 @@
 //! let effects = manager.discover_effects();
 //!
 //! // Create an effect instance for deck 0
-//! let effect = manager.create_effect(0, "rave-percussion")?;
+//! let effect = manager.create_effect("rave-percussion")?;
 //!
 //! // Add to effect chain (effect implements the Effect trait)
 //! chain.add_effect(effect);
@@ -83,7 +83,7 @@ mod manager;
 
 // Re-export public API
 pub use error::{PdError, PdResult};
-pub use instance::PdInstance;
+pub use instance::{PdInstance, drain_pd_messages, has_pending_pd_messages};
 pub use effect::PdEffect;
 pub use metadata::{EffectMetadata, ParamMetadata};
 pub use discovery::{EffectDiscovery, DiscoveredEffect};

@@ -42,6 +42,11 @@
           src = ./.;
         };
 
+        # nn~ Pure Data external for neural audio effects
+        nnTilde = import ./nix/packages/nn-tilde.nix {
+          inherit (pkgs) lib stdenv llvmPackages fetchFromGitHub cmake puredata libtorch-bin curl patchelf;
+        };
+
         # =======================================================================
         # Apps (container-based builds for portability)
         # =======================================================================
@@ -74,6 +79,7 @@
         # Build nn~ Pure Data external for neural audio effects
         buildNnTildeApp = import ./nix/apps/build-nn-tilde.nix {
           inherit pkgs;
+          nn-tilde = nnTilde;
         };
 
         # =======================================================================
@@ -89,6 +95,7 @@
         # Export packages
         packages = {
           mesh-build = meshBuild;
+          nn-tilde = nnTilde;
           default = meshBuild;
         };
 

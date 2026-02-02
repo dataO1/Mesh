@@ -1,104 +1,75 @@
-# Build nn~ Pure Data external for neural audio processing
+# Install nn~ Pure Data external for neural audio effects
 #
-# This app builds the nn~ external and outputs it to the current directory.
-# The resulting nn~.pd_linux can be uploaded as a GitHub release asset.
+# This app installs the pre-built nn~ external (with multi-instance support)
+# to the mesh effects directory.
 #
 # Usage:
 #   nix run .#build-nn-tilde
+#   # Or: nix run .#build-nn-tilde -- /custom/path
 #
-# Output:
-#   ./nn~.pd_linux - The compiled external (Linux)
-#   ./nn~-help.pd  - Help patch
+# The nn~ external is built with PDINSTANCE=1 and PDTHREADS=1 flags
+# to match libpd-rs configuration in mesh.
 
-{ pkgs }:
+{ pkgs, nn-tilde }:
 
 pkgs.writeShellApplication {
   name = "build-nn-tilde";
 
-  runtimeInputs = with pkgs; [
-    git
-    cmake
-    gnumake
-    gcc
-    puredata
-    libtorch-bin
-    curl
-    curl.dev
-  ];
+  runtimeInputs = [ pkgs.coreutils ];
 
   text = ''
-    set -euo pipefail
-
-    # Output goes to dist/nn~/ in the project root
-    PROJECT_DIR="$(pwd)"
-    OUTPUT_DIR="$PROJECT_DIR/dist/nn~"
-    mkdir -p "$OUTPUT_DIR"
+    OUTPUT_DIR="''${1:-$PWD/dist/nn~}"
 
     echo "╔════════════════════════════════════════════════════════════════╗"
-    echo "║           Building nn~ Pure Data External                      ║"
+    echo "║     Installing nn~ with Multi-Instance Support                 ║"
     echo "╚════════════════════════════════════════════════════════════════╝"
     echo ""
-    echo "Output will be written to: $OUTPUT_DIR"
-
-    BUILD_DIR=$(mktemp -d)
-    trap 'rm -rf "$BUILD_DIR"' EXIT
-
+    echo "Source:  ${nn-tilde}/lib/pd/extra"
+    echo "Output:  $OUTPUT_DIR"
     echo ""
-    echo "Step 1: Cloning nn_tilde repository..."
-    git clone --recurse-submodules --depth 1 \
-      https://github.com/acids-ircam/nn_tilde.git \
-      "$BUILD_DIR/nn_tilde"
 
-    echo ""
-    echo "Step 2: Setting up build environment..."
-    cd "$BUILD_DIR/nn_tilde"
+    # Create output directory and clean old files
+    mkdir -p "$OUTPUT_DIR"
+    rm -rf "''${OUTPUT_DIR:?}/nn~.pd_linux" "''${OUTPUT_DIR:?}/nn~-help.pd" "''${OUTPUT_DIR:?}/lib" 2>/dev/null || true
 
-    # Create env/lib structure expected by nn_tilde CMakeLists.txt
-    mkdir -p env/lib env/include
-    ln -sf "${pkgs.curl.out}/lib/libcurl.so" env/lib/
-    ln -sf "${pkgs.curl.dev}/include/curl" env/include/
+    # Copy nn~ external
+    echo "Installing nn~.pd_linux..."
+    cp "${nn-tilde}/lib/pd/extra/nn~.pd_linux" "$OUTPUT_DIR/"
+    chmod +w "$OUTPUT_DIR/nn~.pd_linux"
 
-    echo ""
-    echo "Step 3: Configuring with CMake..."
-    cd src
-    mkdir -p build && cd build
-    cmake .. -DCMAKE_BUILD_TYPE=Release
-
-    echo ""
-    echo "Step 4: Building nn~..."
-    make -j"$(nproc)"
-
-    echo ""
-    echo "Step 5: Copying output files to $OUTPUT_DIR ..."
-
-    # Find and copy the external
-    NN_FILE=$(find . -name "nn~.pd_linux" -print -quit)
-    if [ -n "$NN_FILE" ]; then
-      cp "$NN_FILE" "$OUTPUT_DIR/nn~.pd_linux"
-      echo "  ✓ nn~.pd_linux"
-    else
-      echo "  ✗ nn~.pd_linux not found!"
-      exit 1
-    fi
-
-    # Copy help file if available
-    if [ -f "../help/nn~-help.pd" ]; then
-      cp "../help/nn~-help.pd" "$OUTPUT_DIR/nn~-help.pd"
+    # Copy help file if present
+    if [ -f "${nn-tilde}/lib/pd/extra/nn~-help.pd" ]; then
+      cp "${nn-tilde}/lib/pd/extra/nn~-help.pd" "$OUTPUT_DIR/"
       echo "  ✓ nn~-help.pd"
     fi
 
+    # Copy bundled libraries
+    echo "Installing bundled libraries..."
+    mkdir -p "$OUTPUT_DIR/lib"
+    cp -r "${nn-tilde}/lib/pd/extra/lib/"* "$OUTPUT_DIR/lib/" 2>/dev/null || true
+    chmod -R +w "$OUTPUT_DIR/lib/" 2>/dev/null || true
+
+    # Show results
     echo ""
     echo "════════════════════════════════════════════════════════════════"
-    echo "Build complete!"
+    echo "Installation complete!"
     echo ""
-    echo "Output files in dist/nn~/:"
-    ls -la "$OUTPUT_DIR"/nn~* 2>/dev/null || echo "  (no files found)"
+    echo "Files installed:"
+    ls -la "$OUTPUT_DIR/nn~.pd_linux"
     echo ""
-    echo "To upload as GitHub release:"
-    echo "  gh release upload <tag> dist/nn~/nn~.pd_linux dist/nn~/nn~-help.pd"
+    # shellcheck disable=SC2012
+    echo "Libraries bundled: $(find "$OUTPUT_DIR/lib/" -maxdepth 1 -type f 2>/dev/null | wc -l) files"
     echo ""
-    echo "To install for mesh:"
-    echo "  cp dist/nn~/nn~.pd_linux ~/Music/mesh-collection/effects/externals/"
+    echo "To use with mesh:"
+    echo "  1. Copy to your effects/externals directory:"
+    echo "     cp -r $OUTPUT_DIR/* ~/Music/mesh-collection/effects/externals/"
+    echo ""
+    echo "  2. Or set PD_EXTRA_PATH environment variable:"
+    echo "     export PD_EXTRA_PATH=$OUTPUT_DIR"
+    echo ""
+    echo "Build info:"
+    echo "  - Multi-instance support: PDINSTANCE=1, PDTHREADS=1"
+    echo "  - RPATH configured: \$ORIGIN/lib (bundled libtorch)"
     echo "════════════════════════════════════════════════════════════════"
   '';
 }

@@ -1,28 +1,34 @@
-//! PdManager - manages per-deck PD instances and effect creation
+//! PdManager - manages the global PD instance and effect creation
 //!
 //! This is the main entry point for the PD integration. It handles:
-//! - Creating and managing one PdInstance per deck
+//! - Creating and managing the SINGLE global PdInstance (libpd limitation)
 //! - Discovering available effects at startup
 //! - Creating PdEffect instances for effect chains
+//!
+//! # Important: Single PdInstance
+//!
+//! libpd can only be initialized once per process. All effects from all decks
+//! share this single PdInstance. Per-effect isolation is achieved via the $0
+//! prefix in patch communication (e.g., $0-param0).
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::effect::Effect;
-use crate::types::{NUM_DECKS, SAMPLE_RATE};
+use crate::types::SAMPLE_RATE;
 
 use super::discovery::{DiscoveredEffect, EffectDiscovery};
 use super::effect::PdEffect;
 use super::error::{PdError, PdResult};
 use super::instance::PdInstance;
 
-/// Manager for PD instances and effects
+/// Manager for the global PD instance and effects
 ///
 /// Provides a unified interface for the mesh audio engine to interact
-/// with Pure Data. Each deck gets its own PD instance for isolation.
+/// with Pure Data. All effects share a single PdInstance (libpd limitation).
 pub struct PdManager {
-    /// PD instances for each deck (lazily initialized)
-    instances: [Option<Arc<Mutex<PdInstance>>>; NUM_DECKS],
+    /// The single global PD instance (lazily initialized, shared by all effects)
+    instance: Option<Arc<Mutex<PdInstance>>>,
 
     /// Discovered effects from the effects folder
     discovered_effects: Vec<DiscoveredEffect>,
@@ -30,7 +36,7 @@ pub struct PdManager {
     /// Effect discovery service
     discovery: EffectDiscovery,
 
-    /// Sample rate for all instances
+    /// Sample rate for the instance
     sample_rate: i32,
 }
 
@@ -57,53 +63,54 @@ impl PdManager {
         );
 
         Ok(Self {
-            instances: Default::default(),
+            instance: None,
             discovered_effects,
             discovery,
             sample_rate: SAMPLE_RATE as i32,
         })
     }
 
-    /// Initialize the PD instance for a specific deck
+    /// Initialize the global PD instance
     ///
-    /// This is called lazily when the first PD effect is added to a deck.
-    pub fn init_deck(&mut self, deck_index: usize) -> PdResult<()> {
-        if deck_index >= NUM_DECKS {
-            return Err(PdError::InstanceNotInitialized(deck_index));
-        }
+    /// This is called lazily when the first PD effect is created.
+    /// Subsequent calls are no-ops since libpd only supports one instance.
+    fn init_instance(&mut self) -> PdResult<()> {
+        log::info!("[PD-DEBUG] init_instance() called");
 
-        if self.instances[deck_index].is_some() {
+        if self.instance.is_some() {
+            log::info!("[PD-DEBUG] Instance already exists, returning early");
             return Ok(()); // Already initialized
         }
 
-        let mut instance = PdInstance::new(deck_index, self.sample_rate)?;
+        log::info!("[PD-DEBUG] Creating new PdInstance...");
+        let mut instance = PdInstance::new(self.sample_rate)?;
+        log::info!("[PD-DEBUG] PdInstance created successfully");
 
         // Add search paths for externals and models
         instance.add_search_path(self.discovery.externals_path())?;
         instance.add_search_path(self.discovery.models_path())?;
 
-        self.instances[deck_index] = Some(Arc::new(Mutex::new(instance)));
+        self.instance = Some(Arc::new(Mutex::new(instance)));
 
-        log::info!("PD instance initialized for deck {}", deck_index);
+        log::info!("[PD] Global instance initialized");
 
         Ok(())
     }
 
-    /// Create a PD effect for a specific deck
+    /// Create a PD effect
     ///
     /// # Arguments
-    /// * `deck_index` - The deck to create the effect for (0-3)
     /// * `effect_id` - The effect identifier (folder name)
     ///
     /// # Returns
     /// A boxed Effect trait object that can be added to an effect chain
-    pub fn create_effect(
-        &mut self,
-        deck_index: usize,
-        effect_id: &str,
-    ) -> PdResult<Box<dyn Effect>> {
+    ///
+    /// # Note
+    /// All effects share the single global PdInstance. Per-effect isolation
+    /// is achieved via the $0 prefix in patch communication.
+    pub fn create_effect(&mut self, effect_id: &str) -> PdResult<Box<dyn Effect>> {
         // Find the effect and clone necessary data to avoid borrow conflicts
-        // (we need mutable self for init_deck, but also need effect data)
+        // (we need mutable self for init_instance, but also need effect data)
         let (patch_path, metadata) = {
             let effect = self
                 .discovered_effects
@@ -123,22 +130,21 @@ impl PdManager {
             (effect.patch_path.clone(), effect.metadata.clone())
         };
 
-        // Ensure deck instance is initialized (requires &mut self)
-        self.init_deck(deck_index)?;
+        // Ensure global instance is initialized (requires &mut self)
+        self.init_instance()?;
 
-        // Get the deck's instance
-        let instance = self.instances[deck_index]
+        // Get the shared instance
+        let instance = self
+            .instance
             .as_ref()
-            .ok_or(PdError::InstanceNotInitialized(deck_index))?
+            .ok_or_else(|| {
+                PdError::InitializationFailed("PD instance not initialized".to_string())
+            })?
             .clone();
 
         // Create the PD effect
-        let mut pd_effect = PdEffect::new(
-            instance,
-            patch_path,
-            &metadata,
-            effect_id.to_string(),
-        )?;
+        let mut pd_effect =
+            PdEffect::new(instance, patch_path, &metadata, effect_id.to_string())?;
 
         // Open the patch
         pd_effect.open()?;
@@ -164,9 +170,9 @@ impl PdManager {
         self.discovered_effects.iter().find(|e| e.id == effect_id)
     }
 
-    /// Check if a deck has an initialized PD instance
-    pub fn is_deck_initialized(&self, deck_index: usize) -> bool {
-        deck_index < NUM_DECKS && self.instances[deck_index].is_some()
+    /// Check if the global PD instance is initialized
+    pub fn is_initialized(&self) -> bool {
+        self.instance.is_some()
     }
 
     /// Get the effects folder path
@@ -205,7 +211,7 @@ impl Default for PdManager {
         Self::new(&collection_path).unwrap_or_else(|e| {
             log::error!("Failed to create PdManager: {}", e);
             Self {
-                instances: Default::default(),
+                instance: None,
                 discovered_effects: Vec::new(),
                 discovery: EffectDiscovery::new(&collection_path),
                 sample_rate: SAMPLE_RATE as i32,

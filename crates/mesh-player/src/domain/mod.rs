@@ -897,8 +897,11 @@ impl MeshDomain {
     /// * `effect_id` - Effect identifier (folder name in effects/)
     pub fn add_pd_effect(&mut self, deck: usize, stem: Stem, effect_id: &str) -> Result<(), String> {
         // Create the effect via PdManager (this does the non-RT-safe work)
-        let effect = self.pd_manager
-            .create_effect(deck, effect_id)
+        // Note: All effects share the single global PdInstance; deck is only used
+        // for routing in the audio engine, not for PD isolation.
+        let effect = self
+            .pd_manager
+            .create_effect(effect_id)
             .map_err(|e| format!("Failed to create PD effect '{}': {}", effect_id, e))?;
 
         // Send to audio engine via command

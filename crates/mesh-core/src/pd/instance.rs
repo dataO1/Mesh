@@ -1,46 +1,118 @@
 //! PdInstance - wrapper around libpd-rs for per-deck PD processing
 //!
-//! Each deck gets its own PdInstance for thread isolation and parallel processing.
 //! This wrapper provides a simplified API over libpd-rs tailored for mesh's needs.
+//!
+//! # Important: Single Global Pd Instance
+//!
+//! libpd is fundamentally single-threaded and does NOT support multiple calls to
+//! `Pd::init_and_configure()`. We track initialization state to ensure libpd is
+//! initialized exactly once, then reuse that instance.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 
-use libpd_rs::{Pd, PdAudioContext};
+use crossbeam::queue::SegQueue;
 use libpd_rs::functions::receive::on_print;
 use libpd_rs::functions::verbose_print_state;
+use libpd_rs::{Pd, PdAudioContext};
 
 use super::error::{PdError, PdResult};
 
-/// Global flag to ensure print hook is only registered once
-static PRINT_HOOK_INIT: Once = Once::new();
+/// One-time initialization for libpd (both the library AND print hook)
+static LIBPD_INIT: Once = Once::new();
 
-/// Initialize the global PD print hook (called once across all instances)
+/// Tracks whether libpd has been initialized
+static LIBPD_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+/// Lock-free queue for PD console messages (RT-safe)
+/// Messages are pushed from the audio thread and drained from non-RT contexts
+static PD_MESSAGE_QUEUE: SegQueue<PdMessage> = SegQueue::new();
+
+/// Flag to track if we have pending messages (avoids unnecessary queue checks)
+static HAS_PENDING_MESSAGES: AtomicBool = AtomicBool::new(false);
+
+/// A message from PD's console output
+#[derive(Debug, Clone)]
+pub struct PdMessage {
+    pub text: String,
+    pub level: PdMessageLevel,
+}
+
+/// Severity level for PD messages
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PdMessageLevel {
+    Info,
+    Warning,
+    Error,
+}
+
+/// Initialize the global print hook for capturing PD console output
+///
+/// This uses a lock-free queue to safely capture messages from the audio thread.
+/// Call `drain_pd_messages()` periodically from a non-RT context to log them.
+///
+/// NOTE: This is called during libpd initialization via LIBPD_INIT.
 fn init_print_hook() {
-    PRINT_HOOK_INIT.call_once(|| {
-        // Enable verbose printing from PD
-        verbose_print_state(true);
+    // Enable verbose printing to see external loading info
+    verbose_print_state(true);
 
-        // Register print hook to capture all PD console output
-        on_print(|msg: &str| {
-            // Trim whitespace and skip empty messages
-            let msg = msg.trim();
-            if msg.is_empty() {
-                return;
-            }
+    // Register global print hook - called from DSP thread
+    // CRITICAL: This callback runs on the audio thread - NO BLOCKING OPERATIONS!
+    on_print(|msg: &str| {
+        let msg = msg.trim();
+        if msg.is_empty() {
+            return;
+        }
 
-            // Route to appropriate log level based on content
-            if msg.contains("error") || msg.contains("can't") || msg.contains("couldn't") {
-                log::error!("[PD] {}", msg);
-            } else if msg.contains("warning") || msg.contains("deprecated") {
-                log::warn!("[PD] {}", msg);
-            } else {
-                log::info!("[PD] {}", msg);
-            }
+        // Determine message level based on content
+        let msg_lower = msg.to_lowercase();
+        let level = if msg_lower.contains("error")
+            || msg_lower.contains("can't")
+            || msg_lower.contains("couldn't")
+            || msg_lower.contains("failed")
+        {
+            PdMessageLevel::Error
+        } else if msg_lower.contains("warning") || msg_lower.contains("deprecated") {
+            PdMessageLevel::Warning
+        } else {
+            PdMessageLevel::Info
+        };
+
+        // Push to lock-free queue (RT-safe, non-blocking)
+        PD_MESSAGE_QUEUE.push(PdMessage {
+            text: msg.to_string(),
+            level,
         });
-
-        log::debug!("PD print hook initialized");
+        HAS_PENDING_MESSAGES.store(true, Ordering::Release);
     });
+
+    log::debug!("PD print hook initialized with lock-free message queue");
+}
+
+/// Drain all pending PD messages and log them
+///
+/// Call this from a non-RT context (e.g., after opening a patch, in UI update loop)
+/// to process any messages that were queued from the audio thread.
+pub fn drain_pd_messages() {
+    if !HAS_PENDING_MESSAGES.load(Ordering::Acquire) {
+        return;
+    }
+
+    while let Some(msg) = PD_MESSAGE_QUEUE.pop() {
+        match msg.level {
+            PdMessageLevel::Error => log::error!("[PD] {}", msg.text),
+            PdMessageLevel::Warning => log::warn!("[PD] {}", msg.text),
+            PdMessageLevel::Info => log::info!("[PD] {}", msg.text),
+        }
+    }
+
+    HAS_PENDING_MESSAGES.store(false, Ordering::Release);
+}
+
+/// Check if there are pending PD messages without draining them
+pub fn has_pending_pd_messages() -> bool {
+    HAS_PENDING_MESSAGES.load(Ordering::Acquire)
 }
 
 /// Handle to an open PD patch
@@ -58,19 +130,17 @@ impl PatchHandle {
     }
 }
 
-/// Wrapper around libpd-rs for a single deck
+/// Wrapper around libpd-rs for audio effect processing
 ///
-/// Provides thread-safe access to libpd operations. Each deck should
-/// have its own PdInstance to enable parallel processing.
+/// IMPORTANT: libpd can only be initialized ONCE per process. There should be
+/// exactly ONE PdInstance for the entire application. All effects (from all decks)
+/// share this single instance and use $0 prefix for patch isolation.
 pub struct PdInstance {
     /// The underlying libpd-rs Pd instance
     pd: Pd,
 
     /// Audio context for real-time processing
     ctx: PdAudioContext,
-
-    /// Deck index this instance belongs to
-    deck_index: usize,
 
     /// Whether audio processing is active
     audio_active: bool,
@@ -83,32 +153,53 @@ pub struct PdInstance {
 }
 
 impl PdInstance {
-    /// Create a new PD instance for a deck
+    /// Create the global PD instance
+    ///
+    /// IMPORTANT: This should only be called ONCE for the entire application.
+    /// libpd does not support multiple initializations.
     ///
     /// # Arguments
-    /// * `deck_index` - The deck this instance belongs to (0-3)
     /// * `sample_rate` - Audio sample rate (typically 48000)
-    pub fn new(deck_index: usize, sample_rate: i32) -> PdResult<Self> {
-        // Initialize print hook before any PD operations (only happens once)
-        init_print_hook();
+    pub fn new(sample_rate: i32) -> PdResult<Self> {
+        log::info!("[PD-DEBUG] PdInstance::new() called with sample_rate={}", sample_rate);
+
+        // Check if libpd was already initialized (programmer error to call twice)
+        if LIBPD_INITIALIZED.swap(true, Ordering::SeqCst) {
+            return Err(PdError::InitializationFailed(
+                "libpd already initialized - only one PdInstance allowed per process".to_string(),
+            ));
+        }
+
+        log::info!("[PD-DEBUG] First initialization, proceeding...");
+
+        // Initialize print hook (but NOT before Pd::init_and_configure)
+        // Note: We skip the print hook for now to isolate the crash
+        log::info!("[PD-DEBUG] About to call Pd::init_and_configure(2, 2, {})", sample_rate);
 
         // Initialize libpd with stereo I/O (2 in, 2 out)
         let pd = Pd::init_and_configure(2, 2, sample_rate).map_err(|e| {
+            // Reset the flag on failure so user can retry
+            LIBPD_INITIALIZED.store(false, Ordering::SeqCst);
             PdError::InitializationFailed(format!("libpd init failed: {}", e))
         })?;
 
+        log::info!("[PD-DEBUG] Pd::init_and_configure succeeded!");
+
+        // Now initialize print hook AFTER libpd is set up
+        LIBPD_INIT.call_once(|| {
+            log::info!("[PD-DEBUG] Initializing print hook...");
+            init_print_hook();
+            log::info!("[PD-DEBUG] Print hook initialized");
+        });
+
+        log::info!("[PD-DEBUG] Getting audio context...");
         let ctx = pd.audio_context();
 
-        log::info!(
-            "PdInstance created for deck {} @ {}Hz",
-            deck_index,
-            sample_rate
-        );
+        log::info!("[PD-DEBUG] PdInstance created @ {}Hz (global singleton)", sample_rate);
 
         Ok(Self {
             pd,
             ctx,
-            deck_index,
             audio_active: false,
             sample_rate,
             open_patches: 0,
@@ -121,11 +212,7 @@ impl PdInstance {
             PdError::InitializationFailed(format!("Failed to add search path: {}", e))
         })?;
 
-        log::debug!(
-            "Deck {}: Added PD search path: {}",
-            self.deck_index,
-            path.display()
-        );
+        log::debug!("[PD] Added search path: {}", path.display());
 
         Ok(())
     }
@@ -151,12 +238,11 @@ impl PdInstance {
 
         self.open_patches += 1;
 
-        log::info!(
-            "Deck {}: Opened PD patch: {} ($0={})",
-            self.deck_index,
-            path.display(),
-            dollar_zero
-        );
+        // Drain any messages that were queued during patch loading
+        // (e.g., external loading errors, warnings about missing objects)
+        drain_pd_messages();
+
+        log::info!("[PD] Opened patch: {} ($0={})", path.display(), dollar_zero);
 
         Ok(PatchHandle { dollar_zero })
     }
@@ -171,7 +257,7 @@ impl PdInstance {
             self.open_patches -= 1;
         }
 
-        log::debug!("Deck {}: Closed PD patch", self.deck_index);
+        log::debug!("[PD] Closed patch");
 
         Ok(())
     }
@@ -245,11 +331,6 @@ impl PdInstance {
         output.len() / 2
     }
 
-    /// Get the deck index this instance belongs to
-    pub fn deck_index(&self) -> usize {
-        self.deck_index
-    }
-
     /// Get the configured sample rate
     pub fn sample_rate(&self) -> i32 {
         self.sample_rate
@@ -271,7 +352,7 @@ impl Drop for PdInstance {
         if self.audio_active {
             let _ = self.set_audio_active(false);
         }
-        log::debug!("PdInstance for deck {} dropped", self.deck_index);
+        log::debug!("[PD] Global PdInstance dropped");
     }
 }
 
