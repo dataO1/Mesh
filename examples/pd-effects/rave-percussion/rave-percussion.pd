@@ -58,8 +58,8 @@
 #X obj 366 216 inlet;
 #X obj 423 216 inlet;
 #X obj 480 216 inlet;
-#X obj 66 145 nn~ -m percussion encode 2048;
-#X obj 66 344 nn~ -m percussion decode 2048;
+#X obj 66 145 nn~ -m percussion encode 4096;
+#X obj 66 344 nn~ -m percussion decode 4096;
 #X obj 66 185 snake~ out 8, f 57;
 #X obj 67 251 *~;
 #X obj 67 289 snake~ in 8, f 57;
