@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 
 use crossbeam::queue::SegQueue;
-use libpd_rs::functions::receive::on_print;
+use libpd_rs::functions::receive::{on_print, receive_messages_from_pd};
 use libpd_rs::functions::verbose_print_state;
 use libpd_rs::{Pd, PdAudioContext};
 
@@ -65,6 +65,9 @@ fn init_print_hook() {
             return;
         }
 
+        // DEBUG: Print immediately to stderr to verify hook is being called
+        eprintln!("[PD-HOOK-RAW] {}", msg);
+
         // Determine message level based on content
         let msg_lower = msg.to_lowercase();
         let level = if msg_lower.contains("error")
@@ -95,11 +98,16 @@ fn init_print_hook() {
 /// Call this from a non-RT context (e.g., after opening a patch, in UI update loop)
 /// to process any messages that were queued from the audio thread.
 pub fn drain_pd_messages() {
-    if !HAS_PENDING_MESSAGES.load(Ordering::Acquire) {
+    let has_pending = HAS_PENDING_MESSAGES.load(Ordering::Acquire);
+    log::debug!("[PD-DEBUG] drain_pd_messages called, has_pending={}", has_pending);
+
+    if !has_pending {
         return;
     }
 
+    let mut count = 0;
     while let Some(msg) = PD_MESSAGE_QUEUE.pop() {
+        count += 1;
         match msg.level {
             PdMessageLevel::Error => log::error!("[PD] {}", msg.text),
             PdMessageLevel::Warning => log::warn!("[PD] {}", msg.text),
@@ -107,6 +115,7 @@ pub fn drain_pd_messages() {
         }
     }
 
+    log::debug!("[PD-DEBUG] Drained {} messages from queue", count);
     HAS_PENDING_MESSAGES.store(false, Ordering::Release);
 }
 
@@ -237,6 +246,10 @@ impl PdInstance {
         })?;
 
         self.open_patches += 1;
+
+        // Poll for messages from PD (triggers callbacks including print hook)
+        // This is needed to actually receive the queued messages from libpd
+        receive_messages_from_pd();
 
         // Drain any messages that were queued during patch loading
         // (e.g., external loading errors, warnings about missing objects)
