@@ -1,0 +1,11 @@
+# Cargo configuration for mesh
+#
+# Export dynamic symbols so that PD externals can resolve libpd symbols
+# at runtime. Without this, externals like nn~ fail with "undefined symbol"
+# errors because libpd is statically linked into the binary.
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-args=-Wl,--export-dynamic"]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "link-args=-Wl,--export-dynamic"]

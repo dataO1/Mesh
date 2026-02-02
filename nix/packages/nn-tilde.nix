@@ -1,7 +1,6 @@
 # nn~ Pure Data external for neural audio processing
 #
-# This derivation builds the nn~ external with multi-instance support
-# (PDINSTANCE=1, PDTHREADS=1) to match libpd-rs configuration.
+# This derivation builds the nn~ external for use with libpd-rs.
 #
 # The resulting package includes:
 #   - nn~.pd_linux (the external)
@@ -77,7 +76,7 @@ llvmPackages.stdenv.mkDerivation {
   cmakeDir = "../src";
 
   # Use permissive mode for GCC 15 compatibility with libtorch templates
-  # Also add PDINSTANCE/PDTHREADS for multi-instance Pure Data support
+  # PDINSTANCE=1 is required because libpd-rs uses MULTI=true mode
   NIX_CFLAGS_COMPILE = "-fpermissive -DPDINSTANCE=1 -DPDTHREADS=1";
 
   cmakeFlags = [
@@ -181,6 +180,11 @@ COMPAT_HEADER
         cp -L "$lib" $out/lib/pd/extra/lib/ 2>/dev/null || true
       fi
     done
+
+    # Bundle libcurl (required for model download functionality)
+    echo "Bundling libcurl..."
+    cp -L ${curl.out}/lib/libcurl.so* $out/lib/pd/extra/lib/ 2>/dev/null || true
+    echo "  Bundled libcurl"
 
     # Patch RPATH so nn~ finds bundled libraries
     echo "Patching RPATH..."

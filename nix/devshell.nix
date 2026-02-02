@@ -95,6 +95,21 @@ pkgs.mkShell {
     # JACK settings
     export JACK_NO_AUDIO_RESERVATION=1
 
+    # Setup libpd-sys patch for 32-bit floats (required for nn~ external compatibility)
+    # This patches one line: PD_FLOATSIZE from "64" to "32"
+    if [ ! -d "patches/libpd-sys" ]; then
+      echo "Setting up libpd-sys patch for 32-bit float compatibility..."
+      LIBPD_SYS_SRC=$(find ~/.cargo/registry/src -name "libpd-sys-*" -type d 2>/dev/null | head -1)
+      if [ -n "$LIBPD_SYS_SRC" ]; then
+        mkdir -p patches
+        cp -r "$LIBPD_SYS_SRC" patches/libpd-sys
+        sed -i 's/const PD_FLOATSIZE: &str = "64"/const PD_FLOATSIZE: \&str = "32"/' patches/libpd-sys/build.rs
+        echo "  ✓ Patched libpd-sys for 32-bit floats"
+      else
+        echo "  ⚠ libpd-sys not found in cargo registry. Run 'cargo fetch' first."
+      fi
+    fi
+
     # Torch library path (for nn~)
     export LIBTORCH="${pkgs.libtorch-bin}"
     export LIBTORCH_LIB="${pkgs.libtorch-bin}/lib"

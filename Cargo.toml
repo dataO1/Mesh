@@ -59,3 +59,6 @@ codegen-units = 1      # Better optimization, slower compile
 [patch.crates-io]
 graph = { git = "https://github.com/thief-sty/graph", branch = "main" }
 graph_builder = { git = "https://github.com/thief-sty/graph", branch = "main" }
+# Use 32-bit floats for libpd to be compatible with standard PD externals (like nn~)
+# libpd-sys defaults to 64-bit floats which breaks most externals
+libpd-sys = { path = "patches/libpd-sys" }

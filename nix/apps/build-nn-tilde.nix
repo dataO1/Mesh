@@ -1,14 +1,10 @@
 # Install nn~ Pure Data external for neural audio effects
 #
-# This app installs the pre-built nn~ external (with multi-instance support)
-# to the mesh effects directory.
+# This app installs the pre-built nn~ external to the mesh effects directory.
 #
 # Usage:
 #   nix run .#build-nn-tilde
 #   # Or: nix run .#build-nn-tilde -- /custom/path
-#
-# The nn~ external is built with PDINSTANCE=1 and PDTHREADS=1 flags
-# to match libpd-rs configuration in mesh.
 
 { pkgs, nn-tilde }:
 
@@ -36,6 +32,11 @@ pkgs.writeShellApplication {
     echo "Installing nn~.pd_linux..."
     cp "${nn-tilde}/lib/pd/extra/nn~.pd_linux" "$OUTPUT_DIR/"
     chmod +w "$OUTPUT_DIR/nn~.pd_linux"
+
+    # Create symlink for libpd naming convention
+    # libpd looks for name.linux-amd64-0.so instead of name.pd_linux
+    ln -sf "nn~.pd_linux" "$OUTPUT_DIR/nn~.linux-amd64-0.so"
+    echo "  ✓ Created symlink nn~.linux-amd64-0.so -> nn~.pd_linux"
 
     # Copy help file if present
     if [ -f "${nn-tilde}/lib/pd/extra/nn~-help.pd" ]; then
@@ -68,7 +69,6 @@ pkgs.writeShellApplication {
     echo "     export PD_EXTRA_PATH=$OUTPUT_DIR"
     echo ""
     echo "Build info:"
-    echo "  - Multi-instance support: PDINSTANCE=1, PDTHREADS=1"
     echo "  - RPATH configured: \$ORIGIN/lib (bundled libtorch)"
     echo "════════════════════════════════════════════════════════════════"
   '';

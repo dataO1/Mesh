@@ -3145,8 +3145,6 @@ dependencies = [
 [[package]]
 name = "libpd-sys"
 version = "0.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6cae4da450761d0b085a246ab5eee9c7b98406c43f94d16d0d71aa19f6d4af12"
 dependencies = [
  "bindgen 0.69.5",
  "cmake",

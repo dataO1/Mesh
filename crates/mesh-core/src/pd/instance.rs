@@ -65,15 +65,15 @@ fn init_print_hook() {
             return;
         }
 
-        // DEBUG: Print immediately to stderr to verify hook is being called
-        eprintln!("[PD-HOOK-RAW] {}", msg);
 
         // Determine message level based on content
         let msg_lower = msg.to_lowercase();
-        let level = if msg_lower.contains("error")
-            || msg_lower.contains("can't")
-            || msg_lower.contains("couldn't")
-            || msg_lower.contains("failed")
+        let level = if msg_lower.starts_with("verbose(") {
+            // verbose(N): messages are just search path tracing, not errors
+            PdMessageLevel::Info
+        } else if msg_lower.starts_with("error:")
+            || msg_lower.contains("can't create")
+            || msg_lower.contains("couldn't create")
         {
             PdMessageLevel::Error
         } else if msg_lower.contains("warning") || msg_lower.contains("deprecated") {
