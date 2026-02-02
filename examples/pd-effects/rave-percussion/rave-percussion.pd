@@ -1,4 +1,4 @@
-#N canvas 0 0 1920 1050 12;
+#N canvas 0 1728 1920 1050 12;
 #X text 50 20 =============== MESH EFFECT TEMPLATE ===============;
 #X text 50 45 Copy this folder and rename to create a new effect.;
 #X text 50 65 The folder name must match the .pd filename.;
@@ -45,7 +45,7 @@
 #X obj 54 313 *~;
 #X obj 154 313 *~;
 #X text 204 313 <- Bypass gate;
-#N canvas 0 0 1920 1050 procesing 1;
+#N canvas 0 1728 1920 1050 procesing 0;
 #X obj 65 83 inlet~;
 #X obj 123 82 inlet~;
 #X obj 65 436 outlet~;
@@ -102,8 +102,7 @@
 #X restore 53 269 pd procesing;
 #X f 46;
 #X connect 4 0 20 0;
-#X connect 5 0 20 2;
-#X connect 14 0 20 1;
+#X connect 14 0 20 2;
 #X connect 14 1 20 3;
 #X connect 14 2 20 4;
 #X connect 14 3 20 5;

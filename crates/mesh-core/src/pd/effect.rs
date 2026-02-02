@@ -176,8 +176,11 @@ impl PdEffect {
         }
 
         // Send initial bypass state
+        // Note: PD patches use bypass as a gate multiplier, so we invert:
+        // - active (not bypassed) → send 1.0 → audio passes through
+        // - bypassed → send 0.0 → silence
         let bypass_receiver = format!("{}-bypass", self.dollar_zero);
-        let bypass_value = if self.base.is_bypassed() { 1.0 } else { 0.0 };
+        let bypass_value = if self.base.is_bypassed() { 0.0 } else { 1.0 };
         instance.send_float(&bypass_receiver, bypass_value)?;
 
         Ok(())
@@ -216,7 +219,8 @@ impl PdEffect {
         })?;
 
         let receiver = format!("{}-bypass", self.dollar_zero);
-        instance.send_float(&receiver, if bypass { 1.0 } else { 0.0 })
+        // Invert: bypassed → 0.0 (silence), active → 1.0 (audio passes)
+        instance.send_float(&receiver, if bypass { 0.0 } else { 1.0 })
     }
 
     /// Get the effect ID
