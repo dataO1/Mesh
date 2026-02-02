@@ -24,6 +24,13 @@ impl DelayLine {
 
     /// Set the delay amount in samples
     fn set_delay(&mut self, samples: usize) {
+        if samples >= self.buffer.len() {
+            log::warn!(
+                "Latency compensation {} samples exceeds buffer size {}, clamping! Audio may be misaligned.",
+                samples,
+                self.buffer.len()
+            );
+        }
         self.delay_samples = samples.min(self.buffer.len() - 1);
     }
 

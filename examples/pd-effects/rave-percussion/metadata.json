@@ -2,7 +2,7 @@
   "name": "RAVE Percussion",
   "category": "Neural",
   "description": "Neural audio effect using RAVE model for real-time timbre transfer. Transforms audio through a trained variational autoencoder.",
-  "latency_samples": 4096,
+  "latency_samples": 2048,
   "sample_rate": 48000,
   "requires_externals": ["nn~"],
   "params": [
