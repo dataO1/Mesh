@@ -167,8 +167,22 @@ impl MeshDomain {
                 PdManager::default()
             });
 
-        // Initialize CLAP effect manager (scans system CLAP directories)
+        // Initialize CLAP effect manager (scans system + collection CLAP directories)
         let mut clap_manager = ClapManager::new();
+        // Add mesh-collection/plugins/clap as a search path
+        let collection_clap_path = local_collection_path.join("plugins").join("clap");
+        if collection_clap_path.exists() {
+            log::info!("Adding CLAP search path: {:?}", collection_clap_path);
+            clap_manager.add_search_path(collection_clap_path);
+        } else {
+            // Create the directory for user convenience
+            if let Err(e) = std::fs::create_dir_all(&collection_clap_path) {
+                log::warn!("Failed to create CLAP plugins directory: {}", e);
+            } else {
+                log::info!("Created CLAP plugins directory: {:?}", collection_clap_path);
+                clap_manager.add_search_path(collection_clap_path);
+            }
+        }
         clap_manager.scan_plugins();
         log::info!(
             "ClapManager initialized: found {} plugins ({} available)",
