@@ -305,8 +305,8 @@ impl MeshApp {
                     EffectPickerMessage::Close => {
                         self.effect_picker.close();
                     }
-                    EffectPickerMessage::SelectEffect(effect_id) => {
-                        // Add the effect to the target deck/stem
+                    EffectPickerMessage::SelectPdEffect(effect_id) => {
+                        // Add PD effect to the target deck/stem
                         let deck = self.effect_picker.target_deck;
                         let stem = self.effect_picker.target_stem_enum();
                         let stem_idx = self.effect_picker.target_stem;
@@ -319,7 +319,7 @@ impl MeshApp {
                             .unwrap_or_else(|| effect_id.clone());
 
                         if let Err(e) = self.domain.add_pd_effect(deck, stem, &effect_id) {
-                            log::error!("Failed to add effect '{}': {}", effect_id, e);
+                            log::error!("Failed to add PD effect '{}': {}", effect_id, e);
                             self.status = format!("Failed to add effect: {}", e);
                         } else {
                             // Update UI state to show the effect
@@ -328,6 +328,33 @@ impl MeshApp {
                             log::info!("Added PD effect '{}' to deck {} stem {:?}", effect_id, deck, stem);
                         }
                         self.effect_picker.close();
+                    }
+                    EffectPickerMessage::SelectClapEffect(plugin_id) => {
+                        // Add CLAP effect to the target deck/stem
+                        let deck = self.effect_picker.target_deck;
+                        let stem = self.effect_picker.target_stem_enum();
+                        let stem_idx = self.effect_picker.target_stem;
+
+                        // Look up the plugin's display name
+                        let effect_name = self.domain.available_clap_plugins()
+                            .iter()
+                            .find(|p| p.id == plugin_id)
+                            .map(|p| p.name.clone())
+                            .unwrap_or_else(|| plugin_id.clone());
+
+                        if let Err(e) = self.domain.add_clap_effect(deck, stem, &plugin_id) {
+                            log::error!("Failed to add CLAP effect '{}': {}", plugin_id, e);
+                            self.status = format!("Failed to add CLAP effect: {}", e);
+                        } else {
+                            // Update UI state to show the effect
+                            self.deck_views[deck].add_effect(stem_idx, effect_name.clone());
+                            self.status = format!("Added {} to deck {} {}", effect_name, deck + 1, stem.name());
+                            log::info!("Added CLAP effect '{}' to deck {} stem {:?}", plugin_id, deck, stem);
+                        }
+                        self.effect_picker.close();
+                    }
+                    EffectPickerMessage::ToggleSourceFilter(filter) => {
+                        self.effect_picker.source_filter = filter;
                     }
                 }
                 Task::none()
@@ -831,8 +858,9 @@ impl MeshApp {
             )
             .on_press(Message::EffectPicker(EffectPickerMessage::Close));
 
-            let effects = self.domain.available_effects();
-            let picker_view = self.effect_picker.view(&effects)
+            let pd_effects = self.domain.available_effects();
+            let clap_plugins = self.domain.available_clap_plugins();
+            let picker_view = self.effect_picker.view(&pd_effects, &clap_plugins)
                 .map(Message::EffectPicker);
 
             let modal = center(opaque(picker_view))
