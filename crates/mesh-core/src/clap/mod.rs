@@ -202,60 +202,28 @@ impl ClapManager {
         Ok(bundle)
     }
 
-    /// Create a multiband host effect with optional CLAP crossover
+    /// Create a multiband host effect with native LR24 crossover
     ///
     /// This creates an effect-agnostic MultibandHost container that can hold
-    /// any effect type (CLAP, PD, native). If a crossover plugin ID is provided,
-    /// it will be loaded as the crossover effect.
+    /// any effect type (CLAP, PD, native). The MultibandHost now includes a
+    /// built-in Linkwitz-Riley 24dB/oct crossover for frequency band splitting.
     ///
     /// # Arguments
-    /// * `crossover_plugin_id` - Optional CLAP plugin ID for the crossover (e.g., LSP Crossover)
+    /// * `_crossover_plugin_id` - Deprecated, ignored. Native crossover is always used.
     /// * `buffer_size` - Processing buffer size in samples
     ///
     /// # Returns
-    /// A MultibandHost effect that can contain any effect type.
+    /// A MultibandHost effect with native LR24 crossover.
     pub fn create_multiband(
         &mut self,
-        crossover_plugin_id: Option<&str>,
+        _crossover_plugin_id: Option<&str>,
         buffer_size: usize,
     ) -> ClapResult<crate::effect::MultibandHost> {
         use crate::effect::MultibandHost;
 
-        // Create the multiband host first
-        let mut host = MultibandHost::new(buffer_size);
-
-        // Try to load and set the crossover plugin if provided
-        if let Some(plugin_id) = crossover_plugin_id {
-            if let Some(plugin_info) = self.discovery.get_plugin(plugin_id).cloned() {
-                if plugin_info.available {
-                    match self.get_or_load_bundle(&plugin_info.bundle_path) {
-                        Ok(bundle) => {
-                            match ClapEffect::from_plugin(&plugin_info, bundle) {
-                                Ok(crossover) => {
-                                    host.set_crossover(Box::new(crossover));
-                                    log::info!(
-                                        "MultibandHost created with CLAP crossover '{}'",
-                                        plugin_id
-                                    );
-                                }
-                                Err(e) => {
-                                    log::warn!(
-                                        "Failed to load crossover plugin '{}': {}. Multiband will work without band splitting.",
-                                        plugin_id, e
-                                    );
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            log::warn!(
-                                "Failed to load crossover bundle: {}. Multiband will work without band splitting.",
-                                e
-                            );
-                        }
-                    }
-                }
-            }
-        }
+        // Create the multiband host with native LR24 crossover
+        let host = MultibandHost::new(buffer_size);
+        log::info!("MultibandHost created with native LR24 crossover");
 
         Ok(host)
     }

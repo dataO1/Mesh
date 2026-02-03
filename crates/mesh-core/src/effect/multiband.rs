@@ -29,8 +29,9 @@
 //!
 //! Total latency = crossover_latency + max(band_chain_latencies)
 
+use super::native::LinkwitzRileyCrossover;
 use super::{Effect, EffectBase, EffectInfo, ParamInfo, ParamValue};
-use crate::types::StereoBuffer;
+use crate::types::{StereoBuffer, StereoSample};
 
 /// Maximum number of frequency bands
 pub const MAX_BANDS: usize = 8;
@@ -260,8 +261,8 @@ pub struct MultibandHost {
     /// Effect base (info, bypass state, macro values)
     base: EffectBase,
 
-    /// Optional crossover effect for band splitting (any Effect type)
-    crossover: Option<Box<dyn Effect>>,
+    /// Native LR24 crossover for frequency band splitting
+    crossover: LinkwitzRileyCrossover,
 
     /// Frequency bands with their effect chains
     bands: Vec<Band>,
@@ -307,7 +308,7 @@ impl MultibandHost {
 
         Self {
             base,
-            crossover: None,
+            crossover: LinkwitzRileyCrossover::new(),
             bands,
             config: MultibandConfig::default(),
             macro_mappings: Default::default(),
@@ -363,9 +364,9 @@ impl MultibandHost {
         self.macro_mappings.get(index).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
-    /// Check if crossover is configured
+    /// Check if crossover is enabled (more than 1 band)
     pub fn has_crossover(&self) -> bool {
-        self.crossover.is_some()
+        self.crossover.is_enabled()
     }
 
     /// Get the current configuration
@@ -374,19 +375,17 @@ impl MultibandHost {
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // Mutation methods
+    // Crossover configuration
     // ─────────────────────────────────────────────────────────────────────
 
-    /// Set the crossover effect (any effect that implements frequency splitting)
-    pub fn set_crossover(&mut self, crossover: Box<dyn Effect>) {
-        self.crossover = Some(crossover);
-        self.update_latency();
+    /// Get crossover frequency for a specific point
+    pub fn crossover_frequency(&self, crossover_index: usize) -> f32 {
+        self.crossover.frequency(crossover_index)
     }
 
-    /// Remove the crossover effect
-    pub fn clear_crossover(&mut self) {
-        self.crossover = None;
-        self.update_latency();
+    /// Reset crossover filter state (call when starting playback)
+    pub fn reset_crossover(&mut self) {
+        self.crossover.reset();
     }
 
     /// Add a new band
@@ -458,8 +457,10 @@ impl MultibandHost {
             )));
         }
 
-        self.config.crossover_frequencies[index] = freq_hz.clamp(20.0, 20000.0);
-        // TODO: Update crossover effect parameters if present
+        let freq = freq_hz.clamp(20.0, 20000.0);
+        self.config.crossover_frequencies[index] = freq;
+        // Update native crossover filter
+        self.crossover.set_frequency(index, freq);
         Ok(())
     }
 
@@ -677,11 +678,8 @@ impl MultibandHost {
 
     /// Update cached latency value
     fn update_latency(&mut self) {
-        let crossover_latency = self
-            .crossover
-            .as_ref()
-            .map(|c| c.latency_samples())
-            .unwrap_or(0);
+        // Native LR24 crossover has negligible latency (IIR filter)
+        let crossover_latency = 0_u32;
 
         let max_band_latency = self
             .bands
@@ -703,8 +701,10 @@ impl Effect for MultibandHost {
         // Apply macro values to effect parameters
         self.apply_macros();
 
+        let band_count = self.bands.len();
+
         // Single-band mode: no crossover, just process through the band
-        if self.bands.len() == 1 {
+        if band_count == 1 {
             let band = &mut self.bands[0];
             if !band.muted {
                 band.buffer.copy_from(buffer);
@@ -716,49 +716,44 @@ impl Effect for MultibandHost {
             return;
         }
 
-        // Multi-band mode
-        // If no crossover is configured, process all bands in parallel on the same signal
-        // (This is a simplified mode - true multiband requires a crossover effect)
-        if self.crossover.is_none() {
-            // Process all bands on the same input, mix results
-            let mut any_output = false;
-            buffer.clear(); // Start with silence for mixing
+        // Multi-band mode with native LR24 crossover
+        // Ensure crossover has correct band count
+        self.crossover.set_band_count(band_count);
 
-            for band in &mut self.bands {
-                if band.muted || (self.any_soloed && !band.soloed) {
-                    continue;
-                }
+        // Step 1: Split input through crossover into band buffers
+        // Process sample-by-sample to split frequencies
+        for (i, sample) in buffer.iter().enumerate() {
+            let band_samples = self.crossover.process(*sample);
 
-                // Each band processes a copy
-                // In true multiband, crossover would provide different frequency content
-                // For now, we just mix all bands (which sums the same content)
-                band.buffer.copy_from(buffer);
-                band.process();
-
-                // Simple mix: just use the first active band
-                // (True multiband would sum frequency-split bands)
-                if !any_output {
-                    buffer.copy_from(&band.buffer);
-                    any_output = true;
+            // Copy each band's frequency content to its buffer
+            for (band_idx, band) in self.bands.iter_mut().enumerate() {
+                if i < band.buffer.len() {
+                    band.buffer.as_mut_slice()[i] = band_samples[band_idx];
                 }
             }
-
-            if !any_output {
-                buffer.clear();
-            }
-            return;
         }
 
-        // TODO: Full multiband processing with crossover
-        //
-        // The full implementation would:
-        // 1. Process input through crossover to split into bands
-        // 2. Copy each band's output to the corresponding band buffer
-        // 3. Process each band through its effect chain
-        // 4. Mix all bands back together
-        //
-        // This requires the crossover effect to expose multi-output routing.
-        // For now, we fall back to the simplified mode above.
+        // Step 2: Process each band through its effect chain
+        for band in &mut self.bands {
+            if !band.muted && (!self.any_soloed || band.soloed) {
+                band.process();
+            } else {
+                // Muted/not-soloed bands are silent
+                band.buffer.clear();
+            }
+        }
+
+        // Step 3: Sum all bands back together
+        buffer.clear();
+        for (i, sample) in buffer.iter_mut().enumerate() {
+            for band in &self.bands {
+                if i < band.buffer.len() {
+                    let band_sample = band.buffer[i];
+                    sample.left += band_sample.left * band.gain;
+                    sample.right += band_sample.right * band.gain;
+                }
+            }
+        }
     }
 
     fn latency_samples(&self) -> u32 {
@@ -797,9 +792,7 @@ impl Effect for MultibandHost {
         }
 
         // Reset crossover
-        if let Some(crossover) = &mut self.crossover {
-            crossover.reset();
-        }
+        self.crossover.reset();
     }
 }
 

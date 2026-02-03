@@ -3,11 +3,13 @@
 //! These effects are implemented directly in Rust for minimal latency
 //! and maximum performance.
 
+mod crossover;
 mod delay;
 mod filter;
 mod gain;
 mod reverb;
 
+pub use crossover::{LinkwitzRileyCrossover, MAX_BANDS};
 pub use delay::{beats_to_ms, DelayEffect, TEMPO_SYNC_VALUES};
 pub use filter::DjFilterEffect;
 pub use gain::GainEffect;
