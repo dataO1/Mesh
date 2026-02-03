@@ -720,6 +720,13 @@ impl Effect for MultibandHost {
         // Ensure crossover has correct band count
         self.crossover.set_band_count(band_count);
 
+        // Resize band buffers to match input length (RT-safe: uses pre-allocated capacity)
+        // This ensures effects only process the valid sample count, not the full 8192 capacity
+        let input_len = buffer.len();
+        for band in &mut self.bands {
+            band.buffer.set_len_from_capacity(input_len);
+        }
+
         // Step 1: Split input through crossover into band buffers
         // Process sample-by-sample to split frequencies
         for (i, sample) in buffer.iter().enumerate() {
@@ -727,9 +734,7 @@ impl Effect for MultibandHost {
 
             // Copy each band's frequency content to its buffer
             for (band_idx, band) in self.bands.iter_mut().enumerate() {
-                if i < band.buffer.len() {
-                    band.buffer.as_mut_slice()[i] = band_samples[band_idx];
-                }
+                band.buffer.as_mut_slice()[i] = band_samples[band_idx];
             }
         }
 

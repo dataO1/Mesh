@@ -5,6 +5,7 @@
 
 use iced::Task;
 use mesh_core::types::Stem;
+use mesh_widgets::multiband::{EffectSourceType, EffectUiState};
 use mesh_widgets::MultibandEditorMessage;
 
 use crate::ui::app::MeshApp;
@@ -155,10 +156,10 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             let stem = Stem::ALL[app.multiband_editor.stem];
 
             // Add effect based on source type to the specified band
-            let result = match source.as_str() {
-                "pd" => app.domain.add_pd_effect(deck, stem, &effect_id, band),
-                "clap" => app.domain.add_clap_effect(deck, stem, &effect_id, band),
-                _ => Err(format!("Unknown effect source: {}", source)),
+            let (result, source_type) = match source.as_str() {
+                "pd" => (app.domain.add_pd_effect(deck, stem, &effect_id, band), EffectSourceType::Pd),
+                "clap" => (app.domain.add_clap_effect(deck, stem, &effect_id, band), EffectSourceType::Clap),
+                _ => (Err(format!("Unknown effect source: {}", source)), EffectSourceType::Native),
             };
 
             if let Err(e) = result {
@@ -166,7 +167,30 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                 app.status = format!("Failed to add effect: {}", e);
             } else {
                 log::info!("Added {} effect '{}' to band {}", source, effect_id, band);
-                // Sync UI state from backend
+
+                // Add effect to UI state
+                if let Some(band_state) = app.multiband_editor.bands.get_mut(band) {
+                    // Extract effect name from ID (last path component or the ID itself)
+                    let effect_name = effect_id
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(&effect_id)
+                        .trim_end_matches(".pd")
+                        .to_string();
+
+                    band_state.effects.push(EffectUiState {
+                        id: effect_id.clone(),
+                        name: effect_name,
+                        category: source.to_uppercase(),
+                        source: source_type,
+                        bypassed: false,
+                        param_names: vec!["P1".into(), "P2".into(), "P3".into(), "P4".into(),
+                                         "P5".into(), "P6".into(), "P7".into(), "P8".into()],
+                        param_values: vec![0.5; 8],
+                    });
+                }
+
+                // Sync macro values from deck view
                 sync_from_backend(app);
             }
             Task::none()

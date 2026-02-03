@@ -36,7 +36,7 @@ mod view;
 
 pub use crossover_bar::{crossover_bar, crossover_controls, CROSSOVER_BAR_HEIGHT};
 pub use message::MultibandEditorMessage;
-pub use state::{BandUiState, EffectUiState, MacroUiState, MultibandEditorState};
+pub use state::{BandUiState, EffectSourceType, EffectUiState, MacroUiState, MultibandEditorState};
 pub use view::multiband_editor;
 
 /// Frequency range for crossover display (Hz)
