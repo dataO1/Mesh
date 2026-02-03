@@ -28,6 +28,36 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 ---
 
+## [0.6.0] - 2026-02-03
+
+### Added
+
+- **CLAP plugin hosting** — Load any CLAP plugin as a stem effect. Mesh now supports the [CLAP](https://cleveraudio.org/) open-source plugin standard, giving you access to hundreds of professional effects including LSP Plugins (compressors, EQs, gates), Dragonfly Reverb, Airwindows, BYOD, and ChowTapeModel. Plugins are automatically discovered from `~/.clap/` and `/usr/lib/clap/`.
+
+- **Unified effect picker** — The effect picker now shows both Pure Data effects and CLAP plugins in a single interface. Filter by source (All/PD/CLAP) using the new toggle buttons. Effects are grouped by category with availability status.
+
+- **RAVE neural audio effects** — Create neural audio effects using [RAVE](https://github.com/acids-ircam/RAVE) models via the nn~ external. The included RAVE percussion example (`examples/pd-effects/rave-percussion/`) demonstrates real-time neural timbre transfer. Build nn~ with `nix run .#build-nn-tilde`.
+
+- **MultibandClapHost container** — New multiband effect architecture (internal) that splits audio into frequency bands using LSP Crossover, applies separate effect chains per band, and provides 8 macro knobs with many-to-many parameter mapping. Foundation for future multiband processing UI.
+
+### Changed
+
+- **Effect UI state sync** — Effect bypass, add, and remove operations now properly sync between the UI and audio engine. Bypass toggles correctly reflect current state instead of always bypassing.
+
+- **Improved latency compensation** — Empty decks (no track loaded) now report zero latency, preventing unnecessary compensation delays on active decks. Maximum compensation buffer increased to 8000 samples (~165ms at 48kHz) for better headroom with high-latency effects.
+
+- **RAVE latency reduced** — RAVE effects now use a 2048-sample buffer (down from 4096), reducing latency from ~85ms to ~43ms at 48kHz while maintaining stable processing.
+
+### Technical
+
+- **clack-host integration** — CLAP plugins are loaded via [clack-host](https://github.com/prokopyl/clack), a Rust CLAP hosting library. Effects implement the standard `Effect` trait for seamless integration with the effect chain system.
+
+- **RT-safe CLAP processing** — Plugin audio processing uses `try_lock()` to avoid blocking the audio thread. On lock contention, frames are skipped gracefully rather than causing dropouts.
+
+- **Single libpd instance** — Pure Data effects now share a single global PD instance with RT-safe logging, improving stability and reducing resource usage.
+
+---
+
 ## [0.5.1] - 2026-01-30
 
 ### Added

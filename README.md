@@ -47,7 +47,7 @@ Mesh also includes **built-in stem separation** — drop any MP3, FLAC, or WAV f
 - **Automatic beat sync** — Tracks phase-lock automatically when you press play
 - **Automatic key matching** — Pitch-shift tracks to match harmonically (Camelot wheel)
 - **Stem slicer** — Real-time remixing by rearranging slice playback order
-- **Effects** — DJ filter, delay, reverb with per-stem routing
+- **Effects** — DJ filter, delay, reverb, plus CLAP plugins and Pure Data patches with per-stem routing
 - **MIDI controller support** — Configure any controller with MIDI Learn wizard
 - **Auto-gain** — Tracks are loudness-normalized so volumes are consistent
 
@@ -181,11 +181,30 @@ Configure in **Settings → Separation**.
 
 ## Pure Data Effects
 
-Mesh supports custom audio effects written in [Pure Data](https://puredata.info/), a visual programming language for audio. Create your own filters, delays, distortions, or even neural audio effects.
+Mesh supports custom audio effects written in [Pure Data](https://puredata.info/), a visual programming language for audio. Create your own filters, delays, distortions, or even neural audio effects like RAVE.
 
 Place effects in `~/Music/mesh-collection/effects/` and they'll appear in the effect picker.
 
-See [examples/pd-effects/](examples/pd-effects/) for templates, documentation, and working examples.
+See [examples/pd-effects/](examples/pd-effects/) for templates, documentation, and working examples including a RAVE neural percussion processor.
+
+---
+
+## CLAP Plugins
+
+Mesh supports [CLAP](https://cleveraudio.org/) (CLever Audio Plugin) — the modern open-source plugin standard. Load any Linux CLAP plugin as a stem effect:
+
+- **LSP Plugins** — Professional compressors, EQs, reverbs, gates
+- **Dragonfly Reverb** — Algorithmic room and plate reverbs
+- **Airwindows** — Hundreds of boutique effects
+- **BYOD, ChowTapeModel** — Guitar amp sims and tape saturation
+
+**Plugin locations:**
+```
+~/.clap/              # User plugins
+/usr/lib/clap/        # System plugins
+```
+
+Install CLAP plugins from your distro's package manager or download from plugin developers. Plugins appear automatically in the effect picker under their categories.
 
 ---
 
@@ -208,6 +227,8 @@ See [examples/pd-effects/](examples/pd-effects/) for templates, documentation, a
 - [x] Auto-gain loudness normalization
 - [x] Effects: filter, delay, reverb
 - [x] Pure Data effect patches (custom DSP via PD)
+- [x] CLAP plugin hosting (LSP, Dragonfly, Airwindows, etc.)
+- [x] RAVE neural audio effects (via nn~ external)
 
 ### Coming Soon
 
@@ -222,7 +243,7 @@ See [examples/pd-effects/](examples/pd-effects/) for templates, documentation, a
 
 - [ ] macOS support
 - [ ] Recording to file
-- [ ] RAVE neural effects integration
+- [ ] Multiband effect container (frequency band splitting with per-band effects)
 
 ---
 
