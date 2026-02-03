@@ -154,6 +154,9 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
             app.deck_views[deck_idx].set_selected_stem(stem_idx);
         }
         SetMacro(stem_idx, macro_idx, value) => {
+            // Update UI state immediately for responsive feedback
+            app.deck_views[deck_idx].set_stem_knob(stem_idx, macro_idx, value);
+
             // Send macro value to the multiband container
             if let Some(stem) = Stem::from_index(stem_idx) {
                 app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandMacro {

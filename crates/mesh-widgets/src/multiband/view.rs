@@ -1,6 +1,6 @@
 //! View function for the multiband editor widget
 
-use iced::widget::{button, column, container, row, scrollable, text, Space};
+use iced::widget::{button, column, container, row, scrollable, slider, text, Space};
 use iced::{Alignment, Color, Element, Length};
 
 use super::crossover_bar::crossover_bar;
@@ -51,6 +51,13 @@ pub fn multiband_editor<'a>(
         return None;
     }
 
+    // Build band columns (scrollable horizontally if many bands)
+    let band_columns: Vec<Element<'_, MultibandEditorMessage>> = state
+        .bands
+        .iter()
+        .map(|band| band_column(band, state.any_soloed).into())
+        .collect();
+
     let content = column![
         // Header with preset controls and close button
         header_row(state),
@@ -58,17 +65,15 @@ pub fn multiband_editor<'a>(
         // Crossover visualization bar
         crossover_bar(state),
         divider(),
-        // Band lanes (scrollable if many bands)
+        // Band columns (scrollable horizontally)
         scrollable(
-            column(
-                state
-                    .bands
-                    .iter()
-                    .map(|band| band_lane(band, state.any_soloed).into())
-                    .collect::<Vec<Element<'_, MultibandEditorMessage>>>(),
-            )
-            .spacing(1),
+            row(band_columns)
+                .spacing(4)
+                .padding([0, 4])
         )
+        .direction(scrollable::Direction::Horizontal(
+            scrollable::Scrollbar::default()
+        ))
         .height(Length::Fill),
         // Add band button
         add_band_button(state.bands.len()),
@@ -138,19 +143,29 @@ fn header_row(state: &MultibandEditorState) -> Element<'_, MultibandEditorMessag
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Band lane
+// Band column
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn band_lane<'a>(band: &'a BandUiState, any_soloed: bool) -> Element<'a, MultibandEditorMessage> {
+fn band_column<'a>(band: &'a BandUiState, any_soloed: bool) -> Element<'a, MultibandEditorMessage> {
     let band_idx = band.index;
 
-    // Band header: name, freq range, solo/mute buttons
-    let header = row![
-        text(format!("Band {}: {}", band_idx + 1, band.name()))
+    // Band header: name and freq range
+    let header = column![
+        text(format!("Band {}", band_idx + 1))
             .size(12)
             .color(TEXT_PRIMARY),
-        text(band.freq_range_str()).size(10).color(TEXT_SECONDARY),
-        Space::new().width(Length::Fill),
+        text(band.name())
+            .size(10)
+            .color(TEXT_SECONDARY),
+        text(band.freq_range_str())
+            .size(9)
+            .color(TEXT_SECONDARY),
+    ]
+    .spacing(2)
+    .align_x(Alignment::Center);
+
+    // Control buttons row: Solo, Mute, Remove
+    let controls = row![
         // Solo button
         button(
             text("S")
@@ -173,15 +188,15 @@ fn band_lane<'a>(band: &'a BandUiState, any_soloed: bool) -> Element<'a, Multiba
             band: band_idx,
             muted: !band.muted,
         }),
-        // Remove band button (if more than 1 band)
+        // Remove band button
         button(text("×").size(10))
             .padding([2, 6])
             .on_press(MultibandEditorMessage::RemoveBand(band_idx)),
     ]
-    .spacing(8)
+    .spacing(4)
     .align_y(Alignment::Center);
 
-    // Effect cards
+    // Effect cards stacked vertically
     let effect_cards: Vec<Element<'_, MultibandEditorMessage>> = band
         .effects
         .iter()
@@ -189,34 +204,46 @@ fn band_lane<'a>(band: &'a BandUiState, any_soloed: bool) -> Element<'a, Multiba
         .map(|(effect_idx, effect)| effect_card(band_idx, effect_idx, effect).into())
         .collect();
 
-    let effects_row = row(effect_cards).spacing(8).push(
-        // Add effect button
-        button(text("+").size(16))
-            .padding([8, 16])
-            .on_press(MultibandEditorMessage::OpenEffectPicker(band_idx)),
-    );
+    let effects_column = column(effect_cards)
+        .spacing(4)
+        .push(
+            // Add effect button at the bottom
+            button(text("+ Add Effect").size(10))
+                .padding([6, 12])
+                .on_press(MultibandEditorMessage::OpenEffectPicker(band_idx)),
+        );
 
     // Dim if muted or not soloed (when something else is soloed)
     let is_active = !band.muted && (!any_soloed || band.soloed);
     let bg_color = if is_active { BG_MEDIUM } else { BG_DARK };
 
-    container(column![header, effects_row].spacing(8))
-        .padding(8)
-        .width(Length::Fill)
-        .style(move |_| container::Style {
-            background: Some(bg_color.into()),
-            border: iced::Border {
-                color: BORDER_COLOR,
-                width: 1.0,
-                radius: 4.0.into(),
-            },
-            ..Default::default()
-        })
-        .into()
+    container(
+        column![
+            header,
+            controls,
+            scrollable(effects_column)
+                .height(Length::Fill)
+        ]
+        .spacing(8)
+        .align_x(Alignment::Center)
+    )
+    .padding(8)
+    .width(Length::Fixed(140.0))
+    .height(Length::Fill)
+    .style(move |_| container::Style {
+        background: Some(bg_color.into()),
+        border: iced::Border {
+            color: BORDER_COLOR,
+            width: 1.0,
+            radius: 4.0.into(),
+        },
+        ..Default::default()
+    })
+    .into()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Effect card
+// Effect card (compact for column layout)
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn effect_card<'a>(
@@ -230,67 +257,41 @@ fn effect_card<'a>(
         TEXT_PRIMARY
     };
 
-    // Effect header: name, bypass indicator, remove button
+    // Effect header: name and controls
     let header = row![
-        text(effect.short_name()).size(11).color(name_color),
+        text(effect.short_name()).size(10).color(name_color),
         Space::new().width(Length::Fill),
         // Bypass toggle
         button(
             text(if effect.bypassed { "○" } else { "●" })
-                .size(10)
+                .size(9)
                 .color(name_color)
         )
-        .padding([2, 4])
+        .padding([1, 3])
         .on_press(MultibandEditorMessage::ToggleEffectBypass {
             band: band_idx,
             effect: effect_idx,
         }),
         // Remove button
-        button(text("×").size(10))
-            .padding([2, 4])
+        button(text("×").size(9))
+            .padding([1, 3])
             .on_press(MultibandEditorMessage::RemoveEffect {
                 band: band_idx,
                 effect: effect_idx,
             }),
     ]
-    .spacing(4)
+    .spacing(2)
     .align_y(Alignment::Center);
 
-    // Parameter display (simplified - show first 4 values)
-    let param_count = effect.param_values.len().min(4);
-    let params: Vec<Element<'_, MultibandEditorMessage>> = (0..param_count)
-        .map(|i| {
-            let value = effect.param_values.get(i).copied().unwrap_or(0.5);
-            let name = effect
-                .param_names
-                .get(i)
-                .map(|s| s.as_str())
-                .unwrap_or("?");
-
-            column![
-                text(format!("{:.0}%", value * 100.0))
-                    .size(9)
-                    .color(TEXT_SECONDARY),
-                text(name).size(8).color(TEXT_SECONDARY),
-            ]
-            .spacing(2)
-            .align_x(Alignment::Center)
-            .width(Length::Fixed(28.0))
-            .into()
-        })
-        .collect();
-
-    let params_row = row(params).spacing(2);
-
-    container(column![header, params_row].spacing(4))
-        .padding(6)
-        .width(Length::Fixed(120.0))
+    container(header)
+        .padding(4)
+        .width(Length::Fill)
         .style(|_| container::Style {
             background: Some(BG_LIGHT.into()),
             border: iced::Border {
                 color: BORDER_COLOR,
                 width: 1.0,
-                radius: 4.0.into(),
+                radius: 3.0.into(),
             },
             ..Default::default()
         })
@@ -327,18 +328,29 @@ fn macro_bar(macros: &[MacroUiState]) -> Element<'_, MultibandEditorMessage> {
     let macro_widgets: Vec<Element<'_, MultibandEditorMessage>> = macros
         .iter()
         .map(|m| {
+            let index = m.index;
+            let value = m.value;
+            let name_color = if m.mapping_count > 0 {
+                ACCENT_COLOR
+            } else {
+                TEXT_SECONDARY
+            };
+
             column![
-                // Simplified macro display
-                text(format!("{:.0}%", m.value * 100.0))
+                // Value display
+                text(format!("{:.0}%", value * 100.0))
                     .size(10)
                     .color(TEXT_SECONDARY),
-                text(&m.name).size(9).color(if m.mapping_count > 0 {
-                    ACCENT_COLOR
-                } else {
-                    TEXT_SECONDARY
-                }),
+                // Interactive slider (vertical style via width)
+                slider(0.0..=1.0, value, move |v| {
+                    MultibandEditorMessage::SetMacro { index, value: v }
+                })
+                .width(60)
+                .height(16),
+                // Macro name
+                text(&m.name).size(9).color(name_color),
             ]
-            .spacing(2)
+            .spacing(4)
             .align_x(Alignment::Center)
             .width(Length::Fixed(80.0))
             .into()
@@ -350,7 +362,7 @@ fn macro_bar(macros: &[MacroUiState]) -> Element<'_, MultibandEditorMessage> {
             text("Macros").size(11).color(TEXT_SECONDARY),
             row(macro_widgets).spacing(8),
         ]
-        .spacing(4),
+        .spacing(6),
     )
     .padding(8)
     .style(|_| container::Style {

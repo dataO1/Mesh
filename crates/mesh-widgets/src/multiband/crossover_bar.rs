@@ -3,12 +3,12 @@
 //! Displays frequency bands on a log scale (20Hz-20kHz) with draggable dividers.
 //! No Canvas used to avoid conflicts with existing waveform canvas (iced bug #3040).
 
-use iced::widget::{button, column, container, row, text, Space};
-use iced::{Alignment, Color, Element, Length};
+use iced::widget::{button, column, container, mouse_area, row, text, Space};
+use iced::{Alignment, Color, Element, Length, Point};
 
 use super::message::MultibandEditorMessage;
 use super::state::MultibandEditorState;
-use super::{format_freq, freq_to_position};
+use super::{format_freq, freq_to_position, position_to_freq};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Colors
@@ -83,9 +83,14 @@ fn single_band_bar() -> Element<'static, MultibandEditorMessage> {
     .into()
 }
 
+/// Expected width of the crossover bar (modal width - padding)
+const CROSSOVER_BAR_WIDTH: f32 = 768.0;
+
 /// Multi-band display with colored sections and dividers
+/// Wrapped in mouse_area for drag support
 fn multi_band_bar(state: &MultibandEditorState) -> Element<'_, MultibandEditorMessage> {
     let num_bands = state.bands.len();
+    let is_dragging = state.dragging_crossover.is_some();
 
     // Build band segments
     let mut band_row_elements: Vec<Element<'_, MultibandEditorMessage>> = Vec::new();
@@ -103,8 +108,8 @@ fn multi_band_bar(state: &MultibandEditorState) -> Element<'_, MultibandEditorMe
         // Add divider after each band except the last
         if i < num_bands - 1 {
             let crossover_freq = state.crossover_freqs.get(i).copied().unwrap_or(1000.0);
-            let is_dragging = state.dragging_crossover == Some(i);
-            let divider = crossover_divider(i, crossover_freq, is_dragging);
+            let divider_is_dragging = state.dragging_crossover == Some(i);
+            let divider = crossover_divider(i, crossover_freq, divider_is_dragging);
             band_row_elements.push(divider);
         }
     }
@@ -112,7 +117,7 @@ fn multi_band_bar(state: &MultibandEditorState) -> Element<'_, MultibandEditorMe
     // Frequency scale labels
     let scale_labels = frequency_scale_labels();
 
-    container(
+    let bar_content = container(
         column![
             // Band segments row
             row(band_row_elements)
@@ -132,8 +137,23 @@ fn multi_band_bar(state: &MultibandEditorState) -> Element<'_, MultibandEditorMe
             radius: 4.0.into(),
         },
         ..Default::default()
-    })
-    .into()
+    });
+
+    // Wrap in mouse_area for drag support
+    let mut area = mouse_area(bar_content)
+        .on_release(MultibandEditorMessage::EndDragCrossover);
+
+    // Only track mouse movement when dragging
+    if is_dragging {
+        area = area.on_move(move |point: Point| {
+            // Convert X position to frequency (log scale)
+            let x_ratio = (point.x / CROSSOVER_BAR_WIDTH).clamp(0.01, 0.99);
+            let freq = position_to_freq(x_ratio);
+            MultibandEditorMessage::DragCrossover(freq)
+        });
+    }
+
+    area.into()
 }
 
 /// A single band segment

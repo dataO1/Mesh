@@ -168,7 +168,7 @@ impl DeckView {
             slip_enabled: false,
             key_match_enabled: false,
             selected_stem: 0,       // Start with Vocals selected
-            stem_knobs: [[0.0; 8]; 4],
+            stem_knobs: [[0.5; 8]; 4], // Default to 50% like backend macros
             stem_effect_names: Default::default(),
             stem_effect_bypassed: Default::default(),
             action_mode: ActionButtonMode::default(),
