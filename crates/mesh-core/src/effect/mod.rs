@@ -1,9 +1,18 @@
 //! Effect system - traits, chains, and parameter mapping
 //!
-//! This module provides a unified effect interface for both native Rust effects
-//! and Pure Data effects loaded via libpd.
+//! This module provides a unified effect interface for all effect types:
+//! - Native Rust effects
+//! - Pure Data effects (via libpd)
+//! - CLAP plugins (via clack-host)
+//! - Multiband container (holds any effect type)
 
+pub mod multiband;
 pub mod native;
+
+pub use multiband::{
+    BandEffectInfo, BandState, MacroMapping, MultibandConfig, MultibandError, MultibandHost,
+    MultibandResult, MAX_BANDS, MAX_EFFECTS_PER_BAND, NUM_MACROS,
+};
 
 use crate::types::StereoBuffer;
 

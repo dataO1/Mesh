@@ -15,18 +15,17 @@
 //! │  - Provides thread-safe access to plugins                   │
 //! └─────────────────────────────────────────────────────────────┘
 //!                              │
-//!          ┌──────────────────┼──────────────────┐
-//!          ▼                  ▼                  ▼
-//! ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
-//! │   ClapEffect    │ │   ClapEffect    │ │ MultibandClap   │
-//! │   (single)      │ │   (single)      │ │     Host        │
-//! │                 │ │                 │ │                 │
-//! │  ┌───────────┐  │ │  ┌───────────┐  │ │  ┌───────────┐  │
-//! │  │ ClapPlugin│  │ │  │ ClapPlugin│  │ │  │ Crossover │  │
-//! │  │ Wrapper   │  │ │  │ Wrapper   │  │ │  ├───────────┤  │
-//! │  └───────────┘  │ │  └───────────┘  │ │  │ Band FX   │  │
-//! │                 │ │                 │ │  └───────────┘  │
-//! └─────────────────┘ └─────────────────┘ └─────────────────┘
+//!          ┌──────────────────┴──────────────────┐
+//!          ▼                                     ▼
+//! ┌─────────────────┐                   ┌─────────────────┐
+//! │   ClapEffect    │                   │   ClapEffect    │
+//! │   (single)      │                   │   (single)      │
+//! │                 │                   │                 │
+//! │  ┌───────────┐  │                   │  ┌───────────┐  │
+//! │  │ ClapPlugin│  │                   │  │ ClapPlugin│  │
+//! │  │ Wrapper   │  │                   │  │ Wrapper   │  │
+//! │  └───────────┘  │                   │  └───────────┘  │
+//! └─────────────────┘                   └─────────────────┘
 //! ```
 //!
 //! # Plugin Discovery
@@ -48,13 +47,10 @@
 //! - **set_param()** - Maps mesh's 8 parameters to plugin params
 //! - **set_bypass()** - Controls plugin bypass state
 //!
-//! # MultibandClapHost
+//! # MultibandHost
 //!
-//! A container effect for multiband processing (similar to Kilohearts Multipass):
-//!
-//! - Uses LSP Crossover CLAP for band splitting (up to 8 bands)
-//! - Each band can have its own effect chain
-//! - 8 macro knobs with many-to-many parameter mapping
+//! For multiband processing, see `crate::effect::MultibandHost` which is
+//! effect-agnostic and can contain any effect type (CLAP, PD, native).
 //!
 //! # Example
 //!
@@ -81,16 +77,13 @@ mod error;
 mod discovery;
 mod plugin;
 mod effect;
-mod multiband;
-// Future modules:
-// mod presets;     // Preset serialization
+// Note: multiband module moved to crate::effect::multiband (effect-agnostic)
 
 // Re-export public API
 pub use error::{ClapError, ClapResult};
 pub use discovery::{ClapDiscovery, ClapPluginCategory, DiscoveredClapPlugin};
 pub use plugin::ClapPluginWrapper;
 pub use effect::ClapEffect;
-pub use multiband::{MultibandClapHost, MultibandConfig, MacroMapping, NUM_MACROS, MAX_BANDS};
 
 use std::sync::Arc;
 use std::collections::HashMap;
@@ -209,51 +202,56 @@ impl ClapManager {
         Ok(bundle)
     }
 
-    /// Create a multiband CLAP host effect
+    /// Create a multiband host effect with optional CLAP crossover
     ///
-    /// This creates a MultibandClapHost container that uses the specified
-    /// crossover plugin for band splitting.
+    /// This creates an effect-agnostic MultibandHost container that can hold
+    /// any effect type (CLAP, PD, native). If a crossover plugin ID is provided,
+    /// it will be loaded as the crossover effect.
     ///
     /// # Arguments
-    /// * `crossover_plugin_id` - The plugin ID for the crossover (typically LSP Crossover)
+    /// * `crossover_plugin_id` - Optional CLAP plugin ID for the crossover (e.g., LSP Crossover)
     /// * `buffer_size` - Processing buffer size in samples
     ///
     /// # Returns
-    /// A MultibandClapHost effect, or an error if the crossover plugin is not available.
+    /// A MultibandHost effect that can contain any effect type.
     pub fn create_multiband(
         &mut self,
-        crossover_plugin_id: &str,
+        crossover_plugin_id: Option<&str>,
         buffer_size: usize,
-    ) -> ClapResult<MultibandClapHost> {
-        // Create the multiband host first
-        let mut host = MultibandClapHost::new(buffer_size);
+    ) -> ClapResult<crate::effect::MultibandHost> {
+        use crate::effect::MultibandHost;
 
-        // Try to load and set the crossover plugin (optional - works without it)
-        if let Some(plugin_info) = self.discovery.get_plugin(crossover_plugin_id).cloned() {
-            if plugin_info.available {
-                match self.get_or_load_bundle(&plugin_info.bundle_path) {
-                    Ok(bundle) => {
-                        match ClapEffect::from_plugin(&plugin_info, bundle) {
-                            Ok(crossover) => {
-                                host.set_crossover(crossover);
-                                log::info!(
-                                    "MultibandClapHost created with crossover '{}'",
-                                    crossover_plugin_id
-                                );
-                            }
-                            Err(e) => {
-                                log::warn!(
-                                    "Failed to load crossover plugin '{}': {}. Multiband will work without band splitting.",
-                                    crossover_plugin_id, e
-                                );
+        // Create the multiband host first
+        let mut host = MultibandHost::new(buffer_size);
+
+        // Try to load and set the crossover plugin if provided
+        if let Some(plugin_id) = crossover_plugin_id {
+            if let Some(plugin_info) = self.discovery.get_plugin(plugin_id).cloned() {
+                if plugin_info.available {
+                    match self.get_or_load_bundle(&plugin_info.bundle_path) {
+                        Ok(bundle) => {
+                            match ClapEffect::from_plugin(&plugin_info, bundle) {
+                                Ok(crossover) => {
+                                    host.set_crossover(Box::new(crossover));
+                                    log::info!(
+                                        "MultibandHost created with CLAP crossover '{}'",
+                                        plugin_id
+                                    );
+                                }
+                                Err(e) => {
+                                    log::warn!(
+                                        "Failed to load crossover plugin '{}': {}. Multiband will work without band splitting.",
+                                        plugin_id, e
+                                    );
+                                }
                             }
                         }
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "Failed to load crossover bundle: {}. Multiband will work without band splitting.",
-                            e
-                        );
+                        Err(e) => {
+                            log::warn!(
+                                "Failed to load crossover bundle: {}. Multiband will work without band splitting.",
+                                e
+                            );
+                        }
                     }
                 }
             }
@@ -262,13 +260,13 @@ impl ClapManager {
         Ok(host)
     }
 
-    /// Create a multiband CLAP host effect without a crossover
+    /// Create a simple multiband host without a crossover
     ///
-    /// This creates a MultibandClapHost that processes effects in series
-    /// rather than splitting by frequency bands. Useful for testing or
-    /// when the crossover plugin is not available.
-    pub fn create_multiband_simple(&self, buffer_size: usize) -> MultibandClapHost {
-        MultibandClapHost::new(buffer_size)
+    /// This creates a MultibandHost that starts in single-band mode.
+    /// Effects are processed in series. Useful for testing or as a
+    /// general effect container that can be expanded to multiband later.
+    pub fn create_multiband_simple(&self, buffer_size: usize) -> crate::effect::MultibandHost {
+        crate::effect::MultibandHost::new(buffer_size)
     }
 
     /// Add a custom search path for plugins

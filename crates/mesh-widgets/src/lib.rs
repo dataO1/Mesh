@@ -26,6 +26,7 @@
 //! - `waveform_combined`: Both views in a single canvas (iced bug #3040 workaround)
 
 pub mod button_styles;
+pub mod multiband;
 pub mod playlist_browser;
 pub mod rotary_knob;
 pub mod slice_editor;
@@ -107,3 +108,9 @@ pub use waveform::{draw_slicer_overlay, draw_slicer_overlay_zoomed};
 
 // Subscription helpers for message-driven architecture
 pub use subscription::{mpsc_subscription, mpsc_subscription_owned};
+
+// Multiband effect editor widget
+pub use multiband::{
+    multiband_editor, BandUiState, EffectUiState, MultibandEditorMessage, MultibandEditorState,
+    FREQ_MAX, FREQ_MIN, NUM_MACROS,
+};

@@ -1010,13 +1010,9 @@ impl MeshDomain {
         crossover_plugin_id: Option<&str>,
     ) -> Result<(), String> {
         // Create the multiband host (256 sample buffer)
-        let host = if let Some(crossover_id) = crossover_plugin_id {
-            self.clap_manager
-                .create_multiband(crossover_id, 256)
-                .map_err(|e| format!("Failed to create multiband host: {}", e))?
-        } else {
-            self.clap_manager.create_multiband_simple(256)
-        };
+        let host = self.clap_manager
+            .create_multiband(crossover_plugin_id, 256)
+            .map_err(|e| format!("Failed to create multiband host: {}", e))?;
 
         // Send to audio engine
         if let Some(ref mut sender) = self.command_sender {
