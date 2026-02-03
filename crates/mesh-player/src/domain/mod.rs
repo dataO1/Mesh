@@ -1137,6 +1137,120 @@ impl MeshDomain {
         }
     }
 
+    // =========================================================================
+    // Pre-FX Chain Management (before multiband split)
+    // =========================================================================
+
+    /// Add a PD effect to the pre-fx chain
+    pub fn add_pd_effect_pre_fx(&mut self, deck: usize, stem: Stem, effect_id: &str) -> Result<(), String> {
+        let effect = self
+            .pd_manager
+            .create_effect(effect_id)
+            .map_err(|e| format!("Failed to create PD effect '{}': {}", effect_id, e))?;
+
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(EngineCommand::AddMultibandPreFx { deck, stem, effect });
+            log::info!("Added PD pre-fx '{}' to deck {} stem {:?}", effect_id, deck, stem);
+            Ok(())
+        } else {
+            Err("Audio engine not connected".to_string())
+        }
+    }
+
+    /// Add a CLAP effect to the pre-fx chain
+    pub fn add_clap_effect_pre_fx(&mut self, deck: usize, stem: Stem, plugin_id: &str) -> Result<(), String> {
+        let effect = self
+            .clap_manager
+            .create_effect(plugin_id)
+            .map_err(|e| format!("Failed to create CLAP effect '{}': {}", plugin_id, e))?;
+
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(EngineCommand::AddMultibandPreFx { deck, stem, effect });
+            log::info!("Added CLAP pre-fx '{}' to deck {} stem {:?}", plugin_id, deck, stem);
+            Ok(())
+        } else {
+            Err("Audio engine not connected".to_string())
+        }
+    }
+
+    /// Remove a pre-fx effect by index
+    pub fn remove_pre_fx_effect(&mut self, deck: usize, stem: Stem, effect_index: usize) {
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(EngineCommand::RemoveMultibandPreFx { deck, stem, effect_index });
+        }
+    }
+
+    /// Set bypass state for a pre-fx effect
+    pub fn set_pre_fx_bypass(&mut self, deck: usize, stem: Stem, effect_index: usize, bypass: bool) {
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(EngineCommand::SetMultibandPreFxBypass { deck, stem, effect_index, bypass });
+        }
+    }
+
+    /// Set a parameter value on a pre-fx effect
+    pub fn set_pre_fx_param(&mut self, deck: usize, stem: Stem, effect_index: usize, param_index: usize, value: f32) {
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(EngineCommand::SetMultibandPreFxParam { deck, stem, effect_index, param_index, value });
+        }
+    }
+
+    // =========================================================================
+    // Post-FX Chain Management (after band summation)
+    // =========================================================================
+
+    /// Add a PD effect to the post-fx chain
+    pub fn add_pd_effect_post_fx(&mut self, deck: usize, stem: Stem, effect_id: &str) -> Result<(), String> {
+        let effect = self
+            .pd_manager
+            .create_effect(effect_id)
+            .map_err(|e| format!("Failed to create PD effect '{}': {}", effect_id, e))?;
+
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(EngineCommand::AddMultibandPostFx { deck, stem, effect });
+            log::info!("Added PD post-fx '{}' to deck {} stem {:?}", effect_id, deck, stem);
+            Ok(())
+        } else {
+            Err("Audio engine not connected".to_string())
+        }
+    }
+
+    /// Add a CLAP effect to the post-fx chain
+    pub fn add_clap_effect_post_fx(&mut self, deck: usize, stem: Stem, plugin_id: &str) -> Result<(), String> {
+        let effect = self
+            .clap_manager
+            .create_effect(plugin_id)
+            .map_err(|e| format!("Failed to create CLAP effect '{}': {}", plugin_id, e))?;
+
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(EngineCommand::AddMultibandPostFx { deck, stem, effect });
+            log::info!("Added CLAP post-fx '{}' to deck {} stem {:?}", plugin_id, deck, stem);
+            Ok(())
+        } else {
+            Err("Audio engine not connected".to_string())
+        }
+    }
+
+    /// Remove a post-fx effect by index
+    pub fn remove_post_fx_effect(&mut self, deck: usize, stem: Stem, effect_index: usize) {
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(EngineCommand::RemoveMultibandPostFx { deck, stem, effect_index });
+        }
+    }
+
+    /// Set bypass state for a post-fx effect
+    pub fn set_post_fx_bypass(&mut self, deck: usize, stem: Stem, effect_index: usize, bypass: bool) {
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(EngineCommand::SetMultibandPostFxBypass { deck, stem, effect_index, bypass });
+        }
+    }
+
+    /// Set a parameter value on a post-fx effect
+    pub fn set_post_fx_param(&mut self, deck: usize, stem: Stem, effect_index: usize, param_index: usize, value: f32) {
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(EngineCommand::SetMultibandPostFxParam { deck, stem, effect_index, param_index, value });
+        }
+    }
+
     /// Rescan for effects (e.g., after user adds new effects to the folder)
     pub fn rescan_effects(&mut self) {
         self.pd_manager.rescan_effects();

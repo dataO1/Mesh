@@ -5,8 +5,11 @@
 
 use iced::Task;
 use mesh_core::types::Stem;
-use mesh_widgets::multiband::{EffectSourceType, EffectUiState, ParamMacroMapping};
-use mesh_widgets::MultibandEditorMessage;
+use mesh_widgets::multiband::{
+    self, ensure_effect_knobs_exist, EffectChainLocation, EffectSourceType, EffectUiState,
+    MultibandPresetConfig, ParamMacroMapping,
+};
+use mesh_widgets::{MultibandEditorMessage, DEFAULT_SENSITIVITY};
 
 use crate::ui::app::MeshApp;
 use crate::ui::message::Message;
@@ -23,11 +26,85 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             app.multiband_editor.open(deck, stem, &stem_name);
             // Sync state from backend MultibandHost
             sync_from_backend(app);
+            // Ensure all effect knobs exist before view is rendered
+            ensure_effect_knobs_exist(&mut app.multiband_editor);
             Task::none()
         }
 
         Close => {
             app.multiband_editor.close();
+            Task::none()
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Pre-FX chain management
+        // ─────────────────────────────────────────────────────────────────────
+        OpenPreFxEffectPicker => {
+            let deck = app.multiband_editor.deck;
+            let stem_idx = app.multiband_editor.stem;
+            // Open effect picker for pre-fx (use band 255 as marker for pre-fx)
+            app.effect_picker.open_for_band(deck, stem_idx, 255);
+            log::info!("Opening effect picker for pre-fx (deck {} stem {})", deck, stem_idx);
+            Task::none()
+        }
+
+        PreFxEffectSelected { effect_id, source } => {
+            let deck = app.multiband_editor.deck;
+            let stem = Stem::ALL[app.multiband_editor.stem];
+
+            let (result, source_type) = match source.as_str() {
+                "pd" => (app.domain.add_pd_effect_pre_fx(deck, stem, &effect_id), EffectSourceType::Pd),
+                "clap" => (app.domain.add_clap_effect_pre_fx(deck, stem, &effect_id), EffectSourceType::Clap),
+                _ => (Err(format!("Unknown effect source: {}", source)), EffectSourceType::Native),
+            };
+
+            if let Err(e) = result {
+                log::error!("Failed to add pre-fx effect: {}", e);
+                app.status = format!("Failed to add pre-fx: {}", e);
+            } else {
+                log::info!("Added {} pre-fx effect '{}'", source, effect_id);
+
+                let effect_name = effect_id
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&effect_id)
+                    .trim_end_matches(".pd")
+                    .to_string();
+
+                app.multiband_editor.pre_fx.push(EffectUiState {
+                    id: effect_id.clone(),
+                    name: effect_name,
+                    category: source.to_uppercase(),
+                    source: source_type,
+                    bypassed: false,
+                    param_names: vec!["P1".into(), "P2".into(), "P3".into(), "P4".into(),
+                                     "P5".into(), "P6".into(), "P7".into(), "P8".into()],
+                    param_values: vec![0.5; 8],
+                    param_mappings: vec![ParamMacroMapping::default(); 8],
+                });
+                // Create knobs for the new effect's parameters
+                ensure_effect_knobs_exist(&mut app.multiband_editor);
+            }
+            Task::none()
+        }
+
+        RemovePreFxEffect(index) => {
+            let deck = app.multiband_editor.deck;
+            let stem = Stem::ALL[app.multiband_editor.stem];
+            app.domain.remove_pre_fx_effect(deck, stem, index);
+            if index < app.multiband_editor.pre_fx.len() {
+                app.multiband_editor.pre_fx.remove(index);
+            }
+            Task::none()
+        }
+
+        TogglePreFxBypass(index) => {
+            let deck = app.multiband_editor.deck;
+            let stem = Stem::ALL[app.multiband_editor.stem];
+            if let Some(effect) = app.multiband_editor.pre_fx.get_mut(index) {
+                effect.bypassed = !effect.bypassed;
+                app.domain.set_pre_fx_bypass(deck, stem, index, effect.bypassed);
+            }
             Task::none()
         }
 
@@ -191,6 +268,8 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                     });
                 }
 
+                // Create knobs for the new effect's parameters
+                ensure_effect_knobs_exist(&mut app.multiband_editor);
                 // Sync macro values from deck view
                 sync_from_backend(app);
             }
@@ -232,51 +311,142 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             Task::none()
         }
 
-        SelectEffect { band, effect } => {
-            app.multiband_editor.selected_effect = Some((band, effect));
+        SelectEffect { location, effect } => {
+            app.multiband_editor.selected_effect = Some((location, effect));
             Task::none()
         }
 
-        SetEffectParam { band, effect, param, value } => {
+        // ─────────────────────────────────────────────────────────────────────
+        // Unified effect knob handling (stateful knobs)
+        // ─────────────────────────────────────────────────────────────────────
+        EffectKnob { location, effect, param, event } => {
             let deck = app.multiband_editor.deck;
             let stem = Stem::ALL[app.multiband_editor.stem];
 
-            // Update local state
-            if let Some(band_state) = app.multiband_editor.bands.get_mut(band) {
-                if let Some(effect_state) = band_state.effects.get_mut(effect) {
-                    if param < effect_state.param_values.len() {
-                        effect_state.param_values[param] = value;
+            // Get the knob and handle the event
+            let knob = app.multiband_editor.get_effect_knob(location, effect, param);
+            if let Some(new_value) = knob.handle_event(event, DEFAULT_SENSITIVITY) {
+                // Update local state
+                app.multiband_editor.set_effect_param_value(location, effect, param, new_value);
+
+                // Send to backend based on location
+                match location {
+                    EffectChainLocation::PreFx => {
+                        app.domain.set_pre_fx_param(deck, stem, effect, param, new_value);
+                    }
+                    EffectChainLocation::Band(band_idx) => {
+                        app.domain.set_band_effect_param(deck, stem, band_idx, effect, param, new_value);
+                    }
+                    EffectChainLocation::PostFx => {
+                        app.domain.set_post_fx_param(deck, stem, effect, param, new_value);
                     }
                 }
             }
-
-            app.domain.set_band_effect_param(deck, stem, band, effect, param, value);
             Task::none()
         }
 
         // ─────────────────────────────────────────────────────────────────────
-        // Macro control
+        // Post-FX chain management
         // ─────────────────────────────────────────────────────────────────────
-        SetMacro { index, value } => {
+        OpenPostFxEffectPicker => {
+            let deck = app.multiband_editor.deck;
+            let stem_idx = app.multiband_editor.stem;
+            // Open effect picker for post-fx (use band 254 as marker)
+            app.effect_picker.open_for_band(deck, stem_idx, 254);
+            log::info!("Opening effect picker for post-fx (deck {} stem {})", deck, stem_idx);
+            Task::none()
+        }
+
+        PostFxEffectSelected { effect_id, source } => {
+            let deck = app.multiband_editor.deck;
+            let stem = Stem::ALL[app.multiband_editor.stem];
+
+            // Add effect to post-fx chain in backend
+            let (result, source_type) = match source.as_str() {
+                "pd" => (app.domain.add_pd_effect_post_fx(deck, stem, &effect_id), EffectSourceType::Pd),
+                "clap" => (app.domain.add_clap_effect_post_fx(deck, stem, &effect_id), EffectSourceType::Clap),
+                _ => (Err(format!("Unknown effect source: {}", source)), EffectSourceType::Native),
+            };
+
+            if let Err(e) = result {
+                log::error!("Failed to add post-fx effect: {}", e);
+                app.status = format!("Failed to add effect: {}", e);
+            } else {
+                log::info!("Added {} post-fx effect '{}'", source, effect_id);
+
+                // Add effect to UI state
+                let effect_name = effect_id
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&effect_id)
+                    .trim_end_matches(".pd")
+                    .to_string();
+
+                app.multiband_editor.post_fx.push(EffectUiState {
+                    id: effect_id.clone(),
+                    name: effect_name,
+                    category: source.to_uppercase(),
+                    source: source_type,
+                    bypassed: false,
+                    param_names: vec!["P1".into(), "P2".into(), "P3".into(), "P4".into(),
+                                     "P5".into(), "P6".into(), "P7".into(), "P8".into()],
+                    param_values: vec![0.5; 8],
+                    param_mappings: vec![ParamMacroMapping::default(); 8],
+                });
+                // Create knobs for the new effect's parameters
+                ensure_effect_knobs_exist(&mut app.multiband_editor);
+            }
+            Task::none()
+        }
+
+        RemovePostFxEffect(index) => {
+            let deck = app.multiband_editor.deck;
+            let stem = Stem::ALL[app.multiband_editor.stem];
+
+            app.domain.remove_post_fx_effect(deck, stem, index);
+
+            if index < app.multiband_editor.post_fx.len() {
+                app.multiband_editor.post_fx.remove(index);
+            }
+            Task::none()
+        }
+
+        TogglePostFxBypass(index) => {
+            let deck = app.multiband_editor.deck;
+            let stem = Stem::ALL[app.multiband_editor.stem];
+
+            if let Some(effect) = app.multiband_editor.post_fx.get_mut(index) {
+                effect.bypassed = !effect.bypassed;
+                app.domain.set_post_fx_bypass(deck, stem, index, effect.bypassed);
+            }
+            Task::none()
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Macro control (unified stateful knob handling)
+        // ─────────────────────────────────────────────────────────────────────
+        MacroKnob { index, event } => {
             let deck = app.multiband_editor.deck;
             let stem_idx = app.multiband_editor.stem;
             let stem = Stem::ALL[stem_idx];
 
-            // Update multiband editor UI state
-            app.multiband_editor.set_macro_value(index, value);
+            // Get the knob and handle the event
+            if let Some(knob) = app.multiband_editor.macro_knobs.get_mut(index) {
+                if let Some(new_value) = knob.handle_event(event, DEFAULT_SENSITIVITY) {
+                    // Sync to deck view (bidirectional sync for consistency)
+                    if deck < 4 && stem_idx < 4 && index < 8 {
+                        app.deck_views[deck].set_stem_knob(stem_idx, index, new_value);
+                    }
 
-            // Sync to deck view (bidirectional sync for consistency)
-            if deck < 4 && stem_idx < 4 && index < 8 {
-                app.deck_views[deck].set_stem_knob(stem_idx, index, value);
+                    // Send to engine
+                    app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandMacro {
+                        deck,
+                        stem,
+                        macro_index: index,
+                        value: new_value,
+                    });
+                }
             }
-
-            // Send to engine
-            app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandMacro {
-                deck,
-                stem,
-                macro_index: index,
-                value,
-            });
             Task::none()
         }
 
@@ -354,6 +524,9 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         // Preset management
         // ─────────────────────────────────────────────────────────────────────
         OpenPresetBrowser => {
+            // Refresh preset list when opening browser
+            let presets = multiband::list_presets(&app.config.collection_path);
+            app.multiband_editor.available_presets = presets;
             app.multiband_editor.preset_browser_open = true;
             Task::none()
         }
@@ -363,23 +536,103 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             Task::none()
         }
 
-        LoadPreset(_name) => {
-            // TODO: Load preset from disk
+        OpenSaveDialog => {
+            // Pre-fill with stem name as default preset name
+            app.multiband_editor.preset_name_input = format!(
+                "{}-{}",
+                app.multiband_editor.stem_name,
+                app.multiband_editor.bands.len()
+            );
+            app.multiband_editor.save_dialog_open = true;
             Task::none()
         }
 
-        SavePreset(_name) => {
-            // TODO: Save current state as preset
+        CloseSaveDialog => {
+            app.multiband_editor.save_dialog_open = false;
             Task::none()
         }
 
-        DeletePreset(_name) => {
-            // TODO: Delete preset
+        SetPresetNameInput(name) => {
+            app.multiband_editor.preset_name_input = name;
+            Task::none()
+        }
+
+        LoadPreset(name) => {
+            match multiband::load_preset(&app.config.collection_path, &name) {
+                Ok(preset_config) => {
+                    // Apply preset to editor state
+                    preset_config.apply_to_editor_state(&mut app.multiband_editor);
+                    app.multiband_editor.preset_browser_open = false;
+
+                    // TODO: Recreate effects in backend based on preset
+                    // For now, just update UI state - effects need to be re-added manually
+                    log::info!("Loaded preset '{}' - UI state updated", name);
+                    app.status = format!("Loaded preset: {}", name);
+                }
+                Err(e) => {
+                    log::error!("Failed to load preset: {}", e);
+                    app.status = format!("Failed to load preset: {}", e);
+                }
+            }
+            Task::none()
+        }
+
+        SavePreset => {
+            let name = app.multiband_editor.preset_name_input.trim().to_string();
+            if name.is_empty() {
+                app.status = "Preset name cannot be empty".to_string();
+                return Task::none();
+            }
+
+            // Create preset config from current editor state
+            let preset_config = MultibandPresetConfig::from_editor_state(
+                &app.multiband_editor,
+                &name,
+            );
+
+            // Save to disk
+            match multiband::save_preset(&preset_config, &app.config.collection_path) {
+                Ok(()) => {
+                    log::info!("Saved preset '{}'", name);
+                    app.status = format!("Saved preset: {}", name);
+                    app.multiband_editor.save_dialog_open = false;
+                    // Refresh preset list
+                    app.multiband_editor.available_presets =
+                        multiband::list_presets(&app.config.collection_path);
+                }
+                Err(e) => {
+                    log::error!("Failed to save preset: {}", e);
+                    app.status = format!("Failed to save preset: {}", e);
+                }
+            }
+            Task::none()
+        }
+
+        DeletePreset(name) => {
+            match multiband::delete_preset(&app.config.collection_path, &name) {
+                Ok(()) => {
+                    log::info!("Deleted preset '{}'", name);
+                    app.status = format!("Deleted preset: {}", name);
+                    // Refresh preset list
+                    app.multiband_editor.available_presets =
+                        multiband::list_presets(&app.config.collection_path);
+                }
+                Err(e) => {
+                    log::error!("Failed to delete preset: {}", e);
+                    app.status = format!("Failed to delete: {}", e);
+                }
+            }
             Task::none()
         }
 
         RefreshPresets => {
-            // TODO: Refresh preset list
+            app.multiband_editor.available_presets =
+                multiband::list_presets(&app.config.collection_path);
+            Task::none()
+        }
+
+        SetAvailablePresets(presets) => {
+            app.multiband_editor.available_presets = presets;
             Task::none()
         }
     }

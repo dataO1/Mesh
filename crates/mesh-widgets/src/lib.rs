@@ -26,6 +26,7 @@
 //! - `waveform_combined`: Both views in a single canvas (iced bug #3040 workaround)
 
 pub mod button_styles;
+pub mod knob;
 pub mod multiband;
 pub mod playlist_browser;
 pub mod rotary_knob;
@@ -45,8 +46,14 @@ pub use button_styles::{
     ACTIVE_BG, DEFAULT_BG,
 };
 
-// Rotary knob widget
+// Rotary knob widget (legacy, container-based)
 pub use rotary_knob::{rotary_knob, RotaryKnobState};
+
+// Shader-based knob widget with modulation indicators
+pub use knob::{
+    Knob, KnobEvent, ModulationRange,
+    colors as knob_colors, DEFAULT_SENSITIVITY,
+};
 
 // Peak generation utilities
 pub use waveform::{

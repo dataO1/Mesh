@@ -878,8 +878,42 @@ impl MeshApp {
                 .height(Length::Fill);
 
             stack![with_drawer, backdrop, modal].into()
+        } else if self.multiband_editor.is_open {
+            // Overlay multiband editor modal
+            if let Some(editor_view) = multiband_editor(&self.multiband_editor) {
+                let multiband_modal = editor_view.map(Message::Multiband);
+
+                // If effect picker is also open, layer it on top of multiband
+                if self.effect_picker.is_open {
+                    let picker_backdrop = mouse_area(
+                        container(Space::new())
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .style(|_theme| container::Style {
+                                background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.5).into()),
+                                ..Default::default()
+                            }),
+                    )
+                    .on_press(Message::EffectPicker(EffectPickerMessage::Close));
+
+                    let pd_effects = self.domain.available_effects();
+                    let clap_plugins = self.domain.available_clap_plugins();
+                    let picker_view = self.effect_picker.view(&pd_effects, &clap_plugins)
+                        .map(Message::EffectPicker);
+
+                    let picker_modal = center(opaque(picker_view))
+                        .width(Length::Fill)
+                        .height(Length::Fill);
+
+                    stack![with_drawer, multiband_modal, picker_backdrop, picker_modal].into()
+                } else {
+                    stack![with_drawer, multiband_modal].into()
+                }
+            } else {
+                with_drawer
+            }
         } else if self.effect_picker.is_open {
-            // Overlay effect picker modal
+            // Effect picker without multiband (standalone)
             let backdrop = mouse_area(
                 container(Space::new())
                     .width(Length::Fill)
@@ -901,14 +935,6 @@ impl MeshApp {
                 .height(Length::Fill);
 
             stack![with_drawer, backdrop, modal].into()
-        } else if self.multiband_editor.is_open {
-            // Overlay multiband editor modal
-            if let Some(editor_view) = multiband_editor(&self.multiband_editor) {
-                let modal = editor_view.map(Message::Multiband);
-                stack![with_drawer, modal].into()
-            } else {
-                with_drawer
-            }
         } else {
             with_drawer
         }

@@ -1,9 +1,13 @@
 //! State structures for the multiband editor widget
 
 use mesh_core::effect::{BandEffectInfo, BandState};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+use crate::knob::Knob;
 
 /// Effect source type for display
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EffectSourceType {
     /// Pure Data effect
     Pd,
@@ -24,7 +28,7 @@ impl std::fmt::Display for EffectSourceType {
 }
 
 /// A mapping from a macro knob to an effect parameter
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ParamMacroMapping {
     /// Which macro (0-7) controls this param, None if unmapped
     pub macro_index: Option<usize>,
@@ -44,8 +48,8 @@ impl Default for ParamMacroMapping {
     }
 }
 
-/// UI state for a single effect in a band
-#[derive(Debug, Clone)]
+/// UI state for a single effect in a band (serializable for presets)
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EffectUiState {
     /// Effect identifier (for recreation from preset)
     pub id: String,
@@ -92,7 +96,7 @@ impl EffectUiState {
 }
 
 /// UI state for a single frequency band
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BandUiState {
     /// Band index (0-7)
     pub index: usize,
@@ -146,15 +150,13 @@ impl BandUiState {
     }
 }
 
-/// State for a macro knob
-#[derive(Debug, Clone)]
+/// State for a macro (serializable metadata, knob widget is separate)
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MacroUiState {
     /// Macro index (0-7)
     pub index: usize,
     /// Display name
     pub name: String,
-    /// Current value (normalized 0.0-1.0)
-    pub value: f32,
     /// Number of mappings to effect parameters
     pub mapping_count: usize,
 }
@@ -165,11 +167,24 @@ impl MacroUiState {
         Self {
             index,
             name: format!("Macro {}", index + 1),
-            value: 0.5,
             mapping_count: 0,
         }
     }
 }
+
+/// Effect chain location for UI interaction
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum EffectChainLocation {
+    /// Pre-FX chain (before multiband split)
+    PreFx,
+    /// Band effect chain
+    Band(usize),
+    /// Post-FX chain (after band summation)
+    PostFx,
+}
+
+/// Key for effect parameter knobs
+pub type EffectKnobKey = (EffectChainLocation, usize, usize); // (location, effect_idx, param_idx)
 
 /// Complete state for the multiband editor widget
 #[derive(Debug, Clone)]
@@ -186,6 +201,9 @@ pub struct MultibandEditorState {
     /// Stem name for display
     pub stem_name: String,
 
+    /// Pre-FX chain (effects before multiband split)
+    pub pre_fx: Vec<EffectUiState>,
+
     /// Crossover frequencies (N-1 for N bands)
     pub crossover_freqs: Vec<f32>,
 
@@ -198,15 +216,30 @@ pub struct MultibandEditorState {
     /// Band states
     pub bands: Vec<BandUiState>,
 
-    /// Currently selected effect for parameter focus
-    /// (band_index, effect_index)
-    pub selected_effect: Option<(usize, usize)>,
+    /// Post-FX chain (effects after bands are summed)
+    pub post_fx: Vec<EffectUiState>,
 
-    /// Macro knob states
+    /// Currently selected effect for parameter focus
+    /// (location, effect_index)
+    pub selected_effect: Option<(EffectChainLocation, usize)>,
+
+    /// Macro metadata (names, mapping counts)
     pub macros: Vec<MacroUiState>,
 
-    /// Whether the preset browser is open
+    /// Macro knob widgets (stateful, with stable IDs)
+    pub macro_knobs: Vec<Knob>,
+
+    /// Effect parameter knob widgets, keyed by (location, effect_idx, param_idx)
+    pub effect_knobs: HashMap<EffectKnobKey, Knob>,
+
+    /// Whether the preset browser is open (for loading)
     pub preset_browser_open: bool,
+
+    /// Whether the save dialog is open
+    pub save_dialog_open: bool,
+
+    /// Preset name input for save dialog
+    pub preset_name_input: String,
 
     /// Available preset names
     pub available_presets: Vec<String>,
@@ -229,13 +262,19 @@ impl MultibandEditorState {
             deck: 0,
             stem: 0,
             stem_name: "Vocals".to_string(),
+            pre_fx: Vec::new(),
             crossover_freqs: Vec::new(),
             dragging_crossover: None,
             dragging_macro: None,
             bands: vec![BandUiState::new(0, super::FREQ_MIN, super::FREQ_MAX)],
+            post_fx: Vec::new(),
             selected_effect: None,
             macros: (0..super::NUM_MACROS).map(MacroUiState::new).collect(),
+            macro_knobs: (0..super::NUM_MACROS).map(|_| Knob::new(48.0)).collect(),
+            effect_knobs: HashMap::new(),
             preset_browser_open: false,
+            save_dialog_open: false,
+            preset_name_input: String::new(),
             available_presets: Vec::new(),
             any_soloed: false,
         }
@@ -255,11 +294,120 @@ impl MultibandEditorState {
     pub fn close(&mut self) {
         self.is_open = false;
         self.dragging_crossover = None;
+        self.dragging_macro = None;
     }
 
     /// Get the number of bands
     pub fn band_count(&self) -> usize {
         self.bands.len()
+    }
+
+    /// Get or create an effect parameter knob
+    pub fn get_effect_knob(&mut self, location: EffectChainLocation, effect_idx: usize, param_idx: usize) -> &mut Knob {
+        let key = (location, effect_idx, param_idx);
+        // Get initial value before borrowing effect_knobs
+        let initial_value = if !self.effect_knobs.contains_key(&key) {
+            Some(self.get_effect_param_value(location, effect_idx, param_idx))
+        } else {
+            None
+        };
+
+        self.effect_knobs.entry(key).or_insert_with(|| {
+            let mut knob = Knob::new(28.0); // Smaller size for effect params
+            if let Some(value) = initial_value {
+                knob.set_value(value);
+            }
+            knob
+        })
+    }
+
+    /// Get effect parameter value from state
+    fn get_effect_param_value(&self, location: EffectChainLocation, effect_idx: usize, param_idx: usize) -> f32 {
+        match location {
+            EffectChainLocation::PreFx => {
+                self.pre_fx.get(effect_idx)
+                    .and_then(|e| e.param_values.get(param_idx).copied())
+                    .unwrap_or(0.5)
+            }
+            EffectChainLocation::Band(band_idx) => {
+                self.bands.get(band_idx)
+                    .and_then(|b| b.effects.get(effect_idx))
+                    .and_then(|e| e.param_values.get(param_idx).copied())
+                    .unwrap_or(0.5)
+            }
+            EffectChainLocation::PostFx => {
+                self.post_fx.get(effect_idx)
+                    .and_then(|e| e.param_values.get(param_idx).copied())
+                    .unwrap_or(0.5)
+            }
+        }
+    }
+
+    /// Set effect parameter value in state and sync to knob
+    pub fn set_effect_param_value(&mut self, location: EffectChainLocation, effect_idx: usize, param_idx: usize, value: f32) {
+        // Update effect state
+        match location {
+            EffectChainLocation::PreFx => {
+                if let Some(effect) = self.pre_fx.get_mut(effect_idx) {
+                    if let Some(v) = effect.param_values.get_mut(param_idx) {
+                        *v = value;
+                    }
+                }
+            }
+            EffectChainLocation::Band(band_idx) => {
+                if let Some(band) = self.bands.get_mut(band_idx) {
+                    if let Some(effect) = band.effects.get_mut(effect_idx) {
+                        if let Some(v) = effect.param_values.get_mut(param_idx) {
+                            *v = value;
+                        }
+                    }
+                }
+            }
+            EffectChainLocation::PostFx => {
+                if let Some(effect) = self.post_fx.get_mut(effect_idx) {
+                    if let Some(v) = effect.param_values.get_mut(param_idx) {
+                        *v = value;
+                    }
+                }
+            }
+        }
+
+        // Sync knob if it exists
+        let key = (location, effect_idx, param_idx);
+        if let Some(knob) = self.effect_knobs.get_mut(&key) {
+            knob.set_value(value);
+        }
+    }
+
+    /// Remove knobs for an effect that was removed
+    pub fn remove_effect_knobs(&mut self, location: EffectChainLocation, effect_idx: usize) {
+        // Remove all knobs for this effect
+        self.effect_knobs.retain(|&(loc, eff, _), _| {
+            !(loc == location && eff == effect_idx)
+        });
+        // Shift indices for effects after the removed one
+        let keys_to_update: Vec<_> = self.effect_knobs.keys()
+            .filter(|&&(loc, eff, _)| loc == location && eff > effect_idx)
+            .copied()
+            .collect();
+        for key in keys_to_update {
+            if let Some(knob) = self.effect_knobs.remove(&key) {
+                let new_key = (key.0, key.1 - 1, key.2);
+                self.effect_knobs.insert(new_key, knob);
+            }
+        }
+    }
+
+    /// Get macro value from knob
+    pub fn macro_value(&self, index: usize) -> f32 {
+        self.macro_knobs.get(index).map(|k| k.value()).unwrap_or(0.5)
+    }
+
+    /// Set macro value
+    pub fn set_macro_value(&mut self, index: usize, value: f32) {
+        if let Some(knob) = self.macro_knobs.get_mut(index) {
+            knob.set_value(value);
+        }
     }
 
     /// Update band frequency ranges from crossover frequencies
@@ -306,6 +454,11 @@ impl MultibandEditorState {
             return;
         }
 
+        // Remove effect knobs for this band
+        for effect_idx in 0..self.bands[index].effects.len() {
+            self.remove_effect_knobs(EffectChainLocation::Band(index), effect_idx);
+        }
+
         self.bands.remove(index);
 
         // Remove the corresponding crossover frequency
@@ -317,6 +470,20 @@ impl MultibandEditorState {
         // Update band indices
         for (i, band) in self.bands.iter_mut().enumerate() {
             band.index = i;
+        }
+
+        // Update effect knob keys for bands after the removed one
+        let keys_to_update: Vec<_> = self.effect_knobs.keys()
+            .filter(|&&(loc, _, _)| matches!(loc, EffectChainLocation::Band(b) if b > index))
+            .copied()
+            .collect();
+        for key in keys_to_update {
+            if let Some(knob) = self.effect_knobs.remove(&key) {
+                if let EffectChainLocation::Band(b) = key.0 {
+                    let new_key = (EffectChainLocation::Band(b - 1), key.1, key.2);
+                    self.effect_knobs.insert(new_key, knob);
+                }
+            }
         }
 
         self.update_band_frequencies();
@@ -367,13 +534,6 @@ impl MultibandEditorState {
             if let Some(effect) = band.effects.get_mut(effect_index) {
                 effect.bypassed = bypassed;
             }
-        }
-    }
-
-    /// Set macro value
-    pub fn set_macro_value(&mut self, index: usize, value: f32) {
-        if let Some(macro_state) = self.macros.get_mut(index) {
-            macro_state.value = value.clamp(0.0, 1.0);
         }
     }
 

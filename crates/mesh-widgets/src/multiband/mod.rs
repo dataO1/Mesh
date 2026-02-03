@@ -29,15 +29,20 @@
 //! └─────────────────────────────────────────────────────────────────────────┘
 //! ```
 
+pub mod config;
 mod crossover_bar;
 mod message;
 mod state;
 mod view;
 
+pub use config::{
+    delete_preset, list_presets, load_preset, multiband_presets_folder, save_preset,
+    MultibandPresetConfig,
+};
 pub use crossover_bar::{crossover_bar, crossover_controls, CROSSOVER_BAR_HEIGHT};
 pub use message::MultibandEditorMessage;
-pub use state::{BandUiState, EffectSourceType, EffectUiState, MacroUiState, MultibandEditorState, ParamMacroMapping};
-pub use view::multiband_editor;
+pub use state::{BandUiState, EffectChainLocation, EffectSourceType, EffectUiState, MacroUiState, MultibandEditorState, ParamMacroMapping};
+pub use view::{multiband_editor, ensure_effect_knobs_exist};
 
 /// Frequency range for crossover display (Hz)
 pub const FREQ_MIN: f32 = 20.0;

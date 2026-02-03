@@ -1037,6 +1037,72 @@ impl AudioEngine {
                     }
                 }
 
+                // Pre-FX chain (before multiband split)
+                EngineCommand::AddMultibandPreFx { deck, stem, effect } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            let _ = multiband.add_pre_fx(effect);
+                        }
+                    }
+                    self.update_deck_latencies(deck);
+                }
+                EngineCommand::RemoveMultibandPreFx { deck, stem, effect_index } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            let _ = multiband.remove_pre_fx(effect_index);
+                        }
+                    }
+                    self.update_deck_latencies(deck);
+                }
+                EngineCommand::SetMultibandPreFxBypass { deck, stem, effect_index, bypass } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            let _ = multiband.set_pre_fx_bypass(effect_index, bypass);
+                        }
+                    }
+                    self.update_deck_latencies(deck);
+                }
+                EngineCommand::SetMultibandPreFxParam { deck, stem, effect_index, param_index, value } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            let _ = multiband.set_pre_fx_param(effect_index, param_index, value);
+                        }
+                    }
+                }
+
+                // Post-FX chain (after band summation)
+                EngineCommand::AddMultibandPostFx { deck, stem, effect } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            let _ = multiband.add_post_fx(effect);
+                        }
+                    }
+                    self.update_deck_latencies(deck);
+                }
+                EngineCommand::RemoveMultibandPostFx { deck, stem, effect_index } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            let _ = multiband.remove_post_fx(effect_index);
+                        }
+                    }
+                    self.update_deck_latencies(deck);
+                }
+                EngineCommand::SetMultibandPostFxBypass { deck, stem, effect_index, bypass } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            let _ = multiband.set_post_fx_bypass(effect_index, bypass);
+                        }
+                    }
+                    self.update_deck_latencies(deck);
+                }
+                EngineCommand::SetMultibandPostFxParam { deck, stem, effect_index, param_index, value } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            let _ = multiband.set_post_fx_param(effect_index, param_index, value);
+                        }
+                    }
+                }
+
                 // Mixer Control
                 EngineCommand::SetVolume { deck, volume } => {
                     if let Some(ch) = self.mixer.channel_mut(deck) {

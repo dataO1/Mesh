@@ -3507,12 +3507,14 @@ name = "mesh-widgets"
 version = "0.1.0"
 dependencies = [
  "basedrop",
+ "bytemuck",
  "iced",
  "log",
  "mesh-core",
  "serde",
  "serde_yaml",
  "tokio",
+ "wgpu",
 ]
 
 [[package]]

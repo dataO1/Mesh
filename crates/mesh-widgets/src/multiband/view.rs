@@ -1,11 +1,13 @@
 //! View function for the multiband editor widget
 
-use iced::widget::{button, column, container, mouse_area, row, scrollable, slider, text, Space};
+use iced::widget::{button, column, container, mouse_area, row, scrollable, text, text_input, Space};
 use iced::{Alignment, Color, Element, Length};
 
 use super::crossover_bar::crossover_bar;
 use super::message::MultibandEditorMessage;
-use super::state::{BandUiState, EffectUiState, MacroUiState, MultibandEditorState};
+use super::state::{BandUiState, EffectChainLocation, EffectUiState, MacroUiState, MultibandEditorState};
+
+use crate::knob::{Knob, ModulationRange};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Colors
@@ -44,20 +46,66 @@ fn divider<'a, M: 'a>() -> Element<'a, M> {
 /// Render the multiband editor as a modal overlay
 ///
 /// Returns None if the editor is closed.
-pub fn multiband_editor<'a>(
-    state: &'a MultibandEditorState,
-) -> Option<Element<'a, MultibandEditorMessage>> {
+/// Note: Ensure all effect knobs exist before calling this (via `ensure_effect_knobs_exist`
+/// in your update handler).
+pub fn multiband_editor(
+    state: &MultibandEditorState,
+) -> Option<Element<'_, MultibandEditorMessage>> {
     if !state.is_open {
         return None;
     }
 
-    // Build band columns (scrollable horizontally if many bands)
     let dragging_macro = state.dragging_macro;
+
+    // Build band columns
     let band_columns: Vec<Element<'_, MultibandEditorMessage>> = state
         .bands
         .iter()
-        .map(|band| band_column(band, state.any_soloed, dragging_macro).into())
+        .enumerate()
+        .map(|(band_idx, band)| {
+            band_column(
+                band,
+                band_idx,
+                state.any_soloed,
+                dragging_macro,
+                &state.effect_knobs,
+            )
+        })
         .collect();
+
+    // Main processing area: Pre-FX | Bands | Post-FX
+    let processing_area = row![
+        // Pre-FX chain (left side)
+        fx_chain_column(
+            "Pre-FX",
+            &state.pre_fx,
+            EffectChainLocation::PreFx,
+            dragging_macro,
+            &state.effect_knobs,
+        ),
+        // Band columns (center, fill available space)
+        column![
+            row(band_columns)
+                .spacing(4)
+                .width(Length::Fill)
+                .height(Length::Fill),
+            add_band_button(state.bands.len()),
+        ]
+        .spacing(4)
+        .width(Length::Fill)
+        .height(Length::Fill),
+        // Post-FX chain (right side)
+        fx_chain_column(
+            "Post-FX",
+            &state.post_fx,
+            EffectChainLocation::PostFx,
+            dragging_macro,
+            &state.effect_knobs,
+        ),
+    ]
+    .spacing(8)
+    .width(Length::Fill)
+    .height(Length::Fill);
 
     let content = column![
         // Header with preset controls and close button
@@ -66,25 +114,19 @@ pub fn multiband_editor<'a>(
         // Crossover visualization bar
         crossover_bar(state),
         divider(),
-        // Band columns (fill available width)
-        row(band_columns)
-            .spacing(4)
-            .padding([0, 4])
-            .width(Length::Fill)
-            .height(Length::Fill),
-        // Add band button
-        add_band_button(state.bands.len()),
+        // Main processing area with pre-fx, bands, post-fx
+        processing_area,
         divider(),
-        // Macro knobs row (draggable for mapping)
-        macro_bar(&state.macros, state.dragging_macro),
+        // Macro knobs row
+        macro_bar(&state.macros, &state.macro_knobs, state.dragging_macro),
     ]
     .spacing(8)
     .padding(16);
 
-    // Wrap in modal container (fills most of the screen)
+    // Wrap in modal container (80% of the screen)
     let modal = container(content)
-        .width(Length::FillPortion(9))  // ~90% of available width
-        .height(Length::FillPortion(9)) // ~90% of available height
+        .width(Length::FillPortion(4))
+        .height(Length::FillPortion(4))
         .style(|_| container::Style {
             background: Some(BG_DARK.into()),
             border: iced::Border {
@@ -106,7 +148,61 @@ pub fn multiband_editor<'a>(
             ..Default::default()
         });
 
-    Some(centered.into())
+    // Layer preset browser or save dialog on top if open
+    let final_view: Element<'_, MultibandEditorMessage> = if state.preset_browser_open {
+        iced::widget::stack![centered, preset_browser_overlay(state),].into()
+    } else if state.save_dialog_open {
+        iced::widget::stack![centered, save_dialog_overlay(state),].into()
+    } else {
+        centered.into()
+    };
+
+    Some(final_view)
+}
+
+/// Ensure all effect parameter knobs exist in the state
+///
+/// Call this in update handlers before view is rendered, specifically:
+/// - When the editor is opened
+/// - After adding an effect to any chain (pre-fx, band, post-fx)
+pub fn ensure_effect_knobs_exist(state: &mut MultibandEditorState) {
+    // Pre-FX effects
+    for (effect_idx, effect) in state.pre_fx.iter().enumerate() {
+        for param_idx in 0..effect.param_values.len() {
+            let key = (EffectChainLocation::PreFx, effect_idx, param_idx);
+            if !state.effect_knobs.contains_key(&key) {
+                let mut knob = Knob::new(28.0);
+                knob.set_value(effect.param_values[param_idx]);
+                state.effect_knobs.insert(key, knob);
+            }
+        }
+    }
+
+    // Band effects
+    for (band_idx, band) in state.bands.iter().enumerate() {
+        for (effect_idx, effect) in band.effects.iter().enumerate() {
+            for param_idx in 0..effect.param_values.len() {
+                let key = (EffectChainLocation::Band(band_idx), effect_idx, param_idx);
+                if !state.effect_knobs.contains_key(&key) {
+                    let mut knob = Knob::new(28.0);
+                    knob.set_value(effect.param_values[param_idx]);
+                    state.effect_knobs.insert(key, knob);
+                }
+            }
+        }
+    }
+
+    // Post-FX effects
+    for (effect_idx, effect) in state.post_fx.iter().enumerate() {
+        for param_idx in 0..effect.param_values.len() {
+            let key = (EffectChainLocation::PostFx, effect_idx, param_idx);
+            if !state.effect_knobs.contains_key(&key) {
+                let mut knob = Knob::new(28.0);
+                knob.set_value(effect.param_values[param_idx]);
+                state.effect_knobs.insert(key, knob);
+            }
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -115,20 +211,17 @@ pub fn multiband_editor<'a>(
 
 fn header_row(state: &MultibandEditorState) -> Element<'_, MultibandEditorMessage> {
     row![
-        // Preset controls
         button(text("Load").size(12))
             .padding([4, 8])
             .on_press(MultibandEditorMessage::OpenPresetBrowser),
         button(text("Save").size(12))
             .padding([4, 8])
-            .on_press(MultibandEditorMessage::SavePreset("default".to_string())),
+            .on_press(MultibandEditorMessage::OpenSaveDialog),
         Space::new().width(Length::Fill),
-        // Title
         text(format!("Deck {} - {}", state.deck + 1, state.stem_name))
             .size(16)
             .color(TEXT_PRIMARY),
         Space::new().width(Length::Fill),
-        // Close button
         button(text("×").size(18))
             .padding([2, 8])
             .on_press(MultibandEditorMessage::Close),
@@ -138,32 +231,30 @@ fn header_row(state: &MultibandEditorState) -> Element<'_, MultibandEditorMessag
     .into()
 }
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Band column
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn band_column<'a>(band: &'a BandUiState, any_soloed: bool, dragging_macro: Option<usize>) -> Element<'a, MultibandEditorMessage> {
-    let band_idx = band.index;
-
+fn band_column<'a>(
+    band: &'a BandUiState,
+    band_idx: usize,
+    any_soloed: bool,
+    dragging_macro: Option<usize>,
+    effect_knobs: &'a std::collections::HashMap<super::state::EffectKnobKey, Knob>,
+) -> Element<'a, MultibandEditorMessage> {
     // Band header: name and freq range
     let header = column![
         text(format!("Band {}", band_idx + 1))
             .size(12)
             .color(TEXT_PRIMARY),
-        text(band.name())
-            .size(10)
-            .color(TEXT_SECONDARY),
-        text(band.freq_range_str())
-            .size(9)
-            .color(TEXT_SECONDARY),
+        text(band.name()).size(10).color(TEXT_SECONDARY),
+        text(band.freq_range_str()).size(9).color(TEXT_SECONDARY),
     ]
     .spacing(2)
     .align_x(Alignment::Center);
 
     // Control buttons row: Solo, Mute, Remove
     let controls = row![
-        // Solo button
         button(
             text("S")
                 .size(10)
@@ -174,7 +265,6 @@ fn band_column<'a>(band: &'a BandUiState, any_soloed: bool, dragging_macro: Opti
             band: band_idx,
             soloed: !band.soloed,
         }),
-        // Mute button
         button(
             text("M")
                 .size(10)
@@ -185,7 +275,6 @@ fn band_column<'a>(band: &'a BandUiState, any_soloed: bool, dragging_macro: Opti
             band: band_idx,
             muted: !band.muted,
         }),
-        // Remove band button
         button(text("×").size(10))
             .padding([2, 6])
             .on_press(MultibandEditorMessage::RemoveBand(band_idx)),
@@ -198,31 +287,31 @@ fn band_column<'a>(band: &'a BandUiState, any_soloed: bool, dragging_macro: Opti
         .effects
         .iter()
         .enumerate()
-        .map(|(effect_idx, effect)| effect_card(band_idx, effect_idx, effect, dragging_macro).into())
+        .map(|(effect_idx, effect)| {
+            effect_card(
+                band_idx,
+                effect_idx,
+                effect,
+                dragging_macro,
+                effect_knobs,
+            )
+        })
         .collect();
 
-    let effects_column = column(effect_cards)
-        .spacing(4)
-        .push(
-            // Add effect button at the bottom
-            button(text("+ Add Effect").size(10))
-                .padding([6, 12])
-                .on_press(MultibandEditorMessage::OpenEffectPicker(band_idx)),
-        );
+    let effects_column = column(effect_cards).spacing(4).push(
+        button(text("+ Add Effect").size(10))
+            .padding([6, 12])
+            .on_press(MultibandEditorMessage::OpenEffectPicker(band_idx)),
+    );
 
     // Dim if muted or not soloed (when something else is soloed)
     let is_active = !band.muted && (!any_soloed || band.soloed);
     let bg_color = if is_active { BG_MEDIUM } else { BG_DARK };
 
     container(
-        column![
-            header,
-            controls,
-            scrollable(effects_column)
-                .height(Length::Fill)
-        ]
-        .spacing(8)
-        .align_x(Alignment::Center)
+        column![header, controls, scrollable(effects_column).height(Length::Fill)]
+            .spacing(8)
+            .align_x(Alignment::Center),
     )
     .padding(8)
     .width(Length::FillPortion(1))
@@ -240,14 +329,74 @@ fn band_column<'a>(band: &'a BandUiState, any_soloed: bool, dragging_macro: Opti
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Effect card (compact for column layout)
+// Pre-FX / Post-FX chain column
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn effect_card<'a>(
-    band_idx: usize,
+fn fx_chain_column<'a>(
+    title: &'static str,
+    effects: &'a [EffectUiState],
+    location: EffectChainLocation,
+    dragging_macro: Option<usize>,
+    effect_knobs: &'a std::collections::HashMap<super::state::EffectKnobKey, Knob>,
+) -> Element<'a, MultibandEditorMessage> {
+    let header = column![
+        text(title).size(12).color(TEXT_PRIMARY),
+        text(if location == EffectChainLocation::PreFx {
+            "Before split"
+        } else {
+            "After merge"
+        })
+        .size(9)
+        .color(TEXT_SECONDARY),
+    ]
+    .spacing(2)
+    .align_x(Alignment::Center);
+
+    let effect_cards: Vec<Element<'_, MultibandEditorMessage>> = effects
+        .iter()
+        .enumerate()
+        .map(|(effect_idx, effect)| {
+            fx_effect_card(effect_idx, effect, location, dragging_macro, effect_knobs)
+        })
+        .collect();
+
+    let add_button = button(text("+ Add Effect").size(10))
+        .padding([6, 12])
+        .on_press(if location == EffectChainLocation::PreFx {
+            MultibandEditorMessage::OpenPreFxEffectPicker
+        } else {
+            MultibandEditorMessage::OpenPostFxEffectPicker
+        });
+
+    let effects_column = column(effect_cards).spacing(4).push(add_button);
+
+    container(
+        column![header, scrollable(effects_column).height(Length::Fill)]
+            .spacing(8)
+            .align_x(Alignment::Center),
+    )
+    .padding(8)
+    .width(Length::Fixed(140.0))
+    .height(Length::Fill)
+    .style(move |_| container::Style {
+        background: Some(BG_MEDIUM.into()),
+        border: iced::Border {
+            color: BORDER_COLOR,
+            width: 1.0,
+            radius: 4.0.into(),
+        },
+        ..Default::default()
+    })
+    .into()
+}
+
+/// Renders an effect card for pre-fx or post-fx chains
+fn fx_effect_card<'a>(
     effect_idx: usize,
     effect: &'a EffectUiState,
+    location: EffectChainLocation,
     dragging_macro: Option<usize>,
+    effect_knobs: &'a std::collections::HashMap<super::state::EffectKnobKey, Knob>,
 ) -> Element<'a, MultibandEditorMessage> {
     let name_color = if effect.bypassed {
         BYPASS_COLOR
@@ -255,11 +404,139 @@ fn effect_card<'a>(
         TEXT_PRIMARY
     };
 
-    // Effect header: name and controls
+    let header = row![
+        text(&effect.name).size(10).color(name_color),
+        Space::new().width(Length::Fill),
+        button(
+            text(if effect.bypassed { "○" } else { "●" })
+                .size(9)
+                .color(name_color)
+        )
+        .padding([1, 3])
+        .on_press(if location == EffectChainLocation::PreFx {
+            MultibandEditorMessage::TogglePreFxBypass(effect_idx)
+        } else {
+            MultibandEditorMessage::TogglePostFxBypass(effect_idx)
+        }),
+        button(text("×").size(9))
+            .padding([1, 3])
+            .on_press(if location == EffectChainLocation::PreFx {
+                MultibandEditorMessage::RemovePreFxEffect(effect_idx)
+            } else {
+                MultibandEditorMessage::RemovePostFxEffect(effect_idx)
+            }),
+    ]
+    .spacing(2)
+    .align_y(Alignment::Center);
+
+    // Parameter knobs (show first 6 params in 2 rows of 3)
+    let param_count = effect.param_values.len().min(6);
+    let param_knobs: Vec<Element<'_, MultibandEditorMessage>> = (0..param_count)
+        .map(|param_idx| {
+            let param_name = effect
+                .param_names
+                .get(param_idx)
+                .map(|s| s.as_str())
+                .unwrap_or("P");
+
+            let mapping = effect.param_mappings.get(param_idx);
+            let mapped_macro = mapping.and_then(|m| m.macro_index);
+            let is_mapped = mapped_macro.is_some();
+
+            let label_color = if dragging_macro.is_some() {
+                ACCENT_COLOR
+            } else if is_mapped {
+                Color::from_rgb(0.4, 0.8, 0.4)
+            } else {
+                TEXT_SECONDARY
+            };
+
+            let label_text = if let Some(macro_idx) = mapped_macro {
+                format!("M{}", macro_idx + 1)
+            } else {
+                param_name[..param_name.len().min(3)].to_string()
+            };
+
+            // Get knob from state
+            let key = (location, effect_idx, param_idx);
+            if let Some(knob) = effect_knobs.get(&key) {
+                column![
+                    knob.view(move |event| MultibandEditorMessage::EffectKnob {
+                        location,
+                        effect: effect_idx,
+                        param: param_idx,
+                        event,
+                    }),
+                    text(label_text).size(7).color(label_color),
+                ]
+                .spacing(1)
+                .align_x(Alignment::Center)
+                .into()
+            } else {
+                // Fallback - should not happen if ensure_effect_knobs_exist was called
+                column![
+                    Space::new().width(28.0).height(28.0),
+                    text(label_text).size(7).color(label_color),
+                ]
+                .spacing(1)
+                .align_x(Alignment::Center)
+                .into()
+            }
+        })
+        .collect();
+
+    // Arrange knobs in rows of 3
+    let knob_rows: Element<'_, MultibandEditorMessage> = {
+        let mut knobs_iter = param_knobs.into_iter();
+        let first_row: Vec<_> = knobs_iter.by_ref().take(3).collect();
+        let second_row: Vec<_> = knobs_iter.collect();
+
+        if second_row.is_empty() {
+            row(first_row).spacing(4).into()
+        } else {
+            column![row(first_row).spacing(4), row(second_row).spacing(4),]
+                .spacing(4)
+                .into()
+        }
+    };
+
+    container(column![header, knob_rows].spacing(4).align_x(Alignment::Center))
+        .padding(4)
+        .width(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(BG_LIGHT.into()),
+            border: iced::Border {
+                color: BORDER_COLOR,
+                width: 1.0,
+                radius: 3.0.into(),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Effect card (for band effects)
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn effect_card<'a>(
+    band_idx: usize,
+    effect_idx: usize,
+    effect: &'a EffectUiState,
+    dragging_macro: Option<usize>,
+    effect_knobs: &'a std::collections::HashMap<super::state::EffectKnobKey, Knob>,
+) -> Element<'a, MultibandEditorMessage> {
+    let location = EffectChainLocation::Band(band_idx);
+
+    let name_color = if effect.bypassed {
+        BYPASS_COLOR
+    } else {
+        TEXT_PRIMARY
+    };
+
     let header = row![
         text(&effect.name).size(11).color(name_color),
         Space::new().width(Length::Fill),
-        // Bypass toggle
         button(
             text(if effect.bypassed { "○" } else { "●" })
                 .size(9)
@@ -270,7 +547,6 @@ fn effect_card<'a>(
             band: band_idx,
             effect: effect_idx,
         }),
-        // Remove button
         button(text("×").size(9))
             .padding([1, 3])
             .on_press(MultibandEditorMessage::RemoveEffect {
@@ -281,123 +557,114 @@ fn effect_card<'a>(
     .spacing(2)
     .align_y(Alignment::Center);
 
-    // Parameter sliders (show first 8 params)
+    // Parameter knobs (show first 8 params in 2 rows of 4)
     let param_count = effect.param_values.len().min(8);
-    let param_controls: Vec<Element<'_, MultibandEditorMessage>> = (0..param_count)
+    let param_knobs: Vec<Element<'_, MultibandEditorMessage>> = (0..param_count)
         .map(|param_idx| {
             let param_name = effect
                 .param_names
                 .get(param_idx)
                 .map(|s| s.as_str())
                 .unwrap_or("P");
-            let param_value = effect.param_values.get(param_idx).copied().unwrap_or(0.5);
 
-            // Check if this param has a macro mapping
             let mapping = effect.param_mappings.get(param_idx);
             let mapped_macro = mapping.and_then(|m| m.macro_index);
             let is_mapped = mapped_macro.is_some();
 
-            // Highlight color: green if mapped, blue highlight if dragging over
-            let (label_color, border_color) = if dragging_macro.is_some() {
-                (ACCENT_COLOR, ACCENT_COLOR) // Highlight as drop target
+            let label_color = if dragging_macro.is_some() {
+                ACCENT_COLOR
             } else if is_mapped {
-                (Color::from_rgb(0.4, 0.8, 0.4), Color::from_rgb(0.4, 0.8, 0.4)) // Green for mapped
+                Color::from_rgb(0.4, 0.8, 0.4)
             } else {
-                (TEXT_SECONDARY, Color::TRANSPARENT)
+                TEXT_SECONDARY
             };
 
-            // Label shows macro number if mapped
             let label_text = if let Some(macro_idx) = mapped_macro {
-                format!("M{}:", macro_idx + 1)
+                format!("M{}", macro_idx + 1)
             } else {
-                format!("{}:", &param_name[..param_name.len().min(3)])
+                param_name[..param_name.len().min(3)].to_string()
             };
 
-            // Compact param row: label + slider
-            let param_row = row![
-                text(label_text)
-                    .size(8)
-                    .color(label_color)
-                    .width(Length::Fixed(28.0)),
-                slider(0.0..=1.0, param_value, move |v| {
-                    MultibandEditorMessage::SetEffectParam {
+            // Get knob from state
+            let key = (location, effect_idx, param_idx);
+            let knob_element: Element<'_, MultibandEditorMessage> =
+                if let Some(knob) = effect_knobs.get(&key) {
+                    knob.view(move |event| MultibandEditorMessage::EffectKnob {
+                        location,
+                        effect: effect_idx,
+                        param: param_idx,
+                        event,
+                    })
+                } else {
+                    Space::new().width(28.0).height(28.0).into()
+                };
+
+            // Wrap in mouse_area for macro drop target when dragging
+            let knob_with_label: Element<'_, MultibandEditorMessage> =
+                if let Some(macro_idx) = dragging_macro {
+                    mouse_area(
+                        column![knob_element, text(label_text.clone()).size(7).color(label_color),]
+                            .spacing(1)
+                            .align_x(Alignment::Center),
+                    )
+                    .on_press(MultibandEditorMessage::DropMacroOnParam {
+                        macro_index: macro_idx,
                         band: band_idx,
                         effect: effect_idx,
                         param: param_idx,
-                        value: v,
-                    }
-                })
-                .step(0.01)
-                .width(Length::Fill),
-            ]
-            .spacing(2)
-            .align_y(Alignment::Center);
+                    })
+                    .into()
+                } else if is_mapped {
+                    mouse_area(
+                        column![knob_element, text(label_text.clone()).size(7).color(label_color),]
+                            .spacing(1)
+                            .align_x(Alignment::Center),
+                    )
+                    .on_press(MultibandEditorMessage::RemoveParamMapping {
+                        band: band_idx,
+                        effect: effect_idx,
+                        param: param_idx,
+                    })
+                    .into()
+                } else {
+                    column![knob_element, text(label_text).size(7).color(label_color),]
+                        .spacing(1)
+                        .align_x(Alignment::Center)
+                        .into()
+                };
 
-            // Wrap in mouse_area for drop target when dragging
-            let content: Element<'_, MultibandEditorMessage> = if let Some(macro_idx) = dragging_macro {
-                // Make this a drop target
-                mouse_area(
-                    container(param_row)
-                        .style(move |_| container::Style {
-                            border: iced::Border {
-                                color: border_color,
-                                width: 1.0,
-                                radius: 2.0.into(),
-                            },
-                            ..Default::default()
-                        })
-                )
-                .on_press(MultibandEditorMessage::DropMacroOnParam {
-                    macro_index: macro_idx,
-                    band: band_idx,
-                    effect: effect_idx,
-                    param: param_idx,
-                })
-                .into()
-            } else if is_mapped {
-                // Show remove mapping option on click
-                mouse_area(
-                    container(param_row)
-                        .style(move |_| container::Style {
-                            border: iced::Border {
-                                color: border_color,
-                                width: 1.0,
-                                radius: 2.0.into(),
-                            },
-                            ..Default::default()
-                        })
-                )
-                .on_press(MultibandEditorMessage::RemoveParamMapping {
-                    band: band_idx,
-                    effect: effect_idx,
-                    param: param_idx,
-                })
-                .into()
-            } else {
-                param_row.into()
-            };
-
-            content
+            knob_with_label
         })
         .collect();
 
-    let params_column = column(param_controls).spacing(2);
+    // Arrange knobs in rows of 4
+    let knob_rows: Element<'_, MultibandEditorMessage> = {
+        let mut knobs_iter = param_knobs.into_iter();
+        let first_row: Vec<_> = knobs_iter.by_ref().take(4).collect();
+        let second_row: Vec<_> = knobs_iter.collect();
 
-    container(
-        column![header, params_column].spacing(4)
-    )
-    .padding(6)
-    .width(Length::Fill)
-    .style(|_| container::Style {
-        background: Some(BG_LIGHT.into()),
-        border: iced::Border {
-            color: BORDER_COLOR,
-            width: 1.0,
-            radius: 3.0.into(),
-        },
-        ..Default::default()
-    })
-    .into()
+        if second_row.is_empty() {
+            row(first_row).spacing(4).into()
+        } else {
+            column![row(first_row).spacing(4), row(second_row).spacing(4),]
+                .spacing(4)
+                .into()
+        }
+    };
+
+    container(column![header, knob_rows].spacing(4).align_x(Alignment::Center))
+        .padding(6)
+        .width(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(BG_LIGHT.into()),
+            border: iced::Border {
+                color: BORDER_COLOR,
+                width: 1.0,
+                radius: 3.0.into(),
+            },
+            ..Default::default()
+        })
+        .into()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -426,41 +693,53 @@ fn add_band_button(current_bands: usize) -> Element<'static, MultibandEditorMess
 // Macro bar
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn macro_bar(macros: &[MacroUiState], dragging_macro: Option<usize>) -> Element<'_, MultibandEditorMessage> {
+fn macro_bar<'a>(
+    macros: &'a [MacroUiState],
+    macro_knobs: &'a [Knob],
+    dragging_macro: Option<usize>,
+) -> Element<'a, MultibandEditorMessage> {
     let macro_widgets: Vec<Element<'_, MultibandEditorMessage>> = macros
         .iter()
-        .map(|m| {
+        .zip(macro_knobs.iter())
+        .map(|(m, knob)| {
             let index = m.index;
-            let value = m.value;
-            let is_dragging = dragging_macro == Some(index);
+            let is_mapping_drag = dragging_macro == Some(index);
 
-            let name_color = if is_dragging {
-                Color::from_rgb(1.0, 0.8, 0.3) // Yellow when dragging
+            let name_color = if is_mapping_drag {
+                Color::from_rgb(1.0, 0.8, 0.3)
             } else if m.mapping_count > 0 {
                 ACCENT_COLOR
             } else {
                 TEXT_SECONDARY
             };
 
-            let border_color = if is_dragging {
+            let border_color = if is_mapping_drag {
                 Color::from_rgb(1.0, 0.8, 0.3)
             } else {
                 Color::TRANSPARENT
             };
 
-            // Macro content
+            // Build modulation indicators if this macro has mappings
+            let mut display_knob = knob.clone();
+            if m.mapping_count > 0 {
+                let value = knob.value();
+                display_knob.set_modulations(vec![ModulationRange::new(
+                    (value - 0.1).max(0.0),
+                    (value + 0.1).min(1.0),
+                    Color::from_rgb(0.9, 0.5, 0.2),
+                )]);
+            }
+
+            let knob_widget = display_knob.view(move |event| MultibandEditorMessage::MacroKnob {
+                index,
+                event,
+            });
+
             let macro_content = column![
-                // Value display
-                text(format!("{:.0}%", value * 100.0))
+                text(format!("{:.0}%", knob.value() * 100.0))
                     .size(10)
                     .color(TEXT_SECONDARY),
-                // Interactive slider
-                slider(0.0..=1.0, value, move |v| {
-                    MultibandEditorMessage::SetMacro { index, value: v }
-                })
-                .width(60)
-                .height(16),
-                // Macro name (shows mapping count)
+                knob_widget,
                 text(if m.mapping_count > 0 {
                     format!("{} ({})", m.name, m.mapping_count)
                 } else {
@@ -468,7 +747,6 @@ fn macro_bar(macros: &[MacroUiState], dragging_macro: Option<usize>) -> Element<
                 })
                 .size(9)
                 .color(name_color),
-                // Drag hint
                 text("drag to map")
                     .size(7)
                     .color(Color::from_rgb(0.4, 0.4, 0.45)),
@@ -476,26 +754,24 @@ fn macro_bar(macros: &[MacroUiState], dragging_macro: Option<usize>) -> Element<
             .spacing(2)
             .align_x(Alignment::Center);
 
-            // Wrap in mouse_area for drag support
+            // Wrap in mouse_area for mapping drag support
             let draggable: Element<'_, MultibandEditorMessage> = mouse_area(
                 container(macro_content)
                     .padding(4)
                     .style(move |_| container::Style {
                         border: iced::Border {
                             color: border_color,
-                            width: if is_dragging { 2.0 } else { 0.0 },
+                            width: if is_mapping_drag { 2.0 } else { 0.0 },
                             radius: 4.0.into(),
                         },
                         ..Default::default()
-                    })
+                    }),
             )
             .on_press(MultibandEditorMessage::StartDragMacro(index))
             .on_release(MultibandEditorMessage::EndDragMacro)
             .into();
 
-            container(draggable)
-                .width(Length::Fixed(80.0))
-                .into()
+            container(draggable).width(Length::Fixed(80.0)).into()
         })
         .collect();
 
@@ -505,7 +781,9 @@ fn macro_bar(macros: &[MacroUiState], dragging_macro: Option<usize>) -> Element<
                 text("Macros").size(11).color(TEXT_SECONDARY),
                 Space::new().width(Length::Fill),
                 if dragging_macro.is_some() {
-                    text("Drop on parameter to map").size(9).color(ACCENT_COLOR)
+                    text("Drop on parameter to map")
+                        .size(9)
+                        .color(ACCENT_COLOR)
                 } else {
                     text("").size(9)
                 },
@@ -521,4 +799,146 @@ fn macro_bar(macros: &[MacroUiState], dragging_macro: Option<usize>) -> Element<
         ..Default::default()
     })
     .into()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Preset browser overlay
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn preset_browser_overlay(state: &MultibandEditorState) -> Element<'_, MultibandEditorMessage> {
+    let preset_list: Vec<Element<'_, MultibandEditorMessage>> = state
+        .available_presets
+        .iter()
+        .map(|name| {
+            let name_clone = name.clone();
+            let name_for_delete = name.clone();
+            row![
+                button(text(name).size(12))
+                    .padding([8, 16])
+                    .width(Length::Fill)
+                    .on_press(MultibandEditorMessage::LoadPreset(name_clone)),
+                button(text("×").size(12).color(MUTE_COLOR))
+                    .padding([8, 8])
+                    .on_press(MultibandEditorMessage::DeletePreset(name_for_delete)),
+            ]
+            .spacing(4)
+            .into()
+        })
+        .collect();
+
+    let content: Element<'_, MultibandEditorMessage> = if preset_list.is_empty() {
+        column![
+            text("No presets found").size(14).color(TEXT_SECONDARY),
+            text("Save a preset first").size(11).color(TEXT_SECONDARY),
+        ]
+        .spacing(8)
+        .align_x(Alignment::Center)
+        .into()
+    } else {
+        scrollable(column(preset_list).spacing(4).width(Length::Fill))
+            .height(Length::Fixed(300.0))
+            .into()
+    };
+
+    let dialog = container(
+        column![
+            row![
+                text("Load Preset").size(16).color(TEXT_PRIMARY),
+                Space::new().width(Length::Fill),
+                button(text("×").size(16))
+                    .padding([4, 8])
+                    .on_press(MultibandEditorMessage::ClosePresetBrowser),
+            ]
+            .align_y(Alignment::Center),
+            divider(),
+            content,
+        ]
+        .spacing(12)
+        .padding(16),
+    )
+    .width(Length::Fixed(350.0))
+    .style(|_| container::Style {
+        background: Some(BG_DARK.into()),
+        border: iced::Border {
+            color: ACCENT_COLOR,
+            width: 2.0,
+            radius: 8.0.into(),
+        },
+        ..Default::default()
+    });
+
+    container(dialog)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.5).into()),
+            ..Default::default()
+        })
+        .into()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Save dialog overlay
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn save_dialog_overlay(state: &MultibandEditorState) -> Element<'_, MultibandEditorMessage> {
+    let can_save = !state.preset_name_input.trim().is_empty();
+
+    let dialog = container(
+        column![
+            row![
+                text("Save Preset").size(16).color(TEXT_PRIMARY),
+                Space::new().width(Length::Fill),
+                button(text("×").size(16))
+                    .padding([4, 8])
+                    .on_press(MultibandEditorMessage::CloseSaveDialog),
+            ]
+            .align_y(Alignment::Center),
+            divider(),
+            text("Preset Name:").size(12).color(TEXT_SECONDARY),
+            text_input("Enter preset name...", &state.preset_name_input)
+                .on_input(MultibandEditorMessage::SetPresetNameInput)
+                .padding(8)
+                .size(14),
+            row![
+                button(text("Cancel").size(12))
+                    .padding([8, 16])
+                    .on_press(MultibandEditorMessage::CloseSaveDialog),
+                Space::new().width(Length::Fill),
+                if can_save {
+                    button(text("Save").size(12).color(ACCENT_COLOR))
+                        .padding([8, 16])
+                        .on_press(MultibandEditorMessage::SavePreset)
+                } else {
+                    button(text("Save").size(12).color(TEXT_SECONDARY)).padding([8, 16])
+                },
+            ]
+            .spacing(8),
+        ]
+        .spacing(12)
+        .padding(16),
+    )
+    .width(Length::Fixed(350.0))
+    .style(|_| container::Style {
+        background: Some(BG_DARK.into()),
+        border: iced::Border {
+            color: ACCENT_COLOR,
+            width: 2.0,
+            radius: 8.0.into(),
+        },
+        ..Default::default()
+    });
+
+    container(dialog)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.5).into()),
+            ..Default::default()
+        })
+        .into()
 }

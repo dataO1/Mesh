@@ -1,5 +1,8 @@
 //! Messages for the multiband editor widget
 
+use super::state::EffectChainLocation;
+use crate::knob::KnobEvent;
+
 /// Messages emitted by the multiband editor
 #[derive(Debug, Clone)]
 pub enum MultibandEditorMessage {
@@ -15,6 +18,21 @@ pub enum MultibandEditorMessage {
 
     /// Close the editor
     Close,
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Pre-FX chain management (before multiband split)
+    // ─────────────────────────────────────────────────────────────────────
+    /// Open effect picker to add effect to pre-fx chain
+    OpenPreFxEffectPicker,
+
+    /// Effect selected for pre-fx chain
+    PreFxEffectSelected { effect_id: String, source: String },
+
+    /// Remove effect from pre-fx chain
+    RemovePreFxEffect(usize),
+
+    /// Toggle pre-fx effect bypass
+    TogglePreFxBypass(usize),
 
     // ─────────────────────────────────────────────────────────────────────
     // Crossover control
@@ -47,7 +65,7 @@ pub enum MultibandEditorMessage {
     SetBandGain { band: usize, gain: f32 },
 
     // ─────────────────────────────────────────────────────────────────────
-    // Effect management
+    // Band effect management
     // ─────────────────────────────────────────────────────────────────────
     /// Open effect picker to add effect to a band
     OpenEffectPicker(usize),
@@ -67,22 +85,40 @@ pub enum MultibandEditorMessage {
     ToggleEffectBypass { band: usize, effect: usize },
 
     /// Select effect for parameter focus
-    SelectEffect { band: usize, effect: usize },
+    SelectEffect { location: EffectChainLocation, effect: usize },
 
-    /// Set effect parameter value
-    SetEffectParam {
-        band: usize,
+    // ─────────────────────────────────────────────────────────────────────
+    // Knob events (unified for all knobs)
+    // ─────────────────────────────────────────────────────────────────────
+    /// Macro knob event (index, event)
+    MacroKnob { index: usize, event: KnobEvent },
+
+    /// Effect parameter knob event (location, effect_idx, param_idx, event)
+    EffectKnob {
+        location: EffectChainLocation,
         effect: usize,
         param: usize,
-        value: f32,
+        event: KnobEvent,
     },
 
     // ─────────────────────────────────────────────────────────────────────
-    // Macro control
+    // Post-FX chain management (after band summation)
     // ─────────────────────────────────────────────────────────────────────
-    /// Set macro knob value
-    SetMacro { index: usize, value: f32 },
+    /// Open effect picker to add effect to post-fx chain
+    OpenPostFxEffectPicker,
 
+    /// Effect selected for post-fx chain
+    PostFxEffectSelected { effect_id: String, source: String },
+
+    /// Remove effect from post-fx chain
+    RemovePostFxEffect(usize),
+
+    /// Toggle post-fx effect bypass
+    TogglePostFxBypass(usize),
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Macro mapping control (drag-to-map)
+    // ─────────────────────────────────────────────────────────────────────
     /// Rename a macro
     RenameMacro { index: usize, name: String },
 
@@ -124,21 +160,33 @@ pub enum MultibandEditorMessage {
     // ─────────────────────────────────────────────────────────────────────
     // Preset management
     // ─────────────────────────────────────────────────────────────────────
-    /// Open preset browser
+    /// Open preset browser (for loading)
     OpenPresetBrowser,
 
     /// Close preset browser
     ClosePresetBrowser,
 
+    /// Open save dialog
+    OpenSaveDialog,
+
+    /// Close save dialog
+    CloseSaveDialog,
+
+    /// Update preset name input text
+    SetPresetNameInput(String),
+
     /// Load a preset by name
     LoadPreset(String),
 
-    /// Save current state as preset with given name
-    SavePreset(String),
+    /// Save current state as preset (uses preset_name_input)
+    SavePreset,
 
     /// Delete a preset by name
     DeletePreset(String),
 
     /// Refresh available presets list
     RefreshPresets,
+
+    /// Set available presets list (from handler after loading)
+    SetAvailablePresets(Vec<String>),
 }

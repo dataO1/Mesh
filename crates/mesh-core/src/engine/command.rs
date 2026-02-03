@@ -338,6 +338,60 @@ pub enum EngineCommand {
         macro_index: usize,
         value: f32,
     },
+    /// Add an effect to the pre-fx chain (before multiband split)
+    AddMultibandPreFx {
+        deck: usize,
+        stem: Stem,
+        effect: Box<dyn crate::effect::Effect>,
+    },
+    /// Remove an effect from the pre-fx chain
+    RemoveMultibandPreFx {
+        deck: usize,
+        stem: Stem,
+        effect_index: usize,
+    },
+    /// Set bypass state for a pre-fx effect
+    SetMultibandPreFxBypass {
+        deck: usize,
+        stem: Stem,
+        effect_index: usize,
+        bypass: bool,
+    },
+    /// Set a parameter value on a pre-fx effect
+    SetMultibandPreFxParam {
+        deck: usize,
+        stem: Stem,
+        effect_index: usize,
+        param_index: usize,
+        value: f32,
+    },
+    /// Add an effect to the post-fx chain (after band summation)
+    AddMultibandPostFx {
+        deck: usize,
+        stem: Stem,
+        effect: Box<dyn crate::effect::Effect>,
+    },
+    /// Remove an effect from the post-fx chain
+    RemoveMultibandPostFx {
+        deck: usize,
+        stem: Stem,
+        effect_index: usize,
+    },
+    /// Set bypass state for a post-fx effect
+    SetMultibandPostFxBypass {
+        deck: usize,
+        stem: Stem,
+        effect_index: usize,
+        bypass: bool,
+    },
+    /// Set a parameter value on a post-fx effect
+    SetMultibandPostFxParam {
+        deck: usize,
+        stem: Stem,
+        effect_index: usize,
+        param_index: usize,
+        value: f32,
+    },
 
     // ─────────────────────────────────────────────────────────────
     // Mixer Control

@@ -14,3 +14,5 @@ serde_yaml.workspace = true
 tokio.workspace = true
 basedrop = "0.1"
 log = "0.4"
+wgpu = "27"
+bytemuck = { version = "1.14", features = ["derive"] }

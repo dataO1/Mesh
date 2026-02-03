@@ -1,8 +1,10 @@
 //! Multiband Effect Host
 //!
 //! A container effect that provides:
+//! - Pre-FX chain (before multiband split)
 //! - Multiband frequency splitting (optional crossover effect)
 //! - Per-band effect chains (each band can have multiple effects of ANY type)
+//! - Post-FX chain (after bands are summed)
 //! - 8 macro knobs with many-to-many parameter routing
 //!
 //! This is effect-agnostic: it works with any effect implementing the `Effect` trait,
@@ -11,12 +13,11 @@
 //! # Architecture
 //!
 //! ```text
-//! Input → [Crossover Effect] → Band 1 → [Effect Chain] → ┐
-//!                            → Band 2 → [Effect Chain] → ├→ Mix → Output
-//!                            → Band 3 → [Effect Chain] → │
-//!                            → Band N → [Effect Chain] → ┘
+//! Input → [Pre-FX Chain] → [Crossover] → Band 1 → [Effect Chain] → ┐
+//!                                      → Band 2 → [Effect Chain] → ├→ Sum → [Post-FX Chain] → Output
+//!                                      → Band N → [Effect Chain] → ┘
 //!
-//! 8 Macro Knobs → [Routing Matrix] → Effect Parameters
+//! 8 Macro Knobs → [Routing Matrix] → Effect Parameters (Pre-FX, Bands, Post-FX)
 //! ```
 //!
 //! # Single-Band Mode
@@ -250,10 +251,23 @@ impl Default for MultibandConfig {
     }
 }
 
+/// Effect chain location identifier
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectLocation {
+    /// Pre-FX chain (before multiband split)
+    PreFx,
+    /// Band effect chain (with band index)
+    Band(usize),
+    /// Post-FX chain (after band summation)
+    PostFx,
+}
+
 /// Multiband Effect Host
 ///
 /// A container effect that can hold effects of any type (PD, CLAP, native, etc.)
 /// organized into frequency bands with macro knob routing.
+///
+/// Signal flow: Input → Pre-FX → Bands (parallel) → Sum → Post-FX → Output
 ///
 /// Starts with 1 band by default (simple effect container mode).
 /// Add more bands for multiband processing.
@@ -261,11 +275,17 @@ pub struct MultibandHost {
     /// Effect base (info, bypass state, macro values)
     base: EffectBase,
 
+    /// Pre-FX chain: effects processed BEFORE multiband split
+    pre_fx: Vec<Box<dyn Effect>>,
+
     /// Native LR24 crossover for frequency band splitting
     crossover: LinkwitzRileyCrossover,
 
     /// Frequency bands with their effect chains
     bands: Vec<Band>,
+
+    /// Post-FX chain: effects processed AFTER bands are summed
+    post_fx: Vec<Box<dyn Effect>>,
 
     /// Current configuration
     config: MultibandConfig,
@@ -308,8 +328,10 @@ impl MultibandHost {
 
         Self {
             base,
+            pre_fx: Vec::new(),
             crossover: LinkwitzRileyCrossover::new(),
             bands,
+            post_fx: Vec::new(),
             config: MultibandConfig::default(),
             macro_mappings: Default::default(),
             macro_values: [0.5; NUM_MACROS],
@@ -463,6 +485,176 @@ impl MultibandHost {
         self.crossover.set_frequency(index, freq);
         Ok(())
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Pre-FX chain management
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Get number of effects in pre-fx chain
+    pub fn pre_fx_count(&self) -> usize {
+        self.pre_fx.len()
+    }
+
+    /// Get info about a pre-fx effect for UI
+    pub fn pre_fx_info(&self, index: usize) -> Option<BandEffectInfo> {
+        self.pre_fx.get(index).map(|effect| {
+            let info = effect.info();
+            let params = effect.get_params();
+            BandEffectInfo {
+                name: info.name.clone(),
+                category: info.category.clone(),
+                bypassed: effect.is_bypassed(),
+                param_names: info.params.iter().map(|p| p.name.clone()).collect(),
+                param_values: params.iter().map(|p| p.normalized).collect(),
+            }
+        })
+    }
+
+    /// Add an effect to the pre-fx chain
+    pub fn add_pre_fx(&mut self, effect: Box<dyn Effect>) -> MultibandResult<usize> {
+        if self.pre_fx.len() >= MAX_EFFECTS_PER_BAND {
+            return Err(MultibandError::ConfigError(format!(
+                "Pre-FX chain already has maximum {} effects",
+                MAX_EFFECTS_PER_BAND
+            )));
+        }
+
+        let effect_index = self.pre_fx.len();
+        self.pre_fx.push(effect);
+        self.update_latency();
+        Ok(effect_index)
+    }
+
+    /// Remove an effect from the pre-fx chain
+    pub fn remove_pre_fx(&mut self, index: usize) -> MultibandResult<()> {
+        if index >= self.pre_fx.len() {
+            return Err(MultibandError::EffectIndexOutOfBounds {
+                band: 0,
+                index,
+                max: self.pre_fx.len(),
+            });
+        }
+
+        self.pre_fx.remove(index);
+        self.update_latency();
+        Ok(())
+    }
+
+    /// Set pre-fx effect bypass
+    pub fn set_pre_fx_bypass(&mut self, index: usize, bypass: bool) -> MultibandResult<()> {
+        if index >= self.pre_fx.len() {
+            return Err(MultibandError::EffectIndexOutOfBounds {
+                band: 0,
+                index,
+                max: self.pre_fx.len(),
+            });
+        }
+
+        self.pre_fx[index].set_bypass(bypass);
+        self.update_latency();
+        Ok(())
+    }
+
+    /// Set pre-fx effect parameter
+    pub fn set_pre_fx_param(&mut self, effect_index: usize, param_index: usize, value: f32) -> MultibandResult<()> {
+        if effect_index >= self.pre_fx.len() {
+            return Err(MultibandError::EffectIndexOutOfBounds {
+                band: 0,
+                index: effect_index,
+                max: self.pre_fx.len(),
+            });
+        }
+
+        self.pre_fx[effect_index].set_param(param_index, value);
+        Ok(())
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Post-FX chain management
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Get number of effects in post-fx chain
+    pub fn post_fx_count(&self) -> usize {
+        self.post_fx.len()
+    }
+
+    /// Get info about a post-fx effect for UI
+    pub fn post_fx_info(&self, index: usize) -> Option<BandEffectInfo> {
+        self.post_fx.get(index).map(|effect| {
+            let info = effect.info();
+            let params = effect.get_params();
+            BandEffectInfo {
+                name: info.name.clone(),
+                category: info.category.clone(),
+                bypassed: effect.is_bypassed(),
+                param_names: info.params.iter().map(|p| p.name.clone()).collect(),
+                param_values: params.iter().map(|p| p.normalized).collect(),
+            }
+        })
+    }
+
+    /// Add an effect to the post-fx chain
+    pub fn add_post_fx(&mut self, effect: Box<dyn Effect>) -> MultibandResult<usize> {
+        if self.post_fx.len() >= MAX_EFFECTS_PER_BAND {
+            return Err(MultibandError::ConfigError(format!(
+                "Post-FX chain already has maximum {} effects",
+                MAX_EFFECTS_PER_BAND
+            )));
+        }
+
+        let effect_index = self.post_fx.len();
+        self.post_fx.push(effect);
+        self.update_latency();
+        Ok(effect_index)
+    }
+
+    /// Remove an effect from the post-fx chain
+    pub fn remove_post_fx(&mut self, index: usize) -> MultibandResult<()> {
+        if index >= self.post_fx.len() {
+            return Err(MultibandError::EffectIndexOutOfBounds {
+                band: 0,
+                index,
+                max: self.post_fx.len(),
+            });
+        }
+
+        self.post_fx.remove(index);
+        self.update_latency();
+        Ok(())
+    }
+
+    /// Set post-fx effect bypass
+    pub fn set_post_fx_bypass(&mut self, index: usize, bypass: bool) -> MultibandResult<()> {
+        if index >= self.post_fx.len() {
+            return Err(MultibandError::EffectIndexOutOfBounds {
+                band: 0,
+                index,
+                max: self.post_fx.len(),
+            });
+        }
+
+        self.post_fx[index].set_bypass(bypass);
+        self.update_latency();
+        Ok(())
+    }
+
+    /// Set post-fx effect parameter
+    pub fn set_post_fx_param(&mut self, effect_index: usize, param_index: usize, value: f32) -> MultibandResult<()> {
+        if effect_index >= self.post_fx.len() {
+            return Err(MultibandError::EffectIndexOutOfBounds {
+                band: 0,
+                index: effect_index,
+                max: self.post_fx.len(),
+            });
+        }
+
+        self.post_fx[effect_index].set_param(param_index, value);
+        Ok(())
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Band effect chain management
+    // ─────────────────────────────────────────────────────────────────────
 
     /// Add an effect to a band's chain
     pub fn add_effect_to_band(
@@ -678,9 +870,13 @@ impl MultibandHost {
 
     /// Update cached latency value
     fn update_latency(&mut self) {
+        // Pre-FX latency (serial chain)
+        let pre_fx_latency: u32 = self.pre_fx.iter().map(|e| e.latency_samples()).sum();
+
         // Native LR24 crossover has negligible latency (IIR filter)
         let crossover_latency = 0_u32;
 
+        // Band latency (parallel - take max)
         let max_band_latency = self
             .bands
             .iter()
@@ -688,7 +884,10 @@ impl MultibandHost {
             .max()
             .unwrap_or(0);
 
-        self.cached_latency = crossover_latency + max_band_latency;
+        // Post-FX latency (serial chain)
+        let post_fx_latency: u32 = self.post_fx.iter().map(|e| e.latency_samples()).sum();
+
+        self.cached_latency = pre_fx_latency + crossover_latency + max_band_latency + post_fx_latency;
     }
 }
 
@@ -701,6 +900,18 @@ impl Effect for MultibandHost {
         // Apply macro values to effect parameters
         self.apply_macros();
 
+        // ═══════════════════════════════════════════════════════════════════
+        // STEP 1: Pre-FX chain (before multiband split)
+        // ═══════════════════════════════════════════════════════════════════
+        for effect in &mut self.pre_fx {
+            if !effect.is_bypassed() {
+                effect.process(buffer);
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // STEP 2: Multiband processing
+        // ═══════════════════════════════════════════════════════════════════
         let band_count = self.bands.len();
 
         // Single-band mode: no crossover, just process through the band
@@ -713,50 +924,58 @@ impl Effect for MultibandHost {
             } else {
                 buffer.fill_silence();
             }
-            return;
-        }
+        } else {
+            // Multi-band mode with native LR24 crossover
+            // Ensure crossover has correct band count
+            self.crossover.set_band_count(band_count);
 
-        // Multi-band mode with native LR24 crossover
-        // Ensure crossover has correct band count
-        self.crossover.set_band_count(band_count);
-
-        // Resize band buffers to match input length (RT-safe: uses pre-allocated capacity)
-        // This ensures effects only process the valid sample count, not the full 8192 capacity
-        let input_len = buffer.len();
-        for band in &mut self.bands {
-            band.buffer.set_len_from_capacity(input_len);
-        }
-
-        // Step 1: Split input through crossover into band buffers
-        // Process sample-by-sample to split frequencies
-        for (i, sample) in buffer.iter().enumerate() {
-            let band_samples = self.crossover.process(*sample);
-
-            // Copy each band's frequency content to its buffer
-            for (band_idx, band) in self.bands.iter_mut().enumerate() {
-                band.buffer.as_mut_slice()[i] = band_samples[band_idx];
+            // Resize band buffers to match input length (RT-safe: uses pre-allocated capacity)
+            // This ensures effects only process the valid sample count, not the full 8192 capacity
+            let input_len = buffer.len();
+            for band in &mut self.bands {
+                band.buffer.set_len_from_capacity(input_len);
             }
-        }
 
-        // Step 2: Process each band through its effect chain
-        for band in &mut self.bands {
-            if !band.muted && (!self.any_soloed || band.soloed) {
-                band.process();
-            } else {
-                // Muted/not-soloed bands are silent
-                band.buffer.clear();
-            }
-        }
+            // Step 2a: Split input through crossover into band buffers
+            // Process sample-by-sample to split frequencies
+            for (i, sample) in buffer.iter().enumerate() {
+                let band_samples = self.crossover.process(*sample);
 
-        // Step 3: Sum all bands back together
-        buffer.fill_silence();
-        for (i, sample) in buffer.iter_mut().enumerate() {
-            for band in &self.bands {
-                if i < band.buffer.len() {
-                    let band_sample = band.buffer[i];
-                    sample.left += band_sample.left * band.gain;
-                    sample.right += band_sample.right * band.gain;
+                // Copy each band's frequency content to its buffer
+                for (band_idx, band) in self.bands.iter_mut().enumerate() {
+                    band.buffer.as_mut_slice()[i] = band_samples[band_idx];
                 }
+            }
+
+            // Step 2b: Process each band through its effect chain
+            for band in &mut self.bands {
+                if !band.muted && (!self.any_soloed || band.soloed) {
+                    band.process();
+                } else {
+                    // Muted/not-soloed bands are silent
+                    band.buffer.fill_silence();
+                }
+            }
+
+            // Step 2c: Sum all bands back together
+            buffer.fill_silence();
+            for (i, sample) in buffer.iter_mut().enumerate() {
+                for band in &self.bands {
+                    if i < band.buffer.len() {
+                        let band_sample = band.buffer[i];
+                        sample.left += band_sample.left * band.gain;
+                        sample.right += band_sample.right * band.gain;
+                    }
+                }
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // STEP 3: Post-FX chain (after bands are summed)
+        // ═══════════════════════════════════════════════════════════════════
+        for effect in &mut self.post_fx {
+            if !effect.is_bypassed() {
+                effect.process(buffer);
             }
         }
     }
@@ -789,6 +1008,11 @@ impl Effect for MultibandHost {
     }
 
     fn reset(&mut self) {
+        // Reset pre-fx chain
+        for effect in &mut self.pre_fx {
+            effect.reset();
+        }
+
         // Reset all band effects
         for band in &mut self.bands {
             for effect in &mut band.effects {
@@ -798,6 +1022,11 @@ impl Effect for MultibandHost {
 
         // Reset crossover
         self.crossover.reset();
+
+        // Reset post-fx chain
+        for effect in &mut self.post_fx {
+            effect.reset();
+        }
     }
 }
 

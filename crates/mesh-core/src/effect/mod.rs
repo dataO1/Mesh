@@ -10,8 +10,8 @@ pub mod multiband;
 pub mod native;
 
 pub use multiband::{
-    BandEffectInfo, BandState, MacroMapping, MultibandConfig, MultibandError, MultibandHost,
-    MultibandResult, MAX_BANDS, MAX_EFFECTS_PER_BAND, NUM_MACROS,
+    BandEffectInfo, BandState, EffectLocation, MacroMapping, MultibandConfig, MultibandError,
+    MultibandHost, MultibandResult, MAX_BANDS, MAX_EFFECTS_PER_BAND, NUM_MACROS,
 };
 
 use crate::types::StereoBuffer;
