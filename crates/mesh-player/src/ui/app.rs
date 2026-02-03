@@ -27,7 +27,7 @@ use mesh_midi::{MidiController, MidiMessage as MidiMsg, MidiInputEvent, DeckActi
 use mesh_core::engine::{DeckAtomics, LinkedStemAtomics, SlicerAtomics};
 use mesh_core::types::NUM_DECKS;
 use mesh_widgets::{mpsc_subscription, multiband_editor, MultibandEditorState, SliceEditorState};
-use mesh_widgets::multiband::{EffectSourceType, EffectUiState, ParamMacroMapping};
+use mesh_widgets::multiband::{ensure_effect_knobs_exist, EffectSourceType, EffectUiState, ParamMacroMapping};
 use super::collection_browser::{CollectionBrowserState, CollectionBrowserMessage};
 use super::deck_view::{DeckView, DeckMessage};
 use super::effect_picker::{EffectPickerState, EffectPickerMessage};
@@ -315,34 +315,54 @@ impl MeshApp {
                         let stem = self.effect_picker.target_stem_enum();
                         let band = self.effect_picker.target_band;
 
-                        if let Err(e) = self.domain.add_pd_effect(deck, stem, &effect_id, band) {
+                        // Route based on special band markers: 255=pre-fx, 254=post-fx
+                        let result = if band == 255 {
+                            self.domain.add_pd_effect_pre_fx(deck, stem, &effect_id)
+                        } else if band == 254 {
+                            self.domain.add_pd_effect_post_fx(deck, stem, &effect_id)
+                        } else {
+                            self.domain.add_pd_effect(deck, stem, &effect_id, band)
+                        };
+
+                        if let Err(e) = result {
                             log::error!("Failed to add PD effect '{}': {}", effect_id, e);
                             self.status = format!("Failed to add effect: {}", e);
                         } else {
-                            self.status = format!("Added effect to deck {} {} band {}", deck + 1, stem.name(), band);
-                            log::info!("Added PD effect '{}' to deck {} stem {:?} band {}", effect_id, deck, stem, band);
+                            let location = if band == 255 { "pre-fx" } else if band == 254 { "post-fx" } else { "band" };
+                            self.status = format!("Added effect to deck {} {} {}", deck + 1, stem.name(), location);
+                            log::info!("Added PD effect '{}' to deck {} stem {:?} {}", effect_id, deck, stem, location);
 
-                            // Update multiband UI state
-                            if let Some(band_state) = self.multiband_editor.bands.get_mut(band) {
-                                let effect_name = effect_id
-                                    .rsplit('/')
-                                    .next()
-                                    .unwrap_or(&effect_id)
-                                    .trim_end_matches(".pd")
-                                    .to_string();
+                            // Build effect UI state
+                            let effect_name = effect_id
+                                .rsplit('/')
+                                .next()
+                                .unwrap_or(&effect_id)
+                                .trim_end_matches(".pd")
+                                .to_string();
 
-                                band_state.effects.push(EffectUiState {
-                                    id: effect_id.clone(),
-                                    name: effect_name,
-                                    category: "PD".to_string(),
-                                    source: EffectSourceType::Pd,
-                                    bypassed: false,
-                                    param_names: vec!["P1".into(), "P2".into(), "P3".into(), "P4".into(),
-                                                     "P5".into(), "P6".into(), "P7".into(), "P8".into()],
-                                    param_values: vec![0.5; 8],
-                                    param_mappings: vec![ParamMacroMapping::default(); 8],
-                                });
+                            let effect_state = EffectUiState {
+                                id: effect_id.clone(),
+                                name: effect_name,
+                                category: "PD".to_string(),
+                                source: EffectSourceType::Pd,
+                                bypassed: false,
+                                param_names: vec!["P1".into(), "P2".into(), "P3".into(), "P4".into(),
+                                                 "P5".into(), "P6".into(), "P7".into(), "P8".into()],
+                                param_values: vec![0.5; 8],
+                                param_mappings: vec![ParamMacroMapping::default(); 8],
+                            };
+
+                            // Update correct UI state based on location
+                            if band == 255 {
+                                self.multiband_editor.pre_fx.push(effect_state);
+                            } else if band == 254 {
+                                self.multiband_editor.post_fx.push(effect_state);
+                            } else if let Some(band_state) = self.multiband_editor.bands.get_mut(band) {
+                                band_state.effects.push(effect_state);
                             }
+
+                            // Create knobs for the new effect
+                            ensure_effect_knobs_exist(&mut self.multiband_editor);
                         }
                         self.effect_picker.close();
                     }
@@ -352,33 +372,53 @@ impl MeshApp {
                         let stem = self.effect_picker.target_stem_enum();
                         let band = self.effect_picker.target_band;
 
-                        if let Err(e) = self.domain.add_clap_effect(deck, stem, &plugin_id, band) {
+                        // Route based on special band markers: 255=pre-fx, 254=post-fx
+                        let result = if band == 255 {
+                            self.domain.add_clap_effect_pre_fx(deck, stem, &plugin_id)
+                        } else if band == 254 {
+                            self.domain.add_clap_effect_post_fx(deck, stem, &plugin_id)
+                        } else {
+                            self.domain.add_clap_effect(deck, stem, &plugin_id, band)
+                        };
+
+                        if let Err(e) = result {
                             log::error!("Failed to add CLAP effect '{}': {}", plugin_id, e);
                             self.status = format!("Failed to add CLAP effect: {}", e);
                         } else {
-                            self.status = format!("Added effect to deck {} {} band {}", deck + 1, stem.name(), band);
-                            log::info!("Added CLAP effect '{}' to deck {} stem {:?} band {}", plugin_id, deck, stem, band);
+                            let location = if band == 255 { "pre-fx" } else if band == 254 { "post-fx" } else { "band" };
+                            self.status = format!("Added effect to deck {} {} {}", deck + 1, stem.name(), location);
+                            log::info!("Added CLAP effect '{}' to deck {} stem {:?} {}", plugin_id, deck, stem, location);
 
-                            // Update multiband UI state
-                            if let Some(band_state) = self.multiband_editor.bands.get_mut(band) {
-                                let effect_name = plugin_id
-                                    .rsplit('.')
-                                    .next()
-                                    .unwrap_or(&plugin_id)
-                                    .to_string();
+                            // Build effect UI state
+                            let effect_name = plugin_id
+                                .rsplit('.')
+                                .next()
+                                .unwrap_or(&plugin_id)
+                                .to_string();
 
-                                band_state.effects.push(EffectUiState {
-                                    id: plugin_id.clone(),
-                                    name: effect_name,
-                                    category: "CLAP".to_string(),
-                                    source: EffectSourceType::Clap,
-                                    bypassed: false,
-                                    param_names: vec!["P1".into(), "P2".into(), "P3".into(), "P4".into(),
-                                                     "P5".into(), "P6".into(), "P7".into(), "P8".into()],
-                                    param_values: vec![0.5; 8],
-                                    param_mappings: vec![ParamMacroMapping::default(); 8],
-                                });
+                            let effect_state = EffectUiState {
+                                id: plugin_id.clone(),
+                                name: effect_name,
+                                category: "CLAP".to_string(),
+                                source: EffectSourceType::Clap,
+                                bypassed: false,
+                                param_names: vec!["P1".into(), "P2".into(), "P3".into(), "P4".into(),
+                                                 "P5".into(), "P6".into(), "P7".into(), "P8".into()],
+                                param_values: vec![0.5; 8],
+                                param_mappings: vec![ParamMacroMapping::default(); 8],
+                            };
+
+                            // Update correct UI state based on location
+                            if band == 255 {
+                                self.multiband_editor.pre_fx.push(effect_state);
+                            } else if band == 254 {
+                                self.multiband_editor.post_fx.push(effect_state);
+                            } else if let Some(band_state) = self.multiband_editor.bands.get_mut(band) {
+                                band_state.effects.push(effect_state);
                             }
+
+                            // Create knobs for the new effect
+                            ensure_effect_knobs_exist(&mut self.multiband_editor);
                         }
                         self.effect_picker.close();
                     }
