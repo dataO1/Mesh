@@ -93,6 +93,8 @@ pub struct EffectPickerState {
     pub target_deck: usize,
     /// Target stem index (0-3: Vocals, Drums, Bass, Other)
     pub target_stem: usize,
+    /// Target band index in multiband container (0-7)
+    pub target_band: usize,
     /// Currently selected category filter (None = show all)
     pub selected_category: Option<String>,
     /// Filter by source (None = show all, Some = filter)
@@ -105,6 +107,7 @@ impl Default for EffectPickerState {
             is_open: false,
             target_deck: 0,
             target_stem: 0,
+            target_band: 0,
             selected_category: None,
             source_filter: None,
         }
@@ -117,11 +120,17 @@ impl EffectPickerState {
         Self::default()
     }
 
-    /// Open the picker for a specific deck and stem
+    /// Open the picker for a specific deck, stem, and band
     pub fn open(&mut self, deck: usize, stem: usize) {
+        self.open_for_band(deck, stem, 0);
+    }
+
+    /// Open the picker for a specific deck, stem, and band
+    pub fn open_for_band(&mut self, deck: usize, stem: usize, band: usize) {
         self.is_open = true;
         self.target_deck = deck;
         self.target_stem = stem;
+        self.target_band = band;
         self.selected_category = None;
     }
 

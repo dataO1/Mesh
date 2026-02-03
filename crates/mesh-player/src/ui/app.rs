@@ -309,30 +309,32 @@ impl MeshApp {
                         self.effect_picker.close();
                     }
                     EffectPickerMessage::SelectPdEffect(effect_id) => {
-                        // Add PD effect to the target deck/stem
+                        // Add PD effect to the target deck/stem/band
                         let deck = self.effect_picker.target_deck;
                         let stem = self.effect_picker.target_stem_enum();
+                        let band = self.effect_picker.target_band;
 
-                        if let Err(e) = self.domain.add_pd_effect(deck, stem, &effect_id) {
+                        if let Err(e) = self.domain.add_pd_effect(deck, stem, &effect_id, band) {
                             log::error!("Failed to add PD effect '{}': {}", effect_id, e);
                             self.status = format!("Failed to add effect: {}", e);
                         } else {
-                            self.status = format!("Added effect to deck {} {}", deck + 1, stem.name());
-                            log::info!("Added PD effect '{}' to deck {} stem {:?}", effect_id, deck, stem);
+                            self.status = format!("Added effect to deck {} {} band {}", deck + 1, stem.name(), band);
+                            log::info!("Added PD effect '{}' to deck {} stem {:?} band {}", effect_id, deck, stem, band);
                         }
                         self.effect_picker.close();
                     }
                     EffectPickerMessage::SelectClapEffect(plugin_id) => {
-                        // Add CLAP effect to the target deck/stem
+                        // Add CLAP effect to the target deck/stem/band
                         let deck = self.effect_picker.target_deck;
                         let stem = self.effect_picker.target_stem_enum();
+                        let band = self.effect_picker.target_band;
 
-                        if let Err(e) = self.domain.add_clap_effect(deck, stem, &plugin_id) {
+                        if let Err(e) = self.domain.add_clap_effect(deck, stem, &plugin_id, band) {
                             log::error!("Failed to add CLAP effect '{}': {}", plugin_id, e);
                             self.status = format!("Failed to add CLAP effect: {}", e);
                         } else {
-                            self.status = format!("Added effect to deck {} {}", deck + 1, stem.name());
-                            log::info!("Added CLAP effect '{}' to deck {} stem {:?}", plugin_id, deck, stem);
+                            self.status = format!("Added effect to deck {} {} band {}", deck + 1, stem.name(), band);
+                            log::info!("Added CLAP effect '{}' to deck {} stem {:?} band {}", plugin_id, deck, stem, band);
                         }
                         self.effect_picker.close();
                     }

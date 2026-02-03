@@ -319,6 +319,15 @@ impl DeckView {
         }
     }
 
+    /// Get effect chain knob value for a stem
+    pub fn stem_knob_value(&self, stem_idx: usize, knob_idx: usize) -> f32 {
+        if stem_idx < 4 && knob_idx < 8 {
+            self.stem_knobs[stem_idx][knob_idx]
+        } else {
+            0.5 // Default
+        }
+    }
+
     /// Check if key matching is enabled
     pub fn key_match_enabled(&self) -> bool {
         self.key_match_enabled

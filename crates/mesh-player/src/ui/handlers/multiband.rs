@@ -114,10 +114,8 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             // Store which band we're adding to, then open the picker
             let deck = app.multiband_editor.deck;
             let stem_idx = app.multiband_editor.stem;
-            // Open effect picker for this stem
-            app.effect_picker.open(deck, stem_idx);
-            // TODO: The effect picker needs to know which band to add to
-            // For now, we'll add to band 0 always (handled in effect picker)
+            // Open effect picker for this stem and band
+            app.effect_picker.open_for_band(deck, stem_idx, band_idx);
             log::info!("Opening effect picker for band {} (deck {} stem {})", band_idx, deck, stem_idx);
             Task::none()
         }
@@ -126,10 +124,10 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             let deck = app.multiband_editor.deck;
             let stem = Stem::ALL[app.multiband_editor.stem];
 
-            // Add effect based on source type
+            // Add effect based on source type to the specified band
             let result = match source.as_str() {
-                "pd" => app.domain.add_pd_effect(deck, stem, &effect_id),
-                "clap" => app.domain.add_clap_effect(deck, stem, &effect_id),
+                "pd" => app.domain.add_pd_effect(deck, stem, &effect_id, band),
+                "clap" => app.domain.add_clap_effect(deck, stem, &effect_id, band),
                 _ => Err(format!("Unknown effect source: {}", source)),
             };
 
@@ -206,9 +204,18 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         // ─────────────────────────────────────────────────────────────────────
         SetMacro { index, value } => {
             let deck = app.multiband_editor.deck;
-            let stem = Stem::ALL[app.multiband_editor.stem];
+            let stem_idx = app.multiband_editor.stem;
+            let stem = Stem::ALL[stem_idx];
 
+            // Update multiband editor UI state
             app.multiband_editor.set_macro_value(index, value);
+
+            // Sync to deck view (bidirectional sync for consistency)
+            if deck < 4 && stem_idx < 4 && index < 8 {
+                app.deck_views[deck].set_stem_knob(stem_idx, index, value);
+            }
+
+            // Send to engine
             app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandMacro {
                 deck,
                 stem,
@@ -273,15 +280,22 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
     }
 }
 
-/// Sync multiband editor UI state from backend MultibandHost
+/// Sync multiband editor UI state from deck view (single source of truth for now)
+///
+/// This syncs macro values from deck_views to the multiband editor.
+/// The deck_views are synced from the engine when tracks are loaded.
+///
+/// TODO: For true single source of truth, add atomic storage for macros
+/// and read directly from atomics like we do for play_state.
 fn sync_from_backend(app: &mut MeshApp) {
-    // This would read from the engine's MultibandHost state
-    // For now, we just ensure the UI state is consistent
-    // TODO: Read actual state from deck atomics or via message passing
+    let deck = app.multiband_editor.deck;
+    let stem_idx = app.multiband_editor.stem;
 
-    let _deck = app.multiband_editor.deck;
-    let _stem_idx = app.multiband_editor.stem;
-
-    // The multiband editor state is already initialized with defaults
-    // Real sync would query the engine for current band configuration
+    // Sync macro values from deck view (which holds the current state)
+    if deck < 4 && stem_idx < 4 {
+        for macro_idx in 0..8 {
+            let value = app.deck_views[deck].stem_knob_value(stem_idx, macro_idx);
+            app.multiband_editor.set_macro_value(macro_idx, value);
+        }
+    }
 }

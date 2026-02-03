@@ -228,7 +228,7 @@ fn band_column<'a>(band: &'a BandUiState, any_soloed: bool) -> Element<'a, Multi
         .align_x(Alignment::Center)
     )
     .padding(8)
-    .width(Length::Fixed(140.0))
+    .width(Length::FillPortion(1))
     .height(Length::Fill)
     .style(move |_| container::Style {
         background: Some(bg_color.into()),

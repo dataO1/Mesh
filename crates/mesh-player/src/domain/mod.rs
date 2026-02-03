@@ -921,7 +921,8 @@ impl MeshDomain {
     /// * `deck` - Deck index (0-3)
     /// * `stem` - Which stem to add the effect to
     /// * `effect_id` - Effect identifier (folder name in effects/)
-    pub fn add_pd_effect(&mut self, deck: usize, stem: Stem, effect_id: &str) -> Result<(), String> {
+    /// * `band_index` - Band index in the multiband container (0-7)
+    pub fn add_pd_effect(&mut self, deck: usize, stem: Stem, effect_id: &str, band_index: usize) -> Result<(), String> {
         // Create the effect via PdManager (this does the non-RT-safe work)
         // Note: All effects share the single global PdInstance; deck is only used
         // for routing in the audio engine, not for PD isolation.
@@ -930,15 +931,15 @@ impl MeshDomain {
             .create_effect(effect_id)
             .map_err(|e| format!("Failed to create PD effect '{}': {}", effect_id, e))?;
 
-        // Send to audio engine via command (add to band 0 of multiband container)
+        // Send to audio engine via command (add to specified band of multiband container)
         if let Some(ref mut sender) = self.command_sender {
             let _ = sender.send(EngineCommand::AddMultibandBandEffect {
                 deck,
                 stem,
-                band_index: 0,
+                band_index,
                 effect,
             });
-            log::info!("Added PD effect '{}' to deck {} stem {:?}", effect_id, deck, stem);
+            log::info!("Added PD effect '{}' to deck {} stem {:?} band {}", effect_id, deck, stem, band_index);
             Ok(())
         } else {
             Err("Audio engine not connected".to_string())
@@ -981,22 +982,23 @@ impl MeshDomain {
     /// * `deck` - Deck index (0-3)
     /// * `stem` - Which stem to add the effect to
     /// * `plugin_id` - CLAP plugin identifier (e.g., "org.lsp-plug.compressor-stereo")
-    pub fn add_clap_effect(&mut self, deck: usize, stem: Stem, plugin_id: &str) -> Result<(), String> {
+    /// * `band_index` - Band index in the multiband container (0-7)
+    pub fn add_clap_effect(&mut self, deck: usize, stem: Stem, plugin_id: &str, band_index: usize) -> Result<(), String> {
         // Create the effect via ClapManager (this does the non-RT-safe work)
         let effect = self
             .clap_manager
             .create_effect(plugin_id)
             .map_err(|e| format!("Failed to create CLAP effect '{}': {}", plugin_id, e))?;
 
-        // Send to audio engine via command (add to band 0 of multiband container)
+        // Send to audio engine via command (add to specified band of multiband container)
         if let Some(ref mut sender) = self.command_sender {
             let _ = sender.send(EngineCommand::AddMultibandBandEffect {
                 deck,
                 stem,
-                band_index: 0,
+                band_index,
                 effect,
             });
-            log::info!("Added CLAP effect '{}' to deck {} stem {:?}", plugin_id, deck, stem);
+            log::info!("Added CLAP effect '{}' to deck {} stem {:?} band {}", plugin_id, deck, stem, band_index);
             Ok(())
         } else {
             Err("Audio engine not connected".to_string())
