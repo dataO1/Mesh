@@ -2,7 +2,7 @@
 //!
 //! All message types that can be dispatched in the mesh-player application.
 
-use mesh_widgets::PeaksComputeResult;
+use mesh_widgets::{MultibandEditorMessage, PeaksComputeResult};
 
 use crate::config::StemColorPalette;
 use super::collection_browser::CollectionBrowserMessage;
@@ -84,6 +84,9 @@ pub enum Message {
 
     /// Effect picker message
     EffectPicker(EffectPickerMessage),
+
+    /// Multiband editor message
+    Multiband(MultibandEditorMessage),
 
     /// USB manager message received
     Usb(UsbMessage),

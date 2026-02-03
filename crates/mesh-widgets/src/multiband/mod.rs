@@ -29,12 +29,14 @@
 //! └─────────────────────────────────────────────────────────────────────────┘
 //! ```
 
+mod crossover_bar;
 mod message;
 mod state;
 mod view;
 
+pub use crossover_bar::{crossover_bar, crossover_controls, CROSSOVER_BAR_HEIGHT};
 pub use message::MultibandEditorMessage;
-pub use state::{BandUiState, EffectUiState, MultibandEditorState};
+pub use state::{BandUiState, EffectUiState, MacroUiState, MultibandEditorState};
 pub use view::multiband_editor;
 
 /// Frequency range for crossover display (Hz)
@@ -45,7 +47,7 @@ pub const FREQ_MAX: f32 = 20000.0;
 pub const NUM_MACROS: usize = 8;
 
 /// Default band names based on frequency ranges
-pub fn default_band_name(freq_low: f32, freq_high: f32) -> &'static str {
+pub fn default_band_name(_freq_low: f32, freq_high: f32) -> &'static str {
     if freq_high <= 80.0 {
         "Sub"
     } else if freq_high <= 250.0 {

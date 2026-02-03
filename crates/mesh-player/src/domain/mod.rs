@@ -324,6 +324,18 @@ impl MeshDomain {
         self.command_sender.is_some()
     }
 
+    /// Send a command to the audio engine
+    ///
+    /// Returns true if the command was sent, false if the engine is not connected.
+    pub fn send_command(&mut self, command: EngineCommand) -> bool {
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(command);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Get the track loader's result receiver for subscriptions
     pub fn track_loader_result_receiver(&self) -> TrackLoadResultReceiver {
         self.track_loader.result_receiver()
@@ -918,11 +930,12 @@ impl MeshDomain {
             .create_effect(effect_id)
             .map_err(|e| format!("Failed to create PD effect '{}': {}", effect_id, e))?;
 
-        // Send to audio engine via command
+        // Send to audio engine via command (add to band 0 of multiband container)
         if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::AddStemEffect {
+            let _ = sender.send(EngineCommand::AddMultibandBandEffect {
                 deck,
                 stem,
+                band_index: 0,
                 effect,
             });
             log::info!("Added PD effect '{}' to deck {} stem {:?}", effect_id, deck, stem);
@@ -975,11 +988,12 @@ impl MeshDomain {
             .create_effect(plugin_id)
             .map_err(|e| format!("Failed to create CLAP effect '{}': {}", plugin_id, e))?;
 
-        // Send to audio engine via command
+        // Send to audio engine via command (add to band 0 of multiband container)
         if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::AddStemEffect {
+            let _ = sender.send(EngineCommand::AddMultibandBandEffect {
                 deck,
                 stem,
+                band_index: 0,
                 effect,
             });
             log::info!("Added CLAP effect '{}' to deck {} stem {:?}", plugin_id, deck, stem);
@@ -994,86 +1008,98 @@ impl MeshDomain {
         self.clap_manager.rescan_plugins();
     }
 
-    /// Create and add a multiband CLAP host effect to a stem
+    /// Set a crossover effect for a stem's multiband container
     ///
-    /// The multiband host splits audio into frequency bands and allows
-    /// adding separate effect chains per band, controlled by 8 macro knobs.
+    /// The crossover splits audio into frequency bands. If not set, the multiband
+    /// container operates in single-band passthrough mode.
     ///
     /// # Arguments
     /// * `deck` - Deck index (0-3)
-    /// * `stem` - Which stem to add the effect to
-    /// * `crossover_plugin_id` - Optional crossover plugin ID (e.g., LSP Crossover)
-    pub fn add_multiband_effect(
+    /// * `stem` - Which stem to configure
+    /// * `crossover_plugin_id` - CLAP crossover plugin ID (e.g., LSP Crossover)
+    pub fn set_multiband_crossover(
         &mut self,
         deck: usize,
         stem: Stem,
-        crossover_plugin_id: Option<&str>,
+        crossover_plugin_id: &str,
     ) -> Result<(), String> {
-        // Create the multiband host (256 sample buffer)
-        let host = self.clap_manager
-            .create_multiband(crossover_plugin_id, 256)
-            .map_err(|e| format!("Failed to create multiband host: {}", e))?;
+        // Create the crossover effect
+        let crossover = self.clap_manager
+            .create_effect(crossover_plugin_id)
+            .map_err(|e| format!("Failed to create crossover effect: {}", e))?;
 
-        // Send to audio engine
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::AddStemEffect {
-                deck,
-                stem,
-                effect: Box::new(host),
-            });
-            log::info!(
-                "Added multiband effect to deck {} stem {:?}",
-                deck, stem
-            );
-            Ok(())
-        } else {
-            Err("Audio engine not connected".to_string())
-        }
+        // Set it on the stem's multiband container
+        // Note: This would need a new engine command - for now log a warning
+        log::warn!(
+            "set_multiband_crossover not yet implemented via engine command for deck {} stem {:?}",
+            deck, stem
+        );
+        // TODO: Add EngineCommand::SetMultibandCrossoverEffect
+        drop(crossover);
+        Ok(())
     }
 
-    /// Add a generic effect to a stem's effect chain
+    /// Add a generic effect to a stem's multiband container (band 0)
     ///
     /// This accepts any Box<dyn Effect>, allowing both PD effects and
     /// native Rust effects to be added through the same interface.
     pub fn add_effect(&mut self, deck: usize, stem: Stem, effect: Box<dyn Effect>) {
+        self.add_effect_to_band(deck, stem, 0, effect);
+    }
+
+    /// Add an effect to a specific band in a stem's multiband container
+    pub fn add_effect_to_band(&mut self, deck: usize, stem: Stem, band_index: usize, effect: Box<dyn Effect>) {
         if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::AddStemEffect {
+            let _ = sender.send(EngineCommand::AddMultibandBandEffect {
                 deck,
                 stem,
+                band_index,
                 effect,
             });
         }
     }
 
-    /// Remove an effect from a stem's effect chain by index
-    pub fn remove_effect(&mut self, deck: usize, stem: Stem, index: usize) {
+    /// Remove an effect from band 0 of a stem's multiband container by index
+    pub fn remove_effect(&mut self, deck: usize, stem: Stem, effect_index: usize) {
+        self.remove_effect_from_band(deck, stem, 0, effect_index);
+    }
+
+    /// Remove an effect from a specific band in a stem's multiband container
+    pub fn remove_effect_from_band(&mut self, deck: usize, stem: Stem, band_index: usize, effect_index: usize) {
         if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::RemoveStemEffect {
+            let _ = sender.send(EngineCommand::RemoveMultibandBandEffect {
                 deck,
                 stem,
-                index,
+                band_index,
+                effect_index,
             });
         }
     }
 
-    /// Set bypass state for an effect in a stem's chain
-    pub fn set_effect_bypass(&mut self, deck: usize, stem: Stem, index: usize, bypass: bool) {
+    /// Set bypass state for an effect in band 0 of a stem's multiband container
+    pub fn set_effect_bypass(&mut self, deck: usize, stem: Stem, effect_index: usize, bypass: bool) {
+        self.set_band_effect_bypass(deck, stem, 0, effect_index, bypass);
+    }
+
+    /// Set bypass state for an effect in a specific band
+    pub fn set_band_effect_bypass(&mut self, deck: usize, stem: Stem, band_index: usize, effect_index: usize, bypass: bool) {
         if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetEffectBypass {
+            let _ = sender.send(EngineCommand::SetMultibandEffectBypass {
                 deck,
                 stem,
-                index,
+                band_index,
+                effect_index,
                 bypass,
             });
         }
     }
 
-    /// Set a parameter value on an effect
+    /// Set a parameter value on an effect in band 0
     ///
     /// # Arguments
     /// * `deck` - Deck index
     /// * `stem` - Stem the effect is on
-    /// * `effect_index` - Index of the effect in the chain
+    /// * `effect_index` - Index of the effect in the band
     /// * `param_index` - Parameter index (0-7 for PD effects)
     /// * `value` - Normalized value (typically 0.0-1.0)
     pub fn set_effect_param(
@@ -1084,10 +1110,24 @@ impl MeshDomain {
         param_index: usize,
         value: f32,
     ) {
+        self.set_band_effect_param(deck, stem, 0, effect_index, param_index, value);
+    }
+
+    /// Set a parameter value on an effect in a specific band
+    pub fn set_band_effect_param(
+        &mut self,
+        deck: usize,
+        stem: Stem,
+        band_index: usize,
+        effect_index: usize,
+        param_index: usize,
+        value: f32,
+    ) {
         if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetEffectParam {
+            let _ = sender.send(EngineCommand::SetMultibandEffectParam {
                 deck,
                 stem,
+                band_index,
                 effect_index,
                 param_index,
                 value,

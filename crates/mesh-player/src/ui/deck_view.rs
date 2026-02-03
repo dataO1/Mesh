@@ -10,11 +10,11 @@
 //! Note: Waveform display is handled separately in the unified PlayerCanvas
 
 use iced::widget::{button, column, container, mouse_area, row, slider, text, Row, Space};
-use iced::{Background, Center, Color, Element, Fill};
+use iced::{Background, Center, Color, Element, Fill, Length};
 
 use mesh_core::engine::Deck;
 use mesh_core::types::PlayState;
-use mesh_widgets::{rotary_knob, RotaryKnobState, CUE_COLORS};
+use mesh_widgets::CUE_COLORS;
 
 use super::midi_learn::HighlightTarget;
 
@@ -71,8 +71,6 @@ pub struct DeckView {
     stem_effect_names: [Vec<String>; 4],
     /// Effect bypass states per stem
     stem_effect_bypassed: [Vec<bool>; 4],
-    /// Rotary knob states for rendering (8 knobs, shared across stems)
-    knob_states: [RotaryKnobState; 8],
     /// Current action button mode (HotCue or Slicer)
     action_mode: ActionButtonMode,
     /// Whether slicer is active (synced from atomics)
@@ -128,18 +126,12 @@ pub enum DeckMessage {
     ToggleStemMute(usize),
     /// Toggle stem solo
     ToggleStemSolo(usize),
-    /// Select stem tab for effect chain view
+    /// Select stem tab for multiband view
     SelectStem(usize),
-    /// Set effect chain knob value (stem_idx, knob_idx, value)
-    SetStemKnob(usize, usize, f32),
-    /// Toggle effect bypass in chain (stem_idx, effect_idx)
-    ToggleEffectBypass(usize, usize),
-    /// Remove effect from chain (stem_idx, effect_idx)
-    RemoveEffect(usize, usize),
-    /// Open effect picker for a stem (stem_idx)
-    OpenEffectPicker(usize),
-    /// Add effect to stem (stem_idx, effect_id)
-    AddEffect(usize, String),
+    /// Set macro knob value (stem_idx, macro_idx, value)
+    SetMacro(usize, usize, f32),
+    /// Open multiband editor for a stem (stem_idx)
+    OpenMultibandEditor(usize),
     /// Set action button mode (HotCue or Slicer)
     SetActionMode(ActionButtonMode),
     /// Select slicer preset (0-7) - normal click on slicer pad
@@ -179,7 +171,6 @@ impl DeckView {
             stem_knobs: [[0.0; 8]; 4],
             stem_effect_names: Default::default(),
             stem_effect_bypassed: Default::default(),
-            knob_states: Default::default(),
             action_mode: ActionButtonMode::default(),
             slicer_active: false,
             slicer_queue: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
@@ -233,28 +224,30 @@ impl DeckView {
             self.hot_cue_positions[i] = deck.hot_cue(i).map(|hc| hc.position as u64);
         }
 
-        // Sync stem states and effect chains
+        // Sync stem states and multiband containers
         for i in 0..4 {
-            if let Some(chain) = deck.stem_chain(i) {
-                self.stem_muted[i] = chain.is_muted();
-                self.stem_soloed[i] = chain.is_soloed();
+            let stem = mesh_core::types::Stem::ALL[i];
+            let stem_state = deck.stem(stem);
 
-                // Sync effect chain info
-                let effect_count = chain.effect_count();
-                self.stem_effect_names[i].clear();
-                self.stem_effect_bypassed[i].clear();
+            // Mute/solo is on StemState itself
+            self.stem_muted[i] = stem_state.muted;
+            self.stem_soloed[i] = stem_state.soloed;
 
-                for j in 0..effect_count {
-                    if let Some(effect) = chain.get_effect(j) {
-                        self.stem_effect_names[i].push(effect.info().name.clone());
-                        self.stem_effect_bypassed[i].push(effect.is_bypassed());
-                    }
+            // Sync effect info from band 0 (for backward compatibility display)
+            let effect_count = stem_state.multiband.band_effect_count(0);
+            self.stem_effect_names[i].clear();
+            self.stem_effect_bypassed[i].clear();
+
+            for j in 0..effect_count {
+                if let Some(info) = stem_state.multiband.band_effect_info(0, j) {
+                    self.stem_effect_names[i].push(info.name.clone());
+                    self.stem_effect_bypassed[i].push(info.bypassed);
                 }
+            }
 
-                // Sync knob values
-                for k in 0..8 {
-                    self.stem_knobs[i][k] = chain.get_knob(k);
-                }
+            // Sync macro values (knobs are now macros on the multiband)
+            for k in 0..8 {
+                self.stem_knobs[i][k] = stem_state.multiband.macro_value(k);
             }
         }
     }
@@ -265,42 +258,6 @@ impl DeckView {
     /// without acquiring the engine mutex.
     pub fn sync_play_state(&mut self, state: PlayState) {
         self.state = state;
-    }
-
-    /// Add an effect to a stem's chain (UI state only)
-    ///
-    /// Called after successfully adding an effect to the engine to keep
-    /// the UI in sync without needing direct access to the audio thread.
-    pub fn add_effect(&mut self, stem_idx: usize, effect_name: String) {
-        if stem_idx < 4 {
-            self.stem_effect_names[stem_idx].push(effect_name);
-            self.stem_effect_bypassed[stem_idx].push(false); // New effects start active
-        }
-    }
-
-    /// Remove an effect from a stem's chain (UI state only)
-    pub fn remove_effect(&mut self, stem_idx: usize, effect_idx: usize) {
-        if stem_idx < 4 && effect_idx < self.stem_effect_names[stem_idx].len() {
-            self.stem_effect_names[stem_idx].remove(effect_idx);
-            self.stem_effect_bypassed[stem_idx].remove(effect_idx);
-        }
-    }
-
-    /// Toggle bypass state for an effect (UI state only)
-    pub fn toggle_effect_bypass(&mut self, stem_idx: usize, effect_idx: usize) {
-        if stem_idx < 4 && effect_idx < self.stem_effect_bypassed[stem_idx].len() {
-            self.stem_effect_bypassed[stem_idx][effect_idx] =
-                !self.stem_effect_bypassed[stem_idx][effect_idx];
-        }
-    }
-
-    /// Get bypass state for an effect
-    pub fn is_effect_bypassed(&self, stem_idx: usize, effect_idx: usize) -> bool {
-        if stem_idx < 4 && effect_idx < self.stem_effect_bypassed[stem_idx].len() {
-            self.stem_effect_bypassed[stem_idx][effect_idx]
-        } else {
-            false
-        }
     }
 
     /// Sync loop length from atomics (lock-free UI update)
@@ -492,13 +449,18 @@ impl DeckView {
                 deck.beat_jump_forward();
             }
             DeckMessage::ToggleStemMute(stem_idx) => {
-                if let Some(chain) = deck.stem_chain_mut(stem_idx) {
-                    chain.set_muted(!chain.is_muted());
+                // Mute/solo is now on StemState directly
+                if stem_idx < 4 {
+                    let stem = mesh_core::types::Stem::ALL[stem_idx];
+                    let stem_state = deck.stem_mut(stem);
+                    stem_state.muted = !stem_state.muted;
                 }
             }
             DeckMessage::ToggleStemSolo(stem_idx) => {
-                if let Some(chain) = deck.stem_chain_mut(stem_idx) {
-                    chain.set_soloed(!chain.is_soloed());
+                if stem_idx < 4 {
+                    let stem = mesh_core::types::Stem::ALL[stem_idx];
+                    let stem_state = deck.stem_mut(stem);
+                    stem_state.soloed = !stem_state.soloed;
                 }
             }
             DeckMessage::SelectStem(stem_idx) => {
@@ -506,29 +468,15 @@ impl DeckView {
                     self.selected_stem = stem_idx;
                 }
             }
-            DeckMessage::SetStemKnob(stem_idx, knob_idx, value) => {
-                if stem_idx < 4 && knob_idx < 8 {
-                    self.stem_knobs[stem_idx][knob_idx] = value;
-                    if let Some(chain) = deck.stem_chain_mut(stem_idx) {
-                        chain.set_knob(knob_idx, value);
-                    }
+            DeckMessage::OpenMultibandEditor(_stem_idx) => {
+                // Handled at app level - opens multiband editor modal
+            }
+            DeckMessage::SetMacro(stem_idx, macro_idx, value) => {
+                // Update local UI state for immediate feedback
+                if stem_idx < 4 && macro_idx < 8 {
+                    self.stem_knobs[stem_idx][macro_idx] = value;
                 }
-            }
-            DeckMessage::ToggleEffectBypass(stem_idx, effect_idx) => {
-                if let Some(chain) = deck.stem_chain_mut(stem_idx) {
-                    if let Some(effect) = chain.get_effect_mut(effect_idx) {
-                        effect.set_bypass(!effect.is_bypassed());
-                    }
-                }
-            }
-            DeckMessage::RemoveEffect(_stem_idx, _effect_idx) => {
-                // Handled at app level via EngineCommand::RemoveStemEffect
-            }
-            DeckMessage::OpenEffectPicker(_stem_idx) => {
-                // Handled at app level - opens effect selection UI
-            }
-            DeckMessage::AddEffect(_stem_idx, _effect_id) => {
-                // Handled at app level via domain.add_pd_effect()
+                // Actual engine update handled at app level
             }
             DeckMessage::SetActionMode(mode) => {
                 self.action_mode = mode;
@@ -836,71 +784,39 @@ impl DeckView {
         .into()
     }
 
-    /// View the effect chain for a stem
+    /// View the multiband container summary for a stem
+    ///
+    /// Shows a button to open the multiband editor and a brief effect count summary.
     fn view_effect_chain(&self, stem_idx: usize) -> Element<'_, DeckMessage> {
         let effects = &self.stem_effect_names[stem_idx];
-        let bypassed = &self.stem_effect_bypassed[stem_idx];
 
-        if effects.is_empty() {
-            return row![
-                text("Chain: ").size(10),
-                text("(empty)").size(10),
-                button(text("+").size(10))
-                    .on_press(DeckMessage::OpenEffectPicker(stem_idx))
-                    .padding(3),
-            ]
-            .spacing(3)
-            .align_y(Center)
-            .into();
-        }
+        // "Multiband" button opens the full multiband editor
+        let edit_btn = button(text("Multiband").size(9))
+            .on_press(DeckMessage::OpenMultibandEditor(stem_idx))
+            .padding(3);
 
-        // Build effect chain display: [Effect1 ●]──[Effect2 ◯]──[+]
-        let mut chain_elements: Vec<Element<DeckMessage>> = Vec::new();
-        chain_elements.push(text("Chain: ").size(10).into());
+        let effect_count = if effects.is_empty() {
+            text("(no effects)").size(9)
+        } else {
+            text(format!("({} effects)", effects.len())).size(9)
+        };
 
-        for (i, name) in effects.iter().enumerate() {
-            let is_bypassed = bypassed.get(i).copied().unwrap_or(false);
-            let bypass_indicator = if is_bypassed { "◯" } else { "●" };
-
-            // Shorten effect name if needed
-            let short_name: String = name.chars().take(8).collect();
-            let label = format!("{} {}", short_name, bypass_indicator);
-
-            let effect_btn = button(text(label).size(9))
-                .on_press(DeckMessage::ToggleEffectBypass(stem_idx, i))
-                .padding(3);
-
-            chain_elements.push(effect_btn.into());
-
-            // Add connector if not last
-            if i < effects.len() - 1 {
-                chain_elements.push(text("─").size(10).into());
-            }
-        }
-
-        // Add button for adding new effects
-        chain_elements.push(text("─").size(10).into());
-        chain_elements.push(
-            button(text("+").size(10))
-                .on_press(DeckMessage::OpenEffectPicker(stem_idx))
-                .padding(3)
-                .into()
-        );
-
-        Row::with_children(chain_elements)
-            .spacing(2)
+        row![edit_btn, effect_count]
+            .spacing(5)
             .align_y(Center)
             .into()
     }
 
-    /// View the 8 mappable knobs for the stem's effect chain
+    /// View the 8 macro knobs for the stem's multiband container
+    ///
+    /// These are interactive sliders that control the multiband macros in real-time.
     fn view_chain_knobs(&self, stem_idx: usize) -> Element<'_, DeckMessage> {
         let knobs: Vec<Element<DeckMessage>> = (0..8)
             .map(|k| {
                 let value = self.stem_knobs[stem_idx][k];
                 column![
                     text(format!("{}", k + 1)).size(8),
-                    slider(0.0..=1.0, value, move |v| DeckMessage::SetStemKnob(stem_idx, k, v))
+                    slider(0.0..=1.0, value, move |v| DeckMessage::SetMacro(stem_idx, k, v))
                         .width(30),
                 ]
                 .spacing(1)
@@ -910,7 +826,7 @@ impl DeckView {
             .collect();
 
         row![
-            text("KNOBS").size(8),
+            text("MACROS").size(8),
             Row::with_children(knobs).spacing(4),
         ]
         .spacing(5)
@@ -1419,67 +1335,40 @@ impl DeckView {
             .into()
     }
 
-    /// Compact effect chain view
+    /// Compact multiband summary view
     fn view_effect_chain_compact(&self, stem_idx: usize) -> Element<'_, DeckMessage> {
         let effects = &self.stem_effect_names[stem_idx];
-        let bypassed = &self.stem_effect_bypassed[stem_idx];
 
-        let mut chain_elements: Vec<Element<DeckMessage>> = Vec::new();
+        // "Multiband" button opens the full multiband editor
+        let edit_btn = button(text("Multiband").size(9))
+            .on_press(DeckMessage::OpenMultibandEditor(stem_idx))
+            .padding(2);
 
-        if effects.is_empty() {
-            chain_elements.push(text("Chain: (empty)").size(9).into());
-            chain_elements.push(
-                button(text("+").size(9))
-                    .on_press(DeckMessage::OpenEffectPicker(stem_idx))
-                    .padding(2)
-                    .into()
-            );
+        let effect_count = if effects.is_empty() {
+            text("(empty)").size(9)
         } else {
-            for (i, name) in effects.iter().enumerate() {
-                let is_bypassed = bypassed.get(i).copied().unwrap_or(false);
-                let indicator = if is_bypassed { "◯" } else { "●" };
-                let short_name: String = name.chars().take(6).collect();
+            text(format!("({})", effects.len())).size(9)
+        };
 
-                let effect_btn = button(text(format!("{}{}", short_name, indicator)).size(9))
-                    .on_press(DeckMessage::ToggleEffectBypass(stem_idx, i))
-                    .padding(2);
-
-                chain_elements.push(effect_btn.into());
-
-                if i < effects.len() - 1 {
-                    chain_elements.push(text("→").size(9).into());
-                }
-            }
-            chain_elements.push(text("→").size(9).into());
-            chain_elements.push(
-                button(text("+").size(9))
-                    .on_press(DeckMessage::OpenEffectPicker(stem_idx))
-                    .padding(2)
-                    .into()
-            );
-        }
-
-        Row::with_children(chain_elements)
-            .spacing(2)
+        row![edit_btn, effect_count]
+            .spacing(3)
             .align_y(Center)
             .into()
     }
 
-    /// Compact knob row using rotary knobs
+    /// Compact macro sliders for real-time control
     fn view_chain_knobs_compact(&self, stem_idx: usize) -> Element<'_, DeckMessage> {
-        const KNOB_SIZE: f32 = 32.0;
-        const KNOB_LABELS: [&str; 8] = ["1", "2", "3", "4", "5", "6", "7", "8"];
-
         let knobs: Vec<Element<DeckMessage>> = (0..8)
             .map(|k| {
                 let value = self.stem_knobs[stem_idx][k];
-                rotary_knob(
-                    &self.knob_states[k],
-                    value,
-                    KNOB_SIZE,
-                    Some(KNOB_LABELS[k]),
-                    move |v| DeckMessage::SetStemKnob(stem_idx, k, v),
-                )
+                column![
+                    text(format!("{}", k + 1)).size(7),
+                    slider(0.0..=1.0, value, move |v| DeckMessage::SetMacro(stem_idx, k, v))
+                        .width(28),
+                ]
+                .spacing(1)
+                .align_x(Center)
+                .into()
             })
             .collect();
 

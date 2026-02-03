@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 use crate::config::LoudnessConfig;
+use crate::effect::Effect;
 use crate::db::DatabaseService;
 use crate::loader::{HostTrackParams, LinkedStemLoader, LinkedStemResultReceiver};
 use crate::music::semitones_to_match;
@@ -528,8 +529,8 @@ impl AudioEngine {
             let stretch_latency = self.stretchers[deck].total_latency() as u32;
 
             for (stem_idx, stem) in Stem::ALL.iter().enumerate() {
-                let effect_latency = d.stem(*stem).chain.total_latency();
-                // Total latency = effect chain + timestretch
+                let effect_latency = d.stem(*stem).multiband.latency_samples();
+                // Total latency = multiband container + timestretch
                 let total_latency = effect_latency + stretch_latency;
                 self.latency_compensator.set_stem_latency(deck, stem_idx, total_latency);
             }
@@ -950,52 +951,89 @@ impl AudioEngine {
                     }
                 }
 
-                // Effect Control
-                EngineCommand::AddStemEffect { deck, stem, effect } => {
+                // Multiband Container Control
+                EngineCommand::SetMultibandCrossover { deck, stem, crossover_index, freq } => {
                     if let Some(d) = self.decks.get_mut(deck) {
-                        if let Some(chain) = d.stem_chain_mut(stem as usize) {
-                            chain.add_effect(effect);
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            let _ = multiband.set_crossover_frequency(crossover_index, freq);
                         }
                     }
                     self.update_deck_latencies(deck);
                 }
-                EngineCommand::RemoveStemEffect { deck, stem, index } => {
+                EngineCommand::AddMultibandBand { deck, stem } => {
                     if let Some(d) = self.decks.get_mut(deck) {
-                        if let Some(chain) = d.stem_chain_mut(stem as usize) {
-                            let _removed = chain.remove_effect(index);
-                            // Note: removed effect will be dropped here
-                            // TODO: Send to GC channel if needed for delayed cleanup
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            let _ = multiband.add_band();
                         }
                     }
                     self.update_deck_latencies(deck);
                 }
-                EngineCommand::SetEffectBypass { deck, stem, index, bypass } => {
+                EngineCommand::RemoveMultibandBand { deck, stem, band_index } => {
                     if let Some(d) = self.decks.get_mut(deck) {
-                        if let Some(chain) = d.stem_chain_mut(stem as usize) {
-                            chain.set_effect_bypass(index, bypass);
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            let _ = multiband.remove_band(band_index);
                         }
                     }
                     self.update_deck_latencies(deck);
                 }
-                EngineCommand::SetEffectParam { deck, stem, effect_index, param_index, value } => {
-                    log::debug!(
-                        "SetEffectParam: deck={}, stem={:?}, effect={}, param={}, value={}",
-                        deck, stem, effect_index, param_index, value
-                    );
+                EngineCommand::SetMultibandBandMute { deck, stem, band_index, muted } => {
                     if let Some(d) = self.decks.get_mut(deck) {
-                        if let Some(chain) = d.stem_chain_mut(stem as usize) {
-                            log::debug!("  Chain has {} effects", chain.effect_count());
-                            if let Some(effect) = chain.get_effect_mut(effect_index) {
-                                log::debug!("  Calling set_param on effect");
-                                effect.set_param(param_index, value);
-                            } else {
-                                log::debug!("  No effect at index {}", effect_index);
-                            }
-                        } else {
-                            log::debug!("  No stem chain for stem {:?}", stem);
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            let _ = multiband.set_band_mute(band_index, muted);
                         }
-                    } else {
-                        log::debug!("  No deck {}", deck);
+                    }
+                }
+                EngineCommand::SetMultibandBandSolo { deck, stem, band_index, soloed } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            let _ = multiband.set_band_solo(band_index, soloed);
+                        }
+                    }
+                }
+                EngineCommand::SetMultibandBandGain { deck, stem, band_index, gain } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            let _ = multiband.set_band_gain(band_index, gain);
+                        }
+                    }
+                }
+                EngineCommand::AddMultibandBandEffect { deck, stem, band_index, effect } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            let _ = multiband.add_effect_to_band(band_index, effect);
+                        }
+                    }
+                    self.update_deck_latencies(deck);
+                }
+                EngineCommand::RemoveMultibandBandEffect { deck, stem, band_index, effect_index } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            let _ = multiband.remove_effect_from_band(band_index, effect_index);
+                        }
+                    }
+                    self.update_deck_latencies(deck);
+                }
+                EngineCommand::SetMultibandEffectBypass { deck, stem, band_index, effect_index, bypass } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            let _ = multiband.set_effect_bypass(band_index, effect_index, bypass);
+                        }
+                    }
+                    self.update_deck_latencies(deck);
+                }
+                EngineCommand::SetMultibandEffectParam { deck, stem, band_index, effect_index, param_index, value } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            let _ = multiband.set_effect_param(band_index, effect_index, param_index, value);
+                        }
+                    }
+                }
+                EngineCommand::SetMultibandMacro { deck, stem, macro_index, value } => {
+                    // Macros are exposed as MultibandHost's top-level parameters (indices 0-7)
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            multiband.set_param(macro_index, value);
+                        }
                     }
                 }
 
@@ -1171,7 +1209,7 @@ impl AudioEngine {
         for deck in &mut self.decks {
             if deck.has_track() {
                 for stem in Stem::ALL {
-                    deck.stem_mut(stem).chain.reset();
+                    deck.stem_mut(stem).multiband.reset();
                 }
             }
         }

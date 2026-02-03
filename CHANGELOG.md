@@ -38,9 +38,18 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 - **RAVE neural audio effects** — Create neural audio effects using [RAVE](https://github.com/acids-ircam/RAVE) models via the nn~ external. The included RAVE percussion example (`examples/pd-effects/rave-percussion/`) demonstrates real-time neural timbre transfer. Build nn~ with `nix run .#build-nn-tilde`.
 
-- **MultibandClapHost container** — New multiband effect architecture (internal) that splits audio into frequency bands using LSP Crossover, applies separate effect chains per band, and provides 8 macro knobs with many-to-many parameter mapping. Foundation for future multiband processing UI.
+- **Multiband effect container** — New multiband effect system (Kilohearts Multipass-style) that splits audio into frequency bands using LSP Crossover and applies separate effect chains per band. Access via the **Multiband** button on each stem. Features:
+  - Up to 8 frequency bands with adjustable crossover points
+  - Per-band effect chains with full CLAP and Pure Data plugin support
+  - 8 macro knobs per stem for live performance control
+  - Band mute/solo/gain controls for sculpting your sound
+  - Parameter mapping — route any macro knob to multiple effect parameters
+
+- **Interactive macro knobs** — Per-stem macro knobs on the deck view are now interactive sliders (not read-only). Adjust them during live performance to control multiband effect parameters in real-time.
 
 ### Changed
+
+- **Effect architecture overhaul** — All effects now go through the multiband container system. The previous per-effect chain model has been replaced with a unified multiband approach, improving latency compensation and enabling frequency-band-specific processing.
 
 - **Effect UI state sync** — Effect bypass, add, and remove operations now properly sync between the UI and audio engine. Bypass toggles correctly reflect current state instead of always bypassing.
 

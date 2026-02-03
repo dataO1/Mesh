@@ -7,9 +7,9 @@
 //!
 //! # Architecture
 //!
-//! The slicer operates after track samples are read but before the effect chain:
+//! The slicer operates after track samples are read but before the multiband container:
 //! ```text
-//! Track → Deck.process() → [SLICER] → EffectChain → TimeStretch → Mixer
+//! Track → Deck.process() → [SLICER] → MultibandHost → TimeStretch → Mixer
 //! ```
 //!
 //! # Modes

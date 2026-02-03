@@ -7,7 +7,7 @@
 //!
 //! Linked stems are injected into the deck processing pipeline BEFORE the slicer:
 //! ```text
-//! Track.stems → [LINKED STEM INJECTION] → Slicer → EffectChain → TimeStretch → Mixer
+//! Track.stems → [LINKED STEM INJECTION] → Slicer → MultibandHost → TimeStretch → Mixer
 //! ```
 //!
 //! # BPM Synchronization

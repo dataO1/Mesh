@@ -248,42 +248,94 @@ pub enum EngineCommand {
     LoadLinkedStem(Box<LoadLinkedStemRequest>),
 
     // ─────────────────────────────────────────────────────────────
-    // Effect Control
+    // Multiband Container Control
     // ─────────────────────────────────────────────────────────────
-    /// Add an effect to a stem's effect chain
+    // Each stem has exactly one MultibandHost (always present).
+    // Effects are added INTO the multiband's bands, not alongside it.
+    // ─────────────────────────────────────────────────────────────
+    /// Set a crossover frequency for a stem's multiband container
     ///
-    /// The effect should be created outside the audio thread (e.g., by PdManager)
-    /// and sent via this command. The audio thread only does the fast pointer
-    /// operation of adding to the chain.
-    ///
-    /// Boxed because Box<dyn Effect> is a trait object (16 bytes + effect data).
-    AddStemEffect {
+    /// The crossover_index is 0-based (0 = first crossover between bands 0 and 1).
+    /// Frequency is in Hz and will be clamped to valid range.
+    SetMultibandCrossover {
         deck: usize,
         stem: Stem,
+        crossover_index: usize,
+        freq: f32,
+    },
+    /// Add a band to a stem's multiband container (splits the last band)
+    ///
+    /// Maximum 8 bands supported. If already at max, this is a no-op.
+    AddMultibandBand { deck: usize, stem: Stem },
+    /// Remove a band from a stem's multiband container by index
+    ///
+    /// Minimum 1 band required. If only 1 band exists, this is a no-op.
+    RemoveMultibandBand {
+        deck: usize,
+        stem: Stem,
+        band_index: usize,
+    },
+    /// Set mute state for a band in a stem's multiband container
+    SetMultibandBandMute {
+        deck: usize,
+        stem: Stem,
+        band_index: usize,
+        muted: bool,
+    },
+    /// Set solo state for a band in a stem's multiband container
+    SetMultibandBandSolo {
+        deck: usize,
+        stem: Stem,
+        band_index: usize,
+        soloed: bool,
+    },
+    /// Set gain for a band in a stem's multiband container (linear, 0.0-2.0)
+    SetMultibandBandGain {
+        deck: usize,
+        stem: Stem,
+        band_index: usize,
+        gain: f32,
+    },
+    /// Add an effect to a band's chain in a stem's multiband container
+    ///
+    /// Maximum 8 effects per band. Boxed because Box<dyn Effect> is a trait object.
+    AddMultibandBandEffect {
+        deck: usize,
+        stem: Stem,
+        band_index: usize,
         effect: Box<dyn crate::effect::Effect>,
     },
-    /// Remove an effect from a stem's effect chain by index
-    ///
-    /// Returns the removed effect via garbage collection channel (if GC is active).
-    /// If index is out of bounds, this is a no-op.
-    RemoveStemEffect {
+    /// Remove an effect from a band's chain in a stem's multiband container
+    RemoveMultibandBandEffect {
         deck: usize,
         stem: Stem,
-        index: usize,
+        band_index: usize,
+        effect_index: usize,
     },
-    /// Set bypass state for an effect in a stem's chain
-    SetEffectBypass {
+    /// Set bypass state for an effect within a multiband band
+    SetMultibandEffectBypass {
         deck: usize,
         stem: Stem,
-        index: usize,
+        band_index: usize,
+        effect_index: usize,
         bypass: bool,
     },
-    /// Set a parameter value on an effect in a stem's chain
-    SetEffectParam {
+    /// Set a parameter value on an effect within a multiband band
+    SetMultibandEffectParam {
         deck: usize,
         stem: Stem,
+        band_index: usize,
         effect_index: usize,
         param_index: usize,
+        value: f32,
+    },
+    /// Set a macro value in a stem's multiband container (0-7)
+    ///
+    /// The macro system allows one knob to control multiple parameters.
+    SetMultibandMacro {
+        deck: usize,
+        stem: Stem,
+        macro_index: usize,
         value: f32,
     },
 

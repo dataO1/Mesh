@@ -26,7 +26,7 @@ use crate::domain::MeshDomain;
 use mesh_midi::{MidiController, MidiMessage as MidiMsg, MidiInputEvent, DeckAction as MidiDeckAction, MixerAction as MidiMixerAction, BrowserAction as MidiBrowserAction};
 use mesh_core::engine::{DeckAtomics, LinkedStemAtomics, SlicerAtomics};
 use mesh_core::types::NUM_DECKS;
-use mesh_widgets::{mpsc_subscription, SliceEditorState};
+use mesh_widgets::{mpsc_subscription, multiband_editor, MultibandEditorState, SliceEditorState};
 use super::collection_browser::{CollectionBrowserState, CollectionBrowserMessage};
 use super::deck_view::{DeckView, DeckMessage};
 use super::effect_picker::{EffectPickerState, EffectPickerMessage};
@@ -79,6 +79,8 @@ pub struct MeshApp {
     pub(crate) slice_editor: SliceEditorState,
     /// Effect picker modal state
     pub(crate) effect_picker: EffectPickerState,
+    /// Multiband editor modal state
+    pub(crate) multiband_editor: MultibandEditorState,
 }
 
 // Message enum moved to message.rs
@@ -209,6 +211,7 @@ impl MeshApp {
             app_mode: if mapping_mode { AppMode::Mapping } else { AppMode::Performance },
             stem_link_state: StemLinkState::Idle,
             effect_picker: EffectPickerState::new(),
+            multiband_editor: MultibandEditorState::new(),
         }
     }
 
@@ -309,22 +312,12 @@ impl MeshApp {
                         // Add PD effect to the target deck/stem
                         let deck = self.effect_picker.target_deck;
                         let stem = self.effect_picker.target_stem_enum();
-                        let stem_idx = self.effect_picker.target_stem;
-
-                        // Look up the effect's display name
-                        let effect_name = self.domain.available_effects()
-                            .iter()
-                            .find(|e| e.id == effect_id)
-                            .map(|e| e.name().to_string())
-                            .unwrap_or_else(|| effect_id.clone());
 
                         if let Err(e) = self.domain.add_pd_effect(deck, stem, &effect_id) {
                             log::error!("Failed to add PD effect '{}': {}", effect_id, e);
                             self.status = format!("Failed to add effect: {}", e);
                         } else {
-                            // Update UI state to show the effect
-                            self.deck_views[deck].add_effect(stem_idx, effect_name.clone());
-                            self.status = format!("Added {} to deck {} {}", effect_name, deck + 1, stem.name());
+                            self.status = format!("Added effect to deck {} {}", deck + 1, stem.name());
                             log::info!("Added PD effect '{}' to deck {} stem {:?}", effect_id, deck, stem);
                         }
                         self.effect_picker.close();
@@ -333,22 +326,12 @@ impl MeshApp {
                         // Add CLAP effect to the target deck/stem
                         let deck = self.effect_picker.target_deck;
                         let stem = self.effect_picker.target_stem_enum();
-                        let stem_idx = self.effect_picker.target_stem;
-
-                        // Look up the plugin's display name
-                        let effect_name = self.domain.available_clap_plugins()
-                            .iter()
-                            .find(|p| p.id == plugin_id)
-                            .map(|p| p.name.clone())
-                            .unwrap_or_else(|| plugin_id.clone());
 
                         if let Err(e) = self.domain.add_clap_effect(deck, stem, &plugin_id) {
                             log::error!("Failed to add CLAP effect '{}': {}", plugin_id, e);
                             self.status = format!("Failed to add CLAP effect: {}", e);
                         } else {
-                            // Update UI state to show the effect
-                            self.deck_views[deck].add_effect(stem_idx, effect_name.clone());
-                            self.status = format!("Added {} to deck {} {}", effect_name, deck + 1, stem.name());
+                            self.status = format!("Added effect to deck {} {}", deck + 1, stem.name());
                             log::info!("Added CLAP effect '{}' to deck {} stem {:?}", plugin_id, deck, stem);
                         }
                         self.effect_picker.close();
@@ -358,6 +341,10 @@ impl MeshApp {
                     }
                 }
                 Task::none()
+            }
+
+            Message::Multiband(multiband_msg) => {
+                super::handlers::multiband::handle(self, multiband_msg)
             }
         }
     }
@@ -868,6 +855,14 @@ impl MeshApp {
                 .height(Length::Fill);
 
             stack![with_drawer, backdrop, modal].into()
+        } else if self.multiband_editor.is_open {
+            // Overlay multiband editor modal
+            if let Some(editor_view) = multiband_editor(&self.multiband_editor) {
+                let modal = editor_view.map(Message::Multiband);
+                stack![with_drawer, modal].into()
+            } else {
+                with_drawer
+            }
         } else {
             with_drawer
         }

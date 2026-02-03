@@ -1,4 +1,4 @@
-//! Deck - Individual track player with stems and effect chains
+//! Deck - Individual track player with stems and multiband effects
 
 use std::sync::atomic::{AtomicBool, AtomicI8, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
@@ -6,7 +6,7 @@ use std::sync::Arc;
 use rayon::prelude::*;
 
 use crate::audio_file::LoadedTrack;
-use crate::effect::EffectChain;
+use crate::effect::{Effect, MultibandHost};
 use crate::types::{
     DeckId, PlayState, Stem, StereoBuffer, StereoSample, TransportPosition,
     NUM_STEMS, SAMPLE_RATE,
@@ -265,10 +265,17 @@ impl LoopState {
     }
 }
 
-/// Per-stem state including mute/solo and effect chain
+/// Per-stem state including mute/solo and multiband effect container
+///
+/// Each stem has a MultibandHost that is always present (defaults to single-band
+/// passthrough mode). Effects are added INTO the bands of the multiband container,
+/// not alongside it.
 pub struct StemState {
-    /// Effect chain for this stem
-    pub chain: EffectChain,
+    /// Multiband effect container for this stem
+    ///
+    /// Always present. Defaults to single-band mode (passthrough).
+    /// User can expand to multiple bands and add effects per band.
+    pub multiband: MultibandHost,
     /// Whether this stem is muted
     pub muted: bool,
     /// Whether this stem is soloed
@@ -277,18 +284,19 @@ pub struct StemState {
 
 impl Default for StemState {
     fn default() -> Self {
-        Self {
-            chain: EffectChain::new(),
-            muted: false,
-            soloed: false,
-        }
+        Self::new()
     }
 }
 
 impl StemState {
-    /// Create a new stem state
+    /// Create a new stem state with default buffer size
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            // Use MAX_BUFFER_SIZE for consistency with deck stem buffers
+            multiband: MultibandHost::new(super::MAX_BUFFER_SIZE),
+            muted: false,
+            soloed: false,
+        }
     }
 }
 
@@ -554,10 +562,10 @@ impl Deck {
         // The chains will be reset on next frame or can be done after releasing mutex.
     }
 
-    /// Reset all effect chains (call after releasing mutex if needed)
-    pub fn reset_effect_chains(&mut self) {
+    /// Reset all multiband containers (call after releasing mutex if needed)
+    pub fn reset_multiband_containers(&mut self) {
         for stem in &mut self.stems {
-            stem.chain.reset();
+            stem.multiband.reset();
         }
     }
 
@@ -1255,14 +1263,14 @@ impl Deck {
         state.soloed = soloed;
     }
 
-    /// Get a reference to a stem's effect chain by index
-    pub fn stem_chain(&self, index: usize) -> Option<&EffectChain> {
-        self.stems.get(index).map(|s| &s.chain)
+    /// Get a reference to a stem's multiband container by index
+    pub fn stem_multiband(&self, index: usize) -> Option<&MultibandHost> {
+        self.stems.get(index).map(|s| &s.multiband)
     }
 
-    /// Get a mutable reference to a stem's effect chain by index
-    pub fn stem_chain_mut(&mut self, index: usize) -> Option<&mut EffectChain> {
-        self.stems.get_mut(index).map(|s| &mut s.chain)
+    /// Get a mutable reference to a stem's multiband container by index
+    pub fn stem_multiband_mut(&mut self, index: usize) -> Option<&mut MultibandHost> {
+        self.stems.get_mut(index).map(|s| &mut s.multiband)
     }
 
     /// Trigger hot cue (for UI compatibility)
@@ -1601,8 +1609,8 @@ impl Deck {
                     }
                 }
 
-                // Process through effect chain (pass any_soloed for solo logic)
-                stem_state.chain.process(stem_buffer, any_soloed);
+                // Process through multiband container (handles per-band effects)
+                stem_state.multiband.process(stem_buffer);
             });
 
         // Apply per-stem latency compensation (sequential - must happen after parallel)
@@ -1663,11 +1671,11 @@ impl Deck {
         }
     }
 
-    /// Get the maximum latency across all stem effect chains
+    /// Get the maximum latency across all stem multiband containers
     pub fn max_stem_latency(&self) -> u32 {
         self.stems
             .iter()
-            .map(|s| s.chain.total_latency())
+            .map(|s| s.multiband.latency_samples())
             .max()
             .unwrap_or(0)
     }

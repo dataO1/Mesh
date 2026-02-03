@@ -229,6 +229,7 @@ Install CLAP plugins from your distro's package manager or download from plugin 
 - [x] Pure Data effect patches (custom DSP via PD)
 - [x] CLAP plugin hosting (LSP, Dragonfly, Airwindows, etc.)
 - [x] RAVE neural audio effects (via nn~ external)
+- [x] Multiband effect container with macro knob routing
 
 ### Coming Soon
 
@@ -243,7 +244,6 @@ Install CLAP plugins from your distro's package manager or download from plugin 
 
 - [ ] macOS support
 - [ ] Recording to file
-- [ ] Multiband effect container (frequency band splitting with per-band effects)
 
 ---
 

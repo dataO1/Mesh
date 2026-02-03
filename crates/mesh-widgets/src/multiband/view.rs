@@ -3,9 +3,9 @@
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Color, Element, Length};
 
+use super::crossover_bar::crossover_bar;
 use super::message::MultibandEditorMessage;
 use super::state::{BandUiState, EffectUiState, MacroUiState, MultibandEditorState};
-use super::{format_freq, freq_to_position};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Colors
@@ -136,56 +136,6 @@ fn header_row(state: &MultibandEditorState) -> Element<'_, MultibandEditorMessag
     .into()
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Crossover bar
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn crossover_bar(state: &MultibandEditorState) -> Element<'_, MultibandEditorMessage> {
-    // Simple text-based crossover display for now
-    // TODO: Replace with canvas-based draggable dividers
-
-    let freq_labels: Vec<Element<'_, MultibandEditorMessage>> = state
-        .crossover_freqs
-        .iter()
-        .enumerate()
-        .map(|(_i, &freq)| {
-            let pos = freq_to_position(freq);
-            let label = text(format_freq(freq)).size(11).color(ACCENT_COLOR);
-
-            container(label)
-                .width(Length::FillPortion((pos * 100.0) as u16))
-                .into()
-        })
-        .collect();
-
-    let freq_row = if freq_labels.is_empty() {
-        row![text("Single band (no crossover)")
-            .size(11)
-            .color(TEXT_SECONDARY)]
-    } else {
-        row![
-            text("20Hz").size(10).color(TEXT_SECONDARY),
-            row(freq_labels).width(Length::Fill),
-            text("20kHz").size(10).color(TEXT_SECONDARY),
-        ]
-    };
-
-    container(
-        column![
-            text("Crossover Frequencies")
-                .size(11)
-                .color(TEXT_SECONDARY),
-            freq_row.spacing(4),
-        ]
-        .spacing(4),
-    )
-    .padding(8)
-    .style(|_| container::Style {
-        background: Some(BG_MEDIUM.into()),
-        ..Default::default()
-    })
-    .into()
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Band lane

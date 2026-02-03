@@ -153,31 +153,15 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
             // UI-only state, no command needed
             app.deck_views[deck_idx].set_selected_stem(stem_idx);
         }
-        SetStemKnob(stem_idx, knob_idx, value) => {
-            // Update UI state
-            if stem_idx < 4 && knob_idx < 8 {
-                app.deck_views[deck_idx].set_stem_knob(stem_idx, knob_idx, value);
-            }
-
-            // Send to audio engine via domain
-            // Mapping: 8 knobs per stem, first 3 go to effect 0, next 3 to effect 1, etc.
-            // This allows up to 2-3 effects with 3-4 params each
-            let effect_idx = knob_idx / 3;
-            let param_idx = knob_idx % 3;
-
+        SetMacro(stem_idx, macro_idx, value) => {
+            // Send macro value to the multiband container
             if let Some(stem) = Stem::from_index(stem_idx) {
-                app.domain.set_effect_param(deck_idx, stem, effect_idx, param_idx, value);
-            }
-        }
-        ToggleEffectBypass(stem_idx, effect_idx) => {
-            if let Some(stem) = Stem::from_index(stem_idx) {
-                // Get current bypass state from UI and toggle it
-                let currently_bypassed = app.deck_views[deck_idx]
-                    .is_effect_bypassed(stem_idx, effect_idx);
-                let new_bypass = !currently_bypassed;
-                app.domain.set_effect_bypass(deck_idx, stem, effect_idx, new_bypass);
-                // Update UI state
-                app.deck_views[deck_idx].toggle_effect_bypass(stem_idx, effect_idx);
+                app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandMacro {
+                    deck: deck_idx,
+                    stem,
+                    macro_index: macro_idx,
+                    value,
+                });
             }
         }
 
@@ -260,48 +244,23 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
         }
 
         // ─────────────────────────────────────────────────
-        // Effect Chain Control
+        // Multiband Editor
         // ─────────────────────────────────────────────────
-        RemoveEffect(stem_idx, effect_idx) => {
-            let stem = match stem_idx {
-                0 => Stem::Vocals,
-                1 => Stem::Drums,
-                2 => Stem::Bass,
-                _ => Stem::Other,
+        OpenMultibandEditor(stem_idx) => {
+            // Open multiband editor modal for this deck/stem
+            let stem_name = match stem_idx {
+                0 => "Vocals",
+                1 => "Drums",
+                2 => "Bass",
+                _ => "Other",
             };
-            app.domain.remove_effect(deck_idx, stem, effect_idx);
-            // Update UI state
-            app.deck_views[deck_idx].remove_effect(stem_idx, effect_idx);
-        }
-        OpenEffectPicker(stem_idx) => {
-            // Open effect picker modal for this deck/stem
-            return Task::done(Message::EffectPicker(
-                crate::ui::effect_picker::EffectPickerMessage::Open {
+            return Task::done(Message::Multiband(
+                mesh_widgets::MultibandEditorMessage::Open {
                     deck: deck_idx,
                     stem: stem_idx,
+                    stem_name: stem_name.to_string(),
                 }
             ));
-        }
-        AddEffect(stem_idx, effect_id) => {
-            let stem = match stem_idx {
-                0 => Stem::Vocals,
-                1 => Stem::Drums,
-                2 => Stem::Bass,
-                _ => Stem::Other,
-            };
-            // Look up the effect's display name
-            let effect_name = app.domain.available_effects()
-                .iter()
-                .find(|e| e.id == effect_id)
-                .map(|e| e.name().to_string())
-                .unwrap_or_else(|| effect_id.clone());
-
-            if let Err(e) = app.domain.add_pd_effect(deck_idx, stem, &effect_id) {
-                log::error!("Failed to add effect '{}': {}", effect_id, e);
-            } else {
-                // Update UI state
-                app.deck_views[deck_idx].add_effect(stem_idx, effect_name);
-            }
         }
     }
     Task::none()
