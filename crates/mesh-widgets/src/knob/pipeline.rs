@@ -31,7 +31,7 @@ impl ModulationRange {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
-    // Widget bounds: [x, y, width, height] in pixels
+    // Widget bounds: [x, y, width, height] in physical pixels (scaled)
     bounds: [f32; 4],
     // [value, dragging, bipolar, mod_count]
     params: [f32; 4],
@@ -127,8 +127,8 @@ pub struct KnobPrimitive {
 }
 
 impl KnobPrimitive {
-    /// Build uniforms with the given bounds
-    fn build_uniforms(&self, bounds: &Rectangle) -> Uniforms {
+    /// Build uniforms with the given bounds and scale factor
+    fn build_uniforms(&self, bounds: &Rectangle, scale: f32) -> Uniforms {
         let mut mod_ranges_01 = [0.0f32; 4];
         let mut mod_ranges_23 = [0.0f32; 4];
 
@@ -150,8 +150,14 @@ impl KnobPrimitive {
             mod_ranges_23[3] = m.max;
         }
 
+        // Scale bounds to physical pixels for HiDPI support
         let mut uniforms = Uniforms {
-            bounds: [bounds.x, bounds.y, bounds.width, bounds.height],
+            bounds: [
+                bounds.x * scale,
+                bounds.y * scale,
+                bounds.width * scale,
+                bounds.height * scale,
+            ],
             params: [
                 self.value,
                 if self.dragging { 1.0 } else { 0.0 },
@@ -271,10 +277,11 @@ impl shader::Primitive for KnobPrimitive {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         bounds: &Rectangle,
-        _viewport: &shader::Viewport,
+        viewport: &shader::Viewport,
     ) {
-        // Build uniforms with this primitive's data
-        let uniforms = self.build_uniforms(bounds);
+        // Build uniforms with this primitive's data, scaling for HiDPI
+        let scale = viewport.scale_factor() as f32;
+        let uniforms = self.build_uniforms(bounds, scale);
 
         // Get or create resources for this knob using its stable ID
         let resources = pipeline.primitive_resources.entry(self.id).or_insert_with(|| {

@@ -132,15 +132,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Layer radii (from outside to inside)
     let outer_radius = 0.92;
-    let track_radius = 0.80;
-    let track_width = 0.08;
-    let value_radius = 0.80;
-    let value_width = 0.08;
+    let track_radius = 0.78;
+    let track_width = 0.14;      // Bolder track arc
+    let value_radius = 0.78;
+    let value_width = 0.14;      // Bolder value arc
     let mod_radius = 0.92;
-    let mod_width = 0.06;
-    let inner_radius = 0.68;
-    let notch_length = 0.15;
-    let notch_width = 0.04;
+    let mod_width = 0.10;        // Bolder modulation indicators
+    let inner_radius = 0.62;
+    let notch_length = 0.18;
+    let notch_width = 0.06;      // Bolder notch indicator
 
     // Start with background/transparent
     var color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
@@ -174,7 +174,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if mod_count > 1 {
         let mod_start = value_to_angle(uniforms.mod_ranges_01.z);
         let mod_end = value_to_angle(uniforms.mod_ranges_01.w);
-        let mod_dist = sd_arc(uv, mod_radius - 0.07, mod_width, min(mod_start, mod_end), max(mod_start, mod_end));
+        let mod_dist = sd_arc(uv, mod_radius - 0.12, mod_width, min(mod_start, mod_end), max(mod_start, mod_end));
         let mod_alpha = aa_step(mod_dist, aa);
         color = mix(color, uniforms.mod_color_1, mod_alpha * uniforms.mod_color_1.a * 0.6);
     }
@@ -182,7 +182,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if mod_count > 2 {
         let mod_start = value_to_angle(uniforms.mod_ranges_23.x);
         let mod_end = value_to_angle(uniforms.mod_ranges_23.y);
-        let mod_dist = sd_arc(uv, mod_radius - 0.14, mod_width, min(mod_start, mod_end), max(mod_start, mod_end));
+        let mod_dist = sd_arc(uv, mod_radius - 0.24, mod_width, min(mod_start, mod_end), max(mod_start, mod_end));
         let mod_alpha = aa_step(mod_dist, aa);
         color = mix(color, uniforms.mod_color_2, mod_alpha * uniforms.mod_color_2.a * 0.6);
     }
@@ -190,7 +190,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if mod_count > 3 {
         let mod_start = value_to_angle(uniforms.mod_ranges_23.z);
         let mod_end = value_to_angle(uniforms.mod_ranges_23.w);
-        let mod_dist = sd_arc(uv, mod_radius - 0.21, mod_width, min(mod_start, mod_end), max(mod_start, mod_end));
+        let mod_dist = sd_arc(uv, mod_radius - 0.36, mod_width, min(mod_start, mod_end), max(mod_start, mod_end));
         let mod_alpha = aa_step(mod_dist, aa);
         color = mix(color, uniforms.mod_color_3, mod_alpha * uniforms.mod_color_3.a * 0.6);
     }
