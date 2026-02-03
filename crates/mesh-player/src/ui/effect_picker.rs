@@ -1,12 +1,73 @@
 //! Effect picker modal for adding effects to stem chains
 //!
-//! Provides a modal dialog for selecting and adding PD effects to stems.
-//! Effects are grouped by category and show availability status.
+//! Provides a modal dialog for selecting and adding effects to stems.
+//! Supports both PD effects and CLAP plugins, grouped by category.
 
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
+use mesh_core::clap::DiscoveredClapPlugin;
 use mesh_core::pd::DiscoveredEffect;
 use mesh_core::types::Stem;
+
+/// Effect source type for distinguishing PD from CLAP effects
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EffectSource {
+    /// Pure Data effect
+    Pd,
+    /// CLAP plugin
+    Clap,
+}
+
+/// Unified effect item for display in the picker
+#[derive(Debug, Clone)]
+pub struct EffectListItem {
+    /// Unique identifier (folder name for PD, plugin ID for CLAP)
+    pub id: String,
+    /// Display name
+    pub name: String,
+    /// Category (e.g., "Distortion", "Reverb")
+    pub category: String,
+    /// Whether the effect is available (all dependencies met)
+    pub available: bool,
+    /// Status message (missing deps for PD, error for CLAP)
+    pub status_message: Option<String>,
+    /// Source type (PD or CLAP)
+    pub source: EffectSource,
+}
+
+impl EffectListItem {
+    /// Create from a PD effect
+    pub fn from_pd(effect: &DiscoveredEffect) -> Self {
+        let status_message = if !effect.missing_deps.is_empty() {
+            Some(format!("Missing: {}", effect.missing_deps.join(", ")))
+        } else {
+            None
+        };
+
+        Self {
+            id: effect.id.clone(),
+            name: effect.name().to_string(),
+            category: effect.category().to_string(),
+            available: effect.available,
+            status_message,
+            source: EffectSource::Pd,
+        }
+    }
+
+    /// Create from a CLAP plugin
+    pub fn from_clap(plugin: &DiscoveredClapPlugin) -> Self {
+        let status_message = plugin.error_message.clone();
+
+        Self {
+            id: plugin.id.clone(),
+            name: plugin.name.clone(),
+            category: plugin.category_name().to_string(),
+            available: plugin.available,
+            status_message,
+            source: EffectSource::Clap,
+        }
+    }
+}
 
 /// Messages for the effect picker
 #[derive(Debug, Clone)]
@@ -15,8 +76,12 @@ pub enum EffectPickerMessage {
     Open { deck: usize, stem: usize },
     /// Close the picker without selecting
     Close,
-    /// Select an effect to add
-    SelectEffect(String),
+    /// Select a PD effect to add
+    SelectPdEffect(String),
+    /// Select a CLAP effect to add
+    SelectClapEffect(String),
+    /// Toggle between showing all effects or filtering by source
+    ToggleSourceFilter(Option<EffectSource>),
 }
 
 /// State for the effect picker modal
@@ -30,6 +95,8 @@ pub struct EffectPickerState {
     pub target_stem: usize,
     /// Currently selected category filter (None = show all)
     pub selected_category: Option<String>,
+    /// Filter by source (None = show all, Some = filter)
+    pub source_filter: Option<EffectSource>,
 }
 
 impl Default for EffectPickerState {
@@ -39,6 +106,7 @@ impl Default for EffectPickerState {
             target_deck: 0,
             target_stem: 0,
             selected_category: None,
+            source_filter: None,
         }
     }
 }
@@ -85,10 +153,32 @@ impl EffectPickerState {
     /// Render the effect picker modal
     ///
     /// # Arguments
-    /// * `effects` - List of discovered effects from PdManager
-    pub fn view(&self, effects: &[&DiscoveredEffect]) -> Element<'static, EffectPickerMessage> {
+    /// * `pd_effects` - List of discovered PD effects
+    /// * `clap_plugins` - List of discovered CLAP plugins
+    pub fn view(
+        &self,
+        pd_effects: &[&DiscoveredEffect],
+        clap_plugins: &[&DiscoveredClapPlugin],
+    ) -> Element<'static, EffectPickerMessage> {
         if !self.is_open {
             return Space::new().width(0).height(0).into();
+        }
+
+        // Build unified effect list
+        let mut effects: Vec<EffectListItem> = Vec::new();
+
+        // Add PD effects (filtered by source if needed)
+        if self.source_filter.is_none() || self.source_filter == Some(EffectSource::Pd) {
+            for effect in pd_effects {
+                effects.push(EffectListItem::from_pd(effect));
+            }
+        }
+
+        // Add CLAP plugins (filtered by source if needed)
+        if self.source_filter.is_none() || self.source_filter == Some(EffectSource::Clap) {
+            for plugin in clap_plugins {
+                effects.push(EffectListItem::from_clap(plugin));
+            }
         }
 
         // Header
@@ -107,10 +197,47 @@ impl EffectPickerState {
         .align_y(Alignment::Center)
         .spacing(10);
 
-        // Group effects by category (clone strings to avoid lifetime issues)
+        // Source filter buttons
+        let filter_row = row![
+            button(text("All").size(12))
+                .on_press(EffectPickerMessage::ToggleSourceFilter(None))
+                .padding([4, 10])
+                .style(if self.source_filter.is_none() {
+                    button::primary
+                } else {
+                    button::secondary
+                }),
+            button(text("PD").size(12))
+                .on_press(EffectPickerMessage::ToggleSourceFilter(Some(EffectSource::Pd)))
+                .padding([4, 10])
+                .style(if self.source_filter == Some(EffectSource::Pd) {
+                    button::primary
+                } else {
+                    button::secondary
+                }),
+            button(text("CLAP").size(12))
+                .on_press(EffectPickerMessage::ToggleSourceFilter(Some(EffectSource::Clap)))
+                .padding([4, 10])
+                .style(if self.source_filter == Some(EffectSource::Clap) {
+                    button::primary
+                } else {
+                    button::secondary
+                }),
+            Space::new().width(Length::Fill),
+            text(format!(
+                "{} PD, {} CLAP",
+                pd_effects.len(),
+                clap_plugins.len()
+            ))
+            .size(11),
+        ]
+        .spacing(5)
+        .align_y(Alignment::Center);
+
+        // Group effects by category
         let mut categories: Vec<String> = effects
             .iter()
-            .map(|e| e.category().to_string())
+            .map(|e| e.category.clone())
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
@@ -131,7 +258,7 @@ impl EffectPickerState {
             // Effects in this category
             let category_effects: Vec<_> = effects
                 .iter()
-                .filter(|e| e.category() == category)
+                .filter(|e| &e.category == category)
                 .collect();
 
             for effect in category_effects {
@@ -149,12 +276,11 @@ impl EffectPickerState {
                 column![
                     text("No effects found").size(14),
                     Space::new().height(10),
-                    text("Place PD effects in:").size(12),
+                    text("PD effects location:").size(12),
                     text("~/Music/mesh-collection/effects/").size(11),
-                    Space::new().height(10),
-                    text("Each effect needs:").size(12),
-                    text("  • metadata.json").size(11),
-                    text("  • <effect-name>.pd").size(11),
+                    Space::new().height(5),
+                    text("CLAP plugins location:").size(12),
+                    text("~/.clap/ or /usr/lib/clap/").size(11),
                 ]
                 .spacing(2)
                 .into(),
@@ -167,7 +293,7 @@ impl EffectPickerState {
                 .padding(10)
                 .width(Length::Fill),
         )
-        .height(Length::Fixed(300.0));
+        .height(Length::Fixed(350.0));
 
         // Footer with cancel button
         let footer = row![
@@ -178,10 +304,10 @@ impl EffectPickerState {
         ];
 
         // Modal content
-        let content = column![header, effect_list, footer]
+        let content = column![header, filter_row, effect_list, footer]
             .spacing(15)
             .padding(20)
-            .width(Length::Fixed(400.0));
+            .width(Length::Fixed(450.0));
 
         // Wrap in container with background
         container(content)
@@ -190,34 +316,47 @@ impl EffectPickerState {
     }
 
     /// Render a single effect row
-    ///
-    /// Note: This clones strings to avoid lifetime issues with the returned Element
-    fn view_effect_row(&self, effect: &DiscoveredEffect) -> Element<'static, EffectPickerMessage> {
+    fn view_effect_row(&self, effect: &EffectListItem) -> Element<'static, EffectPickerMessage> {
         let available = effect.available;
-        let name = effect.name().to_string();
+        let name = effect.name.clone();
         let id = effect.id.clone();
+        let source = effect.source.clone();
+
+        // Source badge
+        let source_badge = match &effect.source {
+            EffectSource::Pd => text("PD").size(9),
+            EffectSource::Clap => text("CLAP").size(9),
+        };
 
         // Effect name and status
         let name_text = if available {
             text(name).size(13)
         } else {
-            text(format!("{} (unavailable)", effect.name())).size(13)
+            text(format!("{} (unavailable)", effect.name)).size(13)
         };
 
-        // Missing dependencies hint
-        let status = if !effect.missing_deps.is_empty() {
-            text(format!("Missing: {}", effect.missing_deps.join(", ")))
-                .size(10)
+        // Status message (missing deps or error)
+        let status = if let Some(ref msg) = effect.status_message {
+            text(msg.clone()).size(10)
         } else {
             text("").size(10)
         };
 
-        let info_col = column![name_text, status].spacing(2);
+        let info_col = column![
+            row![source_badge, Space::new().width(5), name_text]
+                .align_y(Alignment::Center),
+            status
+        ]
+        .spacing(2);
 
         // Add button (disabled if unavailable)
         let add_btn = if available {
+            let msg = match source {
+                EffectSource::Pd => EffectPickerMessage::SelectPdEffect(id),
+                EffectSource::Clap => EffectPickerMessage::SelectClapEffect(id),
+            };
             button(text("Add").size(12))
-                .on_press(EffectPickerMessage::SelectEffect(id))
+                .on_press(msg)
                 .padding([4, 12])
         } else {
             button(text("Add").size(12)).padding([4, 12])
