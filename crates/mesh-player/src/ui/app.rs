@@ -27,6 +27,7 @@ use mesh_midi::{MidiController, MidiMessage as MidiMsg, MidiInputEvent, DeckActi
 use mesh_core::engine::{DeckAtomics, LinkedStemAtomics, SlicerAtomics};
 use mesh_core::types::NUM_DECKS;
 use mesh_widgets::{mpsc_subscription, multiband_editor, MultibandEditorState, SliceEditorState};
+use mesh_widgets::multiband::{EffectSourceType, EffectUiState};
 use super::collection_browser::{CollectionBrowserState, CollectionBrowserMessage};
 use super::deck_view::{DeckView, DeckMessage};
 use super::effect_picker::{EffectPickerState, EffectPickerMessage};
@@ -320,6 +321,27 @@ impl MeshApp {
                         } else {
                             self.status = format!("Added effect to deck {} {} band {}", deck + 1, stem.name(), band);
                             log::info!("Added PD effect '{}' to deck {} stem {:?} band {}", effect_id, deck, stem, band);
+
+                            // Update multiband UI state
+                            if let Some(band_state) = self.multiband_editor.bands.get_mut(band) {
+                                let effect_name = effect_id
+                                    .rsplit('/')
+                                    .next()
+                                    .unwrap_or(&effect_id)
+                                    .trim_end_matches(".pd")
+                                    .to_string();
+
+                                band_state.effects.push(EffectUiState {
+                                    id: effect_id.clone(),
+                                    name: effect_name,
+                                    category: "PD".to_string(),
+                                    source: EffectSourceType::Pd,
+                                    bypassed: false,
+                                    param_names: vec!["P1".into(), "P2".into(), "P3".into(), "P4".into(),
+                                                     "P5".into(), "P6".into(), "P7".into(), "P8".into()],
+                                    param_values: vec![0.5; 8],
+                                });
+                            }
                         }
                         self.effect_picker.close();
                     }
@@ -335,6 +357,26 @@ impl MeshApp {
                         } else {
                             self.status = format!("Added effect to deck {} {} band {}", deck + 1, stem.name(), band);
                             log::info!("Added CLAP effect '{}' to deck {} stem {:?} band {}", plugin_id, deck, stem, band);
+
+                            // Update multiband UI state
+                            if let Some(band_state) = self.multiband_editor.bands.get_mut(band) {
+                                let effect_name = plugin_id
+                                    .rsplit('.')
+                                    .next()
+                                    .unwrap_or(&plugin_id)
+                                    .to_string();
+
+                                band_state.effects.push(EffectUiState {
+                                    id: plugin_id.clone(),
+                                    name: effect_name,
+                                    category: "CLAP".to_string(),
+                                    source: EffectSourceType::Clap,
+                                    bypassed: false,
+                                    param_names: vec!["P1".into(), "P2".into(), "P3".into(), "P4".into(),
+                                                     "P5".into(), "P6".into(), "P7".into(), "P8".into()],
+                                    param_values: vec![0.5; 8],
+                                });
+                            }
                         }
                         self.effect_picker.close();
                     }
