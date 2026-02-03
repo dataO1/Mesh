@@ -27,7 +27,7 @@ use mesh_midi::{MidiController, MidiMessage as MidiMsg, MidiInputEvent, DeckActi
 use mesh_core::engine::{DeckAtomics, LinkedStemAtomics, SlicerAtomics};
 use mesh_core::types::NUM_DECKS;
 use mesh_widgets::{mpsc_subscription, multiband_editor, MultibandEditorState, SliceEditorState};
-use mesh_widgets::multiband::{EffectSourceType, EffectUiState};
+use mesh_widgets::multiband::{EffectSourceType, EffectUiState, ParamMacroMapping};
 use super::collection_browser::{CollectionBrowserState, CollectionBrowserMessage};
 use super::deck_view::{DeckView, DeckMessage};
 use super::effect_picker::{EffectPickerState, EffectPickerMessage};
@@ -340,6 +340,7 @@ impl MeshApp {
                                     param_names: vec!["P1".into(), "P2".into(), "P3".into(), "P4".into(),
                                                      "P5".into(), "P6".into(), "P7".into(), "P8".into()],
                                     param_values: vec![0.5; 8],
+                                    param_mappings: vec![ParamMacroMapping::default(); 8],
                                 });
                             }
                         }
@@ -375,6 +376,7 @@ impl MeshApp {
                                     param_names: vec!["P1".into(), "P2".into(), "P3".into(), "P4".into(),
                                                      "P5".into(), "P6".into(), "P7".into(), "P8".into()],
                                     param_values: vec![0.5; 8],
+                                    param_mappings: vec![ParamMacroMapping::default(); 8],
                                 });
                             }
                         }

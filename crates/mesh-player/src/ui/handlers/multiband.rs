@@ -5,7 +5,7 @@
 
 use iced::Task;
 use mesh_core::types::Stem;
-use mesh_widgets::multiband::{EffectSourceType, EffectUiState};
+use mesh_widgets::multiband::{EffectSourceType, EffectUiState, ParamMacroMapping};
 use mesh_widgets::MultibandEditorMessage;
 
 use crate::ui::app::MeshApp;
@@ -187,6 +187,7 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                         param_names: vec!["P1".into(), "P2".into(), "P3".into(), "P4".into(),
                                          "P5".into(), "P6".into(), "P7".into(), "P8".into()],
                         param_values: vec![0.5; 8],
+                        param_mappings: vec![ParamMacroMapping::default(); 8],
                     });
                 }
 
@@ -281,6 +282,56 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
 
         RenameMacro { index, name } => {
             app.multiband_editor.set_macro_name(index, name);
+            Task::none()
+        }
+
+        StartDragMacro(index) => {
+            app.multiband_editor.dragging_macro = Some(index);
+            Task::none()
+        }
+
+        EndDragMacro => {
+            app.multiband_editor.dragging_macro = None;
+            Task::none()
+        }
+
+        DropMacroOnParam { macro_index, band, effect, param } => {
+            // Update UI state - set the mapping on the effect's param
+            if let Some(band_state) = app.multiband_editor.bands.get_mut(band) {
+                if let Some(effect_state) = band_state.effects.get_mut(effect) {
+                    if let Some(mapping) = effect_state.param_mappings.get_mut(param) {
+                        mapping.macro_index = Some(macro_index);
+                    }
+                }
+            }
+
+            // Update macro's mapping count
+            if let Some(macro_state) = app.multiband_editor.macros.get_mut(macro_index) {
+                macro_state.mapping_count += 1;
+            }
+
+            // Clear drag state
+            app.multiband_editor.dragging_macro = None;
+
+            // TODO: Send mapping to backend MultibandHost
+            log::info!("Mapped macro {} to band {} effect {} param {}", macro_index, band, effect, param);
+            Task::none()
+        }
+
+        RemoveParamMapping { band, effect, param } => {
+            // Get the macro that was mapped and decrement its count
+            if let Some(band_state) = app.multiband_editor.bands.get_mut(band) {
+                if let Some(effect_state) = band_state.effects.get_mut(effect) {
+                    if let Some(mapping) = effect_state.param_mappings.get_mut(param) {
+                        if let Some(old_macro) = mapping.macro_index {
+                            if let Some(macro_state) = app.multiband_editor.macros.get_mut(old_macro) {
+                                macro_state.mapping_count = macro_state.mapping_count.saturating_sub(1);
+                            }
+                        }
+                        mapping.macro_index = None;
+                    }
+                }
+            }
             Task::none()
         }
 

@@ -23,6 +23,27 @@ impl std::fmt::Display for EffectSourceType {
     }
 }
 
+/// A mapping from a macro knob to an effect parameter
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParamMacroMapping {
+    /// Which macro (0-7) controls this param, None if unmapped
+    pub macro_index: Option<usize>,
+    /// Min value when macro is at 0
+    pub min_value: f32,
+    /// Max value when macro is at 1
+    pub max_value: f32,
+}
+
+impl Default for ParamMacroMapping {
+    fn default() -> Self {
+        Self {
+            macro_index: None,
+            min_value: 0.0,
+            max_value: 1.0,
+        }
+    }
+}
+
 /// UI state for a single effect in a band
 #[derive(Debug, Clone)]
 pub struct EffectUiState {
@@ -40,11 +61,14 @@ pub struct EffectUiState {
     pub param_names: Vec<String>,
     /// Current parameter values (normalized 0.0-1.0)
     pub param_values: Vec<f32>,
+    /// Macro mappings for each parameter (which macro controls it)
+    pub param_mappings: Vec<ParamMacroMapping>,
 }
 
 impl EffectUiState {
     /// Create from backend BandEffectInfo
     pub fn from_backend(id: String, source: EffectSourceType, info: &BandEffectInfo) -> Self {
+        let param_count = info.param_values.len();
         Self {
             id,
             name: info.name.clone(),
@@ -53,6 +77,7 @@ impl EffectUiState {
             bypassed: info.bypassed,
             param_names: info.param_names.clone(),
             param_values: info.param_values.clone(),
+            param_mappings: vec![ParamMacroMapping::default(); param_count],
         }
     }
 
@@ -167,6 +192,9 @@ pub struct MultibandEditorState {
     /// Which crossover divider is being dragged (index)
     pub dragging_crossover: Option<usize>,
 
+    /// Which macro is being dragged for mapping (index)
+    pub dragging_macro: Option<usize>,
+
     /// Band states
     pub bands: Vec<BandUiState>,
 
@@ -203,6 +231,7 @@ impl MultibandEditorState {
             stem_name: "Vocals".to_string(),
             crossover_freqs: Vec::new(),
             dragging_crossover: None,
+            dragging_macro: None,
             bands: vec![BandUiState::new(0, super::FREQ_MIN, super::FREQ_MAX)],
             selected_effect: None,
             macros: (0..super::NUM_MACROS).map(MacroUiState::new).collect(),

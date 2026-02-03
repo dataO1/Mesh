@@ -1,6 +1,6 @@
 //! View function for the multiband editor widget
 
-use iced::widget::{button, column, container, row, scrollable, slider, text, Space};
+use iced::widget::{button, column, container, mouse_area, row, scrollable, slider, text, Space};
 use iced::{Alignment, Color, Element, Length};
 
 use super::crossover_bar::crossover_bar;
@@ -52,10 +52,11 @@ pub fn multiband_editor<'a>(
     }
 
     // Build band columns (scrollable horizontally if many bands)
+    let dragging_macro = state.dragging_macro;
     let band_columns: Vec<Element<'_, MultibandEditorMessage>> = state
         .bands
         .iter()
-        .map(|band| band_column(band, state.any_soloed).into())
+        .map(|band| band_column(band, state.any_soloed, dragging_macro).into())
         .collect();
 
     let content = column![
@@ -74,8 +75,8 @@ pub fn multiband_editor<'a>(
         // Add band button
         add_band_button(state.bands.len()),
         divider(),
-        // Macro knobs row
-        macro_bar(&state.macros),
+        // Macro knobs row (draggable for mapping)
+        macro_bar(&state.macros, state.dragging_macro),
     ]
     .spacing(8)
     .padding(16);
@@ -142,7 +143,7 @@ fn header_row(state: &MultibandEditorState) -> Element<'_, MultibandEditorMessag
 // Band column
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn band_column<'a>(band: &'a BandUiState, any_soloed: bool) -> Element<'a, MultibandEditorMessage> {
+fn band_column<'a>(band: &'a BandUiState, any_soloed: bool, dragging_macro: Option<usize>) -> Element<'a, MultibandEditorMessage> {
     let band_idx = band.index;
 
     // Band header: name and freq range
@@ -197,7 +198,7 @@ fn band_column<'a>(band: &'a BandUiState, any_soloed: bool) -> Element<'a, Multi
         .effects
         .iter()
         .enumerate()
-        .map(|(effect_idx, effect)| effect_card(band_idx, effect_idx, effect).into())
+        .map(|(effect_idx, effect)| effect_card(band_idx, effect_idx, effect, dragging_macro).into())
         .collect();
 
     let effects_column = column(effect_cards)
@@ -246,6 +247,7 @@ fn effect_card<'a>(
     band_idx: usize,
     effect_idx: usize,
     effect: &'a EffectUiState,
+    dragging_macro: Option<usize>,
 ) -> Element<'a, MultibandEditorMessage> {
     let name_color = if effect.bypassed {
         BYPASS_COLOR
@@ -290,12 +292,33 @@ fn effect_card<'a>(
                 .unwrap_or("P");
             let param_value = effect.param_values.get(param_idx).copied().unwrap_or(0.5);
 
-            // Compact param row: name + slider
-            row![
-                text(format!("{}:", &param_name[..param_name.len().min(3)]))
+            // Check if this param has a macro mapping
+            let mapping = effect.param_mappings.get(param_idx);
+            let mapped_macro = mapping.and_then(|m| m.macro_index);
+            let is_mapped = mapped_macro.is_some();
+
+            // Highlight color: green if mapped, blue highlight if dragging over
+            let (label_color, border_color) = if dragging_macro.is_some() {
+                (ACCENT_COLOR, ACCENT_COLOR) // Highlight as drop target
+            } else if is_mapped {
+                (Color::from_rgb(0.4, 0.8, 0.4), Color::from_rgb(0.4, 0.8, 0.4)) // Green for mapped
+            } else {
+                (TEXT_SECONDARY, Color::TRANSPARENT)
+            };
+
+            // Label shows macro number if mapped
+            let label_text = if let Some(macro_idx) = mapped_macro {
+                format!("M{}:", macro_idx + 1)
+            } else {
+                format!("{}:", &param_name[..param_name.len().min(3)])
+            };
+
+            // Compact param row: label + slider
+            let param_row = row![
+                text(label_text)
                     .size(8)
-                    .color(TEXT_SECONDARY)
-                    .width(Length::Fixed(24.0)),
+                    .color(label_color)
+                    .width(Length::Fixed(28.0)),
                 slider(0.0..=1.0, param_value, move |v| {
                     MultibandEditorMessage::SetEffectParam {
                         band: band_idx,
@@ -308,8 +331,53 @@ fn effect_card<'a>(
                 .width(Length::Fill),
             ]
             .spacing(2)
-            .align_y(Alignment::Center)
-            .into()
+            .align_y(Alignment::Center);
+
+            // Wrap in mouse_area for drop target when dragging
+            let content: Element<'_, MultibandEditorMessage> = if let Some(macro_idx) = dragging_macro {
+                // Make this a drop target
+                mouse_area(
+                    container(param_row)
+                        .style(move |_| container::Style {
+                            border: iced::Border {
+                                color: border_color,
+                                width: 1.0,
+                                radius: 2.0.into(),
+                            },
+                            ..Default::default()
+                        })
+                )
+                .on_press(MultibandEditorMessage::DropMacroOnParam {
+                    macro_index: macro_idx,
+                    band: band_idx,
+                    effect: effect_idx,
+                    param: param_idx,
+                })
+                .into()
+            } else if is_mapped {
+                // Show remove mapping option on click
+                mouse_area(
+                    container(param_row)
+                        .style(move |_| container::Style {
+                            border: iced::Border {
+                                color: border_color,
+                                width: 1.0,
+                                radius: 2.0.into(),
+                            },
+                            ..Default::default()
+                        })
+                )
+                .on_press(MultibandEditorMessage::RemoveParamMapping {
+                    band: band_idx,
+                    effect: effect_idx,
+                    param: param_idx,
+                })
+                .into()
+            } else {
+                param_row.into()
+            };
+
+            content
         })
         .collect();
 
@@ -358,42 +426,91 @@ fn add_band_button(current_bands: usize) -> Element<'static, MultibandEditorMess
 // Macro bar
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn macro_bar(macros: &[MacroUiState]) -> Element<'_, MultibandEditorMessage> {
+fn macro_bar(macros: &[MacroUiState], dragging_macro: Option<usize>) -> Element<'_, MultibandEditorMessage> {
     let macro_widgets: Vec<Element<'_, MultibandEditorMessage>> = macros
         .iter()
         .map(|m| {
             let index = m.index;
             let value = m.value;
-            let name_color = if m.mapping_count > 0 {
+            let is_dragging = dragging_macro == Some(index);
+
+            let name_color = if is_dragging {
+                Color::from_rgb(1.0, 0.8, 0.3) // Yellow when dragging
+            } else if m.mapping_count > 0 {
                 ACCENT_COLOR
             } else {
                 TEXT_SECONDARY
             };
 
-            column![
+            let border_color = if is_dragging {
+                Color::from_rgb(1.0, 0.8, 0.3)
+            } else {
+                Color::TRANSPARENT
+            };
+
+            // Macro content
+            let macro_content = column![
                 // Value display
                 text(format!("{:.0}%", value * 100.0))
                     .size(10)
                     .color(TEXT_SECONDARY),
-                // Interactive slider (vertical style via width)
+                // Interactive slider
                 slider(0.0..=1.0, value, move |v| {
                     MultibandEditorMessage::SetMacro { index, value: v }
                 })
                 .width(60)
                 .height(16),
-                // Macro name
-                text(&m.name).size(9).color(name_color),
+                // Macro name (shows mapping count)
+                text(if m.mapping_count > 0 {
+                    format!("{} ({})", m.name, m.mapping_count)
+                } else {
+                    m.name.clone()
+                })
+                .size(9)
+                .color(name_color),
+                // Drag hint
+                text("drag to map")
+                    .size(7)
+                    .color(Color::from_rgb(0.4, 0.4, 0.45)),
             ]
-            .spacing(4)
-            .align_x(Alignment::Center)
-            .width(Length::Fixed(80.0))
-            .into()
+            .spacing(2)
+            .align_x(Alignment::Center);
+
+            // Wrap in mouse_area for drag support
+            let draggable: Element<'_, MultibandEditorMessage> = mouse_area(
+                container(macro_content)
+                    .padding(4)
+                    .style(move |_| container::Style {
+                        border: iced::Border {
+                            color: border_color,
+                            width: if is_dragging { 2.0 } else { 0.0 },
+                            radius: 4.0.into(),
+                        },
+                        ..Default::default()
+                    })
+            )
+            .on_press(MultibandEditorMessage::StartDragMacro(index))
+            .on_release(MultibandEditorMessage::EndDragMacro)
+            .into();
+
+            container(draggable)
+                .width(Length::Fixed(80.0))
+                .into()
         })
         .collect();
 
     container(
         column![
-            text("Macros").size(11).color(TEXT_SECONDARY),
+            row![
+                text("Macros").size(11).color(TEXT_SECONDARY),
+                Space::new().width(Length::Fill),
+                if dragging_macro.is_some() {
+                    text("Drop on parameter to map").size(9).color(ACCENT_COLOR)
+                } else {
+                    text("").size(9)
+                },
+            ]
+            .width(Length::Fill),
             row(macro_widgets).spacing(8),
         ]
         .spacing(6),

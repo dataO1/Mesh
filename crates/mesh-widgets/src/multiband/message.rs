@@ -86,6 +86,27 @@ pub enum MultibandEditorMessage {
     /// Rename a macro
     RenameMacro { index: usize, name: String },
 
+    /// Start dragging a macro for mapping
+    StartDragMacro(usize),
+
+    /// End macro drag (cancel or drop outside target)
+    EndDragMacro,
+
+    /// Drop macro onto an effect parameter (creates mapping)
+    DropMacroOnParam {
+        macro_index: usize,
+        band: usize,
+        effect: usize,
+        param: usize,
+    },
+
+    /// Remove a macro mapping from a parameter
+    RemoveParamMapping {
+        band: usize,
+        effect: usize,
+        param: usize,
+    },
+
     /// Open macro mapping dialog for a macro
     OpenMacroMapper(usize),
 
