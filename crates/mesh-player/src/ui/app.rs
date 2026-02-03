@@ -315,6 +315,24 @@ impl MeshApp {
                         let stem = self.effect_picker.target_stem_enum();
                         let band = self.effect_picker.target_band;
 
+                        // Check for existing PD effects - warn about libpd limitation
+                        let existing_pd_count = if band == 255 {
+                            self.multiband_editor.pre_fx.iter()
+                                .filter(|e| e.source == EffectSourceType::Pd).count()
+                        } else if band == 254 {
+                            self.multiband_editor.post_fx.iter()
+                                .filter(|e| e.source == EffectSourceType::Pd).count()
+                        } else {
+                            self.multiband_editor.bands.get(band)
+                                .map(|b| b.effects.iter().filter(|e| e.source == EffectSourceType::Pd).count())
+                                .unwrap_or(0)
+                        };
+
+                        if existing_pd_count > 0 {
+                            log::warn!("Adding multiple PD effects - libpd processes all patches in parallel, not series!");
+                            self.status = "⚠ Multiple PD effects process in parallel (libpd limitation)".to_string();
+                        }
+
                         // Route based on special band markers: 255=pre-fx, 254=post-fx
                         let result = if band == 255 {
                             self.domain.add_pd_effect_pre_fx(deck, stem, &effect_id)
@@ -329,7 +347,12 @@ impl MeshApp {
                             self.status = format!("Failed to add effect: {}", e);
                         } else {
                             let location = if band == 255 { "pre-fx" } else if band == 254 { "post-fx" } else { "band" };
-                            self.status = format!("Added effect to deck {} {} {}", deck + 1, stem.name(), location);
+                            // Show warning if multiple PD effects, otherwise show normal status
+                            if existing_pd_count > 0 {
+                                self.status = format!("Added PD effect - ⚠ {} PD effects now (parallel processing)", existing_pd_count + 1);
+                            } else {
+                                self.status = format!("Added effect to deck {} {} {}", deck + 1, stem.name(), location);
+                            }
                             log::info!("Added PD effect '{}' to deck {} stem {:?} {}", effect_id, deck, stem, location);
 
                             // Build effect UI state

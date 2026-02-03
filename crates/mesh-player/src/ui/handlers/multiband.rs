@@ -52,6 +52,11 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             let deck = app.multiband_editor.deck;
             let stem = Stem::ALL[app.multiband_editor.stem];
 
+            // Check for existing PD effects - warn about libpd limitation
+            let existing_pd_count = app.multiband_editor.pre_fx.iter()
+                .filter(|e| e.source == EffectSourceType::Pd).count();
+            let is_pd = source == "pd";
+
             let (result, source_type) = match source.as_str() {
                 "pd" => (app.domain.add_pd_effect_pre_fx(deck, stem, &effect_id), EffectSourceType::Pd),
                 "clap" => (app.domain.add_clap_effect_pre_fx(deck, stem, &effect_id), EffectSourceType::Clap),
@@ -62,7 +67,13 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                 log::error!("Failed to add pre-fx effect: {}", e);
                 app.status = format!("Failed to add pre-fx: {}", e);
             } else {
-                log::info!("Added {} pre-fx effect '{}'", source, effect_id);
+                // Warn if adding multiple PD effects
+                if is_pd && existing_pd_count > 0 {
+                    log::warn!("Multiple PD effects in pre-fx - libpd processes all patches in parallel!");
+                    app.status = format!("Added PD effect - ⚠ {} PD effects (parallel processing)", existing_pd_count + 1);
+                } else {
+                    log::info!("Added {} pre-fx effect '{}'", source, effect_id);
+                }
 
                 let effect_name = effect_id
                     .rsplit('/')
@@ -232,6 +243,12 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             let deck = app.multiband_editor.deck;
             let stem = Stem::ALL[app.multiband_editor.stem];
 
+            // Check for existing PD effects in this band - warn about libpd limitation
+            let existing_pd_count = app.multiband_editor.bands.get(band)
+                .map(|b| b.effects.iter().filter(|e| e.source == EffectSourceType::Pd).count())
+                .unwrap_or(0);
+            let is_pd = source == "pd";
+
             // Add effect based on source type to the specified band
             let (result, source_type) = match source.as_str() {
                 "pd" => (app.domain.add_pd_effect(deck, stem, &effect_id, band), EffectSourceType::Pd),
@@ -243,7 +260,13 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                 log::error!("Failed to add effect to band {}: {}", band, e);
                 app.status = format!("Failed to add effect: {}", e);
             } else {
-                log::info!("Added {} effect '{}' to band {}", source, effect_id, band);
+                // Warn if adding multiple PD effects
+                if is_pd && existing_pd_count > 0 {
+                    log::warn!("Multiple PD effects in band {} - libpd processes all patches in parallel!", band);
+                    app.status = format!("Added PD effect - ⚠ {} PD effects (parallel processing)", existing_pd_count + 1);
+                } else {
+                    log::info!("Added {} effect '{}' to band {}", source, effect_id, band);
+                }
 
                 // Add effect to UI state
                 if let Some(band_state) = app.multiband_editor.bands.get_mut(band) {
@@ -361,6 +384,11 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             let deck = app.multiband_editor.deck;
             let stem = Stem::ALL[app.multiband_editor.stem];
 
+            // Check for existing PD effects - warn about libpd limitation
+            let existing_pd_count = app.multiband_editor.post_fx.iter()
+                .filter(|e| e.source == EffectSourceType::Pd).count();
+            let is_pd = source == "pd";
+
             // Add effect to post-fx chain in backend
             let (result, source_type) = match source.as_str() {
                 "pd" => (app.domain.add_pd_effect_post_fx(deck, stem, &effect_id), EffectSourceType::Pd),
@@ -372,7 +400,13 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                 log::error!("Failed to add post-fx effect: {}", e);
                 app.status = format!("Failed to add effect: {}", e);
             } else {
-                log::info!("Added {} post-fx effect '{}'", source, effect_id);
+                // Warn if adding multiple PD effects
+                if is_pd && existing_pd_count > 0 {
+                    log::warn!("Multiple PD effects in post-fx - libpd processes all patches in parallel!");
+                    app.status = format!("Added PD effect - ⚠ {} PD effects (parallel processing)", existing_pd_count + 1);
+                } else {
+                    log::info!("Added {} post-fx effect '{}'", source, effect_id);
+                }
 
                 // Add effect to UI state
                 let effect_name = effect_id
