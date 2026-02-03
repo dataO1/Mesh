@@ -309,11 +309,23 @@ impl MeshApp {
                         // Add the effect to the target deck/stem
                         let deck = self.effect_picker.target_deck;
                         let stem = self.effect_picker.target_stem_enum();
+                        let stem_idx = self.effect_picker.target_stem;
+
+                        // Look up the effect's display name
+                        let effect_name = self.domain.available_effects()
+                            .iter()
+                            .find(|e| e.id == effect_id)
+                            .map(|e| e.name().to_string())
+                            .unwrap_or_else(|| effect_id.clone());
+
                         if let Err(e) = self.domain.add_pd_effect(deck, stem, &effect_id) {
                             log::error!("Failed to add effect '{}': {}", effect_id, e);
                             self.status = format!("Failed to add effect: {}", e);
                         } else {
-                            self.status = format!("Added {} to deck {} {}", effect_id, deck + 1, stem.name());
+                            // Update UI state to show the effect
+                            self.deck_views[deck].add_effect(stem_idx, effect_name.clone());
+                            self.status = format!("Added {} to deck {} {}", effect_name, deck + 1, stem.name());
+                            log::info!("Added PD effect '{}' to deck {} stem {:?}", effect_id, deck, stem);
                         }
                         self.effect_picker.close();
                     }

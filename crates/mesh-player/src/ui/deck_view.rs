@@ -267,6 +267,42 @@ impl DeckView {
         self.state = state;
     }
 
+    /// Add an effect to a stem's chain (UI state only)
+    ///
+    /// Called after successfully adding an effect to the engine to keep
+    /// the UI in sync without needing direct access to the audio thread.
+    pub fn add_effect(&mut self, stem_idx: usize, effect_name: String) {
+        if stem_idx < 4 {
+            self.stem_effect_names[stem_idx].push(effect_name);
+            self.stem_effect_bypassed[stem_idx].push(false); // New effects start active
+        }
+    }
+
+    /// Remove an effect from a stem's chain (UI state only)
+    pub fn remove_effect(&mut self, stem_idx: usize, effect_idx: usize) {
+        if stem_idx < 4 && effect_idx < self.stem_effect_names[stem_idx].len() {
+            self.stem_effect_names[stem_idx].remove(effect_idx);
+            self.stem_effect_bypassed[stem_idx].remove(effect_idx);
+        }
+    }
+
+    /// Toggle bypass state for an effect (UI state only)
+    pub fn toggle_effect_bypass(&mut self, stem_idx: usize, effect_idx: usize) {
+        if stem_idx < 4 && effect_idx < self.stem_effect_bypassed[stem_idx].len() {
+            self.stem_effect_bypassed[stem_idx][effect_idx] =
+                !self.stem_effect_bypassed[stem_idx][effect_idx];
+        }
+    }
+
+    /// Get bypass state for an effect
+    pub fn is_effect_bypassed(&self, stem_idx: usize, effect_idx: usize) -> bool {
+        if stem_idx < 4 && effect_idx < self.stem_effect_bypassed[stem_idx].len() {
+            self.stem_effect_bypassed[stem_idx][effect_idx]
+        } else {
+            false
+        }
+    }
+
     /// Sync loop length from atomics (lock-free UI update)
     ///
     /// This is called every frame to update the loop length display.

@@ -16,9 +16,9 @@ pub const NUM_DECKS: usize = 4;
 pub const NUM_STEMS: usize = 4;
 
 /// Maximum latency for global compensation (in samples)
-/// 150ms at 48kHz = 7200 samples
-/// This must accommodate: effect latency (e.g., RAVE ~4096) + timestretch latency (~1000-2000)
-pub const MAX_LATENCY_SAMPLES: usize = 7200;
+/// ~165ms at 48kHz = 8000 samples
+/// This must accommodate: effect latency (e.g., RAVE ~2048) + timestretch latency (~5760)
+pub const MAX_LATENCY_SAMPLES: usize = 8000;
 
 /// Audio sample type (32-bit float for processing, stored as 16-bit in files)
 pub type Sample = f32;

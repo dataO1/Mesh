@@ -6,7 +6,7 @@ use crate::db::DatabaseService;
 use crate::loader::{HostTrackParams, LinkedStemLoader, LinkedStemResultReceiver};
 use crate::music::semitones_to_match;
 use crate::timestretch::TimeStretcher;
-use crate::types::{DeckId, PlayState, Stem, StereoBuffer, NUM_DECKS};
+use crate::types::{DeckId, PlayState, Stem, StereoBuffer, NUM_DECKS, NUM_STEMS};
 
 use super::slicer::SlicerPreset;
 use super::{Deck, DeckAtomics, EngineCommand, LatencyCompensator, Mixer, PreparedTrack};
@@ -439,6 +439,8 @@ impl AudioEngine {
             d.unload_track();
             self.stretchers[deck].reset();
             self.latency_compensator.clear_deck(deck);
+            // Recalculate latencies (empty deck will report 0)
+            self.update_deck_latencies(deck);
         }
     }
 
@@ -508,8 +510,20 @@ impl AudioEngine {
     /// Calculates total latency for each stem including:
     /// - Effect chain latency (per-stem, varies by effects)
     /// - Timestretch latency (per-deck, same for all stems)
+    ///
+    /// Empty decks (no track loaded) report 0 latency so they don't inflate
+    /// the global maximum and cause unnecessary compensation on active decks.
     fn update_deck_latencies(&mut self, deck: usize) {
         if let Some(d) = self.decks.get(deck) {
+            // Only compute latency for decks with loaded tracks
+            // Empty decks should not affect global compensation
+            if !d.has_track() {
+                for stem_idx in 0..NUM_STEMS {
+                    self.latency_compensator.set_stem_latency(deck, stem_idx, 0);
+                }
+                return;
+            }
+
             // Get timestretch latency for this deck (applies to all stems)
             let stretch_latency = self.stretchers[deck].total_latency() as u32;
 

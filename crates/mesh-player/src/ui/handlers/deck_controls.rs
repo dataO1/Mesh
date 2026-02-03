@@ -171,9 +171,13 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
         }
         ToggleEffectBypass(stem_idx, effect_idx) => {
             if let Some(stem) = Stem::from_index(stem_idx) {
-                app.domain.set_effect_bypass(deck_idx, stem, effect_idx, true);
-                // Note: This toggles - we'd need to track state to properly toggle
-                // For now, just bypass. A proper implementation would read current state.
+                // Get current bypass state from UI and toggle it
+                let currently_bypassed = app.deck_views[deck_idx]
+                    .is_effect_bypassed(stem_idx, effect_idx);
+                let new_bypass = !currently_bypassed;
+                app.domain.set_effect_bypass(deck_idx, stem, effect_idx, new_bypass);
+                // Update UI state
+                app.deck_views[deck_idx].toggle_effect_bypass(stem_idx, effect_idx);
             }
         }
 
@@ -266,6 +270,8 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
                 _ => Stem::Other,
             };
             app.domain.remove_effect(deck_idx, stem, effect_idx);
+            // Update UI state
+            app.deck_views[deck_idx].remove_effect(stem_idx, effect_idx);
         }
         OpenEffectPicker(stem_idx) => {
             // Open effect picker modal for this deck/stem
@@ -283,8 +289,18 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
                 2 => Stem::Bass,
                 _ => Stem::Other,
             };
+            // Look up the effect's display name
+            let effect_name = app.domain.available_effects()
+                .iter()
+                .find(|e| e.id == effect_id)
+                .map(|e| e.name().to_string())
+                .unwrap_or_else(|| effect_id.clone());
+
             if let Err(e) = app.domain.add_pd_effect(deck_idx, stem, &effect_id) {
                 log::error!("Failed to add effect '{}': {}", effect_id, e);
+            } else {
+                // Update UI state
+                app.deck_views[deck_idx].add_effect(stem_idx, effect_name);
             }
         }
     }
