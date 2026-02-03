@@ -81,8 +81,8 @@ mod error;
 mod discovery;
 mod plugin;
 mod effect;
+mod multiband;
 // Future modules:
-// mod multiband;   // MultibandClapHost
 // mod presets;     // Preset serialization
 
 // Re-export public API
@@ -90,6 +90,7 @@ pub use error::{ClapError, ClapResult};
 pub use discovery::{ClapDiscovery, ClapPluginCategory, DiscoveredClapPlugin};
 pub use plugin::ClapPluginWrapper;
 pub use effect::ClapEffect;
+pub use multiband::{MultibandClapHost, MultibandConfig, MacroMapping, NUM_MACROS, MAX_BANDS};
 
 use std::sync::Arc;
 use std::collections::HashMap;
@@ -215,24 +216,59 @@ impl ClapManager {
     ///
     /// # Arguments
     /// * `crossover_plugin_id` - The plugin ID for the crossover (typically LSP Crossover)
+    /// * `buffer_size` - Processing buffer size in samples
     ///
     /// # Returns
     /// A MultibandClapHost effect, or an error if the crossover plugin is not available.
-    pub fn create_multiband(&mut self, crossover_plugin_id: &str) -> ClapResult<Box<dyn crate::effect::Effect>> {
-        // Verify crossover plugin is available
-        let plugin_info = self.discovery.get_plugin(crossover_plugin_id).ok_or_else(|| {
-            ClapError::CrossoverNotAvailable(crossover_plugin_id.to_string())
-        })?;
+    pub fn create_multiband(
+        &mut self,
+        crossover_plugin_id: &str,
+        buffer_size: usize,
+    ) -> ClapResult<MultibandClapHost> {
+        // Create the multiband host first
+        let mut host = MultibandClapHost::new(buffer_size);
 
-        if !plugin_info.available {
-            return Err(ClapError::CrossoverNotAvailable(crossover_plugin_id.to_string()));
+        // Try to load and set the crossover plugin (optional - works without it)
+        if let Some(plugin_info) = self.discovery.get_plugin(crossover_plugin_id).cloned() {
+            if plugin_info.available {
+                match self.get_or_load_bundle(&plugin_info.bundle_path) {
+                    Ok(bundle) => {
+                        match ClapEffect::from_plugin(&plugin_info, bundle) {
+                            Ok(crossover) => {
+                                host.set_crossover(crossover);
+                                log::info!(
+                                    "MultibandClapHost created with crossover '{}'",
+                                    crossover_plugin_id
+                                );
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "Failed to load crossover plugin '{}': {}. Multiband will work without band splitting.",
+                                    crossover_plugin_id, e
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to load crossover bundle: {}. Multiband will work without band splitting.",
+                            e
+                        );
+                    }
+                }
+            }
         }
 
-        // TODO: Implement MultibandClapHost creation
-        Err(ClapError::InstantiationFailed {
-            plugin_id: crossover_plugin_id.to_string(),
-            reason: "MultibandClapHost not yet implemented".to_string(),
-        })
+        Ok(host)
+    }
+
+    /// Create a multiband CLAP host effect without a crossover
+    ///
+    /// This creates a MultibandClapHost that processes effects in series
+    /// rather than splitting by frequency bands. Useful for testing or
+    /// when the crossover plugin is not available.
+    pub fn create_multiband_simple(&self, buffer_size: usize) -> MultibandClapHost {
+        MultibandClapHost::new(buffer_size)
     }
 
     /// Add a custom search path for plugins

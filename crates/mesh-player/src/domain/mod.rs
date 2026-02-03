@@ -994,6 +994,47 @@ impl MeshDomain {
         self.clap_manager.rescan_plugins();
     }
 
+    /// Create and add a multiband CLAP host effect to a stem
+    ///
+    /// The multiband host splits audio into frequency bands and allows
+    /// adding separate effect chains per band, controlled by 8 macro knobs.
+    ///
+    /// # Arguments
+    /// * `deck` - Deck index (0-3)
+    /// * `stem` - Which stem to add the effect to
+    /// * `crossover_plugin_id` - Optional crossover plugin ID (e.g., LSP Crossover)
+    pub fn add_multiband_effect(
+        &mut self,
+        deck: usize,
+        stem: Stem,
+        crossover_plugin_id: Option<&str>,
+    ) -> Result<(), String> {
+        // Create the multiband host (256 sample buffer)
+        let host = if let Some(crossover_id) = crossover_plugin_id {
+            self.clap_manager
+                .create_multiband(crossover_id, 256)
+                .map_err(|e| format!("Failed to create multiband host: {}", e))?
+        } else {
+            self.clap_manager.create_multiband_simple(256)
+        };
+
+        // Send to audio engine
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(EngineCommand::AddStemEffect {
+                deck,
+                stem,
+                effect: Box::new(host),
+            });
+            log::info!(
+                "Added multiband effect to deck {} stem {:?}",
+                deck, stem
+            );
+            Ok(())
+        } else {
+            Err("Audio engine not connected".to_string())
+        }
+    }
+
     /// Add a generic effect to a stem's effect chain
     ///
     /// This accepts any Box<dyn Effect>, allowing both PD effects and
