@@ -40,8 +40,19 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
 
         DragCrossover(freq) => {
             if let Some(index) = app.multiband_editor.dragging_crossover {
+                let deck = app.multiband_editor.deck;
+                let stem = Stem::ALL[app.multiband_editor.stem];
+
+                // Update UI state
                 app.multiband_editor.set_crossover_freq(index, freq);
-                // TODO: Send to backend via EngineCommand::SetMultibandCrossover
+
+                // Send to backend crossover
+                app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandCrossover {
+                    deck,
+                    stem,
+                    crossover_index: index,
+                    freq,
+                });
             }
             Task::none()
         }
@@ -55,14 +66,33 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         // Band management
         // ─────────────────────────────────────────────────────────────────────
         AddBand => {
+            let deck = app.multiband_editor.deck;
+            let stem = Stem::ALL[app.multiband_editor.stem];
+
+            // Update UI state
             app.multiband_editor.add_band();
-            // TODO: Send to backend via EngineCommand::AddMultibandBand
+
+            // Send to backend (will add band and enable crossover splitting)
+            app.domain.send_command(mesh_core::engine::EngineCommand::AddMultibandBand {
+                deck,
+                stem,
+            });
             Task::none()
         }
 
         RemoveBand(band_idx) => {
+            let deck = app.multiband_editor.deck;
+            let stem = Stem::ALL[app.multiband_editor.stem];
+
+            // Update UI state
             app.multiband_editor.remove_band(band_idx);
-            // TODO: Send to backend via EngineCommand::RemoveMultibandBand
+
+            // Send to backend
+            app.domain.send_command(mesh_core::engine::EngineCommand::RemoveMultibandBand {
+                deck,
+                stem,
+                band_index: band_idx,
+            });
             Task::none()
         }
 

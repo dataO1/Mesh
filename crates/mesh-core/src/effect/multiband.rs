@@ -31,7 +31,7 @@
 
 use super::native::LinkwitzRileyCrossover;
 use super::{Effect, EffectBase, EffectInfo, ParamInfo, ParamValue};
-use crate::types::{StereoBuffer, StereoSample};
+use crate::types::StereoBuffer;
 
 /// Maximum number of frequency bands
 pub const MAX_BANDS: usize = 8;
