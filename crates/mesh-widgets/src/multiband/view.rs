@@ -65,16 +65,12 @@ pub fn multiband_editor<'a>(
         // Crossover visualization bar
         crossover_bar(state),
         divider(),
-        // Band columns (scrollable horizontally)
-        scrollable(
-            row(band_columns)
-                .spacing(4)
-                .padding([0, 4])
-        )
-        .direction(scrollable::Direction::Horizontal(
-            scrollable::Scrollbar::default()
-        ))
-        .height(Length::Fill),
+        // Band columns (fill available width)
+        row(band_columns)
+            .spacing(4)
+            .padding([0, 4])
+            .width(Length::Fill)
+            .height(Length::Fill),
         // Add band button
         add_band_button(state.bands.len()),
         divider(),
@@ -84,10 +80,10 @@ pub fn multiband_editor<'a>(
     .spacing(8)
     .padding(16);
 
-    // Wrap in modal container
+    // Wrap in modal container (fills most of the screen)
     let modal = container(content)
-        .width(Length::Fixed(800.0))
-        .height(Length::Fixed(600.0))
+        .width(Length::FillPortion(9))  // ~90% of available width
+        .height(Length::FillPortion(9)) // ~90% of available height
         .style(|_| container::Style {
             background: Some(BG_DARK.into()),
             border: iced::Border {
@@ -259,7 +255,7 @@ fn effect_card<'a>(
 
     // Effect header: name and controls
     let header = row![
-        text(effect.short_name()).size(10).color(name_color),
+        text(&effect.name).size(11).color(name_color),
         Space::new().width(Length::Fill),
         // Bypass toggle
         button(
@@ -283,19 +279,57 @@ fn effect_card<'a>(
     .spacing(2)
     .align_y(Alignment::Center);
 
-    container(header)
-        .padding(4)
-        .width(Length::Fill)
-        .style(|_| container::Style {
-            background: Some(BG_LIGHT.into()),
-            border: iced::Border {
-                color: BORDER_COLOR,
-                width: 1.0,
-                radius: 3.0.into(),
-            },
-            ..Default::default()
+    // Parameter sliders (show first 8 params)
+    let param_count = effect.param_values.len().min(8);
+    let param_controls: Vec<Element<'_, MultibandEditorMessage>> = (0..param_count)
+        .map(|param_idx| {
+            let param_name = effect
+                .param_names
+                .get(param_idx)
+                .map(|s| s.as_str())
+                .unwrap_or("P");
+            let param_value = effect.param_values.get(param_idx).copied().unwrap_or(0.5);
+
+            // Compact param row: name + slider
+            row![
+                text(format!("{}:", &param_name[..param_name.len().min(3)]))
+                    .size(8)
+                    .color(TEXT_SECONDARY)
+                    .width(Length::Fixed(24.0)),
+                slider(0.0..=1.0, param_value, move |v| {
+                    MultibandEditorMessage::SetEffectParam {
+                        band: band_idx,
+                        effect: effect_idx,
+                        param: param_idx,
+                        value: v,
+                    }
+                })
+                .step(0.01)
+                .width(Length::Fill),
+            ]
+            .spacing(2)
+            .align_y(Alignment::Center)
+            .into()
         })
-        .into()
+        .collect();
+
+    let params_column = column(param_controls).spacing(2);
+
+    container(
+        column![header, params_column].spacing(4)
+    )
+    .padding(6)
+    .width(Length::Fill)
+    .style(|_| container::Style {
+        background: Some(BG_LIGHT.into()),
+        border: iced::Border {
+            color: BORDER_COLOR,
+            width: 1.0,
+            radius: 3.0.into(),
+        },
+        ..Default::default()
+    })
+    .into()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

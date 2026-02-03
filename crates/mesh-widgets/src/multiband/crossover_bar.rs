@@ -233,17 +233,10 @@ fn crossover_divider<'a>(
     .center_x(Length::Fixed(DIVIDER_WIDTH))
     .center_y(Length::Fill);
 
-    // Wrap in a button for click handling
-    // Note: For proper drag support, we'd need mouse_area with position tracking
-    // For now, use buttons that increment/decrement on click
-    button(divider_content)
-        .padding(0)
+    // Use mouse_area for immediate drag on mouse down (not button which needs click-release)
+    mouse_area(divider_content)
         .on_press(MultibandEditorMessage::StartDragCrossover(index))
-        .style(move |_theme, _status| button::Style {
-            background: Some(Color::TRANSPARENT.into()),
-            border: iced::Border::default(),
-            ..Default::default()
-        })
+        .on_release(MultibandEditorMessage::EndDragCrossover)
         .into()
 }
 
