@@ -27,6 +27,10 @@ rubato = "0.16"   # High-quality sample rate conversion
 log = "0.4"
 thiserror.workspace = true
 
+# CLAP plugin hosting
+clack-host = { git = "https://github.com/prokopyl/clack.git" }
+clack-extensions = { git = "https://github.com/prokopyl/clack.git" }
+
 # Cross-platform audio backend
 cpal.workspace = true
 

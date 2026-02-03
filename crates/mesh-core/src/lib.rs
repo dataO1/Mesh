@@ -7,6 +7,7 @@ pub mod effect;
 pub mod audio_file;
 pub mod timestretch;
 pub mod pd;
+pub mod clap;
 pub mod engine;
 pub mod playlist;
 pub mod music;

@@ -34,6 +34,7 @@ use mesh_core::db::DatabaseService;
 use mesh_core::effect::Effect;
 use mesh_core::engine::{EngineCommand, LinkedStemData, PreparedTrack, SlicerPreset};
 use mesh_core::loader::LinkedStemResultReceiver;
+use mesh_core::clap::{ClapManager, ClapPluginCategory, DiscoveredClapPlugin};
 use mesh_core::pd::{DiscoveredEffect, PdManager};
 use mesh_core::usb::get_or_open_usb_database;
 use mesh_core::types::{Stem, StereoBuffer};
@@ -119,6 +120,9 @@ pub struct MeshDomain {
     /// PD effect manager (discovers and creates Pure Data effects)
     pd_manager: PdManager,
 
+    /// CLAP effect manager (discovers and creates CLAP plugin effects)
+    clap_manager: ClapManager,
+
     // =========================================================================
     // Domain State (caches and computed values)
     // =========================================================================
@@ -163,6 +167,15 @@ impl MeshDomain {
                 PdManager::default()
             });
 
+        // Initialize CLAP effect manager (scans system CLAP directories)
+        let mut clap_manager = ClapManager::new();
+        clap_manager.scan_plugins();
+        log::info!(
+            "ClapManager initialized: found {} plugins ({} available)",
+            clap_manager.discovered_plugins().len(),
+            clap_manager.available_plugins().len()
+        );
+
         Self {
             local_db: local_db.clone(),
             active_storage: StorageSource::Local,
@@ -174,6 +187,7 @@ impl MeshDomain {
             usb_manager: UsbManager::spawn(Some(local_db)),
             linked_stem_receiver,
             pd_manager,
+            clap_manager,
             // Domain state
             deck_stems: [None, None, None, None],
             deck_linked_stems: std::array::from_fn(|_| [None, None, None, None]),
@@ -916,6 +930,68 @@ impl MeshDomain {
         } else {
             Err("Audio engine not connected".to_string())
         }
+    }
+
+    // =========================================================================
+    // CLAP Plugin Management
+    // =========================================================================
+
+    /// Get all discovered CLAP plugins
+    ///
+    /// Returns all plugins found in standard CLAP directories.
+    /// Plugins that failed to load are included but marked unavailable.
+    pub fn discovered_clap_plugins(&self) -> &[DiscoveredClapPlugin] {
+        self.clap_manager.discovered_plugins()
+    }
+
+    /// Get only available CLAP plugins (loaded successfully)
+    pub fn available_clap_plugins(&self) -> Vec<&DiscoveredClapPlugin> {
+        self.clap_manager.available_plugins()
+    }
+
+    /// Get CLAP plugins by category
+    pub fn clap_plugins_by_category(&self, category: ClapPluginCategory) -> Vec<&DiscoveredClapPlugin> {
+        self.clap_manager.plugins_by_category(category)
+    }
+
+    /// Check if any CLAP plugins are available
+    pub fn has_clap_plugins(&self) -> bool {
+        self.clap_manager.has_plugins()
+    }
+
+    /// Add a CLAP effect to a stem's effect chain
+    ///
+    /// Creates the effect via ClapManager and sends it to the audio engine.
+    /// Returns Ok(()) on success, or an error message on failure.
+    ///
+    /// # Arguments
+    /// * `deck` - Deck index (0-3)
+    /// * `stem` - Which stem to add the effect to
+    /// * `plugin_id` - CLAP plugin identifier (e.g., "org.lsp-plug.compressor-stereo")
+    pub fn add_clap_effect(&mut self, deck: usize, stem: Stem, plugin_id: &str) -> Result<(), String> {
+        // Create the effect via ClapManager (this does the non-RT-safe work)
+        let effect = self
+            .clap_manager
+            .create_effect(plugin_id)
+            .map_err(|e| format!("Failed to create CLAP effect '{}': {}", plugin_id, e))?;
+
+        // Send to audio engine via command
+        if let Some(ref mut sender) = self.command_sender {
+            let _ = sender.send(EngineCommand::AddStemEffect {
+                deck,
+                stem,
+                effect,
+            });
+            log::info!("Added CLAP effect '{}' to deck {} stem {:?}", plugin_id, deck, stem);
+            Ok(())
+        } else {
+            Err("Audio engine not connected".to_string())
+        }
+    }
+
+    /// Rescan for CLAP plugins
+    pub fn rescan_clap_plugins(&mut self) {
+        self.clap_manager.rescan_plugins();
     }
 
     /// Add a generic effect to a stem's effect chain

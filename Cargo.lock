@@ -818,6 +818,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "clack-common"
+version = "0.1.0"
+source = "git+https://github.com/prokopyl/clack.git#36602d61bb192e2779a68fddf985e7664f161fb1"
+dependencies = [
+ "bitflags 2.10.0",
+ "clap-sys",
+]
+
+[[package]]
+name = "clack-extensions"
+version = "0.1.0"
+source = "git+https://github.com/prokopyl/clack.git#36602d61bb192e2779a68fddf985e7664f161fb1"
+dependencies = [
+ "bitflags 2.10.0",
+ "clack-common",
+ "clap-sys",
+]
+
+[[package]]
+name = "clack-host"
+version = "0.1.0"
+source = "git+https://github.com/prokopyl/clack.git#36602d61bb192e2779a68fddf985e7664f161fb1"
+dependencies = [
+ "clack-common",
+ "clap-sys",
+ "libloading 0.8.9",
+]
+
+[[package]]
 name = "clang-sys"
 version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -836,6 +865,12 @@ checksum = "c6e6ff9dcd79cff5cd969a17a545d79e84ab086e444102a591e288a8aa3ce394"
 dependencies = [
  "clap_builder",
 ]
+
+[[package]]
+name = "clap-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a76abbdb2907f6fd97fb6bc0b7be96b77d328f2dd9669d1075cc03369ed22154"
 
 [[package]]
 name = "clap_builder"
@@ -3374,6 +3409,8 @@ dependencies = [
  "anyhow",
  "basedrop",
  "bytemuck",
+ "clack-extensions",
+ "clack-host",
  "cozo",
  "cpal",
  "crossbeam",
