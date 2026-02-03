@@ -711,7 +711,7 @@ impl Effect for MultibandHost {
                 band.process();
                 buffer.copy_from(&band.buffer);
             } else {
-                buffer.clear();
+                buffer.fill_silence();
             }
             return;
         }
@@ -744,7 +744,7 @@ impl Effect for MultibandHost {
         }
 
         // Step 3: Sum all bands back together
-        buffer.clear();
+        buffer.fill_silence();
         for (i, sample) in buffer.iter_mut().enumerate() {
             for band in &self.bands {
                 if i < band.buffer.len() {
