@@ -789,7 +789,7 @@ fn macro_bar<'a>(
                 },
             ]
             .width(Length::Fill),
-            row(macro_widgets).spacing(8),
+            row(macro_widgets).spacing(8).padding([0, 8]), // Add horizontal padding for knob circles
         ]
         .spacing(6),
     )

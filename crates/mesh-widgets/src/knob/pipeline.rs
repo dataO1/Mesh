@@ -281,6 +281,10 @@ impl shader::Primitive for KnobPrimitive {
     ) {
         // Build uniforms with this primitive's data, scaling for HiDPI
         let scale = viewport.scale_factor() as f32;
+
+        // Safety: ensure scale factor is valid
+        let scale = if scale > 0.0 && scale.is_finite() { scale } else { 1.0 };
+
         let uniforms = self.build_uniforms(bounds, scale);
 
         // Get or create resources for this knob using its stable ID
