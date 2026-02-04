@@ -285,11 +285,9 @@ impl EffectPickerState {
                 column![
                     text("No effects found").size(14),
                     Space::new().height(10),
-                    text("PD effects location:").size(12),
-                    text("~/Music/mesh-collection/effects/").size(11),
-                    Space::new().height(5),
-                    text("CLAP plugins location:").size(12),
-                    text("~/.clap/ or /usr/lib/clap/").size(11),
+                    text("Effects locations (in mesh-collection):").size(12),
+                    text("  PD: effects/").size(11),
+                    text("  CLAP: plugins/clap/").size(11),
                 ]
                 .spacing(2)
                 .into(),
