@@ -181,17 +181,50 @@ impl EffectPresetConfig {
     }
 
     fn to_effect_state(&self) -> EffectUiState {
+        use super::state::{AvailableParam, KnobAssignment, MAX_UI_KNOBS};
+
         let source = match self.source.as_str() {
             "pd" => EffectSourceType::Pd,
             "clap" => EffectSourceType::Clap,
             _ => EffectSourceType::Native,
         };
+
+        // Convert legacy param_names to available_params
+        let available_params: Vec<AvailableParam> = self
+            .param_names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| AvailableParam {
+                name: name.clone(),
+                min: 0.0,
+                max: 1.0,
+                default: self.param_values.get(i).copied().unwrap_or(0.5),
+                unit: String::new(),
+            })
+            .collect();
+
+        // Create knob assignments from legacy values
+        let mut knob_assignments: [KnobAssignment; MAX_UI_KNOBS] = Default::default();
+        for (i, assignment) in knob_assignments
+            .iter_mut()
+            .enumerate()
+            .take(self.param_values.len().min(MAX_UI_KNOBS))
+        {
+            assignment.param_index = Some(i);
+            assignment.value = self.param_values.get(i).copied().unwrap_or(0.5);
+            if let Some(mapping) = self.param_mappings.get(i) {
+                assignment.macro_mapping = Some(mapping.to_mapping());
+            }
+        }
+
         EffectUiState {
             id: self.id.clone(),
             name: self.name.clone(),
             category: self.category.clone(),
             source,
             bypassed: self.bypassed,
+            available_params,
+            knob_assignments,
             param_names: self.param_names.clone(),
             param_values: self.param_values.clone(),
             param_mappings: self.param_mappings.iter().map(|m| m.to_mapping()).collect(),

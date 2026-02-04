@@ -189,4 +189,37 @@ pub enum MultibandEditorMessage {
 
     /// Set available presets list (from handler after loading)
     SetAvailablePresets(Vec<String>),
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Parameter picker (knob-to-param assignment)
+    // ─────────────────────────────────────────────────────────────────────
+    /// Open parameter picker for a specific knob
+    OpenParamPicker {
+        location: EffectChainLocation,
+        effect: usize,
+        knob: usize,
+    },
+
+    /// Close parameter picker without making a selection
+    CloseParamPicker,
+
+    /// Assign a parameter to a knob (None clears the assignment)
+    AssignParam {
+        location: EffectChainLocation,
+        effect: usize,
+        knob: usize,
+        param_index: Option<usize>,
+    },
+
+    /// Update param picker search filter text
+    SetParamPickerFilter(String),
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Global mouse events (for knob drag capture)
+    // ─────────────────────────────────────────────────────────────────────
+    /// Global mouse moved (for active knob drag)
+    GlobalMouseMoved(iced::Point),
+
+    /// Global mouse released (ends any active knob drag)
+    GlobalMouseReleased,
 }

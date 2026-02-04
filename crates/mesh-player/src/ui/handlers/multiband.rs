@@ -4,15 +4,70 @@
 //! effect chains per band, and macro knob routing.
 
 use iced::Task;
+use mesh_core::effect::EffectInfo;
 use mesh_core::types::Stem;
 use mesh_widgets::multiband::{
-    self, ensure_effect_knobs_exist, EffectChainLocation, EffectSourceType, EffectUiState,
-    MultibandPresetConfig, ParamMacroMapping,
+    self, ensure_effect_knobs_exist, AvailableParam, EffectChainLocation, EffectSourceType,
+    EffectUiState, KnobAssignment, MultibandPresetConfig, ParamMacroMapping, MAX_UI_KNOBS,
 };
 use mesh_widgets::{MultibandEditorMessage, DEFAULT_SENSITIVITY};
 
 use crate::ui::app::MeshApp;
 use crate::ui::message::Message;
+
+/// Create an EffectUiState from actual effect info returned by the backend
+fn create_effect_state_from_info(
+    id: String,
+    effect_info: &EffectInfo,
+    source: EffectSourceType,
+) -> EffectUiState {
+    // Convert all params from the effect info to available params
+    let available_params: Vec<AvailableParam> = effect_info.params.iter()
+        .map(|p| AvailableParam {
+            name: p.name.clone(),
+            min: p.min,
+            max: p.max,
+            default: p.default,
+            unit: p.unit.clone(),
+        })
+        .collect();
+
+    // Create knob assignments - assign first 8 params by default
+    let mut knob_assignments: [KnobAssignment; MAX_UI_KNOBS] = Default::default();
+    for (i, assignment) in knob_assignments.iter_mut().enumerate() {
+        if i < effect_info.params.len() {
+            assignment.param_index = Some(i);
+            assignment.value = effect_info.params[i].default;
+        } else {
+            assignment.param_index = None;
+            assignment.value = 0.5;
+        }
+    }
+
+    // Create param_names and param_values for the first 8 or fewer params
+    let param_count = effect_info.params.len().min(8);
+    let param_names: Vec<String> = effect_info.params.iter()
+        .take(8)
+        .map(|p| p.name.clone())
+        .collect();
+    let param_values: Vec<f32> = effect_info.params.iter()
+        .take(8)
+        .map(|p| p.default)
+        .collect();
+
+    EffectUiState {
+        id,
+        name: effect_info.name.clone(),
+        category: effect_info.category.clone(),
+        source,
+        bypassed: false,
+        available_params,
+        knob_assignments,
+        param_names,
+        param_values,
+        param_mappings: vec![ParamMacroMapping::default(); param_count],
+    }
+}
 
 /// Handle multiband editor messages
 pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
@@ -63,38 +118,29 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                 _ => (Err(format!("Unknown effect source: {}", source)), EffectSourceType::Native),
             };
 
-            if let Err(e) = result {
-                log::error!("Failed to add pre-fx effect: {}", e);
-                app.status = format!("Failed to add pre-fx: {}", e);
-            } else {
-                // Warn if adding multiple PD effects
-                if is_pd && existing_pd_count > 0 {
-                    log::warn!("Multiple PD effects in pre-fx - libpd processes all patches in parallel!");
-                    app.status = format!("Added PD effect - ⚠ {} PD effects (parallel processing)", existing_pd_count + 1);
-                } else {
-                    log::info!("Added {} pre-fx effect '{}'", source, effect_id);
+            match result {
+                Err(e) => {
+                    log::error!("Failed to add pre-fx effect: {}", e);
+                    app.status = format!("Failed to add pre-fx: {}", e);
                 }
+                Ok(effect_info) => {
+                    // Warn if adding multiple PD effects
+                    if is_pd && existing_pd_count > 0 {
+                        log::warn!("Multiple PD effects in pre-fx - libpd processes all patches in parallel!");
+                        app.status = format!("Added PD effect - ⚠ {} PD effects (parallel processing)", existing_pd_count + 1);
+                    } else {
+                        log::info!("Added {} pre-fx effect '{}' ({} params)",
+                            source, effect_id, effect_info.params.len());
+                    }
 
-                let effect_name = effect_id
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&effect_id)
-                    .trim_end_matches(".pd")
-                    .to_string();
-
-                app.multiband_editor.pre_fx.push(EffectUiState {
-                    id: effect_id.clone(),
-                    name: effect_name,
-                    category: source.to_uppercase(),
-                    source: source_type,
-                    bypassed: false,
-                    param_names: vec!["P1".into(), "P2".into(), "P3".into(), "P4".into(),
-                                     "P5".into(), "P6".into(), "P7".into(), "P8".into()],
-                    param_values: vec![0.5; 8],
-                    param_mappings: vec![ParamMacroMapping::default(); 8],
-                });
-                // Create knobs for the new effect's parameters
-                ensure_effect_knobs_exist(&mut app.multiband_editor);
+                    app.multiband_editor.pre_fx.push(create_effect_state_from_info(
+                        effect_id.clone(),
+                        &effect_info,
+                        source_type,
+                    ));
+                    // Create knobs for the new effect's parameters
+                    ensure_effect_knobs_exist(&mut app.multiband_editor);
+                }
             }
             Task::none()
         }
@@ -256,45 +302,35 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                 _ => (Err(format!("Unknown effect source: {}", source)), EffectSourceType::Native),
             };
 
-            if let Err(e) = result {
-                log::error!("Failed to add effect to band {}: {}", band, e);
-                app.status = format!("Failed to add effect: {}", e);
-            } else {
-                // Warn if adding multiple PD effects
-                if is_pd && existing_pd_count > 0 {
-                    log::warn!("Multiple PD effects in band {} - libpd processes all patches in parallel!", band);
-                    app.status = format!("Added PD effect - ⚠ {} PD effects (parallel processing)", existing_pd_count + 1);
-                } else {
-                    log::info!("Added {} effect '{}' to band {}", source, effect_id, band);
+            match result {
+                Err(e) => {
+                    log::error!("Failed to add effect to band {}: {}", band, e);
+                    app.status = format!("Failed to add effect: {}", e);
                 }
+                Ok(effect_info) => {
+                    // Warn if adding multiple PD effects
+                    if is_pd && existing_pd_count > 0 {
+                        log::warn!("Multiple PD effects in band {} - libpd processes all patches in parallel!", band);
+                        app.status = format!("Added PD effect - ⚠ {} PD effects (parallel processing)", existing_pd_count + 1);
+                    } else {
+                        log::info!("Added {} effect '{}' to band {} ({} params)",
+                            source, effect_id, band, effect_info.params.len());
+                    }
 
-                // Add effect to UI state
-                if let Some(band_state) = app.multiband_editor.bands.get_mut(band) {
-                    // Extract effect name from ID (last path component or the ID itself)
-                    let effect_name = effect_id
-                        .rsplit('/')
-                        .next()
-                        .unwrap_or(&effect_id)
-                        .trim_end_matches(".pd")
-                        .to_string();
+                    // Add effect to UI state using the actual effect info from backend
+                    if let Some(band_state) = app.multiband_editor.bands.get_mut(band) {
+                        band_state.effects.push(create_effect_state_from_info(
+                            effect_id.clone(),
+                            &effect_info,
+                            source_type,
+                        ));
+                    }
 
-                    band_state.effects.push(EffectUiState {
-                        id: effect_id.clone(),
-                        name: effect_name,
-                        category: source.to_uppercase(),
-                        source: source_type,
-                        bypassed: false,
-                        param_names: vec!["P1".into(), "P2".into(), "P3".into(), "P4".into(),
-                                         "P5".into(), "P6".into(), "P7".into(), "P8".into()],
-                        param_values: vec![0.5; 8],
-                        param_mappings: vec![ParamMacroMapping::default(); 8],
-                    });
+                    // Create knobs for the new effect's parameters
+                    ensure_effect_knobs_exist(&mut app.multiband_editor);
+                    // Sync macro values from deck view
+                    sync_from_backend(app);
                 }
-
-                // Create knobs for the new effect's parameters
-                ensure_effect_knobs_exist(&mut app.multiband_editor);
-                // Sync macro values from deck view
-                sync_from_backend(app);
             }
             Task::none()
         }
@@ -343,8 +379,20 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         // Unified effect knob handling (stateful knobs)
         // ─────────────────────────────────────────────────────────────────────
         EffectKnob { location, effect, param, event } => {
+            use mesh_widgets::knob::KnobEvent;
             let deck = app.multiband_editor.deck;
             let stem = Stem::ALL[app.multiband_editor.stem];
+
+            // Track drag state for global mouse capture
+            match &event {
+                KnobEvent::Pressed => {
+                    app.multiband_editor.dragging_effect_knob = Some((location, effect, param));
+                }
+                KnobEvent::Released => {
+                    app.multiband_editor.dragging_effect_knob = None;
+                }
+                KnobEvent::Moved(_) => {}
+            }
 
             // Get the knob and handle the event
             let knob = app.multiband_editor.get_effect_knob(location, effect, param);
@@ -396,39 +444,30 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                 _ => (Err(format!("Unknown effect source: {}", source)), EffectSourceType::Native),
             };
 
-            if let Err(e) = result {
-                log::error!("Failed to add post-fx effect: {}", e);
-                app.status = format!("Failed to add effect: {}", e);
-            } else {
-                // Warn if adding multiple PD effects
-                if is_pd && existing_pd_count > 0 {
-                    log::warn!("Multiple PD effects in post-fx - libpd processes all patches in parallel!");
-                    app.status = format!("Added PD effect - ⚠ {} PD effects (parallel processing)", existing_pd_count + 1);
-                } else {
-                    log::info!("Added {} post-fx effect '{}'", source, effect_id);
+            match result {
+                Err(e) => {
+                    log::error!("Failed to add post-fx effect: {}", e);
+                    app.status = format!("Failed to add effect: {}", e);
                 }
+                Ok(effect_info) => {
+                    // Warn if adding multiple PD effects
+                    if is_pd && existing_pd_count > 0 {
+                        log::warn!("Multiple PD effects in post-fx - libpd processes all patches in parallel!");
+                        app.status = format!("Added PD effect - ⚠ {} PD effects (parallel processing)", existing_pd_count + 1);
+                    } else {
+                        log::info!("Added {} post-fx effect '{}' ({} params)",
+                            source, effect_id, effect_info.params.len());
+                    }
 
-                // Add effect to UI state
-                let effect_name = effect_id
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&effect_id)
-                    .trim_end_matches(".pd")
-                    .to_string();
-
-                app.multiband_editor.post_fx.push(EffectUiState {
-                    id: effect_id.clone(),
-                    name: effect_name,
-                    category: source.to_uppercase(),
-                    source: source_type,
-                    bypassed: false,
-                    param_names: vec!["P1".into(), "P2".into(), "P3".into(), "P4".into(),
-                                     "P5".into(), "P6".into(), "P7".into(), "P8".into()],
-                    param_values: vec![0.5; 8],
-                    param_mappings: vec![ParamMacroMapping::default(); 8],
-                });
-                // Create knobs for the new effect's parameters
-                ensure_effect_knobs_exist(&mut app.multiband_editor);
+                    // Add effect to UI state using actual effect info from backend
+                    app.multiband_editor.post_fx.push(create_effect_state_from_info(
+                        effect_id.clone(),
+                        &effect_info,
+                        source_type,
+                    ));
+                    // Create knobs for the new effect's parameters
+                    ensure_effect_knobs_exist(&mut app.multiband_editor);
+                }
             }
             Task::none()
         }
@@ -460,9 +499,21 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         // Macro control (unified stateful knob handling)
         // ─────────────────────────────────────────────────────────────────────
         MacroKnob { index, event } => {
+            use mesh_widgets::knob::KnobEvent;
             let deck = app.multiband_editor.deck;
             let stem_idx = app.multiband_editor.stem;
             let stem = Stem::ALL[stem_idx];
+
+            // Track drag state for global mouse capture
+            match &event {
+                KnobEvent::Pressed => {
+                    app.multiband_editor.dragging_macro_knob = Some(index);
+                }
+                KnobEvent::Released => {
+                    app.multiband_editor.dragging_macro_knob = None;
+                }
+                KnobEvent::Moved(_) => {}
+            }
 
             // Get the knob and handle the event
             if let Some(knob) = app.multiband_editor.macro_knobs.get_mut(index) {
@@ -667,6 +718,138 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
 
         SetAvailablePresets(presets) => {
             app.multiband_editor.available_presets = presets;
+            Task::none()
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Parameter picker
+        // ─────────────────────────────────────────────────────────────────────
+        OpenParamPicker { location, effect, knob } => {
+            app.multiband_editor.param_picker_open = Some((location, effect, knob));
+            app.multiband_editor.param_picker_search = String::new();
+            Task::none()
+        }
+
+        CloseParamPicker => {
+            app.multiband_editor.param_picker_open = None;
+            app.multiband_editor.param_picker_search = String::new();
+            Task::none()
+        }
+
+        AssignParam { location, effect, knob, param_index } => {
+            // Get the effect to update
+            let effect_state = match location {
+                EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get_mut(effect),
+                EffectChainLocation::Band(band_idx) => app
+                    .multiband_editor
+                    .bands
+                    .get_mut(band_idx)
+                    .and_then(|b| b.effects.get_mut(effect)),
+                EffectChainLocation::PostFx => app.multiband_editor.post_fx.get_mut(effect),
+            };
+
+            if let Some(effect_state) = effect_state {
+                if let Some(assignment) = effect_state.knob_assignments.get_mut(knob) {
+                    // Update the knob assignment
+                    assignment.param_index = param_index;
+
+                    // If assigning to a parameter, set the value from the param's default
+                    if let Some(idx) = param_index {
+                        if let Some(param) = effect_state.available_params.get(idx) {
+                            assignment.value = param.default;
+                        }
+                    }
+
+                    // Update legacy param_names for backwards compatibility
+                    if knob < effect_state.param_names.len() {
+                        if let Some(idx) = param_index {
+                            if let Some(param) = effect_state.available_params.get(idx) {
+                                effect_state.param_names[knob] = param.name.clone();
+                            }
+                        } else {
+                            effect_state.param_names[knob] = "[assign]".to_string();
+                        }
+                    }
+                }
+            }
+
+            // Close the picker after assignment
+            app.multiband_editor.param_picker_open = None;
+            app.multiband_editor.param_picker_search = String::new();
+            Task::none()
+        }
+
+        SetParamPickerFilter(filter) => {
+            app.multiband_editor.param_picker_search = filter;
+            Task::none()
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Global mouse events for knob drag capture
+        // ─────────────────────────────────────────────────────────────────────
+        GlobalMouseMoved(position) => {
+            use mesh_widgets::knob::KnobEvent;
+            let deck = app.multiband_editor.deck;
+            let stem = Stem::ALL[app.multiband_editor.stem];
+            let stem_idx = app.multiband_editor.stem;
+
+            // Route to dragging effect knob
+            if let Some((location, effect, param)) = app.multiband_editor.dragging_effect_knob {
+                let knob = app.multiband_editor.get_effect_knob(location, effect, param);
+                if let Some(new_value) = knob.handle_event(KnobEvent::Moved(position), DEFAULT_SENSITIVITY) {
+                    app.multiband_editor.set_effect_param_value(location, effect, param, new_value);
+
+                    match location {
+                        EffectChainLocation::PreFx => {
+                            app.domain.set_pre_fx_param(deck, stem, effect, param, new_value);
+                        }
+                        EffectChainLocation::Band(band_idx) => {
+                            app.domain.set_band_effect_param(deck, stem, band_idx, effect, param, new_value);
+                        }
+                        EffectChainLocation::PostFx => {
+                            app.domain.set_post_fx_param(deck, stem, effect, param, new_value);
+                        }
+                    }
+                }
+            }
+
+            // Route to dragging macro knob
+            if let Some(index) = app.multiband_editor.dragging_macro_knob {
+                if let Some(knob) = app.multiband_editor.macro_knobs.get_mut(index) {
+                    if let Some(new_value) = knob.handle_event(KnobEvent::Moved(position), DEFAULT_SENSITIVITY) {
+                        if deck < 4 && stem_idx < 4 && index < 8 {
+                            app.deck_views[deck].set_stem_knob(stem_idx, index, new_value);
+                        }
+
+                        app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandMacro {
+                            deck,
+                            stem,
+                            macro_index: index,
+                            value: new_value,
+                        });
+                    }
+                }
+            }
+
+            Task::none()
+        }
+
+        GlobalMouseReleased => {
+            use mesh_widgets::knob::KnobEvent;
+
+            // Release dragging effect knob
+            if let Some((location, effect, param)) = app.multiband_editor.dragging_effect_knob.take() {
+                let knob = app.multiband_editor.get_effect_knob(location, effect, param);
+                knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
+            }
+
+            // Release dragging macro knob
+            if let Some(index) = app.multiband_editor.dragging_macro_knob.take() {
+                if let Some(knob) = app.multiband_editor.macro_knobs.get_mut(index) {
+                    knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
+                }
+            }
+
             Task::none()
         }
     }

@@ -31,7 +31,7 @@ use basedrop::Shared;
 use mesh_core::audio_file::{StemBuffers, TrackMetadata};
 use mesh_core::config::LoudnessConfig;
 use mesh_core::db::DatabaseService;
-use mesh_core::effect::Effect;
+use mesh_core::effect::{Effect, EffectInfo};
 use mesh_core::engine::{EngineCommand, LinkedStemData, PreparedTrack, SlicerPreset};
 use mesh_core::loader::LinkedStemResultReceiver;
 use mesh_core::clap::{ClapManager, ClapPluginCategory, DiscoveredClapPlugin};
@@ -936,7 +936,7 @@ impl MeshDomain {
     /// * `stem` - Which stem to add the effect to
     /// * `effect_id` - Effect identifier (folder name in effects/)
     /// * `band_index` - Band index in the multiband container (0-7)
-    pub fn add_pd_effect(&mut self, deck: usize, stem: Stem, effect_id: &str, band_index: usize) -> Result<(), String> {
+    pub fn add_pd_effect(&mut self, deck: usize, stem: Stem, effect_id: &str, band_index: usize) -> Result<EffectInfo, String> {
         // Create the effect via PdManager (this does the non-RT-safe work)
         // Note: All effects share the single global PdInstance; deck is only used
         // for routing in the audio engine, not for PD isolation.
@@ -944,6 +944,8 @@ impl MeshDomain {
             .pd_manager
             .create_effect(effect_id)
             .map_err(|e| format!("Failed to create PD effect '{}': {}", effect_id, e))?;
+
+        let effect_info = effect.info().clone();
 
         // Send to audio engine via command (add to specified band of multiband container)
         if let Some(ref mut sender) = self.command_sender {
@@ -953,8 +955,9 @@ impl MeshDomain {
                 band_index,
                 effect,
             });
-            log::info!("Added PD effect '{}' to deck {} stem {:?} band {}", effect_id, deck, stem, band_index);
-            Ok(())
+            log::info!("Added PD effect '{}' to deck {} stem {:?} band {} ({} params)",
+                effect_id, deck, stem, band_index, effect_info.params.len());
+            Ok(effect_info)
         } else {
             Err("Audio engine not connected".to_string())
         }
@@ -990,19 +993,17 @@ impl MeshDomain {
     /// Add a CLAP effect to a stem's effect chain
     ///
     /// Creates the effect via ClapManager and sends it to the audio engine.
-    /// Returns Ok(()) on success, or an error message on failure.
-    ///
-    /// # Arguments
-    /// * `deck` - Deck index (0-3)
-    /// * `stem` - Which stem to add the effect to
-    /// * `plugin_id` - CLAP plugin identifier (e.g., "org.lsp-plug.compressor-stereo")
-    /// * `band_index` - Band index in the multiband container (0-7)
-    pub fn add_clap_effect(&mut self, deck: usize, stem: Stem, plugin_id: &str, band_index: usize) -> Result<(), String> {
+    /// Returns the effect's `EffectInfo` on success (containing all parameter names),
+    /// or an error message on failure.
+    pub fn add_clap_effect(&mut self, deck: usize, stem: Stem, plugin_id: &str, band_index: usize) -> Result<EffectInfo, String> {
         // Create the effect via ClapManager (this does the non-RT-safe work)
         let effect = self
             .clap_manager
             .create_effect(plugin_id)
             .map_err(|e| format!("Failed to create CLAP effect '{}': {}", plugin_id, e))?;
+
+        // Clone the effect info BEFORE sending to audio engine (effect will be moved)
+        let effect_info = effect.info().clone();
 
         // Send to audio engine via command (add to specified band of multiband container)
         if let Some(ref mut sender) = self.command_sender {
@@ -1012,8 +1013,9 @@ impl MeshDomain {
                 band_index,
                 effect,
             });
-            log::info!("Added CLAP effect '{}' to deck {} stem {:?} band {}", plugin_id, deck, stem, band_index);
-            Ok(())
+            log::info!("Added CLAP effect '{}' to deck {} stem {:?} band {} ({} params)",
+                plugin_id, deck, stem, band_index, effect_info.params.len());
+            Ok(effect_info)
         } else {
             Err("Audio engine not connected".to_string())
         }
@@ -1156,32 +1158,38 @@ impl MeshDomain {
     // =========================================================================
 
     /// Add a PD effect to the pre-fx chain
-    pub fn add_pd_effect_pre_fx(&mut self, deck: usize, stem: Stem, effect_id: &str) -> Result<(), String> {
+    pub fn add_pd_effect_pre_fx(&mut self, deck: usize, stem: Stem, effect_id: &str) -> Result<EffectInfo, String> {
         let effect = self
             .pd_manager
             .create_effect(effect_id)
             .map_err(|e| format!("Failed to create PD effect '{}': {}", effect_id, e))?;
 
+        let effect_info = effect.info().clone();
+
         if let Some(ref mut sender) = self.command_sender {
             let _ = sender.send(EngineCommand::AddMultibandPreFx { deck, stem, effect });
-            log::info!("Added PD pre-fx '{}' to deck {} stem {:?}", effect_id, deck, stem);
-            Ok(())
+            log::info!("Added PD pre-fx '{}' to deck {} stem {:?} ({} params)",
+                effect_id, deck, stem, effect_info.params.len());
+            Ok(effect_info)
         } else {
             Err("Audio engine not connected".to_string())
         }
     }
 
     /// Add a CLAP effect to the pre-fx chain
-    pub fn add_clap_effect_pre_fx(&mut self, deck: usize, stem: Stem, plugin_id: &str) -> Result<(), String> {
+    pub fn add_clap_effect_pre_fx(&mut self, deck: usize, stem: Stem, plugin_id: &str) -> Result<EffectInfo, String> {
         let effect = self
             .clap_manager
             .create_effect(plugin_id)
             .map_err(|e| format!("Failed to create CLAP effect '{}': {}", plugin_id, e))?;
 
+        let effect_info = effect.info().clone();
+
         if let Some(ref mut sender) = self.command_sender {
             let _ = sender.send(EngineCommand::AddMultibandPreFx { deck, stem, effect });
-            log::info!("Added CLAP pre-fx '{}' to deck {} stem {:?}", plugin_id, deck, stem);
-            Ok(())
+            log::info!("Added CLAP pre-fx '{}' to deck {} stem {:?} ({} params)",
+                plugin_id, deck, stem, effect_info.params.len());
+            Ok(effect_info)
         } else {
             Err("Audio engine not connected".to_string())
         }
@@ -1213,32 +1221,38 @@ impl MeshDomain {
     // =========================================================================
 
     /// Add a PD effect to the post-fx chain
-    pub fn add_pd_effect_post_fx(&mut self, deck: usize, stem: Stem, effect_id: &str) -> Result<(), String> {
+    pub fn add_pd_effect_post_fx(&mut self, deck: usize, stem: Stem, effect_id: &str) -> Result<EffectInfo, String> {
         let effect = self
             .pd_manager
             .create_effect(effect_id)
             .map_err(|e| format!("Failed to create PD effect '{}': {}", effect_id, e))?;
 
+        let effect_info = effect.info().clone();
+
         if let Some(ref mut sender) = self.command_sender {
             let _ = sender.send(EngineCommand::AddMultibandPostFx { deck, stem, effect });
-            log::info!("Added PD post-fx '{}' to deck {} stem {:?}", effect_id, deck, stem);
-            Ok(())
+            log::info!("Added PD post-fx '{}' to deck {} stem {:?} ({} params)",
+                effect_id, deck, stem, effect_info.params.len());
+            Ok(effect_info)
         } else {
             Err("Audio engine not connected".to_string())
         }
     }
 
     /// Add a CLAP effect to the post-fx chain
-    pub fn add_clap_effect_post_fx(&mut self, deck: usize, stem: Stem, plugin_id: &str) -> Result<(), String> {
+    pub fn add_clap_effect_post_fx(&mut self, deck: usize, stem: Stem, plugin_id: &str) -> Result<EffectInfo, String> {
         let effect = self
             .clap_manager
             .create_effect(plugin_id)
             .map_err(|e| format!("Failed to create CLAP effect '{}': {}", plugin_id, e))?;
 
+        let effect_info = effect.info().clone();
+
         if let Some(ref mut sender) = self.command_sender {
             let _ = sender.send(EngineCommand::AddMultibandPostFx { deck, stem, effect });
-            log::info!("Added CLAP post-fx '{}' to deck {} stem {:?}", plugin_id, deck, stem);
-            Ok(())
+            log::info!("Added CLAP post-fx '{}' to deck {} stem {:?} ({} params)",
+                plugin_id, deck, stem, effect_info.params.len());
+            Ok(effect_info)
         } else {
             Err("Audio engine not connected".to_string())
         }

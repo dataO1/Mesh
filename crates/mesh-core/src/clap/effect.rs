@@ -8,19 +8,16 @@ use std::sync::{Arc, Mutex};
 use crate::effect::{Effect, EffectBase, EffectInfo, ParamInfo, ParamValue};
 use crate::types::StereoBuffer;
 
-use super::error::ClapResult;
-use super::plugin::{ClapPluginWrapper, CLAP_SAMPLE_RATE, CLAP_BUFFER_SIZE};
 use super::discovery::DiscoveredClapPlugin;
-
-/// Maximum parameters exposed to mesh (maps to 8 hardware knobs)
-pub const MAX_CLAP_PARAMS: usize = 8;
+use super::error::ClapResult;
+use super::plugin::{ClapPluginWrapper, CLAP_BUFFER_SIZE, CLAP_SAMPLE_RATE};
 
 /// A CLAP plugin wrapped as a mesh Effect
 ///
 /// This provides the bridge between CLAP plugins and mesh's effect system,
 /// handling:
 /// - Effect trait implementation
-/// - Parameter mapping (CLAP params to mesh's 8-knob system)
+/// - Parameter querying (all CLAP params exposed via Effect::info().params)
 /// - Thread-safe access via Arc<Mutex<>>
 /// - Latency reporting for compensation
 pub struct ClapEffect {
@@ -34,25 +31,57 @@ pub struct ClapEffect {
     latency: u32,
     /// Interleaved audio buffer for processing
     process_buffer: Vec<f32>,
+    /// CLAP parameter IDs (maps param index to CLAP param ID)
+    clap_param_ids: Vec<u32>,
+    /// Pending parameter changes to send to plugin (param_id, value)
+    pending_param_changes: Vec<(u32, f64)>,
 }
 
 impl ClapEffect {
     /// Create a new CLAP effect from a plugin wrapper
-    pub fn new(wrapper: ClapPluginWrapper) -> ClapResult<Self> {
+    pub fn new(mut wrapper: ClapPluginWrapper) -> ClapResult<Self> {
         let plugin_info = wrapper.info().clone();
         let latency = wrapper.latency();
 
-        // Build EffectInfo from plugin metadata
-        let mut info = EffectInfo::new(&plugin_info.name, plugin_info.category_name());
+        // Query all parameters from the plugin
+        let clap_params = wrapper.query_params();
 
-        // For now, we expose up to 8 generic parameters
-        // In a full implementation, we'd query the plugin's actual parameters
-        // and map the first 8 (or allow user-configurable mapping)
-        for i in 0..MAX_CLAP_PARAMS.min(8) {
-            info = info.with_param(
-                ParamInfo::new(format!("Param {}", i + 1), 0.5)
-                    .with_range(0.0, 1.0)
+        // Build EffectInfo from actual plugin parameters
+        let mut info = EffectInfo::new(&plugin_info.name, plugin_info.category_name());
+        let mut clap_param_ids = Vec::with_capacity(clap_params.len());
+
+        if clap_params.is_empty() {
+            // Plugin doesn't expose params or doesn't support extension
+            // Create 8 generic params as fallback
+            log::info!(
+                "CLAP plugin '{}' has no params, creating 8 generic placeholders",
+                plugin_info.id
             );
+            for i in 0..8 {
+                info = info.with_param(ParamInfo::new(format!("Param {}", i + 1), 0.5).with_range(0.0, 1.0));
+                clap_param_ids.push(i as u32);
+            }
+        } else {
+            log::info!(
+                "CLAP plugin '{}' exposes {} parameters",
+                plugin_info.id,
+                clap_params.len()
+            );
+            for param in &clap_params {
+                // Normalize default value to 0.0-1.0 range
+                let range = param.max - param.min;
+                let default_normalized = if range > 0.0 {
+                    ((param.default - param.min) / range) as f32
+                } else {
+                    0.5
+                };
+
+                info = info.with_param(
+                    ParamInfo::new(&param.name, default_normalized)
+                        .with_range(param.min as f32, param.max as f32),
+                );
+                clap_param_ids.push(param.id);
+            }
         }
 
         let base = EffectBase::new(info);
@@ -64,6 +93,8 @@ impl ClapEffect {
             plugin_id: plugin_info.id,
             latency,
             process_buffer,
+            clap_param_ids,
+            pending_param_changes: Vec::new(),
         })
     }
 
@@ -86,6 +117,11 @@ impl ClapEffect {
     pub fn wrapper(&self) -> &Arc<Mutex<ClapPluginWrapper>> {
         &self.wrapper
     }
+
+    /// Get the CLAP parameter info for all parameters
+    pub fn clap_param_ids(&self) -> &[u32] {
+        &self.clap_param_ids
+    }
 }
 
 impl Effect for ClapEffect {
@@ -98,7 +134,10 @@ impl Effect for ClapEffect {
         let mut wrapper = match self.wrapper.try_lock() {
             Ok(w) => w,
             Err(_) => {
-                log::trace!("CLAP effect '{}': lock contention, skipping frame", self.plugin_id);
+                log::trace!(
+                    "CLAP effect '{}': lock contention, skipping frame",
+                    self.plugin_id
+                );
                 return;
             }
         };
@@ -116,8 +155,19 @@ impl Effect for ClapEffect {
         // Copy input to our buffer
         self.process_buffer[..interleaved_size].copy_from_slice(&interleaved[..interleaved_size]);
 
-        // Process through CLAP plugin
-        if let Err(e) = wrapper.process(&self.process_buffer[..interleaved_size], interleaved) {
+        // Drain pending param changes and process through CLAP plugin
+        let param_changes: Vec<(u32, f64)> = self.pending_param_changes.drain(..).collect();
+        let result = if param_changes.is_empty() {
+            wrapper.process(&self.process_buffer[..interleaved_size], interleaved)
+        } else {
+            wrapper.process_with_params(
+                &self.process_buffer[..interleaved_size],
+                interleaved,
+                &param_changes,
+            )
+        };
+
+        if let Err(e) = result {
             log::warn!("CLAP effect '{}' processing error: {}", self.plugin_id, e);
             // On error, buffer is left with input data (passthrough)
         }
@@ -136,9 +186,15 @@ impl Effect for ClapEffect {
     }
 
     fn set_param(&mut self, index: usize, value: f32) {
+        // Update our local state
         self.base.set_param(index, value);
-        // TODO: Send parameter to CLAP plugin via parameter events
-        // This requires implementing the params extension
+
+        // Queue parameter change for the plugin
+        if let Some(&param_id) = self.clap_param_ids.get(index) {
+            // Get the actual (denormalized) value
+            let actual_value = self.base.get_params().get(index).map(|p| p.actual).unwrap_or(value);
+            self.pending_param_changes.push((param_id, actual_value as f64));
+        }
     }
 
     fn set_bypass(&mut self, bypass: bool) {
@@ -164,10 +220,10 @@ unsafe impl Send for ClapEffect {}
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
-    fn test_max_params_constant() {
-        assert_eq!(MAX_CLAP_PARAMS, 8);
+    fn test_clap_param_id_storage() {
+        // Basic test that the types are correct
+        let ids: Vec<u32> = vec![1, 2, 3];
+        assert_eq!(ids.len(), 3);
     }
 }

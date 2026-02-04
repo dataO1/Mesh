@@ -15,8 +15,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use mesh_core::db::DatabaseService;
+use mesh_core::effect::EffectInfo;
 use iced::widget::{button, center, column, container, mouse_area, opaque, row, slider, stack, text, Space};
-use iced::{Center as CenterAlign, Color, Element, Fill, Length, Subscription, Task, Theme};
+use iced::{Center as CenterAlign, Color, Element, Fill, Length, Point, Subscription, Task, Theme};
+use iced::{event, mouse, Event};
 use iced::time;
 
 use crate::audio::CommandSender;
@@ -27,7 +29,64 @@ use mesh_midi::{MidiController, MidiMessage as MidiMsg, MidiInputEvent, DeckActi
 use mesh_core::engine::{DeckAtomics, LinkedStemAtomics, SlicerAtomics};
 use mesh_core::types::NUM_DECKS;
 use mesh_widgets::{mpsc_subscription, multiband_editor, MultibandEditorState, SliceEditorState};
-use mesh_widgets::multiband::{ensure_effect_knobs_exist, EffectSourceType, EffectUiState, ParamMacroMapping};
+use mesh_widgets::multiband::{
+    ensure_effect_knobs_exist, AvailableParam, EffectSourceType, EffectUiState, KnobAssignment,
+    ParamMacroMapping, MAX_UI_KNOBS,
+};
+
+/// Create an EffectUiState from actual effect info returned by the backend
+fn create_effect_state_from_info(
+    id: String,
+    effect_info: &EffectInfo,
+    source: EffectSourceType,
+) -> EffectUiState {
+    // Convert all params from the effect info to available params
+    let available_params: Vec<AvailableParam> = effect_info.params.iter()
+        .map(|p| AvailableParam {
+            name: p.name.clone(),
+            min: p.min,
+            max: p.max,
+            default: p.default,
+            unit: p.unit.clone(),
+        })
+        .collect();
+
+    // Create knob assignments - assign first 8 params by default
+    let mut knob_assignments: [KnobAssignment; MAX_UI_KNOBS] = Default::default();
+    for (i, assignment) in knob_assignments.iter_mut().enumerate() {
+        if i < effect_info.params.len() {
+            assignment.param_index = Some(i);
+            assignment.value = effect_info.params[i].default;
+        } else {
+            assignment.param_index = None;
+            assignment.value = 0.5;
+        }
+    }
+
+    // Create param_names and param_values for the first 8 or fewer params
+    let param_count = effect_info.params.len().min(8);
+    let param_names: Vec<String> = effect_info.params.iter()
+        .take(8)
+        .map(|p| p.name.clone())
+        .collect();
+    let param_values: Vec<f32> = effect_info.params.iter()
+        .take(8)
+        .map(|p| p.default)
+        .collect();
+
+    EffectUiState {
+        id,
+        name: effect_info.name.clone(),
+        category: effect_info.category.clone(),
+        source,
+        bypassed: false,
+        available_params,
+        knob_assignments,
+        param_names,
+        param_values,
+        param_mappings: vec![ParamMacroMapping::default(); param_count],
+    }
+}
 use super::collection_browser::{CollectionBrowserState, CollectionBrowserMessage};
 use super::deck_view::{DeckView, DeckMessage};
 use super::effect_picker::{EffectPickerState, EffectPickerMessage};
@@ -342,50 +401,41 @@ impl MeshApp {
                             self.domain.add_pd_effect(deck, stem, &effect_id, band)
                         };
 
-                        if let Err(e) = result {
-                            log::error!("Failed to add PD effect '{}': {}", effect_id, e);
-                            self.status = format!("Failed to add effect: {}", e);
-                        } else {
-                            let location = if band == 255 { "pre-fx" } else if band == 254 { "post-fx" } else { "band" };
-                            // Show warning if multiple PD effects, otherwise show normal status
-                            if existing_pd_count > 0 {
-                                self.status = format!("Added PD effect - ⚠ {} PD effects now (parallel processing)", existing_pd_count + 1);
-                            } else {
-                                self.status = format!("Added effect to deck {} {} {}", deck + 1, stem.name(), location);
+                        match result {
+                            Err(e) => {
+                                log::error!("Failed to add PD effect '{}': {}", effect_id, e);
+                                self.status = format!("Failed to add effect: {}", e);
                             }
-                            log::info!("Added PD effect '{}' to deck {} stem {:?} {}", effect_id, deck, stem, location);
+                            Ok(effect_info) => {
+                                let location = if band == 255 { "pre-fx" } else if band == 254 { "post-fx" } else { "band" };
+                                // Show warning if multiple PD effects, otherwise show normal status
+                                if existing_pd_count > 0 {
+                                    self.status = format!("Added PD effect - ⚠ {} PD effects now (parallel processing)", existing_pd_count + 1);
+                                } else {
+                                    self.status = format!("Added effect to deck {} {} {}", deck + 1, stem.name(), location);
+                                }
+                                log::info!("Added PD effect '{}' to deck {} stem {:?} {} ({} params)",
+                                    effect_id, deck, stem, location, effect_info.params.len());
 
-                            // Build effect UI state
-                            let effect_name = effect_id
-                                .rsplit('/')
-                                .next()
-                                .unwrap_or(&effect_id)
-                                .trim_end_matches(".pd")
-                                .to_string();
+                                // Build effect UI state from actual effect info
+                                let effect_state = create_effect_state_from_info(
+                                    effect_id.clone(),
+                                    &effect_info,
+                                    EffectSourceType::Pd,
+                                );
 
-                            let effect_state = EffectUiState {
-                                id: effect_id.clone(),
-                                name: effect_name,
-                                category: "PD".to_string(),
-                                source: EffectSourceType::Pd,
-                                bypassed: false,
-                                param_names: vec!["P1".into(), "P2".into(), "P3".into(), "P4".into(),
-                                                 "P5".into(), "P6".into(), "P7".into(), "P8".into()],
-                                param_values: vec![0.5; 8],
-                                param_mappings: vec![ParamMacroMapping::default(); 8],
-                            };
+                                // Update correct UI state based on location
+                                if band == 255 {
+                                    self.multiband_editor.pre_fx.push(effect_state);
+                                } else if band == 254 {
+                                    self.multiband_editor.post_fx.push(effect_state);
+                                } else if let Some(band_state) = self.multiband_editor.bands.get_mut(band) {
+                                    band_state.effects.push(effect_state);
+                                }
 
-                            // Update correct UI state based on location
-                            if band == 255 {
-                                self.multiband_editor.pre_fx.push(effect_state);
-                            } else if band == 254 {
-                                self.multiband_editor.post_fx.push(effect_state);
-                            } else if let Some(band_state) = self.multiband_editor.bands.get_mut(band) {
-                                band_state.effects.push(effect_state);
+                                // Create knobs for the new effect
+                                ensure_effect_knobs_exist(&mut self.multiband_editor);
                             }
-
-                            // Create knobs for the new effect
-                            ensure_effect_knobs_exist(&mut self.multiband_editor);
                         }
                         self.effect_picker.close();
                     }
@@ -404,44 +454,36 @@ impl MeshApp {
                             self.domain.add_clap_effect(deck, stem, &plugin_id, band)
                         };
 
-                        if let Err(e) = result {
-                            log::error!("Failed to add CLAP effect '{}': {}", plugin_id, e);
-                            self.status = format!("Failed to add CLAP effect: {}", e);
-                        } else {
-                            let location = if band == 255 { "pre-fx" } else if band == 254 { "post-fx" } else { "band" };
-                            self.status = format!("Added effect to deck {} {} {}", deck + 1, stem.name(), location);
-                            log::info!("Added CLAP effect '{}' to deck {} stem {:?} {}", plugin_id, deck, stem, location);
-
-                            // Build effect UI state
-                            let effect_name = plugin_id
-                                .rsplit('.')
-                                .next()
-                                .unwrap_or(&plugin_id)
-                                .to_string();
-
-                            let effect_state = EffectUiState {
-                                id: plugin_id.clone(),
-                                name: effect_name,
-                                category: "CLAP".to_string(),
-                                source: EffectSourceType::Clap,
-                                bypassed: false,
-                                param_names: vec!["P1".into(), "P2".into(), "P3".into(), "P4".into(),
-                                                 "P5".into(), "P6".into(), "P7".into(), "P8".into()],
-                                param_values: vec![0.5; 8],
-                                param_mappings: vec![ParamMacroMapping::default(); 8],
-                            };
-
-                            // Update correct UI state based on location
-                            if band == 255 {
-                                self.multiband_editor.pre_fx.push(effect_state);
-                            } else if band == 254 {
-                                self.multiband_editor.post_fx.push(effect_state);
-                            } else if let Some(band_state) = self.multiband_editor.bands.get_mut(band) {
-                                band_state.effects.push(effect_state);
+                        match result {
+                            Err(e) => {
+                                log::error!("Failed to add CLAP effect '{}': {}", plugin_id, e);
+                                self.status = format!("Failed to add CLAP effect: {}", e);
                             }
+                            Ok(effect_info) => {
+                                let location = if band == 255 { "pre-fx" } else if band == 254 { "post-fx" } else { "band" };
+                                self.status = format!("Added effect to deck {} {} {}", deck + 1, stem.name(), location);
+                                log::info!("Added CLAP effect '{}' to deck {} stem {:?} {} ({} params)",
+                                    plugin_id, deck, stem, location, effect_info.params.len());
 
-                            // Create knobs for the new effect
-                            ensure_effect_knobs_exist(&mut self.multiband_editor);
+                                // Build effect UI state from actual effect info
+                                let effect_state = create_effect_state_from_info(
+                                    plugin_id.clone(),
+                                    &effect_info,
+                                    EffectSourceType::Clap,
+                                );
+
+                                // Update correct UI state based on location
+                                if band == 255 {
+                                    self.multiband_editor.pre_fx.push(effect_state);
+                                } else if band == 254 {
+                                    self.multiband_editor.post_fx.push(effect_state);
+                                } else if let Some(band_state) = self.multiband_editor.bands.get_mut(band) {
+                                    band_state.effects.push(effect_state);
+                                }
+
+                                // Create knobs for the new effect
+                                ensure_effect_knobs_exist(&mut self.multiband_editor);
+                            }
                         }
                         self.effect_picker.close();
                     }
@@ -773,6 +815,28 @@ impl MeshApp {
         let usb_sub = mpsc_subscription(self.domain.usb_message_receiver())
             .map(Message::Usb);
 
+        // Global mouse event subscription for knob drag capture
+        // Only active when a knob is being dragged (to avoid overhead otherwise)
+        let mouse_capture_sub = if self.multiband_editor.is_any_knob_dragging() {
+            event::listen_with(|event, _status, _id| {
+                match event {
+                    Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                        Some(Message::Multiband(
+                            mesh_widgets::MultibandEditorMessage::GlobalMouseMoved(position)
+                        ))
+                    }
+                    Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                        Some(Message::Multiband(
+                            mesh_widgets::MultibandEditorMessage::GlobalMouseReleased
+                        ))
+                    }
+                    _ => None,
+                }
+            })
+        } else {
+            Subscription::none()
+        };
+
         Subscription::batch([
             // Update UI at ~60fps for smooth waveform animation
             time::every(std::time::Duration::from_millis(16)).map(|_| Message::Tick),
@@ -786,6 +850,8 @@ impl MeshApp {
             linked_stem_sub,
             // USB device events (connect, disconnect, mount complete)
             usb_sub,
+            // Global mouse capture for smooth knob dragging
+            mouse_capture_sub,
         ])
     }
 

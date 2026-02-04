@@ -41,7 +41,10 @@ pub use config::{
 };
 pub use crossover_bar::{crossover_bar, crossover_controls, CROSSOVER_BAR_HEIGHT};
 pub use message::MultibandEditorMessage;
-pub use state::{BandUiState, EffectChainLocation, EffectSourceType, EffectUiState, MacroUiState, MultibandEditorState, ParamMacroMapping};
+pub use state::{
+    AvailableParam, BandUiState, EffectChainLocation, EffectSourceType, EffectUiState,
+    KnobAssignment, MacroUiState, MultibandEditorState, ParamMacroMapping, MAX_UI_KNOBS,
+};
 pub use view::{multiband_editor, ensure_effect_knobs_exist};
 
 /// Frequency range for crossover display (Hz)

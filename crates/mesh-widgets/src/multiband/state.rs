@@ -1,10 +1,13 @@
 //! State structures for the multiband editor widget
 
-use mesh_core::effect::{BandEffectInfo, BandState};
+use mesh_core::effect::{BandEffectInfo, BandState, ParamInfo};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::knob::Knob;
+
+/// Maximum number of UI knobs per effect (hardware constraint)
+pub const MAX_UI_KNOBS: usize = 8;
 
 /// Effect source type for display
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +51,66 @@ impl Default for ParamMacroMapping {
     }
 }
 
+/// Information about an available parameter (mirrors ParamInfo for serialization)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AvailableParam {
+    /// Parameter name
+    pub name: String,
+    /// Minimum value
+    pub min: f32,
+    /// Maximum value
+    pub max: f32,
+    /// Default value (normalized 0-1)
+    pub default: f32,
+    /// Unit label (e.g., "ms", "dB", "%")
+    pub unit: String,
+}
+
+impl AvailableParam {
+    /// Create from mesh_core ParamInfo
+    pub fn from_param_info(info: &ParamInfo) -> Self {
+        Self {
+            name: info.name.clone(),
+            min: info.min,
+            max: info.max,
+            default: info.default,
+            unit: info.unit.clone(),
+        }
+    }
+}
+
+/// Assignment of a UI knob to an effect parameter
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnobAssignment {
+    /// Parameter index in effect's available_params list (None = unassigned)
+    pub param_index: Option<usize>,
+    /// Current value (normalized 0.0-1.0)
+    pub value: f32,
+    /// Macro mapping for this knob (if any)
+    pub macro_mapping: Option<ParamMacroMapping>,
+}
+
+impl Default for KnobAssignment {
+    fn default() -> Self {
+        Self {
+            param_index: None,
+            value: 0.5,
+            macro_mapping: None,
+        }
+    }
+}
+
+impl KnobAssignment {
+    /// Create a new assignment to a specific parameter
+    pub fn assigned(param_index: usize, value: f32) -> Self {
+        Self {
+            param_index: Some(param_index),
+            value,
+            macro_mapping: None,
+        }
+    }
+}
+
 /// UI state for a single effect in a band (serializable for presets)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EffectUiState {
@@ -61,28 +124,113 @@ pub struct EffectUiState {
     pub source: EffectSourceType,
     /// Whether the effect is bypassed
     pub bypassed: bool,
-    /// Parameter names (up to 8)
+
+    /// All available parameters from the effect (can be 100+ for CLAP plugins)
+    pub available_params: Vec<AvailableParam>,
+
+    /// UI knob assignments (exactly 8 knobs)
+    /// Each knob can be assigned to any parameter index, or be unassigned
+    pub knob_assignments: [KnobAssignment; MAX_UI_KNOBS],
+
+    // Legacy fields kept for backwards compatibility during migration
+    // TODO: Remove these after migration is complete
+    /// Parameter names (up to 8) - LEGACY, use available_params instead
+    #[serde(default)]
     pub param_names: Vec<String>,
-    /// Current parameter values (normalized 0.0-1.0)
+    /// Current parameter values (normalized 0.0-1.0) - LEGACY, use knob_assignments instead
+    #[serde(default)]
     pub param_values: Vec<f32>,
-    /// Macro mappings for each parameter (which macro controls it)
+    /// Macro mappings for each parameter - LEGACY, use knob_assignments instead
+    #[serde(default)]
     pub param_mappings: Vec<ParamMacroMapping>,
 }
 
 impl EffectUiState {
     /// Create from backend BandEffectInfo
     pub fn from_backend(id: String, source: EffectSourceType, info: &BandEffectInfo) -> Self {
-        let param_count = info.param_values.len();
+        let param_count = info.param_values.len().min(MAX_UI_KNOBS);
+
+        // Convert backend param info to AvailableParam
+        let available_params: Vec<AvailableParam> = info
+            .param_names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| AvailableParam {
+                name: name.clone(),
+                min: 0.0,
+                max: 1.0,
+                default: info.param_values.get(i).copied().unwrap_or(0.5),
+                unit: String::new(),
+            })
+            .collect();
+
+        // Create default knob assignments mapping first N params to first N knobs
+        let mut knob_assignments: [KnobAssignment; MAX_UI_KNOBS] = Default::default();
+        for (i, assignment) in knob_assignments.iter_mut().enumerate().take(param_count) {
+            assignment.param_index = Some(i);
+            assignment.value = info.param_values.get(i).copied().unwrap_or(0.5);
+        }
+
         Self {
             id,
             name: info.name.clone(),
             category: info.category.clone(),
             source,
             bypassed: info.bypassed,
+            available_params,
+            knob_assignments,
+            // Legacy fields for backwards compat
             param_names: info.param_names.clone(),
             param_values: info.param_values.clone(),
             param_mappings: vec![ParamMacroMapping::default(); param_count],
         }
+    }
+
+    /// Create a new effect UI state with all available parameters
+    pub fn new_with_params(
+        id: String,
+        name: String,
+        category: String,
+        source: EffectSourceType,
+        available_params: Vec<AvailableParam>,
+    ) -> Self {
+        let param_count = available_params.len().min(MAX_UI_KNOBS);
+
+        // Auto-assign first N params to first N knobs
+        let mut knob_assignments: [KnobAssignment; MAX_UI_KNOBS] = Default::default();
+        for (i, assignment) in knob_assignments.iter_mut().enumerate().take(param_count) {
+            assignment.param_index = Some(i);
+            assignment.value = available_params.get(i).map(|p| p.default).unwrap_or(0.5);
+        }
+
+        // Legacy fields
+        let param_names: Vec<String> = available_params.iter().take(MAX_UI_KNOBS).map(|p| p.name.clone()).collect();
+        let param_values: Vec<f32> = available_params.iter().take(MAX_UI_KNOBS).map(|p| p.default).collect();
+
+        Self {
+            id,
+            name,
+            category,
+            source,
+            bypassed: false,
+            available_params,
+            knob_assignments,
+            param_names,
+            param_values,
+            param_mappings: vec![ParamMacroMapping::default(); param_count],
+        }
+    }
+
+    /// Get the parameter name for a knob (or "[assign]" if unassigned)
+    pub fn knob_param_name(&self, knob_idx: usize) -> &str {
+        if let Some(assignment) = self.knob_assignments.get(knob_idx) {
+            if let Some(param_idx) = assignment.param_index {
+                if let Some(param) = self.available_params.get(param_idx) {
+                    return &param.name;
+                }
+            }
+        }
+        "[assign]"
     }
 
     /// Get a short name for compact display (max 10 chars)
@@ -229,7 +377,7 @@ pub struct MultibandEditorState {
     /// Macro knob widgets (stateful, with stable IDs)
     pub macro_knobs: Vec<Knob>,
 
-    /// Effect parameter knob widgets, keyed by (location, effect_idx, param_idx)
+    /// Effect parameter knob widgets, keyed by (location, effect_idx, knob_idx)
     pub effect_knobs: HashMap<EffectKnobKey, Knob>,
 
     /// Whether the preset browser is open (for loading)
@@ -246,6 +394,27 @@ pub struct MultibandEditorState {
 
     /// Whether any band is soloed (for solo logic display)
     pub any_soloed: bool,
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Parameter picker state
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Open param picker: (location, effect_idx, knob_idx)
+    pub param_picker_open: Option<(EffectChainLocation, usize, usize)>,
+
+    /// Search filter for param picker
+    pub param_picker_search: String,
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Global knob drag tracking (for mouse capture)
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Currently dragging effect knob: (location, effect_idx, param_idx)
+    /// When set, global mouse events should be routed to this knob
+    pub dragging_effect_knob: Option<(EffectChainLocation, usize, usize)>,
+
+    /// Currently dragging macro knob index (0-7)
+    pub dragging_macro_knob: Option<usize>,
 }
 
 impl Default for MultibandEditorState {
@@ -270,14 +439,23 @@ impl MultibandEditorState {
             post_fx: Vec::new(),
             selected_effect: None,
             macros: (0..super::NUM_MACROS).map(MacroUiState::new).collect(),
-            macro_knobs: (0..super::NUM_MACROS).map(|_| Knob::new(48.0)).collect(),
+            macro_knobs: (0..super::NUM_MACROS).map(|_| Knob::new(64.0)).collect(),
             effect_knobs: HashMap::new(),
             preset_browser_open: false,
             save_dialog_open: false,
             preset_name_input: String::new(),
             available_presets: Vec::new(),
             any_soloed: false,
+            param_picker_open: None,
+            param_picker_search: String::new(),
+            dragging_effect_knob: None,
+            dragging_macro_knob: None,
         }
+    }
+
+    /// Check if any knob is currently being dragged (for mouse capture subscription)
+    pub fn is_any_knob_dragging(&self) -> bool {
+        self.dragging_effect_knob.is_some() || self.dragging_macro_knob.is_some()
     }
 
     /// Open the editor for a specific deck and stem
@@ -313,7 +491,7 @@ impl MultibandEditorState {
         };
 
         self.effect_knobs.entry(key).or_insert_with(|| {
-            let mut knob = Knob::new(28.0); // Smaller size for effect params
+            let mut knob = Knob::new(40.0); // Size for effect params
             if let Some(value) = initial_value {
                 knob.set_value(value);
             }

@@ -148,11 +148,13 @@ pub fn multiband_editor(
             ..Default::default()
         });
 
-    // Layer preset browser or save dialog on top if open
+    // Layer preset browser, save dialog, or param picker on top if open
     let final_view: Element<'_, MultibandEditorMessage> = if state.preset_browser_open {
         iced::widget::stack![centered, preset_browser_overlay(state),].into()
     } else if state.save_dialog_open {
         iced::widget::stack![centered, save_dialog_overlay(state),].into()
+    } else if state.param_picker_open.is_some() {
+        iced::widget::stack![centered, param_picker_overlay(state),].into()
     } else {
         centered.into()
     };
@@ -171,7 +173,7 @@ pub fn ensure_effect_knobs_exist(state: &mut MultibandEditorState) {
         for param_idx in 0..effect.param_values.len() {
             let key = (EffectChainLocation::PreFx, effect_idx, param_idx);
             if !state.effect_knobs.contains_key(&key) {
-                let mut knob = Knob::new(28.0);
+                let mut knob = Knob::new(40.0);
                 knob.set_value(effect.param_values[param_idx]);
                 state.effect_knobs.insert(key, knob);
             }
@@ -184,7 +186,7 @@ pub fn ensure_effect_knobs_exist(state: &mut MultibandEditorState) {
             for param_idx in 0..effect.param_values.len() {
                 let key = (EffectChainLocation::Band(band_idx), effect_idx, param_idx);
                 if !state.effect_knobs.contains_key(&key) {
-                    let mut knob = Knob::new(28.0);
+                    let mut knob = Knob::new(40.0);
                     knob.set_value(effect.param_values[param_idx]);
                     state.effect_knobs.insert(key, knob);
                 }
@@ -197,7 +199,7 @@ pub fn ensure_effect_knobs_exist(state: &mut MultibandEditorState) {
         for param_idx in 0..effect.param_values.len() {
             let key = (EffectChainLocation::PostFx, effect_idx, param_idx);
             if !state.effect_knobs.contains_key(&key) {
-                let mut knob = Knob::new(28.0);
+                let mut knob = Knob::new(40.0);
                 knob.set_value(effect.param_values[param_idx]);
                 state.effect_knobs.insert(key, knob);
             }
@@ -211,18 +213,18 @@ pub fn ensure_effect_knobs_exist(state: &mut MultibandEditorState) {
 
 fn header_row(state: &MultibandEditorState) -> Element<'_, MultibandEditorMessage> {
     row![
-        button(text("Load").size(12))
+        button(text("Load").size(20))
             .padding([4, 8])
             .on_press(MultibandEditorMessage::OpenPresetBrowser),
-        button(text("Save").size(12))
+        button(text("Save").size(20))
             .padding([4, 8])
             .on_press(MultibandEditorMessage::OpenSaveDialog),
         Space::new().width(Length::Fill),
         text(format!("Deck {} - {}", state.deck + 1, state.stem_name))
-            .size(16)
+            .size(20)
             .color(TEXT_PRIMARY),
         Space::new().width(Length::Fill),
-        button(text("×").size(18))
+        button(text("×").size(20))
             .padding([2, 8])
             .on_press(MultibandEditorMessage::Close),
     ]
@@ -245,10 +247,10 @@ fn band_column<'a>(
     // Band header: name and freq range
     let header = column![
         text(format!("Band {}", band_idx + 1))
-            .size(12)
+            .size(20)
             .color(TEXT_PRIMARY),
-        text(band.name()).size(10).color(TEXT_SECONDARY),
-        text(band.freq_range_str()).size(9).color(TEXT_SECONDARY),
+        text(band.name()).size(20).color(TEXT_SECONDARY),
+        text(band.freq_range_str()).size(13).color(TEXT_SECONDARY),
     ]
     .spacing(2)
     .align_x(Alignment::Center);
@@ -257,7 +259,7 @@ fn band_column<'a>(
     let controls = row![
         button(
             text("S")
-                .size(10)
+                .size(20)
                 .color(if band.soloed { SOLO_COLOR } else { TEXT_SECONDARY })
         )
         .padding([2, 6])
@@ -267,7 +269,7 @@ fn band_column<'a>(
         }),
         button(
             text("M")
-                .size(10)
+                .size(20)
                 .color(if band.muted { MUTE_COLOR } else { TEXT_SECONDARY })
         )
         .padding([2, 6])
@@ -275,7 +277,7 @@ fn band_column<'a>(
             band: band_idx,
             muted: !band.muted,
         }),
-        button(text("×").size(10))
+        button(text("×").size(20))
             .padding([2, 6])
             .on_press(MultibandEditorMessage::RemoveBand(band_idx)),
     ]
@@ -299,7 +301,7 @@ fn band_column<'a>(
         .collect();
 
     let effects_column = column(effect_cards).spacing(4).push(
-        button(text("+ Add Effect").size(10))
+        button(text("+ Add Effect").size(20))
             .padding([6, 12])
             .on_press(MultibandEditorMessage::OpenEffectPicker(band_idx)),
     );
@@ -340,13 +342,13 @@ fn fx_chain_column<'a>(
     effect_knobs: &'a std::collections::HashMap<super::state::EffectKnobKey, Knob>,
 ) -> Element<'a, MultibandEditorMessage> {
     let header = column![
-        text(title).size(12).color(TEXT_PRIMARY),
+        text(title).size(20).color(TEXT_PRIMARY),
         text(if location == EffectChainLocation::PreFx {
             "Before split"
         } else {
             "After merge"
         })
-        .size(9)
+        .size(13)
         .color(TEXT_SECONDARY),
     ]
     .spacing(2)
@@ -360,7 +362,7 @@ fn fx_chain_column<'a>(
         })
         .collect();
 
-    let add_button = button(text("+ Add Effect").size(10))
+    let add_button = button(text("+ Add Effect").size(20))
         .padding([6, 12])
         .on_press(if location == EffectChainLocation::PreFx {
             MultibandEditorMessage::OpenPreFxEffectPicker
@@ -376,7 +378,7 @@ fn fx_chain_column<'a>(
             .align_x(Alignment::Center),
     )
     .padding(8)
-    .width(Length::Fixed(140.0))
+    .width(Length::Fixed(180.0))
     .height(Length::Fill)
     .style(move |_| container::Style {
         background: Some(BG_MEDIUM.into()),
@@ -405,11 +407,11 @@ fn fx_effect_card<'a>(
     };
 
     let header = row![
-        text(&effect.name).size(10).color(name_color),
+        text(&effect.name).size(20).color(name_color),
         Space::new().width(Length::Fill),
         button(
             text(if effect.bypassed { "○" } else { "●" })
-                .size(9)
+                .size(13)
                 .color(name_color)
         )
         .padding([1, 3])
@@ -418,7 +420,7 @@ fn fx_effect_card<'a>(
         } else {
             MultibandEditorMessage::TogglePostFxBypass(effect_idx)
         }),
-        button(text("×").size(9))
+        button(text("×").size(13))
             .padding([1, 3])
             .on_press(if location == EffectChainLocation::PreFx {
                 MultibandEditorMessage::RemovePreFxEffect(effect_idx)
@@ -457,6 +459,17 @@ fn fx_effect_card<'a>(
                 param_name[..param_name.len().min(3)].to_string()
             };
 
+            // Build clickable label
+            let label_button: Element<'_, MultibandEditorMessage> = mouse_area(
+                text(label_text).size(13).color(label_color)
+            )
+            .on_press(MultibandEditorMessage::OpenParamPicker {
+                location,
+                effect: effect_idx,
+                knob: param_idx,
+            })
+            .into();
+
             // Get knob from state
             let key = (location, effect_idx, param_idx);
             if let Some(knob) = effect_knobs.get(&key) {
@@ -467,7 +480,7 @@ fn fx_effect_card<'a>(
                         param: param_idx,
                         event,
                     }),
-                    text(label_text).size(7).color(label_color),
+                    label_button,
                 ]
                 .spacing(1)
                 .align_x(Alignment::Center)
@@ -475,8 +488,8 @@ fn fx_effect_card<'a>(
             } else {
                 // Fallback - should not happen if ensure_effect_knobs_exist was called
                 column![
-                    Space::new().width(28.0).height(28.0),
-                    text(label_text).size(7).color(label_color),
+                    Space::new().width(40.0).height(40.0),
+                    label_button,
                 ]
                 .spacing(1)
                 .align_x(Alignment::Center)
@@ -535,11 +548,11 @@ fn effect_card<'a>(
     };
 
     let header = row![
-        text(&effect.name).size(11).color(name_color),
+        text(&effect.name).size(13).color(name_color),
         Space::new().width(Length::Fill),
         button(
             text(if effect.bypassed { "○" } else { "●" })
-                .size(9)
+                .size(13)
                 .color(name_color)
         )
         .padding([1, 3])
@@ -547,7 +560,7 @@ fn effect_card<'a>(
             band: band_idx,
             effect: effect_idx,
         }),
-        button(text("×").size(9))
+        button(text("×").size(13))
             .padding([1, 3])
             .on_press(MultibandEditorMessage::RemoveEffect {
                 band: band_idx,
@@ -596,14 +609,25 @@ fn effect_card<'a>(
                         event,
                     })
                 } else {
-                    Space::new().width(28.0).height(28.0).into()
+                    Space::new().width(40.0).height(40.0).into()
                 };
+
+            // Build label as clickable button to open param picker
+            let label_button: Element<'_, MultibandEditorMessage> = mouse_area(
+                text(label_text).size(13).color(label_color)
+            )
+            .on_press(MultibandEditorMessage::OpenParamPicker {
+                location,
+                effect: effect_idx,
+                knob: param_idx,
+            })
+            .into();
 
             // Wrap in mouse_area for macro drop target when dragging
             let knob_with_label: Element<'_, MultibandEditorMessage> =
                 if let Some(macro_idx) = dragging_macro {
                     mouse_area(
-                        column![knob_element, text(label_text.clone()).size(7).color(label_color),]
+                        column![knob_element, label_button]
                             .spacing(1)
                             .align_x(Alignment::Center),
                     )
@@ -616,7 +640,7 @@ fn effect_card<'a>(
                     .into()
                 } else if is_mapped {
                     mouse_area(
-                        column![knob_element, text(label_text.clone()).size(7).color(label_color),]
+                        column![knob_element, label_button]
                             .spacing(1)
                             .align_x(Alignment::Center),
                     )
@@ -627,7 +651,7 @@ fn effect_card<'a>(
                     })
                     .into()
                 } else {
-                    column![knob_element, text(label_text).size(7).color(label_color),]
+                    column![knob_element, label_button]
                         .spacing(1)
                         .align_x(Alignment::Center)
                         .into()
@@ -674,12 +698,12 @@ fn effect_card<'a>(
 fn add_band_button(current_bands: usize) -> Element<'static, MultibandEditorMessage> {
     if current_bands >= 8 {
         text("Maximum 8 bands")
-            .size(11)
+            .size(13)
             .color(TEXT_SECONDARY)
             .into()
     } else {
         button(
-            row![text("+").size(14), text("Add Band").size(12),]
+            row![text("+").size(20), text("Add Band").size(20),]
                 .spacing(4)
                 .align_y(Alignment::Center),
         )
@@ -737,7 +761,7 @@ fn macro_bar<'a>(
 
             let macro_content = column![
                 text(format!("{:.0}%", knob.value() * 100.0))
-                    .size(10)
+                    .size(20)
                     .color(TEXT_SECONDARY),
                 knob_widget,
                 text(if m.mapping_count > 0 {
@@ -745,10 +769,10 @@ fn macro_bar<'a>(
                 } else {
                     m.name.clone()
                 })
-                .size(9)
+                .size(13)
                 .color(name_color),
                 text("drag to map")
-                    .size(7)
+                    .size(13)
                     .color(Color::from_rgb(0.4, 0.4, 0.45)),
             ]
             .spacing(2)
@@ -771,21 +795,21 @@ fn macro_bar<'a>(
             .on_release(MultibandEditorMessage::EndDragMacro)
             .into();
 
-            container(draggable).width(Length::Fixed(80.0)).into()
+            container(draggable).width(Length::Fixed(100.0)).into()
         })
         .collect();
 
     container(
         column![
             row![
-                text("Macros").size(11).color(TEXT_SECONDARY),
+                text("Macros").size(13).color(TEXT_SECONDARY),
                 Space::new().width(Length::Fill),
                 if dragging_macro.is_some() {
                     text("Drop on parameter to map")
-                        .size(9)
+                        .size(13)
                         .color(ACCENT_COLOR)
                 } else {
-                    text("").size(9)
+                    text("").size(13)
                 },
             ]
             .width(Length::Fill),
@@ -813,11 +837,11 @@ fn preset_browser_overlay(state: &MultibandEditorState) -> Element<'_, Multiband
             let name_clone = name.clone();
             let name_for_delete = name.clone();
             row![
-                button(text(name).size(12))
+                button(text(name).size(20))
                     .padding([8, 16])
                     .width(Length::Fill)
                     .on_press(MultibandEditorMessage::LoadPreset(name_clone)),
-                button(text("×").size(12).color(MUTE_COLOR))
+                button(text("×").size(20).color(MUTE_COLOR))
                     .padding([8, 8])
                     .on_press(MultibandEditorMessage::DeletePreset(name_for_delete)),
             ]
@@ -828,8 +852,8 @@ fn preset_browser_overlay(state: &MultibandEditorState) -> Element<'_, Multiband
 
     let content: Element<'_, MultibandEditorMessage> = if preset_list.is_empty() {
         column![
-            text("No presets found").size(14).color(TEXT_SECONDARY),
-            text("Save a preset first").size(11).color(TEXT_SECONDARY),
+            text("No presets found").size(20).color(TEXT_SECONDARY),
+            text("Save a preset first").size(13).color(TEXT_SECONDARY),
         ]
         .spacing(8)
         .align_x(Alignment::Center)
@@ -843,9 +867,9 @@ fn preset_browser_overlay(state: &MultibandEditorState) -> Element<'_, Multiband
     let dialog = container(
         column![
             row![
-                text("Load Preset").size(16).color(TEXT_PRIMARY),
+                text("Load Preset").size(20).color(TEXT_PRIMARY),
                 Space::new().width(Length::Fill),
-                button(text("×").size(16))
+                button(text("×").size(20))
                     .padding([4, 8])
                     .on_press(MultibandEditorMessage::ClosePresetBrowser),
             ]
@@ -889,30 +913,30 @@ fn save_dialog_overlay(state: &MultibandEditorState) -> Element<'_, MultibandEdi
     let dialog = container(
         column![
             row![
-                text("Save Preset").size(16).color(TEXT_PRIMARY),
+                text("Save Preset").size(20).color(TEXT_PRIMARY),
                 Space::new().width(Length::Fill),
-                button(text("×").size(16))
+                button(text("×").size(20))
                     .padding([4, 8])
                     .on_press(MultibandEditorMessage::CloseSaveDialog),
             ]
             .align_y(Alignment::Center),
             divider(),
-            text("Preset Name:").size(12).color(TEXT_SECONDARY),
+            text("Preset Name:").size(20).color(TEXT_SECONDARY),
             text_input("Enter preset name...", &state.preset_name_input)
                 .on_input(MultibandEditorMessage::SetPresetNameInput)
                 .padding(8)
-                .size(14),
+                .size(20),
             row![
-                button(text("Cancel").size(12))
+                button(text("Cancel").size(20))
                     .padding([8, 16])
                     .on_press(MultibandEditorMessage::CloseSaveDialog),
                 Space::new().width(Length::Fill),
                 if can_save {
-                    button(text("Save").size(12).color(ACCENT_COLOR))
+                    button(text("Save").size(20).color(ACCENT_COLOR))
                         .padding([8, 16])
                         .on_press(MultibandEditorMessage::SavePreset)
                 } else {
-                    button(text("Save").size(12).color(TEXT_SECONDARY)).padding([8, 16])
+                    button(text("Save").size(20).color(TEXT_SECONDARY)).padding([8, 16])
                 },
             ]
             .spacing(8),
@@ -921,6 +945,207 @@ fn save_dialog_overlay(state: &MultibandEditorState) -> Element<'_, MultibandEdi
         .padding(16),
     )
     .width(Length::Fixed(350.0))
+    .style(|_| container::Style {
+        background: Some(BG_DARK.into()),
+        border: iced::Border {
+            color: ACCENT_COLOR,
+            width: 2.0,
+            radius: 8.0.into(),
+        },
+        ..Default::default()
+    });
+
+    container(dialog)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.5).into()),
+            ..Default::default()
+        })
+        .into()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Parameter picker overlay
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn param_picker_overlay(state: &MultibandEditorState) -> Element<'_, MultibandEditorMessage> {
+    let (location, effect_idx, knob_idx) = match state.param_picker_open {
+        Some(info) => info,
+        None => {
+            return Space::new().width(0.0).height(0.0).into();
+        }
+    };
+
+    // Get the effect state
+    let effect = match location {
+        EffectChainLocation::PreFx => state.pre_fx.get(effect_idx),
+        EffectChainLocation::Band(band_idx) => state
+            .bands
+            .get(band_idx)
+            .and_then(|b| b.effects.get(effect_idx)),
+        EffectChainLocation::PostFx => state.post_fx.get(effect_idx),
+    };
+
+    let effect = match effect {
+        Some(e) => e,
+        None => {
+            return Space::new().width(0.0).height(0.0).into();
+        }
+    };
+
+    // Get current assignment for this knob
+    let current_param_idx = effect
+        .knob_assignments
+        .get(knob_idx)
+        .and_then(|a| a.param_index);
+
+    // Filter params by search term
+    let search_lower = state.param_picker_search.to_lowercase();
+    let filtered_params: Vec<(usize, &super::state::AvailableParam)> = effect
+        .available_params
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| {
+            search_lower.is_empty() || p.name.to_lowercase().contains(&search_lower)
+        })
+        .collect();
+
+    // Build parameter list
+    let param_items: Vec<Element<'_, MultibandEditorMessage>> = filtered_params
+        .iter()
+        .map(|(idx, param)| {
+            let is_current = current_param_idx == Some(*idx);
+
+            // Check if this param is assigned to another knob
+            let assigned_to_other = effect
+                .knob_assignments
+                .iter()
+                .enumerate()
+                .any(|(k, a)| k != knob_idx && a.param_index == Some(*idx));
+
+            let text_color = if is_current {
+                ACCENT_COLOR
+            } else if assigned_to_other {
+                Color::from_rgb(0.5, 0.5, 0.55) // Dimmed
+            } else {
+                TEXT_PRIMARY
+            };
+
+            let idx_copy = *idx;
+            let range_text = if param.min == 0.0 && param.max == 1.0 {
+                String::new()
+            } else {
+                let unit_str = if param.unit.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", param.unit)
+                };
+                format!(" ({:.1} - {:.1}{})", param.min, param.max, unit_str)
+            };
+
+            let indicator = if is_current { "★ " } else { "  " };
+            let assigned_note = if assigned_to_other { " (on another knob)" } else { "" };
+
+            mouse_area(
+                container(
+                    row![
+                        text(format!("{}{}", indicator, param.name))
+                            .size(20)
+                            .color(text_color),
+                        text(range_text).size(20).color(TEXT_SECONDARY),
+                        Space::new().width(Length::Fill),
+                        text(assigned_note).size(13).color(TEXT_SECONDARY),
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
+                )
+                .padding([6, 12])
+                .width(Length::Fill)
+                .style(move |_| container::Style {
+                    background: if is_current {
+                        Some(Color::from_rgb(0.2, 0.3, 0.4).into())
+                    } else {
+                        None
+                    },
+                    ..Default::default()
+                }),
+            )
+            .on_press(MultibandEditorMessage::AssignParam {
+                location,
+                effect: effect_idx,
+                knob: knob_idx,
+                param_index: Some(idx_copy),
+            })
+            .into()
+        })
+        .collect();
+
+    let param_list: Element<'_, MultibandEditorMessage> = if param_items.is_empty() {
+        column![
+            text("No parameters match").size(20).color(TEXT_SECONDARY),
+            text("Try a different search term")
+                .size(20)
+                .color(TEXT_SECONDARY),
+        ]
+        .spacing(4)
+        .align_x(Alignment::Center)
+        .into()
+    } else {
+        scrollable(column(param_items).spacing(2).width(Length::Fill))
+            .height(Length::Fixed(300.0))
+            .into()
+    };
+
+    let dialog = container(
+        column![
+            // Header
+            row![
+                text(format!("Select Parameter for Knob {}", knob_idx + 1))
+                    .size(20)
+                    .color(TEXT_PRIMARY),
+                Space::new().width(Length::Fill),
+                button(text("×").size(20))
+                    .padding([4, 8])
+                    .on_press(MultibandEditorMessage::CloseParamPicker),
+            ]
+            .align_y(Alignment::Center),
+            // Effect name
+            text(format!("Effect: {}", effect.name))
+                .size(13)
+                .color(TEXT_SECONDARY),
+            divider(),
+            // Search input
+            text_input("Search parameters...", &state.param_picker_search)
+                .on_input(MultibandEditorMessage::SetParamPickerFilter)
+                .padding(8)
+                .size(20),
+            // Parameter list
+            param_list,
+            divider(),
+            // Action buttons
+            row![
+                button(text("Clear Assignment").size(13))
+                    .padding([6, 12])
+                    .on_press(MultibandEditorMessage::AssignParam {
+                        location,
+                        effect: effect_idx,
+                        knob: knob_idx,
+                        param_index: None,
+                    }),
+                Space::new().width(Length::Fill),
+                button(text("Cancel").size(13))
+                    .padding([6, 12])
+                    .on_press(MultibandEditorMessage::CloseParamPicker),
+            ]
+            .spacing(8),
+        ]
+        .spacing(10)
+        .padding(16),
+    )
+    .width(Length::Fixed(400.0))
     .style(|_| container::Style {
         background: Some(BG_DARK.into()),
         border: iced::Border {

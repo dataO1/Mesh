@@ -8,7 +8,14 @@ use std::sync::Arc;
 
 use clack_host::prelude::*;
 use clack_host::bundle::PluginBundle;
+use clack_host::events::event_types::ParamValueEvent;
+use clack_host::events::io::EventBuffer;
 use clack_host::process::StartedPluginAudioProcessor;
+use clack_host::utils::{ClapId, Cookie};
+use clack_extensions::params::{
+    HostParams, HostParamsImplMainThread, HostParamsImplShared, ParamClearFlags, ParamInfoBuffer,
+    ParamRescanFlags, PluginParams,
+};
 
 use super::error::{ClapError, ClapResult};
 use super::discovery::DiscoveredClapPlugin;
@@ -35,9 +42,23 @@ impl HostHandlers for MeshClapHost {
     type AudioProcessor<'a> = ();
 
     fn declare_extensions(builder: &mut HostExtensions<Self>, _shared: &Self::Shared<'_>) {
-        // We could register extensions here like HostLog, HostParams, etc.
-        // For now, keep it minimal for initial implementation
-        let _ = builder;
+        builder.register::<HostParams>();
+    }
+}
+
+impl HostParamsImplShared for MeshClapHostShared {
+    fn request_flush(&self) {
+        // We don't support flush requests - always processing
+    }
+}
+
+impl HostParamsImplMainThread for MeshClapHostMainThread<'_> {
+    fn rescan(&mut self, _flags: ParamRescanFlags) {
+        // We don't track param changes dynamically yet
+    }
+
+    fn clear(&mut self, _param_id: ClapId, _flags: ParamClearFlags) {
+        // No-op
     }
 }
 
@@ -77,6 +98,8 @@ pub struct MeshClapHostMainThread<'a> {
     _shared: &'a MeshClapHostShared,
     #[allow(dead_code)]
     plugin: Option<InitializedPluginHandle<'a>>,
+    /// Plugin params extension (if supported)
+    pub params_ext: Option<PluginParams>,
 }
 
 impl<'a> MeshClapHostMainThread<'a> {
@@ -84,12 +107,14 @@ impl<'a> MeshClapHostMainThread<'a> {
         Self {
             _shared: shared,
             plugin: None,
+            params_ext: None,
         }
     }
 }
 
 impl<'a> MainThreadHandler<'a> for MeshClapHostMainThread<'a> {
     fn initialized(&mut self, instance: InitializedPluginHandle<'a>) {
+        self.params_ext = instance.get_extension();
         self.plugin = Some(instance);
     }
 }
@@ -280,11 +305,66 @@ impl ClapPluginWrapper {
         &self.info
     }
 
-    /// Process audio through the plugin
+    /// Query all available parameters from the plugin
     ///
-    /// Takes interleaved stereo input and produces interleaved stereo output.
-    /// The input buffer is copied, processed, and the result is written to output.
-    pub fn process(&mut self, input: &[f32], output: &mut [f32]) -> ClapResult<()> {
+    /// Uses the CLAP params extension to enumerate all plugin parameters.
+    /// Returns empty Vec if the plugin doesn't support the params extension.
+    pub fn query_params(&mut self) -> Vec<ClapParamInfo> {
+        let instance = match self.instance.as_mut() {
+            Some(i) => i,
+            None => return Vec::new(),
+        };
+
+        // Get params extension from main thread handler
+        let params_ext = match instance.access_handler(|h| h.params_ext) {
+            Some(ext) => ext,
+            None => {
+                log::debug!("Plugin '{}' doesn't support params extension", self.info.id);
+                return Vec::new();
+            }
+        };
+
+        let mut plugin_handle = instance.plugin_handle();
+        let count = params_ext.count(&mut plugin_handle);
+        log::debug!("Plugin '{}' has {} parameters", self.info.id, count);
+
+        let mut params = Vec::with_capacity(count as usize);
+        let mut info_buffer = ParamInfoBuffer::new();
+
+        for i in 0..count {
+            if let Some(info) = params_ext.get_info(&mut plugin_handle, i, &mut info_buffer) {
+                // Convert name bytes to string (trimming null bytes)
+                let name = String::from_utf8_lossy(info.name)
+                    .trim_end_matches('\0')
+                    .to_string();
+
+                params.push(ClapParamInfo {
+                    id: info.id.get(),
+                    name,
+                    min: info.min_value,
+                    max: info.max_value,
+                    default: info.default_value,
+                });
+            }
+        }
+
+        params
+    }
+
+    /// Process audio through the plugin with parameter changes
+    ///
+    /// Takes interleaved stereo input, applies parameter changes, and produces
+    /// interleaved stereo output.
+    ///
+    /// Parameter changes are provided as (param_id, value) pairs where:
+    /// - param_id is the CLAP parameter ID
+    /// - value is in the plugin's native range (NOT normalized 0-1)
+    pub fn process_with_params(
+        &mut self,
+        input: &[f32],
+        output: &mut [f32],
+        param_changes: &[(u32, f64)],
+    ) -> ClapResult<()> {
         let processor = self.processor.as_mut().ok_or_else(|| ClapError::NotActivated {
             plugin_id: self.info.id.clone(),
         })?;
@@ -345,12 +425,31 @@ impl ClapPluginWrapper {
             ),
         }));
 
+        // Build input events from parameter changes
+        let mut event_buffer = EventBuffer::with_capacity(param_changes.len());
+        for &(param_id, value) in param_changes {
+            // Skip u32::MAX which is invalid in CLAP
+            if param_id == u32::MAX {
+                continue;
+            }
+            // Create param value event at time 0 (apply immediately)
+            let event = ParamValueEvent::new(
+                0,                      // time
+                ClapId::new(param_id), // param_id (panics if u32::MAX, but we checked above)
+                Pckn::match_all(),     // pckn - match all notes
+                value,                 // value in plugin's native range
+                Cookie::empty(),       // no cookie
+            );
+            event_buffer.push(&event);
+        }
+        let input_events = event_buffer.as_input();
+
         // Process
         processor
             .process(
                 &input_buffers,
                 &mut output_buffers,
-                &InputEvents::empty(),
+                &input_events,
                 &mut OutputEvents::void(),
                 None, // steady time
                 None, // transport
@@ -367,6 +466,14 @@ impl ClapPluginWrapper {
         }
 
         Ok(())
+    }
+
+    /// Process audio through the plugin (without parameter changes)
+    ///
+    /// Takes interleaved stereo input and produces interleaved stereo output.
+    /// The input buffer is copied, processed, and the result is written to output.
+    pub fn process(&mut self, input: &[f32], output: &mut [f32]) -> ClapResult<()> {
+        self.process_with_params(input, output, &[])
     }
 
     /// Process audio in-place (reads from buffer, writes result back)

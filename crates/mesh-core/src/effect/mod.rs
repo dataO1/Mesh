@@ -16,8 +16,9 @@ pub use multiband::{
 
 use crate::types::StereoBuffer;
 
-/// Maximum number of parameters per effect (maps to 8 hardware knobs)
-pub const MAX_EFFECT_PARAMS: usize = 8;
+/// Maximum number of UI knobs for effect control (hardware knob limit)
+/// Note: Effects can have unlimited parameters internally; this is the UI display limit
+pub const MAX_EFFECT_KNOBS: usize = 8;
 
 /// Information about an effect parameter
 #[derive(Debug, Clone)]
@@ -109,7 +110,8 @@ pub struct EffectInfo {
     pub name: String,
     /// Effect category (e.g., "Filter", "Delay", "Reverb", "Neural")
     pub category: String,
-    /// Parameter descriptions (up to MAX_EFFECT_PARAMS)
+    /// Parameter descriptions (no limit - can be 100+ for CLAP plugins)
+    /// The UI's 8 knobs are "slots" that can be assigned to any parameter index
     pub params: Vec<ParamInfo>,
 }
 
@@ -124,8 +126,10 @@ impl EffectInfo {
     }
 
     /// Add a parameter to this effect
+    ///
+    /// Effects can have unlimited parameters. The UI's 8 knobs are "slots"
+    /// that can be assigned to control any parameter index.
     pub fn with_param(mut self, param: ParamInfo) -> Self {
-        assert!(self.params.len() < MAX_EFFECT_PARAMS, "Too many parameters");
         self.params.push(param);
         self
     }
