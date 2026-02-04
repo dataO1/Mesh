@@ -265,6 +265,12 @@ impl ClapDiscovery {
 
         log::info!("Scanning CLAP directory: {:?}", dir);
 
+        // Check for bundled libraries in lib/ subdirectory
+        let lib_dir = dir.join("lib");
+        if lib_dir.exists() && lib_dir.is_dir() {
+            Self::add_library_path(&lib_dir);
+        }
+
         let mut bundle_count = 0;
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
@@ -316,6 +322,28 @@ impl ClapDiscovery {
         }
 
         Ok(())
+    }
+
+    /// Add a library path to LD_LIBRARY_PATH for loading plugin dependencies
+    ///
+    /// This allows CLAP plugins to bundle their runtime dependencies in a `lib/`
+    /// subdirectory alongside the `.clap` files.
+    fn add_library_path(lib_dir: &Path) {
+        use std::env;
+
+        let lib_path = lib_dir.to_string_lossy();
+        log::info!("Adding CLAP library path: {}", lib_path);
+
+        // Get current LD_LIBRARY_PATH and prepend our path
+        let current = env::var("LD_LIBRARY_PATH").unwrap_or_default();
+        let new_path = if current.is_empty() {
+            lib_path.to_string()
+        } else {
+            format!("{}:{}", lib_path, current)
+        };
+
+        env::set_var("LD_LIBRARY_PATH", &new_path);
+        log::debug!("LD_LIBRARY_PATH set to: {}", new_path);
     }
 
     /// Convert a CStr to String, handling potential UTF-8 errors
