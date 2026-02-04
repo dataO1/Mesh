@@ -169,17 +169,17 @@ impl MeshDomain {
 
         // Initialize CLAP effect manager (scans system + collection CLAP directories)
         let mut clap_manager = ClapManager::new();
-        // Add mesh-collection/plugins/clap as a search path
-        let collection_clap_path = local_collection_path.join("plugins").join("clap");
+        // Add mesh-collection/effects/clap as a search path (all effects under effects/)
+        let collection_clap_path = local_collection_path.join("effects").join("clap");
         if collection_clap_path.exists() {
             log::info!("Adding CLAP search path: {:?}", collection_clap_path);
             clap_manager.add_search_path(collection_clap_path);
         } else {
             // Create the directory for user convenience
             if let Err(e) = std::fs::create_dir_all(&collection_clap_path) {
-                log::warn!("Failed to create CLAP plugins directory: {}", e);
+                log::warn!("Failed to create CLAP effects directory: {}", e);
             } else {
-                log::info!("Created CLAP plugins directory: {:?}", collection_clap_path);
+                log::info!("Created CLAP effects directory: {:?}", collection_clap_path);
                 clap_manager.add_search_path(collection_clap_path);
             }
         }
