@@ -1,0 +1,16 @@
+{
+  "name": "Test Gain",
+  "category": "Utility",
+  "description": "Simple gain control for testing PD integration",
+  "author": "mesh",
+  "version": "1.0.0",
+  "latency_samples": 0,
+  "params": [
+    {
+      "name": "Gain",
+      "default": 0.5,
+      "min": 0.0,
+      "max": 1.0
+    }
+  ]
+}

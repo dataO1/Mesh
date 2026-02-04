@@ -1,0 +1,66 @@
+{
+  "name": "RAVE Percussion",
+  "category": "Neural",
+  "description": "Neural audio effect using RAVE model for real-time timbre transfer. Transforms audio through a trained variational autoencoder.",
+  "latency_samples": 2048,
+  "sample_rate": 48000,
+  "requires_externals": ["nn~"],
+  "params": [
+    {
+      "name": "Latent 1",
+      "min": -10.0,
+      "max": 10.0,
+      "default": 0.0,
+      "unit": ""
+    },
+    {
+      "name": "Latent 2",
+      "min": -10.0,
+      "max": 10.0,
+      "default": 0.0,
+      "unit": ""
+    },
+    {
+      "name": "Latent 3",
+      "min": -10.0,
+      "max": 10.0,
+      "default": 0.0,
+      "unit": ""
+    },
+    {
+      "name": "Latent 4",
+      "min": -10.0,
+      "max": 10.0,
+      "default": 0.0,
+      "unit": ""
+    },
+    {
+      "name": "Latent 5",
+      "min": -10.0,
+      "max": 10.0,
+      "default": 0.0,
+      "unit": ""
+    },
+    {
+      "name": "Latent 6",
+      "min": -10.0,
+      "max": 10.0,
+      "default": 0.0,
+      "unit": ""
+    },
+    {
+      "name": "Latent 7",
+      "min": -10.0,
+      "max": 10.0,
+      "default": 0.0,
+      "unit": ""
+    },
+    {
+      "name": "Latent 8",
+      "min": -10.0,
+      "max": 10.0,
+      "default": 0.0,
+      "unit": ""
+    }
+  ]
+}
