@@ -47,17 +47,18 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   - CLAP plugin installation and dependency bundling
   - Multiband processing workflow
 
-- **Example effects collection** — `collection/effects/` includes:
+- **Example effects collection** — `collection/effects/pd/` includes:
   - `test-gain/` — Simple gain utility for testing
   - `rave-percussion/` — Neural audio synthesis via nn~ external
 
 ### Changed
 
-- **Unified effects directory** — All effects (PD and CLAP) now live under
-  `effects/` directory instead of split locations:
-  - PD effects: `effects/<effect-name>/`
+- **Unified effects directory** — Each effect type has its own subfolder:
+  - PD effects: `effects/pd/<effect-name>/`
+  - PD externals: `effects/pd/externals/`
+  - PD models: `effects/pd/models/`
   - CLAP plugins: `effects/clap/`
-  - Shared externals: `effects/externals/`
+  - CLAP libs: `effects/clap/lib/`
 
 - **Improved CLAP discovery logging** — Better error messages when plugins fail
   to load due to missing dependencies, with actionable guidance.

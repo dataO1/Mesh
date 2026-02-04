@@ -8,19 +8,19 @@ Mesh supports two types of audio effects:
 
 ```
 mesh-collection/effects/
-├── clap/                    # CLAP audio plugins
-│   ├── *.clap               # Plugin files
-│   └── lib/                 # Bundled runtime dependencies
-│       └── *.so             # Shared libraries (for portability)
-├── externals/               # PD external objects
-│   ├── nn~.pd_linux         # Neural network external
-│   └── lib/                 # Runtime libs for externals (libtorch, etc.)
-├── models/                  # ML models for nn~ external
-│   └── *.ts                 # TorchScript models
-├── <effect-name>/           # PD effect folders
-│   ├── metadata.json        # Effect configuration
-│   └── main.pd              # Pure Data patch
-└── ...
+├── pd/                      # Pure Data effects
+│   ├── <effect-name>/       # Effect folders
+│   │   ├── metadata.json    # Effect configuration
+│   │   └── <effect-name>.pd # Pure Data patch
+│   ├── externals/           # PD external objects
+│   │   ├── nn~.pd_linux     # Neural network external
+│   │   └── lib/             # Runtime libs (libtorch, etc.)
+│   └── models/              # ML models for nn~ external
+│       └── *.ts             # TorchScript models
+└── clap/                    # CLAP audio plugins
+    ├── *.clap               # Plugin files
+    └── lib/                 # Bundled runtime dependencies
+        └── *.so             # Shared libraries (for portability)
 ```
 
 ## PD Effects
@@ -52,12 +52,14 @@ Each PD effect lives in its own folder with:
 
 ### Creating a PD Effect
 
-1. Create a folder: `effects/<your-effect>/`
+1. Create a folder: `effects/pd/<your-effect>/`
 2. Create `metadata.json` with effect info
-3. Create `main.pd` with your patch
+3. Create `<your-effect>.pd` with your patch (filename must match folder name)
 4. The patch receives audio on `[adc~ 1]` and `[adc~ 2]`
 5. Output audio via `[dac~ 1]` and `[dac~ 2]`
 6. Receive parameters via `[r param1]`, `[r param2]`, etc.
+7. Place any required externals in `effects/pd/externals/`
+8. Place any required models in `effects/pd/models/`
 
 ## CLAP Plugins
 

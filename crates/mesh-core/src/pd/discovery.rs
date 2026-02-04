@@ -1,7 +1,7 @@
-//! Effect discovery - scans the effects folder for available PD effects
+//! Effect discovery - scans the effects/pd folder for available PD effects
 //!
 //! Discovery happens once at startup. Effects must have:
-//! - A folder in effects/ (folder name = effect ID)
+//! - A folder in effects/pd/ (folder name = effect ID)
 //! - A .pd file matching the folder name
 //! - A metadata.json file with effect metadata
 
@@ -51,15 +51,15 @@ impl DiscoveredEffect {
 
 /// Effect discovery service
 ///
-/// Scans the effects folder structure and validates effect availability.
+/// Scans the effects/pd folder structure and validates effect availability.
 pub struct EffectDiscovery {
-    /// Root effects folder (e.g., ~/Music/mesh-collection/effects/)
-    effects_path: PathBuf,
+    /// Root PD effects folder (e.g., ~/Music/mesh-collection/effects/pd/)
+    pd_effects_path: PathBuf,
 
-    /// Path to shared externals folder
+    /// Path to shared externals folder (effects/pd/externals/)
     externals_path: PathBuf,
 
-    /// Path to shared models folder
+    /// Path to shared models folder (effects/pd/models/)
     models_path: PathBuf,
 }
 
@@ -69,20 +69,20 @@ impl EffectDiscovery {
     /// # Arguments
     /// * `collection_path` - Path to the mesh collection root
     pub fn new(collection_path: &Path) -> Self {
-        let effects_path = collection_path.join("effects");
-        let externals_path = effects_path.join("externals");
-        let models_path = effects_path.join("models");
+        let pd_effects_path = collection_path.join("effects").join("pd");
+        let externals_path = pd_effects_path.join("externals");
+        let models_path = pd_effects_path.join("models");
 
         Self {
-            effects_path,
+            pd_effects_path,
             externals_path,
             models_path,
         }
     }
 
-    /// Get the effects folder path
+    /// Get the PD effects folder path
     pub fn effects_path(&self) -> &Path {
-        &self.effects_path
+        &self.pd_effects_path
     }
 
     /// Get the externals folder path
@@ -102,17 +102,17 @@ impl EffectDiscovery {
     pub fn discover(&self) -> Vec<DiscoveredEffect> {
         let mut effects = Vec::new();
 
-        // Check if effects folder exists
-        if !self.effects_path.exists() {
+        // Check if PD effects folder exists
+        if !self.pd_effects_path.exists() {
             log::info!(
-                "Effects folder does not exist: {}",
-                self.effects_path.display()
+                "PD effects folder does not exist: {}",
+                self.pd_effects_path.display()
             );
             return effects;
         }
 
-        // Iterate over directories in effects/
-        let entries = match std::fs::read_dir(&self.effects_path) {
+        // Iterate over directories in effects/pd/
+        let entries = match std::fs::read_dir(&self.pd_effects_path) {
             Ok(entries) => entries,
             Err(e) => {
                 log::warn!("Failed to read effects folder: {}", e);
@@ -257,11 +257,11 @@ impl EffectDiscovery {
 
     /// Create the effects folder structure if it doesn't exist
     pub fn ensure_folders_exist(&self) -> PdResult<()> {
-        std::fs::create_dir_all(&self.effects_path)?;
+        std::fs::create_dir_all(&self.pd_effects_path)?;
         std::fs::create_dir_all(&self.externals_path)?;
         std::fs::create_dir_all(&self.models_path)?;
 
-        log::debug!("Ensured effects folders exist at {}", self.effects_path.display());
+        log::debug!("Ensured PD effects folders exist at {}", self.pd_effects_path.display());
 
         Ok(())
     }
@@ -275,8 +275,8 @@ mod tests {
 
     fn setup_test_effects(temp_dir: &TempDir) -> PathBuf {
         let collection = temp_dir.path().to_path_buf();
-        let effects = collection.join("effects");
-        let externals = effects.join("externals");
+        let pd_effects = collection.join("effects").join("pd");
+        let externals = pd_effects.join("externals");
 
         fs::create_dir_all(&externals).unwrap();
 
@@ -284,7 +284,7 @@ mod tests {
         fs::write(externals.join("test~.pd_linux"), b"").unwrap();
 
         // Create a valid effect
-        let effect1 = effects.join("test-effect");
+        let effect1 = pd_effects.join("test-effect");
         fs::create_dir_all(&effect1).unwrap();
         fs::write(
             effect1.join("metadata.json"),
@@ -298,7 +298,7 @@ mod tests {
         fs::write(effect1.join("test-effect.pd"), b"#N canvas 0 0 450 300;").unwrap();
 
         // Create an effect with missing dependency
-        let effect2 = effects.join("missing-dep");
+        let effect2 = pd_effects.join("missing-dep");
         fs::create_dir_all(&effect2).unwrap();
         fs::write(
             effect2.join("metadata.json"),
