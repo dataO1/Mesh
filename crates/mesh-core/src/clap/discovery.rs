@@ -219,6 +219,18 @@ impl ClapDiscovery {
         self.plugins.clear();
         self.plugins_list.clear();
 
+        log::info!(
+            "Starting CLAP plugin scan ({} search path(s))",
+            self.search_paths.len()
+        );
+        for (i, path) in self.search_paths.iter().enumerate() {
+            log::debug!("  Search path {}: {:?}", i + 1, path);
+        }
+
+        if self.search_paths.is_empty() {
+            log::warn!("No CLAP search paths configured. Add paths or install plugins to ~/.clap");
+        }
+
         for search_path in &self.search_paths.clone() {
             if let Err(e) = self.scan_directory(search_path) {
                 log::warn!("Failed to scan CLAP directory {:?}: {}", search_path, e);
@@ -227,6 +239,13 @@ impl ClapDiscovery {
 
         // Sort by name for consistent ordering
         self.plugins_list.sort_by(|a, b| a.name.cmp(&b.name));
+
+        let available = self.plugins_list.iter().filter(|p| p.available).count();
+        log::info!(
+            "CLAP scan complete: {} plugin(s) found, {} available",
+            self.plugins_list.len(),
+            available
+        );
 
         self.scanned = true;
         &self.plugins_list
@@ -244,14 +263,18 @@ impl ClapDiscovery {
             return Ok(());
         }
 
-        log::debug!("Scanning CLAP directory: {:?}", dir);
+        log::info!("Scanning CLAP directory: {:?}", dir);
 
+        let mut bundle_count = 0;
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
 
             // Check for .clap extension (bundles are directories on Linux)
             if path.extension().map(|e| e == "clap").unwrap_or(false) {
+                bundle_count += 1;
+                log::debug!("Found CLAP bundle: {:?}", path);
+
                 match self.scan_bundle(&path) {
                     Ok(plugins) => {
                         for plugin in plugins {
@@ -266,13 +289,30 @@ impl ClapDiscovery {
                         }
                     }
                     Err(e) => {
-                        log::warn!("Failed to scan CLAP bundle {:?}: {}", path, e);
+                        let error_str = e.to_string();
+                        // Check for common missing library errors
+                        if error_str.contains("cannot open shared object file") {
+                            log::error!(
+                                "CLAP plugin {:?} failed to load - missing system library. \
+                                Install the required dependency and restart.",
+                                path.file_name().unwrap_or_default()
+                            );
+                            log::error!("  Error: {}", error_str);
+                        } else {
+                            log::warn!("Failed to scan CLAP bundle {:?}: {}", path, e);
+                        }
                         // Add as unavailable
-                        let unavailable = DiscoveredClapPlugin::unavailable(path, e.to_string());
+                        let unavailable = DiscoveredClapPlugin::unavailable(path, error_str);
                         self.plugins_list.push(unavailable);
                     }
                 }
             }
+        }
+
+        if bundle_count == 0 {
+            log::info!("No .clap bundles found in {:?}", dir);
+        } else {
+            log::info!("Scanned {} CLAP bundle(s) in {:?}", bundle_count, dir);
         }
 
         Ok(())
