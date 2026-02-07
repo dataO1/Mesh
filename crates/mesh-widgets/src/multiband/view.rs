@@ -545,29 +545,53 @@ fn fx_effect_card<'a>(
 
             // Get knob from state
             let key = (location, effect_idx, param_idx);
-            if let Some(knob) = effect_knobs.get(&key) {
-                column![
+            let knob_element: Element<'_, MultibandEditorMessage> =
+                if let Some(knob) = effect_knobs.get(&key) {
                     knob.view(move |event| MultibandEditorMessage::EffectKnob {
                         location,
                         effect: effect_idx,
                         param: param_idx,
                         event,
-                    }),
-                    label_button,
-                ]
-                .spacing(1)
-                .align_x(Alignment::Center)
-                .into()
-            } else {
-                // Fallback - should not happen if ensure_effect_knobs_exist was called
-                column![
-                    Space::new().width(40.0).height(40.0),
-                    label_button,
-                ]
-                .spacing(1)
-                .align_x(Alignment::Center)
-                .into()
-            }
+                    })
+                } else {
+                    Space::new().width(40.0).height(40.0).into()
+                };
+
+            // Wrap in mouse_area for macro drop target when dragging
+            let knob_with_label: Element<'_, MultibandEditorMessage> =
+                if let Some(macro_idx) = dragging_macro {
+                    mouse_area(
+                        column![knob_element, label_button]
+                            .spacing(1)
+                            .align_x(Alignment::Center),
+                    )
+                    .on_release(MultibandEditorMessage::DropMacroOnParam {
+                        macro_index: macro_idx,
+                        location,
+                        effect: effect_idx,
+                        param: param_idx,
+                    })
+                    .into()
+                } else if is_mapped {
+                    mouse_area(
+                        column![knob_element, label_button]
+                            .spacing(1)
+                            .align_x(Alignment::Center),
+                    )
+                    .on_press(MultibandEditorMessage::RemoveParamMapping {
+                        location,
+                        effect: effect_idx,
+                        param: param_idx,
+                    })
+                    .into()
+                } else {
+                    column![knob_element, label_button]
+                        .spacing(1)
+                        .align_x(Alignment::Center)
+                        .into()
+                };
+
+            knob_with_label
         })
         .collect();
 
@@ -767,7 +791,7 @@ fn effect_card<'a>(
                     )
                     .on_release(MultibandEditorMessage::DropMacroOnParam {
                         macro_index: macro_idx,
-                        band: band_idx,
+                        location,
                         effect: effect_idx,
                         param: param_idx,
                     })
@@ -779,7 +803,7 @@ fn effect_card<'a>(
                             .align_x(Alignment::Center),
                     )
                     .on_press(MultibandEditorMessage::RemoveParamMapping {
-                        band: band_idx,
+                        location,
                         effect: effect_idx,
                         param: param_idx,
                     })

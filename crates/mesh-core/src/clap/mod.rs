@@ -186,7 +186,15 @@ impl ClapGuiHandle {
     /// to the snapshot.
     pub fn start_learning_mode(&self) {
         log::info!("[CLAP_LEARN] ClapGuiHandle::start_learning_mode() called for plugin_id={}", self.plugin_id);
-        log::info!("[CLAP_LEARN] Attempting to acquire wrapper lock...");
+
+        // Drain any stale param change events from previous sessions
+        let mut stale_count = 0;
+        while self.param_change_receiver.try_recv().is_ok() {
+            stale_count += 1;
+        }
+        if stale_count > 0 {
+            log::info!("[CLAP_LEARN] Drained {} stale param change events", stale_count);
+        }
 
         match self.wrapper.lock() {
             Ok(mut wrapper) => {

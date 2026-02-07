@@ -86,10 +86,13 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   parameter, the knob button label now correctly updates to show the learned
   parameter name (e.g., "Temperature", "Pre-delay") instead of remaining blank.
 
-- **Macro knob drag-and-drop mapping** — Fixed macro knob mapping to effect
-  parameter knobs. The drop target was using `on_press` instead of `on_release`,
-  which meant the drop event never fired since the press occurred on the macro
-  knob (drag source), not the parameter knob (drop target).
+- **Macro knob drag-and-drop mapping** — Multiple fixes:
+  - Changed drop target from `on_press` to `on_release` (press happens on drag
+    source, release on drop target)
+  - Added `EffectChainLocation` to messages for proper pre-fx/post-fx support
+  - Added drop targets to pre-fx/post-fx effect cards (previously only band effects)
+  - Clear stale param events when starting learning mode (prevents immediate
+    re-learning after completing a previous learn)
 
 ### Known Limitations
 

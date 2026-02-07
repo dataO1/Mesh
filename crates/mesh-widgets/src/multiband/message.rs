@@ -131,14 +131,14 @@ pub enum MultibandEditorMessage {
     /// Drop macro onto an effect parameter (creates mapping)
     DropMacroOnParam {
         macro_index: usize,
-        band: usize,
+        location: EffectChainLocation,
         effect: usize,
         param: usize,
     },
 
     /// Remove a macro mapping from a parameter
     RemoveParamMapping {
-        band: usize,
+        location: EffectChainLocation,
         effect: usize,
         param: usize,
     },

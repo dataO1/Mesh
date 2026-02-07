@@ -550,13 +550,20 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             Task::none()
         }
 
-        DropMacroOnParam { macro_index, band, effect, param } => {
+        DropMacroOnParam { macro_index, location, effect, param } => {
+            // Get effect state based on location
+            let effect_state = match location {
+                EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get_mut(effect),
+                EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
+                    .get_mut(band_idx)
+                    .and_then(|b| b.effects.get_mut(effect)),
+                EffectChainLocation::PostFx => app.multiband_editor.post_fx.get_mut(effect),
+            };
+
             // Update UI state - set the mapping on the effect's param
-            if let Some(band_state) = app.multiband_editor.bands.get_mut(band) {
-                if let Some(effect_state) = band_state.effects.get_mut(effect) {
-                    if let Some(mapping) = effect_state.param_mappings.get_mut(param) {
-                        mapping.macro_index = Some(macro_index);
-                    }
+            if let Some(effect_state) = effect_state {
+                if let Some(mapping) = effect_state.param_mappings.get_mut(param) {
+                    mapping.macro_index = Some(macro_index);
                 }
             }
 
@@ -568,23 +575,29 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             // Clear drag state
             app.multiband_editor.dragging_macro = None;
 
-            // TODO: Send mapping to backend MultibandHost
-            log::info!("Mapped macro {} to band {} effect {} param {}", macro_index, band, effect, param);
+            log::info!("Mapped macro {} to {:?} effect {} param {}", macro_index, location, effect, param);
             Task::none()
         }
 
-        RemoveParamMapping { band, effect, param } => {
+        RemoveParamMapping { location, effect, param } => {
+            // Get effect state based on location
+            let effect_state = match location {
+                EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get_mut(effect),
+                EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
+                    .get_mut(band_idx)
+                    .and_then(|b| b.effects.get_mut(effect)),
+                EffectChainLocation::PostFx => app.multiband_editor.post_fx.get_mut(effect),
+            };
+
             // Get the macro that was mapped and decrement its count
-            if let Some(band_state) = app.multiband_editor.bands.get_mut(band) {
-                if let Some(effect_state) = band_state.effects.get_mut(effect) {
-                    if let Some(mapping) = effect_state.param_mappings.get_mut(param) {
-                        if let Some(old_macro) = mapping.macro_index {
-                            if let Some(macro_state) = app.multiband_editor.macros.get_mut(old_macro) {
-                                macro_state.mapping_count = macro_state.mapping_count.saturating_sub(1);
-                            }
+            if let Some(effect_state) = effect_state {
+                if let Some(mapping) = effect_state.param_mappings.get_mut(param) {
+                    if let Some(old_macro) = mapping.macro_index {
+                        if let Some(macro_state) = app.multiband_editor.macros.get_mut(old_macro) {
+                            macro_state.mapping_count = macro_state.mapping_count.saturating_sub(1);
                         }
-                        mapping.macro_index = None;
                     }
+                    mapping.macro_index = None;
                 }
             }
             Task::none()
