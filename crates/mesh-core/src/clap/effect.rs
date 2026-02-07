@@ -10,7 +10,7 @@ use crate::types::StereoBuffer;
 
 use super::discovery::DiscoveredClapPlugin;
 use super::error::ClapResult;
-use super::plugin::{ClapPluginWrapper, CLAP_BUFFER_SIZE, CLAP_SAMPLE_RATE};
+use super::plugin::{ClapPluginWrapper, ParamChangeReceiver, CLAP_BUFFER_SIZE, CLAP_SAMPLE_RATE};
 
 /// A CLAP plugin wrapped as a mesh Effect
 ///
@@ -20,6 +20,7 @@ use super::plugin::{ClapPluginWrapper, CLAP_BUFFER_SIZE, CLAP_SAMPLE_RATE};
 /// - Parameter querying (all CLAP params exposed via Effect::info().params)
 /// - Thread-safe access via Arc<Mutex<>>
 /// - Latency reporting for compensation
+/// - Parameter change notifications for learning mode
 pub struct ClapEffect {
     /// Effect base (info, params, bypass state)
     base: EffectBase,
@@ -35,11 +36,16 @@ pub struct ClapEffect {
     clap_param_ids: Vec<u32>,
     /// Pending parameter changes to send to plugin (param_id, value)
     pending_param_changes: Vec<(u32, f64)>,
+    /// Receiver for parameter change notifications from plugin GUI
+    param_change_receiver: ParamChangeReceiver,
 }
 
 impl ClapEffect {
-    /// Create a new CLAP effect from a plugin wrapper
-    pub fn new(mut wrapper: ClapPluginWrapper) -> ClapResult<Self> {
+    /// Create a new CLAP effect from a plugin wrapper and param change receiver
+    pub fn new(
+        mut wrapper: ClapPluginWrapper,
+        param_change_receiver: ParamChangeReceiver,
+    ) -> ClapResult<Self> {
         let plugin_info = wrapper.info().clone();
         let latency = wrapper.latency();
 
@@ -95,6 +101,7 @@ impl ClapEffect {
             process_buffer,
             clap_param_ids,
             pending_param_changes: Vec::new(),
+            param_change_receiver,
         })
     }
 
@@ -103,9 +110,28 @@ impl ClapEffect {
         plugin_info: &DiscoveredClapPlugin,
         bundle: Arc<clack_host::bundle::PluginBundle>,
     ) -> ClapResult<Self> {
-        let mut wrapper = ClapPluginWrapper::new(plugin_info, bundle)?;
+        let (mut wrapper, receiver) = ClapPluginWrapper::new(plugin_info, bundle)?;
         wrapper.activate(CLAP_SAMPLE_RATE, CLAP_BUFFER_SIZE)?;
-        Self::new(wrapper)
+        Self::new(wrapper, receiver)
+    }
+
+    /// Create and activate a CLAP effect, returning both effect and receiver separately
+    ///
+    /// This variant is used when the param change receiver needs to go to a GUI handle
+    /// instead of staying in the effect. The effect gets a dummy receiver.
+    pub fn from_plugin_with_separate_receiver(
+        plugin_info: &DiscoveredClapPlugin,
+        bundle: Arc<clack_host::bundle::PluginBundle>,
+    ) -> ClapResult<(Self, ParamChangeReceiver)> {
+        let (mut wrapper, receiver) = ClapPluginWrapper::new(plugin_info, bundle)?;
+        wrapper.activate(CLAP_SAMPLE_RATE, CLAP_BUFFER_SIZE)?;
+
+        // Create a dummy channel for the effect - it won't receive anything
+        // since the real receiver is being returned for the GUI handle
+        let (_dummy_sender, dummy_receiver) = crossbeam::channel::bounded(1);
+
+        let effect = Self::new(wrapper, dummy_receiver)?;
+        Ok((effect, receiver))
     }
 
     /// Get the plugin ID
@@ -121,6 +147,39 @@ impl ClapEffect {
     /// Get the CLAP parameter info for all parameters
     pub fn clap_param_ids(&self) -> &[u32] {
         &self.clap_param_ids
+    }
+
+    /// Poll for parameter changes from the plugin GUI
+    ///
+    /// Returns all pending parameter changes. Call this periodically from the UI
+    /// thread to detect when the plugin's GUI modifies parameters (for learning mode).
+    ///
+    /// Each change contains the CLAP param_id and the new value in the plugin's
+    /// native range.
+    pub fn poll_param_changes(&self) -> Vec<super::plugin::ParamChangeEvent> {
+        let mut changes = Vec::new();
+        while let Ok(change) = self.param_change_receiver.try_recv() {
+            changes.push(change);
+        }
+        changes
+    }
+
+    /// Get the parameter name for a CLAP param ID
+    ///
+    /// Returns None if the param ID is not found.
+    pub fn param_name_for_id(&self, param_id: u32) -> Option<&str> {
+        self.clap_param_ids
+            .iter()
+            .position(|&id| id == param_id)
+            .and_then(|idx| self.base.info().params.get(idx))
+            .map(|p| p.name.as_str())
+    }
+
+    /// Get the parameter index for a CLAP param ID
+    ///
+    /// Returns None if the param ID is not found.
+    pub fn param_index_for_id(&self, param_id: u32) -> Option<usize> {
+        self.clap_param_ids.iter().position(|&id| id == param_id)
     }
 }
 

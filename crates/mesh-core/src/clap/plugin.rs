@@ -3,8 +3,10 @@
 //! This module provides the core plugin hosting functionality, wrapping
 //! clack-host's API into a mesh-friendly interface.
 
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use clack_host::prelude::*;
 use clack_host::bundle::PluginBundle;
@@ -16,6 +18,8 @@ use clack_extensions::params::{
     HostParams, HostParamsImplMainThread, HostParamsImplShared, ParamClearFlags, ParamInfoBuffer,
     ParamRescanFlags, PluginParams,
 };
+use clack_extensions::gui::{GuiSize, HostGui, HostGuiImpl, PluginGui, GuiApiType, GuiConfiguration, Window};
+use crossbeam::channel::{self, Sender, Receiver};
 
 use super::error::{ClapError, ClapResult};
 use super::discovery::DiscoveredClapPlugin;
@@ -28,6 +32,28 @@ pub const CLAP_BUFFER_SIZE: u32 = 256;
 
 /// Maximum buffer size we'll allocate for
 pub const CLAP_MAX_BUFFER_SIZE: u32 = 4096;
+
+/// Capacity for the parameter change notification channel
+const PARAM_CHANGE_CHANNEL_CAPACITY: usize = 64;
+
+// ============================================================================
+// Parameter Change Notifications
+// ============================================================================
+
+/// A parameter change detected from plugin output events
+///
+/// This is sent when the plugin's GUI (or automation) changes a parameter,
+/// allowing the host to detect which parameter was modified for "learn" mode.
+#[derive(Debug, Clone)]
+pub struct ParamChangeEvent {
+    /// The CLAP parameter ID that changed
+    pub param_id: u32,
+    /// The new value (in plugin's native range)
+    pub value: f64,
+}
+
+/// Receiver for parameter change events from a plugin
+pub type ParamChangeReceiver = Receiver<ParamChangeEvent>;
 
 // ============================================================================
 // Host Implementation
@@ -43,12 +69,52 @@ impl HostHandlers for MeshClapHost {
 
     fn declare_extensions(builder: &mut HostExtensions<Self>, _shared: &Self::Shared<'_>) {
         builder.register::<HostParams>();
+        builder.register::<HostGui>();
     }
 }
 
 impl HostParamsImplShared for MeshClapHostShared {
     fn request_flush(&self) {
-        // We don't support flush requests - always processing
+        // Plugin GUI thread is requesting a param flush
+        // Set flag so wrapper can call flush() on next opportunity
+        self.flush_requested.store(true, Ordering::Release);
+        log::info!("[CLAP_LEARN] Plugin '{}' GUI called request_flush()", self.plugin_id);
+    }
+}
+
+impl HostGuiImpl for MeshClapHostShared {
+    fn resize_hints_changed(&self) {
+        // We don't dynamically handle resize hints yet
+        log::trace!("CLAP plugin '{}' resize hints changed", self.plugin_id);
+    }
+
+    fn request_resize(&self, new_size: GuiSize) -> Result<(), clack_host::host::HostError> {
+        // For floating windows, we accept all resize requests
+        log::debug!(
+            "CLAP plugin '{}' requested resize to {}x{}",
+            self.plugin_id,
+            new_size.width,
+            new_size.height
+        );
+        Ok(())
+    }
+
+    fn request_show(&self) -> Result<(), clack_host::host::HostError> {
+        log::debug!("CLAP plugin '{}' requested show", self.plugin_id);
+        Ok(())
+    }
+
+    fn request_hide(&self) -> Result<(), clack_host::host::HostError> {
+        log::debug!("CLAP plugin '{}' requested hide", self.plugin_id);
+        Ok(())
+    }
+
+    fn closed(&self, was_destroyed: bool) {
+        log::debug!(
+            "CLAP plugin '{}' GUI closed (destroyed: {})",
+            self.plugin_id,
+            was_destroyed
+        );
     }
 }
 
@@ -66,11 +132,13 @@ impl HostParamsImplMainThread for MeshClapHostMainThread<'_> {
 pub struct MeshClapHostShared {
     /// Plugin ID for logging
     plugin_id: String,
+    /// Flag set when plugin requests a parameter flush (from GUI thread)
+    flush_requested: Arc<AtomicBool>,
 }
 
 impl MeshClapHostShared {
-    fn new(plugin_id: String) -> Self {
-        Self { plugin_id }
+    fn new(plugin_id: String, flush_requested: Arc<AtomicBool>) -> Self {
+        Self { plugin_id, flush_requested }
     }
 }
 
@@ -157,6 +225,12 @@ pub struct ClapPluginWrapper {
     input_buffer: Vec<f32>,
     /// Output buffer (non-interleaved: [L, L, L, ..., R, R, R, ...])
     output_buffer: Vec<f32>,
+    /// Output event buffer for capturing plugin parameter changes
+    output_event_buffer: EventBuffer,
+    /// Channel sender for parameter change notifications
+    param_change_sender: Sender<ParamChangeEvent>,
+    /// Flag set by host when plugin GUI requests a param flush
+    flush_requested: Arc<AtomicBool>,
     /// Current buffer size
     buffer_size: usize,
     /// Sample rate
@@ -167,11 +241,22 @@ pub struct ClapPluginWrapper {
     latency_samples: u32,
     /// Keep the bundle alive
     _bundle: Arc<PluginBundle>,
+    /// Cached parameter values for change detection during learning mode
+    /// Maps param_id -> (previous_value, has_been_sampled)
+    cached_param_values: HashMap<u32, f64>,
+    /// Whether we're actively polling for param changes (learning mode)
+    learning_mode_active: bool,
 }
 
 impl ClapPluginWrapper {
     /// Create a new plugin wrapper from a discovered plugin
-    pub fn new(plugin_info: &DiscoveredClapPlugin, bundle: Arc<PluginBundle>) -> ClapResult<Self> {
+    ///
+    /// Returns the wrapper and a receiver for parameter change notifications.
+    /// The receiver can be used to detect when the plugin's GUI changes parameters.
+    pub fn new(
+        plugin_info: &DiscoveredClapPlugin,
+        bundle: Arc<PluginBundle>,
+    ) -> ClapResult<(Self, ParamChangeReceiver)> {
         let plugin_id = CString::new(plugin_info.id.as_str()).map_err(|_| {
             ClapError::InstantiationFailed {
                 plugin_id: plugin_info.id.clone(),
@@ -185,9 +270,13 @@ impl ClapPluginWrapper {
                 reason: format!("Failed to create host info: {:?}", e),
             })?;
 
+        // Create shared flush flag for host<->wrapper communication
+        let flush_requested = Arc::new(AtomicBool::new(false));
+        let flush_flag_for_host = Arc::clone(&flush_requested);
+
         let cloned_id = plugin_info.id.clone();
         let instance = PluginInstance::<MeshClapHost>::new(
-            |_| MeshClapHostShared::new(cloned_id.clone()),
+            |_| MeshClapHostShared::new(cloned_id.clone(), flush_flag_for_host),
             |shared| MeshClapHostMainThread::new(shared),
             &bundle,
             &plugin_id,
@@ -201,20 +290,31 @@ impl ClapPluginWrapper {
         let buffer_size = CLAP_BUFFER_SIZE as usize;
         let stereo_buffer_size = buffer_size * 2; // L and R channels
 
-        Ok(Self {
-            instance: Some(instance),
-            processor: None,
-            info: plugin_info.clone(),
-            input_ports: AudioPorts::with_capacity(2, 1), // 2 channels, 1 port
-            output_ports: AudioPorts::with_capacity(2, 1),
-            input_buffer: vec![0.0; stereo_buffer_size],
-            output_buffer: vec![0.0; stereo_buffer_size],
-            buffer_size,
-            sample_rate: CLAP_SAMPLE_RATE,
-            activated: false,
-            latency_samples: 0,
-            _bundle: bundle,
-        })
+        // Create channel for parameter change notifications
+        let (sender, receiver) = channel::bounded(PARAM_CHANGE_CHANNEL_CAPACITY);
+
+        Ok((
+            Self {
+                instance: Some(instance),
+                processor: None,
+                info: plugin_info.clone(),
+                input_ports: AudioPorts::with_capacity(2, 1), // 2 channels, 1 port
+                output_ports: AudioPorts::with_capacity(2, 1),
+                input_buffer: vec![0.0; stereo_buffer_size],
+                output_buffer: vec![0.0; stereo_buffer_size],
+                output_event_buffer: EventBuffer::with_capacity(32),
+                param_change_sender: sender,
+                flush_requested,
+                buffer_size,
+                sample_rate: CLAP_SAMPLE_RATE,
+                activated: false,
+                latency_samples: 0,
+                _bundle: bundle,
+                cached_param_values: HashMap::new(),
+                learning_mode_active: false,
+            },
+            receiver,
+        ))
     }
 
     /// Activate the plugin for audio processing
@@ -351,6 +451,517 @@ impl ClapPluginWrapper {
         params
     }
 
+    /// Poll for parameter changes from the plugin GUI
+    ///
+    /// This method supports two mechanisms for detecting GUI parameter changes:
+    ///
+    /// 1. **request_flush() based**: Some plugins call host->params->request_flush() when
+    ///    their GUI modifies a parameter. This sets the `flush_requested` flag.
+    ///
+    /// 2. **Unconditional flush**: Many plugins (like LSP) don't call request_flush().
+    ///    They send parameter changes through the audio thread's output events instead.
+    ///    When audio is not playing, we must call flush_active() unconditionally to poll
+    ///    for any pending GUI changes.
+    ///
+    /// Call this periodically from the UI thread during learning mode to detect changes.
+    pub fn poll_gui_param_changes(&mut self) {
+        // Check if flush was explicitly requested (some plugins do this)
+        let was_requested = self.flush_requested.swap(false, Ordering::AcqRel);
+        if was_requested {
+            log::info!("[CLAP_LEARN] Processing flush request for plugin '{}'", self.info.id);
+        }
+
+        // Need the processor (plugin must be activated and started)
+        let processor = match self.processor.as_mut() {
+            Some(p) => p,
+            None => {
+                log::warn!("[CLAP_LEARN] No audio processor for '{}', cannot flush params", self.info.id);
+                return;
+            }
+        };
+
+        let instance = match self.instance.as_ref() {
+            Some(i) => i,
+            None => {
+                log::warn!("[CLAP_LEARN] No instance for '{}'", self.info.id);
+                return;
+            }
+        };
+
+        // Get params extension
+        let params_ext = match instance.access_handler(|h| h.params_ext) {
+            Some(ext) => ext,
+            None => {
+                log::warn!("[CLAP_LEARN] Plugin '{}' has no params extension", self.info.id);
+                return;
+            }
+        };
+
+        // Clear output event buffer before processing
+        self.output_event_buffer.clear();
+
+        // When learning mode is active, call process() with a silent buffer.
+        // Many plugins (like LSP) only output ParamValueEvent during process(),
+        // not during flush_active(). This ensures we capture GUI parameter changes
+        // even when audio is not actively playing.
+        if self.learning_mode_active {
+            log::trace!("[CLAP_LEARN] Processing silent buffer to capture GUI param changes for '{}'", self.info.id);
+
+            // Use a small buffer size for minimal overhead
+            const SILENT_BUFFER_SIZE: usize = 64;
+
+            // Ensure our buffers are large enough for silent processing
+            let stereo_buffer_size = SILENT_BUFFER_SIZE * 2;
+            if self.input_buffer.len() < stereo_buffer_size {
+                self.input_buffer.resize(stereo_buffer_size, 0.0);
+            }
+            if self.output_buffer.len() < stereo_buffer_size {
+                self.output_buffer.resize(stereo_buffer_size, 0.0);
+            }
+
+            // Fill input with silence
+            self.input_buffer[..stereo_buffer_size].fill(0.0);
+            self.output_buffer[..stereo_buffer_size].fill(0.0);
+
+            // Split buffers to get non-overlapping mutable references for L/R channels
+            let (input_left, input_right) = self.input_buffer[..stereo_buffer_size].split_at_mut(SILENT_BUFFER_SIZE);
+            let (output_left, output_right) = self.output_buffer[..stereo_buffer_size].split_at_mut(SILENT_BUFFER_SIZE);
+
+            // Prepare input buffers using the same pattern as process_with_params
+            let input_buffers = self.input_ports.with_input_buffers(std::iter::once(AudioPortBuffer {
+                latency: 0,
+                channels: AudioPortBufferType::f32_input_only(
+                    [
+                        InputChannel {
+                            buffer: input_left,
+                            is_constant: false,
+                        },
+                        InputChannel {
+                            buffer: input_right,
+                            is_constant: false,
+                        },
+                    ]
+                    .into_iter(),
+                ),
+            }));
+
+            // Prepare output buffers
+            let mut output_buffers = self.output_ports.with_output_buffers(std::iter::once(AudioPortBuffer {
+                latency: 0,
+                channels: AudioPortBufferType::f32_output_only(
+                    [
+                        output_left,
+                        output_right,
+                    ]
+                    .into_iter(),
+                ),
+            }));
+
+            // Empty input events
+            let input_events = EventBuffer::new();
+            let input_events_ref = input_events.as_input();
+            let mut output_events = self.output_event_buffer.as_output();
+
+            // Process the silent buffer - this triggers the plugin to output any pending param changes
+            let result = processor.process(
+                &input_buffers,
+                &mut output_buffers,
+                &input_events_ref,
+                &mut output_events,
+                None, // steady time
+                None, // transport
+            );
+
+            drop(output_events);
+
+            if let Err(e) = result {
+                log::warn!("[CLAP_LEARN] Silent process failed for '{}': {:?}", self.info.id, e);
+            }
+        } else {
+            // When not in learning mode, just call flush_active
+            let mut plugin_handle = processor.plugin_handle();
+            let input_events = EventBuffer::new();
+
+            log::trace!("[CLAP_LEARN] Calling flush_active on plugin '{}'", self.info.id);
+
+            params_ext.flush_active(
+                &mut plugin_handle,
+                &input_events.as_input(),
+                &mut self.output_event_buffer.as_output(),
+            );
+        }
+
+        // Check how many output events we got
+        let event_count = self.output_event_buffer.as_input().iter().count();
+        log::trace!("[CLAP_LEARN] Got {} output events from plugin", event_count);
+
+        // Process any output events (sends to param_change_sender channel)
+        self.process_output_events();
+
+        // If process/flush didn't produce any events, try direct value polling as fallback.
+        // Some plugins might still not output events but do update their internal values.
+        log::trace!(
+            "[CLAP_LEARN] poll_gui_param_changes: event_count={}, learning_mode_active={}",
+            event_count, self.learning_mode_active
+        );
+        if event_count == 0 && self.learning_mode_active {
+            log::trace!("[CLAP_LEARN] Calling poll_param_value_changes() for '{}'", self.info.id);
+            self.poll_param_value_changes();
+        }
+    }
+
+    /// Start learning mode - snapshot all current parameter values
+    ///
+    /// Call this when entering learning mode. All parameter values are cached
+    /// so that subsequent calls to `poll_gui_param_changes()` can detect changes
+    /// by comparing current values to the snapshot.
+    pub fn start_learning_mode(&mut self) {
+        log::info!("[CLAP_LEARN] Starting learning mode for '{}'", self.info.id);
+
+        let instance = match self.instance.as_mut() {
+            Some(i) => i,
+            None => {
+                log::warn!("[CLAP_LEARN] No instance for '{}', cannot start learning", self.info.id);
+                return;
+            }
+        };
+
+        // Get params extension
+        let params_ext = match instance.access_handler(|h| h.params_ext) {
+            Some(ext) => ext,
+            None => {
+                log::warn!("[CLAP_LEARN] Plugin '{}' has no params extension", self.info.id);
+                return;
+            }
+        };
+
+        // Clear old cache
+        self.cached_param_values.clear();
+
+        // Get the plugin handle for main thread operations
+        let mut plugin_handle = instance.plugin_handle();
+        let param_count = params_ext.count(&mut plugin_handle);
+
+        // Cache current values of all parameters
+        let mut info_buffer = ParamInfoBuffer::new();
+        for i in 0..param_count {
+            if let Some(info) = params_ext.get_info(&mut plugin_handle, i, &mut info_buffer) {
+                let param_id = ClapId::new(info.id.get());
+                if let Some(value) = params_ext.get_value(&mut plugin_handle, param_id) {
+                    self.cached_param_values.insert(info.id.get(), value);
+                }
+            }
+        }
+
+        self.learning_mode_active = true;
+        log::info!(
+            "[CLAP_LEARN] Cached {} parameter values for '{}'",
+            self.cached_param_values.len(),
+            self.info.id
+        );
+    }
+
+    /// Stop learning mode and clear the parameter cache
+    pub fn stop_learning_mode(&mut self) {
+        log::info!("[CLAP_LEARN] Stopping learning mode for '{}'", self.info.id);
+        self.learning_mode_active = false;
+        self.cached_param_values.clear();
+    }
+
+    /// Poll for parameter value changes by comparing current values to cached values
+    ///
+    /// This is a fallback for plugins that don't properly implement `flush_active()`.
+    /// It directly queries parameter values and compares them to the cached snapshot.
+    fn poll_param_value_changes(&mut self) {
+        if self.cached_param_values.is_empty() {
+            log::warn!("[CLAP_LEARN] No cached param values - start_learning_mode() may not have run");
+            return;
+        }
+
+        let instance = match self.instance.as_mut() {
+            Some(i) => i,
+            None => return,
+        };
+
+        let params_ext = match instance.access_handler(|h| h.params_ext) {
+            Some(ext) => ext,
+            None => return,
+        };
+
+        let mut plugin_handle = instance.plugin_handle();
+
+        // Collect changes first (can't mutate cache while iterating)
+        let mut changed: Option<(u32, f64)> = None;
+
+        // Sample first 3 parameters to see if values are changing at all
+        let mut sample_count = 0;
+        for (&param_id, &cached_value) in self.cached_param_values.iter() {
+            let clap_id = ClapId::new(param_id);
+            if let Some(current_value) = params_ext.get_value(&mut plugin_handle, clap_id) {
+                // Log first 3 params to see what values we're getting
+                if sample_count < 3 {
+                    log::debug!(
+                        "[CLAP_LEARN] Sample param {}: id={}, cached={:.6}, current={:.6}, diff={:.6}",
+                        sample_count,
+                        param_id,
+                        cached_value,
+                        current_value,
+                        (current_value - cached_value).abs()
+                    );
+                    sample_count += 1;
+                }
+
+                // Check if value changed (with small epsilon for floating point comparison)
+                const EPSILON: f64 = 0.0001;
+                if (current_value - cached_value).abs() > EPSILON {
+                    log::info!(
+                        "[CLAP_LEARN] Value change detected: plugin='{}', param_id={}, old={:.4}, new={:.4}",
+                        self.info.id,
+                        param_id,
+                        cached_value,
+                        current_value
+                    );
+                    changed = Some((param_id, current_value));
+                    // Only report the first changed parameter (for learning mode)
+                    break;
+                }
+            }
+        }
+
+        // Process the change after iteration is complete
+        if let Some((param_id, new_value)) = changed {
+            // Update cache with new value (so we don't report it again)
+            self.cached_param_values.insert(param_id, new_value);
+
+            // Send the change notification
+            match self.param_change_sender.try_send(ParamChangeEvent {
+                param_id,
+                value: new_value,
+            }) {
+                Ok(_) => log::info!("[CLAP_LEARN] Sent value-based param change to channel"),
+                Err(e) => log::warn!("[CLAP_LEARN] Failed to send param change: {:?}", e),
+            }
+        }
+    }
+
+    // ========================================================================
+    // GUI Methods
+    // ========================================================================
+
+    /// Check if the plugin supports GUI
+    pub fn supports_gui(&mut self) -> bool {
+        let instance = match self.instance.as_mut() {
+            Some(i) => i,
+            None => return false,
+        };
+
+        instance
+            .plugin_handle()
+            .get_extension::<PluginGui>()
+            .is_some()
+    }
+
+    /// Get the GUI extension from the plugin
+    fn get_gui_extension(&mut self) -> ClapResult<PluginGui> {
+        let instance = self.instance.as_mut().ok_or_else(|| ClapError::NotActivated {
+            plugin_id: self.info.id.clone(),
+        })?;
+
+        instance
+            .plugin_handle()
+            .get_extension::<PluginGui>()
+            .ok_or_else(|| ClapError::GuiNotSupported {
+                plugin_id: self.info.id.clone(),
+            })
+    }
+
+    /// Check if a specific GUI API is supported
+    pub fn is_gui_api_supported(&mut self, is_floating: bool) -> bool {
+        let instance = match self.instance.as_mut() {
+            Some(i) => i,
+            None => return false,
+        };
+
+        let gui_ext = match instance.plugin_handle().get_extension::<PluginGui>() {
+            Some(ext) => ext,
+            None => return false,
+        };
+
+        let api_type = Self::current_platform_api();
+        let config = GuiConfiguration {
+            api_type,
+            is_floating,
+        };
+
+        gui_ext.is_api_supported(&mut instance.plugin_handle(), config)
+    }
+
+    /// Get the current platform's GUI API type
+    fn current_platform_api() -> GuiApiType<'static> {
+        #[cfg(target_os = "windows")]
+        {
+            GuiApiType::WIN32
+        }
+        #[cfg(target_os = "macos")]
+        {
+            GuiApiType::COCOA
+        }
+        #[cfg(target_os = "linux")]
+        {
+            GuiApiType::X11
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+        {
+            GuiApiType::X11 // Fallback
+        }
+    }
+
+    /// Create the plugin's GUI
+    ///
+    /// Must be called before show_gui().
+    pub fn create_gui(&mut self, is_floating: bool) -> ClapResult<()> {
+        let instance = self.instance.as_mut().ok_or_else(|| ClapError::NotActivated {
+            plugin_id: self.info.id.clone(),
+        })?;
+
+        let gui_ext = instance
+            .plugin_handle()
+            .get_extension::<PluginGui>()
+            .ok_or_else(|| ClapError::GuiNotSupported {
+                plugin_id: self.info.id.clone(),
+            })?;
+
+        let api_type = Self::current_platform_api();
+        let config = GuiConfiguration {
+            api_type,
+            is_floating,
+        };
+
+        gui_ext
+            .create(&mut instance.plugin_handle(), config)
+            .map_err(|e| ClapError::GuiCreationFailed {
+                plugin_id: self.info.id.clone(),
+                reason: format!("{:?}", e),
+            })?;
+
+        log::info!(
+            "Created GUI for plugin '{}' (floating: {})",
+            self.info.id,
+            is_floating
+        );
+        Ok(())
+    }
+
+    /// Get the preferred GUI size
+    pub fn get_gui_size(&mut self) -> ClapResult<(u32, u32)> {
+        let instance = self.instance.as_mut().ok_or_else(|| ClapError::NotActivated {
+            plugin_id: self.info.id.clone(),
+        })?;
+
+        let gui_ext = instance
+            .plugin_handle()
+            .get_extension::<PluginGui>()
+            .ok_or_else(|| ClapError::GuiNotSupported {
+                plugin_id: self.info.id.clone(),
+            })?;
+
+        gui_ext
+            .get_size(&mut instance.plugin_handle())
+            .map(|size| (size.width, size.height))
+            .ok_or_else(|| ClapError::GuiCreationFailed {
+                plugin_id: self.info.id.clone(),
+                reason: "Failed to get GUI size".to_string(),
+            })
+    }
+
+    /// Set the parent window for the GUI (for embedded mode)
+    ///
+    /// # Safety
+    /// The caller must ensure the window handle remains valid until destroy_gui is called.
+    pub unsafe fn set_gui_parent(&mut self, window: Window) -> ClapResult<()> {
+        let instance = self.instance.as_mut().ok_or_else(|| ClapError::NotActivated {
+            plugin_id: self.info.id.clone(),
+        })?;
+
+        let gui_ext = instance
+            .plugin_handle()
+            .get_extension::<PluginGui>()
+            .ok_or_else(|| ClapError::GuiNotSupported {
+                plugin_id: self.info.id.clone(),
+            })?;
+
+        gui_ext
+            .set_parent(&mut instance.plugin_handle(), window)
+            .map_err(|_| ClapError::GuiParentFailed {
+                plugin_id: self.info.id.clone(),
+            })?;
+
+        log::debug!("Set GUI parent for plugin '{}'", self.info.id);
+        Ok(())
+    }
+
+    /// Show the plugin's GUI
+    pub fn show_gui(&mut self) -> ClapResult<()> {
+        let instance = self.instance.as_mut().ok_or_else(|| ClapError::NotActivated {
+            plugin_id: self.info.id.clone(),
+        })?;
+
+        let gui_ext = instance
+            .plugin_handle()
+            .get_extension::<PluginGui>()
+            .ok_or_else(|| ClapError::GuiNotSupported {
+                plugin_id: self.info.id.clone(),
+            })?;
+
+        gui_ext
+            .show(&mut instance.plugin_handle())
+            .map_err(|_| ClapError::GuiShowFailed {
+                plugin_id: self.info.id.clone(),
+            })?;
+
+        log::info!("Showed GUI for plugin '{}'", self.info.id);
+        Ok(())
+    }
+
+    /// Hide the plugin's GUI
+    pub fn hide_gui(&mut self) -> ClapResult<()> {
+        let instance = self.instance.as_mut().ok_or_else(|| ClapError::NotActivated {
+            plugin_id: self.info.id.clone(),
+        })?;
+
+        let gui_ext = instance
+            .plugin_handle()
+            .get_extension::<PluginGui>()
+            .ok_or_else(|| ClapError::GuiNotSupported {
+                plugin_id: self.info.id.clone(),
+            })?;
+
+        gui_ext
+            .hide(&mut instance.plugin_handle())
+            .map_err(|_| ClapError::GuiHideFailed {
+                plugin_id: self.info.id.clone(),
+            })?;
+
+        log::debug!("Hid GUI for plugin '{}'", self.info.id);
+        Ok(())
+    }
+
+    /// Destroy the plugin's GUI and free resources
+    pub fn destroy_gui(&mut self) {
+        let instance = match self.instance.as_mut() {
+            Some(i) => i,
+            None => return,
+        };
+
+        let gui_ext = match instance.plugin_handle().get_extension::<PluginGui>() {
+            Some(ext) => ext,
+            None => return,
+        };
+
+        gui_ext.destroy(&mut instance.plugin_handle());
+        log::debug!("Destroyed GUI for plugin '{}'", self.info.id);
+    }
+
     /// Process audio through the plugin with parameter changes
     ///
     /// Takes interleaved stereo input, applies parameter changes, and produces
@@ -444,13 +1055,17 @@ impl ClapPluginWrapper {
         }
         let input_events = event_buffer.as_input();
 
+        // Clear output event buffer and prepare for capturing plugin output
+        self.output_event_buffer.clear();
+        let mut output_events = self.output_event_buffer.as_output();
+
         // Process
         processor
             .process(
                 &input_buffers,
                 &mut output_buffers,
                 &input_events,
-                &mut OutputEvents::void(),
+                &mut output_events,
                 None, // steady time
                 None, // transport
             )
@@ -459,6 +1074,12 @@ impl ClapPluginWrapper {
                 reason: format!("{:?}", e),
             })?;
 
+        // Drop output_events to release borrow on output_event_buffer
+        drop(output_events);
+
+        // Process output events to detect parameter changes from plugin GUI
+        self.process_output_events();
+
         // Interleave output: [L, L, L, ..., R, R, R, ...] -> [L, R, L, R, ...]
         for i in 0..frame_count {
             output[i * 2] = self.output_buffer[i];           // Left channel
@@ -466,6 +1087,48 @@ impl ClapPluginWrapper {
         }
 
         Ok(())
+    }
+
+    /// Process output events from the plugin to detect parameter changes
+    ///
+    /// This is called after each process() call to check if the plugin's GUI
+    /// or internal automation changed any parameters.
+    fn process_output_events(&self) {
+        let mut event_idx = 0;
+        for event in self.output_event_buffer.as_input().iter() {
+            log::debug!("[CLAP_LEARN] Processing output event {}", event_idx);
+            event_idx += 1;
+
+            // Check if this is a parameter value event
+            if let Some(param_event) = event.as_event::<ParamValueEvent>() {
+                // param_id() returns Option<ClapId> - None means "all parameters"
+                let param_id = match param_event.param_id() {
+                    Some(id) => id.get(),
+                    None => {
+                        log::debug!("[CLAP_LEARN] Skipping 'all parameters' event");
+                        continue;
+                    }
+                };
+                let value = param_event.value();
+
+                log::info!(
+                    "[CLAP_LEARN] Got param change event: plugin='{}', param_id={}, value={}",
+                    self.info.id,
+                    param_id,
+                    value
+                );
+
+                // Try to send the change notification (non-blocking)
+                // If the channel is full, we just drop the event (UI can poll less frequently)
+                match self.param_change_sender.try_send(ParamChangeEvent {
+                    param_id,
+                    value,
+                }) {
+                    Ok(_) => log::info!("[CLAP_LEARN] Sent param change to channel"),
+                    Err(e) => log::warn!("[CLAP_LEARN] Failed to send param change: {:?}", e),
+                }
+            }
+        }
     }
 
     /// Process audio through the plugin (without parameter changes)

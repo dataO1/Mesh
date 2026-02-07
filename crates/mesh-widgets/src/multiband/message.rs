@@ -215,6 +215,43 @@ pub enum MultibandEditorMessage {
     SetParamPickerFilter(String),
 
     // ─────────────────────────────────────────────────────────────────────
+    // CLAP Plugin GUI Learning Mode
+    // ─────────────────────────────────────────────────────────────────────
+    /// Open the plugin GUI for a CLAP effect
+    OpenPluginGui {
+        location: EffectChainLocation,
+        effect: usize,
+    },
+
+    /// Close the plugin GUI for an effect
+    ClosePluginGui {
+        location: EffectChainLocation,
+        effect: usize,
+    },
+
+    /// Start learning mode for a knob - next plugin GUI interaction assigns the param
+    StartLearning {
+        location: EffectChainLocation,
+        effect: usize,
+        knob: usize,
+    },
+
+    /// Cancel learning mode
+    CancelLearning,
+
+    /// A parameter was learned from plugin GUI interaction
+    /// (emitted by the handler when a param change is detected from plugin GUI)
+    ParamLearned {
+        location: EffectChainLocation,
+        effect: usize,
+        knob: usize,
+        /// The CLAP parameter ID that was learned
+        param_id: u32,
+        /// The parameter name
+        param_name: String,
+    },
+
+    // ─────────────────────────────────────────────────────────────────────
     // Global mouse events (for knob drag capture)
     // ─────────────────────────────────────────────────────────────────────
     /// Global mouse moved (for active knob drag)

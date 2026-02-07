@@ -34,7 +34,8 @@ use mesh_core::db::DatabaseService;
 use mesh_core::effect::{Effect, EffectInfo};
 use mesh_core::engine::{EngineCommand, LinkedStemData, PreparedTrack, SlicerPreset};
 use mesh_core::loader::LinkedStemResultReceiver;
-use mesh_core::clap::{ClapManager, ClapPluginCategory, DiscoveredClapPlugin};
+use mesh_core::clap::{ClapManager, ClapPluginCategory, DiscoveredClapPlugin, ClapGuiHandle};
+use std::collections::HashMap;
 use mesh_core::pd::{DiscoveredEffect, PdManager};
 use mesh_core::usb::get_or_open_usb_database;
 use mesh_core::types::{Stem, StereoBuffer};
@@ -123,6 +124,10 @@ pub struct MeshDomain {
     /// CLAP effect manager (discovers and creates CLAP plugin effects)
     clap_manager: ClapManager,
 
+    /// GUI handles for CLAP plugin window hosting (keyed by unique effect instance ID)
+    /// These are stored when effects are created via `add_clap_effect_*` methods.
+    clap_gui_handles: HashMap<String, ClapGuiHandle>,
+
     // =========================================================================
     // Domain State (caches and computed values)
     // =========================================================================
@@ -202,6 +207,7 @@ impl MeshDomain {
             linked_stem_receiver,
             pd_manager,
             clap_manager,
+            clap_gui_handles: HashMap::new(),
             // Domain state
             deck_stems: [None, None, None, None],
             deck_linked_stems: std::array::from_fn(|_| [None, None, None, None]),
@@ -993,17 +999,24 @@ impl MeshDomain {
     /// Add a CLAP effect to a stem's effect chain
     ///
     /// Creates the effect via ClapManager and sends it to the audio engine.
+    /// Also stores a GUI handle for plugin window hosting.
     /// Returns the effect's `EffectInfo` on success (containing all parameter names),
     /// or an error message on failure.
     pub fn add_clap_effect(&mut self, deck: usize, stem: Stem, plugin_id: &str, band_index: usize) -> Result<EffectInfo, String> {
-        // Create the effect via ClapManager (this does the non-RT-safe work)
-        let effect = self
+        // Create the effect with GUI handle via ClapManager
+        let (effect, gui_handle) = self
             .clap_manager
-            .create_effect(plugin_id)
+            .create_effect_with_gui_handle(plugin_id)
             .map_err(|e| format!("Failed to create CLAP effect '{}': {}", plugin_id, e))?;
 
         // Clone the effect info BEFORE sending to audio engine (effect will be moved)
         let effect_info = effect.info().clone();
+
+        // Generate unique effect instance ID for GUI handle storage
+        let effect_instance_id = format!("{}_d{}_s{}_b{}", plugin_id, deck, stem as u8, band_index);
+
+        // Store GUI handle for later use (opening plugin windows, learning mode)
+        self.clap_gui_handles.insert(effect_instance_id.clone(), gui_handle);
 
         // Send to audio engine via command (add to specified band of multiband container)
         if let Some(ref mut sender) = self.command_sender {
@@ -1013,12 +1026,44 @@ impl MeshDomain {
                 band_index,
                 effect,
             });
-            log::info!("Added CLAP effect '{}' to deck {} stem {:?} band {} ({} params)",
+            log::info!("Added CLAP effect '{}' to deck {} stem {:?} band {} ({} params, GUI handle stored)",
                 plugin_id, deck, stem, band_index, effect_info.params.len());
             Ok(effect_info)
         } else {
+            // Clean up GUI handle if we can't send to engine
+            self.clap_gui_handles.remove(&effect_instance_id);
             Err("Audio engine not connected".to_string())
         }
+    }
+
+    /// Get a CLAP GUI handle by effect instance ID
+    ///
+    /// Effect instance IDs follow the pattern:
+    /// - Band effects: `{plugin_id}_d{deck}_s{stem}_b{band}`
+    /// - Pre-FX: `{plugin_id}_d{deck}_s{stem}_prefx`
+    /// - Post-FX: `{plugin_id}_d{deck}_s{stem}_postfx`
+    pub fn get_clap_gui_handle(&self, effect_instance_id: &str) -> Option<&ClapGuiHandle> {
+        self.clap_gui_handles.get(effect_instance_id)
+    }
+
+    /// List all registered CLAP GUI handle IDs (for debugging)
+    pub fn list_clap_gui_handles(&self) -> Vec<&str> {
+        self.clap_gui_handles.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Generate the effect instance ID for a band effect
+    pub fn make_band_effect_id(plugin_id: &str, deck: usize, stem: Stem, band_index: usize) -> String {
+        format!("{}_d{}_s{}_b{}", plugin_id, deck, stem as u8, band_index)
+    }
+
+    /// Generate the effect instance ID for a pre-fx effect
+    pub fn make_pre_fx_effect_id(plugin_id: &str, deck: usize, stem: Stem) -> String {
+        format!("{}_d{}_s{}_prefx", plugin_id, deck, stem as u8)
+    }
+
+    /// Generate the effect instance ID for a post-fx effect
+    pub fn make_post_fx_effect_id(plugin_id: &str, deck: usize, stem: Stem) -> String {
+        format!("{}_d{}_s{}_postfx", plugin_id, deck, stem as u8)
     }
 
     /// Rescan for CLAP plugins
@@ -1178,19 +1223,23 @@ impl MeshDomain {
 
     /// Add a CLAP effect to the pre-fx chain
     pub fn add_clap_effect_pre_fx(&mut self, deck: usize, stem: Stem, plugin_id: &str) -> Result<EffectInfo, String> {
-        let effect = self
+        let (effect, gui_handle) = self
             .clap_manager
-            .create_effect(plugin_id)
+            .create_effect_with_gui_handle(plugin_id)
             .map_err(|e| format!("Failed to create CLAP effect '{}': {}", plugin_id, e))?;
 
         let effect_info = effect.info().clone();
+        let effect_instance_id = format!("{}_d{}_s{}_prefx", plugin_id, deck, stem as u8);
+
+        self.clap_gui_handles.insert(effect_instance_id.clone(), gui_handle);
 
         if let Some(ref mut sender) = self.command_sender {
             let _ = sender.send(EngineCommand::AddMultibandPreFx { deck, stem, effect });
-            log::info!("Added CLAP pre-fx '{}' to deck {} stem {:?} ({} params)",
+            log::info!("Added CLAP pre-fx '{}' to deck {} stem {:?} ({} params, GUI handle stored)",
                 plugin_id, deck, stem, effect_info.params.len());
             Ok(effect_info)
         } else {
+            self.clap_gui_handles.remove(&effect_instance_id);
             Err("Audio engine not connected".to_string())
         }
     }
@@ -1241,19 +1290,23 @@ impl MeshDomain {
 
     /// Add a CLAP effect to the post-fx chain
     pub fn add_clap_effect_post_fx(&mut self, deck: usize, stem: Stem, plugin_id: &str) -> Result<EffectInfo, String> {
-        let effect = self
+        let (effect, gui_handle) = self
             .clap_manager
-            .create_effect(plugin_id)
+            .create_effect_with_gui_handle(plugin_id)
             .map_err(|e| format!("Failed to create CLAP effect '{}': {}", plugin_id, e))?;
 
         let effect_info = effect.info().clone();
+        let effect_instance_id = format!("{}_d{}_s{}_postfx", plugin_id, deck, stem as u8);
+
+        self.clap_gui_handles.insert(effect_instance_id.clone(), gui_handle);
 
         if let Some(ref mut sender) = self.command_sender {
             let _ = sender.send(EngineCommand::AddMultibandPostFx { deck, stem, effect });
-            log::info!("Added CLAP post-fx '{}' to deck {} stem {:?} ({} params)",
+            log::info!("Added CLAP post-fx '{}' to deck {} stem {:?} ({} params, GUI handle stored)",
                 plugin_id, deck, stem, effect_info.params.len());
             Ok(effect_info)
         } else {
+            self.clap_gui_handles.remove(&effect_instance_id);
             Err("Audio engine not connected".to_string())
         }
     }

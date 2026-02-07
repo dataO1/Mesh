@@ -29,7 +29,7 @@ thiserror.workspace = true
 
 # CLAP plugin hosting
 clack-host = { git = "https://github.com/prokopyl/clack.git" }
-clack-extensions = { git = "https://github.com/prokopyl/clack.git", features = ["params", "clack-host"] }
+clack-extensions = { git = "https://github.com/prokopyl/clack.git", features = ["params", "gui", "clack-host"] }
 
 # Cross-platform audio backend
 cpal.workspace = true

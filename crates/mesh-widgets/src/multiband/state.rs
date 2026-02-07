@@ -415,6 +415,15 @@ pub struct MultibandEditorState {
 
     /// Currently dragging macro knob index (0-7)
     pub dragging_macro_knob: Option<usize>,
+
+    // ─────────────────────────────────────────────────────────────────────
+    // CLAP Plugin GUI Learning Mode
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Knob currently in learning mode: (location, effect_idx, knob_idx)
+    /// When set, the next parameter change from a CLAP plugin GUI will be
+    /// assigned to this knob.
+    pub learning_knob: Option<(EffectChainLocation, usize, usize)>,
 }
 
 impl Default for MultibandEditorState {
@@ -450,12 +459,43 @@ impl MultibandEditorState {
             param_picker_search: String::new(),
             dragging_effect_knob: None,
             dragging_macro_knob: None,
+            learning_knob: None,
         }
     }
 
     /// Check if any knob is currently being dragged (for mouse capture subscription)
     pub fn is_any_knob_dragging(&self) -> bool {
         self.dragging_effect_knob.is_some() || self.dragging_macro_knob.is_some()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // CLAP Plugin GUI Learning Mode
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Start learning mode for a knob - the next CLAP plugin GUI interaction
+    /// will assign the changed parameter to this knob
+    pub fn start_learning(&mut self, location: EffectChainLocation, effect_idx: usize, knob_idx: usize) {
+        self.learning_knob = Some((location, effect_idx, knob_idx));
+    }
+
+    /// Cancel learning mode
+    pub fn cancel_learning(&mut self) {
+        self.learning_knob = None;
+    }
+
+    /// Check if a specific knob is in learning mode
+    pub fn is_knob_learning(&self, location: EffectChainLocation, effect_idx: usize, knob_idx: usize) -> bool {
+        self.learning_knob == Some((location, effect_idx, knob_idx))
+    }
+
+    /// Check if any knob is in learning mode
+    pub fn is_learning(&self) -> bool {
+        self.learning_knob.is_some()
+    }
+
+    /// Get the current learning target (if any)
+    pub fn learning_target(&self) -> Option<(EffectChainLocation, usize, usize)> {
+        self.learning_knob
     }
 
     /// Open the editor for a specific deck and stem

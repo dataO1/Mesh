@@ -66,3 +66,8 @@ anyhow.workspace = true
 serde.workspace = true
 serde_yaml.workspace = true
 dirs.workspace = true
+crossbeam.workspace = true
+
+# CLAP plugin GUI hosting
+baseview = { git = "https://github.com/RustAudio/baseview.git" }
+raw-window-handle = "0.6"

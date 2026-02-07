@@ -91,6 +91,30 @@ pub enum ClapError {
     /// Lock acquisition failed (non-blocking)
     #[error("Failed to acquire lock for plugin '{plugin_id}' - skipping frame")]
     LockFailed { plugin_id: String },
+
+    /// Plugin does not support GUI extension
+    #[error("Plugin '{plugin_id}' does not support GUI")]
+    GuiNotSupported { plugin_id: String },
+
+    /// GUI API not supported by plugin
+    #[error("Plugin '{plugin_id}' does not support GUI API '{api}'")]
+    GuiApiNotSupported { plugin_id: String, api: String },
+
+    /// Failed to create GUI
+    #[error("Failed to create GUI for plugin '{plugin_id}': {reason}")]
+    GuiCreationFailed { plugin_id: String, reason: String },
+
+    /// Failed to set GUI parent window
+    #[error("Failed to set GUI parent for plugin '{plugin_id}'")]
+    GuiParentFailed { plugin_id: String },
+
+    /// Failed to show GUI
+    #[error("Failed to show GUI for plugin '{plugin_id}'")]
+    GuiShowFailed { plugin_id: String },
+
+    /// Failed to hide GUI
+    #[error("Failed to hide GUI for plugin '{plugin_id}'")]
+    GuiHideFailed { plugin_id: String },
 }
 
 /// Result type for CLAP operations

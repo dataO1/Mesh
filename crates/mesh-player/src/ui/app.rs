@@ -24,6 +24,7 @@ use iced::time;
 use crate::audio::CommandSender;
 use crate::config::{self, PlayerConfig};
 use crate::domain::MeshDomain;
+use crate::plugin_gui::PluginGuiManager;
 
 use mesh_midi::{MidiController, MidiMessage as MidiMsg, MidiInputEvent, DeckAction as MidiDeckAction, MixerAction as MidiMixerAction, BrowserAction as MidiBrowserAction};
 use mesh_core::engine::{DeckAtomics, LinkedStemAtomics, SlicerAtomics};
@@ -141,6 +142,8 @@ pub struct MeshApp {
     pub(crate) effect_picker: EffectPickerState,
     /// Multiband editor modal state
     pub(crate) multiband_editor: MultibandEditorState,
+    /// Plugin GUI manager for CLAP plugin windows and parameter learning
+    pub(crate) plugin_gui_manager: PluginGuiManager,
 }
 
 // Message enum moved to message.rs
@@ -272,6 +275,7 @@ impl MeshApp {
             stem_link_state: StemLinkState::Idle,
             effect_picker: EffectPickerState::new(),
             multiband_editor: MultibandEditorState::new(),
+            plugin_gui_manager: PluginGuiManager::new(),
         }
     }
 
@@ -496,6 +500,11 @@ impl MeshApp {
 
             Message::Multiband(multiband_msg) => {
                 super::handlers::multiband::handle(self, multiband_msg)
+            }
+
+            Message::PluginGuiTick => {
+                // Poll GUI handles for parameter changes when in learning mode
+                super::handlers::multiband::handle_plugin_gui_tick(self)
             }
         }
     }
@@ -837,6 +846,15 @@ impl MeshApp {
             Subscription::none()
         };
 
+        // Plugin GUI polling subscription for parameter learning
+        // Only active when in learning mode (to avoid overhead otherwise)
+        let plugin_gui_sub = if self.multiband_editor.is_learning() {
+            // Poll at 30fps for responsive learning detection
+            time::every(std::time::Duration::from_millis(33)).map(|_| Message::PluginGuiTick)
+        } else {
+            Subscription::none()
+        };
+
         Subscription::batch([
             // Update UI at ~60fps for smooth waveform animation
             time::every(std::time::Duration::from_millis(16)).map(|_| Message::Tick),
@@ -852,6 +870,8 @@ impl MeshApp {
             usb_sub,
             // Global mouse capture for smooth knob dragging
             mouse_capture_sub,
+            // Plugin GUI parameter learning polling
+            plugin_gui_sub,
         ])
     }
 

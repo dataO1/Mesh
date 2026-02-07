@@ -834,6 +834,259 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             Task::none()
         }
 
+        // ─────────────────────────────────────────────────────────────────────
+        // CLAP Plugin GUI Learning Mode
+        // ─────────────────────────────────────────────────────────────────────
+        OpenPluginGui { location, effect } => {
+            log::info!("OpenPluginGui: location={:?}, effect={}", location, effect);
+
+            let deck = app.multiband_editor.deck;
+            let stem = Stem::ALL[app.multiband_editor.stem];
+
+            // Get the effect state and plugin ID
+            let effect_state = match location {
+                EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get(effect),
+                EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
+                    .get(band_idx)
+                    .and_then(|b| b.effects.get(effect)),
+                EffectChainLocation::PostFx => app.multiband_editor.post_fx.get(effect),
+            };
+
+            if let Some(effect_state) = effect_state {
+                if effect_state.source != EffectSourceType::Clap {
+                    log::warn!("Cannot open plugin GUI for non-CLAP effect: {}", effect_state.source);
+                    return Task::none();
+                }
+
+                // Generate effect instance ID to look up GUI handle
+                let effect_instance_id = match location {
+                    EffectChainLocation::PreFx => {
+                        crate::domain::MeshDomain::make_pre_fx_effect_id(&effect_state.id, deck, stem)
+                    }
+                    EffectChainLocation::Band(band_idx) => {
+                        crate::domain::MeshDomain::make_band_effect_id(&effect_state.id, deck, stem, band_idx)
+                    }
+                    EffectChainLocation::PostFx => {
+                        crate::domain::MeshDomain::make_post_fx_effect_id(&effect_state.id, deck, stem)
+                    }
+                };
+
+                // Get GUI handle from domain
+                if let Some(gui_handle) = app.domain.get_clap_gui_handle(&effect_instance_id) {
+                    if !gui_handle.supports_gui() {
+                        log::warn!("Plugin '{}' does not support GUI", effect_state.id);
+                        return Task::none();
+                    }
+
+                    // Create and show floating GUI window
+                    match gui_handle.create_gui(true) {
+                        Ok(()) => {
+                            if let Err(e) = gui_handle.show_gui() {
+                                log::error!("Failed to show plugin GUI: {}", e);
+                            } else {
+                                log::info!("Opened plugin GUI for '{}'", effect_state.id);
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("Failed to create plugin GUI: {}", e);
+                        }
+                    }
+                } else {
+                    log::warn!("No GUI handle found for effect instance '{}'", effect_instance_id);
+                }
+            }
+
+            Task::none()
+        }
+
+        ClosePluginGui { location, effect } => {
+            log::info!("ClosePluginGui: location={:?}, effect={}", location, effect);
+
+            let deck = app.multiband_editor.deck;
+            let stem = Stem::ALL[app.multiband_editor.stem];
+
+            // Get the effect state
+            let effect_state = match location {
+                EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get(effect),
+                EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
+                    .get(band_idx)
+                    .and_then(|b| b.effects.get(effect)),
+                EffectChainLocation::PostFx => app.multiband_editor.post_fx.get(effect),
+            };
+
+            if let Some(effect_state) = effect_state {
+                // Generate effect instance ID
+                let effect_instance_id = match location {
+                    EffectChainLocation::PreFx => {
+                        crate::domain::MeshDomain::make_pre_fx_effect_id(&effect_state.id, deck, stem)
+                    }
+                    EffectChainLocation::Band(band_idx) => {
+                        crate::domain::MeshDomain::make_band_effect_id(&effect_state.id, deck, stem, band_idx)
+                    }
+                    EffectChainLocation::PostFx => {
+                        crate::domain::MeshDomain::make_post_fx_effect_id(&effect_state.id, deck, stem)
+                    }
+                };
+
+                // Get GUI handle and destroy the GUI
+                if let Some(gui_handle) = app.domain.get_clap_gui_handle(&effect_instance_id) {
+                    gui_handle.destroy_gui();
+                    log::info!("Closed plugin GUI for '{}'", effect_state.id);
+                }
+            }
+
+            Task::none()
+        }
+
+        StartLearning { location, effect, knob } => {
+            log::info!(
+                "[CLAP_LEARN] StartLearning handler: location={:?}, effect={}, knob={}",
+                location, effect, knob
+            );
+
+            // Check that this is a CLAP effect and extract plugin ID (avoiding borrow issues)
+            let clap_plugin_id = {
+                let effect_state = match location {
+                    EffectChainLocation::PreFx => {
+                        log::info!("[CLAP_LEARN] Looking up PreFx effect at index {}", effect);
+                        app.multiband_editor.pre_fx.get(effect)
+                    }
+                    EffectChainLocation::Band(band_idx) => {
+                        log::info!("[CLAP_LEARN] Looking up Band {} effect at index {}", band_idx, effect);
+                        app.multiband_editor.bands
+                            .get(band_idx)
+                            .and_then(|b| b.effects.get(effect))
+                    }
+                    EffectChainLocation::PostFx => {
+                        log::info!("[CLAP_LEARN] Looking up PostFx effect at index {}", effect);
+                        app.multiband_editor.post_fx.get(effect)
+                    }
+                };
+
+                if let Some(e) = effect_state {
+                    log::info!("[CLAP_LEARN] Found effect: id='{}', source={:?}", e.id, e.source);
+                    if e.source == EffectSourceType::Clap {
+                        Some(e.id.clone())
+                    } else {
+                        log::warn!("[CLAP_LEARN] Learning mode only available for CLAP effects, got {:?}", e.source);
+                        None
+                    }
+                } else {
+                    log::warn!("[CLAP_LEARN] No effect found at location={:?}, index={}", location, effect);
+                    None
+                }
+            };
+
+            if let Some(plugin_id) = clap_plugin_id {
+                // Construct the full effect instance ID (must match how domain stores GUI handles)
+                let deck = app.multiband_editor.deck;
+                let stem = Stem::ALL[app.multiband_editor.stem];
+
+                log::info!("[CLAP_LEARN] Got plugin_id='{}', deck={}, stem={:?}", plugin_id, deck, stem);
+
+                use crate::domain::MeshDomain;
+                let effect_instance_id = match location {
+                    EffectChainLocation::PreFx => MeshDomain::make_pre_fx_effect_id(&plugin_id, deck, stem),
+                    EffectChainLocation::Band(band_idx) => MeshDomain::make_band_effect_id(&plugin_id, deck, stem, band_idx),
+                    EffectChainLocation::PostFx => MeshDomain::make_post_fx_effect_id(&plugin_id, deck, stem),
+                };
+
+                log::info!("[CLAP_LEARN] Constructed effect_instance_id='{}'", effect_instance_id);
+                log::info!("[CLAP_LEARN] Available GUI handles: {:?}", app.domain.list_clap_gui_handles());
+
+                // Get the GUI handle and start learning mode
+                if let Some(gui_handle) = app.domain.get_clap_gui_handle(&effect_instance_id) {
+                    log::info!("[CLAP_LEARN] GUI handle FOUND for effect_instance_id='{}'", effect_instance_id);
+                    log::info!("[CLAP_LEARN] Calling gui_handle.start_learning_mode()...");
+
+                    // Start learning mode on the plugin wrapper - this snapshots all param values
+                    // so we can detect changes by comparing current values to the snapshot
+                    gui_handle.start_learning_mode();
+
+                    log::info!("[CLAP_LEARN] gui_handle.start_learning_mode() returned");
+                } else {
+                    log::warn!("[CLAP_LEARN] NO GUI handle for effect_instance_id='{}'", effect_instance_id);
+                }
+
+                // Start learning mode in the UI state
+                app.multiband_editor.start_learning(location, effect, knob);
+
+                // Start learning in PluginGuiManager (tracks effect_id -> knob mapping)
+                app.plugin_gui_manager.start_learning(effect_instance_id, knob);
+            }
+
+            Task::none()
+        }
+
+        CancelLearning => {
+            log::info!("CancelLearning");
+
+            // Stop learning mode on the plugin wrapper (if we have a learning target)
+            if let Some(target) = app.plugin_gui_manager.learning_target() {
+                if let Some(gui_handle) = app.domain.get_clap_gui_handle(&target.effect_id) {
+                    gui_handle.stop_learning_mode();
+                }
+            }
+
+            app.multiband_editor.cancel_learning();
+            app.plugin_gui_manager.cancel_learning();
+            Task::none()
+        }
+
+        ParamLearned { location, effect, knob, param_id, param_name } => {
+            log::info!(
+                "ParamLearned: location={:?}, effect={}, knob={}, param_id={}, param_name={}",
+                location, effect, knob, param_id, param_name
+            );
+
+            // Clear learning mode in UI
+            app.multiband_editor.cancel_learning();
+
+            // Find the effect and update the knob assignment
+            let effect_state = match location {
+                EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get_mut(effect),
+                EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
+                    .get_mut(band_idx)
+                    .and_then(|b| b.effects.get_mut(effect)),
+                EffectChainLocation::PostFx => app.multiband_editor.post_fx.get_mut(effect),
+            };
+
+            if let Some(effect_state) = effect_state {
+                // Find or add the param in available_params
+                let param_index = effect_state.available_params
+                    .iter()
+                    .position(|p| p.name == param_name)
+                    .unwrap_or_else(|| {
+                        // Add new param if not found
+                        let new_param = AvailableParam {
+                            name: param_name.clone(),
+                            min: 0.0,
+                            max: 1.0,
+                            default: 0.5,
+                            unit: String::new(),
+                        };
+                        effect_state.available_params.push(new_param);
+                        effect_state.available_params.len() - 1
+                    });
+
+                // Assign to the knob
+                if let Some(assignment) = effect_state.knob_assignments.get_mut(knob) {
+                    assignment.param_index = Some(param_index);
+                    log::info!(
+                        "Assigned param '{}' (index {}) to knob {}",
+                        param_name, param_index, knob
+                    );
+                }
+
+                // Update param_names for UI label display
+                if knob < effect_state.param_names.len() {
+                    effect_state.param_names[knob] = param_name.clone();
+                }
+            }
+
+            Task::none()
+        }
+
         GlobalMouseReleased => {
             use mesh_widgets::knob::KnobEvent;
 
@@ -873,4 +1126,80 @@ fn sync_from_backend(app: &mut MeshApp) {
             app.multiband_editor.set_macro_value(macro_idx, value);
         }
     }
+}
+
+/// Handle plugin GUI tick - poll for parameter changes during learning mode
+///
+/// Called periodically from the subscription when learning mode is active.
+/// Polls all GUI handles for parameter changes and emits ParamLearned when detected.
+pub fn handle_plugin_gui_tick(app: &mut MeshApp) -> Task<Message> {
+    // Only process if we're in learning mode
+    if !app.plugin_gui_manager.is_learning() {
+        return Task::none();
+    }
+
+    // Get the learning target info
+    let target = match app.plugin_gui_manager.learning_target() {
+        Some(t) => t.clone(),
+        None => {
+            log::warn!("[CLAP_LEARN] is_learning() true but no learning_target");
+            return Task::none();
+        }
+    };
+
+    log::trace!("[CLAP_LEARN] Tick: polling effect_id={}", target.effect_id);
+
+    // Look up the GUI handle for this effect
+    match app.domain.get_clap_gui_handle(&target.effect_id) {
+        Some(gui_handle) => {
+            log::trace!("[CLAP_LEARN] Found GUI handle, calling poll_param_changes()");
+
+            // Check for parameter changes
+            let changes = gui_handle.poll_param_changes();
+
+            log::trace!("[CLAP_LEARN] poll_param_changes returned {} changes", changes.len());
+
+            if !changes.is_empty() {
+                // Use the first change
+                let change = &changes[0];
+                let param_id = change.param_id;
+                let param_name = gui_handle
+                    .param_name_for_id(param_id)
+                    .unwrap_or_else(|| format!("Param {}", param_id));
+
+                log::info!(
+                    "[CLAP_LEARN] Learning detected param change: effect={}, param_id={}, param_name={}",
+                    target.effect_id,
+                    param_id,
+                    param_name
+                );
+
+                // Get the location and effect index from multiband_editor's learning state
+                if let Some((location, effect_idx, knob_idx)) = app.multiband_editor.learning_target() {
+                    // Stop learning mode on the plugin wrapper (clears cached param values)
+                    gui_handle.stop_learning_mode();
+
+                    // Clear learning state in both places
+                    app.plugin_gui_manager.cancel_learning();
+                    app.multiband_editor.cancel_learning();
+
+                    // Emit the ParamLearned message to complete the assignment
+                    return Task::done(Message::Multiband(
+                        MultibandEditorMessage::ParamLearned {
+                            location,
+                            effect: effect_idx,
+                            knob: knob_idx,
+                            param_id,
+                            param_name,
+                        }
+                    ));
+                }
+            }
+        }
+        None => {
+            log::warn!("[CLAP_LEARN] No GUI handle found for effect_id={}", target.effect_id);
+        }
+    }
+
+    Task::none()
 }

@@ -90,4 +90,7 @@ pub enum Message {
 
     /// USB manager message received
     Usb(UsbMessage),
+
+    /// Plugin GUI polling tick (for parameter learning)
+    PluginGuiTick,
 }

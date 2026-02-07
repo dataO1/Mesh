@@ -76,6 +76,16 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 - **Effect knob initialization** — Knobs now appear immediately when adding
   effects, without requiring modal reopen.
 
+- **CLAP parameter learning when audio not playing** — Parameter learning now
+  works even when audio is stopped. Previously, GUI parameter changes weren't
+  detected because LSP plugins only output `ParamValueEvent` during audio
+  processing. Fixed by processing silent audio buffers during learning mode to
+  trigger plugin synchronization.
+
+- **Knob label not updating after parameter learning** — After learning a CLAP
+  parameter, the knob button label now correctly updates to show the learned
+  parameter name (e.g., "Temperature", "Pre-delay") instead of remaining blank.
+
 ### Known Limitations
 
 - **libpd parallel processing** — Multiple PD effects process in parallel (not

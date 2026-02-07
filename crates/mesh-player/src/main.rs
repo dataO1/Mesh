@@ -21,6 +21,7 @@ mod audio;
 mod config;
 mod domain;
 mod loader;
+mod plugin_gui;
 mod ui;
 
 use iced::{Size, Task};

@@ -78,6 +78,7 @@ let
     xorg.libXcursor
     xorg.libXrandr
     xorg.libXi
+    xorg.libxcb      # Required by baseview for CLAP plugin GUI hosting
     vulkan-loader
     libGL
 
@@ -88,6 +89,10 @@ let
   # Build-time only dependencies
   buildOnlyInputs = with pkgs; [
     glibc.dev    # Headers for cc-rs crates
+    # X11 development files for baseview (CLAP plugin GUI hosting)
+    xorg.libX11.dev
+    xorg.libxcb.dev
+    pkg-config
   ];
 
   # Combined build inputs

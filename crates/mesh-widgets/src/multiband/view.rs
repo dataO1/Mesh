@@ -23,6 +23,8 @@ const ACCENT_COLOR: Color = Color::from_rgb(0.3, 0.7, 0.9);
 const MUTE_COLOR: Color = Color::from_rgb(0.8, 0.3, 0.3);
 const SOLO_COLOR: Color = Color::from_rgb(0.9, 0.8, 0.2);
 const BYPASS_COLOR: Color = Color::from_rgb(0.5, 0.5, 0.5);
+/// Color for knobs in learning mode (bright magenta for visibility)
+const LEARNING_COLOR: Color = Color::from_rgb(1.0, 0.3, 0.8);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Horizontal divider helper
@@ -56,6 +58,7 @@ pub fn multiband_editor(
     }
 
     let dragging_macro = state.dragging_macro;
+    let learning_knob = state.learning_knob;
 
     // Build band columns
     let band_columns: Vec<Element<'_, MultibandEditorMessage>> = state
@@ -69,6 +72,7 @@ pub fn multiband_editor(
                 state.any_soloed,
                 dragging_macro,
                 &state.effect_knobs,
+                learning_knob,
             )
         })
         .collect();
@@ -82,6 +86,7 @@ pub fn multiband_editor(
             EffectChainLocation::PreFx,
             dragging_macro,
             &state.effect_knobs,
+            learning_knob,
         ),
         // Band columns (center, fill available space)
         column![
@@ -101,6 +106,7 @@ pub fn multiband_editor(
             EffectChainLocation::PostFx,
             dragging_macro,
             &state.effect_knobs,
+            learning_knob,
         ),
     ]
     .spacing(8)
@@ -243,6 +249,7 @@ fn band_column<'a>(
     any_soloed: bool,
     dragging_macro: Option<usize>,
     effect_knobs: &'a std::collections::HashMap<super::state::EffectKnobKey, Knob>,
+    learning_knob: Option<(EffectChainLocation, usize, usize)>,
 ) -> Element<'a, MultibandEditorMessage> {
     // Band header: name and freq range
     let header = column![
@@ -296,6 +303,7 @@ fn band_column<'a>(
                 effect,
                 dragging_macro,
                 effect_knobs,
+                learning_knob,
             )
         })
         .collect();
@@ -340,6 +348,7 @@ fn fx_chain_column<'a>(
     location: EffectChainLocation,
     dragging_macro: Option<usize>,
     effect_knobs: &'a std::collections::HashMap<super::state::EffectKnobKey, Knob>,
+    learning_knob: Option<(EffectChainLocation, usize, usize)>,
 ) -> Element<'a, MultibandEditorMessage> {
     let header = column![
         text(title).size(20).color(TEXT_PRIMARY),
@@ -358,7 +367,7 @@ fn fx_chain_column<'a>(
         .iter()
         .enumerate()
         .map(|(effect_idx, effect)| {
-            fx_effect_card(effect_idx, effect, location, dragging_macro, effect_knobs)
+            fx_effect_card(effect_idx, effect, location, dragging_macro, effect_knobs, learning_knob)
         })
         .collect();
 
@@ -399,35 +408,74 @@ fn fx_effect_card<'a>(
     location: EffectChainLocation,
     dragging_macro: Option<usize>,
     effect_knobs: &'a std::collections::HashMap<super::state::EffectKnobKey, Knob>,
+    learning_knob: Option<(EffectChainLocation, usize, usize)>,
 ) -> Element<'a, MultibandEditorMessage> {
+    use super::state::EffectSourceType;
+
     let name_color = if effect.bypassed {
         BYPASS_COLOR
     } else {
         TEXT_PRIMARY
     };
 
-    let header = row![
-        text(&effect.name).size(20).color(name_color),
-        Space::new().width(Length::Fill),
-        button(
-            text(if effect.bypassed { "○" } else { "●" })
-                .size(13)
-                .color(name_color)
-        )
-        .padding([1, 3])
-        .on_press(if location == EffectChainLocation::PreFx {
-            MultibandEditorMessage::TogglePreFxBypass(effect_idx)
-        } else {
-            MultibandEditorMessage::TogglePostFxBypass(effect_idx)
-        }),
-        button(text("×").size(13))
+    // Check if this is a CLAP effect (can open plugin GUI)
+    let is_clap = effect.source == EffectSourceType::Clap;
+
+    // Build header with optional GUI button for CLAP effects
+    let header = if is_clap {
+        row![
+            text(&effect.name).size(20).color(name_color),
+            Space::new().width(Length::Fill),
+            // GUI button for CLAP plugins
+            button(text("GUI").size(11).color(ACCENT_COLOR))
+                .padding([1, 3])
+                .on_press(MultibandEditorMessage::OpenPluginGui {
+                    location,
+                    effect: effect_idx,
+                }),
+            button(
+                text(if effect.bypassed { "○" } else { "●" })
+                    .size(13)
+                    .color(name_color)
+            )
             .padding([1, 3])
             .on_press(if location == EffectChainLocation::PreFx {
-                MultibandEditorMessage::RemovePreFxEffect(effect_idx)
+                MultibandEditorMessage::TogglePreFxBypass(effect_idx)
             } else {
-                MultibandEditorMessage::RemovePostFxEffect(effect_idx)
+                MultibandEditorMessage::TogglePostFxBypass(effect_idx)
             }),
-    ]
+            button(text("×").size(13))
+                .padding([1, 3])
+                .on_press(if location == EffectChainLocation::PreFx {
+                    MultibandEditorMessage::RemovePreFxEffect(effect_idx)
+                } else {
+                    MultibandEditorMessage::RemovePostFxEffect(effect_idx)
+                }),
+        ]
+    } else {
+        row![
+            text(&effect.name).size(20).color(name_color),
+            Space::new().width(Length::Fill),
+            button(
+                text(if effect.bypassed { "○" } else { "●" })
+                    .size(13)
+                    .color(name_color)
+            )
+            .padding([1, 3])
+            .on_press(if location == EffectChainLocation::PreFx {
+                MultibandEditorMessage::TogglePreFxBypass(effect_idx)
+            } else {
+                MultibandEditorMessage::TogglePostFxBypass(effect_idx)
+            }),
+            button(text("×").size(13))
+                .padding([1, 3])
+                .on_press(if location == EffectChainLocation::PreFx {
+                    MultibandEditorMessage::RemovePreFxEffect(effect_idx)
+                } else {
+                    MultibandEditorMessage::RemovePostFxEffect(effect_idx)
+                }),
+        ]
+    }
     .spacing(2)
     .align_y(Alignment::Center);
 
@@ -435,6 +483,9 @@ fn fx_effect_card<'a>(
     let param_count = effect.param_values.len().min(6);
     let param_knobs: Vec<Element<'_, MultibandEditorMessage>> = (0..param_count)
         .map(|param_idx| {
+            // Check if this knob is in learning mode
+            let is_learning = learning_knob == Some((location, effect_idx, param_idx));
+
             let param_name = effect
                 .param_names
                 .get(param_idx)
@@ -445,7 +496,10 @@ fn fx_effect_card<'a>(
             let mapped_macro = mapping.and_then(|m| m.macro_index);
             let is_mapped = mapped_macro.is_some();
 
-            let label_color = if dragging_macro.is_some() {
+            // Learning mode takes priority for color
+            let label_color = if is_learning {
+                LEARNING_COLOR
+            } else if dragging_macro.is_some() {
                 ACCENT_COLOR
             } else if is_mapped {
                 Color::from_rgb(0.4, 0.8, 0.4)
@@ -453,22 +507,41 @@ fn fx_effect_card<'a>(
                 TEXT_SECONDARY
             };
 
-            let label_text = if let Some(macro_idx) = mapped_macro {
+            // Learning mode shows "LEARN" label
+            let label_text = if is_learning {
+                "LEARN".to_string()
+            } else if let Some(macro_idx) = mapped_macro {
                 format!("M{}", macro_idx + 1)
             } else {
                 param_name[..param_name.len().min(3)].to_string()
             };
 
-            // Build clickable label
-            let label_button: Element<'_, MultibandEditorMessage> = mouse_area(
-                text(label_text).size(13).color(label_color)
-            )
-            .on_press(MultibandEditorMessage::OpenParamPicker {
-                location,
-                effect: effect_idx,
-                knob: param_idx,
-            })
-            .into();
+            // Build clickable label - for CLAP effects, right-click (or long-press) starts learning
+            // Regular click opens param picker
+            let label_button: Element<'_, MultibandEditorMessage> = if is_learning {
+                // When learning, clicking cancels learning mode
+                mouse_area(text(label_text).size(13).color(label_color))
+                    .on_press(MultibandEditorMessage::CancelLearning)
+                    .into()
+            } else if is_clap {
+                // For CLAP effects, clicking starts learning mode
+                mouse_area(text(label_text).size(13).color(label_color))
+                    .on_press(MultibandEditorMessage::StartLearning {
+                        location,
+                        effect: effect_idx,
+                        knob: param_idx,
+                    })
+                    .into()
+            } else {
+                // For non-CLAP effects, clicking opens param picker
+                mouse_area(text(label_text).size(13).color(label_color))
+                    .on_press(MultibandEditorMessage::OpenParamPicker {
+                        location,
+                        effect: effect_idx,
+                        knob: param_idx,
+                    })
+                    .into()
+            };
 
             // Get knob from state
             let key = (location, effect_idx, param_idx);
@@ -538,7 +611,10 @@ fn effect_card<'a>(
     effect: &'a EffectUiState,
     dragging_macro: Option<usize>,
     effect_knobs: &'a std::collections::HashMap<super::state::EffectKnobKey, Knob>,
+    learning_knob: Option<(EffectChainLocation, usize, usize)>,
 ) -> Element<'a, MultibandEditorMessage> {
+    use super::state::EffectSourceType;
+
     let location = EffectChainLocation::Band(band_idx);
 
     let name_color = if effect.bypassed {
@@ -547,26 +623,60 @@ fn effect_card<'a>(
         TEXT_PRIMARY
     };
 
-    let header = row![
-        text(&effect.name).size(13).color(name_color),
-        Space::new().width(Length::Fill),
-        button(
-            text(if effect.bypassed { "○" } else { "●" })
-                .size(13)
-                .color(name_color)
-        )
-        .padding([1, 3])
-        .on_press(MultibandEditorMessage::ToggleEffectBypass {
-            band: band_idx,
-            effect: effect_idx,
-        }),
-        button(text("×").size(13))
+    // Check if this is a CLAP effect (can open plugin GUI)
+    let is_clap = effect.source == EffectSourceType::Clap;
+
+    // Build header with optional GUI button for CLAP effects
+    let header = if is_clap {
+        row![
+            text(&effect.name).size(13).color(name_color),
+            Space::new().width(Length::Fill),
+            // GUI button for CLAP plugins
+            button(text("GUI").size(11).color(ACCENT_COLOR))
+                .padding([1, 3])
+                .on_press(MultibandEditorMessage::OpenPluginGui {
+                    location,
+                    effect: effect_idx,
+                }),
+            button(
+                text(if effect.bypassed { "○" } else { "●" })
+                    .size(13)
+                    .color(name_color)
+            )
             .padding([1, 3])
-            .on_press(MultibandEditorMessage::RemoveEffect {
+            .on_press(MultibandEditorMessage::ToggleEffectBypass {
                 band: band_idx,
                 effect: effect_idx,
             }),
-    ]
+            button(text("×").size(13))
+                .padding([1, 3])
+                .on_press(MultibandEditorMessage::RemoveEffect {
+                    band: band_idx,
+                    effect: effect_idx,
+                }),
+        ]
+    } else {
+        row![
+            text(&effect.name).size(13).color(name_color),
+            Space::new().width(Length::Fill),
+            button(
+                text(if effect.bypassed { "○" } else { "●" })
+                    .size(13)
+                    .color(name_color)
+            )
+            .padding([1, 3])
+            .on_press(MultibandEditorMessage::ToggleEffectBypass {
+                band: band_idx,
+                effect: effect_idx,
+            }),
+            button(text("×").size(13))
+                .padding([1, 3])
+                .on_press(MultibandEditorMessage::RemoveEffect {
+                    band: band_idx,
+                    effect: effect_idx,
+                }),
+        ]
+    }
     .spacing(2)
     .align_y(Alignment::Center);
 
@@ -574,6 +684,9 @@ fn effect_card<'a>(
     let param_count = effect.param_values.len().min(8);
     let param_knobs: Vec<Element<'_, MultibandEditorMessage>> = (0..param_count)
         .map(|param_idx| {
+            // Check if this knob is in learning mode
+            let is_learning = learning_knob == Some((location, effect_idx, param_idx));
+
             let param_name = effect
                 .param_names
                 .get(param_idx)
@@ -584,7 +697,10 @@ fn effect_card<'a>(
             let mapped_macro = mapping.and_then(|m| m.macro_index);
             let is_mapped = mapped_macro.is_some();
 
-            let label_color = if dragging_macro.is_some() {
+            // Learning mode takes priority for color
+            let label_color = if is_learning {
+                LEARNING_COLOR
+            } else if dragging_macro.is_some() {
                 ACCENT_COLOR
             } else if is_mapped {
                 Color::from_rgb(0.4, 0.8, 0.4)
@@ -592,7 +708,10 @@ fn effect_card<'a>(
                 TEXT_SECONDARY
             };
 
-            let label_text = if let Some(macro_idx) = mapped_macro {
+            // Learning mode shows "LEARN" label
+            let label_text = if is_learning {
+                "LEARN".to_string()
+            } else if let Some(macro_idx) = mapped_macro {
                 format!("M{}", macro_idx + 1)
             } else {
                 param_name[..param_name.len().min(3)].to_string()
@@ -612,16 +731,31 @@ fn effect_card<'a>(
                     Space::new().width(40.0).height(40.0).into()
                 };
 
-            // Build label as clickable button to open param picker
-            let label_button: Element<'_, MultibandEditorMessage> = mouse_area(
-                text(label_text).size(13).color(label_color)
-            )
-            .on_press(MultibandEditorMessage::OpenParamPicker {
-                location,
-                effect: effect_idx,
-                knob: param_idx,
-            })
-            .into();
+            // Build clickable label - for CLAP effects, clicking starts learning mode
+            let label_button: Element<'_, MultibandEditorMessage> = if is_learning {
+                // When learning, clicking cancels learning mode
+                mouse_area(text(label_text).size(13).color(label_color))
+                    .on_press(MultibandEditorMessage::CancelLearning)
+                    .into()
+            } else if is_clap {
+                // For CLAP effects, clicking starts learning mode
+                mouse_area(text(label_text).size(13).color(label_color))
+                    .on_press(MultibandEditorMessage::StartLearning {
+                        location,
+                        effect: effect_idx,
+                        knob: param_idx,
+                    })
+                    .into()
+            } else {
+                // For non-CLAP effects, clicking opens param picker
+                mouse_area(text(label_text).size(13).color(label_color))
+                    .on_press(MultibandEditorMessage::OpenParamPicker {
+                        location,
+                        effect: effect_idx,
+                        knob: param_idx,
+                    })
+                    .into()
+            };
 
             // Wrap in mouse_area for macro drop target when dragging
             let knob_with_label: Element<'_, MultibandEditorMessage> =
