@@ -394,22 +394,38 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                 KnobEvent::Moved(_) => {}
             }
 
+            // Look up the actual parameter index from knob_assignments
+            // (param is the knob slot 0-7, but the actual param could be different after learning)
+            let actual_param_index = {
+                let effect_state = match location {
+                    EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get(effect),
+                    EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
+                        .get(band_idx)
+                        .and_then(|b| b.effects.get(effect)),
+                    EffectChainLocation::PostFx => app.multiband_editor.post_fx.get(effect),
+                };
+                effect_state
+                    .and_then(|e| e.knob_assignments.get(param))
+                    .and_then(|a| a.param_index)
+                    .unwrap_or(param) // Fallback to knob slot if no assignment
+            };
+
             // Get the knob and handle the event
             let knob = app.multiband_editor.get_effect_knob(location, effect, param);
             if let Some(new_value) = knob.handle_event(event, DEFAULT_SENSITIVITY) {
                 // Update local state
                 app.multiband_editor.set_effect_param_value(location, effect, param, new_value);
 
-                // Send to backend based on location
+                // Send to backend using the actual parameter index (not the knob slot)
                 match location {
                     EffectChainLocation::PreFx => {
-                        app.domain.set_pre_fx_param(deck, stem, effect, param, new_value);
+                        app.domain.set_pre_fx_param(deck, stem, effect, actual_param_index, new_value);
                     }
                     EffectChainLocation::Band(band_idx) => {
-                        app.domain.set_band_effect_param(deck, stem, band_idx, effect, param, new_value);
+                        app.domain.set_band_effect_param(deck, stem, band_idx, effect, actual_param_index, new_value);
                     }
                     EffectChainLocation::PostFx => {
-                        app.domain.set_post_fx_param(deck, stem, effect, param, new_value);
+                        app.domain.set_post_fx_param(deck, stem, effect, actual_param_index, new_value);
                     }
                 }
             }

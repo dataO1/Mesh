@@ -51,6 +51,15 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   - `test-gain/` — Simple gain utility for testing
   - `rave-percussion/` — Neural audio synthesis via nn~ external
 
+- **CLAP parameter learning** — Click the label under any effect knob to enter
+  learning mode, then adjust a parameter in the plugin's native GUI. The knob
+  is automatically assigned to control that parameter. Works with any of the
+  plugin's parameters, not just the first 8.
+
+- **Macro-to-parameter mapping** — Drag any of the 8 macro knobs onto an effect
+  parameter knob to create a mapping. Macro knobs can control parameters across
+  pre-fx, band, and post-fx effect chains.
+
 ### Changed
 
 - **Unified effects directory** — Each effect type has its own subfolder:
@@ -62,37 +71,6 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 - **Improved CLAP discovery logging** — Better error messages when plugins fail
   to load due to missing dependencies, with actionable guidance.
-
-### Fixed
-
-- **WGSL shader validation** — Fixed GPU knob rendering crash caused by invalid
-  `@location` attribute on non-entry-point function.
-
-- **Macro knob clipping** — Leftmost macro knob no longer clips at the edge.
-
-- **Pre-FX/Post-FX effect routing** — Effects added to pre-fx or post-fx chains
-  now correctly appear in the UI.
-
-- **Effect knob initialization** — Knobs now appear immediately when adding
-  effects, without requiring modal reopen.
-
-- **CLAP parameter learning when audio not playing** — Parameter learning now
-  works even when audio is stopped. Previously, GUI parameter changes weren't
-  detected because LSP plugins only output `ParamValueEvent` during audio
-  processing. Fixed by processing silent audio buffers during learning mode to
-  trigger plugin synchronization.
-
-- **Knob label not updating after parameter learning** — After learning a CLAP
-  parameter, the knob button label now correctly updates to show the learned
-  parameter name (e.g., "Temperature", "Pre-delay") instead of remaining blank.
-
-- **Macro knob drag-and-drop mapping** — Multiple fixes:
-  - Changed drop target from `on_press` to `on_release` (press happens on drag
-    source, release on drop target)
-  - Added `EffectChainLocation` to messages for proper pre-fx/post-fx support
-  - Added drop targets to pre-fx/post-fx effect cards (previously only band effects)
-  - Clear stale param events when starting learning mode (prevents immediate
-    re-learning after completing a previous learn)
 
 ### Known Limitations
 
