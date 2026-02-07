@@ -81,6 +81,7 @@ fn create_effect_state_from_info(
         category: effect_info.category.clone(),
         source,
         bypassed: false,
+        gui_open: false,
         available_params,
         knob_assignments,
         param_names,

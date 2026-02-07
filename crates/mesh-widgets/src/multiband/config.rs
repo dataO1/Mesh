@@ -223,6 +223,7 @@ impl EffectPresetConfig {
             category: self.category.clone(),
             source,
             bypassed: self.bypassed,
+            gui_open: false,
             available_params,
             knob_assignments,
             param_names: self.param_names.clone(),

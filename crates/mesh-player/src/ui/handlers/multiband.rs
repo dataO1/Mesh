@@ -61,6 +61,7 @@ fn create_effect_state_from_info(
         category: effect_info.category.clone(),
         source,
         bypassed: false,
+        gui_open: false,
         available_params,
         knob_assignments,
         param_names,
@@ -872,57 +873,72 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             let deck = app.multiband_editor.deck;
             let stem = Stem::ALL[app.multiband_editor.stem];
 
-            // Get the effect state and plugin ID
-            let effect_state = match location {
-                EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get(effect),
-                EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
-                    .get(band_idx)
-                    .and_then(|b| b.effects.get(effect)),
-                EffectChainLocation::PostFx => app.multiband_editor.post_fx.get(effect),
+            // Get effect info (immutably first for safety checks)
+            let (plugin_id, source, effect_instance_id) = {
+                let effect_state = match location {
+                    EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get(effect),
+                    EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
+                        .get(band_idx)
+                        .and_then(|b| b.effects.get(effect)),
+                    EffectChainLocation::PostFx => app.multiband_editor.post_fx.get(effect),
+                };
+                match effect_state {
+                    Some(e) => {
+                        let effect_instance_id = match location {
+                            EffectChainLocation::PreFx => {
+                                crate::domain::MeshDomain::make_pre_fx_effect_id(&e.id, deck, stem)
+                            }
+                            EffectChainLocation::Band(band_idx) => {
+                                crate::domain::MeshDomain::make_band_effect_id(&e.id, deck, stem, band_idx)
+                            }
+                            EffectChainLocation::PostFx => {
+                                crate::domain::MeshDomain::make_post_fx_effect_id(&e.id, deck, stem)
+                            }
+                        };
+                        (e.id.clone(), e.source, effect_instance_id)
+                    }
+                    None => return Task::none(),
+                }
             };
 
-            if let Some(effect_state) = effect_state {
-                if effect_state.source != EffectSourceType::Clap {
-                    log::warn!("Cannot open plugin GUI for non-CLAP effect: {}", effect_state.source);
+            if source != EffectSourceType::Clap {
+                log::warn!("Cannot open plugin GUI for non-CLAP effect: {}", source);
+                return Task::none();
+            }
+
+            // Get GUI handle from domain and create/show
+            if let Some(gui_handle) = app.domain.get_clap_gui_handle(&effect_instance_id) {
+                if !gui_handle.supports_gui() {
+                    log::warn!("Plugin '{}' does not support GUI", plugin_id);
                     return Task::none();
                 }
 
-                // Generate effect instance ID to look up GUI handle
-                let effect_instance_id = match location {
-                    EffectChainLocation::PreFx => {
-                        crate::domain::MeshDomain::make_pre_fx_effect_id(&effect_state.id, deck, stem)
-                    }
-                    EffectChainLocation::Band(band_idx) => {
-                        crate::domain::MeshDomain::make_band_effect_id(&effect_state.id, deck, stem, band_idx)
-                    }
-                    EffectChainLocation::PostFx => {
-                        crate::domain::MeshDomain::make_post_fx_effect_id(&effect_state.id, deck, stem)
-                    }
-                };
-
-                // Get GUI handle from domain
-                if let Some(gui_handle) = app.domain.get_clap_gui_handle(&effect_instance_id) {
-                    if !gui_handle.supports_gui() {
-                        log::warn!("Plugin '{}' does not support GUI", effect_state.id);
-                        return Task::none();
-                    }
-
-                    // Create and show floating GUI window
-                    match gui_handle.create_gui(true) {
-                        Ok(()) => {
-                            if let Err(e) = gui_handle.show_gui() {
-                                log::error!("Failed to show plugin GUI: {}", e);
-                            } else {
-                                log::info!("Opened plugin GUI for '{}'", effect_state.id);
+                // Create and show floating GUI window
+                match gui_handle.create_gui(true) {
+                    Ok(()) => {
+                        if let Err(e) = gui_handle.show_gui() {
+                            log::error!("Failed to show plugin GUI: {}", e);
+                        } else {
+                            log::info!("Opened plugin GUI for '{}'", plugin_id);
+                            // Update UI state to track that GUI is open
+                            let effect_state = match location {
+                                EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get_mut(effect),
+                                EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
+                                    .get_mut(band_idx)
+                                    .and_then(|b| b.effects.get_mut(effect)),
+                                EffectChainLocation::PostFx => app.multiband_editor.post_fx.get_mut(effect),
+                            };
+                            if let Some(e) = effect_state {
+                                e.gui_open = true;
                             }
                         }
-                        Err(e) => {
-                            log::error!("Failed to create plugin GUI: {}", e);
-                        }
                     }
-                } else {
-                    log::warn!("No GUI handle found for effect instance '{}'", effect_instance_id);
+                    Err(e) => {
+                        log::error!("Failed to create plugin GUI: {}", e);
+                    }
                 }
+            } else {
+                log::warn!("No GUI handle found for effect instance '{}'", effect_instance_id);
             }
 
             Task::none()
@@ -934,33 +950,45 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             let deck = app.multiband_editor.deck;
             let stem = Stem::ALL[app.multiband_editor.stem];
 
-            // Get the effect state
-            let effect_state = match location {
-                EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get(effect),
-                EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
-                    .get(band_idx)
-                    .and_then(|b| b.effects.get(effect)),
-                EffectChainLocation::PostFx => app.multiband_editor.post_fx.get(effect),
-            };
-
-            if let Some(effect_state) = effect_state {
-                // Generate effect instance ID
-                let effect_instance_id = match location {
+            // Get effect info and instance ID
+            let effect_instance_id = {
+                let effect_state = match location {
+                    EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get(effect),
+                    EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
+                        .get(band_idx)
+                        .and_then(|b| b.effects.get(effect)),
+                    EffectChainLocation::PostFx => app.multiband_editor.post_fx.get(effect),
+                };
+                effect_state.map(|e| match location {
                     EffectChainLocation::PreFx => {
-                        crate::domain::MeshDomain::make_pre_fx_effect_id(&effect_state.id, deck, stem)
+                        crate::domain::MeshDomain::make_pre_fx_effect_id(&e.id, deck, stem)
                     }
                     EffectChainLocation::Band(band_idx) => {
-                        crate::domain::MeshDomain::make_band_effect_id(&effect_state.id, deck, stem, band_idx)
+                        crate::domain::MeshDomain::make_band_effect_id(&e.id, deck, stem, band_idx)
                     }
                     EffectChainLocation::PostFx => {
-                        crate::domain::MeshDomain::make_post_fx_effect_id(&effect_state.id, deck, stem)
+                        crate::domain::MeshDomain::make_post_fx_effect_id(&e.id, deck, stem)
                     }
-                };
+                })
+            };
 
+            if let Some(effect_instance_id) = effect_instance_id {
                 // Get GUI handle and destroy the GUI
                 if let Some(gui_handle) = app.domain.get_clap_gui_handle(&effect_instance_id) {
                     gui_handle.destroy_gui();
-                    log::info!("Closed plugin GUI for '{}'", effect_state.id);
+                    log::info!("Closed plugin GUI");
+                }
+
+                // Update UI state
+                let effect_state = match location {
+                    EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get_mut(effect),
+                    EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
+                        .get_mut(band_idx)
+                        .and_then(|b| b.effects.get_mut(effect)),
+                    EffectChainLocation::PostFx => app.multiband_editor.post_fx.get_mut(effect),
+                };
+                if let Some(e) = effect_state {
+                    e.gui_open = false;
                 }
             }
 
@@ -1071,7 +1099,44 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             // Clear learning mode in UI
             app.multiband_editor.cancel_learning();
 
-            // Find the effect and update the knob assignment
+            let deck = app.multiband_editor.deck;
+            let stem = Stem::ALL[app.multiband_editor.stem];
+
+            // Get the effect state (immutable first to get plugin ID)
+            let plugin_id = {
+                let effect_state = match location {
+                    EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get(effect),
+                    EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
+                        .get(band_idx)
+                        .and_then(|b| b.effects.get(effect)),
+                    EffectChainLocation::PostFx => app.multiband_editor.post_fx.get(effect),
+                };
+                effect_state.map(|e| e.id.clone())
+            };
+
+            // Look up the correct param_index using the GUI handle's param_ids
+            // This is more reliable than matching by name
+            let param_index = if let Some(ref plugin_id) = plugin_id {
+                let effect_instance_id = match location {
+                    EffectChainLocation::PreFx => {
+                        crate::domain::MeshDomain::make_pre_fx_effect_id(plugin_id, deck, stem)
+                    }
+                    EffectChainLocation::Band(band_idx) => {
+                        crate::domain::MeshDomain::make_band_effect_id(plugin_id, deck, stem, band_idx)
+                    }
+                    EffectChainLocation::PostFx => {
+                        crate::domain::MeshDomain::make_post_fx_effect_id(plugin_id, deck, stem)
+                    }
+                };
+
+                // Find index by param_id in the GUI handle's param_ids list
+                app.domain.get_clap_gui_handle(&effect_instance_id)
+                    .and_then(|h| h.param_ids.iter().position(|&id| id == param_id))
+            } else {
+                None
+            };
+
+            // Get effect state mutably for update
             let effect_state = match location {
                 EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get_mut(effect),
                 EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
@@ -1081,22 +1146,14 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             };
 
             if let Some(effect_state) = effect_state {
-                // Find or add the param in available_params
-                let param_index = effect_state.available_params
-                    .iter()
-                    .position(|p| p.name == param_name)
-                    .unwrap_or_else(|| {
-                        // Add new param if not found
-                        let new_param = AvailableParam {
-                            name: param_name.clone(),
-                            min: 0.0,
-                            max: 1.0,
-                            default: 0.5,
-                            unit: String::new(),
-                        };
-                        effect_state.available_params.push(new_param);
-                        effect_state.available_params.len() - 1
-                    });
+                // Use the param_index from GUI handle, or fall back to name search
+                let param_index = param_index.unwrap_or_else(|| {
+                    log::warn!("Could not find param_id {} in GUI handle, falling back to name search", param_id);
+                    effect_state.available_params
+                        .iter()
+                        .position(|p| p.name == param_name)
+                        .unwrap_or(knob) // Last resort: use knob slot
+                });
 
                 // Assign to the knob
                 if let Some(assignment) = effect_state.knob_assignments.get_mut(knob) {

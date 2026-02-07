@@ -124,6 +124,9 @@ pub struct EffectUiState {
     pub source: EffectSourceType,
     /// Whether the effect is bypassed
     pub bypassed: bool,
+    /// Whether the plugin GUI window is open (CLAP only, not serialized)
+    #[serde(skip)]
+    pub gui_open: bool,
 
     /// All available parameters from the effect (can be 100+ for CLAP plugins)
     pub available_params: Vec<AvailableParam>,
@@ -177,6 +180,7 @@ impl EffectUiState {
             category: info.category.clone(),
             source,
             bypassed: info.bypassed,
+            gui_open: false,
             available_params,
             knob_assignments,
             // Legacy fields for backwards compat
@@ -213,6 +217,7 @@ impl EffectUiState {
             category,
             source,
             bypassed: false,
+            gui_open: false,
             available_params,
             knob_assignments,
             param_names,

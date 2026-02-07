@@ -423,16 +423,22 @@ fn fx_effect_card<'a>(
 
     // Build header with optional GUI button for CLAP effects
     let header = if is_clap {
+        // GUI button toggles open/close
+        let gui_button_text = if effect.gui_open { "✕ GUI" } else { "GUI" };
+        let gui_button_color = if effect.gui_open { Color::from_rgb(0.9, 0.5, 0.5) } else { ACCENT_COLOR };
+        let gui_message = if effect.gui_open {
+            MultibandEditorMessage::ClosePluginGui { location, effect: effect_idx }
+        } else {
+            MultibandEditorMessage::OpenPluginGui { location, effect: effect_idx }
+        };
+
         row![
             text(&effect.name).size(20).color(name_color),
             Space::new().width(Length::Fill),
-            // GUI button for CLAP plugins
-            button(text("GUI").size(11).color(ACCENT_COLOR))
+            // GUI button for CLAP plugins (toggles open/close)
+            button(text(gui_button_text).size(11).color(gui_button_color))
                 .padding([1, 3])
-                .on_press(MultibandEditorMessage::OpenPluginGui {
-                    location,
-                    effect: effect_idx,
-                }),
+                .on_press(gui_message),
             button(
                 text(if effect.bypassed { "○" } else { "●" })
                     .size(13)
@@ -652,16 +658,22 @@ fn effect_card<'a>(
 
     // Build header with optional GUI button for CLAP effects
     let header = if is_clap {
+        // GUI button toggles open/close
+        let gui_button_text = if effect.gui_open { "✕ GUI" } else { "GUI" };
+        let gui_button_color = if effect.gui_open { Color::from_rgb(0.9, 0.5, 0.5) } else { ACCENT_COLOR };
+        let gui_message = if effect.gui_open {
+            MultibandEditorMessage::ClosePluginGui { location, effect: effect_idx }
+        } else {
+            MultibandEditorMessage::OpenPluginGui { location, effect: effect_idx }
+        };
+
         row![
             text(&effect.name).size(13).color(name_color),
             Space::new().width(Length::Fill),
-            // GUI button for CLAP plugins
-            button(text("GUI").size(11).color(ACCENT_COLOR))
+            // GUI button for CLAP plugins (toggles open/close)
+            button(text(gui_button_text).size(11).color(gui_button_color))
                 .padding([1, 3])
-                .on_press(MultibandEditorMessage::OpenPluginGui {
-                    location,
-                    effect: effect_idx,
-                }),
+                .on_press(gui_message),
             button(
                 text(if effect.bypassed { "○" } else { "●" })
                     .size(13)
