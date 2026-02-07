@@ -765,7 +765,7 @@ fn effect_card<'a>(
                             .spacing(1)
                             .align_x(Alignment::Center),
                     )
-                    .on_press(MultibandEditorMessage::DropMacroOnParam {
+                    .on_release(MultibandEditorMessage::DropMacroOnParam {
                         macro_index: macro_idx,
                         band: band_idx,
                         effect: effect_idx,
