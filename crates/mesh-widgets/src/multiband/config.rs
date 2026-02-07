@@ -239,18 +239,15 @@ impl EffectPresetConfig {
 pub struct ParamMappingConfig {
     /// Which macro (0-7) controls this param, None if unmapped
     pub macro_index: Option<usize>,
-    /// Min value when macro is at 0
-    pub min_value: f32,
-    /// Max value when macro is at 1
-    pub max_value: f32,
+    /// Offset range: how much the macro can offset from base value (±range)
+    pub offset_range: f32,
 }
 
 impl Default for ParamMappingConfig {
     fn default() -> Self {
         Self {
             macro_index: None,
-            min_value: 0.0,
-            max_value: 1.0,
+            offset_range: 0.25, // Default ±25% range
         }
     }
 }
@@ -259,16 +256,14 @@ impl ParamMappingConfig {
     fn from_mapping(mapping: &ParamMacroMapping) -> Self {
         Self {
             macro_index: mapping.macro_index,
-            min_value: mapping.min_value,
-            max_value: mapping.max_value,
+            offset_range: mapping.offset_range,
         }
     }
 
     fn to_mapping(&self) -> ParamMacroMapping {
         ParamMacroMapping {
             macro_index: self.macro_index,
-            min_value: self.min_value,
-            max_value: self.max_value,
+            offset_range: self.offset_range,
         }
     }
 }

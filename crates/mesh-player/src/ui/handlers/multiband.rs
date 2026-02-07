@@ -414,19 +414,61 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             // Get the knob and handle the event
             let knob = app.multiband_editor.get_effect_knob(location, effect, param);
             if let Some(new_value) = knob.handle_event(event, DEFAULT_SENSITIVITY) {
-                // Update local state
+                // Update local state (base value)
                 app.multiband_editor.set_effect_param_value(location, effect, param, new_value);
+
+                // Check if this knob has a macro mapping
+                let macro_mapping = {
+                    let effect_state = match location {
+                        EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get(effect),
+                        EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
+                            .get(band_idx)
+                            .and_then(|b| b.effects.get(effect)),
+                        EffectChainLocation::PostFx => app.multiband_editor.post_fx.get(effect),
+                    };
+                    effect_state
+                        .and_then(|e| e.knob_assignments.get(param))
+                        .and_then(|a| a.macro_mapping.clone())
+                };
+
+                // Calculate the value to send (apply modulation if mapped)
+                let value_to_send = if let Some(ref mapping) = macro_mapping {
+                    if let Some(macro_idx) = mapping.macro_index {
+                        // Get current macro value
+                        let macro_value = app.multiband_editor.macro_value(macro_idx);
+                        // Apply modulation
+                        mapping.modulate(new_value, macro_value)
+                    } else {
+                        new_value
+                    }
+                } else {
+                    new_value
+                };
+
+                // Update modulation bounds visualization if mapped
+                if let Some(mapping) = macro_mapping {
+                    use mesh_widgets::knob::ModulationRange;
+                    let key = (location, effect, param);
+                    if let Some(knob) = app.multiband_editor.effect_knobs.get_mut(&key) {
+                        let (min, max) = mapping.modulation_bounds(new_value);
+                        knob.set_modulations(vec![ModulationRange::new(
+                            min,
+                            max,
+                            iced::Color::from_rgb(0.9, 0.6, 0.2),
+                        )]);
+                    }
+                }
 
                 // Send to backend using the actual parameter index (not the knob slot)
                 match location {
                     EffectChainLocation::PreFx => {
-                        app.domain.set_pre_fx_param(deck, stem, effect, actual_param_index, new_value);
+                        app.domain.set_pre_fx_param(deck, stem, effect, actual_param_index, value_to_send);
                     }
                     EffectChainLocation::Band(band_idx) => {
-                        app.domain.set_band_effect_param(deck, stem, band_idx, effect, actual_param_index, new_value);
+                        app.domain.set_band_effect_param(deck, stem, band_idx, effect, actual_param_index, value_to_send);
                     }
                     EffectChainLocation::PostFx => {
-                        app.domain.set_post_fx_param(deck, stem, effect, actual_param_index, new_value);
+                        app.domain.set_post_fx_param(deck, stem, effect, actual_param_index, value_to_send);
                     }
                 }
             }
@@ -540,13 +582,16 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                         app.deck_views[deck].set_stem_knob(stem_idx, index, new_value);
                     }
 
-                    // Send to engine
+                    // Send macro value to engine (for any engine-side processing)
                     app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandMacro {
                         deck,
                         stem,
                         macro_index: index,
                         value: new_value,
                     });
+
+                    // Apply modulation to all parameters mapped to this macro
+                    apply_macro_modulation(app, index, new_value);
                 }
             }
             Task::none()
@@ -568,7 +613,24 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         }
 
         DropMacroOnParam { macro_index, location, effect, param } => {
-            // Get effect state based on location
+            use mesh_widgets::knob::ModulationRange;
+
+            // Get base value first (immutable borrow)
+            let base_value = {
+                let effect_state = match location {
+                    EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get(effect),
+                    EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
+                        .get(band_idx)
+                        .and_then(|b| b.effects.get(effect)),
+                    EffectChainLocation::PostFx => app.multiband_editor.post_fx.get(effect),
+                };
+                effect_state
+                    .and_then(|e| e.knob_assignments.get(param))
+                    .map(|a| a.value)
+                    .unwrap_or(0.5)
+            };
+
+            // Get effect state based on location (mutable)
             let effect_state = match location {
                 EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get_mut(effect),
                 EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
@@ -577,11 +639,30 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                 EffectChainLocation::PostFx => app.multiband_editor.post_fx.get_mut(effect),
             };
 
-            // Update UI state - set the mapping on the effect's param
+            let offset_range = 0.25; // ±25% default range
+
+            // Update UI state - set the mapping on both structures
             if let Some(effect_state) = effect_state {
+                // Set on knob_assignments (primary storage for new mappings)
+                if let Some(assignment) = effect_state.knob_assignments.get_mut(param) {
+                    assignment.macro_mapping = Some(ParamMacroMapping::new(macro_index, offset_range));
+                }
+                // Also set on param_mappings for legacy compatibility
                 if let Some(mapping) = effect_state.param_mappings.get_mut(param) {
                     mapping.macro_index = Some(macro_index);
+                    mapping.offset_range = offset_range;
                 }
+            }
+
+            // Update knob visualization with modulation range
+            let key = (location, effect, param);
+            if let Some(knob) = app.multiband_editor.effect_knobs.get_mut(&key) {
+                let (min, max) = ParamMacroMapping::new(macro_index, offset_range).modulation_bounds(base_value);
+                knob.set_modulations(vec![ModulationRange::new(
+                    min,
+                    max,
+                    iced::Color::from_rgb(0.9, 0.6, 0.2), // Orange for modulation
+                )]);
             }
 
             // Update macro's mapping count
@@ -592,7 +673,7 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             // Clear drag state
             app.multiband_editor.dragging_macro = None;
 
-            log::info!("Mapped macro {} to {:?} effect {} param {}", macro_index, location, effect, param);
+            log::info!("Mapped macro {} to {:?} effect {} param {} with ±{:.0}% range", macro_index, location, effect, param, offset_range * 100.0);
             Task::none()
         }
 
@@ -608,15 +689,29 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
 
             // Get the macro that was mapped and decrement its count
             if let Some(effect_state) = effect_state {
-                if let Some(mapping) = effect_state.param_mappings.get_mut(param) {
-                    if let Some(old_macro) = mapping.macro_index {
-                        if let Some(macro_state) = app.multiband_editor.macros.get_mut(old_macro) {
-                            macro_state.mapping_count = macro_state.mapping_count.saturating_sub(1);
+                // Clear from knob_assignments
+                if let Some(assignment) = effect_state.knob_assignments.get_mut(param) {
+                    if let Some(ref mapping) = assignment.macro_mapping {
+                        if let Some(old_macro) = mapping.macro_index {
+                            if let Some(macro_state) = app.multiband_editor.macros.get_mut(old_macro) {
+                                macro_state.mapping_count = macro_state.mapping_count.saturating_sub(1);
+                            }
                         }
                     }
+                    assignment.macro_mapping = None;
+                }
+                // Clear from param_mappings (legacy)
+                if let Some(mapping) = effect_state.param_mappings.get_mut(param) {
                     mapping.macro_index = None;
                 }
             }
+
+            // Clear knob modulation visualization
+            let key = (location, effect, param);
+            if let Some(knob) = app.multiband_editor.effect_knobs.get_mut(&key) {
+                knob.clear_modulations();
+            }
+
             Task::none()
         }
 
@@ -841,20 +936,60 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                         .unwrap_or(param) // Fallback to knob slot if no assignment
                 };
 
+                // Get macro mapping info before mutable borrow
+                let macro_mapping = {
+                    let effect_state = match location {
+                        EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get(effect),
+                        EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
+                            .get(band_idx)
+                            .and_then(|b| b.effects.get(effect)),
+                        EffectChainLocation::PostFx => app.multiband_editor.post_fx.get(effect),
+                    };
+                    effect_state
+                        .and_then(|e| e.knob_assignments.get(param))
+                        .and_then(|a| a.macro_mapping.clone())
+                };
+
                 let knob = app.multiband_editor.get_effect_knob(location, effect, param);
                 if let Some(new_value) = knob.handle_event(KnobEvent::Moved(position), DEFAULT_SENSITIVITY) {
                     app.multiband_editor.set_effect_param_value(location, effect, param, new_value);
 
+                    // Calculate the value to send (apply modulation if mapped)
+                    let value_to_send = if let Some(ref mapping) = macro_mapping {
+                        if let Some(macro_idx) = mapping.macro_index {
+                            let macro_value = app.multiband_editor.macro_value(macro_idx);
+                            mapping.modulate(new_value, macro_value)
+                        } else {
+                            new_value
+                        }
+                    } else {
+                        new_value
+                    };
+
+                    // Update modulation bounds visualization if mapped
+                    if let Some(mapping) = macro_mapping {
+                        use mesh_widgets::knob::ModulationRange;
+                        let key = (location, effect, param);
+                        if let Some(knob) = app.multiband_editor.effect_knobs.get_mut(&key) {
+                            let (min, max) = mapping.modulation_bounds(new_value);
+                            knob.set_modulations(vec![ModulationRange::new(
+                                min,
+                                max,
+                                iced::Color::from_rgb(0.9, 0.6, 0.2),
+                            )]);
+                        }
+                    }
+
                     // Send to backend using the actual parameter index (not the knob slot)
                     match location {
                         EffectChainLocation::PreFx => {
-                            app.domain.set_pre_fx_param(deck, stem, effect, actual_param_index, new_value);
+                            app.domain.set_pre_fx_param(deck, stem, effect, actual_param_index, value_to_send);
                         }
                         EffectChainLocation::Band(band_idx) => {
-                            app.domain.set_band_effect_param(deck, stem, band_idx, effect, actual_param_index, new_value);
+                            app.domain.set_band_effect_param(deck, stem, band_idx, effect, actual_param_index, value_to_send);
                         }
                         EffectChainLocation::PostFx => {
-                            app.domain.set_post_fx_param(deck, stem, effect, actual_param_index, new_value);
+                            app.domain.set_post_fx_param(deck, stem, effect, actual_param_index, value_to_send);
                         }
                     }
                 }
@@ -874,6 +1009,9 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                             macro_index: index,
                             value: new_value,
                         });
+
+                        // Apply modulation to all mapped parameters
+                        apply_macro_modulation(app, index, new_value);
                     }
                 }
             }
@@ -1334,4 +1472,104 @@ pub fn handle_plugin_gui_tick(app: &mut MeshApp) -> Task<Message> {
     }
 
     Task::none()
+}
+
+/// Apply macro modulation to all parameters mapped to this macro
+///
+/// When a macro value changes, this function finds all parameters that are
+/// mapped to that macro and sends updated (modulated) values to the backend.
+///
+/// The modulation formula is:
+/// actual_value = base_value + (macro_value * 2 - 1) * offset_range
+///
+/// This creates bipolar modulation where macro=50% is neutral.
+fn apply_macro_modulation(app: &mut MeshApp, macro_index: usize, macro_value: f32) {
+    use mesh_core::types::Stem;
+
+    let deck = app.multiband_editor.deck;
+    let stem = Stem::ALL[app.multiband_editor.stem];
+
+    // Helper to process an effect's mappings
+    let process_effect = |effect: &multiband::EffectUiState,
+                          effect_idx: usize,
+                          location: EffectChainLocation,
+                          domain: &mut crate::domain::MeshDomain| {
+        for (knob_idx, assignment) in effect.knob_assignments.iter().enumerate() {
+            // Check if this knob is mapped to our macro
+            if let Some(ref mapping) = assignment.macro_mapping {
+                if mapping.macro_index == Some(macro_index) {
+                    // Get the actual parameter index for this knob
+                    if let Some(param_index) = assignment.param_index {
+                        // Calculate modulated value
+                        let base_value = assignment.value;
+                        let modulated_value = mapping.modulate(base_value, macro_value);
+
+                        // Send to backend
+                        match location {
+                            EffectChainLocation::PreFx => {
+                                domain.set_pre_fx_param(deck, stem, effect_idx, param_index, modulated_value);
+                            }
+                            EffectChainLocation::Band(band_idx) => {
+                                domain.set_band_effect_param(deck, stem, band_idx, effect_idx, param_index, modulated_value);
+                            }
+                            EffectChainLocation::PostFx => {
+                                domain.set_post_fx_param(deck, stem, effect_idx, param_index, modulated_value);
+                            }
+                        }
+
+                        log::trace!(
+                            "Macro {} modulation: {:?} effect {} knob {} -> param {}: base={:.2} + offset={:.2} = {:.2}",
+                            macro_index,
+                            location,
+                            effect_idx,
+                            knob_idx,
+                            param_index,
+                            base_value,
+                            (macro_value * 2.0 - 1.0) * mapping.offset_range,
+                            modulated_value
+                        );
+                    }
+                }
+            }
+
+            // Also check legacy param_mappings for backwards compatibility
+            if let Some(mapping) = effect.param_mappings.get(knob_idx) {
+                if mapping.macro_index == Some(macro_index) {
+                    if let Some(param_index) = assignment.param_index {
+                        let base_value = assignment.value;
+                        let modulated_value = mapping.modulate(base_value, macro_value);
+
+                        match location {
+                            EffectChainLocation::PreFx => {
+                                domain.set_pre_fx_param(deck, stem, effect_idx, param_index, modulated_value);
+                            }
+                            EffectChainLocation::Band(band_idx) => {
+                                domain.set_band_effect_param(deck, stem, band_idx, effect_idx, param_index, modulated_value);
+                            }
+                            EffectChainLocation::PostFx => {
+                                domain.set_post_fx_param(deck, stem, effect_idx, param_index, modulated_value);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    // Process Pre-FX effects
+    for (effect_idx, effect) in app.multiband_editor.pre_fx.iter().enumerate() {
+        process_effect(effect, effect_idx, EffectChainLocation::PreFx, &mut app.domain);
+    }
+
+    // Process Band effects
+    for (band_idx, band) in app.multiband_editor.bands.iter().enumerate() {
+        for (effect_idx, effect) in band.effects.iter().enumerate() {
+            process_effect(effect, effect_idx, EffectChainLocation::Band(band_idx), &mut app.domain);
+        }
+    }
+
+    // Process Post-FX effects
+    for (effect_idx, effect) in app.multiband_editor.post_fx.iter().enumerate() {
+        process_effect(effect, effect_idx, EffectChainLocation::PostFx, &mut app.domain);
+    }
 }

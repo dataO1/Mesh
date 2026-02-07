@@ -31,23 +31,55 @@ impl std::fmt::Display for EffectSourceType {
 }
 
 /// A mapping from a macro knob to an effect parameter
+///
+/// The macro applies a bipolar offset to the parameter's base value:
+/// - Macro at 0%: actual = base - offset_range
+/// - Macro at 50%: actual = base (no change)
+/// - Macro at 100%: actual = base + offset_range
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ParamMacroMapping {
     /// Which macro (0-7) controls this param, None if unmapped
     pub macro_index: Option<usize>,
-    /// Min value when macro is at 0
-    pub min_value: f32,
-    /// Max value when macro is at 1
-    pub max_value: f32,
+    /// Offset range: how much the macro can offset from base value
+    /// E.g., 0.1 means macro can offset by ±10% (normalized)
+    pub offset_range: f32,
 }
 
 impl Default for ParamMacroMapping {
     fn default() -> Self {
         Self {
             macro_index: None,
-            min_value: 0.0,
-            max_value: 1.0,
+            offset_range: 0.25, // Default ±25% range
         }
+    }
+}
+
+impl ParamMacroMapping {
+    /// Create a new mapping with specified macro and offset range
+    pub fn new(macro_index: usize, offset_range: f32) -> Self {
+        Self {
+            macro_index: Some(macro_index),
+            offset_range,
+        }
+    }
+
+    /// Calculate the modulated value given base value and macro position
+    ///
+    /// Formula: actual = base + (macro * 2 - 1) * offset_range
+    /// - macro=0: offset = -offset_range
+    /// - macro=0.5: offset = 0
+    /// - macro=1: offset = +offset_range
+    pub fn modulate(&self, base_value: f32, macro_value: f32) -> f32 {
+        let offset = (macro_value * 2.0 - 1.0) * self.offset_range;
+        (base_value + offset).clamp(0.0, 1.0)
+    }
+
+    /// Get the modulation range bounds for visualization
+    /// Returns (min_possible, max_possible) given the base value
+    pub fn modulation_bounds(&self, base_value: f32) -> (f32, f32) {
+        let min = (base_value - self.offset_range).clamp(0.0, 1.0);
+        let max = (base_value + self.offset_range).clamp(0.0, 1.0);
+        (min, max)
     }
 }
 
