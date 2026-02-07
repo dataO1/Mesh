@@ -522,6 +522,13 @@ fn fx_effect_card<'a>(
                 param_name[..param_name.len().min(3)].to_string()
             };
 
+            // Get the current value for display (from knob_assignments)
+            let value_display = effect
+                .knob_assignments
+                .get(param_idx)
+                .map(|a| format!("{:.0}%", a.value * 100.0))
+                .unwrap_or_default();
+
             // Build clickable label - for CLAP effects, right-click (or long-press) starts learning
             // Regular click opens param picker
             let label_button: Element<'_, MultibandEditorMessage> = if is_learning {
@@ -563,11 +570,16 @@ fn fx_effect_card<'a>(
                     Space::new().width(40.0).height(40.0).into()
                 };
 
+            // Value text element (pass owned String to avoid borrow issues)
+            let value_text = text(value_display)
+                .size(10)
+                .color(TEXT_SECONDARY);
+
             // Wrap in mouse_area for macro drop target when dragging
             let knob_with_label: Element<'_, MultibandEditorMessage> =
                 if let Some(macro_idx) = dragging_macro {
                     mouse_area(
-                        column![knob_element, label_button]
+                        column![knob_element, label_button, value_text]
                             .spacing(1)
                             .align_x(Alignment::Center),
                     )
@@ -580,7 +592,7 @@ fn fx_effect_card<'a>(
                     .into()
                 } else if is_mapped {
                     mouse_area(
-                        column![knob_element, label_button]
+                        column![knob_element, label_button, value_text]
                             .spacing(1)
                             .align_x(Alignment::Center),
                     )
@@ -591,7 +603,7 @@ fn fx_effect_card<'a>(
                     })
                     .into()
                 } else {
-                    column![knob_element, label_button]
+                    column![knob_element, label_button, value_text]
                         .spacing(1)
                         .align_x(Alignment::Center)
                         .into()
@@ -753,6 +765,13 @@ fn effect_card<'a>(
                 param_name[..param_name.len().min(3)].to_string()
             };
 
+            // Get the current value for display (from knob_assignments)
+            let value_display = effect
+                .knob_assignments
+                .get(param_idx)
+                .map(|a| format!("{:.0}%", a.value * 100.0))
+                .unwrap_or_default();
+
             // Get knob from state
             let key = (location, effect_idx, param_idx);
             let knob_element: Element<'_, MultibandEditorMessage> =
@@ -793,11 +812,16 @@ fn effect_card<'a>(
                     .into()
             };
 
+            // Value text element (pass owned String to avoid borrow issues)
+            let value_text = text(value_display)
+                .size(10)
+                .color(TEXT_SECONDARY);
+
             // Wrap in mouse_area for macro drop target when dragging
             let knob_with_label: Element<'_, MultibandEditorMessage> =
                 if let Some(macro_idx) = dragging_macro {
                     mouse_area(
-                        column![knob_element, label_button]
+                        column![knob_element, label_button, value_text]
                             .spacing(1)
                             .align_x(Alignment::Center),
                     )
@@ -810,7 +834,7 @@ fn effect_card<'a>(
                     .into()
                 } else if is_mapped {
                     mouse_area(
-                        column![knob_element, label_button]
+                        column![knob_element, label_button, value_text]
                             .spacing(1)
                             .align_x(Alignment::Center),
                     )
@@ -821,7 +845,7 @@ fn effect_card<'a>(
                     })
                     .into()
                 } else {
-                    column![knob_element, label_button]
+                    column![knob_element, label_button, value_text]
                         .spacing(1)
                         .align_x(Alignment::Center)
                         .into()

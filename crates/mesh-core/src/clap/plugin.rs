@@ -451,6 +451,25 @@ impl ClapPluginWrapper {
         params
     }
 
+    /// Get the current value of a parameter by its CLAP param ID
+    ///
+    /// Returns the value in the plugin's native range (not normalized).
+    pub fn get_param_value(&mut self, param_id: u32) -> Option<f64> {
+        let instance = match self.instance.as_mut() {
+            Some(i) => i,
+            None => return None,
+        };
+
+        let params_ext = match instance.access_handler(|h| h.params_ext) {
+            Some(ext) => ext,
+            None => return None,
+        };
+
+        let mut plugin_handle = instance.plugin_handle();
+        let clap_id = ClapId::new(param_id);
+        params_ext.get_value(&mut plugin_handle, clap_id)
+    }
+
     /// Poll for parameter changes from the plugin GUI
     ///
     /// This method supports two mechanisms for detecting GUI parameter changes:

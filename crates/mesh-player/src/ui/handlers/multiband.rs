@@ -825,19 +825,36 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
 
             // Route to dragging effect knob
             if let Some((location, effect, param)) = app.multiband_editor.dragging_effect_knob {
+                // Look up the actual parameter index from knob_assignments
+                // (param is the knob slot 0-7, but the actual param could be different after learning)
+                let actual_param_index = {
+                    let effect_state = match location {
+                        EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get(effect),
+                        EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
+                            .get(band_idx)
+                            .and_then(|b| b.effects.get(effect)),
+                        EffectChainLocation::PostFx => app.multiband_editor.post_fx.get(effect),
+                    };
+                    effect_state
+                        .and_then(|e| e.knob_assignments.get(param))
+                        .and_then(|a| a.param_index)
+                        .unwrap_or(param) // Fallback to knob slot if no assignment
+                };
+
                 let knob = app.multiband_editor.get_effect_knob(location, effect, param);
                 if let Some(new_value) = knob.handle_event(KnobEvent::Moved(position), DEFAULT_SENSITIVITY) {
                     app.multiband_editor.set_effect_param_value(location, effect, param, new_value);
 
+                    // Send to backend using the actual parameter index (not the knob slot)
                     match location {
                         EffectChainLocation::PreFx => {
-                            app.domain.set_pre_fx_param(deck, stem, effect, param, new_value);
+                            app.domain.set_pre_fx_param(deck, stem, effect, actual_param_index, new_value);
                         }
                         EffectChainLocation::Band(band_idx) => {
-                            app.domain.set_band_effect_param(deck, stem, band_idx, effect, param, new_value);
+                            app.domain.set_band_effect_param(deck, stem, band_idx, effect, actual_param_index, new_value);
                         }
                         EffectChainLocation::PostFx => {
-                            app.domain.set_post_fx_param(deck, stem, effect, param, new_value);
+                            app.domain.set_post_fx_param(deck, stem, effect, actual_param_index, new_value);
                         }
                     }
                 }
@@ -1114,9 +1131,8 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                 effect_state.map(|e| e.id.clone())
             };
 
-            // Look up the correct param_index using the GUI handle's param_ids
-            // This is more reliable than matching by name
-            let param_index = if let Some(ref plugin_id) = plugin_id {
+            // Look up the correct param_index and get current value using the GUI handle
+            let (param_index, current_normalized_value) = if let Some(ref plugin_id) = plugin_id {
                 let effect_instance_id = match location {
                     EffectChainLocation::PreFx => {
                         crate::domain::MeshDomain::make_pre_fx_effect_id(plugin_id, deck, stem)
@@ -1129,11 +1145,32 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                     }
                 };
 
-                // Find index by param_id in the GUI handle's param_ids list
-                app.domain.get_clap_gui_handle(&effect_instance_id)
-                    .and_then(|h| h.param_ids.iter().position(|&id| id == param_id))
+                // Find index and current value via GUI handle
+                if let Some(gui_handle) = app.domain.get_clap_gui_handle(&effect_instance_id) {
+                    let idx = gui_handle.param_ids.iter().position(|&id| id == param_id);
+
+                    // Get the current parameter value and normalize it
+                    let normalized = if let (Some(value), Some((min, max, _default))) = (
+                        gui_handle.get_param_value(param_id),
+                        gui_handle.get_param_info(param_id),
+                    ) {
+                        // Normalize value from [min, max] to [0, 1]
+                        let range = max - min;
+                        if range > 0.0 {
+                            ((value - min) / range) as f32
+                        } else {
+                            0.5
+                        }
+                    } else {
+                        0.5 // Default if we can't get the value
+                    };
+
+                    (idx, normalized)
+                } else {
+                    (None, 0.5)
+                }
             } else {
-                None
+                (None, 0.5)
             };
 
             // Get effect state mutably for update
@@ -1155,12 +1192,13 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                         .unwrap_or(knob) // Last resort: use knob slot
                 });
 
-                // Assign to the knob
+                // Assign to the knob with the current value from the plugin
                 if let Some(assignment) = effect_state.knob_assignments.get_mut(knob) {
                     assignment.param_index = Some(param_index);
+                    assignment.value = current_normalized_value;
                     log::info!(
-                        "Assigned param '{}' (index {}) to knob {}",
-                        param_name, param_index, knob
+                        "Assigned param '{}' (index {}) to knob {} with value {:.2}",
+                        param_name, param_index, knob, current_normalized_value
                     );
                 }
 
@@ -1168,7 +1206,15 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                 if knob < effect_state.param_names.len() {
                     effect_state.param_names[knob] = param_name.clone();
                 }
+
+                // Also update param_values for the knob widget
+                if knob < effect_state.param_values.len() {
+                    effect_state.param_values[knob] = current_normalized_value;
+                }
             }
+
+            // Sync the knob widget value as well
+            app.multiband_editor.set_effect_param_value(location, effect, knob, current_normalized_value);
 
             Task::none()
         }

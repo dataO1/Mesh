@@ -568,12 +568,15 @@ impl MultibandEditorState {
 
     /// Set effect parameter value in state and sync to knob
     pub fn set_effect_param_value(&mut self, location: EffectChainLocation, effect_idx: usize, param_idx: usize, value: f32) {
-        // Update effect state
+        // Update effect state (both param_values and knob_assignments)
         match location {
             EffectChainLocation::PreFx => {
                 if let Some(effect) = self.pre_fx.get_mut(effect_idx) {
                     if let Some(v) = effect.param_values.get_mut(param_idx) {
                         *v = value;
+                    }
+                    if let Some(assignment) = effect.knob_assignments.get_mut(param_idx) {
+                        assignment.value = value;
                     }
                 }
             }
@@ -583,6 +586,9 @@ impl MultibandEditorState {
                         if let Some(v) = effect.param_values.get_mut(param_idx) {
                             *v = value;
                         }
+                        if let Some(assignment) = effect.knob_assignments.get_mut(param_idx) {
+                            assignment.value = value;
+                        }
                     }
                 }
             }
@@ -591,11 +597,14 @@ impl MultibandEditorState {
                     if let Some(v) = effect.param_values.get_mut(param_idx) {
                         *v = value;
                     }
+                    if let Some(assignment) = effect.knob_assignments.get_mut(param_idx) {
+                        assignment.value = value;
+                    }
                 }
             }
         }
 
-        // Sync knob if it exists
+        // Sync knob widget if it exists
         let key = (location, effect_idx, param_idx);
         if let Some(knob) = self.effect_knobs.get_mut(&key) {
             knob.set_value(value);

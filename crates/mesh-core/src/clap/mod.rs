@@ -263,6 +263,29 @@ impl ClapGuiHandle {
             None
         }
     }
+
+    /// Get the current value of a parameter by its CLAP param ID
+    ///
+    /// Returns the value in the plugin's native range (not normalized).
+    pub fn get_param_value(&self, param_id: u32) -> Option<f64> {
+        if let Ok(mut wrapper) = self.wrapper.lock() {
+            wrapper.get_param_value(param_id)
+        } else {
+            None
+        }
+    }
+
+    /// Get parameter info (min, max, default) for a CLAP param ID
+    pub fn get_param_info(&self, param_id: u32) -> Option<(f64, f64, f64)> {
+        if let Ok(mut wrapper) = self.wrapper.lock() {
+            let params = wrapper.query_params();
+            params.iter()
+                .find(|p| p.id == param_id)
+                .map(|p| (p.min, p.max, p.default))
+        } else {
+            None
+        }
+    }
 }
 
 /// Manager for CLAP plugin hosting
