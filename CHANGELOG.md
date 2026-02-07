@@ -60,6 +60,14 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   parameter knob to create a mapping. Macro knobs can control parameters across
   pre-fx, band, and post-fx effect chains.
 
+### Fixed
+
+- **CLAP plugin latency compensation** — CLAP plugins now properly report their
+  processing latency via the CLAP latency extension. This fixes audio alignment
+  issues when playing multiple decks with effects that introduce latency (e.g.,
+  lookahead limiters, linear-phase EQs). Previously, all CLAP plugins reported
+  0 latency, causing drum tracks to drift out of sync across decks.
+
 ### Changed
 
 - **Unified effects directory** — Each effect type has its own subfolder:

@@ -532,6 +532,15 @@ impl AudioEngine {
                 let effect_latency = d.stem(*stem).multiband.latency_samples();
                 // Total latency = multiband container + timestretch
                 let total_latency = effect_latency + stretch_latency;
+
+                // Log significant latency values
+                if effect_latency > 0 {
+                    log::debug!(
+                        "[LATENCY] Deck {} {:?}: effect={} stretch={} total={}",
+                        deck, stem, effect_latency, stretch_latency, total_latency
+                    );
+                }
+
                 self.latency_compensator.set_stem_latency(deck, stem_idx, total_latency);
             }
         }

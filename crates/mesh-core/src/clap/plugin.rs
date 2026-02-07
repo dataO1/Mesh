@@ -19,6 +19,7 @@ use clack_extensions::params::{
     ParamRescanFlags, PluginParams,
 };
 use clack_extensions::gui::{GuiSize, HostGui, HostGuiImpl, PluginGui, GuiApiType, GuiConfiguration, Window};
+use clack_extensions::latency::{HostLatency, HostLatencyImpl, PluginLatency};
 use crossbeam::channel::{self, Sender, Receiver};
 
 use super::error::{ClapError, ClapResult};
@@ -70,6 +71,7 @@ impl HostHandlers for MeshClapHost {
     fn declare_extensions(builder: &mut HostExtensions<Self>, _shared: &Self::Shared<'_>) {
         builder.register::<HostParams>();
         builder.register::<HostGui>();
+        builder.register::<HostLatency>();
     }
 }
 
@@ -168,6 +170,8 @@ pub struct MeshClapHostMainThread<'a> {
     plugin: Option<InitializedPluginHandle<'a>>,
     /// Plugin params extension (if supported)
     pub params_ext: Option<PluginParams>,
+    /// Plugin latency extension (if supported)
+    pub latency_ext: Option<PluginLatency>,
 }
 
 impl<'a> MeshClapHostMainThread<'a> {
@@ -176,6 +180,7 @@ impl<'a> MeshClapHostMainThread<'a> {
             _shared: shared,
             plugin: None,
             params_ext: None,
+            latency_ext: None,
         }
     }
 }
@@ -183,7 +188,16 @@ impl<'a> MeshClapHostMainThread<'a> {
 impl<'a> MainThreadHandler<'a> for MeshClapHostMainThread<'a> {
     fn initialized(&mut self, instance: InitializedPluginHandle<'a>) {
         self.params_ext = instance.get_extension();
+        self.latency_ext = instance.get_extension();
         self.plugin = Some(instance);
+    }
+}
+
+impl HostLatencyImpl for MeshClapHostMainThread<'_> {
+    fn changed(&mut self) {
+        // Plugin notified us that its latency changed
+        // We'll query it on the next process cycle
+        log::debug!("CLAP plugin latency changed notification received");
     }
 }
 
@@ -356,19 +370,25 @@ impl ClapPluginWrapper {
             reason: format!("Failed to start processing: {:?}", e),
         })?;
 
-        // Query latency (if available)
-        // For now, use 0 - we'd need the latency extension to query this
-        self.latency_samples = 0;
+        // Query latency using the latency extension
+        self.latency_samples = instance
+            .access_handler(|h| h.latency_ext)
+            .map(|ext| {
+                let mut handle = instance.plugin_handle();
+                ext.get(&mut handle)
+            })
+            .unwrap_or(0);
 
         self.instance = Some(instance);
         self.processor = Some(processor);
         self.activated = true;
 
         log::info!(
-            "CLAP plugin '{}' activated at {}Hz, buffer size {}",
+            "CLAP plugin '{}' activated at {}Hz, buffer size {}, latency {} samples",
             self.info.id,
             sample_rate,
-            buffer_size
+            buffer_size,
+            self.latency_samples
         );
 
         Ok(())

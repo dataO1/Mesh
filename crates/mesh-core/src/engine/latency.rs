@@ -106,6 +106,8 @@ impl LatencyCompensator {
 
     /// Recalculate all compensation delays based on current stem latencies
     fn recalculate_delays(&mut self) {
+        let old_max = self.global_max_latency;
+
         // Find global maximum
         self.global_max_latency = self
             .stem_latencies
@@ -114,6 +116,26 @@ impl LatencyCompensator {
             .copied()
             .max()
             .unwrap_or(0);
+
+        // Log when global max changes
+        if self.global_max_latency != old_max {
+            log::info!(
+                "[LATENCY] Global max changed: {} -> {} samples ({:.2}ms @ 48kHz)",
+                old_max,
+                self.global_max_latency,
+                self.global_max_latency as f32 / 48.0
+            );
+            // Log per-deck latencies for debugging
+            for deck in 0..NUM_DECKS {
+                let stems = &self.stem_latencies[deck];
+                if stems.iter().any(|&s| s > 0) {
+                    log::debug!(
+                        "[LATENCY] Deck {} stems: [{}, {}, {}, {}]",
+                        deck, stems[0], stems[1], stems[2], stems[3]
+                    );
+                }
+            }
+        }
 
         // Set compensation delay for each stem
         for deck in 0..NUM_DECKS {
