@@ -45,6 +45,7 @@ impl Default for MultibandPresetConfig {
             post_fx: Vec::new(),
             macros: (0..8).map(|i| MacroPresetConfig {
                 name: format!("Macro {}", i + 1),
+                value: 0.5,
             }).collect(),
         }
     }
@@ -59,12 +60,34 @@ impl MultibandPresetConfig {
             crossover_freqs: state.crossover_freqs.clone(),
             bands: state.bands.iter().map(BandPresetConfig::from_band_state).collect(),
             post_fx: state.post_fx.iter().map(EffectPresetConfig::from_effect_state).collect(),
-            macros: state.macros.iter().map(MacroPresetConfig::from_macro_state).collect(),
+            macros: state.macros.iter().enumerate().map(|(i, m)| {
+                let value = state.macro_knobs.get(i).map(|k| k.value()).unwrap_or(0.5);
+                MacroPresetConfig::from_macro_state(m, value)
+            }).collect(),
         }
     }
 
     /// Apply to MultibandEditorState
     pub fn apply_to_editor_state(&self, state: &mut MultibandEditorState) {
+        // Clear any active drag/hover state that references old effects
+        state.selected_effect = None;
+        state.dragging_effect_knob = None;
+        state.dragging_macro_knob = None;
+        state.dragging_mod_range = None;
+        state.hovered_mapping = None;
+        state.dragging_crossover = None;
+        state.dragging_macro = None;
+        state.learning_knob = None;
+        state.param_picker_open = None;
+
+        // Clear effect knobs - they reference old effect locations
+        state.effect_knobs.clear();
+
+        // Clear the macro mappings index - will be rebuilt after
+        for mappings in &mut state.macro_mappings_index {
+            mappings.clear();
+        }
+
         // Apply pre-fx chain
         state.pre_fx = self.pre_fx.iter().map(|e| e.to_effect_state()).collect();
 
@@ -83,10 +106,13 @@ impl MultibandPresetConfig {
         // Apply post-fx chain
         state.post_fx = self.post_fx.iter().map(|e| e.to_effect_state()).collect();
 
-        // Apply macro names
+        // Apply macro names and values
         for (i, macro_config) in self.macros.iter().enumerate() {
             if let Some(macro_state) = state.macros.get_mut(i) {
                 macro_state.name = macro_config.name.clone();
+            }
+            if let Some(knob) = state.macro_knobs.get_mut(i) {
+                knob.set_value(macro_config.value);
             }
         }
 
@@ -154,16 +180,45 @@ pub struct EffectPresetConfig {
     /// Whether the effect is bypassed
     #[serde(default)]
     pub bypassed: bool,
-    /// Parameter names
-    pub param_names: Vec<String>,
-    /// Parameter values (normalized 0.0-1.0)
-    pub param_values: Vec<f32>,
-    /// Macro mappings for each parameter
-    pub param_mappings: Vec<ParamMappingConfig>,
+    /// Knob assignments (8 knobs per effect)
+    /// Each stores: param_index (for learned params), value, macro_mapping
+    pub knob_assignments: Vec<KnobAssignmentConfig>,
+}
+
+/// Knob assignment configuration for preset
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KnobAssignmentConfig {
+    /// Parameter index in effect's available_params list (None = unassigned)
+    pub param_index: Option<usize>,
+    /// Current value (normalized 0.0-1.0)
+    pub value: f32,
+    /// Macro mapping for this knob (if any)
+    pub macro_mapping: Option<ParamMappingConfig>,
+}
+
+impl Default for KnobAssignmentConfig {
+    fn default() -> Self {
+        Self {
+            param_index: None,
+            value: 0.5,
+            macro_mapping: None,
+        }
+    }
 }
 
 impl EffectPresetConfig {
     fn from_effect_state(effect: &EffectUiState) -> Self {
+        let knob_assignments: Vec<KnobAssignmentConfig> = effect
+            .knob_assignments
+            .iter()
+            .map(|a| KnobAssignmentConfig {
+                param_index: a.param_index,
+                value: a.value,
+                macro_mapping: a.macro_mapping.as_ref().map(ParamMappingConfig::from_mapping),
+            })
+            .collect();
+
         Self {
             id: effect.id.clone(),
             name: effect.name.clone(),
@@ -174,14 +229,12 @@ impl EffectPresetConfig {
                 EffectSourceType::Native => "native".to_string(),
             },
             bypassed: effect.bypassed,
-            param_names: effect.param_names.clone(),
-            param_values: effect.param_values.clone(),
-            param_mappings: effect.param_mappings.iter().map(ParamMappingConfig::from_mapping).collect(),
+            knob_assignments,
         }
     }
 
     fn to_effect_state(&self) -> EffectUiState {
-        use super::state::{AvailableParam, KnobAssignment, MAX_UI_KNOBS};
+        use super::state::{KnobAssignment, MAX_UI_KNOBS};
 
         let source = match self.source.as_str() {
             "pd" => EffectSourceType::Pd,
@@ -189,32 +242,14 @@ impl EffectPresetConfig {
             _ => EffectSourceType::Native,
         };
 
-        // Convert legacy param_names to available_params
-        let available_params: Vec<AvailableParam> = self
-            .param_names
-            .iter()
-            .enumerate()
-            .map(|(i, name)| AvailableParam {
-                name: name.clone(),
-                min: 0.0,
-                max: 1.0,
-                default: self.param_values.get(i).copied().unwrap_or(0.5),
-                unit: String::new(),
-            })
-            .collect();
-
-        // Create knob assignments from legacy values
+        // Load knob assignments
         let mut knob_assignments: [KnobAssignment; MAX_UI_KNOBS] = Default::default();
-        for (i, assignment) in knob_assignments
-            .iter_mut()
-            .enumerate()
-            .take(self.param_values.len().min(MAX_UI_KNOBS))
-        {
-            assignment.param_index = Some(i);
-            assignment.value = self.param_values.get(i).copied().unwrap_or(0.5);
-            if let Some(mapping) = self.param_mappings.get(i) {
-                assignment.macro_mapping = Some(mapping.to_mapping());
-            }
+        for (i, config) in self.knob_assignments.iter().enumerate().take(MAX_UI_KNOBS) {
+            knob_assignments[i] = KnobAssignment {
+                param_index: config.param_index,
+                value: config.value,
+                macro_mapping: config.macro_mapping.as_ref().map(|m| m.to_mapping()),
+            };
         }
 
         EffectUiState {
@@ -224,11 +259,8 @@ impl EffectPresetConfig {
             source,
             bypassed: self.bypassed,
             gui_open: false,
-            available_params,
+            available_params: Vec::new(), // Will be populated when plugin loads
             knob_assignments,
-            param_names: self.param_names.clone(),
-            param_values: self.param_values.clone(),
-            param_mappings: self.param_mappings.iter().map(|m| m.to_mapping()).collect(),
         }
     }
 }
@@ -273,12 +305,20 @@ impl ParamMappingConfig {
 pub struct MacroPresetConfig {
     /// Display name
     pub name: String,
+    /// Current value (normalized 0.0-1.0)
+    #[serde(default = "default_macro_value")]
+    pub value: f32,
+}
+
+fn default_macro_value() -> f32 {
+    0.5
 }
 
 impl MacroPresetConfig {
-    fn from_macro_state(macro_state: &MacroUiState) -> Self {
+    fn from_macro_state(macro_state: &MacroUiState, value: f32) -> Self {
         Self {
             name: macro_state.name.clone(),
+            value,
         }
     }
 }

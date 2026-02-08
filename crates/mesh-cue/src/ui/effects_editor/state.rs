@@ -7,6 +7,9 @@ use mesh_widgets::MultibandEditorState;
 ///
 /// Wraps the MultibandEditorState from mesh-widgets and adds
 /// mesh-cue specific functionality like preset management UI.
+///
+/// Note: Fields like `save_dialog_open` and `preset_name_input` live in the
+/// inner `editor` state since the view reads from there directly.
 #[derive(Debug, Clone)]
 pub struct EffectsEditorState {
     /// Whether the effects editor modal is open
@@ -17,12 +20,6 @@ pub struct EffectsEditorState {
 
     /// Preset currently being edited (None = new/unsaved)
     pub editing_preset: Option<String>,
-
-    /// Whether save dialog is showing
-    pub save_dialog_open: bool,
-
-    /// Text input for preset name (for save dialog)
-    pub preset_name_input: String,
 
     /// Status message to display
     pub status: String,
@@ -47,8 +44,6 @@ impl EffectsEditorState {
             is_open: false,
             editor: MultibandEditorState::new(),
             editing_preset: None,
-            save_dialog_open: false,
-            preset_name_input: String::new(),
             status: String::new(),
             preview_stem: Stem::Other, // Default to "Other" stem for full mix preview
             audio_preview_enabled: false, // Disabled by default - user can enable
@@ -67,15 +62,15 @@ impl EffectsEditorState {
     /// Close the effects editor
     pub fn close(&mut self) {
         self.is_open = false;
-        self.save_dialog_open = false;
+        self.editor.save_dialog_open = false;
         self.editor.close();
     }
 
     /// Start editing a new preset
     pub fn new_preset(&mut self) {
         self.editing_preset = None;
-        self.preset_name_input = "New Preset".to_string();
         self.editor = MultibandEditorState::new();
+        self.editor.preset_name_input = "New Preset".to_string();
         self.editor.open(0, 0, "Preview");
         // Preserve preview settings when starting a new preset
     }
@@ -93,25 +88,20 @@ impl EffectsEditorState {
     /// Load a preset for editing
     pub fn load_preset(&mut self, name: String) {
         self.editing_preset = Some(name.clone());
-        self.preset_name_input = name;
+        self.editor.preset_name_input = name;
     }
 
     /// Open save dialog
     pub fn open_save_dialog(&mut self) {
-        if self.editing_preset.is_some() {
+        if let Some(ref name) = self.editing_preset {
             // Use existing name
-            self.preset_name_input = self.editing_preset.clone().unwrap_or_default();
+            self.editor.preset_name_input = name.clone();
         }
-        self.save_dialog_open = true;
-        // Also set inner editor state for the view to pick up
-        // (the view reads from self.editor, not from self)
         self.editor.save_dialog_open = true;
-        self.editor.preset_name_input = self.preset_name_input.clone();
     }
 
     /// Close save dialog
     pub fn close_save_dialog(&mut self) {
-        self.save_dialog_open = false;
         self.editor.save_dialog_open = false;
     }
 

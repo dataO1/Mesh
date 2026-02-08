@@ -70,12 +70,22 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   50% is neutral: turning below 50% subtracts from the base value, above 50% adds.
   This enables expressive live control of multiple parameters simultaneously.
 
+- **Macro modulation range indicators** — Visual mini-bars above each macro knob
+  show which parameters are mapped and their modulation depth. Drag indicators
+  up/down to adjust the modulation range from -1 (fully inverted) through 0
+  (no modulation) to +1 (full modulation). Hover over an indicator to highlight
+  the corresponding parameter knob in the effect chain.
+
 - **Effect preset save/load** — Create and manage effect presets in YAML format.
   Presets store the complete multiband configuration including band splits,
   effect chains, parameter values, macro mappings, and learned parameter
   assignments. Presets are saved to `~/.config/mesh/presets/`.
 
 ### Fixed
+
+- **Effects editor preset loading** — Loading a preset now properly clears stale
+  UI state (drag handles, hover state, effect knobs) before applying the new
+  configuration. Previously, stale references to old effects could cause crashes.
 
 - **CLAP plugin latency compensation** — CLAP plugins now properly report their
   processing latency via the CLAP latency extension. This fixes audio alignment

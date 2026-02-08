@@ -5,7 +5,7 @@ use iced::{Alignment, Color, Element, Length};
 
 use super::crossover_bar::crossover_bar;
 use super::message::MultibandEditorMessage;
-use super::state::{BandUiState, EffectChainLocation, EffectUiState, MacroUiState, MultibandEditorState};
+use super::state::{BandUiState, EffectChainLocation, EffectUiState, MacroMappingRef, MultibandEditorState};
 
 use crate::knob::{Knob, ModulationRange};
 
@@ -73,6 +73,7 @@ pub fn multiband_editor(
                 dragging_macro,
                 &state.effect_knobs,
                 learning_knob,
+                state,
             )
         })
         .collect();
@@ -87,6 +88,7 @@ pub fn multiband_editor(
             dragging_macro,
             &state.effect_knobs,
             learning_knob,
+            state,
         ),
         // Band columns (center, fill available space)
         column![
@@ -107,6 +109,7 @@ pub fn multiband_editor(
             dragging_macro,
             &state.effect_knobs,
             learning_knob,
+            state,
         ),
     ]
     .spacing(8)
@@ -124,7 +127,7 @@ pub fn multiband_editor(
         processing_area,
         divider(),
         // Macro knobs row
-        macro_bar(&state.macros, &state.macro_knobs, state.dragging_macro),
+        macro_bar(state),
     ]
     .spacing(8)
     .padding(16);
@@ -193,6 +196,7 @@ pub fn multiband_editor_content(
                 dragging_macro,
                 &state.effect_knobs,
                 learning_knob,
+                state,
             )
         })
         .collect();
@@ -207,6 +211,7 @@ pub fn multiband_editor_content(
             dragging_macro,
             &state.effect_knobs,
             learning_knob,
+            state,
         ),
         // Band columns (center, fill available space)
         column![
@@ -227,6 +232,7 @@ pub fn multiband_editor_content(
             dragging_macro,
             &state.effect_knobs,
             learning_knob,
+            state,
         ),
     ]
     .spacing(8)
@@ -242,7 +248,7 @@ pub fn multiband_editor_content(
         processing_area,
         divider(),
         // Macro knobs row
-        macro_bar(&state.macros, &state.macro_knobs, state.dragging_macro),
+        macro_bar(state),
     ]
     .spacing(8)
     .width(Length::Fill)
@@ -257,13 +263,15 @@ pub fn multiband_editor_content(
 /// - When the editor is opened
 /// - After adding an effect to any chain (pre-fx, band, post-fx)
 pub fn ensure_effect_knobs_exist(state: &mut MultibandEditorState) {
+    use super::state::MAX_UI_KNOBS;
+
     // Pre-FX effects
     for (effect_idx, effect) in state.pre_fx.iter().enumerate() {
-        for param_idx in 0..effect.param_values.len() {
-            let key = (EffectChainLocation::PreFx, effect_idx, param_idx);
+        for knob_idx in 0..MAX_UI_KNOBS {
+            let key = (EffectChainLocation::PreFx, effect_idx, knob_idx);
             if !state.effect_knobs.contains_key(&key) {
                 let mut knob = Knob::new(40.0);
-                knob.set_value(effect.param_values[param_idx]);
+                knob.set_value(effect.knob_assignments[knob_idx].value);
                 state.effect_knobs.insert(key, knob);
             }
         }
@@ -272,11 +280,11 @@ pub fn ensure_effect_knobs_exist(state: &mut MultibandEditorState) {
     // Band effects
     for (band_idx, band) in state.bands.iter().enumerate() {
         for (effect_idx, effect) in band.effects.iter().enumerate() {
-            for param_idx in 0..effect.param_values.len() {
-                let key = (EffectChainLocation::Band(band_idx), effect_idx, param_idx);
+            for knob_idx in 0..MAX_UI_KNOBS {
+                let key = (EffectChainLocation::Band(band_idx), effect_idx, knob_idx);
                 if !state.effect_knobs.contains_key(&key) {
                     let mut knob = Knob::new(40.0);
-                    knob.set_value(effect.param_values[param_idx]);
+                    knob.set_value(effect.knob_assignments[knob_idx].value);
                     state.effect_knobs.insert(key, knob);
                 }
             }
@@ -285,11 +293,11 @@ pub fn ensure_effect_knobs_exist(state: &mut MultibandEditorState) {
 
     // Post-FX effects
     for (effect_idx, effect) in state.post_fx.iter().enumerate() {
-        for param_idx in 0..effect.param_values.len() {
-            let key = (EffectChainLocation::PostFx, effect_idx, param_idx);
+        for knob_idx in 0..MAX_UI_KNOBS {
+            let key = (EffectChainLocation::PostFx, effect_idx, knob_idx);
             if !state.effect_knobs.contains_key(&key) {
                 let mut knob = Knob::new(40.0);
-                knob.set_value(effect.param_values[param_idx]);
+                knob.set_value(effect.knob_assignments[knob_idx].value);
                 state.effect_knobs.insert(key, knob);
             }
         }
@@ -333,6 +341,7 @@ fn band_column<'a>(
     dragging_macro: Option<usize>,
     effect_knobs: &'a std::collections::HashMap<super::state::EffectKnobKey, Knob>,
     learning_knob: Option<(EffectChainLocation, usize, usize)>,
+    editor_state: &'a MultibandEditorState,
 ) -> Element<'a, MultibandEditorMessage> {
     // Band header: name and freq range
     let header = column![
@@ -387,6 +396,7 @@ fn band_column<'a>(
                 dragging_macro,
                 effect_knobs,
                 learning_knob,
+                editor_state,
             )
         })
         .collect();
@@ -432,6 +442,7 @@ fn fx_chain_column<'a>(
     dragging_macro: Option<usize>,
     effect_knobs: &'a std::collections::HashMap<super::state::EffectKnobKey, Knob>,
     learning_knob: Option<(EffectChainLocation, usize, usize)>,
+    editor_state: &'a MultibandEditorState,
 ) -> Element<'a, MultibandEditorMessage> {
     let header = column![
         text(title).size(14).color(TEXT_PRIMARY),
@@ -450,7 +461,7 @@ fn fx_chain_column<'a>(
         .iter()
         .enumerate()
         .map(|(effect_idx, effect)| {
-            fx_effect_card(effect_idx, effect, location, dragging_macro, effect_knobs, learning_knob)
+            fx_effect_card(effect_idx, effect, location, dragging_macro, effect_knobs, learning_knob, editor_state)
         })
         .collect();
 
@@ -492,6 +503,7 @@ fn fx_effect_card<'a>(
     dragging_macro: Option<usize>,
     effect_knobs: &'a std::collections::HashMap<super::state::EffectKnobKey, Knob>,
     learning_knob: Option<(EffectChainLocation, usize, usize)>,
+    editor_state: &'a MultibandEditorState,
 ) -> Element<'a, MultibandEditorMessage> {
     use super::state::EffectSourceType;
 
@@ -568,26 +580,31 @@ fn fx_effect_card<'a>(
     .spacing(2)
     .align_y(Alignment::Center);
 
-    // Parameter knobs (show first 8 params in 2 rows of 4)
-    let param_count = effect.param_values.len().min(8);
-    let param_knobs: Vec<Element<'_, MultibandEditorMessage>> = (0..param_count)
-        .map(|param_idx| {
+    // Parameter knobs (show 8 knobs in 2 rows of 4)
+    let param_knobs: Vec<Element<'_, MultibandEditorMessage>> = (0..8)
+        .map(|knob_idx| {
+            let assignment = &effect.knob_assignments[knob_idx];
+
             // Check if this knob is in learning mode
-            let is_learning = learning_knob == Some((location, effect_idx, param_idx));
+            let is_learning = learning_knob == Some((location, effect_idx, knob_idx));
 
-            let param_name = effect
-                .param_names
-                .get(param_idx)
-                .map(|s| s.as_str())
-                .unwrap_or("P");
+            // Check if this knob is highlighted (from hovering a modulation indicator)
+            let is_highlighted = is_param_highlighted(editor_state, location, effect_idx, knob_idx);
 
-            let mapping = effect.param_mappings.get(param_idx);
-            let mapped_macro = mapping.and_then(|m| m.macro_index);
+            // Get param name from available_params via the assignment's param_index
+            let param_name = assignment.param_index
+                .and_then(|idx| effect.available_params.get(idx))
+                .map(|p| p.name.as_str())
+                .unwrap_or("[assign]");
+
+            let mapped_macro = assignment.macro_mapping.as_ref().and_then(|m| m.macro_index);
             let is_mapped = mapped_macro.is_some();
 
-            // Learning mode takes priority for color
+            // Learning mode takes priority for color, then highlight
             let label_color = if is_learning {
                 LEARNING_COLOR
+            } else if is_highlighted {
+                PARAM_HIGHLIGHT_COLOR
             } else if dragging_macro.is_some() {
                 ACCENT_COLOR
             } else if is_mapped {
@@ -605,12 +622,8 @@ fn fx_effect_card<'a>(
                 param_name[..param_name.len().min(3)].to_string()
             };
 
-            // Get the current value for display (from knob_assignments)
-            let value_display = effect
-                .knob_assignments
-                .get(param_idx)
-                .map(|a| format!("{:.0}%", a.value * 100.0))
-                .unwrap_or_default();
+            // Get the current value for display
+            let value_display = format!("{:.0}%", assignment.value * 100.0);
 
             // Build clickable label - for CLAP effects, right-click (or long-press) starts learning
             // Regular click opens param picker
@@ -625,7 +638,7 @@ fn fx_effect_card<'a>(
                     .on_press(MultibandEditorMessage::StartLearning {
                         location,
                         effect: effect_idx,
-                        knob: param_idx,
+                        knob: knob_idx,
                     })
                     .into()
             } else {
@@ -634,19 +647,19 @@ fn fx_effect_card<'a>(
                     .on_press(MultibandEditorMessage::OpenParamPicker {
                         location,
                         effect: effect_idx,
-                        knob: param_idx,
+                        knob: knob_idx,
                     })
                     .into()
             };
 
             // Get knob from state
-            let key = (location, effect_idx, param_idx);
+            let key = (location, effect_idx, knob_idx);
             let knob_element: Element<'_, MultibandEditorMessage> =
                 if let Some(knob) = effect_knobs.get(&key) {
                     knob.view(move |event| MultibandEditorMessage::EffectKnob {
                         location,
                         effect: effect_idx,
-                        param: param_idx,
+                        param: knob_idx,
                         event,
                     })
                 } else {
@@ -658,38 +671,48 @@ fn fx_effect_card<'a>(
                 .size(10)
                 .color(TEXT_SECONDARY);
 
+            // Build the knob column content
+            let knob_content = column![knob_element, label_button, value_text]
+                .spacing(1)
+                .align_x(Alignment::Center);
+
+            // Wrap in container with highlight border if needed
+            let knob_container: Element<'_, MultibandEditorMessage> = if is_highlighted {
+                container(knob_content)
+                    .style(move |_| container::Style {
+                        border: iced::Border {
+                            color: PARAM_HIGHLIGHT_COLOR,
+                            width: 2.0,
+                            radius: 4.0.into(),
+                        },
+                        ..Default::default()
+                    })
+                    .into()
+            } else {
+                knob_content.into()
+            };
+
             // Wrap in mouse_area for macro drop target when dragging
             let knob_with_label: Element<'_, MultibandEditorMessage> =
                 if let Some(macro_idx) = dragging_macro {
-                    mouse_area(
-                        column![knob_element, label_button, value_text]
-                            .spacing(1)
-                            .align_x(Alignment::Center),
-                    )
-                    .on_release(MultibandEditorMessage::DropMacroOnParam {
-                        macro_index: macro_idx,
-                        location,
-                        effect: effect_idx,
-                        param: param_idx,
-                    })
-                    .into()
-                } else if is_mapped {
-                    mouse_area(
-                        column![knob_element, label_button, value_text]
-                            .spacing(1)
-                            .align_x(Alignment::Center),
-                    )
-                    .on_press(MultibandEditorMessage::RemoveParamMapping {
-                        location,
-                        effect: effect_idx,
-                        param: param_idx,
-                    })
-                    .into()
-                } else {
-                    column![knob_element, label_button, value_text]
-                        .spacing(1)
-                        .align_x(Alignment::Center)
+                    mouse_area(knob_container)
+                        .on_release(MultibandEditorMessage::DropMacroOnParam {
+                            macro_index: macro_idx,
+                            location,
+                            effect: effect_idx,
+                            param: knob_idx,
+                        })
                         .into()
+                } else if is_mapped {
+                    mouse_area(knob_container)
+                        .on_press(MultibandEditorMessage::RemoveParamMapping {
+                            location,
+                            effect: effect_idx,
+                            param: knob_idx,
+                        })
+                        .into()
+                } else {
+                    knob_container
                 };
 
             knob_with_label
@@ -737,6 +760,7 @@ fn effect_card<'a>(
     dragging_macro: Option<usize>,
     effect_knobs: &'a std::collections::HashMap<super::state::EffectKnobKey, Knob>,
     learning_knob: Option<(EffectChainLocation, usize, usize)>,
+    editor_state: &'a MultibandEditorState,
 ) -> Element<'a, MultibandEditorMessage> {
     use super::state::EffectSourceType;
 
@@ -811,26 +835,31 @@ fn effect_card<'a>(
     .spacing(2)
     .align_y(Alignment::Center);
 
-    // Parameter knobs (show first 8 params in 2 rows of 4)
-    let param_count = effect.param_values.len().min(8);
-    let param_knobs: Vec<Element<'_, MultibandEditorMessage>> = (0..param_count)
-        .map(|param_idx| {
+    // Parameter knobs (show 8 knobs in 2 rows of 4)
+    let param_knobs: Vec<Element<'_, MultibandEditorMessage>> = (0..8)
+        .map(|knob_idx| {
+            let assignment = &effect.knob_assignments[knob_idx];
+
             // Check if this knob is in learning mode
-            let is_learning = learning_knob == Some((location, effect_idx, param_idx));
+            let is_learning = learning_knob == Some((location, effect_idx, knob_idx));
 
-            let param_name = effect
-                .param_names
-                .get(param_idx)
-                .map(|s| s.as_str())
-                .unwrap_or("P");
+            // Check if this knob is highlighted (from hovering a modulation indicator)
+            let is_highlighted = is_param_highlighted(editor_state, location, effect_idx, knob_idx);
 
-            let mapping = effect.param_mappings.get(param_idx);
-            let mapped_macro = mapping.and_then(|m| m.macro_index);
+            // Get param name from available_params via the assignment's param_index
+            let param_name = assignment.param_index
+                .and_then(|idx| effect.available_params.get(idx))
+                .map(|p| p.name.as_str())
+                .unwrap_or("[assign]");
+
+            let mapped_macro = assignment.macro_mapping.as_ref().and_then(|m| m.macro_index);
             let is_mapped = mapped_macro.is_some();
 
-            // Learning mode takes priority for color
+            // Learning mode takes priority for color, then highlight
             let label_color = if is_learning {
                 LEARNING_COLOR
+            } else if is_highlighted {
+                PARAM_HIGHLIGHT_COLOR
             } else if dragging_macro.is_some() {
                 ACCENT_COLOR
             } else if is_mapped {
@@ -848,21 +877,17 @@ fn effect_card<'a>(
                 param_name[..param_name.len().min(3)].to_string()
             };
 
-            // Get the current value for display (from knob_assignments)
-            let value_display = effect
-                .knob_assignments
-                .get(param_idx)
-                .map(|a| format!("{:.0}%", a.value * 100.0))
-                .unwrap_or_default();
+            // Get the current value for display
+            let value_display = format!("{:.0}%", assignment.value * 100.0);
 
             // Get knob from state
-            let key = (location, effect_idx, param_idx);
+            let key = (location, effect_idx, knob_idx);
             let knob_element: Element<'_, MultibandEditorMessage> =
                 if let Some(knob) = effect_knobs.get(&key) {
                     knob.view(move |event| MultibandEditorMessage::EffectKnob {
                         location,
                         effect: effect_idx,
-                        param: param_idx,
+                        param: knob_idx,
                         event,
                     })
                 } else {
@@ -881,7 +906,7 @@ fn effect_card<'a>(
                     .on_press(MultibandEditorMessage::StartLearning {
                         location,
                         effect: effect_idx,
-                        knob: param_idx,
+                        knob: knob_idx,
                     })
                     .into()
             } else {
@@ -890,7 +915,7 @@ fn effect_card<'a>(
                     .on_press(MultibandEditorMessage::OpenParamPicker {
                         location,
                         effect: effect_idx,
-                        knob: param_idx,
+                        knob: knob_idx,
                     })
                     .into()
             };
@@ -900,38 +925,48 @@ fn effect_card<'a>(
                 .size(10)
                 .color(TEXT_SECONDARY);
 
+            // Build the knob column content
+            let knob_content = column![knob_element, label_button, value_text]
+                .spacing(1)
+                .align_x(Alignment::Center);
+
+            // Wrap in container with highlight border if needed
+            let knob_container: Element<'_, MultibandEditorMessage> = if is_highlighted {
+                container(knob_content)
+                    .style(move |_| container::Style {
+                        border: iced::Border {
+                            color: PARAM_HIGHLIGHT_COLOR,
+                            width: 2.0,
+                            radius: 4.0.into(),
+                        },
+                        ..Default::default()
+                    })
+                    .into()
+            } else {
+                knob_content.into()
+            };
+
             // Wrap in mouse_area for macro drop target when dragging
             let knob_with_label: Element<'_, MultibandEditorMessage> =
                 if let Some(macro_idx) = dragging_macro {
-                    mouse_area(
-                        column![knob_element, label_button, value_text]
-                            .spacing(1)
-                            .align_x(Alignment::Center),
-                    )
-                    .on_release(MultibandEditorMessage::DropMacroOnParam {
-                        macro_index: macro_idx,
-                        location,
-                        effect: effect_idx,
-                        param: param_idx,
-                    })
-                    .into()
-                } else if is_mapped {
-                    mouse_area(
-                        column![knob_element, label_button, value_text]
-                            .spacing(1)
-                            .align_x(Alignment::Center),
-                    )
-                    .on_press(MultibandEditorMessage::RemoveParamMapping {
-                        location,
-                        effect: effect_idx,
-                        param: param_idx,
-                    })
-                    .into()
-                } else {
-                    column![knob_element, label_button, value_text]
-                        .spacing(1)
-                        .align_x(Alignment::Center)
+                    mouse_area(knob_container)
+                        .on_release(MultibandEditorMessage::DropMacroOnParam {
+                            macro_index: macro_idx,
+                            location,
+                            effect: effect_idx,
+                            param: knob_idx,
+                        })
                         .into()
+                } else if is_mapped {
+                    mouse_area(knob_container)
+                        .on_press(MultibandEditorMessage::RemoveParamMapping {
+                            location,
+                            effect: effect_idx,
+                            param: knob_idx,
+                        })
+                        .into()
+                } else {
+                    knob_container
                 };
 
             knob_with_label
@@ -995,15 +1030,17 @@ fn add_band_button(current_bands: usize) -> Element<'static, MultibandEditorMess
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn macro_bar<'a>(
-    macros: &'a [MacroUiState],
-    macro_knobs: &'a [Knob],
-    dragging_macro: Option<usize>,
+    state: &'a MultibandEditorState,
 ) -> Element<'a, MultibandEditorMessage> {
+    let macros = &state.macros;
+    let macro_knobs = &state.macro_knobs;
+    let dragging_macro = state.dragging_macro;
+
     let macro_widgets: Vec<Element<'_, MultibandEditorMessage>> = macros
         .iter()
         .zip(macro_knobs.iter())
-        .map(|(m, knob)| {
-            let index = m.index;
+        .enumerate()
+        .map(|(index, (m, knob))| {
             let is_mapping_drag = dragging_macro == Some(index);
 
             let name_color = if is_mapping_drag {
@@ -1036,7 +1073,11 @@ fn macro_bar<'a>(
                 event,
             });
 
+            // Build mini modulation indicator row
+            let mod_indicators = mod_indicators_row(index, &state.macro_mappings_index[index], state);
+
             let macro_content = column![
+                mod_indicators,
                 text(format!("{:.0}%", knob.value() * 100.0))
                     .size(14)
                     .color(TEXT_SECONDARY),
@@ -1100,6 +1141,143 @@ fn macro_bar<'a>(
         ..Default::default()
     })
     .into()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Modulation Range Indicators
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Color for modulation indicators
+const MOD_INDICATOR_COLOR: Color = Color::from_rgb(0.9, 0.5, 0.2);
+/// Color for inverted (negative) modulation indicators
+const MOD_INDICATOR_INVERTED_COLOR: Color = Color::from_rgb(0.7, 0.4, 0.2);
+/// Color for modulation indicator highlight
+const MOD_INDICATOR_HIGHLIGHT_COLOR: Color = Color::from_rgb(1.0, 0.7, 0.3);
+/// Color for highlighted parameter knobs (when hovering mod indicator)
+const PARAM_HIGHLIGHT_COLOR: Color = Color::from_rgb(1.0, 0.6, 0.2);
+
+/// Check if a specific effect parameter knob should be highlighted
+///
+/// Returns true if the user is hovering a modulation indicator that targets this knob.
+fn is_param_highlighted(
+    state: &MultibandEditorState,
+    location: EffectChainLocation,
+    effect_idx: usize,
+    knob_idx: usize,
+) -> bool {
+    if let Some((macro_idx, map_idx)) = state.hovered_mapping {
+        if let Some(mapping) = state.macro_mappings_index[macro_idx].get(map_idx) {
+            return mapping.location == location
+                && mapping.effect_idx == effect_idx
+                && mapping.knob_idx == knob_idx;
+        }
+    }
+    false
+}
+
+/// Render a row of mini modulation indicators above a macro knob
+fn mod_indicators_row<'a>(
+    macro_idx: usize,
+    mappings: &[MacroMappingRef],
+    state: &MultibandEditorState,
+) -> Element<'a, MultibandEditorMessage> {
+    if mappings.is_empty() {
+        return Space::new()
+            .width(Length::Fixed(0.0))
+            .height(Length::Fixed(24.0))
+            .into();
+    }
+
+    let indicators: Vec<Element<'_, MultibandEditorMessage>> = mappings
+        .iter()
+        .enumerate()
+        .map(|(i, m)| mod_range_indicator(macro_idx, i, m, state))
+        .collect();
+
+    container(
+        row(indicators)
+            .spacing(2)
+            .align_y(Alignment::Center),
+    )
+    .width(Length::Shrink)
+    .height(Length::Fixed(24.0))
+    .center_x(Length::Shrink)
+    .into()
+}
+
+/// Render a single mini modulation range indicator (8px × 24px bipolar bar)
+///
+/// Visual design:
+/// - Center line at 12px from top
+/// - Positive offset: fills UP from center (orange)
+/// - Negative offset: fills DOWN from center (darker orange)
+fn mod_range_indicator<'a>(
+    macro_idx: usize,
+    mapping_idx: usize,
+    mapping: &MacroMappingRef,
+    state: &MultibandEditorState,
+) -> Element<'a, MultibandEditorMessage> {
+    let is_hovered = state.hovered_mapping == Some((macro_idx, mapping_idx));
+    let is_dragging = state.dragging_mod_range
+        .map(|d| d.macro_index == macro_idx && d.mapping_idx == mapping_idx)
+        .unwrap_or(false);
+    let offset_range = mapping.offset_range;
+
+    // Determine fill color based on state
+    let fill_color = if is_hovered || is_dragging {
+        MOD_INDICATOR_HIGHLIGHT_COLOR
+    } else if offset_range < 0.0 {
+        MOD_INDICATOR_INVERTED_COLOR
+    } else {
+        MOD_INDICATOR_COLOR
+    };
+
+    // Calculate visual representation
+    // offset_range is -1 to +1, we normalize to fill position
+    let bar_height = 24.0_f32;
+    let center_y = bar_height / 2.0;
+    let max_fill = center_y - 2.0; // Leave 2px margin at top/bottom
+
+    // Absolute fill amount (0 to max_fill)
+    let fill_amount = (offset_range.abs() * max_fill).min(max_fill);
+
+    // Calculate padding to position the fill correctly
+    // For positive offset: fill goes UP from center (top padding = center - fill, bottom = center)
+    // For negative offset: fill goes DOWN from center (top = center, bottom = center - fill)
+    let top_pad = if offset_range >= 0.0 { center_y - fill_amount } else { center_y };
+    let _bottom_pad = if offset_range < 0.0 { center_y - fill_amount } else { center_y };
+
+    // Create the indicator visual using a container with a styled inner container
+    let bar_visual: Element<'_, MultibandEditorMessage> = container(
+        // Inner container that represents the fill
+        container(Space::new().width(Length::Fill).height(Length::Fill))
+            .width(Length::Fill)
+            .height(Length::Fixed(fill_amount))
+            .style(move |_| container::Style {
+                background: Some(fill_color.into()),
+                ..Default::default()
+            }),
+    )
+    .width(Length::Fixed(8.0))
+    .height(Length::Fixed(bar_height))
+    .padding([top_pad as u16, 0])  // [vertical, horizontal]
+    .style(move |_| container::Style {
+        background: Some(BG_LIGHT.into()),
+        border: iced::Border {
+            color: if is_hovered || is_dragging { MOD_INDICATOR_HIGHLIGHT_COLOR } else { BORDER_COLOR },
+            width: 1.0,
+            radius: 2.0.into(),
+        },
+        ..Default::default()
+    })
+    .into();
+
+    // Wrap in mouse_area for drag and hover interactions
+    mouse_area(bar_visual)
+        .on_press(MultibandEditorMessage::StartDragModRange { macro_index: macro_idx, mapping_idx })
+        .on_enter(MultibandEditorMessage::HoverModRange { macro_index: macro_idx, mapping_idx })
+        .on_exit(MultibandEditorMessage::UnhoverModRange)
+        .into()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

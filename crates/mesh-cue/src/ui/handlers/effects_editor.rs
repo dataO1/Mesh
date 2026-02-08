@@ -56,10 +56,10 @@ impl MeshCueApp {
             }
             SavePreset => {
                 // Use current name or prompt
-                let name = if self.effects_editor.preset_name_input.is_empty() {
+                let name = if self.effects_editor.editor.preset_name_input.is_empty() {
                     "Untitled".to_string()
                 } else {
-                    self.effects_editor.preset_name_input.clone()
+                    self.effects_editor.editor.preset_name_input.clone()
                 };
                 return self.handle_effects_editor_save(name);
             }
@@ -82,8 +82,6 @@ impl MeshCueApp {
                 self.effects_editor.close_save_dialog();
             }
             SetPresetNameInput(name) => {
-                self.effects_editor.preset_name_input = name.clone();
-                // Also update inner state for the view to display
                 self.effects_editor.editor.preset_name_input = name;
             }
 
@@ -365,6 +363,8 @@ impl MeshCueApp {
             DropMacroOnParam { macro_index, location, effect, param } => {
                 use mesh_widgets::multiband::ParamMacroMapping;
 
+                let offset_range = 0.25; // ±25% default range
+
                 let effect_state = match location {
                     EffectChainLocation::PreFx => self.effects_editor.editor.pre_fx.get_mut(effect),
                     EffectChainLocation::Band(band_idx) => self.effects_editor.editor.bands
@@ -375,16 +375,35 @@ impl MeshCueApp {
 
                 if let Some(effect_state) = effect_state {
                     if let Some(assignment) = effect_state.knob_assignments.get_mut(param) {
-                        assignment.macro_mapping = Some(ParamMacroMapping::new(macro_index, 0.25));
+                        assignment.macro_mapping = Some(ParamMacroMapping::new(macro_index, offset_range));
                     }
                     if let Some(macro_state) = self.effects_editor.editor.macros.get_mut(macro_index) {
                         macro_state.mapping_count += 1;
                     }
                 }
+
+                // Add to reverse mapping index
+                self.effects_editor.editor.add_mapping_to_index(macro_index, location, effect, param, offset_range);
+
                 self.effects_editor.editor.dragging_macro = None;
                 log::info!("Mapped macro {} to {:?} effect {} param {}", macro_index, location, effect, param);
             }
             RemoveParamMapping { location, effect, param } => {
+                // Get the macro that was mapped (before modifying)
+                let old_macro_index = {
+                    let effect_state = match location {
+                        EffectChainLocation::PreFx => self.effects_editor.editor.pre_fx.get(effect),
+                        EffectChainLocation::Band(band_idx) => self.effects_editor.editor.bands
+                            .get(band_idx)
+                            .and_then(|b| b.effects.get(effect)),
+                        EffectChainLocation::PostFx => self.effects_editor.editor.post_fx.get(effect),
+                    };
+                    effect_state
+                        .and_then(|e| e.knob_assignments.get(param))
+                        .and_then(|a| a.macro_mapping.as_ref())
+                        .and_then(|m| m.macro_index)
+                };
+
                 let effect_state = match location {
                     EffectChainLocation::PreFx => self.effects_editor.editor.pre_fx.get_mut(effect),
                     EffectChainLocation::Band(band_idx) => self.effects_editor.editor.bands
@@ -405,9 +424,127 @@ impl MeshCueApp {
                         assignment.macro_mapping = None;
                     }
                 }
+
+                // Remove from reverse mapping index
+                if let Some(macro_index) = old_macro_index {
+                    self.effects_editor.editor.remove_mapping_from_index(macro_index, location, effect, param);
+                }
             }
             OpenMacroMapper(_) | AddMacroMapping { .. } | ClearMacroMappings(_) => {
                 // Not implemented in mesh-cue (direct drag-drop is used instead)
+            }
+
+            // ─────────────────────────────────────────────────────────────────────
+            // Macro Modulation Range Controls
+            // ─────────────────────────────────────────────────────────────────────
+            StartDragModRange { macro_index, mapping_idx } => {
+                use mesh_widgets::multiband::ModRangeDrag;
+
+                // Get the current offset_range as the starting value
+                let start_offset = self.effects_editor.editor.macro_mappings_index[macro_index]
+                    .get(mapping_idx)
+                    .map(|m| m.offset_range)
+                    .unwrap_or(0.0);
+
+                self.effects_editor.editor.dragging_mod_range = Some(ModRangeDrag {
+                    macro_index,
+                    mapping_idx,
+                    start_offset,
+                    start_y: None, // Will be set on first mouse move
+                });
+            }
+
+            DragModRange { macro_index, mapping_idx, new_offset_range } => {
+                use mesh_widgets::multiband::ParamMacroMapping;
+
+                // Clamp offset_range to valid range
+                let new_offset_range = new_offset_range.clamp(-1.0, 1.0);
+
+                // Look up the mapping reference to get the effect location
+                if let Some(mapping_ref) = self.effects_editor.editor.macro_mappings_index[macro_index].get(mapping_idx).copied() {
+                    let location = mapping_ref.location;
+                    let effect_idx = mapping_ref.effect_idx;
+                    let knob_idx = mapping_ref.knob_idx;
+
+                    // Update actual offset_range in the effect's knob assignment
+                    let effect_state = match location {
+                        EffectChainLocation::PreFx => self.effects_editor.editor.pre_fx.get_mut(effect_idx),
+                        EffectChainLocation::Band(band_idx) => self.effects_editor.editor.bands
+                            .get_mut(band_idx)
+                            .and_then(|b| b.effects.get_mut(effect_idx)),
+                        EffectChainLocation::PostFx => self.effects_editor.editor.post_fx.get_mut(effect_idx),
+                    };
+
+                    if let Some(effect) = effect_state {
+                        if let Some(mapping) = effect.knob_assignments[knob_idx].macro_mapping.as_mut() {
+                            mapping.offset_range = new_offset_range;
+                        }
+                    }
+
+                    // Update the index cache
+                    self.effects_editor.editor.update_mapping_offset_range(macro_index, mapping_idx, new_offset_range);
+
+                    // If audio preview is enabled, send updated modulation to audio
+                    if self.effects_editor.audio_preview_enabled {
+                        let stem = self.effects_editor.preview_stem;
+                        let macro_value = self.effects_editor.editor.macro_value(macro_index);
+
+                        // Get base value and recalculate modulated value
+                        let base_value = {
+                            let effect_state = match location {
+                                EffectChainLocation::PreFx => self.effects_editor.editor.pre_fx.get(effect_idx),
+                                EffectChainLocation::Band(band_idx) => self.effects_editor.editor.bands
+                                    .get(band_idx)
+                                    .and_then(|b| b.effects.get(effect_idx)),
+                                EffectChainLocation::PostFx => self.effects_editor.editor.post_fx.get(effect_idx),
+                            };
+                            effect_state
+                                .and_then(|e| e.knob_assignments.get(knob_idx))
+                                .map(|a| a.value)
+                                .unwrap_or(0.5)
+                        };
+
+                        let param_index = {
+                            let effect_state = match location {
+                                EffectChainLocation::PreFx => self.effects_editor.editor.pre_fx.get(effect_idx),
+                                EffectChainLocation::Band(band_idx) => self.effects_editor.editor.bands
+                                    .get(band_idx)
+                                    .and_then(|b| b.effects.get(effect_idx)),
+                                EffectChainLocation::PostFx => self.effects_editor.editor.post_fx.get(effect_idx),
+                            };
+                            effect_state
+                                .and_then(|e| e.knob_assignments.get(knob_idx))
+                                .and_then(|a| a.param_index)
+                        };
+
+                        if let Some(param_idx) = param_index {
+                            let modulated_value = ParamMacroMapping::new(macro_index, new_offset_range).modulate(base_value, macro_value);
+                            match location {
+                                EffectChainLocation::PreFx => {
+                                    self.audio.set_multiband_pre_fx_param(stem, effect_idx, param_idx, modulated_value);
+                                }
+                                EffectChainLocation::Band(band_idx) => {
+                                    self.audio.set_multiband_effect_param(stem, band_idx, effect_idx, param_idx, modulated_value);
+                                }
+                                EffectChainLocation::PostFx => {
+                                    self.audio.set_multiband_post_fx_param(stem, effect_idx, param_idx, modulated_value);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            EndDragModRange => {
+                self.effects_editor.editor.dragging_mod_range = None;
+            }
+
+            HoverModRange { macro_index, mapping_idx } => {
+                self.effects_editor.editor.hovered_mapping = Some((macro_index, mapping_idx));
+            }
+
+            UnhoverModRange => {
+                self.effects_editor.editor.hovered_mapping = None;
             }
 
             // ─────────────────────────────────────────────────────────────────────
@@ -703,14 +840,6 @@ impl MeshCueApp {
                             param_name, param_index, knob, current_value
                         );
                     }
-
-                    // Update param_names for UI display
-                    if knob < effect_state.param_names.len() {
-                        effect_state.param_names[knob] = param_name.clone();
-                    }
-                    if knob < effect_state.param_values.len() {
-                        effect_state.param_values[knob] = current_value;
-                    }
                 }
 
                 // Sync the knob widget value
@@ -786,6 +915,79 @@ impl MeshCueApp {
                         }
                     }
                 }
+
+                // Route to dragging mod range indicator
+                if let Some(ref mut drag) = self.effects_editor.editor.dragging_mod_range {
+                    use mesh_widgets::knob::ModulationRange;
+                    use mesh_widgets::multiband::ParamMacroMapping;
+
+                    const MOD_DRAG_SENSITIVITY: f32 = 0.01; // offset per pixel
+
+                    if drag.start_y.is_none() {
+                        // First mouse move - capture starting position
+                        drag.start_y = Some(position.y);
+                    } else {
+                        // Calculate new offset based on drag delta
+                        // Moving UP (negative y delta) increases offset, moving DOWN decreases
+                        let start_y = drag.start_y.unwrap();
+                        let delta_y = start_y - position.y; // Inverted: up is positive
+                        let new_offset = (drag.start_offset + delta_y * MOD_DRAG_SENSITIVITY).clamp(-1.0, 1.0);
+
+                        let macro_index = drag.macro_index;
+                        let mapping_idx = drag.mapping_idx;
+
+                        // Look up the mapping reference to get the effect location
+                        if let Some(mapping_ref) = self.effects_editor.editor.macro_mappings_index[macro_index].get(mapping_idx).copied() {
+                            let location = mapping_ref.location;
+                            let effect_idx = mapping_ref.effect_idx;
+                            let knob_idx = mapping_ref.knob_idx;
+
+                            // Get base value for modulation bounds calculation
+                            let base_value = {
+                                let effect_state = match location {
+                                    EffectChainLocation::PreFx => self.effects_editor.editor.pre_fx.get(effect_idx),
+                                    EffectChainLocation::Band(band_idx) => self.effects_editor.editor.bands
+                                        .get(band_idx)
+                                        .and_then(|b| b.effects.get(effect_idx)),
+                                    EffectChainLocation::PostFx => self.effects_editor.editor.post_fx.get(effect_idx),
+                                };
+                                effect_state
+                                    .and_then(|e| e.knob_assignments.get(knob_idx))
+                                    .map(|a| a.value)
+                                    .unwrap_or(0.5)
+                            };
+
+                            // Update actual offset_range in the effect's knob assignment
+                            let effect_state = match location {
+                                EffectChainLocation::PreFx => self.effects_editor.editor.pre_fx.get_mut(effect_idx),
+                                EffectChainLocation::Band(band_idx) => self.effects_editor.editor.bands
+                                    .get_mut(band_idx)
+                                    .and_then(|b| b.effects.get_mut(effect_idx)),
+                                EffectChainLocation::PostFx => self.effects_editor.editor.post_fx.get_mut(effect_idx),
+                            };
+
+                            if let Some(effect) = effect_state {
+                                if let Some(mapping) = effect.knob_assignments[knob_idx].macro_mapping.as_mut() {
+                                    mapping.offset_range = new_offset;
+                                }
+                            }
+
+                            // Update the index cache
+                            self.effects_editor.editor.update_mapping_offset_range(macro_index, mapping_idx, new_offset);
+
+                            // Update parameter knob modulation visualization
+                            let key = (location, effect_idx, knob_idx);
+                            if let Some(knob) = self.effects_editor.editor.effect_knobs.get_mut(&key) {
+                                let (min, max) = ParamMacroMapping::new(macro_index, new_offset.abs()).modulation_bounds(base_value);
+                                knob.set_modulations(vec![ModulationRange::new(
+                                    min,
+                                    max,
+                                    iced::Color::from_rgb(0.9, 0.5, 0.2), // Orange for modulation
+                                )]);
+                            }
+                        }
+                    }
+                }
             }
             GlobalMouseReleased => {
                 use mesh_widgets::knob::KnobEvent;
@@ -798,6 +1000,8 @@ impl MeshCueApp {
                         knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
                     }
                 }
+                // Release dragging mod range indicator
+                self.effects_editor.editor.dragging_mod_range = None;
             }
 
             // ─────────────────────────────────────────────────────────────────────
@@ -853,6 +1057,9 @@ impl MeshCueApp {
 
                 // Ensure knob state exists for all effects
                 mesh_widgets::multiband::ensure_effect_knobs_exist(&mut self.effects_editor.editor);
+
+                // Rebuild the macro mappings reverse index
+                self.effects_editor.editor.rebuild_macro_mappings_index();
 
                 // If preview is enabled, sync the loaded state to audio
                 if self.effects_editor.audio_preview_enabled {

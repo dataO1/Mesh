@@ -44,17 +44,6 @@ fn create_effect_state_from_info(
         }
     }
 
-    // Create param_names and param_values for the first 8 or fewer params
-    let param_count = effect_info.params.len().min(8);
-    let param_names: Vec<String> = effect_info.params.iter()
-        .take(8)
-        .map(|p| p.name.clone())
-        .collect();
-    let param_values: Vec<f32> = effect_info.params.iter()
-        .take(8)
-        .map(|p| p.default)
-        .collect();
-
     EffectUiState {
         id,
         name: effect_info.name.clone(),
@@ -64,9 +53,6 @@ fn create_effect_state_from_info(
         gui_open: false,
         available_params,
         knob_assignments,
-        param_names,
-        param_values,
-        param_mappings: vec![ParamMacroMapping::default(); param_count],
     }
 }
 
@@ -631,16 +617,10 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
 
             let offset_range = 0.25; // ±25% default range
 
-            // Update UI state - set the mapping on both structures
+            // Update UI state - set the mapping on knob_assignments
             if let Some(effect_state) = effect_state {
-                // Set on knob_assignments (primary storage for new mappings)
                 if let Some(assignment) = effect_state.knob_assignments.get_mut(param) {
                     assignment.macro_mapping = Some(ParamMacroMapping::new(macro_index, offset_range));
-                }
-                // Also set on param_mappings for legacy compatibility
-                if let Some(mapping) = effect_state.param_mappings.get_mut(param) {
-                    mapping.macro_index = Some(macro_index);
-                    mapping.offset_range = offset_range;
                 }
             }
 
@@ -660,6 +640,9 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                 macro_state.mapping_count += 1;
             }
 
+            // Add to reverse mapping index
+            app.multiband_editor.add_mapping_to_index(macro_index, location, effect, param, offset_range);
+
             // Clear drag state
             app.multiband_editor.dragging_macro = None;
 
@@ -668,7 +651,22 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         }
 
         RemoveParamMapping { location, effect, param } => {
-            // Get effect state based on location
+            // Get the macro that was mapped (before modifying)
+            let old_macro_index = {
+                let effect_state = match location {
+                    EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get(effect),
+                    EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
+                        .get(band_idx)
+                        .and_then(|b| b.effects.get(effect)),
+                    EffectChainLocation::PostFx => app.multiband_editor.post_fx.get(effect),
+                };
+                effect_state
+                    .and_then(|e| e.knob_assignments.get(param))
+                    .and_then(|a| a.macro_mapping.as_ref())
+                    .and_then(|m| m.macro_index)
+            };
+
+            // Get effect state based on location (mutable)
             let effect_state = match location {
                 EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get_mut(effect),
                 EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
@@ -677,9 +675,8 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                 EffectChainLocation::PostFx => app.multiband_editor.post_fx.get_mut(effect),
             };
 
-            // Get the macro that was mapped and decrement its count
+            // Remove the mapping from knob assignment and decrement macro count
             if let Some(effect_state) = effect_state {
-                // Clear from knob_assignments
                 if let Some(assignment) = effect_state.knob_assignments.get_mut(param) {
                     if let Some(ref mapping) = assignment.macro_mapping {
                         if let Some(old_macro) = mapping.macro_index {
@@ -690,10 +687,11 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                     }
                     assignment.macro_mapping = None;
                 }
-                // Clear from param_mappings (legacy)
-                if let Some(mapping) = effect_state.param_mappings.get_mut(param) {
-                    mapping.macro_index = None;
-                }
+            }
+
+            // Remove from reverse mapping index
+            if let Some(macro_index) = old_macro_index {
+                app.multiband_editor.remove_mapping_from_index(macro_index, location, effect, param);
             }
 
             // Clear knob modulation visualization
@@ -717,6 +715,102 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
 
         ClearMacroMappings(_index) => {
             // TODO: Clear all mappings for this macro
+            Task::none()
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Macro Modulation Range Controls
+        // ─────────────────────────────────────────────────────────────────────
+        StartDragModRange { macro_index, mapping_idx } => {
+            use mesh_widgets::multiband::ModRangeDrag;
+
+            // Get the current offset_range as the starting value
+            let start_offset = app.multiband_editor.macro_mappings_index[macro_index]
+                .get(mapping_idx)
+                .map(|m| m.offset_range)
+                .unwrap_or(0.0);
+
+            app.multiband_editor.dragging_mod_range = Some(ModRangeDrag {
+                macro_index,
+                mapping_idx,
+                start_offset,
+                start_y: None, // Will be set on first mouse move
+            });
+            Task::none()
+        }
+
+        DragModRange { macro_index, mapping_idx, new_offset_range } => {
+            use mesh_widgets::knob::ModulationRange;
+
+            // Clamp offset_range to valid range
+            let new_offset_range = new_offset_range.clamp(-1.0, 1.0);
+
+            // Look up the mapping reference to get the effect location
+            if let Some(mapping_ref) = app.multiband_editor.macro_mappings_index[macro_index].get(mapping_idx).copied() {
+                let location = mapping_ref.location;
+                let effect_idx = mapping_ref.effect_idx;
+                let knob_idx = mapping_ref.knob_idx;
+
+                // Get base value for modulation bounds calculation
+                let base_value = {
+                    let effect_state = match location {
+                        EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get(effect_idx),
+                        EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
+                            .get(band_idx)
+                            .and_then(|b| b.effects.get(effect_idx)),
+                        EffectChainLocation::PostFx => app.multiband_editor.post_fx.get(effect_idx),
+                    };
+                    effect_state
+                        .and_then(|e| e.knob_assignments.get(knob_idx))
+                        .map(|a| a.value)
+                        .unwrap_or(0.5)
+                };
+
+                // Update actual offset_range in the effect's knob assignment
+                let effect_state = match location {
+                    EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get_mut(effect_idx),
+                    EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
+                        .get_mut(band_idx)
+                        .and_then(|b| b.effects.get_mut(effect_idx)),
+                    EffectChainLocation::PostFx => app.multiband_editor.post_fx.get_mut(effect_idx),
+                };
+
+                if let Some(effect) = effect_state {
+                    if let Some(mapping) = effect.knob_assignments[knob_idx].macro_mapping.as_mut() {
+                        mapping.offset_range = new_offset_range;
+                    }
+                }
+
+                // Update the index cache
+                app.multiband_editor.update_mapping_offset_range(macro_index, mapping_idx, new_offset_range);
+
+                // Update parameter knob modulation visualization
+                let key = (location, effect_idx, knob_idx);
+                if let Some(knob) = app.multiband_editor.effect_knobs.get_mut(&key) {
+                    // Use absolute value for modulation bounds since visualization shows range extent
+                    let (min, max) = ParamMacroMapping::new(macro_index, new_offset_range.abs()).modulation_bounds(base_value);
+                    knob.set_modulations(vec![ModulationRange::new(
+                        min,
+                        max,
+                        iced::Color::from_rgb(0.9, 0.5, 0.2), // Orange for modulation
+                    )]);
+                }
+            }
+            Task::none()
+        }
+
+        EndDragModRange => {
+            app.multiband_editor.dragging_mod_range = None;
+            Task::none()
+        }
+
+        HoverModRange { macro_index, mapping_idx } => {
+            app.multiband_editor.hovered_mapping = Some((macro_index, mapping_idx));
+            Task::none()
+        }
+
+        UnhoverModRange => {
+            app.multiband_editor.hovered_mapping = None;
             Task::none()
         }
 
@@ -763,6 +857,9 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                     // Apply preset to editor state
                     preset_config.apply_to_editor_state(&mut app.multiband_editor);
                     app.multiband_editor.preset_browser_open = false;
+
+                    // Rebuild the macro mappings index after loading preset
+                    app.multiband_editor.rebuild_macro_mappings_index();
 
                     // TODO: Recreate effects in backend based on preset
                     // For now, just update UI state - effects need to be re-added manually
@@ -872,17 +969,6 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                     if let Some(idx) = param_index {
                         if let Some(param) = effect_state.available_params.get(idx) {
                             assignment.value = param.default;
-                        }
-                    }
-
-                    // Update legacy param_names for backwards compatibility
-                    if knob < effect_state.param_names.len() {
-                        if let Some(idx) = param_index {
-                            if let Some(param) = effect_state.available_params.get(idx) {
-                                effect_state.param_names[knob] = param.name.clone();
-                            }
-                        } else {
-                            effect_state.param_names[knob] = "[assign]".to_string();
                         }
                     }
                 }
@@ -1002,6 +1088,79 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
 
                         // Apply modulation to all mapped parameters
                         apply_macro_modulation(app, index, new_value);
+                    }
+                }
+            }
+
+            // Route to dragging mod range indicator
+            if let Some(ref mut drag) = app.multiband_editor.dragging_mod_range {
+                use mesh_widgets::knob::ModulationRange;
+                use mesh_widgets::multiband::ParamMacroMapping;
+
+                const MOD_DRAG_SENSITIVITY: f32 = 0.01; // offset per pixel
+
+                if drag.start_y.is_none() {
+                    // First mouse move - capture starting position
+                    drag.start_y = Some(position.y);
+                } else {
+                    // Calculate new offset based on drag delta
+                    // Moving UP (negative y delta) increases offset, moving DOWN decreases
+                    let start_y = drag.start_y.unwrap();
+                    let delta_y = start_y - position.y; // Inverted: up is positive
+                    let new_offset = (drag.start_offset + delta_y * MOD_DRAG_SENSITIVITY).clamp(-1.0, 1.0);
+
+                    let macro_index = drag.macro_index;
+                    let mapping_idx = drag.mapping_idx;
+
+                    // Look up the mapping reference to get the effect location
+                    if let Some(mapping_ref) = app.multiband_editor.macro_mappings_index[macro_index].get(mapping_idx).copied() {
+                        let location = mapping_ref.location;
+                        let effect_idx = mapping_ref.effect_idx;
+                        let knob_idx = mapping_ref.knob_idx;
+
+                        // Get base value for modulation bounds calculation
+                        let base_value = {
+                            let effect_state = match location {
+                                EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get(effect_idx),
+                                EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
+                                    .get(band_idx)
+                                    .and_then(|b| b.effects.get(effect_idx)),
+                                EffectChainLocation::PostFx => app.multiband_editor.post_fx.get(effect_idx),
+                            };
+                            effect_state
+                                .and_then(|e| e.knob_assignments.get(knob_idx))
+                                .map(|a| a.value)
+                                .unwrap_or(0.5)
+                        };
+
+                        // Update actual offset_range in the effect's knob assignment
+                        let effect_state = match location {
+                            EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get_mut(effect_idx),
+                            EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
+                                .get_mut(band_idx)
+                                .and_then(|b| b.effects.get_mut(effect_idx)),
+                            EffectChainLocation::PostFx => app.multiband_editor.post_fx.get_mut(effect_idx),
+                        };
+
+                        if let Some(effect) = effect_state {
+                            if let Some(mapping) = effect.knob_assignments[knob_idx].macro_mapping.as_mut() {
+                                mapping.offset_range = new_offset;
+                            }
+                        }
+
+                        // Update the index cache
+                        app.multiband_editor.update_mapping_offset_range(macro_index, mapping_idx, new_offset);
+
+                        // Update parameter knob modulation visualization
+                        let key = (location, effect_idx, knob_idx);
+                        if let Some(knob) = app.multiband_editor.effect_knobs.get_mut(&key) {
+                            let (min, max) = ParamMacroMapping::new(macro_index, new_offset.abs()).modulation_bounds(base_value);
+                            knob.set_modulations(vec![ModulationRange::new(
+                                min,
+                                max,
+                                iced::Color::from_rgb(0.9, 0.5, 0.2), // Orange for modulation
+                            )]);
+                        }
                     }
                 }
             }
@@ -1329,16 +1488,6 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                         param_name, param_index, knob, current_normalized_value
                     );
                 }
-
-                // Update param_names for UI label display
-                if knob < effect_state.param_names.len() {
-                    effect_state.param_names[knob] = param_name.clone();
-                }
-
-                // Also update param_values for the knob widget
-                if knob < effect_state.param_values.len() {
-                    effect_state.param_values[knob] = current_normalized_value;
-                }
             }
 
             // Sync the knob widget value as well
@@ -1362,6 +1511,9 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                     knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
                 }
             }
+
+            // Release dragging mod range indicator
+            app.multiband_editor.dragging_mod_range = None;
 
             Task::none()
         }
@@ -1518,28 +1670,6 @@ fn apply_macro_modulation(app: &mut MeshApp, macro_index: usize, macro_value: f3
                             (macro_value * 2.0 - 1.0) * mapping.offset_range,
                             modulated_value
                         );
-                    }
-                }
-            }
-
-            // Also check legacy param_mappings for backwards compatibility
-            if let Some(mapping) = effect.param_mappings.get(knob_idx) {
-                if mapping.macro_index == Some(macro_index) {
-                    if let Some(param_index) = assignment.param_index {
-                        let base_value = assignment.value;
-                        let modulated_value = mapping.modulate(base_value, macro_value);
-
-                        match location {
-                            EffectChainLocation::PreFx => {
-                                domain.set_pre_fx_param(deck, stem, effect_idx, param_index, modulated_value);
-                            }
-                            EffectChainLocation::Band(band_idx) => {
-                                domain.set_band_effect_param(deck, stem, band_idx, effect_idx, param_index, modulated_value);
-                            }
-                            EffectChainLocation::PostFx => {
-                                domain.set_post_fx_param(deck, stem, effect_idx, param_index, modulated_value);
-                            }
-                        }
                     }
                 }
             }

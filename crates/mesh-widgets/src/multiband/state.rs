@@ -166,18 +166,6 @@ pub struct EffectUiState {
     /// UI knob assignments (exactly 8 knobs)
     /// Each knob can be assigned to any parameter index, or be unassigned
     pub knob_assignments: [KnobAssignment; MAX_UI_KNOBS],
-
-    // Legacy fields kept for backwards compatibility during migration
-    // TODO: Remove these after migration is complete
-    /// Parameter names (up to 8) - LEGACY, use available_params instead
-    #[serde(default)]
-    pub param_names: Vec<String>,
-    /// Current parameter values (normalized 0.0-1.0) - LEGACY, use knob_assignments instead
-    #[serde(default)]
-    pub param_values: Vec<f32>,
-    /// Macro mappings for each parameter - LEGACY, use knob_assignments instead
-    #[serde(default)]
-    pub param_mappings: Vec<ParamMacroMapping>,
 }
 
 impl EffectUiState {
@@ -215,10 +203,6 @@ impl EffectUiState {
             gui_open: false,
             available_params,
             knob_assignments,
-            // Legacy fields for backwards compat
-            param_names: info.param_names.clone(),
-            param_values: info.param_values.clone(),
-            param_mappings: vec![ParamMacroMapping::default(); param_count],
         }
     }
 
@@ -239,10 +223,6 @@ impl EffectUiState {
             assignment.value = available_params.get(i).map(|p| p.default).unwrap_or(0.5);
         }
 
-        // Legacy fields
-        let param_names: Vec<String> = available_params.iter().take(MAX_UI_KNOBS).map(|p| p.name.clone()).collect();
-        let param_values: Vec<f32> = available_params.iter().take(MAX_UI_KNOBS).map(|p| p.default).collect();
-
         Self {
             id,
             name,
@@ -252,9 +232,6 @@ impl EffectUiState {
             gui_open: false,
             available_params,
             knob_assignments,
-            param_names,
-            param_values,
-            param_mappings: vec![ParamMacroMapping::default(); param_count],
         }
     }
 
@@ -368,6 +345,35 @@ pub enum EffectChainLocation {
     PostFx,
 }
 
+/// Reference to a macro mapping for the reverse index
+///
+/// This allows efficient lookup of which parameters are mapped to each macro,
+/// enabling the mini modulation indicator UI above macro knobs.
+#[derive(Debug, Clone, Copy)]
+pub struct MacroMappingRef {
+    /// Location of the effect in the chain
+    pub location: EffectChainLocation,
+    /// Effect index within the chain
+    pub effect_idx: usize,
+    /// Knob index within the effect (0-7)
+    pub knob_idx: usize,
+    /// Current offset range (-1 to +1)
+    pub offset_range: f32,
+}
+
+/// State for dragging a modulation range indicator
+#[derive(Debug, Clone, Copy)]
+pub struct ModRangeDrag {
+    /// Which macro's mapping is being dragged
+    pub macro_index: usize,
+    /// Index within that macro's mappings
+    pub mapping_idx: usize,
+    /// Starting offset_range value when drag began
+    pub start_offset: f32,
+    /// Starting Y position when drag began (None until first mouse move)
+    pub start_y: Option<f32>,
+}
+
 /// Key for effect parameter knobs
 pub type EffectKnobKey = (EffectChainLocation, usize, usize); // (location, effect_idx, param_idx)
 
@@ -461,6 +467,21 @@ pub struct MultibandEditorState {
     /// When set, the next parameter change from a CLAP plugin GUI will be
     /// assigned to this knob.
     pub learning_knob: Option<(EffectChainLocation, usize, usize)>,
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Macro Modulation Range Controls
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Reverse index: for each macro (0-7), list of mappings to that macro
+    /// This enables efficient lookup for rendering mini modulation indicators.
+    pub macro_mappings_index: [Vec<MacroMappingRef>; 8],
+
+    /// Currently dragging a modulation range indicator
+    pub dragging_mod_range: Option<ModRangeDrag>,
+
+    /// Currently hovered modulation indicator: (macro_idx, mapping_idx)
+    /// Used to highlight the target parameter knob when hovering an indicator.
+    pub hovered_mapping: Option<(usize, usize)>,
 }
 
 impl Default for MultibandEditorState {
@@ -497,12 +518,17 @@ impl MultibandEditorState {
             dragging_effect_knob: None,
             dragging_macro_knob: None,
             learning_knob: None,
+            macro_mappings_index: Default::default(),
+            dragging_mod_range: None,
+            hovered_mapping: None,
         }
     }
 
     /// Check if any knob is currently being dragged (for mouse capture subscription)
     pub fn is_any_knob_dragging(&self) -> bool {
-        self.dragging_effect_knob.is_some() || self.dragging_macro_knob.is_some()
+        self.dragging_effect_knob.is_some()
+            || self.dragging_macro_knob.is_some()
+            || self.dragging_mod_range.is_some()
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -576,38 +602,38 @@ impl MultibandEditorState {
         })
     }
 
-    /// Get effect parameter value from state
-    fn get_effect_param_value(&self, location: EffectChainLocation, effect_idx: usize, param_idx: usize) -> f32 {
+    /// Get effect parameter value from state (knob_idx is the UI knob index 0-7)
+    fn get_effect_param_value(&self, location: EffectChainLocation, effect_idx: usize, knob_idx: usize) -> f32 {
         match location {
             EffectChainLocation::PreFx => {
                 self.pre_fx.get(effect_idx)
-                    .and_then(|e| e.param_values.get(param_idx).copied())
+                    .and_then(|e| e.knob_assignments.get(knob_idx))
+                    .map(|a| a.value)
                     .unwrap_or(0.5)
             }
             EffectChainLocation::Band(band_idx) => {
                 self.bands.get(band_idx)
                     .and_then(|b| b.effects.get(effect_idx))
-                    .and_then(|e| e.param_values.get(param_idx).copied())
+                    .and_then(|e| e.knob_assignments.get(knob_idx))
+                    .map(|a| a.value)
                     .unwrap_or(0.5)
             }
             EffectChainLocation::PostFx => {
                 self.post_fx.get(effect_idx)
-                    .and_then(|e| e.param_values.get(param_idx).copied())
+                    .and_then(|e| e.knob_assignments.get(knob_idx))
+                    .map(|a| a.value)
                     .unwrap_or(0.5)
             }
         }
     }
 
-    /// Set effect parameter value in state and sync to knob
-    pub fn set_effect_param_value(&mut self, location: EffectChainLocation, effect_idx: usize, param_idx: usize, value: f32) {
-        // Update effect state (both param_values and knob_assignments)
+    /// Set effect parameter value in state and sync to knob (knob_idx is the UI knob index 0-7)
+    pub fn set_effect_param_value(&mut self, location: EffectChainLocation, effect_idx: usize, knob_idx: usize, value: f32) {
+        // Update knob assignment value
         match location {
             EffectChainLocation::PreFx => {
                 if let Some(effect) = self.pre_fx.get_mut(effect_idx) {
-                    if let Some(v) = effect.param_values.get_mut(param_idx) {
-                        *v = value;
-                    }
-                    if let Some(assignment) = effect.knob_assignments.get_mut(param_idx) {
+                    if let Some(assignment) = effect.knob_assignments.get_mut(knob_idx) {
                         assignment.value = value;
                     }
                 }
@@ -615,10 +641,7 @@ impl MultibandEditorState {
             EffectChainLocation::Band(band_idx) => {
                 if let Some(band) = self.bands.get_mut(band_idx) {
                     if let Some(effect) = band.effects.get_mut(effect_idx) {
-                        if let Some(v) = effect.param_values.get_mut(param_idx) {
-                            *v = value;
-                        }
-                        if let Some(assignment) = effect.knob_assignments.get_mut(param_idx) {
+                        if let Some(assignment) = effect.knob_assignments.get_mut(knob_idx) {
                             assignment.value = value;
                         }
                     }
@@ -626,10 +649,7 @@ impl MultibandEditorState {
             }
             EffectChainLocation::PostFx => {
                 if let Some(effect) = self.post_fx.get_mut(effect_idx) {
-                    if let Some(v) = effect.param_values.get_mut(param_idx) {
-                        *v = value;
-                    }
-                    if let Some(assignment) = effect.knob_assignments.get_mut(param_idx) {
+                    if let Some(assignment) = effect.knob_assignments.get_mut(knob_idx) {
                         assignment.value = value;
                     }
                 }
@@ -637,7 +657,7 @@ impl MultibandEditorState {
         }
 
         // Sync knob widget if it exists
-        let key = (location, effect_idx, param_idx);
+        let key = (location, effect_idx, knob_idx);
         if let Some(knob) = self.effect_knobs.get_mut(&key) {
             knob.set_value(value);
         }
@@ -805,6 +825,99 @@ impl MultibandEditorState {
     pub fn set_macro_name(&mut self, index: usize, name: String) {
         if let Some(macro_state) = self.macros.get_mut(index) {
             macro_state.name = name;
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Macro Modulation Range Index
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Rebuild the reverse mapping index from all effects
+    ///
+    /// Scans pre_fx, bands[].effects, and post_fx to find all knob assignments
+    /// that have macro mappings, then builds a reverse index for each macro.
+    /// This enables efficient lookup of which parameters are mapped to each macro.
+    pub fn rebuild_macro_mappings_index(&mut self) {
+        // Clear existing index
+        for mappings in &mut self.macro_mappings_index {
+            mappings.clear();
+        }
+
+        // Helper closure to extract mappings from an effect
+        fn extract_mappings(
+            location: EffectChainLocation,
+            effect_idx: usize,
+            effect: &EffectUiState,
+            index: &mut [Vec<MacroMappingRef>; 8],
+        ) {
+            for (knob_idx, assignment) in effect.knob_assignments.iter().enumerate() {
+                if let Some(ref mapping) = assignment.macro_mapping {
+                    if let Some(macro_index) = mapping.macro_index {
+                        if macro_index < 8 {
+                            index[macro_index].push(MacroMappingRef {
+                                location,
+                                effect_idx,
+                                knob_idx,
+                                offset_range: mapping.offset_range,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Scan pre-fx effects
+        for (effect_idx, effect) in self.pre_fx.iter().enumerate() {
+            extract_mappings(EffectChainLocation::PreFx, effect_idx, effect, &mut self.macro_mappings_index);
+        }
+
+        // Scan band effects
+        for (band_idx, band) in self.bands.iter().enumerate() {
+            for (effect_idx, effect) in band.effects.iter().enumerate() {
+                extract_mappings(EffectChainLocation::Band(band_idx), effect_idx, effect, &mut self.macro_mappings_index);
+            }
+        }
+
+        // Scan post-fx effects
+        for (effect_idx, effect) in self.post_fx.iter().enumerate() {
+            extract_mappings(EffectChainLocation::PostFx, effect_idx, effect, &mut self.macro_mappings_index);
+        }
+
+        // Update macro mapping counts
+        for (macro_idx, mappings) in self.macro_mappings_index.iter().enumerate() {
+            if let Some(macro_state) = self.macros.get_mut(macro_idx) {
+                macro_state.mapping_count = mappings.len();
+            }
+        }
+    }
+
+    /// Add a single mapping to the index (called when a new mapping is created)
+    pub fn add_mapping_to_index(&mut self, macro_index: usize, location: EffectChainLocation, effect_idx: usize, knob_idx: usize, offset_range: f32) {
+        if macro_index < 8 {
+            self.macro_mappings_index[macro_index].push(MacroMappingRef {
+                location,
+                effect_idx,
+                knob_idx,
+                offset_range,
+            });
+        }
+    }
+
+    /// Remove a mapping from the index (called when a mapping is removed)
+    pub fn remove_mapping_from_index(&mut self, macro_index: usize, location: EffectChainLocation, effect_idx: usize, knob_idx: usize) {
+        if macro_index < 8 {
+            self.macro_mappings_index[macro_index].retain(|m| {
+                !(m.location == location && m.effect_idx == effect_idx && m.knob_idx == knob_idx)
+            });
+        }
+    }
+
+    /// Update offset_range for a mapping in the index
+    pub fn update_mapping_offset_range(&mut self, macro_index: usize, mapping_idx: usize, new_offset_range: f32) {
+        if macro_index < 8 {
+            if let Some(mapping) = self.macro_mappings_index[macro_index].get_mut(mapping_idx) {
+                mapping.offset_range = new_offset_range;
+            }
         }
     }
 }

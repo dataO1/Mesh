@@ -158,6 +158,34 @@ pub enum MultibandEditorMessage {
     ClearMacroMappings(usize),
 
     // ─────────────────────────────────────────────────────────────────────
+    // Macro Modulation Range Controls
+    // ─────────────────────────────────────────────────────────────────────
+    /// Start dragging a modulation range indicator
+    StartDragModRange {
+        macro_index: usize,
+        mapping_idx: usize,
+    },
+
+    /// Update modulation range while dragging (-1.0 to 1.0)
+    DragModRange {
+        macro_index: usize,
+        mapping_idx: usize,
+        new_offset_range: f32,
+    },
+
+    /// End modulation range drag
+    EndDragModRange,
+
+    /// Hover over modulation indicator (highlights target param)
+    HoverModRange {
+        macro_index: usize,
+        mapping_idx: usize,
+    },
+
+    /// Stop hovering over modulation indicator
+    UnhoverModRange,
+
+    // ─────────────────────────────────────────────────────────────────────
     // Preset management
     // ─────────────────────────────────────────────────────────────────────
     /// Open preset browser (for loading)

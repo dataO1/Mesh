@@ -407,15 +407,17 @@ fn apply_preset_to_multiband(
         };
 
         if let Ok(_info) = result {
-            // Apply parameter values
-            for (param_idx, &value) in effect.param_values.iter().enumerate() {
-                app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPreFxParam {
-                    deck: deck_idx,
-                    stem,
-                    effect_index: effect_idx,
-                    param_index: param_idx,
-                    value,
-                });
+            // Apply parameter values from knob assignments
+            for assignment in effect.knob_assignments.iter() {
+                if let Some(param_idx) = assignment.param_index {
+                    app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPreFxParam {
+                        deck: deck_idx,
+                        stem,
+                        effect_index: effect_idx,
+                        param_index: param_idx,
+                        value: assignment.value,
+                    });
+                }
             }
         }
     }
@@ -438,16 +440,18 @@ fn apply_preset_to_multiband(
             };
 
             if let Ok(_info) = result {
-                // Apply parameter values
-                for (param_idx, &value) in effect.param_values.iter().enumerate() {
-                    app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandEffectParam {
-                        deck: deck_idx,
-                        stem,
-                        band_index: band_idx,
-                        effect_index: effect_idx,
-                        param_index: param_idx,
-                        value,
-                    });
+                // Apply parameter values from knob assignments
+                for assignment in effect.knob_assignments.iter() {
+                    if let Some(param_idx) = assignment.param_index {
+                        app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandEffectParam {
+                            deck: deck_idx,
+                            stem,
+                            band_index: band_idx,
+                            effect_index: effect_idx,
+                            param_index: param_idx,
+                            value: assignment.value,
+                        });
+                    }
                 }
             }
         }
@@ -462,15 +466,17 @@ fn apply_preset_to_multiband(
         };
 
         if let Ok(_info) = result {
-            // Apply parameter values
-            for (param_idx, &value) in effect.param_values.iter().enumerate() {
-                app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPostFxParam {
-                    deck: deck_idx,
-                    stem,
-                    effect_index: effect_idx,
-                    param_index: param_idx,
-                    value,
-                });
+            // Apply parameter values from knob assignments
+            for assignment in effect.knob_assignments.iter() {
+                if let Some(param_idx) = assignment.param_index {
+                    app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPostFxParam {
+                        deck: deck_idx,
+                        stem,
+                        effect_index: effect_idx,
+                        param_index: param_idx,
+                        value: assignment.value,
+                    });
+                }
             }
         }
     }
