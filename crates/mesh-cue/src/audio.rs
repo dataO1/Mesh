@@ -697,6 +697,80 @@ impl AudioState {
 
     /// Reset a stem's multiband host to default state (single band, no effects)
     ///
+    // ─────────────────────────────────────────────────────────────────────
+    // Dry/Wet Mix Control
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Set per-effect dry/wet for a pre-fx effect
+    pub fn set_multiband_pre_fx_effect_dry_wet(&mut self, stem: mesh_core::types::Stem, effect_index: usize, mix: f32) {
+        self.send(EngineCommand::SetMultibandPreFxEffectDryWet {
+            deck: PREVIEW_DECK,
+            stem,
+            effect_index,
+            mix,
+        });
+    }
+
+    /// Set per-effect dry/wet for a band effect
+    pub fn set_multiband_band_effect_dry_wet(&mut self, stem: mesh_core::types::Stem, band_index: usize, effect_index: usize, mix: f32) {
+        self.send(EngineCommand::SetMultibandBandEffectDryWet {
+            deck: PREVIEW_DECK,
+            stem,
+            band_index,
+            effect_index,
+            mix,
+        });
+    }
+
+    /// Set per-effect dry/wet for a post-fx effect
+    pub fn set_multiband_post_fx_effect_dry_wet(&mut self, stem: mesh_core::types::Stem, effect_index: usize, mix: f32) {
+        self.send(EngineCommand::SetMultibandPostFxEffectDryWet {
+            deck: PREVIEW_DECK,
+            stem,
+            effect_index,
+            mix,
+        });
+    }
+
+    /// Set chain dry/wet for pre-fx chain
+    pub fn set_multiband_pre_fx_chain_dry_wet(&mut self, stem: mesh_core::types::Stem, mix: f32) {
+        self.send(EngineCommand::SetMultibandPreFxChainDryWet {
+            deck: PREVIEW_DECK,
+            stem,
+            mix,
+        });
+    }
+
+    /// Set chain dry/wet for a band's effect chain
+    pub fn set_multiband_band_chain_dry_wet(&mut self, stem: mesh_core::types::Stem, band_index: usize, mix: f32) {
+        self.send(EngineCommand::SetMultibandBandChainDryWet {
+            deck: PREVIEW_DECK,
+            stem,
+            band_index,
+            mix,
+        });
+    }
+
+    /// Set chain dry/wet for post-fx chain
+    pub fn set_multiband_post_fx_chain_dry_wet(&mut self, stem: mesh_core::types::Stem, mix: f32) {
+        self.send(EngineCommand::SetMultibandPostFxChainDryWet {
+            deck: PREVIEW_DECK,
+            stem,
+            mix,
+        });
+    }
+
+    /// Set global dry/wet for entire effect rack
+    pub fn set_multiband_global_dry_wet(&mut self, stem: mesh_core::types::Stem, mix: f32) {
+        self.send(EngineCommand::SetMultibandGlobalDryWet {
+            deck: PREVIEW_DECK,
+            stem,
+            mix,
+        });
+    }
+
+    /// Reset a stem's multiband host to default state
+    ///
     /// Used when disabling audio preview in the effects editor to return the stem
     /// to a clean processing state.
     pub fn reset_multiband(&mut self, stem: mesh_core::types::Stem) {

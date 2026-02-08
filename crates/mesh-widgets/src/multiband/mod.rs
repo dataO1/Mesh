@@ -40,7 +40,7 @@ pub use config::{
     EffectPresetConfig, MultibandPresetConfig,
 };
 pub use crossover_bar::{crossover_bar, crossover_controls, CROSSOVER_BAR_HEIGHT};
-pub use message::MultibandEditorMessage;
+pub use message::{ChainTarget, MultibandEditorMessage};
 pub use state::{
     AvailableParam, BandUiState, EffectChainLocation, EffectSourceType, EffectUiState,
     KnobAssignment, MacroMappingRef, MacroUiState, ModRangeDrag, MultibandEditorState,

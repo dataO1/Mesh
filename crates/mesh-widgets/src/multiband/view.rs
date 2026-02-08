@@ -4,8 +4,9 @@ use iced::widget::{button, column, container, mouse_area, row, scrollable, text,
 use iced::{Alignment, Color, Element, Length};
 
 use super::crossover_bar::crossover_bar;
-use super::message::MultibandEditorMessage;
+use super::message::{ChainTarget, MultibandEditorMessage};
 use super::state::{BandUiState, EffectChainLocation, EffectUiState, MacroMappingRef, MultibandEditorState};
+use crate::knob::KnobEvent;
 
 use crate::knob::{Knob, ModulationRange};
 
@@ -25,6 +26,8 @@ const SOLO_COLOR: Color = Color::from_rgb(0.9, 0.8, 0.2);
 const BYPASS_COLOR: Color = Color::from_rgb(0.5, 0.5, 0.5);
 /// Color for knobs in learning mode (bright magenta for visibility)
 const LEARNING_COLOR: Color = Color::from_rgb(1.0, 0.3, 0.8);
+/// Color for dry/wet knobs (cyan tint)
+const DRY_WET_COLOR: Color = Color::from_rgb(0.3, 0.8, 0.9);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Horizontal divider helper
@@ -36,6 +39,86 @@ fn divider<'a, M: 'a>() -> Element<'a, M> {
         .width(Length::Fill)
         .style(|_| container::Style {
             background: Some(BORDER_COLOR.into()),
+            ..Default::default()
+        })
+        .into()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Dry/Wet knob helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Create a small dry/wet knob with label
+fn dry_wet_knob_view<'a>(
+    value: f32,
+    label: &'static str,
+    on_event: impl Fn(KnobEvent) -> MultibandEditorMessage + 'a,
+) -> Element<'a, MultibandEditorMessage> {
+    let mut knob = Knob::new(32.0);
+    knob.set_value(value);
+
+    let knob_element = knob.view(on_event);
+    let value_text = format!("{:.0}%", value * 100.0);
+
+    column![
+        text(label).size(10).color(DRY_WET_COLOR),
+        knob_element,
+        text(value_text).size(9).color(TEXT_SECONDARY),
+    ]
+    .spacing(1)
+    .align_x(Alignment::Center)
+    .into()
+}
+
+/// Create a chain dry/wet section with label and knob
+fn chain_dry_wet_section<'a>(
+    label: &'static str,
+    value: f32,
+    on_event: impl Fn(KnobEvent) -> MultibandEditorMessage + 'a,
+    dragging_macro: Option<usize>,
+    chain_target: ChainTarget,
+) -> Element<'a, MultibandEditorMessage> {
+    let mut knob = Knob::new(36.0);
+    knob.set_value(value);
+
+    let knob_element = knob.view(on_event);
+    let value_text = format!("{:.0}%", value * 100.0);
+
+    let content = row![
+        text(label).size(11).color(TEXT_SECONDARY),
+        Space::new().width(Length::Fill),
+        column![
+            knob_element,
+            text(value_text).size(9).color(TEXT_SECONDARY),
+        ]
+        .spacing(1)
+        .align_x(Alignment::Center),
+    ]
+    .spacing(4)
+    .align_y(Alignment::Center);
+
+    // Make it a drop target for macros
+    let content: Element<'_, MultibandEditorMessage> = if let Some(macro_idx) = dragging_macro {
+        mouse_area(content)
+            .on_release(MultibandEditorMessage::DropMacroOnChainDryWet {
+                macro_index: macro_idx,
+                chain: chain_target,
+            })
+            .into()
+    } else {
+        content.into()
+    };
+
+    container(content)
+        .padding([4, 8])
+        .width(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(Color::from_rgba(0.2, 0.3, 0.35, 0.3).into()),
+            border: iced::Border {
+                color: DRY_WET_COLOR.scale_alpha(0.3),
+                width: 1.0,
+                radius: 3.0.into(),
+            },
             ..Default::default()
         })
         .into()
@@ -411,10 +494,24 @@ fn band_column<'a>(
     let is_active = !band.muted && (!any_soloed || band.soloed);
     let bg_color = if is_active { BG_MEDIUM } else { BG_DARK };
 
+    // Chain dry/wet section at the bottom
+    let chain_dw_section = chain_dry_wet_section(
+        "Chain D/W",
+        band.chain_dry_wet,
+        move |event| MultibandEditorMessage::BandChainDryWetKnob { band: band_idx, event },
+        dragging_macro,
+        ChainTarget::Band(band_idx),
+    );
+
     container(
-        column![header, controls, scrollable(effects_column).height(Length::Fill)]
-            .spacing(8)
-            .align_x(Alignment::Center),
+        column![
+            header,
+            controls,
+            scrollable(effects_column).height(Length::Fill),
+            chain_dw_section,
+        ]
+        .spacing(8)
+        .align_x(Alignment::Center),
     )
     .padding(8)
     .width(Length::FillPortion(1))
@@ -475,10 +572,35 @@ fn fx_chain_column<'a>(
 
     let effects_column = column(effect_cards).spacing(4).push(add_button);
 
+    // Chain dry/wet section at the bottom
+    let (chain_dry_wet, chain_target) = if location == EffectChainLocation::PreFx {
+        (editor_state.pre_fx_chain_dry_wet, ChainTarget::PreFx)
+    } else {
+        (editor_state.post_fx_chain_dry_wet, ChainTarget::PostFx)
+    };
+
+    let chain_dry_wet_section = chain_dry_wet_section(
+        "Chain D/W",
+        chain_dry_wet,
+        move |event| {
+            if location == EffectChainLocation::PreFx {
+                MultibandEditorMessage::PreFxChainDryWetKnob(event)
+            } else {
+                MultibandEditorMessage::PostFxChainDryWetKnob(event)
+            }
+        },
+        dragging_macro,
+        chain_target,
+    );
+
     container(
-        column![header, scrollable(effects_column).height(Length::Fill)]
-            .spacing(8)
-            .align_x(Alignment::Center),
+        column![
+            header,
+            scrollable(effects_column).height(Length::Fill),
+            chain_dry_wet_section,
+        ]
+        .spacing(8)
+        .align_x(Alignment::Center),
     )
     .padding(8)
     .width(Length::Fixed(220.0))
@@ -734,7 +856,45 @@ fn fx_effect_card<'a>(
         }
     };
 
-    container(column![header, knob_rows].spacing(4).align_x(Alignment::Center))
+    // Per-effect dry/wet knob on the left
+    let effect_dry_wet = effect.dry_wet;
+    let dry_wet_knob = dry_wet_knob_view(
+        effect_dry_wet,
+        "D/W",
+        move |event| MultibandEditorMessage::EffectDryWetKnob {
+            location,
+            effect: effect_idx,
+            event,
+        },
+    );
+
+    // Wrap dry/wet in macro drop target
+    let dry_wet_element: Element<'_, MultibandEditorMessage> = if let Some(macro_idx) = dragging_macro {
+        mouse_area(dry_wet_knob)
+            .on_release(MultibandEditorMessage::DropMacroOnEffectDryWet {
+                macro_index: macro_idx,
+                location,
+                effect: effect_idx,
+            })
+            .into()
+    } else {
+        dry_wet_knob
+    };
+
+    // Combine dry/wet knob with param knobs
+    let knobs_with_dry_wet = row![
+        dry_wet_element,
+        container(Space::new()).width(Length::Fixed(1.0)).height(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(BORDER_COLOR.into()),
+                ..Default::default()
+            }),
+        knob_rows,
+    ]
+    .spacing(4)
+    .align_y(Alignment::Center);
+
+    container(column![header, knobs_with_dry_wet].spacing(4).align_x(Alignment::Center))
         .padding(4)
         .width(Length::Fill)
         .style(|_| container::Style {
@@ -988,7 +1148,45 @@ fn effect_card<'a>(
         }
     };
 
-    container(column![header, knob_rows].spacing(4).align_x(Alignment::Center))
+    // Per-effect dry/wet knob on the left
+    let effect_dry_wet = effect.dry_wet;
+    let dry_wet_knob = dry_wet_knob_view(
+        effect_dry_wet,
+        "D/W",
+        move |event| MultibandEditorMessage::EffectDryWetKnob {
+            location,
+            effect: effect_idx,
+            event,
+        },
+    );
+
+    // Wrap dry/wet in macro drop target
+    let dry_wet_element: Element<'_, MultibandEditorMessage> = if let Some(macro_idx) = dragging_macro {
+        mouse_area(dry_wet_knob)
+            .on_release(MultibandEditorMessage::DropMacroOnEffectDryWet {
+                macro_index: macro_idx,
+                location,
+                effect: effect_idx,
+            })
+            .into()
+    } else {
+        dry_wet_knob
+    };
+
+    // Combine dry/wet knob with param knobs
+    let knobs_with_dry_wet = row![
+        dry_wet_element,
+        container(Space::new()).width(Length::Fixed(1.0)).height(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(BORDER_COLOR.into()),
+                ..Default::default()
+            }),
+        knob_rows,
+    ]
+    .spacing(4)
+    .align_y(Alignment::Center);
+
+    container(column![header, knobs_with_dry_wet].spacing(4).align_x(Alignment::Center))
         .padding(6)
         .width(Length::Fill)
         .style(|_| container::Style {
@@ -1117,6 +1315,46 @@ fn macro_bar<'a>(
         })
         .collect();
 
+    // Global dry/wet control
+    let global_dry_wet = state.global_dry_wet;
+    let global_dw_knob = {
+        let mut knob = Knob::new(48.0);
+        knob.set_value(global_dry_wet);
+        let knob_element = knob.view(|event| MultibandEditorMessage::GlobalDryWetKnob(event));
+
+        let value_text = format!("{:.0}%", global_dry_wet * 100.0);
+
+        let content = column![
+            text("Global").size(10).color(DRY_WET_COLOR),
+            text("D/W").size(10).color(DRY_WET_COLOR),
+            knob_element,
+            text(value_text).size(10).color(TEXT_SECONDARY),
+        ]
+        .spacing(1)
+        .align_x(Alignment::Center);
+
+        // Wrap in macro drop target
+        let content: Element<'_, MultibandEditorMessage> = if let Some(macro_idx) = dragging_macro {
+            mouse_area(content)
+                .on_release(MultibandEditorMessage::DropMacroOnGlobalDryWet { macro_index: macro_idx })
+                .into()
+        } else {
+            content.into()
+        };
+
+        container(content)
+            .padding(4)
+            .style(|_| container::Style {
+                background: Some(Color::from_rgba(0.2, 0.3, 0.35, 0.3).into()),
+                border: iced::Border {
+                    color: DRY_WET_COLOR.scale_alpha(0.3),
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                ..Default::default()
+            })
+    };
+
     container(
         column![
             row![
@@ -1131,7 +1369,13 @@ fn macro_bar<'a>(
                 },
             ]
             .width(Length::Fill),
-            row(macro_widgets).spacing(8).padding([0, 8]), // Add horizontal padding for knob circles
+            row![
+                row(macro_widgets).spacing(8).padding([0, 8]), // Add horizontal padding for knob circles
+                Space::new().width(Length::Fill),
+                global_dw_knob,
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
         ]
         .spacing(6),
     )

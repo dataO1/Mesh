@@ -176,6 +176,20 @@ pub struct EffectUiState {
     /// Populated when loading a preset, empty for newly added effects.
     #[serde(skip)]
     pub saved_param_values: Vec<f32>,
+
+    /// Per-effect dry/wet mix (0.0 = fully dry, 1.0 = fully wet)
+    /// Default is 1.0 (100% wet = normal processing)
+    #[serde(default = "default_dry_wet")]
+    pub dry_wet: f32,
+
+    /// Macro mapping for dry/wet parameter
+    #[serde(default)]
+    pub dry_wet_macro_mapping: Option<ParamMacroMapping>,
+}
+
+/// Default dry/wet value (100% wet = normal processing)
+fn default_dry_wet() -> f32 {
+    1.0
 }
 
 impl EffectUiState {
@@ -214,6 +228,8 @@ impl EffectUiState {
             available_params,
             knob_assignments,
             saved_param_values: Vec::new(), // Fresh effect, no saved values
+            dry_wet: 1.0,
+            dry_wet_macro_mapping: None,
         }
     }
 
@@ -244,6 +260,8 @@ impl EffectUiState {
             available_params,
             knob_assignments,
             saved_param_values: Vec::new(), // Fresh effect, no saved values
+            dry_wet: 1.0,
+            dry_wet_macro_mapping: None,
         }
     }
 
@@ -286,6 +304,14 @@ pub struct BandUiState {
     pub soloed: bool,
     /// Effects in this band's chain
     pub effects: Vec<EffectUiState>,
+
+    /// Chain dry/wet for entire band (0.0 = dry, 1.0 = wet)
+    #[serde(default = "default_dry_wet")]
+    pub chain_dry_wet: f32,
+
+    /// Macro mapping for chain dry/wet
+    #[serde(default)]
+    pub chain_dry_wet_macro_mapping: Option<ParamMacroMapping>,
 }
 
 impl BandUiState {
@@ -299,6 +325,8 @@ impl BandUiState {
             muted: false,
             soloed: false,
             effects: Vec::new(),
+            chain_dry_wet: 1.0,
+            chain_dry_wet_macro_mapping: None,
         }
     }
 
@@ -494,6 +522,28 @@ pub struct MultibandEditorState {
     /// Currently hovered modulation indicator: (macro_idx, mapping_idx)
     /// Used to highlight the target parameter knob when hovering an indicator.
     pub hovered_mapping: Option<(usize, usize)>,
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Dry/Wet Mix Controls
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Pre-FX chain dry/wet mix (0.0 = dry, 1.0 = wet)
+    pub pre_fx_chain_dry_wet: f32,
+
+    /// Macro mapping for pre-fx chain dry/wet
+    pub pre_fx_chain_dry_wet_macro_mapping: Option<ParamMacroMapping>,
+
+    /// Post-FX chain dry/wet mix (0.0 = dry, 1.0 = wet)
+    pub post_fx_chain_dry_wet: f32,
+
+    /// Macro mapping for post-fx chain dry/wet
+    pub post_fx_chain_dry_wet_macro_mapping: Option<ParamMacroMapping>,
+
+    /// Global dry/wet mix for entire effect rack (0.0 = dry, 1.0 = wet)
+    pub global_dry_wet: f32,
+
+    /// Macro mapping for global dry/wet
+    pub global_dry_wet_macro_mapping: Option<ParamMacroMapping>,
 }
 
 impl Default for MultibandEditorState {
@@ -533,6 +583,13 @@ impl MultibandEditorState {
             macro_mappings_index: Default::default(),
             dragging_mod_range: None,
             hovered_mapping: None,
+            // Dry/wet mix controls (default: 100% wet = normal processing)
+            pre_fx_chain_dry_wet: 1.0,
+            pre_fx_chain_dry_wet_macro_mapping: None,
+            post_fx_chain_dry_wet: 1.0,
+            post_fx_chain_dry_wet_macro_mapping: None,
+            global_dry_wet: 1.0,
+            global_dry_wet_macro_mapping: None,
         }
     }
 

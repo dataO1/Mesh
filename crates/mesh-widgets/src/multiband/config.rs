@@ -18,6 +18,7 @@ pub const MULTIBAND_PRESETS_FOLDER: &str = "presets";
 /// - Band configurations with effects and their macro mappings
 /// - Post-FX chain (after band summation)
 /// - Macro knob names
+/// - Dry/wet mix controls at chain and global levels
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MultibandPresetConfig {
@@ -33,6 +34,26 @@ pub struct MultibandPresetConfig {
     pub post_fx: Vec<EffectPresetConfig>,
     /// Macro knob configurations
     pub macros: Vec<MacroPresetConfig>,
+
+    // Dry/Wet Mix Controls
+    /// Pre-FX chain dry/wet (0.0 = dry, 1.0 = wet)
+    #[serde(default = "default_dry_wet")]
+    pub pre_fx_chain_dry_wet: f32,
+    /// Macro mapping for pre-fx chain dry/wet
+    #[serde(default)]
+    pub pre_fx_chain_dry_wet_macro_mapping: Option<ParamMappingConfig>,
+    /// Post-FX chain dry/wet (0.0 = dry, 1.0 = wet)
+    #[serde(default = "default_dry_wet")]
+    pub post_fx_chain_dry_wet: f32,
+    /// Macro mapping for post-fx chain dry/wet
+    #[serde(default)]
+    pub post_fx_chain_dry_wet_macro_mapping: Option<ParamMappingConfig>,
+    /// Global dry/wet for entire effect rack (0.0 = dry, 1.0 = wet)
+    #[serde(default = "default_dry_wet")]
+    pub global_dry_wet: f32,
+    /// Macro mapping for global dry/wet
+    #[serde(default)]
+    pub global_dry_wet_macro_mapping: Option<ParamMappingConfig>,
 }
 
 impl Default for MultibandPresetConfig {
@@ -47,6 +68,12 @@ impl Default for MultibandPresetConfig {
                 name: format!("Macro {}", i + 1),
                 value: 0.5,
             }).collect(),
+            pre_fx_chain_dry_wet: 1.0,
+            pre_fx_chain_dry_wet_macro_mapping: None,
+            post_fx_chain_dry_wet: 1.0,
+            post_fx_chain_dry_wet_macro_mapping: None,
+            global_dry_wet: 1.0,
+            global_dry_wet_macro_mapping: None,
         }
     }
 }
@@ -64,6 +91,13 @@ impl MultibandPresetConfig {
                 let value = state.macro_knobs.get(i).map(|k| k.value()).unwrap_or(0.5);
                 MacroPresetConfig::from_macro_state(m, value)
             }).collect(),
+            // Dry/wet mix controls
+            pre_fx_chain_dry_wet: state.pre_fx_chain_dry_wet,
+            pre_fx_chain_dry_wet_macro_mapping: state.pre_fx_chain_dry_wet_macro_mapping.as_ref().map(ParamMappingConfig::from_mapping),
+            post_fx_chain_dry_wet: state.post_fx_chain_dry_wet,
+            post_fx_chain_dry_wet_macro_mapping: state.post_fx_chain_dry_wet_macro_mapping.as_ref().map(ParamMappingConfig::from_mapping),
+            global_dry_wet: state.global_dry_wet,
+            global_dry_wet_macro_mapping: state.global_dry_wet_macro_mapping.as_ref().map(ParamMappingConfig::from_mapping),
         }
     }
 
@@ -116,6 +150,14 @@ impl MultibandPresetConfig {
             }
         }
 
+        // Apply dry/wet mix controls
+        state.pre_fx_chain_dry_wet = self.pre_fx_chain_dry_wet;
+        state.pre_fx_chain_dry_wet_macro_mapping = self.pre_fx_chain_dry_wet_macro_mapping.as_ref().map(|m| m.to_mapping());
+        state.post_fx_chain_dry_wet = self.post_fx_chain_dry_wet;
+        state.post_fx_chain_dry_wet_macro_mapping = self.post_fx_chain_dry_wet_macro_mapping.as_ref().map(|m| m.to_mapping());
+        state.global_dry_wet = self.global_dry_wet;
+        state.global_dry_wet_macro_mapping = self.global_dry_wet_macro_mapping.as_ref().map(|m| m.to_mapping());
+
         // Update solo state
         state.any_soloed = state.bands.iter().any(|b| b.soloed);
     }
@@ -133,6 +175,12 @@ pub struct BandPresetConfig {
     pub soloed: bool,
     /// Effects in this band's chain
     pub effects: Vec<EffectPresetConfig>,
+    /// Chain dry/wet for entire band (0.0 = dry, 1.0 = wet)
+    #[serde(default = "default_dry_wet")]
+    pub chain_dry_wet: f32,
+    /// Macro mapping for chain dry/wet
+    #[serde(default)]
+    pub chain_dry_wet_macro_mapping: Option<ParamMappingConfig>,
 }
 
 impl Default for BandPresetConfig {
@@ -142,6 +190,8 @@ impl Default for BandPresetConfig {
             muted: false,
             soloed: false,
             effects: Vec::new(),
+            chain_dry_wet: 1.0,
+            chain_dry_wet_macro_mapping: None,
         }
     }
 }
@@ -153,6 +203,8 @@ impl BandPresetConfig {
             muted: band.muted,
             soloed: band.soloed,
             effects: band.effects.iter().map(EffectPresetConfig::from_effect_state).collect(),
+            chain_dry_wet: band.chain_dry_wet,
+            chain_dry_wet_macro_mapping: band.chain_dry_wet_macro_mapping.as_ref().map(ParamMappingConfig::from_mapping),
         }
     }
 
@@ -162,6 +214,8 @@ impl BandPresetConfig {
         band.muted = self.muted;
         band.soloed = self.soloed;
         band.effects = self.effects.iter().map(|e| e.to_effect_state()).collect();
+        band.chain_dry_wet = self.chain_dry_wet;
+        band.chain_dry_wet_macro_mapping = self.chain_dry_wet_macro_mapping.as_ref().map(|m| m.to_mapping());
         band
     }
 }
@@ -188,6 +242,17 @@ pub struct EffectPresetConfig {
     /// Essential for preserving settings made via the plugin GUI (e.g., reverb mode).
     #[serde(default)]
     pub all_param_values: Vec<f32>,
+    /// Per-effect dry/wet mix (0.0 = dry, 1.0 = wet)
+    #[serde(default = "default_dry_wet")]
+    pub dry_wet: f32,
+    /// Macro mapping for dry/wet
+    #[serde(default)]
+    pub dry_wet_macro_mapping: Option<ParamMappingConfig>,
+}
+
+/// Default dry/wet value (100% wet = normal processing)
+fn default_dry_wet() -> f32 {
+    1.0
 }
 
 /// Knob assignment configuration for preset
@@ -275,6 +340,8 @@ impl EffectPresetConfig {
             bypassed: effect.bypassed,
             knob_assignments,
             all_param_values,
+            dry_wet: effect.dry_wet,
+            dry_wet_macro_mapping: effect.dry_wet_macro_mapping.as_ref().map(ParamMappingConfig::from_mapping),
         }
     }
 
@@ -308,6 +375,8 @@ impl EffectPresetConfig {
             knob_assignments,
             // Restore saved param values so they can be applied when plugin loads
             saved_param_values: self.all_param_values.clone(),
+            dry_wet: self.dry_wet,
+            dry_wet_macro_mapping: self.dry_wet_macro_mapping.as_ref().map(|m| m.to_mapping()),
         }
     }
 }

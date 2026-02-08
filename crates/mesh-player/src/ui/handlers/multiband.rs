@@ -7,7 +7,7 @@ use iced::Task;
 use mesh_core::effect::EffectInfo;
 use mesh_core::types::Stem;
 use mesh_widgets::multiband::{
-    self, ensure_effect_knobs_exist, AvailableParam, EffectChainLocation, EffectSourceType,
+    self, ensure_effect_knobs_exist, AvailableParam, ChainTarget, EffectChainLocation, EffectSourceType,
     EffectUiState, KnobAssignment, MultibandPresetConfig, ParamMacroMapping, MAX_UI_KNOBS,
 };
 use mesh_widgets::{MultibandEditorMessage, DEFAULT_SENSITIVITY};
@@ -55,6 +55,8 @@ fn create_effect_state_from_info(
         available_params,
         knob_assignments,
         saved_param_values: Vec::new(), // Fresh effect, no saved values
+        dry_wet: 1.0,
+        dry_wet_macro_mapping: None,
     }
 }
 
@@ -1552,6 +1554,240 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
 
             Task::none()
         }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Dry/Wet Mix Controls
+        // ─────────────────────────────────────────────────────────────────────
+        SetEffectDryWet { location, effect, mix } => {
+            let deck = app.multiband_editor.deck;
+            let stem = Stem::ALL[app.multiband_editor.stem];
+
+            // Update UI state
+            match location {
+                EffectChainLocation::PreFx => {
+                    if let Some(fx) = app.multiband_editor.pre_fx.get_mut(effect) {
+                        fx.dry_wet = mix;
+                    }
+                    app.domain.send_command(
+                        mesh_core::engine::EngineCommand::SetMultibandPreFxEffectDryWet {
+                            deck, stem, effect_index: effect, mix
+                        }
+                    );
+                }
+                EffectChainLocation::Band(band) => {
+                    if let Some(b) = app.multiband_editor.bands.get_mut(band) {
+                        if let Some(fx) = b.effects.get_mut(effect) {
+                            fx.dry_wet = mix;
+                        }
+                    }
+                    app.domain.send_command(
+                        mesh_core::engine::EngineCommand::SetMultibandBandEffectDryWet {
+                            deck, stem, band_index: band, effect_index: effect, mix
+                        }
+                    );
+                }
+                EffectChainLocation::PostFx => {
+                    if let Some(fx) = app.multiband_editor.post_fx.get_mut(effect) {
+                        fx.dry_wet = mix;
+                    }
+                    app.domain.send_command(
+                        mesh_core::engine::EngineCommand::SetMultibandPostFxEffectDryWet {
+                            deck, stem, effect_index: effect, mix
+                        }
+                    );
+                }
+            }
+            Task::none()
+        }
+
+        EffectDryWetKnob { location, effect, event } => {
+            // Get current dry/wet value
+            let current = match &location {
+                EffectChainLocation::PreFx => {
+                    app.multiband_editor.pre_fx.get(effect).map(|e| e.dry_wet).unwrap_or(1.0)
+                }
+                EffectChainLocation::Band(band) => {
+                    app.multiband_editor.bands.get(*band)
+                        .and_then(|b| b.effects.get(effect))
+                        .map(|e| e.dry_wet)
+                        .unwrap_or(1.0)
+                }
+                EffectChainLocation::PostFx => {
+                    app.multiband_editor.post_fx.get(effect).map(|e| e.dry_wet).unwrap_or(1.0)
+                }
+            };
+
+            // Create a temporary knob and handle the event
+            let mut knob = mesh_widgets::knob::Knob::new(24.0);
+            knob.set_value(current);
+            knob.handle_event(event, DEFAULT_SENSITIVITY);
+            let new_value = knob.value();
+
+            // Apply change
+            return handle(app, SetEffectDryWet { location, effect, mix: new_value });
+        }
+
+        SetPreFxChainDryWet(mix) => {
+            let deck = app.multiband_editor.deck;
+            let stem = Stem::ALL[app.multiband_editor.stem];
+            app.multiband_editor.pre_fx_chain_dry_wet = mix;
+            app.domain.send_command(
+                mesh_core::engine::EngineCommand::SetMultibandPreFxChainDryWet {
+                    deck, stem, mix
+                }
+            );
+            Task::none()
+        }
+
+        PreFxChainDryWetKnob(event) => {
+            let mut knob = mesh_widgets::knob::Knob::new(24.0);
+            knob.set_value(app.multiband_editor.pre_fx_chain_dry_wet);
+            knob.handle_event(event, DEFAULT_SENSITIVITY);
+            return handle(app, SetPreFxChainDryWet(knob.value()));
+        }
+
+        SetBandChainDryWet { band, mix } => {
+            let deck = app.multiband_editor.deck;
+            let stem = Stem::ALL[app.multiband_editor.stem];
+            if let Some(b) = app.multiband_editor.bands.get_mut(band) {
+                b.chain_dry_wet = mix;
+            }
+            app.domain.send_command(
+                mesh_core::engine::EngineCommand::SetMultibandBandChainDryWet {
+                    deck, stem, band_index: band, mix
+                }
+            );
+            Task::none()
+        }
+
+        BandChainDryWetKnob { band, event } => {
+            let current = app.multiband_editor.bands.get(band)
+                .map(|b| b.chain_dry_wet)
+                .unwrap_or(1.0);
+            let mut knob = mesh_widgets::knob::Knob::new(24.0);
+            knob.set_value(current);
+            knob.handle_event(event, DEFAULT_SENSITIVITY);
+            return handle(app, SetBandChainDryWet { band, mix: knob.value() });
+        }
+
+        SetPostFxChainDryWet(mix) => {
+            let deck = app.multiband_editor.deck;
+            let stem = Stem::ALL[app.multiband_editor.stem];
+            app.multiband_editor.post_fx_chain_dry_wet = mix;
+            app.domain.send_command(
+                mesh_core::engine::EngineCommand::SetMultibandPostFxChainDryWet {
+                    deck, stem, mix
+                }
+            );
+            Task::none()
+        }
+
+        PostFxChainDryWetKnob(event) => {
+            let mut knob = mesh_widgets::knob::Knob::new(24.0);
+            knob.set_value(app.multiband_editor.post_fx_chain_dry_wet);
+            knob.handle_event(event, DEFAULT_SENSITIVITY);
+            return handle(app, SetPostFxChainDryWet(knob.value()));
+        }
+
+        SetGlobalDryWet(mix) => {
+            let deck = app.multiband_editor.deck;
+            let stem = Stem::ALL[app.multiband_editor.stem];
+            app.multiband_editor.global_dry_wet = mix;
+            app.domain.send_command(
+                mesh_core::engine::EngineCommand::SetMultibandGlobalDryWet {
+                    deck, stem, mix
+                }
+            );
+            Task::none()
+        }
+
+        GlobalDryWetKnob(event) => {
+            let mut knob = mesh_widgets::knob::Knob::new(24.0);
+            knob.set_value(app.multiband_editor.global_dry_wet);
+            knob.handle_event(event, DEFAULT_SENSITIVITY);
+            return handle(app, SetGlobalDryWet(knob.value()));
+        }
+
+        DropMacroOnEffectDryWet { macro_index, location, effect } => {
+            let offset_range = 0.5; // ±50% for dry/wet (covers full 0-100% range)
+
+            // Get effect state and set the dry/wet macro mapping
+            let effect_state = match location {
+                EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get_mut(effect),
+                EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
+                    .get_mut(band_idx)
+                    .and_then(|b| b.effects.get_mut(effect)),
+                EffectChainLocation::PostFx => app.multiband_editor.post_fx.get_mut(effect),
+            };
+
+            if let Some(effect_state) = effect_state {
+                effect_state.dry_wet_macro_mapping = Some(ParamMacroMapping::new(macro_index, offset_range));
+            }
+
+            // Update macro's mapping count
+            if let Some(macro_state) = app.multiband_editor.macros.get_mut(macro_index) {
+                macro_state.mapping_count += 1;
+            }
+
+            // Clear drag state
+            app.multiband_editor.dragging_macro = None;
+
+            log::info!("Mapped macro {} to {:?} effect {} dry/wet with ±{:.0}% range",
+                macro_index, location, effect, offset_range * 100.0);
+            Task::none()
+        }
+
+        DropMacroOnChainDryWet { macro_index, chain } => {
+            let offset_range = 0.5; // ±50% for dry/wet
+
+            match chain {
+                ChainTarget::PreFx => {
+                    app.multiband_editor.pre_fx_chain_dry_wet_macro_mapping =
+                        Some(ParamMacroMapping::new(macro_index, offset_range));
+                }
+                ChainTarget::Band(band_idx) => {
+                    if let Some(band) = app.multiband_editor.bands.get_mut(band_idx) {
+                        band.chain_dry_wet_macro_mapping =
+                            Some(ParamMacroMapping::new(macro_index, offset_range));
+                    }
+                }
+                ChainTarget::PostFx => {
+                    app.multiband_editor.post_fx_chain_dry_wet_macro_mapping =
+                        Some(ParamMacroMapping::new(macro_index, offset_range));
+                }
+            }
+
+            // Update macro's mapping count
+            if let Some(macro_state) = app.multiband_editor.macros.get_mut(macro_index) {
+                macro_state.mapping_count += 1;
+            }
+
+            // Clear drag state
+            app.multiband_editor.dragging_macro = None;
+
+            log::info!("Mapped macro {} to {:?} chain dry/wet with ±{:.0}% range",
+                macro_index, chain, offset_range * 100.0);
+            Task::none()
+        }
+
+        DropMacroOnGlobalDryWet { macro_index } => {
+            let offset_range = 0.5; // ±50% for dry/wet
+
+            app.multiband_editor.global_dry_wet_macro_mapping =
+                Some(ParamMacroMapping::new(macro_index, offset_range));
+
+            // Update macro's mapping count
+            if let Some(macro_state) = app.multiband_editor.macros.get_mut(macro_index) {
+                macro_state.mapping_count += 1;
+            }
+
+            // Clear drag state
+            app.multiband_editor.dragging_macro = None;
+
+            log::info!("Mapped macro {} to global dry/wet with ±{:.0}% range",
+                macro_index, offset_range * 100.0);
+            Task::none()
+        }
     }
 }
 
@@ -1746,5 +1982,88 @@ pub(super) fn apply_macro_modulation(app: &mut MeshApp, macro_index: usize, macr
     // Process Post-FX effects
     for (effect_idx, effect) in app.multiband_editor.post_fx.iter().enumerate() {
         process_effect(effect, effect_idx, EffectChainLocation::PostFx, &mut app.domain);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Dry/Wet Modulation
+    // ─────────────────────────────────────────────────────────────────────
+
+    // Helper to apply dry/wet modulation if mapped to this macro
+    let apply_dry_wet = |mapping: &Option<multiband::ParamMacroMapping>,
+                         base_value: f32| -> Option<f32> {
+        if let Some(ref m) = mapping {
+            if m.macro_index == Some(macro_index) {
+                return Some(m.modulate(base_value, macro_value));
+            }
+        }
+        None
+    };
+
+    // Per-effect dry/wet: Pre-FX effects
+    for (effect_idx, effect) in app.multiband_editor.pre_fx.iter().enumerate() {
+        if let Some(modulated) = apply_dry_wet(&effect.dry_wet_macro_mapping, effect.dry_wet) {
+            app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPreFxEffectDryWet {
+                deck, stem, effect_index: effect_idx, mix: modulated,
+            });
+        }
+    }
+
+    // Per-effect dry/wet: Band effects
+    for (band_idx, band) in app.multiband_editor.bands.iter().enumerate() {
+        for (effect_idx, effect) in band.effects.iter().enumerate() {
+            if let Some(modulated) = apply_dry_wet(&effect.dry_wet_macro_mapping, effect.dry_wet) {
+                app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandBandEffectDryWet {
+                    deck, stem, band_index: band_idx, effect_index: effect_idx, mix: modulated,
+                });
+            }
+        }
+    }
+
+    // Per-effect dry/wet: Post-FX effects
+    for (effect_idx, effect) in app.multiband_editor.post_fx.iter().enumerate() {
+        if let Some(modulated) = apply_dry_wet(&effect.dry_wet_macro_mapping, effect.dry_wet) {
+            app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPostFxEffectDryWet {
+                deck, stem, effect_index: effect_idx, mix: modulated,
+            });
+        }
+    }
+
+    // Chain dry/wet: Pre-FX
+    if let Some(modulated) = apply_dry_wet(
+        &app.multiband_editor.pre_fx_chain_dry_wet_macro_mapping,
+        app.multiband_editor.pre_fx_chain_dry_wet,
+    ) {
+        app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPreFxChainDryWet {
+            deck, stem, mix: modulated,
+        });
+    }
+
+    // Chain dry/wet: Bands
+    for (band_idx, band) in app.multiband_editor.bands.iter().enumerate() {
+        if let Some(modulated) = apply_dry_wet(&band.chain_dry_wet_macro_mapping, band.chain_dry_wet) {
+            app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandBandChainDryWet {
+                deck, stem, band_index: band_idx, mix: modulated,
+            });
+        }
+    }
+
+    // Chain dry/wet: Post-FX
+    if let Some(modulated) = apply_dry_wet(
+        &app.multiband_editor.post_fx_chain_dry_wet_macro_mapping,
+        app.multiband_editor.post_fx_chain_dry_wet,
+    ) {
+        app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPostFxChainDryWet {
+            deck, stem, mix: modulated,
+        });
+    }
+
+    // Global dry/wet
+    if let Some(modulated) = apply_dry_wet(
+        &app.multiband_editor.global_dry_wet_macro_mapping,
+        app.multiband_editor.global_dry_wet,
+    ) {
+        app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandGlobalDryWet {
+            deck, stem, mix: modulated,
+        });
     }
 }

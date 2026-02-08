@@ -5,7 +5,8 @@
 use iced::Task;
 use mesh_core::types::Stem;
 use mesh_widgets::multiband::{
-    EffectChainLocation, EffectSourceType, MultibandPresetConfig, load_preset, save_preset,
+    ChainTarget, EffectChainLocation, EffectSourceType, MultibandPresetConfig, ParamMacroMapping,
+    load_preset, save_preset,
 };
 use mesh_widgets::{MultibandEditorMessage, DEFAULT_SENSITIVITY};
 
@@ -1032,6 +1033,214 @@ impl MeshCueApp {
             PreFxEffectSelected { .. } | EffectSelected { .. } | PostFxEffectSelected { .. } => {
                 // Handled by effect_picker handler instead
             }
+
+            // ─────────────────────────────────────────────────────────────────────
+            // Dry/Wet Mix Controls
+            // ─────────────────────────────────────────────────────────────────────
+            SetEffectDryWet { location, effect, mix } => {
+                // Update UI state
+                match location {
+                    EffectChainLocation::PreFx => {
+                        if let Some(fx) = self.effects_editor.editor.pre_fx.get_mut(effect) {
+                            fx.dry_wet = mix;
+                        }
+                        if self.effects_editor.audio_preview_enabled {
+                            let stem = self.effects_editor.preview_stem;
+                            self.audio.set_multiband_pre_fx_effect_dry_wet(stem, effect, mix);
+                        }
+                    }
+                    EffectChainLocation::Band(band) => {
+                        if let Some(b) = self.effects_editor.editor.bands.get_mut(band) {
+                            if let Some(fx) = b.effects.get_mut(effect) {
+                                fx.dry_wet = mix;
+                            }
+                        }
+                        if self.effects_editor.audio_preview_enabled {
+                            let stem = self.effects_editor.preview_stem;
+                            self.audio.set_multiband_band_effect_dry_wet(stem, band, effect, mix);
+                        }
+                    }
+                    EffectChainLocation::PostFx => {
+                        if let Some(fx) = self.effects_editor.editor.post_fx.get_mut(effect) {
+                            fx.dry_wet = mix;
+                        }
+                        if self.effects_editor.audio_preview_enabled {
+                            let stem = self.effects_editor.preview_stem;
+                            self.audio.set_multiband_post_fx_effect_dry_wet(stem, effect, mix);
+                        }
+                    }
+                }
+            }
+
+            EffectDryWetKnob { location, effect, event } => {
+                // Get current dry/wet value
+                let current = match &location {
+                    EffectChainLocation::PreFx => {
+                        self.effects_editor.editor.pre_fx.get(effect).map(|e| e.dry_wet).unwrap_or(1.0)
+                    }
+                    EffectChainLocation::Band(band) => {
+                        self.effects_editor.editor.bands.get(*band)
+                            .and_then(|b| b.effects.get(effect))
+                            .map(|e| e.dry_wet)
+                            .unwrap_or(1.0)
+                    }
+                    EffectChainLocation::PostFx => {
+                        self.effects_editor.editor.post_fx.get(effect).map(|e| e.dry_wet).unwrap_or(1.0)
+                    }
+                };
+
+                // Create a temporary knob and handle the event
+                let mut knob = mesh_widgets::knob::Knob::new(24.0);
+                knob.set_value(current);
+                knob.handle_event(event, DEFAULT_SENSITIVITY);
+                let new_value = knob.value();
+
+                // Apply change
+                return self.handle_effects_editor(SetEffectDryWet { location, effect, mix: new_value });
+            }
+
+            SetPreFxChainDryWet(mix) => {
+                self.effects_editor.editor.pre_fx_chain_dry_wet = mix;
+                if self.effects_editor.audio_preview_enabled {
+                    let stem = self.effects_editor.preview_stem;
+                    self.audio.set_multiband_pre_fx_chain_dry_wet(stem, mix);
+                }
+            }
+
+            PreFxChainDryWetKnob(event) => {
+                let mut knob = mesh_widgets::knob::Knob::new(24.0);
+                knob.set_value(self.effects_editor.editor.pre_fx_chain_dry_wet);
+                knob.handle_event(event, DEFAULT_SENSITIVITY);
+                return self.handle_effects_editor(SetPreFxChainDryWet(knob.value()));
+            }
+
+            SetBandChainDryWet { band, mix } => {
+                if let Some(b) = self.effects_editor.editor.bands.get_mut(band) {
+                    b.chain_dry_wet = mix;
+                }
+                if self.effects_editor.audio_preview_enabled {
+                    let stem = self.effects_editor.preview_stem;
+                    self.audio.set_multiband_band_chain_dry_wet(stem, band, mix);
+                }
+            }
+
+            BandChainDryWetKnob { band, event } => {
+                let current = self.effects_editor.editor.bands.get(band)
+                    .map(|b| b.chain_dry_wet)
+                    .unwrap_or(1.0);
+                let mut knob = mesh_widgets::knob::Knob::new(24.0);
+                knob.set_value(current);
+                knob.handle_event(event, DEFAULT_SENSITIVITY);
+                return self.handle_effects_editor(SetBandChainDryWet { band, mix: knob.value() });
+            }
+
+            SetPostFxChainDryWet(mix) => {
+                self.effects_editor.editor.post_fx_chain_dry_wet = mix;
+                if self.effects_editor.audio_preview_enabled {
+                    let stem = self.effects_editor.preview_stem;
+                    self.audio.set_multiband_post_fx_chain_dry_wet(stem, mix);
+                }
+            }
+
+            PostFxChainDryWetKnob(event) => {
+                let mut knob = mesh_widgets::knob::Knob::new(24.0);
+                knob.set_value(self.effects_editor.editor.post_fx_chain_dry_wet);
+                knob.handle_event(event, DEFAULT_SENSITIVITY);
+                return self.handle_effects_editor(SetPostFxChainDryWet(knob.value()));
+            }
+
+            SetGlobalDryWet(mix) => {
+                self.effects_editor.editor.global_dry_wet = mix;
+                if self.effects_editor.audio_preview_enabled {
+                    let stem = self.effects_editor.preview_stem;
+                    self.audio.set_multiband_global_dry_wet(stem, mix);
+                }
+            }
+
+            GlobalDryWetKnob(event) => {
+                let mut knob = mesh_widgets::knob::Knob::new(24.0);
+                knob.set_value(self.effects_editor.editor.global_dry_wet);
+                knob.handle_event(event, DEFAULT_SENSITIVITY);
+                return self.handle_effects_editor(SetGlobalDryWet(knob.value()));
+            }
+
+            DropMacroOnEffectDryWet { macro_index, location, effect } => {
+                let offset_range = 0.5; // ±50% for dry/wet
+
+                // Get effect state and set the dry/wet macro mapping
+                let effect_state = match location {
+                    EffectChainLocation::PreFx => self.effects_editor.editor.pre_fx.get_mut(effect),
+                    EffectChainLocation::Band(band_idx) => self.effects_editor.editor.bands
+                        .get_mut(band_idx)
+                        .and_then(|b| b.effects.get_mut(effect)),
+                    EffectChainLocation::PostFx => self.effects_editor.editor.post_fx.get_mut(effect),
+                };
+
+                if let Some(effect_state) = effect_state {
+                    effect_state.dry_wet_macro_mapping = Some(ParamMacroMapping::new(macro_index, offset_range));
+                }
+
+                // Update macro's mapping count
+                if let Some(macro_state) = self.effects_editor.editor.macros.get_mut(macro_index) {
+                    macro_state.mapping_count += 1;
+                }
+
+                // Clear drag state
+                self.effects_editor.editor.dragging_macro = None;
+
+                log::info!("Mapped macro {} to {:?} effect {} dry/wet with ±{:.0}% range",
+                    macro_index, location, effect, offset_range * 100.0);
+            }
+
+            DropMacroOnChainDryWet { macro_index, chain } => {
+                let offset_range = 0.5; // ±50% for dry/wet
+
+                match chain {
+                    ChainTarget::PreFx => {
+                        self.effects_editor.editor.pre_fx_chain_dry_wet_macro_mapping =
+                            Some(ParamMacroMapping::new(macro_index, offset_range));
+                    }
+                    ChainTarget::Band(band_idx) => {
+                        if let Some(band) = self.effects_editor.editor.bands.get_mut(band_idx) {
+                            band.chain_dry_wet_macro_mapping =
+                                Some(ParamMacroMapping::new(macro_index, offset_range));
+                        }
+                    }
+                    ChainTarget::PostFx => {
+                        self.effects_editor.editor.post_fx_chain_dry_wet_macro_mapping =
+                            Some(ParamMacroMapping::new(macro_index, offset_range));
+                    }
+                }
+
+                // Update macro's mapping count
+                if let Some(macro_state) = self.effects_editor.editor.macros.get_mut(macro_index) {
+                    macro_state.mapping_count += 1;
+                }
+
+                // Clear drag state
+                self.effects_editor.editor.dragging_macro = None;
+
+                log::info!("Mapped macro {} to {:?} chain dry/wet with ±{:.0}% range",
+                    macro_index, chain, offset_range * 100.0);
+            }
+
+            DropMacroOnGlobalDryWet { macro_index } => {
+                let offset_range = 0.5; // ±50% for dry/wet
+
+                self.effects_editor.editor.global_dry_wet_macro_mapping =
+                    Some(ParamMacroMapping::new(macro_index, offset_range));
+
+                // Update macro's mapping count
+                if let Some(macro_state) = self.effects_editor.editor.macros.get_mut(macro_index) {
+                    macro_state.mapping_count += 1;
+                }
+
+                // Clear drag state
+                self.effects_editor.editor.dragging_macro = None;
+
+                log::info!("Mapped macro {} to global dry/wet with ±{:.0}% range",
+                    macro_index, offset_range * 100.0);
+            }
         }
 
         Task::none()
@@ -1641,6 +1850,75 @@ impl MeshCueApp {
                     self.audio.set_multiband_post_fx_param(stem, effect_idx, param_index, modulated_value);
                 }
             }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Dry/Wet Modulation
+        // ─────────────────────────────────────────────────────────────────────
+
+        // Helper to check if a mapping applies to this macro
+        let apply_dry_wet = |mapping: &Option<mesh_widgets::multiband::ParamMacroMapping>,
+                             base_value: f32| -> Option<f32> {
+            if let Some(ref m) = mapping {
+                if m.macro_index == Some(macro_index) {
+                    return Some(m.modulate(base_value, macro_value));
+                }
+            }
+            None
+        };
+
+        // Per-effect dry/wet: Pre-FX effects
+        for (effect_idx, effect) in self.effects_editor.editor.pre_fx.iter().enumerate() {
+            if let Some(modulated) = apply_dry_wet(&effect.dry_wet_macro_mapping, effect.dry_wet) {
+                self.audio.set_multiband_pre_fx_effect_dry_wet(stem, effect_idx, modulated);
+            }
+        }
+
+        // Per-effect dry/wet: Band effects
+        for (band_idx, band) in self.effects_editor.editor.bands.iter().enumerate() {
+            for (effect_idx, effect) in band.effects.iter().enumerate() {
+                if let Some(modulated) = apply_dry_wet(&effect.dry_wet_macro_mapping, effect.dry_wet) {
+                    self.audio.set_multiband_band_effect_dry_wet(stem, band_idx, effect_idx, modulated);
+                }
+            }
+        }
+
+        // Per-effect dry/wet: Post-FX effects
+        for (effect_idx, effect) in self.effects_editor.editor.post_fx.iter().enumerate() {
+            if let Some(modulated) = apply_dry_wet(&effect.dry_wet_macro_mapping, effect.dry_wet) {
+                self.audio.set_multiband_post_fx_effect_dry_wet(stem, effect_idx, modulated);
+            }
+        }
+
+        // Chain dry/wet: Pre-FX
+        if let Some(modulated) = apply_dry_wet(
+            &self.effects_editor.editor.pre_fx_chain_dry_wet_macro_mapping,
+            self.effects_editor.editor.pre_fx_chain_dry_wet,
+        ) {
+            self.audio.set_multiband_pre_fx_chain_dry_wet(stem, modulated);
+        }
+
+        // Chain dry/wet: Bands
+        for (band_idx, band) in self.effects_editor.editor.bands.iter().enumerate() {
+            if let Some(modulated) = apply_dry_wet(&band.chain_dry_wet_macro_mapping, band.chain_dry_wet) {
+                self.audio.set_multiband_band_chain_dry_wet(stem, band_idx, modulated);
+            }
+        }
+
+        // Chain dry/wet: Post-FX
+        if let Some(modulated) = apply_dry_wet(
+            &self.effects_editor.editor.post_fx_chain_dry_wet_macro_mapping,
+            self.effects_editor.editor.post_fx_chain_dry_wet,
+        ) {
+            self.audio.set_multiband_post_fx_chain_dry_wet(stem, modulated);
+        }
+
+        // Global dry/wet
+        if let Some(modulated) = apply_dry_wet(
+            &self.effects_editor.editor.global_dry_wet_macro_mapping,
+            self.effects_editor.editor.global_dry_wet,
+        ) {
+            self.audio.set_multiband_global_dry_wet(stem, modulated);
         }
     }
 }

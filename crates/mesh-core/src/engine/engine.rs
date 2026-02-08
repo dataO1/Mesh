@@ -1158,6 +1158,57 @@ impl AudioEngine {
                     self.update_deck_latencies(deck);
                 }
 
+                // Multiband Dry/Wet Mix Control
+                EngineCommand::SetMultibandPreFxEffectDryWet { deck, stem, effect_index, mix } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            let _ = multiband.set_pre_fx_effect_dry_wet(effect_index, mix);
+                        }
+                    }
+                }
+                EngineCommand::SetMultibandBandEffectDryWet { deck, stem, band_index, effect_index, mix } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            let _ = multiband.set_band_effect_dry_wet(band_index, effect_index, mix);
+                        }
+                    }
+                }
+                EngineCommand::SetMultibandPostFxEffectDryWet { deck, stem, effect_index, mix } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            let _ = multiband.set_post_fx_effect_dry_wet(effect_index, mix);
+                        }
+                    }
+                }
+                EngineCommand::SetMultibandPreFxChainDryWet { deck, stem, mix } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            multiband.set_pre_fx_chain_dry_wet(mix);
+                        }
+                    }
+                }
+                EngineCommand::SetMultibandBandChainDryWet { deck, stem, band_index, mix } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            let _ = multiband.set_band_chain_dry_wet(band_index, mix);
+                        }
+                    }
+                }
+                EngineCommand::SetMultibandPostFxChainDryWet { deck, stem, mix } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            multiband.set_post_fx_chain_dry_wet(mix);
+                        }
+                    }
+                }
+                EngineCommand::SetMultibandGlobalDryWet { deck, stem, mix } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            multiband.set_global_dry_wet(mix);
+                        }
+                    }
+                }
+
                 // Mixer Control
                 EngineCommand::SetVolume { deck, volume } => {
                     if let Some(ch) = self.mixer.channel_mut(deck) {

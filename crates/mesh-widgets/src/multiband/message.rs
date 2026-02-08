@@ -3,6 +3,17 @@
 use super::state::EffectChainLocation;
 use crate::knob::KnobEvent;
 
+/// Target for chain-level dry/wet control
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChainTarget {
+    /// Pre-FX chain (before multiband split)
+    PreFx,
+    /// A specific band's effect chain
+    Band(usize),
+    /// Post-FX chain (after band summation)
+    PostFx,
+}
+
 /// Messages emitted by the multiband editor
 #[derive(Debug, Clone)]
 pub enum MultibandEditorMessage {
@@ -184,6 +195,63 @@ pub enum MultibandEditorMessage {
 
     /// Stop hovering over modulation indicator
     UnhoverModRange,
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Dry/Wet Mix Controls
+    // ─────────────────────────────────────────────────────────────────────
+    /// Set per-effect dry/wet mix
+    SetEffectDryWet {
+        location: EffectChainLocation,
+        effect: usize,
+        mix: f32,
+    },
+
+    /// Effect dry/wet knob event
+    EffectDryWetKnob {
+        location: EffectChainLocation,
+        effect: usize,
+        event: KnobEvent,
+    },
+
+    /// Set pre-fx chain dry/wet mix
+    SetPreFxChainDryWet(f32),
+
+    /// Pre-fx chain dry/wet knob event
+    PreFxChainDryWetKnob(KnobEvent),
+
+    /// Set band chain dry/wet mix
+    SetBandChainDryWet { band: usize, mix: f32 },
+
+    /// Band chain dry/wet knob event
+    BandChainDryWetKnob { band: usize, event: KnobEvent },
+
+    /// Set post-fx chain dry/wet mix
+    SetPostFxChainDryWet(f32),
+
+    /// Post-fx chain dry/wet knob event
+    PostFxChainDryWetKnob(KnobEvent),
+
+    /// Set global dry/wet mix
+    SetGlobalDryWet(f32),
+
+    /// Global dry/wet knob event
+    GlobalDryWetKnob(KnobEvent),
+
+    /// Drop macro on effect dry/wet
+    DropMacroOnEffectDryWet {
+        macro_index: usize,
+        location: EffectChainLocation,
+        effect: usize,
+    },
+
+    /// Drop macro on chain dry/wet
+    DropMacroOnChainDryWet {
+        macro_index: usize,
+        chain: ChainTarget,
+    },
+
+    /// Drop macro on global dry/wet
+    DropMacroOnGlobalDryWet { macro_index: usize },
 
     // ─────────────────────────────────────────────────────────────────────
     // Preset management

@@ -85,6 +85,18 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   values, not just the 8 mapped to UI knobs. Settings made via the plugin's
   native GUI (e.g., reverb mode, filter type) are preserved across save/load.
 
+- **Dry/wet mix controls** — Comprehensive parallel processing support at three
+  levels for precise blend control:
+  - **Per-effect dry/wet** — A 9th knob (D/W) on each effect card controls the
+    blend between the unprocessed and processed signal for that effect
+  - **Chain dry/wet** — Each chain section (Pre-FX, each band, Post-FX) has a
+    dedicated D/W knob to blend the entire chain's output with the original
+  - **Global dry/wet** — Master D/W knob in the macro bar blends the entire
+    effect rack output with the completely unprocessed signal
+  - All dry/wet controls are macro-mappable via drag-and-drop with ±50% modulation
+    range, enabling expressive performance control
+  - Values are saved and loaded with presets (existing presets default to 100% wet)
+
 ### Fixed
 
 - **Effects editor preset loading** — Loading a preset now properly clears stale

@@ -417,6 +417,71 @@ pub enum EngineCommand {
     ResetMultiband { deck: usize, stem: Stem },
 
     // ─────────────────────────────────────────────────────────────
+    // Multiband Dry/Wet Mix Control
+    // ─────────────────────────────────────────────────────────────
+    /// Set per-effect dry/wet mix for a pre-fx effect
+    ///
+    /// mix: 0.0 = fully dry (effect bypassed), 1.0 = fully wet (normal processing)
+    SetMultibandPreFxEffectDryWet {
+        deck: usize,
+        stem: Stem,
+        effect_index: usize,
+        mix: f32,
+    },
+    /// Set per-effect dry/wet mix for a band effect
+    ///
+    /// mix: 0.0 = fully dry (effect bypassed), 1.0 = fully wet (normal processing)
+    SetMultibandBandEffectDryWet {
+        deck: usize,
+        stem: Stem,
+        band_index: usize,
+        effect_index: usize,
+        mix: f32,
+    },
+    /// Set per-effect dry/wet mix for a post-fx effect
+    ///
+    /// mix: 0.0 = fully dry (effect bypassed), 1.0 = fully wet (normal processing)
+    SetMultibandPostFxEffectDryWet {
+        deck: usize,
+        stem: Stem,
+        effect_index: usize,
+        mix: f32,
+    },
+    /// Set chain dry/wet mix for the entire pre-fx chain
+    ///
+    /// mix: 0.0 = fully dry (chain bypassed), 1.0 = fully wet (normal processing)
+    SetMultibandPreFxChainDryWet {
+        deck: usize,
+        stem: Stem,
+        mix: f32,
+    },
+    /// Set chain dry/wet mix for a band's entire effect chain
+    ///
+    /// mix: 0.0 = fully dry (chain bypassed), 1.0 = fully wet (normal processing)
+    SetMultibandBandChainDryWet {
+        deck: usize,
+        stem: Stem,
+        band_index: usize,
+        mix: f32,
+    },
+    /// Set chain dry/wet mix for the entire post-fx chain
+    ///
+    /// mix: 0.0 = fully dry (chain bypassed), 1.0 = fully wet (normal processing)
+    SetMultibandPostFxChainDryWet {
+        deck: usize,
+        stem: Stem,
+        mix: f32,
+    },
+    /// Set global dry/wet mix for the entire multiband effect rack
+    ///
+    /// mix: 0.0 = fully dry (rack bypassed), 1.0 = fully wet (normal processing)
+    SetMultibandGlobalDryWet {
+        deck: usize,
+        stem: Stem,
+        mix: f32,
+    },
+
+    // ─────────────────────────────────────────────────────────────
     // Mixer Control
     // ─────────────────────────────────────────────────────────────
     /// Set channel volume (0.0 - 1.0)

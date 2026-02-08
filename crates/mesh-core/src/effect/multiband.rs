@@ -200,6 +200,12 @@ pub struct Band {
     soloed: bool,
     /// Processing buffer for this band
     buffer: StereoBuffer,
+    /// Per-effect dry/wet mix (0.0=dry, 1.0=wet, one per effect)
+    effect_dry_wet: Vec<f32>,
+    /// Chain dry/wet for entire band (0.0=dry, 1.0=wet)
+    chain_dry_wet: f32,
+    /// Buffer for dry signal (before processing)
+    dry_buffer: StereoBuffer,
 }
 
 impl Band {
@@ -210,20 +216,58 @@ impl Band {
             muted: false,
             soloed: false,
             buffer: StereoBuffer::silence(buffer_size),
+            effect_dry_wet: Vec::new(),
+            chain_dry_wet: 1.0, // Default: 100% wet (normal processing)
+            dry_buffer: StereoBuffer::silence(buffer_size),
         }
     }
 
-    /// Process audio through this band's effect chain
+    /// Process audio through this band's effect chain with dry/wet mixing
     fn process(&mut self) {
         if self.muted {
             self.buffer.clear();
             return;
         }
 
-        // Process through each effect in the chain
-        for effect in &mut self.effects {
+        // Store dry signal before chain processing (for chain dry/wet)
+        if self.chain_dry_wet < 1.0 {
+            self.dry_buffer.copy_from(&self.buffer);
+        }
+
+        // Process through each effect in the chain with per-effect dry/wet
+        for (i, effect) in self.effects.iter_mut().enumerate() {
             if !effect.is_bypassed() {
-                effect.process(&mut self.buffer);
+                let mix = self.effect_dry_wet.get(i).copied().unwrap_or(1.0);
+
+                if mix >= 1.0 {
+                    // 100% wet - normal processing
+                    effect.process(&mut self.buffer);
+                } else if mix <= 0.0 {
+                    // 0% wet - skip effect entirely (dry signal unchanged)
+                } else {
+                    // Partial mix - store dry, process, then blend
+                    // Use a temporary copy since we need to blend
+                    let mut wet_buffer = self.buffer.clone();
+                    effect.process(&mut wet_buffer);
+
+                    // Blend: output = dry * (1-mix) + wet * mix
+                    let dry_gain = 1.0 - mix;
+                    for (sample, wet_sample) in self.buffer.iter_mut().zip(wet_buffer.iter()) {
+                        sample.left = sample.left * dry_gain + wet_sample.left * mix;
+                        sample.right = sample.right * dry_gain + wet_sample.right * mix;
+                    }
+                }
+            }
+        }
+
+        // Apply chain dry/wet
+        if self.chain_dry_wet < 1.0 {
+            let wet_gain = self.chain_dry_wet;
+            let dry_gain = 1.0 - wet_gain;
+
+            for (sample, dry_sample) in self.buffer.iter_mut().zip(self.dry_buffer.iter()) {
+                sample.left = dry_sample.left * dry_gain + sample.left * wet_gain;
+                sample.right = dry_sample.right * dry_gain + sample.right * wet_gain;
             }
         }
 
@@ -331,6 +375,29 @@ pub struct MultibandHost {
 
     /// Buffer size for new bands
     buffer_size: usize,
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Dry/Wet Mix Controls
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Per-effect dry/wet for pre-fx chain (one per effect)
+    pre_fx_effect_dry_wet: Vec<f32>,
+    /// Pre-fx chain dry/wet (entire chain)
+    pre_fx_chain_dry_wet: f32,
+    /// Buffer for pre-fx dry signal
+    pre_fx_dry_buffer: StereoBuffer,
+
+    /// Per-effect dry/wet for post-fx chain (one per effect)
+    post_fx_effect_dry_wet: Vec<f32>,
+    /// Post-fx chain dry/wet (entire chain)
+    post_fx_chain_dry_wet: f32,
+    /// Buffer for post-fx dry signal
+    post_fx_dry_buffer: StereoBuffer,
+
+    /// Global dry/wet (entire effect rack)
+    global_dry_wet: f32,
+    /// Buffer for global dry signal
+    global_dry_buffer: StereoBuffer,
 }
 
 impl MultibandHost {
@@ -363,6 +430,15 @@ impl MultibandHost {
             any_soloed: false,
             cached_latency: 0,
             buffer_size,
+            // Dry/wet controls - default to 1.0 (100% wet = normal processing)
+            pre_fx_effect_dry_wet: Vec::new(),
+            pre_fx_chain_dry_wet: 1.0,
+            pre_fx_dry_buffer: StereoBuffer::silence(buffer_size),
+            post_fx_effect_dry_wet: Vec::new(),
+            post_fx_chain_dry_wet: 1.0,
+            post_fx_dry_buffer: StereoBuffer::silence(buffer_size),
+            global_dry_wet: 1.0,
+            global_dry_buffer: StereoBuffer::silence(buffer_size),
         }
     }
 
@@ -545,6 +621,7 @@ impl MultibandHost {
 
         let effect_index = self.pre_fx.len();
         self.pre_fx.push(effect);
+        self.pre_fx_effect_dry_wet.push(1.0); // Default: 100% wet
         self.update_latency();
         Ok(effect_index)
     }
@@ -560,6 +637,9 @@ impl MultibandHost {
         }
 
         self.pre_fx.remove(index);
+        if index < self.pre_fx_effect_dry_wet.len() {
+            self.pre_fx_effect_dry_wet.remove(index);
+        }
         self.update_latency();
         Ok(())
     }
@@ -628,6 +708,7 @@ impl MultibandHost {
 
         let effect_index = self.post_fx.len();
         self.post_fx.push(effect);
+        self.post_fx_effect_dry_wet.push(1.0); // Default: 100% wet
         self.update_latency();
         Ok(effect_index)
     }
@@ -643,6 +724,9 @@ impl MultibandHost {
         }
 
         self.post_fx.remove(index);
+        if index < self.post_fx_effect_dry_wet.len() {
+            self.post_fx_effect_dry_wet.remove(index);
+        }
         self.update_latency();
         Ok(())
     }
@@ -703,6 +787,7 @@ impl MultibandHost {
 
         let effect_index = band.effects.len();
         band.effects.push(effect);
+        band.effect_dry_wet.push(1.0); // Default: 100% wet
         self.update_latency();
         Ok(effect_index)
     }
@@ -730,6 +815,9 @@ impl MultibandHost {
         }
 
         band.effects.remove(effect_index);
+        if effect_index < band.effect_dry_wet.len() {
+            band.effect_dry_wet.remove(effect_index);
+        }
 
         // Remove any macro mappings that referenced this effect
         for mappings in &mut self.macro_mappings {
@@ -840,6 +928,136 @@ impl MultibandHost {
         self.bands[band_index].soloed = soloed;
         self.any_soloed = self.bands.iter().any(|b| b.soloed);
         Ok(())
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Dry/Wet Mix Control
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Set per-effect dry/wet mix for pre-fx chain
+    /// mix: 0.0 = fully dry (bypassed), 1.0 = fully wet (normal processing)
+    pub fn set_pre_fx_effect_dry_wet(&mut self, effect_index: usize, mix: f32) -> MultibandResult<()> {
+        if effect_index >= self.pre_fx.len() {
+            return Err(MultibandError::EffectIndexOutOfBounds {
+                band: 0,
+                index: effect_index,
+                max: self.pre_fx.len(),
+            });
+        }
+
+        self.pre_fx_effect_dry_wet[effect_index] = mix.clamp(0.0, 1.0);
+        Ok(())
+    }
+
+    /// Set per-effect dry/wet mix for a band's effect chain
+    /// mix: 0.0 = fully dry (bypassed), 1.0 = fully wet (normal processing)
+    pub fn set_band_effect_dry_wet(
+        &mut self,
+        band_index: usize,
+        effect_index: usize,
+        mix: f32,
+    ) -> MultibandResult<()> {
+        if band_index >= self.bands.len() {
+            return Err(MultibandError::BandIndexOutOfBounds {
+                index: band_index,
+                max: self.bands.len(),
+            });
+        }
+
+        let band = &mut self.bands[band_index];
+        if effect_index >= band.effects.len() {
+            return Err(MultibandError::EffectIndexOutOfBounds {
+                band: band_index,
+                index: effect_index,
+                max: band.effects.len(),
+            });
+        }
+
+        band.effect_dry_wet[effect_index] = mix.clamp(0.0, 1.0);
+        Ok(())
+    }
+
+    /// Set per-effect dry/wet mix for post-fx chain
+    /// mix: 0.0 = fully dry (bypassed), 1.0 = fully wet (normal processing)
+    pub fn set_post_fx_effect_dry_wet(&mut self, effect_index: usize, mix: f32) -> MultibandResult<()> {
+        if effect_index >= self.post_fx.len() {
+            return Err(MultibandError::EffectIndexOutOfBounds {
+                band: 0,
+                index: effect_index,
+                max: self.post_fx.len(),
+            });
+        }
+
+        self.post_fx_effect_dry_wet[effect_index] = mix.clamp(0.0, 1.0);
+        Ok(())
+    }
+
+    /// Set chain dry/wet mix for the entire pre-fx chain
+    /// mix: 0.0 = fully dry (bypassed), 1.0 = fully wet (normal processing)
+    pub fn set_pre_fx_chain_dry_wet(&mut self, mix: f32) {
+        self.pre_fx_chain_dry_wet = mix.clamp(0.0, 1.0);
+    }
+
+    /// Set chain dry/wet mix for a band's entire effect chain
+    /// mix: 0.0 = fully dry (bypassed), 1.0 = fully wet (normal processing)
+    pub fn set_band_chain_dry_wet(&mut self, band_index: usize, mix: f32) -> MultibandResult<()> {
+        if band_index >= self.bands.len() {
+            return Err(MultibandError::BandIndexOutOfBounds {
+                index: band_index,
+                max: self.bands.len(),
+            });
+        }
+
+        self.bands[band_index].chain_dry_wet = mix.clamp(0.0, 1.0);
+        Ok(())
+    }
+
+    /// Set chain dry/wet mix for the entire post-fx chain
+    /// mix: 0.0 = fully dry (bypassed), 1.0 = fully wet (normal processing)
+    pub fn set_post_fx_chain_dry_wet(&mut self, mix: f32) {
+        self.post_fx_chain_dry_wet = mix.clamp(0.0, 1.0);
+    }
+
+    /// Set global dry/wet mix for the entire effect rack
+    /// mix: 0.0 = fully dry (bypassed), 1.0 = fully wet (normal processing)
+    pub fn set_global_dry_wet(&mut self, mix: f32) {
+        self.global_dry_wet = mix.clamp(0.0, 1.0);
+    }
+
+    /// Get pre-fx effect dry/wet value
+    pub fn pre_fx_effect_dry_wet(&self, effect_index: usize) -> Option<f32> {
+        self.pre_fx_effect_dry_wet.get(effect_index).copied()
+    }
+
+    /// Get band effect dry/wet value
+    pub fn band_effect_dry_wet(&self, band_index: usize, effect_index: usize) -> Option<f32> {
+        self.bands.get(band_index)
+            .and_then(|band| band.effect_dry_wet.get(effect_index).copied())
+    }
+
+    /// Get post-fx effect dry/wet value
+    pub fn post_fx_effect_dry_wet(&self, effect_index: usize) -> Option<f32> {
+        self.post_fx_effect_dry_wet.get(effect_index).copied()
+    }
+
+    /// Get pre-fx chain dry/wet value
+    pub fn pre_fx_chain_dry_wet(&self) -> f32 {
+        self.pre_fx_chain_dry_wet
+    }
+
+    /// Get band chain dry/wet value
+    pub fn band_chain_dry_wet(&self, band_index: usize) -> Option<f32> {
+        self.bands.get(band_index).map(|band| band.chain_dry_wet)
+    }
+
+    /// Get post-fx chain dry/wet value
+    pub fn post_fx_chain_dry_wet(&self) -> f32 {
+        self.post_fx_chain_dry_wet
+    }
+
+    /// Get global dry/wet value
+    pub fn global_dry_wet(&self) -> f32 {
+        self.global_dry_wet
     }
 
     /// Set macro name
@@ -997,11 +1215,47 @@ impl Effect for MultibandHost {
         self.apply_macros();
 
         // ═══════════════════════════════════════════════════════════════════
-        // STEP 1: Pre-FX chain (before multiband split)
+        // STEP 0: Store global dry signal (before any processing)
         // ═══════════════════════════════════════════════════════════════════
-        for effect in &mut self.pre_fx {
+        if self.global_dry_wet < 1.0 {
+            self.global_dry_buffer.copy_from(buffer);
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // STEP 1: Pre-FX chain (before multiband split) with dry/wet
+        // ═══════════════════════════════════════════════════════════════════
+        // Store pre-fx dry signal
+        if self.pre_fx_chain_dry_wet < 1.0 {
+            self.pre_fx_dry_buffer.copy_from(buffer);
+        }
+
+        // Process each pre-fx effect with per-effect dry/wet
+        for (i, effect) in self.pre_fx.iter_mut().enumerate() {
             if !effect.is_bypassed() {
-                effect.process(buffer);
+                let mix = self.pre_fx_effect_dry_wet.get(i).copied().unwrap_or(1.0);
+
+                if mix >= 1.0 {
+                    effect.process(buffer);
+                } else if mix > 0.0 {
+                    let mut wet_buffer = buffer.clone();
+                    effect.process(&mut wet_buffer);
+                    let dry_gain = 1.0 - mix;
+                    for (sample, wet_sample) in buffer.iter_mut().zip(wet_buffer.iter()) {
+                        sample.left = sample.left * dry_gain + wet_sample.left * mix;
+                        sample.right = sample.right * dry_gain + wet_sample.right * mix;
+                    }
+                }
+                // mix <= 0.0: skip effect (dry signal unchanged)
+            }
+        }
+
+        // Apply pre-fx chain dry/wet
+        if self.pre_fx_chain_dry_wet < 1.0 {
+            let wet_gain = self.pre_fx_chain_dry_wet;
+            let dry_gain = 1.0 - wet_gain;
+            for (sample, dry_sample) in buffer.iter_mut().zip(self.pre_fx_dry_buffer.iter()) {
+                sample.left = dry_sample.left * dry_gain + sample.left * wet_gain;
+                sample.right = dry_sample.right * dry_gain + sample.right * wet_gain;
             }
         }
 
@@ -1067,11 +1321,52 @@ impl Effect for MultibandHost {
         }
 
         // ═══════════════════════════════════════════════════════════════════
-        // STEP 3: Post-FX chain (after bands are summed)
+        // STEP 3: Post-FX chain (after bands are summed) with dry/wet
         // ═══════════════════════════════════════════════════════════════════
-        for effect in &mut self.post_fx {
+        // Store post-fx dry signal
+        if self.post_fx_chain_dry_wet < 1.0 {
+            self.post_fx_dry_buffer.copy_from(buffer);
+        }
+
+        // Process each post-fx effect with per-effect dry/wet
+        for (i, effect) in self.post_fx.iter_mut().enumerate() {
             if !effect.is_bypassed() {
-                effect.process(buffer);
+                let mix = self.post_fx_effect_dry_wet.get(i).copied().unwrap_or(1.0);
+
+                if mix >= 1.0 {
+                    effect.process(buffer);
+                } else if mix > 0.0 {
+                    let mut wet_buffer = buffer.clone();
+                    effect.process(&mut wet_buffer);
+                    let dry_gain = 1.0 - mix;
+                    for (sample, wet_sample) in buffer.iter_mut().zip(wet_buffer.iter()) {
+                        sample.left = sample.left * dry_gain + wet_sample.left * mix;
+                        sample.right = sample.right * dry_gain + wet_sample.right * mix;
+                    }
+                }
+                // mix <= 0.0: skip effect (dry signal unchanged)
+            }
+        }
+
+        // Apply post-fx chain dry/wet
+        if self.post_fx_chain_dry_wet < 1.0 {
+            let wet_gain = self.post_fx_chain_dry_wet;
+            let dry_gain = 1.0 - wet_gain;
+            for (sample, dry_sample) in buffer.iter_mut().zip(self.post_fx_dry_buffer.iter()) {
+                sample.left = dry_sample.left * dry_gain + sample.left * wet_gain;
+                sample.right = dry_sample.right * dry_gain + sample.right * wet_gain;
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // STEP 4: Apply global dry/wet (entire effect rack)
+        // ═══════════════════════════════════════════════════════════════════
+        if self.global_dry_wet < 1.0 {
+            let wet_gain = self.global_dry_wet;
+            let dry_gain = 1.0 - wet_gain;
+            for (sample, dry_sample) in buffer.iter_mut().zip(self.global_dry_buffer.iter()) {
+                sample.left = dry_sample.left * dry_gain + sample.left * wet_gain;
+                sample.right = dry_sample.right * dry_gain + sample.right * wet_gain;
             }
         }
     }
