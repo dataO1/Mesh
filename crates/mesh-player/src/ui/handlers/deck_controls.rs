@@ -6,7 +6,6 @@ use iced::Task;
 
 use crate::ui::app::MeshApp;
 use crate::ui::deck_view::{DeckMessage, ActionButtonMode};
-use crate::ui::handlers::multiband::apply_macro_modulation;
 use crate::ui::message::Message;
 use mesh_core::types::Stem;
 use mesh_widgets::multiband::{load_preset, EffectPresetConfig, MultibandPresetConfig, NUM_MACROS};
@@ -169,26 +168,9 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
                     // Update UI state immediately for responsive feedback
                     app.deck_views[deck_idx].set_stem_macro(stem_idx, *index, *value);
 
-                    // Sync to multiband editor if open for same deck/stem (bidirectional sync)
-                    // and apply modulation to effect parameters
-                    if app.multiband_editor.is_open
-                        && app.multiband_editor.deck == deck_idx
-                        && app.multiband_editor.stem == stem_idx
-                    {
-                        log::debug!("[MACRO] Multiband editor open, applying modulation");
-                        app.multiband_editor.set_macro_value(*index, *value);
-                        // Apply modulation to all parameters mapped to this macro
-                        apply_macro_modulation(app, *index, *value);
-                    } else {
-                        log::debug!(
-                            "[MACRO] Multiband editor NOT open for this deck/stem (is_open={}, deck={}, stem={})",
-                            app.multiband_editor.is_open, app.multiband_editor.deck, app.multiband_editor.stem
-                        );
-                    }
-
-                    // Send macro value to the multiband container
+                    // Send macro value to the engine - the engine's MultibandHost
+                    // will apply mappings during audio processing via apply_macros()
                     if let Some(stem) = Stem::from_index(stem_idx) {
-                        log::debug!("[MACRO] Sending SetMultibandMacro to engine");
                         app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandMacro {
                             deck: deck_idx,
                             stem,

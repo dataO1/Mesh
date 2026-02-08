@@ -886,6 +886,7 @@ impl DeckView {
                         stem_idx,
                         StemPresetMessage::SetMacro { index: k, value: v }
                     ))
+                    .step(0.01)  // Ensure continuous control with 100 steps
                     .width(Fill),
                 ]
                 .spacing(1)
@@ -1458,6 +1459,7 @@ impl DeckView {
                         stem_idx,
                         StemPresetMessage::SetMacro { index: k, value: v }
                     ))
+                    .step(0.01)  // Ensure continuous control with 100 steps
                     .width(Fill),
                 ]
                 .spacing(1)
