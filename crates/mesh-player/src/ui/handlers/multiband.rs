@@ -1558,6 +1558,9 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
 /// Sync multiband editor UI state from deck view (single source of truth for now)
 ///
 /// This syncs macro values from deck_views to the multiband editor.
+/// If a preset was loaded via the deck view picker, also loads the preset state
+/// into the editor so macro modulation mappings are available.
+///
 /// The deck_views are synced from the engine when tracks are loaded.
 ///
 /// TODO: For true single source of truth, add atomic storage for macros
@@ -1566,12 +1569,29 @@ fn sync_from_backend(app: &mut MeshApp) {
     let deck = app.multiband_editor.deck;
     let stem_idx = app.multiband_editor.stem;
 
-    // Sync macro values from deck view (which holds the current state)
-    if deck < 4 && stem_idx < 4 {
-        for macro_idx in 0..8 {
-            let value = app.deck_views[deck].stem_macro_value(stem_idx, macro_idx);
-            app.multiband_editor.set_macro_value(macro_idx, value);
+    if deck >= 4 || stem_idx >= 4 {
+        return;
+    }
+
+    // If there's a loaded preset for this deck/stem, load it into the editor state
+    // This ensures macro modulation mappings are available
+    let loaded_preset_name = app.deck_views[deck]
+        .stem_preset(stem_idx)
+        .and_then(|p| p.loaded_preset.clone());
+
+    if let Some(preset_name) = loaded_preset_name {
+        if let Ok(preset_config) = multiband::load_preset(&app.config.collection_path, &preset_name) {
+            // Apply preset to editor state (effects, macro mappings, etc.)
+            preset_config.apply_to_editor_state(&mut app.multiband_editor);
+            app.multiband_editor.rebuild_macro_mappings_index();
+            log::debug!("sync_from_backend: Loaded preset '{}' into editor state", preset_name);
         }
+    }
+
+    // Sync macro values from deck view (which holds the current state)
+    for macro_idx in 0..8 {
+        let value = app.deck_views[deck].stem_macro_value(stem_idx, macro_idx);
+        app.multiband_editor.set_macro_value(macro_idx, value);
     }
 }
 
@@ -1660,7 +1680,7 @@ pub fn handle_plugin_gui_tick(app: &mut MeshApp) -> Task<Message> {
 /// actual_value = base_value + (macro_value * 2 - 1) * offset_range
 ///
 /// This creates bipolar modulation where macro=50% is neutral.
-fn apply_macro_modulation(app: &mut MeshApp, macro_index: usize, macro_value: f32) {
+pub(super) fn apply_macro_modulation(app: &mut MeshApp, macro_index: usize, macro_value: f32) {
     use mesh_core::types::Stem;
 
     let deck = app.multiband_editor.deck;

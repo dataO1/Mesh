@@ -103,6 +103,11 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   native GUI (e.g., reverb mode, filter type). Also fixed bypass state not
   being applied when loading presets.
 
+- **mesh-player macro modulation** — Macro sliders in the deck view now properly
+  modulate effect parameters. Previously, moving a macro slider only updated the
+  UI value without actually changing the audio. Fixed by properly syncing preset
+  state to the multiband editor when loading presets and opening the editor.
+
 ### Changed
 
 - **Unified effects directory** — Each effect type has its own subfolder:

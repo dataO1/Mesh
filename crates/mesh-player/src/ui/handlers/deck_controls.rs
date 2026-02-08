@@ -6,6 +6,7 @@ use iced::Task;
 
 use crate::ui::app::MeshApp;
 use crate::ui::deck_view::{DeckMessage, ActionButtonMode};
+use crate::ui::handlers::multiband::apply_macro_modulation;
 use crate::ui::message::Message;
 use mesh_core::types::Stem;
 use mesh_widgets::multiband::{load_preset, EffectPresetConfig, MultibandPresetConfig};
@@ -164,11 +165,14 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
                     app.deck_views[deck_idx].set_stem_macro(stem_idx, *index, *value);
 
                     // Sync to multiband editor if open for same deck/stem (bidirectional sync)
+                    // and apply modulation to effect parameters
                     if app.multiband_editor.is_open
                         && app.multiband_editor.deck == deck_idx
                         && app.multiband_editor.stem == stem_idx
                     {
                         app.multiband_editor.set_macro_value(*index, *value);
+                        // Apply modulation to all parameters mapped to this macro
+                        apply_macro_modulation(app, *index, *value);
                     }
 
                     // Send macro value to the multiband container
@@ -356,6 +360,17 @@ fn handle_preset_selection(
                 // Apply the preset to the multiband container
                 if let Some(stem) = Stem::from_index(stem_idx) {
                     apply_preset_to_multiband(app, deck_idx, stem, &config);
+                }
+
+                // If multiband editor is open for this deck/stem, also populate it
+                // so macro modulation will work from deck view sliders
+                if app.multiband_editor.is_open
+                    && app.multiband_editor.deck == deck_idx
+                    && app.multiband_editor.stem == stem_idx
+                {
+                    config.apply_to_editor_state(&mut app.multiband_editor);
+                    app.multiband_editor.rebuild_macro_mappings_index();
+                    mesh_widgets::multiband::ensure_effect_knobs_exist(&mut app.multiband_editor);
                 }
 
                 app.status = format!("Loaded preset '{}' on deck {} {}", name, deck_idx + 1,
