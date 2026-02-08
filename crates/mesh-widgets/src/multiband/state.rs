@@ -642,6 +642,7 @@ impl MultibandEditorState {
     pub fn is_any_knob_dragging(&self) -> bool {
         self.dragging_effect_knob.is_some()
             || self.dragging_macro_knob.is_some()
+            || self.dragging_dry_wet_knob.is_some()
             || self.dragging_mod_range.is_some()
     }
 
