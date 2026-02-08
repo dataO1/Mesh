@@ -82,7 +82,9 @@ impl MeshCueApp {
                 self.effects_editor.close_save_dialog();
             }
             SetPresetNameInput(name) => {
-                self.effects_editor.preset_name_input = name;
+                self.effects_editor.preset_name_input = name.clone();
+                // Also update inner state for the view to display
+                self.effects_editor.editor.preset_name_input = name;
             }
 
             // Crossover control - forward to editor state and audio
