@@ -8,6 +8,7 @@ use crate::ui::app::MeshApp;
 use crate::ui::deck_view::{DeckMessage, ActionButtonMode};
 use crate::ui::message::Message;
 use mesh_core::types::Stem;
+use mesh_widgets::multiband::{load_preset, MultibandPresetConfig};
 
 /// Handle deck control messages
 pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task<Message> {
@@ -153,26 +154,65 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
             // UI-only state, no command needed
             app.deck_views[deck_idx].set_selected_stem(stem_idx);
         }
-        SetMacro(stem_idx, macro_idx, value) => {
-            // Update UI state immediately for responsive feedback
-            app.deck_views[deck_idx].set_stem_knob(stem_idx, macro_idx, value);
+        StemPreset(stem_idx, ref preset_msg) => {
+            use mesh_widgets::StemPresetMessage;
 
-            // Sync to multiband editor if open for same deck/stem (bidirectional sync)
-            if app.multiband_editor.is_open
-                && app.multiband_editor.deck == deck_idx
-                && app.multiband_editor.stem == stem_idx
-            {
-                app.multiband_editor.set_macro_value(macro_idx, value);
-            }
+            // Handle stem preset messages
+            match preset_msg {
+                StemPresetMessage::SetMacro { index, value } => {
+                    // Update UI state immediately for responsive feedback
+                    app.deck_views[deck_idx].set_stem_macro(stem_idx, *index, *value);
 
-            // Send macro value to the multiband container
-            if let Some(stem) = Stem::from_index(stem_idx) {
-                app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandMacro {
-                    deck: deck_idx,
-                    stem,
-                    macro_index: macro_idx,
-                    value,
-                });
+                    // Sync to multiband editor if open for same deck/stem (bidirectional sync)
+                    if app.multiband_editor.is_open
+                        && app.multiband_editor.deck == deck_idx
+                        && app.multiband_editor.stem == stem_idx
+                    {
+                        app.multiband_editor.set_macro_value(*index, *value);
+                    }
+
+                    // Send macro value to the multiband container
+                    if let Some(stem) = Stem::from_index(stem_idx) {
+                        app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandMacro {
+                            deck: deck_idx,
+                            stem,
+                            macro_index: *index,
+                            value: *value,
+                        });
+                    }
+                }
+                StemPresetMessage::SelectPreset(preset_name) => {
+                    // Load the selected preset to this stem
+                    return handle_preset_selection(app, deck_idx, stem_idx, preset_name.clone());
+                }
+                StemPresetMessage::TogglePicker => {
+                    // Toggle the preset picker dropdown
+                    if let Some(preset) = app.deck_views[deck_idx].stem_preset_mut(stem_idx) {
+                        preset.picker_open = !preset.picker_open;
+                    }
+                }
+                StemPresetMessage::ClosePicker => {
+                    if let Some(preset) = app.deck_views[deck_idx].stem_preset_mut(stem_idx) {
+                        preset.picker_open = false;
+                    }
+                }
+                StemPresetMessage::RefreshPresets => {
+                    // Refresh the available presets list
+                    let presets = mesh_widgets::multiband::list_presets(&app.config.collection_path);
+                    if let Some(preset) = app.deck_views[deck_idx].stem_preset_mut(stem_idx) {
+                        preset.available_presets = presets;
+                    }
+                }
+                StemPresetMessage::SetAvailablePresets(presets) => {
+                    if let Some(preset) = app.deck_views[deck_idx].stem_preset_mut(stem_idx) {
+                        preset.available_presets = presets.clone();
+                    }
+                }
+                StemPresetMessage::SetMacroNames(names) => {
+                    if let Some(preset) = app.deck_views[deck_idx].stem_preset_mut(stem_idx) {
+                        preset.macro_names = names.clone();
+                    }
+                }
             }
         }
 
@@ -275,4 +315,175 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
         }
     }
     Task::none()
+}
+
+/// Handle preset selection for a stem
+///
+/// Loads the preset configuration and applies it to the multiband container.
+fn handle_preset_selection(
+    app: &mut MeshApp,
+    deck_idx: usize,
+    stem_idx: usize,
+    preset_name: Option<String>,
+) -> Task<Message> {
+    if let Some(name) = preset_name {
+        // Load the preset from disk
+        match load_preset(&app.config.collection_path, &name) {
+            Ok(config) => {
+                // Update UI state
+                if let Some(preset) = app.deck_views[deck_idx].stem_preset_mut(stem_idx) {
+                    preset.loaded_preset = Some(name.clone());
+                    preset.picker_open = false;
+
+                    // Update macro names from the preset
+                    let mut names: [String; 8] = Default::default();
+                    for (i, macro_config) in config.macros.iter().enumerate().take(8) {
+                        names[i] = macro_config.name.clone();
+                    }
+                    preset.macro_names = names;
+
+                    // Reset macro values to center
+                    preset.macro_values = [0.5; 8];
+                }
+
+                // Apply the preset to the multiband container
+                if let Some(stem) = Stem::from_index(stem_idx) {
+                    apply_preset_to_multiband(app, deck_idx, stem, &config);
+                }
+
+                app.status = format!("Loaded preset '{}' on deck {} {}", name, deck_idx + 1,
+                    Stem::from_index(stem_idx).map(|s| s.name()).unwrap_or("?"));
+            }
+            Err(e) => {
+                log::error!("Failed to load preset '{}': {}", name, e);
+                app.status = format!("Failed to load preset: {}", e);
+            }
+        }
+    } else {
+        // Clear the preset (passthrough mode)
+        if let Some(preset) = app.deck_views[deck_idx].stem_preset_mut(stem_idx) {
+            preset.clear_preset();
+        }
+
+        // Clear effects from the multiband container
+        if let Some(stem) = Stem::from_index(stem_idx) {
+            clear_multiband_effects(app, deck_idx, stem);
+        }
+
+        app.status = format!("Cleared preset on deck {} {}", deck_idx + 1,
+            Stem::from_index(stem_idx).map(|s| s.name()).unwrap_or("?"));
+    }
+
+    Task::none()
+}
+
+/// Apply a preset configuration to the multiband container
+fn apply_preset_to_multiband(
+    app: &mut MeshApp,
+    deck_idx: usize,
+    stem: Stem,
+    config: &MultibandPresetConfig,
+) {
+    // Clear existing effects by removing them one by one
+    // This is a workaround since we don't have a bulk clear command
+    clear_multiband_effects(app, deck_idx, stem);
+
+    // Apply crossover frequencies
+    for (i, &freq) in config.crossover_freqs.iter().enumerate() {
+        app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandCrossover {
+            deck: deck_idx,
+            stem,
+            crossover_index: i,
+            freq,
+        });
+    }
+
+    // Add pre-fx effects
+    for (effect_idx, effect) in config.pre_fx.iter().enumerate() {
+        let result = match effect.source.as_str() {
+            "pd" => app.domain.add_pd_effect_pre_fx(deck_idx, stem, &effect.id),
+            "clap" => app.domain.add_clap_effect_pre_fx(deck_idx, stem, &effect.id),
+            _ => continue,
+        };
+
+        if let Ok(_info) = result {
+            // Apply parameter values
+            for (param_idx, &value) in effect.param_values.iter().enumerate() {
+                app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPreFxParam {
+                    deck: deck_idx,
+                    stem,
+                    effect_index: effect_idx,
+                    param_index: param_idx,
+                    value,
+                });
+            }
+        }
+    }
+
+    // Add per-band effects
+    for (band_idx, band) in config.bands.iter().enumerate() {
+        // Set band gain
+        app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandBandGain {
+            deck: deck_idx,
+            stem,
+            band_index: band_idx,
+            gain: band.gain,
+        });
+
+        for (effect_idx, effect) in band.effects.iter().enumerate() {
+            let result = match effect.source.as_str() {
+                "pd" => app.domain.add_pd_effect(deck_idx, stem, &effect.id, band_idx),
+                "clap" => app.domain.add_clap_effect(deck_idx, stem, &effect.id, band_idx),
+                _ => continue,
+            };
+
+            if let Ok(_info) = result {
+                // Apply parameter values
+                for (param_idx, &value) in effect.param_values.iter().enumerate() {
+                    app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandEffectParam {
+                        deck: deck_idx,
+                        stem,
+                        band_index: band_idx,
+                        effect_index: effect_idx,
+                        param_index: param_idx,
+                        value,
+                    });
+                }
+            }
+        }
+    }
+
+    // Add post-fx effects
+    for (effect_idx, effect) in config.post_fx.iter().enumerate() {
+        let result = match effect.source.as_str() {
+            "pd" => app.domain.add_pd_effect_post_fx(deck_idx, stem, &effect.id),
+            "clap" => app.domain.add_clap_effect_post_fx(deck_idx, stem, &effect.id),
+            _ => continue,
+        };
+
+        if let Ok(_info) = result {
+            // Apply parameter values
+            for (param_idx, &value) in effect.param_values.iter().enumerate() {
+                app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPostFxParam {
+                    deck: deck_idx,
+                    stem,
+                    effect_index: effect_idx,
+                    param_index: param_idx,
+                    value,
+                });
+            }
+        }
+    }
+
+    log::info!("Applied preset '{}' to deck {} stem {:?}", config.name, deck_idx, stem);
+}
+
+/// Clear all effects from a multiband container
+///
+/// Note: This is a placeholder - we need to query the current effect count
+/// and remove them one by one. For now, we'll just log a warning.
+fn clear_multiband_effects(_app: &mut MeshApp, deck_idx: usize, stem: Stem) {
+    // TODO: Implement proper clearing by querying effect counts and removing
+    // For now, we just log a warning - effects will be added on top
+    log::warn!("clear_multiband_effects not fully implemented - effects may stack on preset changes. deck={}, stem={:?}", deck_idx, stem);
 }

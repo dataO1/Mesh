@@ -14,7 +14,7 @@ use iced::{Background, Center, Color, Element, Fill, Length};
 
 use mesh_core::engine::Deck;
 use mesh_core::types::PlayState;
-use mesh_widgets::CUE_COLORS;
+use mesh_widgets::{CUE_COLORS, StemPresetState, StemPresetMessage};
 
 use super::midi_learn::HighlightTarget;
 
@@ -65,12 +65,8 @@ pub struct DeckView {
     key_match_enabled: bool,
     /// Currently selected stem for effect chain view (0-3)
     selected_stem: usize,
-    /// Effect chain knob values per stem (8 knobs x 4 stems)
-    stem_knobs: [[f32; 8]; 4],
-    /// Effect names in each stem's chain (for display)
-    stem_effect_names: [Vec<String>; 4],
-    /// Effect bypass states per stem
-    stem_effect_bypassed: [Vec<bool>; 4],
+    /// Stem preset states (preset selector + macro knobs per stem)
+    stem_presets: [StemPresetState; 4],
     /// Current action button mode (HotCue or Slicer)
     action_mode: ActionButtonMode,
     /// Whether slicer is active (synced from atomics)
@@ -128,9 +124,9 @@ pub enum DeckMessage {
     ToggleStemSolo(usize),
     /// Select stem tab for multiband view
     SelectStem(usize),
-    /// Set macro knob value (stem_idx, macro_idx, value)
-    SetMacro(usize, usize, f32),
-    /// Open multiband editor for a stem (stem_idx)
+    /// Stem preset message (stem_idx, message)
+    StemPreset(usize, StemPresetMessage),
+    /// Open multiband editor for a stem (stem_idx) - only used in mapping mode
     OpenMultibandEditor(usize),
     /// Set action button mode (HotCue or Slicer)
     SetActionMode(ActionButtonMode),
@@ -168,9 +164,12 @@ impl DeckView {
             slip_enabled: false,
             key_match_enabled: false,
             selected_stem: 0,       // Start with Vocals selected
-            stem_knobs: [[0.5; 8]; 4], // Default to 50% like backend macros
-            stem_effect_names: Default::default(),
-            stem_effect_bypassed: Default::default(),
+            stem_presets: [
+                StemPresetState::new(),
+                StemPresetState::new(),
+                StemPresetState::new(),
+                StemPresetState::new(),
+            ],
             action_mode: ActionButtonMode::default(),
             slicer_active: false,
             slicer_queue: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
@@ -233,21 +232,9 @@ impl DeckView {
             self.stem_muted[i] = stem_state.muted;
             self.stem_soloed[i] = stem_state.soloed;
 
-            // Sync effect info from band 0 (for backward compatibility display)
-            let effect_count = stem_state.multiband.band_effect_count(0);
-            self.stem_effect_names[i].clear();
-            self.stem_effect_bypassed[i].clear();
-
-            for j in 0..effect_count {
-                if let Some(info) = stem_state.multiband.band_effect_info(0, j) {
-                    self.stem_effect_names[i].push(info.name.clone());
-                    self.stem_effect_bypassed[i].push(info.bypassed);
-                }
-            }
-
-            // Sync macro values (knobs are now macros on the multiband)
+            // Sync macro values from the multiband to the stem preset state
             for k in 0..8 {
-                self.stem_knobs[i][k] = stem_state.multiband.macro_value(k);
+                self.stem_presets[i].macro_values[k] = stem_state.multiband.macro_value(k);
             }
         }
     }
@@ -312,20 +299,30 @@ impl DeckView {
         }
     }
 
-    /// Set effect chain knob value for a stem
-    pub fn set_stem_knob(&mut self, stem_idx: usize, knob_idx: usize, value: f32) {
+    /// Set macro knob value for a stem preset
+    pub fn set_stem_macro(&mut self, stem_idx: usize, knob_idx: usize, value: f32) {
         if stem_idx < 4 && knob_idx < 8 {
-            self.stem_knobs[stem_idx][knob_idx] = value;
+            self.stem_presets[stem_idx].macro_values[knob_idx] = value;
         }
     }
 
-    /// Get effect chain knob value for a stem
-    pub fn stem_knob_value(&self, stem_idx: usize, knob_idx: usize) -> f32 {
+    /// Get macro knob value for a stem preset
+    pub fn stem_macro_value(&self, stem_idx: usize, knob_idx: usize) -> f32 {
         if stem_idx < 4 && knob_idx < 8 {
-            self.stem_knobs[stem_idx][knob_idx]
+            self.stem_presets[stem_idx].macro_values[knob_idx]
         } else {
             0.5 // Default
         }
+    }
+
+    /// Get mutable reference to a stem preset state
+    pub fn stem_preset_mut(&mut self, stem_idx: usize) -> Option<&mut StemPresetState> {
+        self.stem_presets.get_mut(stem_idx)
+    }
+
+    /// Get reference to a stem preset state
+    pub fn stem_preset(&self, stem_idx: usize) -> Option<&StemPresetState> {
+        self.stem_presets.get(stem_idx)
     }
 
     /// Check if key matching is enabled
@@ -480,10 +477,10 @@ impl DeckView {
             DeckMessage::OpenMultibandEditor(_stem_idx) => {
                 // Handled at app level - opens multiband editor modal
             }
-            DeckMessage::SetMacro(stem_idx, macro_idx, value) => {
+            DeckMessage::StemPreset(stem_idx, ref msg) => {
                 // Update local UI state for immediate feedback
-                if stem_idx < 4 && macro_idx < 8 {
-                    self.stem_knobs[stem_idx][macro_idx] = value;
+                if let Some(preset) = self.stem_presets.get_mut(stem_idx) {
+                    preset.handle_message(msg.clone());
                 }
                 // Actual engine update handled at app level
             }
@@ -793,40 +790,52 @@ impl DeckView {
         .into()
     }
 
-    /// View the multiband container summary for a stem
+    /// View the preset selector for a stem
     ///
-    /// Shows a button to open the multiband editor and a brief effect count summary.
+    /// Shows a dropdown to select preset and the preset name.
     fn view_effect_chain(&self, stem_idx: usize) -> Element<'_, DeckMessage> {
-        let effects = &self.stem_effect_names[stem_idx];
+        let preset = &self.stem_presets[stem_idx];
 
-        // "Multiband" button opens the full multiband editor
-        let edit_btn = button(text("Multiband").size(9))
-            .on_press(DeckMessage::OpenMultibandEditor(stem_idx))
+        // Preset dropdown button
+        let label = preset
+            .loaded_preset
+            .as_deref()
+            .unwrap_or("No Preset");
+
+        let dropdown_btn = button(text(label).size(9))
+            .on_press(DeckMessage::StemPreset(stem_idx, StemPresetMessage::TogglePicker))
             .padding(3);
 
-        let effect_count = if effects.is_empty() {
-            text("(no effects)").size(9)
-        } else {
-            text(format!("({} effects)", effects.len())).size(9)
-        };
-
-        row![edit_btn, effect_count]
-            .spacing(5)
+        row![dropdown_btn, text("▾").size(9)]
+            .spacing(3)
             .align_y(Center)
             .into()
     }
 
-    /// View the 8 macro knobs for the stem's multiband container
+    /// View the 8 macro knobs for the stem's preset
     ///
-    /// These are interactive sliders that control the multiband macros in real-time.
+    /// These are interactive sliders that control the preset macros in real-time.
     fn view_chain_knobs(&self, stem_idx: usize) -> Element<'_, DeckMessage> {
+        let preset = &self.stem_presets[stem_idx];
+
         let knobs: Vec<Element<DeckMessage>> = (0..8)
             .map(|k| {
-                let value = self.stem_knobs[stem_idx][k];
+                let value = preset.macro_values[k];
+                let name = preset.macro_name(k);
+                // Truncate name if too long
+                let display_name = if name.len() > 4 {
+                    format!("{}…", &name[..3])
+                } else {
+                    name.to_string()
+                };
+
                 column![
-                    text(format!("{}", k + 1)).size(8),
-                    slider(0.0..=1.0, value, move |v| DeckMessage::SetMacro(stem_idx, k, v))
-                        .width(30),
+                    text(display_name).size(7),
+                    slider(0.0..=1.0, value, move |v| DeckMessage::StemPreset(
+                        stem_idx,
+                        StemPresetMessage::SetMacro { index: k, value: v }
+                    ))
+                    .width(30),
                 ]
                 .spacing(1)
                 .align_x(Center)
@@ -1344,36 +1353,48 @@ impl DeckView {
             .into()
     }
 
-    /// Compact multiband summary view
+    /// Compact preset selector view
     fn view_effect_chain_compact(&self, stem_idx: usize) -> Element<'_, DeckMessage> {
-        let effects = &self.stem_effect_names[stem_idx];
+        let preset = &self.stem_presets[stem_idx];
 
-        // "Multiband" button opens the full multiband editor
-        let edit_btn = button(text("Multiband").size(9))
-            .on_press(DeckMessage::OpenMultibandEditor(stem_idx))
+        // Preset dropdown button
+        let label = preset
+            .loaded_preset
+            .as_deref()
+            .unwrap_or("No Preset");
+
+        let dropdown_btn = button(text(label).size(9))
+            .on_press(DeckMessage::StemPreset(stem_idx, StemPresetMessage::TogglePicker))
             .padding(2);
 
-        let effect_count = if effects.is_empty() {
-            text("(empty)").size(9)
-        } else {
-            text(format!("({})", effects.len())).size(9)
-        };
-
-        row![edit_btn, effect_count]
-            .spacing(3)
+        row![dropdown_btn, text("▾").size(9)]
+            .spacing(2)
             .align_y(Center)
             .into()
     }
 
     /// Compact macro sliders for real-time control
     fn view_chain_knobs_compact(&self, stem_idx: usize) -> Element<'_, DeckMessage> {
+        let preset = &self.stem_presets[stem_idx];
+
         let knobs: Vec<Element<DeckMessage>> = (0..8)
             .map(|k| {
-                let value = self.stem_knobs[stem_idx][k];
+                let value = preset.macro_values[k];
+                let name = preset.macro_name(k);
+                // Truncate name if too long
+                let display_name = if name.len() > 3 {
+                    format!("{}…", &name[..2])
+                } else {
+                    name.to_string()
+                };
+
                 column![
-                    text(format!("{}", k + 1)).size(7),
-                    slider(0.0..=1.0, value, move |v| DeckMessage::SetMacro(stem_idx, k, v))
-                        .width(28),
+                    text(display_name).size(6),
+                    slider(0.0..=1.0, value, move |v| DeckMessage::StemPreset(
+                        stem_idx,
+                        StemPresetMessage::SetMacro { index: k, value: v }
+                    ))
+                    .width(28),
                 ]
                 .spacing(1)
                 .align_x(Center)

@@ -96,11 +96,8 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         // Pre-FX chain management
         // ─────────────────────────────────────────────────────────────────────
         OpenPreFxEffectPicker => {
-            let deck = app.multiband_editor.deck;
-            let stem_idx = app.multiband_editor.stem;
-            // Open effect picker for pre-fx (use band 255 as marker for pre-fx)
-            app.effect_picker.open_for_band(deck, stem_idx, 255);
-            log::info!("Opening effect picker for pre-fx (deck {} stem {})", deck, stem_idx);
+            // Effect editing moved to mesh-cue - use preset selector instead
+            log::debug!("Effect picker not available in mesh-player - use mesh-cue for preset editing");
             Task::none()
         }
 
@@ -276,13 +273,9 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         // ─────────────────────────────────────────────────────────────────────
         // Effect management
         // ─────────────────────────────────────────────────────────────────────
-        OpenEffectPicker(band_idx) => {
-            // Store which band we're adding to, then open the picker
-            let deck = app.multiband_editor.deck;
-            let stem_idx = app.multiband_editor.stem;
-            // Open effect picker for this stem and band
-            app.effect_picker.open_for_band(deck, stem_idx, band_idx);
-            log::info!("Opening effect picker for band {} (deck {} stem {})", band_idx, deck, stem_idx);
+        OpenEffectPicker(_band_idx) => {
+            // Effect editing moved to mesh-cue - use preset selector instead
+            log::debug!("Effect picker not available in mesh-player - use mesh-cue for preset editing");
             Task::none()
         }
 
@@ -479,11 +472,8 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         // Post-FX chain management
         // ─────────────────────────────────────────────────────────────────────
         OpenPostFxEffectPicker => {
-            let deck = app.multiband_editor.deck;
-            let stem_idx = app.multiband_editor.stem;
-            // Open effect picker for post-fx (use band 254 as marker)
-            app.effect_picker.open_for_band(deck, stem_idx, 254);
-            log::info!("Opening effect picker for post-fx (deck {} stem {})", deck, stem_idx);
+            // Effect editing moved to mesh-cue - use preset selector instead
+            log::debug!("Effect picker not available in mesh-player - use mesh-cue for preset editing");
             Task::none()
         }
 
@@ -579,7 +569,7 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                 if let Some(new_value) = knob.handle_event(event, DEFAULT_SENSITIVITY) {
                     // Sync to deck view (bidirectional sync for consistency)
                     if deck < 4 && stem_idx < 4 && index < 8 {
-                        app.deck_views[deck].set_stem_knob(stem_idx, index, new_value);
+                        app.deck_views[deck].set_stem_macro(stem_idx, index, new_value);
                     }
 
                     // Send macro value to engine (for any engine-side processing)
@@ -1000,7 +990,7 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                 if let Some(knob) = app.multiband_editor.macro_knobs.get_mut(index) {
                     if let Some(new_value) = knob.handle_event(KnobEvent::Moved(position), DEFAULT_SENSITIVITY) {
                         if deck < 4 && stem_idx < 4 && index < 8 {
-                            app.deck_views[deck].set_stem_knob(stem_idx, index, new_value);
+                            app.deck_views[deck].set_stem_macro(stem_idx, index, new_value);
                         }
 
                         app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandMacro {
@@ -1392,7 +1382,7 @@ fn sync_from_backend(app: &mut MeshApp) {
     // Sync macro values from deck view (which holds the current state)
     if deck < 4 && stem_idx < 4 {
         for macro_idx in 0..8 {
-            let value = app.deck_views[deck].stem_knob_value(stem_idx, macro_idx);
+            let value = app.deck_views[deck].stem_macro_value(stem_idx, macro_idx);
             app.multiband_editor.set_macro_value(macro_idx, value);
         }
     }
