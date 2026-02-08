@@ -1256,13 +1256,12 @@ fn mod_range_indicator<'a>(
     // Absolute fill amount (0 to max_fill)
     let fill_amount = (offset_range.abs() * max_fill).min(max_fill);
 
-    // Calculate padding to position the fill correctly
-    // For positive offset: fill goes UP from center (top padding = center - fill, bottom = center)
-    // For negative offset: fill goes DOWN from center (top = center, bottom = center - fill)
+    // Calculate asymmetric padding to position the fill correctly
+    // For positive offset: fill goes UP from center (top padding = center - fill)
+    // For negative offset: fill goes DOWN from center (top padding = center)
     let top_pad = if offset_range >= 0.0 { center_y - fill_amount } else { center_y };
-    let _bottom_pad = if offset_range < 0.0 { center_y - fill_amount } else { center_y };
 
-    // Create the indicator visual using a container with a styled inner container
+    // Create the indicator visual using a container with asymmetric padding
     let bar_visual: Element<'_, MultibandEditorMessage> = container(
         // Inner container that represents the fill
         container(Space::new().width(Length::Fill).height(Length::Fill))
@@ -1275,7 +1274,7 @@ fn mod_range_indicator<'a>(
     )
     .width(Length::Fixed(8.0))
     .height(Length::Fixed(bar_height))
-    .padding([top_pad as u16, 0])  // [vertical, horizontal]
+    .padding(iced::Padding::default().top(top_pad))  // Asymmetric: only top padding
     .style(move |_| container::Style {
         background: Some(BG_LIGHT.into()),
         border: iced::Border {
