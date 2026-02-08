@@ -161,6 +161,11 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
             // Handle stem preset messages
             match preset_msg {
                 StemPresetMessage::SetMacro { index, value } => {
+                    log::debug!(
+                        "[MACRO] SetMacro deck={} stem={} macro={} value={:.3}",
+                        deck_idx, stem_idx, index, value
+                    );
+
                     // Update UI state immediately for responsive feedback
                     app.deck_views[deck_idx].set_stem_macro(stem_idx, *index, *value);
 
@@ -170,13 +175,20 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
                         && app.multiband_editor.deck == deck_idx
                         && app.multiband_editor.stem == stem_idx
                     {
+                        log::debug!("[MACRO] Multiband editor open, applying modulation");
                         app.multiband_editor.set_macro_value(*index, *value);
                         // Apply modulation to all parameters mapped to this macro
                         apply_macro_modulation(app, *index, *value);
+                    } else {
+                        log::debug!(
+                            "[MACRO] Multiband editor NOT open for this deck/stem (is_open={}, deck={}, stem={})",
+                            app.multiband_editor.is_open, app.multiband_editor.deck, app.multiband_editor.stem
+                        );
                     }
 
                     // Send macro value to the multiband container
                     if let Some(stem) = Stem::from_index(stem_idx) {
+                        log::debug!("[MACRO] Sending SetMultibandMacro to engine");
                         app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandMacro {
                             deck: deck_idx,
                             stem,

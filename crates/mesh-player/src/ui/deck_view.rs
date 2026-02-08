@@ -886,9 +886,10 @@ impl DeckView {
                         stem_idx,
                         StemPresetMessage::SetMacro { index: k, value: v }
                     ))
-                    .width(50),  // Wider for better control
+                    .width(Fill),
                 ]
                 .spacing(1)
+                .width(Fill)
                 .align_x(Center)
                 .into()
             })
@@ -896,9 +897,10 @@ impl DeckView {
 
         row![
             text("MACROS").size(9),
-            Row::with_children(knobs).spacing(4),
+            Row::with_children(knobs).spacing(4).width(Fill),
         ]
         .spacing(5)
+        .width(Fill)
         .align_y(Center)
         .into()
     }
@@ -1456,9 +1458,10 @@ impl DeckView {
                         stem_idx,
                         StemPresetMessage::SetMacro { index: k, value: v }
                     ))
-                    .width(50),  // Wider for better control
+                    .width(Fill),
                 ]
                 .spacing(1)
+                .width(Fill)
                 .align_x(Center)
                 .into()
             })
@@ -1466,6 +1469,7 @@ impl DeckView {
 
         Row::with_children(knobs)
             .spacing(4)
+            .width(Fill)
             .align_y(Center)
             .into()
     }
