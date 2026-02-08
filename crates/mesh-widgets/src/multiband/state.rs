@@ -76,9 +76,12 @@ impl ParamMacroMapping {
 
     /// Get the modulation range bounds for visualization
     /// Returns (min_possible, max_possible) given the base value
+    /// Note: Uses absolute offset_range since visualization shows the range extent,
+    /// not the direction (direction is shown by the indicator bar fill)
     pub fn modulation_bounds(&self, base_value: f32) -> (f32, f32) {
-        let min = (base_value - self.offset_range).clamp(0.0, 1.0);
-        let max = (base_value + self.offset_range).clamp(0.0, 1.0);
+        let range = self.offset_range.abs();
+        let min = (base_value - range).clamp(0.0, 1.0);
+        let max = (base_value + range).clamp(0.0, 1.0);
         (min, max)
     }
 }

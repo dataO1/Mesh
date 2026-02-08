@@ -942,8 +942,8 @@ impl MeshCueApp {
                             let effect_idx = mapping_ref.effect_idx;
                             let knob_idx = mapping_ref.knob_idx;
 
-                            // Get base value for modulation bounds calculation
-                            let base_value = {
+                            // Get base value and actual param index for audio update
+                            let (base_value, actual_param_index) = {
                                 let effect_state = match location {
                                     EffectChainLocation::PreFx => self.effects_editor.editor.pre_fx.get(effect_idx),
                                     EffectChainLocation::Band(band_idx) => self.effects_editor.editor.bands
@@ -951,10 +951,11 @@ impl MeshCueApp {
                                         .and_then(|b| b.effects.get(effect_idx)),
                                     EffectChainLocation::PostFx => self.effects_editor.editor.post_fx.get(effect_idx),
                                 };
-                                effect_state
-                                    .and_then(|e| e.knob_assignments.get(knob_idx))
-                                    .map(|a| a.value)
-                                    .unwrap_or(0.5)
+                                let assignment = effect_state.and_then(|e| e.knob_assignments.get(knob_idx));
+                                (
+                                    assignment.map(|a| a.value).unwrap_or(0.5),
+                                    assignment.and_then(|a| a.param_index).unwrap_or(knob_idx),
+                                )
                             };
 
                             // Update actual offset_range in the effect's knob assignment
@@ -976,14 +977,34 @@ impl MeshCueApp {
                             self.effects_editor.editor.update_mapping_offset_range(macro_index, mapping_idx, new_offset);
 
                             // Update parameter knob modulation visualization
+                            let mapping = ParamMacroMapping::new(macro_index, new_offset);
                             let key = (location, effect_idx, knob_idx);
                             if let Some(knob) = self.effects_editor.editor.effect_knobs.get_mut(&key) {
-                                let (min, max) = ParamMacroMapping::new(macro_index, new_offset.abs()).modulation_bounds(base_value);
+                                let (min, max) = mapping.modulation_bounds(base_value);
                                 knob.set_modulations(vec![ModulationRange::new(
                                     min,
                                     max,
                                     iced::Color::from_rgb(0.9, 0.5, 0.2), // Orange for modulation
                                 )]);
+                            }
+
+                            // If audio preview is enabled, recompute and send the modulated value
+                            if self.effects_editor.audio_preview_enabled {
+                                let macro_value = self.effects_editor.editor.macro_value(macro_index);
+                                let modulated_value = mapping.modulate(base_value, macro_value);
+                                let stem = self.effects_editor.preview_stem;
+
+                                match location {
+                                    EffectChainLocation::PreFx => {
+                                        self.audio.set_multiband_pre_fx_param(stem, effect_idx, actual_param_index, modulated_value);
+                                    }
+                                    EffectChainLocation::Band(band_idx) => {
+                                        self.audio.set_multiband_effect_param(stem, band_idx, effect_idx, actual_param_index, modulated_value);
+                                    }
+                                    EffectChainLocation::PostFx => {
+                                        self.audio.set_multiband_post_fx_param(stem, effect_idx, actual_param_index, modulated_value);
+                                    }
+                                }
                             }
                         }
                     }
