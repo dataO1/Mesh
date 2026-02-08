@@ -105,8 +105,11 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 - **mesh-player macro modulation** — Macro sliders in the deck view now properly
   modulate effect parameters. Previously, moving a macro slider only updated the
-  UI value without actually changing the audio. Fixed by properly syncing preset
-  state to the multiband editor when loading presets and opening the editor.
+  UI value without actually changing the audio. Fixed by implementing direct
+  parameter modulation: when a preset is loaded, all macro-to-parameter mappings
+  are extracted and stored in the UI state. When a macro slider is moved, the
+  modulated parameter values are computed and sent directly to the audio engine,
+  matching the proven approach used in mesh-cue.
 
 ### Changed
 

@@ -863,6 +863,33 @@ impl MultibandHost {
             )));
         }
 
+        // Log diagnostic info about target effect
+        let target_exists = match &mapping.location {
+            EffectLocation::PreFx => mapping.effect_index < self.pre_fx.len(),
+            EffectLocation::Band(band_idx) => {
+                *band_idx < self.bands.len()
+                    && mapping.effect_index < self.bands[*band_idx].effects.len()
+            }
+            EffectLocation::PostFx => mapping.effect_index < self.post_fx.len(),
+        };
+
+        log::info!(
+            "[MULTIBAND] add_macro_mapping: macro={} -> {:?} effect={} param={} range=[{:.2}, {:.2}] target_exists={}",
+            macro_index, mapping.location, mapping.effect_index, mapping.param_index,
+            mapping.min_value, mapping.max_value, target_exists
+        );
+
+        if !target_exists {
+            log::warn!(
+                "[MULTIBAND] Target effect does not exist! bands={} pre_fx={} post_fx={}",
+                self.bands.len(), self.pre_fx.len(), self.post_fx.len()
+            );
+            // Also log band effect counts
+            for (i, band) in self.bands.iter().enumerate() {
+                log::warn!("[MULTIBAND]   band[{}] has {} effects", i, band.effects.len());
+            }
+        }
+
         self.macro_mappings[macro_index].push(mapping);
         Ok(())
     }
@@ -874,10 +901,30 @@ impl MultibandHost {
         }
     }
 
+    /// Counter for occasional logging (to avoid flooding)
+    #[cfg(debug_assertions)]
+    fn should_log_apply_macros() -> bool {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+        count % 10000 == 0 // Log every 10000 calls
+    }
+
     /// Apply macro values to mapped effect parameters
     fn apply_macros(&mut self) {
+        #[cfg(debug_assertions)]
+        let should_log = Self::should_log_apply_macros();
+
         for (macro_idx, mappings) in self.macro_mappings.iter().enumerate() {
             let macro_value = self.macro_values[macro_idx];
+
+            #[cfg(debug_assertions)]
+            if should_log && !mappings.is_empty() {
+                log::debug!(
+                    "[MULTIBAND_APPLY] macro[{}]={:.3} has {} mappings",
+                    macro_idx, macro_value, mappings.len()
+                );
+            }
 
             for mapping in mappings {
                 let param_value = mapping.apply(macro_value);
@@ -893,7 +940,18 @@ impl MultibandHost {
                             let band = &mut self.bands[band_index];
                             if mapping.effect_index < band.effects.len() {
                                 band.effects[mapping.effect_index].set_param(mapping.param_index, param_value);
+                            } else {
+                                // Log once per frame is too noisy - use trace level
+                                log::trace!(
+                                    "[MULTIBAND_MACRO] Effect {} not found in band {} (have {} effects)",
+                                    mapping.effect_index, band_index, band.effects.len()
+                                );
                             }
+                        } else {
+                            log::trace!(
+                                "[MULTIBAND_MACRO] Band {} not found (have {} bands)",
+                                band_index, self.bands.len()
+                            );
                         }
                     }
                     EffectLocation::PostFx => {

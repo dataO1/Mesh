@@ -33,6 +33,37 @@ pub const DEFAULT_MACRO_NAMES: [&str; NUM_MACROS] = [
     "Macro 1", "Macro 2", "Macro 3", "Macro 4",
 ];
 
+/// A macro-to-parameter mapping for direct modulation
+///
+/// Stores all the information needed to compute and send modulated
+/// parameter values directly, without relying on the engine's macro system.
+#[derive(Debug, Clone)]
+pub struct MacroParamMapping {
+    /// Which chain the effect is in
+    pub location: crate::multiband::EffectChainLocation,
+    /// Which effect in the chain
+    pub effect_index: usize,
+    /// Which parameter on the effect (the actual CLAP param index)
+    pub param_index: usize,
+    /// Base value (normalized 0-1)
+    pub base_value: f32,
+    /// Bipolar offset range (-1 to +1)
+    pub offset_range: f32,
+}
+
+impl MacroParamMapping {
+    /// Compute the modulated parameter value for a given macro position
+    ///
+    /// Formula: result = base + (macro * 2 - 1) * offset_range
+    /// - macro=0: result = base - offset_range
+    /// - macro=0.5: result = base
+    /// - macro=1: result = base + offset_range
+    pub fn modulate(&self, macro_value: f32) -> f32 {
+        let offset = (macro_value * 2.0 - 1.0) * self.offset_range;
+        (self.base_value + offset).clamp(0.0, 1.0)
+    }
+}
+
 /// State for a stem preset selector
 ///
 /// Lightweight state for preset-based stem effects in mesh-player.
@@ -54,6 +85,10 @@ pub struct StemPresetState {
 
     /// Whether the preset picker dropdown is open
     pub picker_open: bool,
+
+    /// Macro-to-parameter mappings for direct modulation
+    /// Each entry is the list of parameters mapped to that macro
+    pub macro_mappings: [Vec<MacroParamMapping>; NUM_MACROS],
 }
 
 impl Default for StemPresetState {
@@ -71,6 +106,7 @@ impl StemPresetState {
             macro_names: DEFAULT_MACRO_NAMES.map(String::from),
             available_presets: Vec::new(),
             picker_open: false,
+            macro_mappings: Default::default(),
         }
     }
 
@@ -119,7 +155,8 @@ impl StemPresetState {
         self.loaded_preset = name;
         self.macro_values = [0.5; NUM_MACROS];
         self.picker_open = false;
-        // Macro names will be set separately by the handler after loading the config
+        self.macro_mappings = Default::default();
+        // Macro names and mappings will be set separately by the handler after loading the config
     }
 
     /// Clear the loaded preset (passthrough mode)
@@ -128,6 +165,24 @@ impl StemPresetState {
         self.macro_values = [0.5; NUM_MACROS];
         self.macro_names = DEFAULT_MACRO_NAMES.map(String::from);
         self.picker_open = false;
+        self.macro_mappings = Default::default();
+    }
+
+    /// Set macro mappings (called after loading preset config)
+    pub fn set_macro_mappings(&mut self, mappings: [Vec<MacroParamMapping>; NUM_MACROS]) {
+        self.macro_mappings = mappings;
+    }
+
+    /// Add a single macro mapping
+    pub fn add_macro_mapping(&mut self, macro_index: usize, mapping: MacroParamMapping) {
+        if macro_index < NUM_MACROS {
+            self.macro_mappings[macro_index].push(mapping);
+        }
+    }
+
+    /// Get the mappings for a specific macro
+    pub fn mappings_for_macro(&self, macro_index: usize) -> &[MacroParamMapping] {
+        self.macro_mappings.get(macro_index).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
     /// Handle a message and update state

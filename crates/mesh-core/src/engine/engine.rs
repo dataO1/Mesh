@@ -1041,6 +1041,11 @@ impl AudioEngine {
                     // Macros are exposed as MultibandHost's top-level parameters (indices 0-3)
                     if let Some(d) = self.decks.get_mut(deck) {
                         if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            let mapping_count = multiband.macro_mappings(macro_index).len();
+                            log::debug!(
+                                "[ENGINE_MACRO] SetMacro: deck={} stem={:?} macro={} value={:.3} (has {} mappings)",
+                                deck, stem, macro_index, value, mapping_count
+                            );
                             multiband.set_param(macro_index, value);
                         }
                     }
@@ -1053,15 +1058,23 @@ impl AudioEngine {
                         if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
                             use crate::effect::multiband::MacroMapping;
                             let mapping = MacroMapping {
-                                location,
+                                location: location.clone(),
                                 effect_index,
                                 param_index,
                                 min_value,
                                 max_value,
                                 name: None,
                             };
+                            log::info!(
+                                "[ENGINE_MACRO] Adding mapping: deck={} stem={:?} macro={} -> {:?} effect={} param={} range=[{:.2}, {:.2}]",
+                                deck, stem, macro_index, location, effect_index, param_index, min_value, max_value
+                            );
                             let _ = multiband.add_macro_mapping(macro_index, mapping);
+                        } else {
+                            log::warn!("[ENGINE_MACRO] No multiband for deck={} stem={:?}", deck, stem);
                         }
+                    } else {
+                        log::warn!("[ENGINE_MACRO] No deck={}", deck);
                     }
                 }
                 EngineCommand::ClearMultibandMacroMappings { deck, stem, macro_index } => {

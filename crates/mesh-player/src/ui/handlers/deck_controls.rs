@@ -168,15 +168,27 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
                     // Update UI state immediately for responsive feedback
                     app.deck_views[deck_idx].set_stem_macro(stem_idx, *index, *value);
 
-                    // Send macro value to the engine - the engine's MultibandHost
-                    // will apply mappings during audio processing via apply_macros()
                     if let Some(stem) = Stem::from_index(stem_idx) {
+                        // Send macro value to the engine (updates macro_values for engine's apply_macros)
                         app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandMacro {
                             deck: deck_idx,
                             stem,
                             macro_index: *index,
                             value: *value,
                         });
+
+                        // Also apply direct parameter modulation for more reliable control
+                        // This computes the modulated value and sends it directly to effects
+                        if let Some(preset) = app.deck_views[deck_idx].stem_preset(stem_idx) {
+                            apply_macro_modulation_direct(
+                                &mut app.domain,
+                                deck_idx,
+                                stem,
+                                *index,
+                                *value,
+                                preset.mappings_for_macro(*index),
+                            );
+                        }
                     }
                 }
                 StemPresetMessage::SelectPreset(preset_name) => {
@@ -349,6 +361,9 @@ fn handle_preset_selection(
 
                     // Reset macro values to center
                     preset.macro_values = [0.5; NUM_MACROS];
+
+                    // Extract and store macro mappings for direct modulation
+                    preset.macro_mappings = extract_macro_mappings(&config);
                 }
 
                 // Apply the preset to the multiband container
@@ -616,4 +631,115 @@ fn clear_multiband_effects(_app: &mut MeshApp, deck_idx: usize, stem: Stem) {
     // TODO: Implement proper clearing by querying effect counts and removing
     // For now, we just log a warning - effects will be added on top
     log::warn!("clear_multiband_effects not fully implemented - effects may stack on preset changes. deck={}, stem={:?}", deck_idx, stem);
+}
+
+/// Apply macro modulation directly by sending parameter values to effects
+///
+/// This is a more reliable approach than relying on the engine's apply_macros(),
+/// as it directly computes the modulated values and sends them to the engine.
+fn apply_macro_modulation_direct(
+    domain: &mut crate::domain::MeshDomain,
+    deck_idx: usize,
+    stem: Stem,
+    _macro_index: usize,
+    macro_value: f32,
+    mappings: &[mesh_widgets::stem_preset::MacroParamMapping],
+) {
+    use mesh_widgets::multiband::EffectChainLocation;
+
+    for mapping in mappings {
+        let modulated_value = mapping.modulate(macro_value);
+
+        match mapping.location {
+            EffectChainLocation::PreFx => {
+                domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPreFxParam {
+                    deck: deck_idx,
+                    stem,
+                    effect_index: mapping.effect_index,
+                    param_index: mapping.param_index,
+                    value: modulated_value,
+                });
+            }
+            EffectChainLocation::Band(band_idx) => {
+                domain.send_command(mesh_core::engine::EngineCommand::SetMultibandEffectParam {
+                    deck: deck_idx,
+                    stem,
+                    band_index: band_idx,
+                    effect_index: mapping.effect_index,
+                    param_index: mapping.param_index,
+                    value: modulated_value,
+                });
+            }
+            EffectChainLocation::PostFx => {
+                domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPostFxParam {
+                    deck: deck_idx,
+                    stem,
+                    effect_index: mapping.effect_index,
+                    param_index: mapping.param_index,
+                    value: modulated_value,
+                });
+            }
+        }
+    }
+
+    if !mappings.is_empty() {
+        log::trace!(
+            "[MACRO_DIRECT] Applied {} mappings for deck={} stem={:?} macro_value={:.3}",
+            mappings.len(), deck_idx, stem, macro_value
+        );
+    }
+}
+
+/// Extract macro-to-parameter mappings from a preset config
+///
+/// Builds a mapping structure that allows direct parameter modulation
+/// without relying on the engine's macro system.
+fn extract_macro_mappings(config: &MultibandPresetConfig) -> [Vec<mesh_widgets::stem_preset::MacroParamMapping>; NUM_MACROS] {
+    use mesh_widgets::multiband::EffectChainLocation;
+    use mesh_widgets::stem_preset::MacroParamMapping;
+
+    let mut mappings: [Vec<MacroParamMapping>; NUM_MACROS] = Default::default();
+
+    // Helper to process an effect's knob assignments
+    let mut add_effect_mappings = |location: EffectChainLocation, effect_idx: usize, effect: &EffectPresetConfig| {
+        for assignment in &effect.knob_assignments {
+            if let (Some(param_index), Some(ref macro_mapping)) = (assignment.param_index, &assignment.macro_mapping) {
+                if let Some(macro_index) = macro_mapping.macro_index {
+                    if macro_index < NUM_MACROS {
+                        mappings[macro_index].push(MacroParamMapping {
+                            location,
+                            effect_index: effect_idx,
+                            param_index,
+                            base_value: assignment.value,
+                            offset_range: macro_mapping.offset_range,
+                        });
+                    }
+                }
+            }
+        }
+    };
+
+    // Process pre-fx effects
+    for (effect_idx, effect) in config.pre_fx.iter().enumerate() {
+        add_effect_mappings(EffectChainLocation::PreFx, effect_idx, effect);
+    }
+
+    // Process band effects
+    for (band_idx, band) in config.bands.iter().enumerate() {
+        for (effect_idx, effect) in band.effects.iter().enumerate() {
+            add_effect_mappings(EffectChainLocation::Band(band_idx), effect_idx, effect);
+        }
+    }
+
+    // Process post-fx effects
+    for (effect_idx, effect) in config.post_fx.iter().enumerate() {
+        add_effect_mappings(EffectChainLocation::PostFx, effect_idx, effect);
+    }
+
+    log::debug!(
+        "[MACRO_EXTRACT] Extracted mappings: macro0={}, macro1={}, macro2={}, macro3={}",
+        mappings[0].len(), mappings[1].len(), mappings[2].len(), mappings[3].len()
+    );
+
+    mappings
 }
