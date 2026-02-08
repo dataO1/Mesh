@@ -9,7 +9,7 @@
 //!
 //! Note: Waveform display is handled separately in the unified PlayerCanvas
 
-use iced::widget::{button, column, container, mouse_area, row, slider, text, Row, Space};
+use iced::widget::{button, column, container, mouse_area, row, scrollable, slider, text, Row, Space};
 use iced::{Background, Center, Color, Element, Fill, Length};
 
 use mesh_core::engine::Deck;
@@ -802,13 +802,64 @@ impl DeckView {
             .as_deref()
             .unwrap_or("No Preset");
 
-        let dropdown_btn = button(text(label).size(9))
-            .on_press(DeckMessage::StemPreset(stem_idx, StemPresetMessage::TogglePicker))
-            .padding(3);
+        let dropdown_btn = button(
+            row![text(label).size(9), Space::new().width(Fill), text("▾").size(9)]
+                .spacing(4)
+                .align_y(Center)
+        )
+        .on_press(DeckMessage::StemPreset(stem_idx, StemPresetMessage::TogglePicker))
+        .padding([3, 6])
+        .width(Fill);
 
-        row![dropdown_btn, text("▾").size(9)]
-            .spacing(3)
-            .align_y(Center)
+        if preset.picker_open {
+            // Show dropdown with preset list
+            let picker_list = self.view_preset_picker_list(stem_idx);
+            column![dropdown_btn, picker_list]
+                .spacing(2)
+                .width(Fill)
+                .into()
+        } else {
+            dropdown_btn.into()
+        }
+    }
+
+    /// View the preset picker dropdown list
+    fn view_preset_picker_list(&self, stem_idx: usize) -> Element<'_, DeckMessage> {
+        let preset = &self.stem_presets[stem_idx];
+        let mut items: Vec<Element<'_, DeckMessage>> = Vec::new();
+
+        // "No Preset" option (passthrough)
+        let no_preset_selected = preset.loaded_preset.is_none();
+        items.push(
+            button(text("(No Preset)").size(9))
+                .on_press(DeckMessage::StemPreset(stem_idx, StemPresetMessage::SelectPreset(None)))
+                .padding([3, 8])
+                .width(Fill)
+                .style(if no_preset_selected { preset_item_selected_style } else { preset_item_style })
+                .into(),
+        );
+
+        // Available presets
+        for preset_name in &preset.available_presets {
+            let is_selected = preset.loaded_preset.as_ref() == Some(preset_name);
+            let name = preset_name.clone();
+            items.push(
+                button(text(preset_name).size(9))
+                    .on_press(DeckMessage::StemPreset(stem_idx, StemPresetMessage::SelectPreset(Some(name))))
+                    .padding([3, 8])
+                    .width(Fill)
+                    .style(if is_selected { preset_item_selected_style } else { preset_item_style })
+                    .into(),
+            );
+        }
+
+        let list = scrollable(column(items).spacing(1).width(Fill))
+            .height(Length::Fixed(120.0));
+
+        container(list)
+            .padding(4)
+            .width(Fill)
+            .style(picker_container_style)
             .into()
     }
 
@@ -1363,14 +1414,25 @@ impl DeckView {
             .as_deref()
             .unwrap_or("No Preset");
 
-        let dropdown_btn = button(text(label).size(9))
-            .on_press(DeckMessage::StemPreset(stem_idx, StemPresetMessage::TogglePicker))
-            .padding(2);
+        let dropdown_btn = button(
+            row![text(label).size(9), Space::new().width(Fill), text("▾").size(9)]
+                .spacing(2)
+                .align_y(Center)
+        )
+        .on_press(DeckMessage::StemPreset(stem_idx, StemPresetMessage::TogglePicker))
+        .padding(2)
+        .width(Fill);
 
-        row![dropdown_btn, text("▾").size(9)]
-            .spacing(2)
-            .align_y(Center)
-            .into()
+        if preset.picker_open {
+            // Show dropdown with preset list
+            let picker_list = self.view_preset_picker_list(stem_idx);
+            column![dropdown_btn, picker_list]
+                .spacing(2)
+                .width(Fill)
+                .into()
+        } else {
+            dropdown_btn.into()
+        }
     }
 
     /// Compact macro sliders for real-time control
@@ -1778,5 +1840,51 @@ fn format_loop_length(beats: f32) -> String {
         format!("1/{:.0}", 1.0 / beats)
     } else {
         format!("{:.0}", beats)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Preset picker styles
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PICKER_BG_DARK: Color = Color::from_rgb(0.12, 0.12, 0.14);
+const PICKER_BORDER: Color = Color::from_rgb(0.35, 0.35, 0.40);
+const PICKER_ACCENT: Color = Color::from_rgb(0.3, 0.7, 0.9);
+
+fn preset_item_style(_theme: &iced::Theme, _status: iced::widget::button::Status) -> iced::widget::button::Style {
+    iced::widget::button::Style {
+        background: Some(Background::Color(PICKER_BG_DARK)),
+        text_color: Color::from_rgb(0.9, 0.9, 0.9),
+        border: iced::Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: 2.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
+fn preset_item_selected_style(_theme: &iced::Theme, _status: iced::widget::button::Status) -> iced::widget::button::Style {
+    iced::widget::button::Style {
+        background: Some(Background::Color(PICKER_ACCENT)),
+        text_color: Color::WHITE,
+        border: iced::Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: 2.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
+fn picker_container_style(_theme: &iced::Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(Background::Color(PICKER_BG_DARK)),
+        border: iced::Border {
+            color: PICKER_BORDER,
+            width: 1.0,
+            radius: 3.0.into(),
+        },
+        ..Default::default()
     }
 }
