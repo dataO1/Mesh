@@ -248,103 +248,44 @@ impl MeshCueApp {
             MacroKnob { index, event } => {
                 use mesh_widgets::knob::KnobEvent;
 
-                // Track drag state for global mouse capture
-                match &event {
+                // Only handle Pressed/Released locally - Moved is handled by GlobalMouseMoved
+                // to prevent flickering from dual event processing
+                match event {
                     KnobEvent::Pressed => {
                         self.effects_editor.editor.dragging_macro_knob = Some(index);
+                        if let Some(knob) = self.effects_editor.editor.macro_knobs.get_mut(index) {
+                            knob.handle_event(KnobEvent::Pressed, DEFAULT_SENSITIVITY);
+                        }
                     }
                     KnobEvent::Released => {
                         self.effects_editor.editor.dragging_macro_knob = None;
-                        // Important: Must also clear the knob's internal drag state here,
-                        // not just in GlobalMouseReleased, because both events may fire
-                        // when releasing over a knob and this handler might run first.
                         if let Some(knob) = self.effects_editor.editor.macro_knobs.get_mut(index) {
-                            knob.handle_event(event.clone(), DEFAULT_SENSITIVITY);
+                            knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
                         }
-                        return Task::none(); // Already handled, don't process again below
                     }
-                    KnobEvent::Moved(_) => {}
-                }
-
-                if let Some(knob) = self.effects_editor.editor.macro_knobs.get_mut(index) {
-                    if let Some(new_value) = knob.handle_event(event, DEFAULT_SENSITIVITY) {
-                        self.effects_editor.editor.set_macro_value(index, new_value);
-
-                        // Apply modulation to all parameters mapped to this macro
-                        self.apply_macro_modulation(index, new_value);
+                    KnobEvent::Moved(_) => {
+                        // Ignore local Moved events - GlobalMouseMoved handles all movement
                     }
                 }
             }
             EffectKnob { location, effect, param, event } => {
                 use mesh_widgets::knob::KnobEvent;
 
-                // Track drag state for global mouse capture
-                match &event {
+                // Only handle Pressed/Released locally - Moved is handled by GlobalMouseMoved
+                // to prevent flickering from dual event processing
+                match event {
                     KnobEvent::Pressed => {
                         self.effects_editor.editor.dragging_effect_knob = Some((location, effect, param));
+                        let knob = self.effects_editor.editor.get_effect_knob(location, effect, param);
+                        knob.handle_event(KnobEvent::Pressed, DEFAULT_SENSITIVITY);
                     }
                     KnobEvent::Released => {
                         self.effects_editor.editor.dragging_effect_knob = None;
-                        // Important: Must also clear the knob's internal drag state here,
-                        // not just in GlobalMouseReleased, because both events may fire
-                        // when releasing over a knob and this handler might run first.
                         let knob = self.effects_editor.editor.get_effect_knob(location, effect, param);
-                        knob.handle_event(event.clone(), DEFAULT_SENSITIVITY);
-                        return Task::none(); // Already handled, don't process again below
+                        knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
                     }
-                    KnobEvent::Moved(_) => {}
-                }
-
-                // Look up the actual parameter index from knob_assignments
-                // (param is the knob slot 0-7, but actual param could be different after learning)
-                let (actual_param_index, macro_mapping) = {
-                    let effect_state = match location {
-                        EffectChainLocation::PreFx => self.effects_editor.editor.pre_fx.get(effect),
-                        EffectChainLocation::Band(band_idx) => self.effects_editor.editor.bands
-                            .get(band_idx)
-                            .and_then(|b| b.effects.get(effect)),
-                        EffectChainLocation::PostFx => self.effects_editor.editor.post_fx.get(effect),
-                    };
-                    let assignment = effect_state.and_then(|e| e.knob_assignments.get(param));
-                    (
-                        assignment.and_then(|a| a.param_index).unwrap_or(param),
-                        assignment.and_then(|a| a.macro_mapping.clone()),
-                    )
-                };
-
-                let knob = self.effects_editor.editor.get_effect_knob(location, effect, param);
-                if let Some(new_value) = knob.handle_event(event, DEFAULT_SENSITIVITY) {
-                    // Update UI state (base value)
-                    self.effects_editor.editor.set_effect_param_value(location, effect, param, new_value);
-
-                    // Send to audio engine if preview enabled
-                    if self.effects_editor.audio_preview_enabled {
-                        let stem = self.effects_editor.preview_stem;
-
-                        // Calculate value to send (apply modulation if mapped)
-                        let value_to_send = if let Some(ref mapping) = macro_mapping {
-                            if let Some(macro_idx) = mapping.macro_index {
-                                let macro_value = self.effects_editor.editor.macro_value(macro_idx);
-                                mapping.modulate(new_value, macro_value)
-                            } else {
-                                new_value
-                            }
-                        } else {
-                            new_value
-                        };
-
-                        // Send to audio engine using actual param index
-                        match location {
-                            EffectChainLocation::PreFx => {
-                                self.audio.set_multiband_pre_fx_param(stem, effect, actual_param_index, value_to_send);
-                            }
-                            EffectChainLocation::Band(band_idx) => {
-                                self.audio.set_multiband_effect_param(stem, band_idx, effect, actual_param_index, value_to_send);
-                            }
-                            EffectChainLocation::PostFx => {
-                                self.audio.set_multiband_post_fx_param(stem, effect, actual_param_index, value_to_send);
-                            }
-                        }
+                    KnobEvent::Moved(_) => {
+                        // Ignore local Moved events - GlobalMouseMoved handles all movement
                     }
                 }
             }
@@ -1142,18 +1083,6 @@ impl MeshCueApp {
             EffectDryWetKnob { location, effect, event } => {
                 use mesh_widgets::knob::KnobEvent;
 
-                // Track drag state for global mouse capture
-                match &event {
-                    KnobEvent::Pressed => {
-                        self.effects_editor.editor.dragging_dry_wet_knob =
-                            Some(DryWetKnobId::Effect(location.clone(), effect));
-                    }
-                    KnobEvent::Released => {
-                        self.effects_editor.editor.dragging_dry_wet_knob = None;
-                    }
-                    KnobEvent::Moved(_) => {}
-                }
-
                 // Ensure knob exists with correct initial value
                 let key = (location.clone(), effect);
                 if !self.effects_editor.editor.effect_dry_wet_knobs.contains_key(&key) {
@@ -1176,9 +1105,23 @@ impl MeshCueApp {
                     self.effects_editor.editor.effect_dry_wet_knobs.insert(key.clone(), knob);
                 }
 
-                if let Some(knob) = self.effects_editor.editor.effect_dry_wet_knobs.get_mut(&key) {
-                    if let Some(new_value) = knob.handle_event(event, DEFAULT_SENSITIVITY) {
-                        return self.handle_effects_editor(SetEffectDryWet { location, effect, mix: new_value });
+                // Only handle Pressed/Released locally - Moved is handled by GlobalMouseMoved
+                match event {
+                    KnobEvent::Pressed => {
+                        self.effects_editor.editor.dragging_dry_wet_knob =
+                            Some(DryWetKnobId::Effect(location, effect));
+                        if let Some(knob) = self.effects_editor.editor.effect_dry_wet_knobs.get_mut(&key) {
+                            knob.handle_event(KnobEvent::Pressed, DEFAULT_SENSITIVITY);
+                        }
+                    }
+                    KnobEvent::Released => {
+                        self.effects_editor.editor.dragging_dry_wet_knob = None;
+                        if let Some(knob) = self.effects_editor.editor.effect_dry_wet_knobs.get_mut(&key) {
+                            knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
+                        }
+                    }
+                    KnobEvent::Moved(_) => {
+                        // Ignore local Moved events - GlobalMouseMoved handles all movement
                     }
                 }
             }
@@ -1195,18 +1138,19 @@ impl MeshCueApp {
             PreFxChainDryWetKnob(event) => {
                 use mesh_widgets::knob::KnobEvent;
 
-                match &event {
+                // Only handle Pressed/Released locally - Moved is handled by GlobalMouseMoved
+                match event {
                     KnobEvent::Pressed => {
                         self.effects_editor.editor.dragging_dry_wet_knob = Some(DryWetKnobId::PreFxChain);
+                        self.effects_editor.editor.pre_fx_chain_dry_wet_knob.handle_event(KnobEvent::Pressed, DEFAULT_SENSITIVITY);
                     }
                     KnobEvent::Released => {
                         self.effects_editor.editor.dragging_dry_wet_knob = None;
+                        self.effects_editor.editor.pre_fx_chain_dry_wet_knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
                     }
-                    KnobEvent::Moved(_) => {}
-                }
-
-                if let Some(new_value) = self.effects_editor.editor.pre_fx_chain_dry_wet_knob.handle_event(event, DEFAULT_SENSITIVITY) {
-                    return self.handle_effects_editor(SetPreFxChainDryWet(new_value));
+                    KnobEvent::Moved(_) => {
+                        // Ignore local Moved events - GlobalMouseMoved handles all movement
+                    }
                 }
             }
 
@@ -1228,16 +1172,6 @@ impl MeshCueApp {
             BandChainDryWetKnob { band, event } => {
                 use mesh_widgets::knob::KnobEvent;
 
-                match &event {
-                    KnobEvent::Pressed => {
-                        self.effects_editor.editor.dragging_dry_wet_knob = Some(DryWetKnobId::BandChain(band));
-                    }
-                    KnobEvent::Released => {
-                        self.effects_editor.editor.dragging_dry_wet_knob = None;
-                    }
-                    KnobEvent::Moved(_) => {}
-                }
-
                 // Ensure we have enough knobs for this band with correct initial value
                 while self.effects_editor.editor.band_chain_dry_wet_knobs.len() <= band {
                     let initial_value = self.effects_editor.editor.bands.get(band)
@@ -1247,8 +1181,20 @@ impl MeshCueApp {
                     knob.set_value(initial_value);
                     self.effects_editor.editor.band_chain_dry_wet_knobs.push(knob);
                 }
-                if let Some(new_value) = self.effects_editor.editor.band_chain_dry_wet_knobs[band].handle_event(event, DEFAULT_SENSITIVITY) {
-                    return self.handle_effects_editor(SetBandChainDryWet { band, mix: new_value });
+
+                // Only handle Pressed/Released locally - Moved is handled by GlobalMouseMoved
+                match event {
+                    KnobEvent::Pressed => {
+                        self.effects_editor.editor.dragging_dry_wet_knob = Some(DryWetKnobId::BandChain(band));
+                        self.effects_editor.editor.band_chain_dry_wet_knobs[band].handle_event(KnobEvent::Pressed, DEFAULT_SENSITIVITY);
+                    }
+                    KnobEvent::Released => {
+                        self.effects_editor.editor.dragging_dry_wet_knob = None;
+                        self.effects_editor.editor.band_chain_dry_wet_knobs[band].handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
+                    }
+                    KnobEvent::Moved(_) => {
+                        // Ignore local Moved events - GlobalMouseMoved handles all movement
+                    }
                 }
             }
 
@@ -1264,18 +1210,19 @@ impl MeshCueApp {
             PostFxChainDryWetKnob(event) => {
                 use mesh_widgets::knob::KnobEvent;
 
-                match &event {
+                // Only handle Pressed/Released locally - Moved is handled by GlobalMouseMoved
+                match event {
                     KnobEvent::Pressed => {
                         self.effects_editor.editor.dragging_dry_wet_knob = Some(DryWetKnobId::PostFxChain);
+                        self.effects_editor.editor.post_fx_chain_dry_wet_knob.handle_event(KnobEvent::Pressed, DEFAULT_SENSITIVITY);
                     }
                     KnobEvent::Released => {
                         self.effects_editor.editor.dragging_dry_wet_knob = None;
+                        self.effects_editor.editor.post_fx_chain_dry_wet_knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
                     }
-                    KnobEvent::Moved(_) => {}
-                }
-
-                if let Some(new_value) = self.effects_editor.editor.post_fx_chain_dry_wet_knob.handle_event(event, DEFAULT_SENSITIVITY) {
-                    return self.handle_effects_editor(SetPostFxChainDryWet(new_value));
+                    KnobEvent::Moved(_) => {
+                        // Ignore local Moved events - GlobalMouseMoved handles all movement
+                    }
                 }
             }
 
@@ -1291,18 +1238,19 @@ impl MeshCueApp {
             GlobalDryWetKnob(event) => {
                 use mesh_widgets::knob::KnobEvent;
 
-                match &event {
+                // Only handle Pressed/Released locally - Moved is handled by GlobalMouseMoved
+                match event {
                     KnobEvent::Pressed => {
                         self.effects_editor.editor.dragging_dry_wet_knob = Some(DryWetKnobId::Global);
+                        self.effects_editor.editor.global_dry_wet_knob.handle_event(KnobEvent::Pressed, DEFAULT_SENSITIVITY);
                     }
                     KnobEvent::Released => {
                         self.effects_editor.editor.dragging_dry_wet_knob = None;
+                        self.effects_editor.editor.global_dry_wet_knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
                     }
-                    KnobEvent::Moved(_) => {}
-                }
-
-                if let Some(new_value) = self.effects_editor.editor.global_dry_wet_knob.handle_event(event, DEFAULT_SENSITIVITY) {
-                    return self.handle_effects_editor(SetGlobalDryWet(new_value));
+                    KnobEvent::Moved(_) => {
+                        // Ignore local Moved events - GlobalMouseMoved handles all movement
+                    }
                 }
             }
 

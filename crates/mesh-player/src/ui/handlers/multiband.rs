@@ -365,95 +365,23 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         // ─────────────────────────────────────────────────────────────────────
         EffectKnob { location, effect, param, event } => {
             use mesh_widgets::knob::KnobEvent;
-            let deck = app.multiband_editor.deck;
-            let stem = Stem::ALL[app.multiband_editor.stem];
 
-            // Track drag state for global mouse capture
-            match &event {
+            // Only handle Pressed/Released locally - Moved is handled by GlobalMouseMoved
+            // to prevent flickering from dual event processing
+            match event {
                 KnobEvent::Pressed => {
                     app.multiband_editor.dragging_effect_knob = Some((location, effect, param));
+                    // Set drag state on knob
+                    let knob = app.multiband_editor.get_effect_knob(location, effect, param);
+                    knob.handle_event(KnobEvent::Pressed, DEFAULT_SENSITIVITY);
                 }
                 KnobEvent::Released => {
                     app.multiband_editor.dragging_effect_knob = None;
+                    let knob = app.multiband_editor.get_effect_knob(location, effect, param);
+                    knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
                 }
-                KnobEvent::Moved(_) => {}
-            }
-
-            // Look up the actual parameter index from knob_assignments
-            // (param is the knob slot 0-7, but the actual param could be different after learning)
-            let actual_param_index = {
-                let effect_state = match location {
-                    EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get(effect),
-                    EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
-                        .get(band_idx)
-                        .and_then(|b| b.effects.get(effect)),
-                    EffectChainLocation::PostFx => app.multiband_editor.post_fx.get(effect),
-                };
-                effect_state
-                    .and_then(|e| e.knob_assignments.get(param))
-                    .and_then(|a| a.param_index)
-                    .unwrap_or(param) // Fallback to knob slot if no assignment
-            };
-
-            // Get the knob and handle the event
-            let knob = app.multiband_editor.get_effect_knob(location, effect, param);
-            if let Some(new_value) = knob.handle_event(event, DEFAULT_SENSITIVITY) {
-                // Update local state (base value)
-                app.multiband_editor.set_effect_param_value(location, effect, param, new_value);
-
-                // Check if this knob has a macro mapping
-                let macro_mapping = {
-                    let effect_state = match location {
-                        EffectChainLocation::PreFx => app.multiband_editor.pre_fx.get(effect),
-                        EffectChainLocation::Band(band_idx) => app.multiband_editor.bands
-                            .get(band_idx)
-                            .and_then(|b| b.effects.get(effect)),
-                        EffectChainLocation::PostFx => app.multiband_editor.post_fx.get(effect),
-                    };
-                    effect_state
-                        .and_then(|e| e.knob_assignments.get(param))
-                        .and_then(|a| a.macro_mapping.clone())
-                };
-
-                // Calculate the value to send (apply modulation if mapped)
-                let value_to_send = if let Some(ref mapping) = macro_mapping {
-                    if let Some(macro_idx) = mapping.macro_index {
-                        // Get current macro value
-                        let macro_value = app.multiband_editor.macro_value(macro_idx);
-                        // Apply modulation
-                        mapping.modulate(new_value, macro_value)
-                    } else {
-                        new_value
-                    }
-                } else {
-                    new_value
-                };
-
-                // Update modulation bounds visualization if mapped
-                if let Some(mapping) = macro_mapping {
-                    use mesh_widgets::knob::ModulationRange;
-                    let key = (location, effect, param);
-                    if let Some(knob) = app.multiband_editor.effect_knobs.get_mut(&key) {
-                        let (min, max) = mapping.modulation_bounds(new_value);
-                        knob.set_modulations(vec![ModulationRange::new(
-                            min,
-                            max,
-                            iced::Color::from_rgb(0.9, 0.6, 0.2),
-                        )]);
-                    }
-                }
-
-                // Send to backend using the actual parameter index (not the knob slot)
-                match location {
-                    EffectChainLocation::PreFx => {
-                        app.domain.set_pre_fx_param(deck, stem, effect, actual_param_index, value_to_send);
-                    }
-                    EffectChainLocation::Band(band_idx) => {
-                        app.domain.set_band_effect_param(deck, stem, band_idx, effect, actual_param_index, value_to_send);
-                    }
-                    EffectChainLocation::PostFx => {
-                        app.domain.set_post_fx_param(deck, stem, effect, actual_param_index, value_to_send);
-                    }
+                KnobEvent::Moved(_) => {
+                    // Ignore local Moved events - GlobalMouseMoved handles all movement
                 }
             }
             Task::none()
@@ -540,39 +468,24 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         // ─────────────────────────────────────────────────────────────────────
         MacroKnob { index, event } => {
             use mesh_widgets::knob::KnobEvent;
-            let deck = app.multiband_editor.deck;
-            let stem_idx = app.multiband_editor.stem;
-            let stem = Stem::ALL[stem_idx];
 
-            // Track drag state for global mouse capture
-            match &event {
+            // Only handle Pressed/Released locally - Moved is handled by GlobalMouseMoved
+            // to prevent flickering from dual event processing
+            match event {
                 KnobEvent::Pressed => {
                     app.multiband_editor.dragging_macro_knob = Some(index);
+                    if let Some(knob) = app.multiband_editor.macro_knobs.get_mut(index) {
+                        knob.handle_event(KnobEvent::Pressed, DEFAULT_SENSITIVITY);
+                    }
                 }
                 KnobEvent::Released => {
                     app.multiband_editor.dragging_macro_knob = None;
-                }
-                KnobEvent::Moved(_) => {}
-            }
-
-            // Get the knob and handle the event
-            if let Some(knob) = app.multiband_editor.macro_knobs.get_mut(index) {
-                if let Some(new_value) = knob.handle_event(event, DEFAULT_SENSITIVITY) {
-                    // Sync to deck view (bidirectional sync for consistency)
-                    if deck < 4 && stem_idx < 4 && index < multiband::NUM_MACROS {
-                        app.deck_views[deck].set_stem_macro(stem_idx, index, new_value);
+                    if let Some(knob) = app.multiband_editor.macro_knobs.get_mut(index) {
+                        knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
                     }
-
-                    // Send macro value to engine (for any engine-side processing)
-                    app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandMacro {
-                        deck,
-                        stem,
-                        macro_index: index,
-                        value: new_value,
-                    });
-
-                    // Apply modulation to all parameters mapped to this macro
-                    apply_macro_modulation(app, index, new_value);
+                }
+                KnobEvent::Moved(_) => {
+                    // Ignore local Moved events - GlobalMouseMoved handles all movement
                 }
             }
             Task::none()
@@ -1670,18 +1583,6 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         EffectDryWetKnob { location, effect, event } => {
             use mesh_widgets::knob::KnobEvent;
 
-            // Track drag state for global mouse capture
-            match &event {
-                KnobEvent::Pressed => {
-                    app.multiband_editor.dragging_dry_wet_knob =
-                        Some(DryWetKnobId::Effect(location.clone(), effect));
-                }
-                KnobEvent::Released => {
-                    app.multiband_editor.dragging_dry_wet_knob = None;
-                }
-                KnobEvent::Moved(_) => {}
-            }
-
             let key = (location.clone(), effect);
             // Ensure the knob exists with correct initial value
             if !app.multiband_editor.effect_dry_wet_knobs.contains_key(&key) {
@@ -1704,9 +1605,23 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                 app.multiband_editor.effect_dry_wet_knobs.insert(key.clone(), knob);
             }
 
-            if let Some(knob) = app.multiband_editor.effect_dry_wet_knobs.get_mut(&key) {
-                if let Some(new_value) = knob.handle_event(event, DEFAULT_SENSITIVITY) {
-                    return handle(app, SetEffectDryWet { location, effect, mix: new_value });
+            // Only handle Pressed/Released locally - Moved is handled by GlobalMouseMoved
+            match event {
+                KnobEvent::Pressed => {
+                    app.multiband_editor.dragging_dry_wet_knob =
+                        Some(DryWetKnobId::Effect(location, effect));
+                    if let Some(knob) = app.multiband_editor.effect_dry_wet_knobs.get_mut(&key) {
+                        knob.handle_event(KnobEvent::Pressed, DEFAULT_SENSITIVITY);
+                    }
+                }
+                KnobEvent::Released => {
+                    app.multiband_editor.dragging_dry_wet_knob = None;
+                    if let Some(knob) = app.multiband_editor.effect_dry_wet_knobs.get_mut(&key) {
+                        knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
+                    }
+                }
+                KnobEvent::Moved(_) => {
+                    // Ignore local Moved events - GlobalMouseMoved handles all movement
                 }
             }
             Task::none()
@@ -1728,19 +1643,19 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         PreFxChainDryWetKnob(event) => {
             use mesh_widgets::knob::KnobEvent;
 
-            // Track drag state for global mouse capture
-            match &event {
+            // Only handle Pressed/Released locally - Moved is handled by GlobalMouseMoved
+            match event {
                 KnobEvent::Pressed => {
                     app.multiband_editor.dragging_dry_wet_knob = Some(DryWetKnobId::PreFxChain);
+                    app.multiband_editor.pre_fx_chain_dry_wet_knob.handle_event(KnobEvent::Pressed, DEFAULT_SENSITIVITY);
                 }
                 KnobEvent::Released => {
                     app.multiband_editor.dragging_dry_wet_knob = None;
+                    app.multiband_editor.pre_fx_chain_dry_wet_knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
                 }
-                KnobEvent::Moved(_) => {}
-            }
-
-            if let Some(new_value) = app.multiband_editor.pre_fx_chain_dry_wet_knob.handle_event(event, DEFAULT_SENSITIVITY) {
-                return handle(app, SetPreFxChainDryWet(new_value));
+                KnobEvent::Moved(_) => {
+                    // Ignore local Moved events - GlobalMouseMoved handles all movement
+                }
             }
             Task::none()
         }
@@ -1765,17 +1680,6 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         BandChainDryWetKnob { band, event } => {
             use mesh_widgets::knob::KnobEvent;
 
-            // Track drag state for global mouse capture
-            match &event {
-                KnobEvent::Pressed => {
-                    app.multiband_editor.dragging_dry_wet_knob = Some(DryWetKnobId::BandChain(band));
-                }
-                KnobEvent::Released => {
-                    app.multiband_editor.dragging_dry_wet_knob = None;
-                }
-                KnobEvent::Moved(_) => {}
-            }
-
             // Ensure band knob exists with correct initial value
             while app.multiband_editor.band_chain_dry_wet_knobs.len() <= band {
                 let initial_value = app.multiband_editor.bands.get(band)
@@ -1785,8 +1689,20 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                 knob.set_value(initial_value);
                 app.multiband_editor.band_chain_dry_wet_knobs.push(knob);
             }
-            if let Some(new_value) = app.multiband_editor.band_chain_dry_wet_knobs[band].handle_event(event, DEFAULT_SENSITIVITY) {
-                return handle(app, SetBandChainDryWet { band, mix: new_value });
+
+            // Only handle Pressed/Released locally - Moved is handled by GlobalMouseMoved
+            match event {
+                KnobEvent::Pressed => {
+                    app.multiband_editor.dragging_dry_wet_knob = Some(DryWetKnobId::BandChain(band));
+                    app.multiband_editor.band_chain_dry_wet_knobs[band].handle_event(KnobEvent::Pressed, DEFAULT_SENSITIVITY);
+                }
+                KnobEvent::Released => {
+                    app.multiband_editor.dragging_dry_wet_knob = None;
+                    app.multiband_editor.band_chain_dry_wet_knobs[band].handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
+                }
+                KnobEvent::Moved(_) => {
+                    // Ignore local Moved events - GlobalMouseMoved handles all movement
+                }
             }
             Task::none()
         }
@@ -1807,19 +1723,19 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         PostFxChainDryWetKnob(event) => {
             use mesh_widgets::knob::KnobEvent;
 
-            // Track drag state for global mouse capture
-            match &event {
+            // Only handle Pressed/Released locally - Moved is handled by GlobalMouseMoved
+            match event {
                 KnobEvent::Pressed => {
                     app.multiband_editor.dragging_dry_wet_knob = Some(DryWetKnobId::PostFxChain);
+                    app.multiband_editor.post_fx_chain_dry_wet_knob.handle_event(KnobEvent::Pressed, DEFAULT_SENSITIVITY);
                 }
                 KnobEvent::Released => {
                     app.multiband_editor.dragging_dry_wet_knob = None;
+                    app.multiband_editor.post_fx_chain_dry_wet_knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
                 }
-                KnobEvent::Moved(_) => {}
-            }
-
-            if let Some(new_value) = app.multiband_editor.post_fx_chain_dry_wet_knob.handle_event(event, DEFAULT_SENSITIVITY) {
-                return handle(app, SetPostFxChainDryWet(new_value));
+                KnobEvent::Moved(_) => {
+                    // Ignore local Moved events - GlobalMouseMoved handles all movement
+                }
             }
             Task::none()
         }
@@ -1840,19 +1756,19 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         GlobalDryWetKnob(event) => {
             use mesh_widgets::knob::KnobEvent;
 
-            // Track drag state for global mouse capture
-            match &event {
+            // Only handle Pressed/Released locally - Moved is handled by GlobalMouseMoved
+            match event {
                 KnobEvent::Pressed => {
                     app.multiband_editor.dragging_dry_wet_knob = Some(DryWetKnobId::Global);
+                    app.multiband_editor.global_dry_wet_knob.handle_event(KnobEvent::Pressed, DEFAULT_SENSITIVITY);
                 }
                 KnobEvent::Released => {
                     app.multiband_editor.dragging_dry_wet_knob = None;
+                    app.multiband_editor.global_dry_wet_knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
                 }
-                KnobEvent::Moved(_) => {}
-            }
-
-            if let Some(new_value) = app.multiband_editor.global_dry_wet_knob.handle_event(event, DEFAULT_SENSITIVITY) {
-                return handle(app, SetGlobalDryWet(new_value));
+                KnobEvent::Moved(_) => {
+                    // Ignore local Moved events - GlobalMouseMoved handles all movement
+                }
             }
             Task::none()
         }
