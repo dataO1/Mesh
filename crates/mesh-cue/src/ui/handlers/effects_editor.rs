@@ -1039,7 +1039,7 @@ impl MeshCueApp {
             // ─────────────────────────────────────────────────────────────────────
             SetEffectDryWet { location, effect, mix } => {
                 // Update UI state
-                match location {
+                match &location {
                     EffectChainLocation::PreFx => {
                         if let Some(fx) = self.effects_editor.editor.pre_fx.get_mut(effect) {
                             fx.dry_wet = mix;
@@ -1050,14 +1050,14 @@ impl MeshCueApp {
                         }
                     }
                     EffectChainLocation::Band(band) => {
-                        if let Some(b) = self.effects_editor.editor.bands.get_mut(band) {
+                        if let Some(b) = self.effects_editor.editor.bands.get_mut(*band) {
                             if let Some(fx) = b.effects.get_mut(effect) {
                                 fx.dry_wet = mix;
                             }
                         }
                         if self.effects_editor.audio_preview_enabled {
                             let stem = self.effects_editor.preview_stem;
-                            self.audio.set_multiband_band_effect_dry_wet(stem, band, effect, mix);
+                            self.audio.set_multiband_band_effect_dry_wet(stem, *band, effect, mix);
                         }
                     }
                     EffectChainLocation::PostFx => {
@@ -1070,37 +1070,27 @@ impl MeshCueApp {
                         }
                     }
                 }
+                // Sync knob value
+                let knob = self.effects_editor.editor.effect_dry_wet_knobs
+                    .entry((location, effect))
+                    .or_insert_with(|| mesh_widgets::knob::Knob::new(24.0));
+                knob.set_value(mix);
             }
 
             EffectDryWetKnob { location, effect, event } => {
-                // Get current dry/wet value
-                let current = match &location {
-                    EffectChainLocation::PreFx => {
-                        self.effects_editor.editor.pre_fx.get(effect).map(|e| e.dry_wet).unwrap_or(1.0)
-                    }
-                    EffectChainLocation::Band(band) => {
-                        self.effects_editor.editor.bands.get(*band)
-                            .and_then(|b| b.effects.get(effect))
-                            .map(|e| e.dry_wet)
-                            .unwrap_or(1.0)
-                    }
-                    EffectChainLocation::PostFx => {
-                        self.effects_editor.editor.post_fx.get(effect).map(|e| e.dry_wet).unwrap_or(1.0)
-                    }
-                };
+                // Use persistent knob from editor state
+                let knob = self.effects_editor.editor.effect_dry_wet_knobs
+                    .entry((location.clone(), effect))
+                    .or_insert_with(|| mesh_widgets::knob::Knob::new(24.0));
 
-                // Create a temporary knob and handle the event
-                let mut knob = mesh_widgets::knob::Knob::new(24.0);
-                knob.set_value(current);
-                knob.handle_event(event, DEFAULT_SENSITIVITY);
-                let new_value = knob.value();
-
-                // Apply change
-                return self.handle_effects_editor(SetEffectDryWet { location, effect, mix: new_value });
+                if let Some(new_value) = knob.handle_event(event, DEFAULT_SENSITIVITY) {
+                    return self.handle_effects_editor(SetEffectDryWet { location, effect, mix: new_value });
+                }
             }
 
             SetPreFxChainDryWet(mix) => {
                 self.effects_editor.editor.pre_fx_chain_dry_wet = mix;
+                self.effects_editor.editor.pre_fx_chain_dry_wet_knob.set_value(mix);
                 if self.effects_editor.audio_preview_enabled {
                     let stem = self.effects_editor.preview_stem;
                     self.audio.set_multiband_pre_fx_chain_dry_wet(stem, mix);
@@ -1108,16 +1098,20 @@ impl MeshCueApp {
             }
 
             PreFxChainDryWetKnob(event) => {
-                let mut knob = mesh_widgets::knob::Knob::new(24.0);
-                knob.set_value(self.effects_editor.editor.pre_fx_chain_dry_wet);
-                knob.handle_event(event, DEFAULT_SENSITIVITY);
-                return self.handle_effects_editor(SetPreFxChainDryWet(knob.value()));
+                if let Some(new_value) = self.effects_editor.editor.pre_fx_chain_dry_wet_knob.handle_event(event, DEFAULT_SENSITIVITY) {
+                    return self.handle_effects_editor(SetPreFxChainDryWet(new_value));
+                }
             }
 
             SetBandChainDryWet { band, mix } => {
                 if let Some(b) = self.effects_editor.editor.bands.get_mut(band) {
                     b.chain_dry_wet = mix;
                 }
+                // Sync knob value
+                while self.effects_editor.editor.band_chain_dry_wet_knobs.len() <= band {
+                    self.effects_editor.editor.band_chain_dry_wet_knobs.push(mesh_widgets::knob::Knob::new(36.0));
+                }
+                self.effects_editor.editor.band_chain_dry_wet_knobs[band].set_value(mix);
                 if self.effects_editor.audio_preview_enabled {
                     let stem = self.effects_editor.preview_stem;
                     self.audio.set_multiband_band_chain_dry_wet(stem, band, mix);
@@ -1125,17 +1119,18 @@ impl MeshCueApp {
             }
 
             BandChainDryWetKnob { band, event } => {
-                let current = self.effects_editor.editor.bands.get(band)
-                    .map(|b| b.chain_dry_wet)
-                    .unwrap_or(1.0);
-                let mut knob = mesh_widgets::knob::Knob::new(24.0);
-                knob.set_value(current);
-                knob.handle_event(event, DEFAULT_SENSITIVITY);
-                return self.handle_effects_editor(SetBandChainDryWet { band, mix: knob.value() });
+                // Ensure we have enough knobs for this band
+                while self.effects_editor.editor.band_chain_dry_wet_knobs.len() <= band {
+                    self.effects_editor.editor.band_chain_dry_wet_knobs.push(mesh_widgets::knob::Knob::new(36.0));
+                }
+                if let Some(new_value) = self.effects_editor.editor.band_chain_dry_wet_knobs[band].handle_event(event, DEFAULT_SENSITIVITY) {
+                    return self.handle_effects_editor(SetBandChainDryWet { band, mix: new_value });
+                }
             }
 
             SetPostFxChainDryWet(mix) => {
                 self.effects_editor.editor.post_fx_chain_dry_wet = mix;
+                self.effects_editor.editor.post_fx_chain_dry_wet_knob.set_value(mix);
                 if self.effects_editor.audio_preview_enabled {
                     let stem = self.effects_editor.preview_stem;
                     self.audio.set_multiband_post_fx_chain_dry_wet(stem, mix);
@@ -1143,14 +1138,14 @@ impl MeshCueApp {
             }
 
             PostFxChainDryWetKnob(event) => {
-                let mut knob = mesh_widgets::knob::Knob::new(24.0);
-                knob.set_value(self.effects_editor.editor.post_fx_chain_dry_wet);
-                knob.handle_event(event, DEFAULT_SENSITIVITY);
-                return self.handle_effects_editor(SetPostFxChainDryWet(knob.value()));
+                if let Some(new_value) = self.effects_editor.editor.post_fx_chain_dry_wet_knob.handle_event(event, DEFAULT_SENSITIVITY) {
+                    return self.handle_effects_editor(SetPostFxChainDryWet(new_value));
+                }
             }
 
             SetGlobalDryWet(mix) => {
                 self.effects_editor.editor.global_dry_wet = mix;
+                self.effects_editor.editor.global_dry_wet_knob.set_value(mix);
                 if self.effects_editor.audio_preview_enabled {
                     let stem = self.effects_editor.preview_stem;
                     self.audio.set_multiband_global_dry_wet(stem, mix);
@@ -1158,10 +1153,9 @@ impl MeshCueApp {
             }
 
             GlobalDryWetKnob(event) => {
-                let mut knob = mesh_widgets::knob::Knob::new(24.0);
-                knob.set_value(self.effects_editor.editor.global_dry_wet);
-                knob.handle_event(event, DEFAULT_SENSITIVITY);
-                return self.handle_effects_editor(SetGlobalDryWet(knob.value()));
+                if let Some(new_value) = self.effects_editor.editor.global_dry_wet_knob.handle_event(event, DEFAULT_SENSITIVITY) {
+                    return self.handle_effects_editor(SetGlobalDryWet(new_value));
+                }
             }
 
             DropMacroOnEffectDryWet { macro_index, location, effect } => {

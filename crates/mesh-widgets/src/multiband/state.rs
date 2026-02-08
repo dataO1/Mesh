@@ -544,6 +544,25 @@ pub struct MultibandEditorState {
 
     /// Macro mapping for global dry/wet
     pub global_dry_wet_macro_mapping: Option<ParamMacroMapping>,
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Dry/Wet Knob Widgets (for drag state persistence)
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Knob widgets for per-effect dry/wet (keyed by location + effect index)
+    pub effect_dry_wet_knobs: HashMap<(EffectChainLocation, usize), Knob>,
+
+    /// Knob widget for pre-fx chain dry/wet
+    pub pre_fx_chain_dry_wet_knob: Knob,
+
+    /// Knob widget for post-fx chain dry/wet
+    pub post_fx_chain_dry_wet_knob: Knob,
+
+    /// Knob widgets for band chain dry/wet (indexed by band)
+    pub band_chain_dry_wet_knobs: Vec<Knob>,
+
+    /// Knob widget for global dry/wet
+    pub global_dry_wet_knob: Knob,
 }
 
 impl Default for MultibandEditorState {
@@ -590,6 +609,12 @@ impl MultibandEditorState {
             post_fx_chain_dry_wet_macro_mapping: None,
             global_dry_wet: 1.0,
             global_dry_wet_macro_mapping: None,
+            // Dry/wet knob widgets
+            effect_dry_wet_knobs: HashMap::new(),
+            pre_fx_chain_dry_wet_knob: Knob::new(36.0),
+            post_fx_chain_dry_wet_knob: Knob::new(36.0),
+            band_chain_dry_wet_knobs: vec![Knob::new(36.0)], // One band by default
+            global_dry_wet_knob: Knob::new(48.0),
         }
     }
 

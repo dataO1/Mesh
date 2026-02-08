@@ -1562,7 +1562,7 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             let deck = app.multiband_editor.deck;
             let stem = Stem::ALL[app.multiband_editor.stem];
 
-            // Update UI state
+            // Update UI state and knob value
             match location {
                 EffectChainLocation::PreFx => {
                     if let Some(fx) = app.multiband_editor.pre_fx.get_mut(effect) {
@@ -1597,40 +1597,33 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                     );
                 }
             }
+            // Sync knob widget value
+            if let Some(knob) = app.multiband_editor.effect_dry_wet_knobs.get_mut(&(location, effect)) {
+                knob.set_value(mix);
+            }
             Task::none()
         }
 
         EffectDryWetKnob { location, effect, event } => {
-            // Get current dry/wet value
-            let current = match &location {
-                EffectChainLocation::PreFx => {
-                    app.multiband_editor.pre_fx.get(effect).map(|e| e.dry_wet).unwrap_or(1.0)
-                }
-                EffectChainLocation::Band(band) => {
-                    app.multiband_editor.bands.get(*band)
-                        .and_then(|b| b.effects.get(effect))
-                        .map(|e| e.dry_wet)
-                        .unwrap_or(1.0)
-                }
-                EffectChainLocation::PostFx => {
-                    app.multiband_editor.post_fx.get(effect).map(|e| e.dry_wet).unwrap_or(1.0)
-                }
-            };
+            let key = (location, effect);
+            // Ensure the knob exists
+            app.multiband_editor.effect_dry_wet_knobs
+                .entry(key)
+                .or_insert_with(|| mesh_widgets::knob::Knob::new(32.0));
 
-            // Create a temporary knob and handle the event
-            let mut knob = mesh_widgets::knob::Knob::new(24.0);
-            knob.set_value(current);
-            knob.handle_event(event, DEFAULT_SENSITIVITY);
-            let new_value = knob.value();
-
-            // Apply change
-            return handle(app, SetEffectDryWet { location, effect, mix: new_value });
+            if let Some(knob) = app.multiband_editor.effect_dry_wet_knobs.get_mut(&key) {
+                if let Some(new_value) = knob.handle_event(event, DEFAULT_SENSITIVITY) {
+                    return handle(app, SetEffectDryWet { location, effect, mix: new_value });
+                }
+            }
+            Task::none()
         }
 
         SetPreFxChainDryWet(mix) => {
             let deck = app.multiband_editor.deck;
             let stem = Stem::ALL[app.multiband_editor.stem];
             app.multiband_editor.pre_fx_chain_dry_wet = mix;
+            app.multiband_editor.pre_fx_chain_dry_wet_knob.set_value(mix);
             app.domain.send_command(
                 mesh_core::engine::EngineCommand::SetMultibandPreFxChainDryWet {
                     deck, stem, mix
@@ -1640,10 +1633,10 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         }
 
         PreFxChainDryWetKnob(event) => {
-            let mut knob = mesh_widgets::knob::Knob::new(24.0);
-            knob.set_value(app.multiband_editor.pre_fx_chain_dry_wet);
-            knob.handle_event(event, DEFAULT_SENSITIVITY);
-            return handle(app, SetPreFxChainDryWet(knob.value()));
+            if let Some(new_value) = app.multiband_editor.pre_fx_chain_dry_wet_knob.handle_event(event, DEFAULT_SENSITIVITY) {
+                return handle(app, SetPreFxChainDryWet(new_value));
+            }
+            Task::none()
         }
 
         SetBandChainDryWet { band, mix } => {
@@ -1651,6 +1644,9 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             let stem = Stem::ALL[app.multiband_editor.stem];
             if let Some(b) = app.multiband_editor.bands.get_mut(band) {
                 b.chain_dry_wet = mix;
+            }
+            if let Some(knob) = app.multiband_editor.band_chain_dry_wet_knobs.get_mut(band) {
+                knob.set_value(mix);
             }
             app.domain.send_command(
                 mesh_core::engine::EngineCommand::SetMultibandBandChainDryWet {
@@ -1661,19 +1657,21 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         }
 
         BandChainDryWetKnob { band, event } => {
-            let current = app.multiband_editor.bands.get(band)
-                .map(|b| b.chain_dry_wet)
-                .unwrap_or(1.0);
-            let mut knob = mesh_widgets::knob::Knob::new(24.0);
-            knob.set_value(current);
-            knob.handle_event(event, DEFAULT_SENSITIVITY);
-            return handle(app, SetBandChainDryWet { band, mix: knob.value() });
+            // Ensure band knob exists
+            while app.multiband_editor.band_chain_dry_wet_knobs.len() <= band {
+                app.multiband_editor.band_chain_dry_wet_knobs.push(mesh_widgets::knob::Knob::new(36.0));
+            }
+            if let Some(new_value) = app.multiband_editor.band_chain_dry_wet_knobs[band].handle_event(event, DEFAULT_SENSITIVITY) {
+                return handle(app, SetBandChainDryWet { band, mix: new_value });
+            }
+            Task::none()
         }
 
         SetPostFxChainDryWet(mix) => {
             let deck = app.multiband_editor.deck;
             let stem = Stem::ALL[app.multiband_editor.stem];
             app.multiband_editor.post_fx_chain_dry_wet = mix;
+            app.multiband_editor.post_fx_chain_dry_wet_knob.set_value(mix);
             app.domain.send_command(
                 mesh_core::engine::EngineCommand::SetMultibandPostFxChainDryWet {
                     deck, stem, mix
@@ -1683,16 +1681,17 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         }
 
         PostFxChainDryWetKnob(event) => {
-            let mut knob = mesh_widgets::knob::Knob::new(24.0);
-            knob.set_value(app.multiband_editor.post_fx_chain_dry_wet);
-            knob.handle_event(event, DEFAULT_SENSITIVITY);
-            return handle(app, SetPostFxChainDryWet(knob.value()));
+            if let Some(new_value) = app.multiband_editor.post_fx_chain_dry_wet_knob.handle_event(event, DEFAULT_SENSITIVITY) {
+                return handle(app, SetPostFxChainDryWet(new_value));
+            }
+            Task::none()
         }
 
         SetGlobalDryWet(mix) => {
             let deck = app.multiband_editor.deck;
             let stem = Stem::ALL[app.multiband_editor.stem];
             app.multiband_editor.global_dry_wet = mix;
+            app.multiband_editor.global_dry_wet_knob.set_value(mix);
             app.domain.send_command(
                 mesh_core::engine::EngineCommand::SetMultibandGlobalDryWet {
                     deck, stem, mix
@@ -1702,10 +1701,10 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         }
 
         GlobalDryWetKnob(event) => {
-            let mut knob = mesh_widgets::knob::Knob::new(24.0);
-            knob.set_value(app.multiband_editor.global_dry_wet);
-            knob.handle_event(event, DEFAULT_SENSITIVITY);
-            return handle(app, SetGlobalDryWet(knob.value()));
+            if let Some(new_value) = app.multiband_editor.global_dry_wet_knob.handle_event(event, DEFAULT_SENSITIVITY) {
+                return handle(app, SetGlobalDryWet(new_value));
+            }
+            Task::none()
         }
 
         DropMacroOnEffectDryWet { macro_index, location, effect } => {

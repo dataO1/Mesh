@@ -50,17 +50,14 @@ fn divider<'a, M: 'a>() -> Element<'a, M> {
 
 /// Create a small dry/wet knob with label
 fn dry_wet_knob_view<'a>(
-    value: f32,
+    knob: &Knob,
     label: &'static str,
     on_event: impl Fn(KnobEvent) -> MultibandEditorMessage + 'a,
     is_drag_target: bool,
     is_mapped: bool,
 ) -> Element<'a, MultibandEditorMessage> {
-    let mut knob = Knob::new(32.0);
-    knob.set_value(value);
-
     let knob_element = knob.view(on_event);
-    let value_text = format!("{:.0}%", value * 100.0);
+    let value_text = format!("{:.0}%", knob.value() * 100.0);
 
     // Highlight color when dragging macro over or when mapped
     let label_color = if is_drag_target {
@@ -84,17 +81,14 @@ fn dry_wet_knob_view<'a>(
 /// Create a chain dry/wet section with label and knob
 fn chain_dry_wet_section<'a>(
     label: &'static str,
-    value: f32,
+    knob: &Knob,
     on_event: impl Fn(KnobEvent) -> MultibandEditorMessage + 'a,
     dragging_macro: Option<usize>,
     chain_target: ChainTarget,
     is_mapped: bool,
 ) -> Element<'a, MultibandEditorMessage> {
-    let mut knob = Knob::new(36.0);
-    knob.set_value(value);
-
     let knob_element = knob.view(on_event);
-    let value_text = format!("{:.0}%", value * 100.0);
+    let value_text = format!("{:.0}%", knob.value() * 100.0);
 
     // Highlight color when dragging macro or when mapped
     let label_color = if dragging_macro.is_some() {
@@ -516,14 +510,20 @@ fn band_column<'a>(
     let bg_color = if is_active { BG_MEDIUM } else { BG_DARK };
 
     // Chain dry/wet section at the bottom
-    let chain_dw_section = chain_dry_wet_section(
-        "Chain D/W",
-        band.chain_dry_wet,
-        move |event| MultibandEditorMessage::BandChainDryWetKnob { band: band_idx, event },
-        dragging_macro,
-        ChainTarget::Band(band_idx),
-        band.chain_dry_wet_macro_mapping.is_some(),
-    );
+    let band_knob = editor_state.band_chain_dry_wet_knobs.get(band_idx);
+    let chain_dw_section = if let Some(knob) = band_knob {
+        chain_dry_wet_section(
+            "Chain D/W",
+            knob,
+            move |event| MultibandEditorMessage::BandChainDryWetKnob { band: band_idx, event },
+            dragging_macro,
+            ChainTarget::Band(band_idx),
+            band.chain_dry_wet_macro_mapping.is_some(),
+        )
+    } else {
+        // Fallback if knob doesn't exist yet
+        text("D/W").size(11).color(TEXT_SECONDARY).into()
+    };
 
     container(
         column![
@@ -595,15 +595,15 @@ fn fx_chain_column<'a>(
     let effects_column = column(effect_cards).spacing(4).push(add_button);
 
     // Chain dry/wet section at the bottom
-    let (chain_dry_wet, chain_target, chain_dw_mapped) = if location == EffectChainLocation::PreFx {
+    let (chain_knob, chain_target, chain_dw_mapped) = if location == EffectChainLocation::PreFx {
         (
-            editor_state.pre_fx_chain_dry_wet,
+            &editor_state.pre_fx_chain_dry_wet_knob,
             ChainTarget::PreFx,
             editor_state.pre_fx_chain_dry_wet_macro_mapping.is_some(),
         )
     } else {
         (
-            editor_state.post_fx_chain_dry_wet,
+            &editor_state.post_fx_chain_dry_wet_knob,
             ChainTarget::PostFx,
             editor_state.post_fx_chain_dry_wet_macro_mapping.is_some(),
         )
@@ -611,7 +611,7 @@ fn fx_chain_column<'a>(
 
     let chain_dry_wet_section = chain_dry_wet_section(
         "Chain D/W",
-        chain_dry_wet,
+        chain_knob,
         move |event| {
             if location == EffectChainLocation::PreFx {
                 MultibandEditorMessage::PreFxChainDryWetKnob(event)
@@ -888,31 +888,36 @@ fn fx_effect_card<'a>(
     };
 
     // Per-effect dry/wet knob on the left
-    let effect_dry_wet = effect.dry_wet;
     let is_dw_mapped = effect.dry_wet_macro_mapping.is_some();
-    let dry_wet_knob = dry_wet_knob_view(
-        effect_dry_wet,
-        "D/W",
-        move |event| MultibandEditorMessage::EffectDryWetKnob {
-            location,
-            effect: effect_idx,
-            event,
-        },
-        dragging_macro.is_some(), // Highlight when macro is being dragged
-        is_dw_mapped,             // Show mapped indicator
-    );
-
-    // Wrap dry/wet in macro drop target
-    let dry_wet_element: Element<'_, MultibandEditorMessage> = if let Some(macro_idx) = dragging_macro {
-        mouse_area(dry_wet_knob)
-            .on_release(MultibandEditorMessage::DropMacroOnEffectDryWet {
-                macro_index: macro_idx,
+    let dw_key = (location, effect_idx);
+    let dry_wet_element: Element<'_, MultibandEditorMessage> = if let Some(knob) = editor_state.effect_dry_wet_knobs.get(&dw_key) {
+        let dry_wet_knob = dry_wet_knob_view(
+            knob,
+            "D/W",
+            move |event| MultibandEditorMessage::EffectDryWetKnob {
                 location,
                 effect: effect_idx,
-            })
-            .into()
+                event,
+            },
+            dragging_macro.is_some(),
+            is_dw_mapped,
+        );
+
+        // Wrap dry/wet in macro drop target
+        if let Some(macro_idx) = dragging_macro {
+            mouse_area(dry_wet_knob)
+                .on_release(MultibandEditorMessage::DropMacroOnEffectDryWet {
+                    macro_index: macro_idx,
+                    location,
+                    effect: effect_idx,
+                })
+                .into()
+        } else {
+            dry_wet_knob
+        }
     } else {
-        dry_wet_knob
+        // Fallback if knob doesn't exist yet
+        text("D/W").size(10).color(TEXT_SECONDARY).into()
     };
 
     // Combine dry/wet knob with param knobs
@@ -1183,31 +1188,36 @@ fn effect_card<'a>(
     };
 
     // Per-effect dry/wet knob on the left
-    let effect_dry_wet = effect.dry_wet;
     let is_dw_mapped = effect.dry_wet_macro_mapping.is_some();
-    let dry_wet_knob = dry_wet_knob_view(
-        effect_dry_wet,
-        "D/W",
-        move |event| MultibandEditorMessage::EffectDryWetKnob {
-            location,
-            effect: effect_idx,
-            event,
-        },
-        dragging_macro.is_some(), // Highlight when macro is being dragged
-        is_dw_mapped,             // Show mapped indicator
-    );
-
-    // Wrap dry/wet in macro drop target
-    let dry_wet_element: Element<'_, MultibandEditorMessage> = if let Some(macro_idx) = dragging_macro {
-        mouse_area(dry_wet_knob)
-            .on_release(MultibandEditorMessage::DropMacroOnEffectDryWet {
-                macro_index: macro_idx,
+    let dw_key = (location, effect_idx);
+    let dry_wet_element: Element<'_, MultibandEditorMessage> = if let Some(knob) = editor_state.effect_dry_wet_knobs.get(&dw_key) {
+        let dry_wet_knob = dry_wet_knob_view(
+            knob,
+            "D/W",
+            move |event| MultibandEditorMessage::EffectDryWetKnob {
                 location,
                 effect: effect_idx,
-            })
-            .into()
+                event,
+            },
+            dragging_macro.is_some(),
+            is_dw_mapped,
+        );
+
+        // Wrap dry/wet in macro drop target
+        if let Some(macro_idx) = dragging_macro {
+            mouse_area(dry_wet_knob)
+                .on_release(MultibandEditorMessage::DropMacroOnEffectDryWet {
+                    macro_index: macro_idx,
+                    location,
+                    effect: effect_idx,
+                })
+                .into()
+        } else {
+            dry_wet_knob
+        }
     } else {
-        dry_wet_knob
+        // Fallback if knob doesn't exist yet
+        text("D/W").size(10).color(TEXT_SECONDARY).into()
     };
 
     // Combine dry/wet knob with param knobs
@@ -1356,9 +1366,7 @@ fn macro_bar<'a>(
     let global_dry_wet = state.global_dry_wet;
     let global_dw_mapped = state.global_dry_wet_macro_mapping.is_some();
     let global_dw_knob = {
-        let mut knob = Knob::new(48.0);
-        knob.set_value(global_dry_wet);
-        let knob_element = knob.view(|event| MultibandEditorMessage::GlobalDryWetKnob(event));
+        let knob_element = state.global_dry_wet_knob.view(|event| MultibandEditorMessage::GlobalDryWetKnob(event));
 
         let value_text = format!("{:.0}%", global_dry_wet * 100.0);
 
