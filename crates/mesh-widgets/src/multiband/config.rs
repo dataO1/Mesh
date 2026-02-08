@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Default presets folder name within the collection folder
-pub const MULTIBAND_PRESETS_FOLDER: &str = "multiband-presets";
+pub const MULTIBAND_PRESETS_FOLDER: &str = "presets";
 
 /// Multiband preset configuration
 ///
