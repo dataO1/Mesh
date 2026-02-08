@@ -1091,7 +1091,8 @@ impl MeshCueApp {
             // Add effects to band
             if let Some(effects) = band_effects.get(band_idx) {
                 for (effect_idx, data) in effects.iter().enumerate() {
-                    if let Some(effect) = self.create_effect_by_id_and_source(&data.id, &data.source) {
+                    let location = EffectChainLocation::Band(band_idx);
+                    if let Some(effect) = self.create_effect_for_audio(&data.id, &data.source, location, effect_idx) {
                         self.audio.add_multiband_band_effect(stem, band_idx, effect);
                         // Sync bypass
                         if data.bypassed {
@@ -1108,7 +1109,7 @@ impl MeshCueApp {
 
         // 5. Add pre-fx effects
         for (effect_idx, data) in pre_fx_effects.iter().enumerate() {
-            if let Some(effect) = self.create_effect_by_id_and_source(&data.id, &data.source) {
+            if let Some(effect) = self.create_effect_for_audio(&data.id, &data.source, EffectChainLocation::PreFx, effect_idx) {
                 self.audio.add_multiband_pre_fx(stem, effect);
                 // Sync bypass
                 if data.bypassed {
@@ -1123,7 +1124,7 @@ impl MeshCueApp {
 
         // 6. Add post-fx effects
         for (effect_idx, data) in post_fx_effects.iter().enumerate() {
-            if let Some(effect) = self.create_effect_by_id_and_source(&data.id, &data.source) {
+            if let Some(effect) = self.create_effect_for_audio(&data.id, &data.source, EffectChainLocation::PostFx, effect_idx) {
                 self.audio.add_multiband_post_fx(stem, effect);
                 // Sync bypass
                 if data.bypassed {
@@ -1145,16 +1146,33 @@ impl MeshCueApp {
             num_bands, pre_fx_effects.len(), post_fx_effects.len());
     }
 
-    /// Create an audio effect instance by ID and source type
+    /// Create an audio effect instance by ID, source type, and location
     ///
-    /// Helper that doesn't borrow effects_editor, avoiding borrow conflicts.
-    fn create_effect_by_id_and_source(&mut self, id: &str, source: &EffectSourceType) -> Option<Box<dyn mesh_core::effect::Effect>> {
+    /// For CLAP effects, creates the effect WITH a GUI handle so that the same
+    /// plugin wrapper is used for both audio processing and GUI/learning.
+    /// This is essential for parameter learning to work correctly.
+    fn create_effect_for_audio(
+        &mut self,
+        id: &str,
+        source: &EffectSourceType,
+        location: EffectChainLocation,
+        effect_idx: usize,
+    ) -> Option<Box<dyn mesh_core::effect::Effect>> {
         match source {
             EffectSourceType::Pd => {
                 self.domain.create_pd_effect(id).ok()
             }
             EffectSourceType::Clap => {
-                self.domain.create_clap_effect(id).ok()
+                // Generate effect instance ID matching the format used in handlers
+                let effect_instance_id = match location {
+                    EffectChainLocation::PreFx => format!("{}_cue_prefx_{}", id, effect_idx),
+                    EffectChainLocation::Band(band_idx) => format!("{}_cue_b{}_{}", id, band_idx, effect_idx),
+                    EffectChainLocation::PostFx => format!("{}_cue_postfx_{}", id, effect_idx),
+                };
+
+                // Create effect WITH GUI handle so audio and GUI share the same wrapper
+                // This ensures parameter learning works correctly
+                self.domain.create_clap_effect_with_gui(id, effect_instance_id).ok()
             }
             EffectSourceType::Native => {
                 // Native effects not supported in presets yet
