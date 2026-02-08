@@ -51,14 +51,29 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   - `test-gain/` — Simple gain utility for testing
   - `rave-percussion/` — Neural audio synthesis via nn~ external
 
-- **CLAP parameter learning** — Click the label under any effect knob to enter
-  learning mode, then adjust a parameter in the plugin's native GUI. The knob
-  is automatically assigned to control that parameter. Works with any of the
-  plugin's parameters, not just the first 8.
+- **Effects editor modal (mesh-cue)** — New full-featured effects preset editor
+  accessible via the "FX Presets" button. Create multiband processing chains
+  with complete plugin parameter control:
+  - **Multiband splitter** — Up to 8 frequency bands with adjustable crossovers
+  - **Pre/Post-FX chains** — Apply effects before or after the band split
+  - **Per-band effect chains** — Independent effect stacks for each frequency band
+  - **8 macro knobs** — Map macros to any parameter across all effect chains
+  - **Real-time audio preview** — Toggle preview to hear changes live on any stem
 
-- **Macro-to-parameter mapping** — Drag any of the 8 macro knobs onto an effect
-  parameter knob to create a mapping. Macro knobs can control parameters across
-  pre-fx, band, and post-fx effect chains.
+- **CLAP parameter learning (mesh-cue)** — Click the label under any effect knob
+  to enter learning mode. Open the plugin's native GUI and adjust any parameter —
+  it will be automatically assigned to that knob. This allows controlling any of
+  a plugin's parameters, not just the default first 8.
+
+- **Macro-to-parameter mapping** — Click the "Map" button on any macro knob, then
+  click a parameter knob to create a mapping. Macros use bipolar modulation where
+  50% is neutral: turning below 50% subtracts from the base value, above 50% adds.
+  This enables expressive live control of multiple parameters simultaneously.
+
+- **Effect preset save/load** — Create and manage effect presets in YAML format.
+  Presets store the complete multiband configuration including band splits,
+  effect chains, parameter values, macro mappings, and learned parameter
+  assignments. Presets are saved to `~/.config/mesh/presets/`.
 
 ### Fixed
 
@@ -79,6 +94,11 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 - **Improved CLAP discovery logging** — Better error messages when plugins fail
   to load due to missing dependencies, with actionable guidance.
+
+- **Effects editor architecture (mesh-cue)** — Complete rewrite of the effects
+  editing system. The editor now maintains its own UI state separate from audio,
+  with changes synced to the audio engine only when preview is enabled. This
+  provides a responsive editing experience without audio glitches.
 
 ### Known Limitations
 
