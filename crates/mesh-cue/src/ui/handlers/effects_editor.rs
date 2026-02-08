@@ -932,6 +932,7 @@ impl MeshCueApp {
                         let start_y = drag.start_y.unwrap();
                         let delta_y = start_y - position.y; // Inverted: up is positive
                         let new_offset = (drag.start_offset + delta_y * MOD_DRAG_SENSITIVITY).clamp(-1.0, 1.0);
+                        log::trace!("Mod range drag: start={:.2}, delta_y={:.1}, new_offset={:.3}", drag.start_offset, delta_y, new_offset);
 
                         let macro_index = drag.macro_index;
                         let mapping_idx = drag.mapping_idx;

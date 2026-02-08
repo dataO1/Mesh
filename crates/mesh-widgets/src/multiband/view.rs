@@ -1042,13 +1042,8 @@ fn macro_bar<'a>(
         .enumerate()
         .map(|(index, (m, knob))| {
             let is_mapping_drag = dragging_macro == Some(index);
-            // Also highlight when dragging a mod range indicator for this macro
-            let is_mod_range_drag = state.dragging_mod_range
-                .map(|d| d.macro_index == index)
-                .unwrap_or(false);
-            let is_highlighted = is_mapping_drag || is_mod_range_drag;
 
-            let name_color = if is_highlighted {
+            let name_color = if is_mapping_drag {
                 Color::from_rgb(1.0, 0.8, 0.3)
             } else if m.mapping_count > 0 {
                 ACCENT_COLOR
@@ -1056,7 +1051,7 @@ fn macro_bar<'a>(
                 TEXT_SECONDARY
             };
 
-            let border_color = if is_highlighted {
+            let border_color = if is_mapping_drag {
                 Color::from_rgb(1.0, 0.8, 0.3)
             } else {
                 Color::TRANSPARENT
@@ -1108,7 +1103,7 @@ fn macro_bar<'a>(
                     .style(move |_| container::Style {
                         border: iced::Border {
                             color: border_color,
-                            width: if is_highlighted { 2.0 } else { 0.0 },
+                            width: if is_mapping_drag { 2.0 } else { 0.0 },
                             radius: 4.0.into(),
                         },
                         ..Default::default()
@@ -1163,18 +1158,33 @@ const PARAM_HIGHLIGHT_COLOR: Color = Color::from_rgb(1.0, 0.6, 0.2);
 
 /// Check if a specific effect parameter knob should be highlighted
 ///
-/// Returns true if the user is hovering a modulation indicator that targets this knob.
+/// Returns true if the user is hovering OR dragging a modulation indicator that targets this knob.
 fn is_param_highlighted(
     state: &MultibandEditorState,
     location: EffectChainLocation,
     effect_idx: usize,
     knob_idx: usize,
 ) -> bool {
+    // Check if hovering a mod indicator that targets this param
     if let Some((macro_idx, map_idx)) = state.hovered_mapping {
         if let Some(mapping) = state.macro_mappings_index[macro_idx].get(map_idx) {
-            return mapping.location == location
+            if mapping.location == location
                 && mapping.effect_idx == effect_idx
-                && mapping.knob_idx == knob_idx;
+                && mapping.knob_idx == knob_idx
+            {
+                return true;
+            }
+        }
+    }
+    // Check if dragging a mod range indicator that targets this param
+    if let Some(drag) = state.dragging_mod_range {
+        if let Some(mapping) = state.macro_mappings_index[drag.macro_index].get(drag.mapping_idx) {
+            if mapping.location == location
+                && mapping.effect_idx == effect_idx
+                && mapping.knob_idx == knob_idx
+            {
+                return true;
+            }
         }
     }
     false
