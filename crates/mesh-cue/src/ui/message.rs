@@ -14,7 +14,9 @@ use mesh_widgets::PlaylistBrowserMessage;
 use crate::analysis::{AnalysisType, ReanalysisProgress, ReanalysisScope};
 use crate::batch_import::{ImportProgress, MixedAudioFile, StemGroup};
 use crate::config::{BackendType, BpmSource, ModelType};
+use mesh_core::types::Stem;
 use mesh_core::usb::UsbMessage;
+use mesh_widgets::MultibandEditorMessage;
 use super::context_menu::ContextMenuKind;
 use super::state::{BrowserSide, ImportMode, LinkedStemLoadedMsg, StemsLoadResult, View};
 
@@ -279,4 +281,36 @@ pub enum Message {
     UsbMessage(UsbMessage),
     /// Dismiss export results
     DismissExportResults,
+
+    // Effects Editor
+    /// Open the effects editor modal
+    OpenEffectsEditor,
+    /// Close the effects editor modal
+    CloseEffectsEditor,
+    /// Message from the multiband editor widget
+    EffectsEditor(MultibandEditorMessage),
+    /// Create a new preset in the effects editor
+    EffectsEditorNewPreset,
+    /// Open save dialog in the effects editor
+    EffectsEditorOpenSaveDialog,
+    /// Save the current preset with the given name
+    EffectsEditorSavePreset(String),
+    /// Close the save dialog
+    EffectsEditorCloseSaveDialog,
+    /// Update preset name input
+    EffectsEditorSetPresetName(String),
+
+    // Effect Picker
+    /// Message from the effect picker
+    EffectPicker(super::effect_picker::EffectPickerMessage),
+
+    // Effects Editor Audio Preview
+    /// Toggle audio preview on/off in effects editor
+    EffectsEditorTogglePreview,
+    /// Set which stem to use for audio preview
+    EffectsEditorSetPreviewStem(Stem),
+
+    // Plugin GUI Learning Mode
+    /// Poll for parameter learning changes
+    PluginGuiTick,
 }

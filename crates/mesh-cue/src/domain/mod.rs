@@ -23,6 +23,9 @@ use anyhow::{anyhow, Result};
 use mesh_core::db::{DatabaseService, Track, Playlist, CuePoint as DbCuePoint, SavedLoop as DbSavedLoop, StemLink as DbStemLink};
 use mesh_core::audio_file::{CuePoint, SavedLoop, StemLinkReference};
 use mesh_core::playlist::{DatabaseStorage, NodeId, NodeKind, PlaylistNode, PlaylistStorage};
+use mesh_core::pd::{DiscoveredEffect, PdManager};
+use mesh_core::clap::{ClapManager, ClapGuiHandle, DiscoveredClapPlugin};
+use std::collections::HashMap;
 use mesh_widgets::TrackRow;
 use mesh_core::usb::{UsbManager, UsbCommand, UsbMessage, SyncPlan, ExportableConfig};
 use mesh_widgets::TreeNode;
@@ -107,6 +110,20 @@ pub struct MeshCueDomain {
 
     /// Path to configuration file
     config_path: PathBuf,
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Effect Discovery
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Pure Data effects manager (discovers effects at startup)
+    pd_manager: PdManager,
+
+    /// CLAP plugin manager (scans system + collection CLAP directories)
+    clap_manager: ClapManager,
+
+    /// GUI handles for CLAP plugin window hosting (keyed by unique effect instance ID)
+    /// These are stored when effects are created via `create_clap_effect_with_gui`.
+    clap_gui_handles: HashMap<String, ClapGuiHandle>,
 }
 
 impl MeshCueDomain {
@@ -137,6 +154,36 @@ impl MeshCueDomain {
         // Initialize USB manager (spawns background thread)
         let usb_manager = UsbManager::spawn(Some(db_service.clone()));
 
+        // Initialize PD effect manager (discovers effects at startup)
+        let pd_manager = PdManager::new(&collection_root)
+            .unwrap_or_else(|e| {
+                log::warn!("Failed to initialize PdManager: {}. PD effects will be unavailable.", e);
+                PdManager::default()
+            });
+
+        // Initialize CLAP effect manager (scans system + collection CLAP directories)
+        let mut clap_manager = ClapManager::new();
+        // Add mesh-collection/effects/clap as a search path
+        let collection_clap_path = collection_root.join("effects").join("clap");
+        if collection_clap_path.exists() {
+            log::info!("Adding CLAP search path: {:?}", collection_clap_path);
+            clap_manager.add_search_path(collection_clap_path);
+        } else {
+            // Create the directory for user convenience
+            if let Err(e) = std::fs::create_dir_all(&collection_clap_path) {
+                log::warn!("Failed to create CLAP effects directory: {}", e);
+            } else {
+                log::info!("Created CLAP effects directory: {:?}", collection_clap_path);
+                clap_manager.add_search_path(collection_clap_path);
+            }
+        }
+        clap_manager.scan_plugins();
+        log::info!(
+            "ClapManager initialized: found {} plugins ({} available)",
+            clap_manager.discovered_plugins().len(),
+            clap_manager.available_plugins().len()
+        );
+
         Ok(Self {
             db_service,
             collection_root,
@@ -151,6 +198,9 @@ impl MeshCueDomain {
             reanalysis_cancel_flag: None,
             config,
             config_path,
+            pd_manager,
+            clap_manager,
+            clap_gui_handles: HashMap::new(),
         })
     }
 
@@ -1072,6 +1122,108 @@ impl MeshCueDomain {
     {
         f(Arc::make_mut(&mut self.config));
         self.save_config()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Effect Discovery
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Get the list of discovered PD effects
+    ///
+    /// Returns all effects found in the collection's effects/ folder.
+    /// Effects with missing dependencies are included but marked unavailable.
+    pub fn discovered_effects(&self) -> &[DiscoveredEffect] {
+        self.pd_manager.discovered_effects()
+    }
+
+    /// Get only available PD effects (no missing dependencies)
+    pub fn available_effects(&self) -> Vec<&DiscoveredEffect> {
+        self.pd_manager.available_effects()
+    }
+
+    /// Get a specific PD effect by ID
+    pub fn get_effect(&self, effect_id: &str) -> Option<&DiscoveredEffect> {
+        self.pd_manager.get_effect(effect_id)
+    }
+
+    /// Get all discovered CLAP plugins
+    ///
+    /// Returns all plugins found in standard CLAP directories.
+    /// Plugins that failed to load are included but marked unavailable.
+    pub fn discovered_clap_plugins(&self) -> &[DiscoveredClapPlugin] {
+        self.clap_manager.discovered_plugins()
+    }
+
+    /// Get only available CLAP plugins (loaded successfully)
+    pub fn available_clap_plugins(&self) -> Vec<&DiscoveredClapPlugin> {
+        self.clap_manager.available_plugins()
+    }
+
+    /// Get a specific CLAP plugin by ID
+    pub fn get_clap_plugin(&self, plugin_id: &str) -> Option<&DiscoveredClapPlugin> {
+        self.clap_manager.get_plugin(plugin_id)
+    }
+
+    /// Check if any CLAP plugins are available
+    pub fn has_clap_plugins(&self) -> bool {
+        self.clap_manager.has_plugins()
+    }
+
+    /// Rescan for CLAP plugins
+    pub fn rescan_clap_plugins(&mut self) {
+        self.clap_manager.rescan_plugins();
+    }
+
+    /// Rescan for PD effects
+    pub fn rescan_pd_effects(&mut self) {
+        self.pd_manager.rescan_effects();
+    }
+
+    /// Create a PD effect instance by ID
+    ///
+    /// Used by the effects editor to instantiate effects for audio preview.
+    pub fn create_pd_effect(&mut self, effect_id: &str) -> Result<Box<dyn mesh_core::effect::Effect>, mesh_core::pd::PdError> {
+        self.pd_manager.create_effect(effect_id)
+    }
+
+    /// Create a CLAP effect instance by plugin ID
+    ///
+    /// Used by the effects editor to instantiate effects for audio preview.
+    /// Note: This does not store the GUI handle. Use `create_clap_effect_with_gui`
+    /// if you need plugin GUI support.
+    pub fn create_clap_effect(&mut self, plugin_id: &str) -> Result<Box<dyn mesh_core::effect::Effect>, mesh_core::clap::ClapError> {
+        self.clap_manager.create_effect(plugin_id)
+    }
+
+    /// Create a CLAP effect instance with GUI support
+    ///
+    /// Creates the effect and stores the GUI handle for later window management.
+    /// The effect_instance_id should be unique for this instance (e.g., "plugin_prefx_0").
+    pub fn create_clap_effect_with_gui(
+        &mut self,
+        plugin_id: &str,
+        effect_instance_id: String,
+    ) -> Result<Box<dyn mesh_core::effect::Effect>, mesh_core::clap::ClapError> {
+        let (effect, gui_handle) = self.clap_manager.create_effect_with_gui_handle(plugin_id)?;
+        self.clap_gui_handles.insert(effect_instance_id, gui_handle);
+        Ok(effect)
+    }
+
+    /// Get a CLAP GUI handle by effect instance ID
+    ///
+    /// Used to open/close plugin windows and for parameter learning.
+    pub fn get_clap_gui_handle(&self, effect_instance_id: &str) -> Option<&ClapGuiHandle> {
+        self.clap_gui_handles.get(effect_instance_id)
+    }
+
+    /// List all registered CLAP GUI handle IDs (for debugging)
+    pub fn list_clap_gui_handles(&self) -> Vec<&str> {
+        self.clap_gui_handles.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Remove a CLAP GUI handle (when effect is removed)
+    pub fn remove_clap_gui_handle(&mut self, effect_instance_id: &str) {
+        self.clap_gui_handles.remove(effect_instance_id);
     }
 }
 

@@ -6,6 +6,8 @@
 pub mod browser;
 pub mod delete;
 pub mod editing;
+pub mod effect_picker;
+pub mod effects_editor;
 pub mod export;
 pub mod import;
 pub mod keyboard;

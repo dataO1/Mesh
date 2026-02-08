@@ -502,6 +502,209 @@ impl AudioState {
             volume,
         });
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Multiband Effects Control (for effects editor preview)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Set a crossover frequency for the preview stem's multiband container
+    pub fn set_multiband_crossover(&mut self, stem: mesh_core::types::Stem, crossover_index: usize, freq: f32) {
+        self.send(EngineCommand::SetMultibandCrossover {
+            deck: PREVIEW_DECK,
+            stem,
+            crossover_index,
+            freq,
+        });
+    }
+
+    /// Add a band to the preview stem's multiband container
+    pub fn add_multiband_band(&mut self, stem: mesh_core::types::Stem) {
+        self.send(EngineCommand::AddMultibandBand {
+            deck: PREVIEW_DECK,
+            stem,
+        });
+    }
+
+    /// Remove a band from the preview stem's multiband container
+    pub fn remove_multiband_band(&mut self, stem: mesh_core::types::Stem, band_index: usize) {
+        self.send(EngineCommand::RemoveMultibandBand {
+            deck: PREVIEW_DECK,
+            stem,
+            band_index,
+        });
+    }
+
+    /// Set mute state for a band
+    pub fn set_multiband_band_mute(&mut self, stem: mesh_core::types::Stem, band_index: usize, muted: bool) {
+        self.send(EngineCommand::SetMultibandBandMute {
+            deck: PREVIEW_DECK,
+            stem,
+            band_index,
+            muted,
+        });
+    }
+
+    /// Set solo state for a band
+    pub fn set_multiband_band_solo(&mut self, stem: mesh_core::types::Stem, band_index: usize, soloed: bool) {
+        self.send(EngineCommand::SetMultibandBandSolo {
+            deck: PREVIEW_DECK,
+            stem,
+            band_index,
+            soloed,
+        });
+    }
+
+    /// Set gain for a band (linear, 0.0-2.0)
+    pub fn set_multiband_band_gain(&mut self, stem: mesh_core::types::Stem, band_index: usize, gain: f32) {
+        self.send(EngineCommand::SetMultibandBandGain {
+            deck: PREVIEW_DECK,
+            stem,
+            band_index,
+            gain,
+        });
+    }
+
+    /// Add an effect to a band's chain
+    pub fn add_multiband_band_effect(&mut self, stem: mesh_core::types::Stem, band_index: usize, effect: Box<dyn mesh_core::effect::Effect>) {
+        self.send(EngineCommand::AddMultibandBandEffect {
+            deck: PREVIEW_DECK,
+            stem,
+            band_index,
+            effect,
+        });
+    }
+
+    /// Remove an effect from a band's chain
+    pub fn remove_multiband_band_effect(&mut self, stem: mesh_core::types::Stem, band_index: usize, effect_index: usize) {
+        self.send(EngineCommand::RemoveMultibandBandEffect {
+            deck: PREVIEW_DECK,
+            stem,
+            band_index,
+            effect_index,
+        });
+    }
+
+    /// Set bypass state for an effect within a band
+    pub fn set_multiband_effect_bypass(&mut self, stem: mesh_core::types::Stem, band_index: usize, effect_index: usize, bypass: bool) {
+        self.send(EngineCommand::SetMultibandEffectBypass {
+            deck: PREVIEW_DECK,
+            stem,
+            band_index,
+            effect_index,
+            bypass,
+        });
+    }
+
+    /// Set a parameter value on an effect within a band
+    pub fn set_multiband_effect_param(&mut self, stem: mesh_core::types::Stem, band_index: usize, effect_index: usize, param_index: usize, value: f32) {
+        self.send(EngineCommand::SetMultibandEffectParam {
+            deck: PREVIEW_DECK,
+            stem,
+            band_index,
+            effect_index,
+            param_index,
+            value,
+        });
+    }
+
+    /// Set a macro value for the stem's multiband container (0-7)
+    pub fn set_multiband_macro(&mut self, stem: mesh_core::types::Stem, macro_index: usize, value: f32) {
+        self.send(EngineCommand::SetMultibandMacro {
+            deck: PREVIEW_DECK,
+            stem,
+            macro_index,
+            value,
+        });
+    }
+
+    /// Add an effect to the pre-fx chain (before multiband split)
+    pub fn add_multiband_pre_fx(&mut self, stem: mesh_core::types::Stem, effect: Box<dyn mesh_core::effect::Effect>) {
+        self.send(EngineCommand::AddMultibandPreFx {
+            deck: PREVIEW_DECK,
+            stem,
+            effect,
+        });
+    }
+
+    /// Remove an effect from the pre-fx chain
+    pub fn remove_multiband_pre_fx(&mut self, stem: mesh_core::types::Stem, effect_index: usize) {
+        self.send(EngineCommand::RemoveMultibandPreFx {
+            deck: PREVIEW_DECK,
+            stem,
+            effect_index,
+        });
+    }
+
+    /// Set bypass state for a pre-fx effect
+    pub fn set_multiband_pre_fx_bypass(&mut self, stem: mesh_core::types::Stem, effect_index: usize, bypass: bool) {
+        self.send(EngineCommand::SetMultibandPreFxBypass {
+            deck: PREVIEW_DECK,
+            stem,
+            effect_index,
+            bypass,
+        });
+    }
+
+    /// Set a parameter on a pre-fx effect
+    pub fn set_multiband_pre_fx_param(&mut self, stem: mesh_core::types::Stem, effect_index: usize, param_index: usize, value: f32) {
+        self.send(EngineCommand::SetMultibandPreFxParam {
+            deck: PREVIEW_DECK,
+            stem,
+            effect_index,
+            param_index,
+            value,
+        });
+    }
+
+    /// Add an effect to the post-fx chain (after band summation)
+    pub fn add_multiband_post_fx(&mut self, stem: mesh_core::types::Stem, effect: Box<dyn mesh_core::effect::Effect>) {
+        self.send(EngineCommand::AddMultibandPostFx {
+            deck: PREVIEW_DECK,
+            stem,
+            effect,
+        });
+    }
+
+    /// Remove an effect from the post-fx chain
+    pub fn remove_multiband_post_fx(&mut self, stem: mesh_core::types::Stem, effect_index: usize) {
+        self.send(EngineCommand::RemoveMultibandPostFx {
+            deck: PREVIEW_DECK,
+            stem,
+            effect_index,
+        });
+    }
+
+    /// Set bypass state for a post-fx effect
+    pub fn set_multiband_post_fx_bypass(&mut self, stem: mesh_core::types::Stem, effect_index: usize, bypass: bool) {
+        self.send(EngineCommand::SetMultibandPostFxBypass {
+            deck: PREVIEW_DECK,
+            stem,
+            effect_index,
+            bypass,
+        });
+    }
+
+    /// Set a parameter on a post-fx effect
+    pub fn set_multiband_post_fx_param(&mut self, stem: mesh_core::types::Stem, effect_index: usize, param_index: usize, value: f32) {
+        self.send(EngineCommand::SetMultibandPostFxParam {
+            deck: PREVIEW_DECK,
+            stem,
+            effect_index,
+            param_index,
+            value,
+        });
+    }
+
+    /// Reset a stem's multiband host to default state (single band, no effects)
+    ///
+    /// Used when disabling audio preview in the effects editor to return the stem
+    /// to a clean processing state.
+    pub fn reset_multiband(&mut self, stem: mesh_core::types::Stem) {
+        self.send(EngineCommand::ResetMultiband {
+            deck: PREVIEW_DECK,
+            stem,
+        });
+    }
 }
 
 /// Start the audio system for mesh-cue

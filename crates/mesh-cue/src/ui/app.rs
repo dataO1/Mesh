@@ -9,7 +9,7 @@ use crate::config;
 use crate::domain::MeshCueDomain;
 use crate::keybindings::{self, KeybindingsConfig};
 use iced::widget::{button, column, container, mouse_area, row, stack, text, Space};
-use iced::{Element, Length, Task, Theme};
+use iced::{Color, Element, Length, Task, Theme};
 use super::modals::with_modal_overlay;
 use mesh_core::playlist::NodeId;
 use mesh_widgets::mpsc_subscription;
@@ -84,6 +84,12 @@ pub struct MeshCueApp {
     pub(crate) reanalysis_state: ReanalysisState,
     /// USB export UI state
     pub(crate) export_state: ExportState,
+    /// Effects editor modal state
+    pub(crate) effects_editor: super::effects_editor::EffectsEditorState,
+    /// Effect picker modal state
+    pub(crate) effect_picker: super::effect_picker::EffectPickerState,
+    /// Plugin GUI manager for CLAP parameter learning
+    pub(crate) plugin_gui_manager: super::plugin_gui::PluginGuiManager,
 }
 
 /// Extract the playlists subtree from the tree nodes for the export modal
@@ -188,6 +194,9 @@ impl MeshCueApp {
             stem_link_selection: None,
             reanalysis_state: ReanalysisState::default(),
             export_state: ExportState::default(),
+            effects_editor: super::effects_editor::EffectsEditorState::new(),
+            effect_picker: super::effect_picker::EffectPickerState::new(),
+            plugin_gui_manager: super::plugin_gui::PluginGuiManager::new(),
         };
 
         // Initial collection scan and playlist refresh
@@ -460,6 +469,51 @@ impl MeshCueApp {
             Message::ReanalysisProgress(progress) => return self.handle_reanalysis_progress(progress),
             Message::CancelReanalysis => return self.handle_cancel_reanalysis(),
             Message::StartRenamePlaylist(playlist_id) => return self.handle_start_rename_playlist(playlist_id),
+
+            // Effects Editor
+            Message::OpenEffectsEditor => {
+                return self.handle_open_effects_editor();
+            }
+            Message::CloseEffectsEditor => {
+                return self.handle_close_effects_editor();
+            }
+            Message::EffectsEditor(editor_msg) => {
+                // Delegate to effects editor handler
+                return self.handle_effects_editor(editor_msg);
+            }
+            Message::EffectsEditorNewPreset => {
+                return self.handle_effects_editor_new_preset();
+            }
+            Message::EffectsEditorOpenSaveDialog => {
+                self.effects_editor.open_save_dialog();
+            }
+            Message::EffectsEditorSavePreset(name) => {
+                return self.handle_effects_editor_save(name);
+            }
+            Message::EffectsEditorCloseSaveDialog => {
+                self.effects_editor.close_save_dialog();
+            }
+            Message::EffectsEditorSetPresetName(name) => {
+                self.effects_editor.preset_name_input = name;
+            }
+
+            // Effects Editor Audio Preview
+            Message::EffectsEditorTogglePreview => {
+                return self.handle_effects_editor_toggle_preview();
+            }
+            Message::EffectsEditorSetPreviewStem(stem) => {
+                return self.handle_effects_editor_set_preview_stem(stem);
+            }
+
+            // Effect Picker
+            Message::EffectPicker(picker_msg) => {
+                return self.handle_effect_picker(picker_msg);
+            }
+
+            // Plugin GUI Learning Mode
+            Message::PluginGuiTick => {
+                return self.poll_learning_mode();
+            }
         }
 
         Task::none()
@@ -522,6 +576,44 @@ impl MeshCueApp {
                 super::settings::view(&self.settings),
                 Message::CloseSettings,
             )
+        } else if self.effects_editor.is_open {
+            // Effects editor modal
+            if let Some(editor_view) = super::effects_editor::effects_editor_view(&self.effects_editor) {
+                let editor_modal = with_modal_overlay(base, editor_view, Message::CloseEffectsEditor);
+
+                // If effect picker is also open, layer it on top
+                if self.effect_picker.is_open {
+                    use iced::widget::{center, opaque};
+
+                    let picker_backdrop: Element<Message> = mouse_area(
+                        container(Space::new())
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .style(|_theme| container::Style {
+                                background: Some(iced::Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.5))),
+                                ..Default::default()
+                            }),
+                    )
+                    .on_press(Message::EffectPicker(super::effect_picker::EffectPickerMessage::Close))
+                    .into();
+
+                    // Get available effects from domain
+                    let pd_effects = self.domain.available_effects();
+                    let clap_plugins = self.domain.available_clap_plugins();
+                    let picker_view = self.effect_picker.view(&pd_effects, &clap_plugins)
+                        .map(Message::EffectPicker);
+
+                    let picker_modal = center(opaque(picker_view))
+                        .width(Length::Fill)
+                        .height(Length::Fill);
+
+                    stack![editor_modal, picker_backdrop, picker_modal].into()
+                } else {
+                    editor_modal
+                }
+            } else {
+                base
+            }
         } else if self.context_menu_state.is_open {
             // Context menu uses transparent backdrop and positioned content
             let backdrop: Element<Message> = mouse_area(
@@ -613,6 +705,30 @@ impl MeshCueApp {
             }
         });
 
+        // Mouse capture subscription for smooth knob dragging in effects editor
+        // Only active when a knob is being dragged (to avoid overhead otherwise)
+        let effects_editor_mouse_sub = if self.effects_editor.is_open
+            && self.effects_editor.editor.is_any_knob_dragging()
+        {
+            event::listen_with(|event, _status, _id| {
+                match event {
+                    Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                        Some(Message::EffectsEditor(
+                            mesh_widgets::MultibandEditorMessage::GlobalMouseMoved(position)
+                        ))
+                    }
+                    Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                        Some(Message::EffectsEditor(
+                            mesh_widgets::MultibandEditorMessage::GlobalMouseReleased
+                        ))
+                    }
+                    _ => None,
+                }
+            })
+        } else {
+            iced::Subscription::none()
+        };
+
         // Linked stem result subscription (engine owns the loader, we receive results)
         let linked_stem_sub = if let Some(receiver) = self.audio.linked_stem_receiver() {
             mpsc_subscription(receiver)
@@ -625,14 +741,24 @@ impl MeshCueApp {
         let usb_sub = mpsc_subscription(self.domain.usb_message_receiver())
             .map(Message::UsbMessage);
 
+        // Plugin GUI learning mode polling subscription
+        // Only active when in learning mode (polls at ~20Hz for responsive learning)
+        let learning_sub = if self.plugin_gui_manager.is_learning() {
+            time::every(Duration::from_millis(50)).map(|_| Message::PluginGuiTick)
+        } else {
+            iced::Subscription::none()
+        };
+
         // Always run tick at 60fps for smooth waveform animation
         // This matches mesh-player's approach and ensures cueing/preview states work correctly
         iced::Subscription::batch([
             keyboard_sub,
             mouse_sub,
+            effects_editor_mouse_sub,
             time::every(Duration::from_millis(16)).map(|_| Message::Tick),
             linked_stem_sub,
             usb_sub,
+            learning_sub,
         ])
     }
 
@@ -680,6 +806,12 @@ impl MeshCueApp {
 
     /// View header with app title and settings
     fn view_header(&self) -> Element<'_, Message> {
+        // FX Presets button - simple primary style
+        let fx_btn = button(text("FX Presets").size(14))
+            .on_press(Message::OpenEffectsEditor)
+            .padding([8, 16])
+            .style(button::primary);
+
         // Settings gear icon (⚙ U+2699)
         let settings_btn = button(text("⚙").size(20))
             .on_press(Message::OpenSettings)
@@ -688,9 +820,11 @@ impl MeshCueApp {
         row![
             text("mesh-cue").size(24),
             Space::new().width(Length::Fill),
+            fx_btn,
             settings_btn,
         ]
         .spacing(10)
+        .align_y(iced::Alignment::Center)
         .into()
     }
 
