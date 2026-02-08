@@ -392,6 +392,10 @@ pub enum EngineCommand {
         param_index: usize,
         value: f32,
     },
+    /// Reset a stem's multiband host to default state (single band, no effects)
+    ///
+    /// Used when disabling audio preview to return the stem to a clean state.
+    ResetMultiband { deck: usize, stem: Stem },
 
     // ─────────────────────────────────────────────────────────────
     // Mixer Control

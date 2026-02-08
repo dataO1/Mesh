@@ -1273,6 +1273,17 @@ impl Deck {
         self.stems.get_mut(index).map(|s| &mut s.multiband)
     }
 
+    /// Reset a stem's multiband host to default state (single band, no effects)
+    ///
+    /// Used when disabling audio preview in mesh-cue to return the stem to a clean
+    /// processing state with no effects applied.
+    pub fn reset_multiband(&mut self, stem: Stem) {
+        let stem_idx = stem as usize;
+        if stem_idx < self.stems.len() {
+            self.stems[stem_idx].multiband = MultibandHost::new(MAX_BUFFER_SIZE);
+        }
+    }
+
     /// Trigger hot cue (for UI compatibility)
     pub fn trigger_hot_cue(&mut self, slot: usize) {
         self.hot_cue_press(slot);

@@ -1111,6 +1111,12 @@ impl AudioEngine {
                         }
                     }
                 }
+                EngineCommand::ResetMultiband { deck, stem } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        d.reset_multiband(stem);
+                    }
+                    self.update_deck_latencies(deck);
+                }
 
                 // Mixer Control
                 EngineCommand::SetVolume { deck, volume } => {
