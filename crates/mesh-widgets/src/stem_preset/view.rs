@@ -160,7 +160,7 @@ fn macro_knob(state: &StemPresetState, index: usize) -> Element<'_, StemPresetMe
             index,
             value: v,
         })
-        .width(28),
+        .width(50),  // Wider for better control (was 28)
     ]
     .spacing(1)
     .align_x(Alignment::Center)
