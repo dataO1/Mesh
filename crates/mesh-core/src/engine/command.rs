@@ -345,7 +345,7 @@ pub enum EngineCommand {
         deck: usize,
         stem: Stem,
         macro_index: usize,
-        band_index: usize,
+        location: crate::effect::multiband::EffectLocation,
         effect_index: usize,
         param_index: usize,
         min_value: f32,

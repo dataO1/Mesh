@@ -77,14 +77,25 @@ impl std::error::Error for MultibandError {}
 /// Result type for multiband operations
 pub type MultibandResult<T> = Result<T, MultibandError>;
 
+/// Location of an effect in the multiband chain
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectLocation {
+    /// Pre-FX chain (before multiband split)
+    PreFx,
+    /// Band effect chain (within a specific band)
+    Band(usize),
+    /// Post-FX chain (after band summation)
+    PostFx,
+}
+
 /// A macro knob mapping to a specific effect parameter
 #[derive(Debug, Clone)]
 pub struct MacroMapping {
-    /// Which band (0-7)
-    pub band_index: usize,
-    /// Which effect in the band's chain (0-7)
+    /// Which chain the effect is in
+    pub location: EffectLocation,
+    /// Which effect in the chain
     pub effect_index: usize,
-    /// Which parameter on the effect (0-7)
+    /// Which parameter on the effect
     pub param_index: usize,
     /// Scaling factor (0.0 to 1.0 maps to min_value..max_value)
     pub min_value: f32,
@@ -94,10 +105,34 @@ pub struct MacroMapping {
 }
 
 impl MacroMapping {
-    /// Create a new 1:1 macro mapping (full range)
+    /// Create a new 1:1 macro mapping for a band effect (full range)
     pub fn new(band_index: usize, effect_index: usize, param_index: usize) -> Self {
         Self {
-            band_index,
+            location: EffectLocation::Band(band_index),
+            effect_index,
+            param_index,
+            min_value: 0.0,
+            max_value: 1.0,
+            name: None,
+        }
+    }
+
+    /// Create a new mapping for pre-fx effect
+    pub fn pre_fx(effect_index: usize, param_index: usize) -> Self {
+        Self {
+            location: EffectLocation::PreFx,
+            effect_index,
+            param_index,
+            min_value: 0.0,
+            max_value: 1.0,
+            name: None,
+        }
+    }
+
+    /// Create a new mapping for post-fx effect
+    pub fn post_fx(effect_index: usize, param_index: usize) -> Self {
+        Self {
+            location: EffectLocation::PostFx,
             effect_index,
             param_index,
             min_value: 0.0,
@@ -249,17 +284,6 @@ impl Default for MultibandConfig {
             crossover_frequencies: Vec::new(),
         }
     }
-}
-
-/// Effect chain location identifier
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EffectLocation {
-    /// Pre-FX chain (before multiband split)
-    PreFx,
-    /// Band effect chain (with band index)
-    Band(usize),
-    /// Post-FX chain (after band summation)
-    PostFx,
 }
 
 /// Multiband Effect Host
@@ -709,10 +733,10 @@ impl MultibandHost {
 
         // Remove any macro mappings that referenced this effect
         for mappings in &mut self.macro_mappings {
-            mappings.retain(|m| !(m.band_index == band_index && m.effect_index == effect_index));
+            mappings.retain(|m| !(m.location == EffectLocation::Band(band_index) && m.effect_index == effect_index));
             // Adjust effect indices for effects after the removed one
             for m in mappings.iter_mut() {
-                if m.band_index == band_index && m.effect_index > effect_index {
+                if m.location == EffectLocation::Band(band_index) && m.effect_index > effect_index {
                     m.effect_index -= 1;
                 }
             }
@@ -856,12 +880,26 @@ impl MultibandHost {
             let macro_value = self.macro_values[macro_idx];
 
             for mapping in mappings {
-                if mapping.band_index < self.bands.len() {
-                    let band = &mut self.bands[mapping.band_index];
-                    if mapping.effect_index < band.effects.len() {
-                        let effect = &mut band.effects[mapping.effect_index];
-                        let param_value = mapping.apply(macro_value);
-                        effect.set_param(mapping.param_index, param_value);
+                let param_value = mapping.apply(macro_value);
+
+                match mapping.location {
+                    EffectLocation::PreFx => {
+                        if mapping.effect_index < self.pre_fx.len() {
+                            self.pre_fx[mapping.effect_index].set_param(mapping.param_index, param_value);
+                        }
+                    }
+                    EffectLocation::Band(band_index) => {
+                        if band_index < self.bands.len() {
+                            let band = &mut self.bands[band_index];
+                            if mapping.effect_index < band.effects.len() {
+                                band.effects[mapping.effect_index].set_param(mapping.param_index, param_value);
+                            }
+                        }
+                    }
+                    EffectLocation::PostFx => {
+                        if mapping.effect_index < self.post_fx.len() {
+                            self.post_fx[mapping.effect_index].set_param(mapping.param_index, param_value);
+                        }
                     }
                 }
             }

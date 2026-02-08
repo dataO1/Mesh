@@ -1046,14 +1046,20 @@ impl AudioEngine {
                     }
                 }
                 EngineCommand::AddMultibandMacroMapping {
-                    deck, stem, macro_index, band_index, effect_index, param_index, min_value, max_value
+                    deck, stem, macro_index, location, effect_index, param_index, min_value, max_value
                 } => {
                     // Add a macro mapping to route macro changes to effect parameters
                     if let Some(d) = self.decks.get_mut(deck) {
                         if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
                             use crate::effect::multiband::MacroMapping;
-                            let mapping = MacroMapping::new(band_index, effect_index, param_index)
-                                .with_range(min_value, max_value);
+                            let mapping = MacroMapping {
+                                location,
+                                effect_index,
+                                param_index,
+                                min_value,
+                                max_value,
+                                name: None,
+                            };
                             let _ = multiband.add_macro_mapping(macro_index, mapping);
                         }
                     }

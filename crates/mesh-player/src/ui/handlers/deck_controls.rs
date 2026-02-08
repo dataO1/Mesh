@@ -519,12 +519,24 @@ pub(super) fn apply_preset_to_multiband(
         });
     }
 
+    use mesh_core::effect::multiband::EffectLocation;
+
     // Apply macro mappings from the preset
+    // Pre-FX effects mappings
+    for (effect_idx, effect) in config.pre_fx.iter().enumerate() {
+        apply_effect_macro_mappings(app, deck_idx, stem, EffectLocation::PreFx, effect_idx, effect);
+    }
+
     // Band effects mappings
     for (band_idx, band) in config.bands.iter().enumerate() {
         for (effect_idx, effect) in band.effects.iter().enumerate() {
-            apply_effect_macro_mappings(app, deck_idx, stem, band_idx, effect_idx, effect);
+            apply_effect_macro_mappings(app, deck_idx, stem, EffectLocation::Band(band_idx), effect_idx, effect);
         }
+    }
+
+    // Post-FX effects mappings
+    for (effect_idx, effect) in config.post_fx.iter().enumerate() {
+        apply_effect_macro_mappings(app, deck_idx, stem, EffectLocation::PostFx, effect_idx, effect);
     }
 
     log::info!("Applied preset '{}' to deck {} stem {:?}", config.name, deck_idx, stem);
@@ -535,7 +547,7 @@ fn apply_effect_macro_mappings(
     app: &mut MeshApp,
     deck_idx: usize,
     stem: Stem,
-    band_index: usize,
+    location: mesh_core::effect::multiband::EffectLocation,
     effect_index: usize,
     effect: &EffectPresetConfig,
 ) {
@@ -551,11 +563,16 @@ fn apply_effect_macro_mappings(
                 let min_value = (base_value - mapping.offset_range).max(0.0);
                 let max_value = (base_value + mapping.offset_range).min(1.0);
 
+                log::debug!(
+                    "[MACRO_MAPPING] Adding mapping: macro={} -> {:?} effect={} param={} range=[{:.2}, {:.2}]",
+                    macro_index, location, effect_index, param_index, min_value, max_value
+                );
+
                 app.domain.send_command(mesh_core::engine::EngineCommand::AddMultibandMacroMapping {
                     deck: deck_idx,
                     stem,
                     macro_index,
-                    band_index,
+                    location,
                     effect_index,
                     param_index,
                     min_value,
