@@ -37,7 +37,7 @@ mod view;
 
 pub use config::{
     delete_preset, list_presets, load_preset, multiband_presets_folder, save_preset,
-    MultibandPresetConfig,
+    EffectPresetConfig, MultibandPresetConfig,
 };
 pub use crossover_bar::{crossover_bar, crossover_controls, CROSSOVER_BAR_HEIGHT};
 pub use message::MultibandEditorMessage;

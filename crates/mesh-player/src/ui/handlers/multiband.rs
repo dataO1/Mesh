@@ -13,6 +13,7 @@ use mesh_widgets::multiband::{
 use mesh_widgets::{MultibandEditorMessage, DEFAULT_SENSITIVITY};
 
 use crate::ui::app::MeshApp;
+use crate::ui::handlers::deck_controls::apply_preset_to_multiband;
 use crate::ui::message::Message;
 
 /// Create an EffectUiState from actual effect info returned by the backend
@@ -855,6 +856,9 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         LoadPreset(name) => {
             match multiband::load_preset(&app.config.collection_path, &name) {
                 Ok(preset_config) => {
+                    let deck = app.multiband_editor.deck;
+                    let stem_idx = app.multiband_editor.stem;
+
                     // Apply preset to editor state
                     preset_config.apply_to_editor_state(&mut app.multiband_editor);
                     app.multiband_editor.preset_browser_open = false;
@@ -862,9 +866,21 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                     // Rebuild the macro mappings index after loading preset
                     app.multiband_editor.rebuild_macro_mappings_index();
 
-                    // TODO: Recreate effects in backend based on preset
-                    // For now, just update UI state - effects need to be re-added manually
-                    log::info!("Loaded preset '{}' - UI state updated", name);
+                    // Apply preset to audio backend
+                    if let Some(stem) = Stem::from_index(stem_idx) {
+                        apply_preset_to_multiband(app, deck, stem, &preset_config);
+                    }
+
+                    // Update the deck view's preset state
+                    if let Some(preset) = app.deck_views[deck].stem_preset_mut(stem_idx) {
+                        preset.loaded_preset = Some(name.clone());
+                        // Update macro names from preset
+                        for (i, macro_config) in preset_config.macros.iter().enumerate().take(8) {
+                            preset.macro_names[i] = macro_config.name.clone();
+                        }
+                    }
+
+                    log::info!("Loaded preset '{}' to deck {} stem {:?}", name, deck, stem_idx);
                     app.status = format!("Loaded preset: {}", name);
                 }
                 Err(e) => {

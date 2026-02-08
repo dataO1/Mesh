@@ -97,6 +97,12 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   lookahead limiters, linear-phase EQs). Previously, all CLAP plugins reported
   0 latency, causing drum tracks to drift out of sync across decks.
 
+- **mesh-player preset loading** — Presets loaded in mesh-player now correctly
+  apply ALL plugin parameters to the audio engine. Previously only the 8
+  knob-mapped parameters were applied, ignoring settings made via the plugin's
+  native GUI (e.g., reverb mode, filter type). Also fixed bypass state not
+  being applied when loading presets.
+
 ### Changed
 
 - **Unified effects directory** — Each effect type has its own subfolder:

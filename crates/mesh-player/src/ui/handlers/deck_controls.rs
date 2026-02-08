@@ -8,7 +8,7 @@ use crate::ui::app::MeshApp;
 use crate::ui::deck_view::{DeckMessage, ActionButtonMode};
 use crate::ui::message::Message;
 use mesh_core::types::Stem;
-use mesh_widgets::multiband::{load_preset, MultibandPresetConfig};
+use mesh_widgets::multiband::{load_preset, EffectPresetConfig, MultibandPresetConfig};
 
 /// Handle deck control messages
 pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task<Message> {
@@ -385,7 +385,7 @@ fn handle_preset_selection(
 }
 
 /// Apply a preset configuration to the multiband container
-fn apply_preset_to_multiband(
+pub(super) fn apply_preset_to_multiband(
     app: &mut MeshApp,
     deck_idx: usize,
     stem: Stem,
@@ -414,17 +414,22 @@ fn apply_preset_to_multiband(
         };
 
         if let Ok(_info) = result {
-            // Apply parameter values from knob assignments
-            for assignment in effect.knob_assignments.iter() {
-                if let Some(param_idx) = assignment.param_index {
-                    app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPreFxParam {
-                        deck: deck_idx,
-                        stem,
-                        effect_index: effect_idx,
-                        param_index: param_idx,
-                        value: assignment.value,
-                    });
-                }
+            // Apply ALL parameter values (not just knob-mapped ones)
+            // This preserves settings made via the plugin GUI (e.g., reverb mode)
+            let params = get_effect_params(effect);
+            for (param_idx, value) in params {
+                app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPreFxParam {
+                    deck: deck_idx,
+                    stem,
+                    effect_index: effect_idx,
+                    param_index: param_idx,
+                    value,
+                });
+            }
+
+            // Apply bypass state
+            if effect.bypassed {
+                app.domain.set_pre_fx_bypass(deck_idx, stem, effect_idx, true);
             }
         }
     }
@@ -447,18 +452,22 @@ fn apply_preset_to_multiband(
             };
 
             if let Ok(_info) = result {
-                // Apply parameter values from knob assignments
-                for assignment in effect.knob_assignments.iter() {
-                    if let Some(param_idx) = assignment.param_index {
-                        app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandEffectParam {
-                            deck: deck_idx,
-                            stem,
-                            band_index: band_idx,
-                            effect_index: effect_idx,
-                            param_index: param_idx,
-                            value: assignment.value,
-                        });
-                    }
+                // Apply ALL parameter values (not just knob-mapped ones)
+                let params = get_effect_params(effect);
+                for (param_idx, value) in params {
+                    app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandEffectParam {
+                        deck: deck_idx,
+                        stem,
+                        band_index: band_idx,
+                        effect_index: effect_idx,
+                        param_index: param_idx,
+                        value,
+                    });
+                }
+
+                // Apply bypass state
+                if effect.bypassed {
+                    app.domain.set_band_effect_bypass(deck_idx, stem, band_idx, effect_idx, effect.bypassed);
                 }
             }
         }
@@ -473,22 +482,51 @@ fn apply_preset_to_multiband(
         };
 
         if let Ok(_info) = result {
-            // Apply parameter values from knob assignments
-            for assignment in effect.knob_assignments.iter() {
-                if let Some(param_idx) = assignment.param_index {
-                    app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPostFxParam {
-                        deck: deck_idx,
-                        stem,
-                        effect_index: effect_idx,
-                        param_index: param_idx,
-                        value: assignment.value,
-                    });
-                }
+            // Apply ALL parameter values (not just knob-mapped ones)
+            let params = get_effect_params(effect);
+            for (param_idx, value) in params {
+                app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPostFxParam {
+                    deck: deck_idx,
+                    stem,
+                    effect_index: effect_idx,
+                    param_index: param_idx,
+                    value,
+                });
+            }
+
+            // Apply bypass state
+            if effect.bypassed {
+                app.domain.set_post_fx_bypass(deck_idx, stem, effect_idx, true);
             }
         }
     }
 
     log::info!("Applied preset '{}' to deck {} stem {:?}", config.name, deck_idx, stem);
+}
+
+/// Extract all parameter values from an effect preset config
+///
+/// Returns (param_index, value) pairs for all parameters.
+/// Prefers `all_param_values` (which contains the complete plugin state)
+/// over `knob_assignments` (which only has 8 mapped params).
+fn get_effect_params(effect: &EffectPresetConfig) -> Vec<(usize, f32)> {
+    if !effect.all_param_values.is_empty() {
+        // Use all_param_values - contains the complete plugin state
+        // including settings made via the plugin GUI
+        effect.all_param_values
+            .iter()
+            .enumerate()
+            .map(|(idx, &value)| (idx, value))
+            .collect()
+    } else {
+        // Fallback to knob_assignments for older presets
+        effect.knob_assignments
+            .iter()
+            .filter_map(|assignment| {
+                assignment.param_index.map(|idx| (idx, assignment.value))
+            })
+            .collect()
+    }
 }
 
 /// Clear all effects from a multiband container
