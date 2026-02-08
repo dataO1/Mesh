@@ -41,7 +41,7 @@ pub const MAX_BANDS: usize = 8;
 pub const MAX_EFFECTS_PER_BAND: usize = 8;
 
 /// Number of macro knobs available for routing
-pub const NUM_MACROS: usize = 8;
+pub const NUM_MACROS: usize = 4;
 
 /// Error type for multiband operations
 #[derive(Debug, Clone)]

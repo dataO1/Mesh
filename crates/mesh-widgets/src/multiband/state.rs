@@ -484,9 +484,9 @@ pub struct MultibandEditorState {
     // Macro Modulation Range Controls
     // ─────────────────────────────────────────────────────────────────────
 
-    /// Reverse index: for each macro (0-7), list of mappings to that macro
+    /// Reverse index: for each macro, list of mappings to that macro
     /// This enables efficient lookup for rendering mini modulation indicators.
-    pub macro_mappings_index: [Vec<MacroMappingRef>; 8],
+    pub macro_mappings_index: [Vec<MacroMappingRef>; super::NUM_MACROS],
 
     /// Currently dragging a modulation range indicator
     pub dragging_mod_range: Option<ModRangeDrag>,
@@ -860,12 +860,12 @@ impl MultibandEditorState {
             location: EffectChainLocation,
             effect_idx: usize,
             effect: &EffectUiState,
-            index: &mut [Vec<MacroMappingRef>; 8],
+            index: &mut [Vec<MacroMappingRef>; super::NUM_MACROS],
         ) {
             for (knob_idx, assignment) in effect.knob_assignments.iter().enumerate() {
                 if let Some(ref mapping) = assignment.macro_mapping {
                     if let Some(macro_index) = mapping.macro_index {
-                        if macro_index < 8 {
+                        if macro_index < super::NUM_MACROS {
                             index[macro_index].push(MacroMappingRef {
                                 location,
                                 effect_idx,
@@ -905,7 +905,7 @@ impl MultibandEditorState {
 
     /// Add a single mapping to the index (called when a new mapping is created)
     pub fn add_mapping_to_index(&mut self, macro_index: usize, location: EffectChainLocation, effect_idx: usize, knob_idx: usize, offset_range: f32) {
-        if macro_index < 8 {
+        if macro_index < super::NUM_MACROS {
             self.macro_mappings_index[macro_index].push(MacroMappingRef {
                 location,
                 effect_idx,
@@ -917,7 +917,7 @@ impl MultibandEditorState {
 
     /// Remove a mapping from the index (called when a mapping is removed)
     pub fn remove_mapping_from_index(&mut self, macro_index: usize, location: EffectChainLocation, effect_idx: usize, knob_idx: usize) {
-        if macro_index < 8 {
+        if macro_index < super::NUM_MACROS {
             self.macro_mappings_index[macro_index].retain(|m| {
                 !(m.location == location && m.effect_idx == effect_idx && m.knob_idx == knob_idx)
             });
@@ -926,7 +926,7 @@ impl MultibandEditorState {
 
     /// Update offset_range for a mapping in the index
     pub fn update_mapping_offset_range(&mut self, macro_index: usize, mapping_idx: usize, new_offset_range: f32) {
-        if macro_index < 8 {
+        if macro_index < super::NUM_MACROS {
             if let Some(mapping) = self.macro_mappings_index[macro_index].get_mut(mapping_idx) {
                 mapping.offset_range = new_offset_range;
             }

@@ -1,12 +1,14 @@
 //! Messages for the stem preset widget
 
+use super::NUM_MACROS;
+
 /// Messages emitted by the stem preset selector
 #[derive(Debug, Clone)]
 pub enum StemPresetMessage {
     /// Select a preset by name (None = passthrough/no effects)
     SelectPreset(Option<String>),
 
-    /// Set a macro knob value (index 0-7, value 0.0-1.0)
+    /// Set a macro knob value (index 0-3, value 0.0-1.0)
     SetMacro { index: usize, value: f32 },
 
     /// Toggle the preset picker dropdown
@@ -22,5 +24,5 @@ pub enum StemPresetMessage {
     SetAvailablePresets(Vec<String>),
 
     /// Set macro names (from handler after preset load)
-    SetMacroNames([String; 8]),
+    SetMacroNames([String; NUM_MACROS]),
 }

@@ -56,7 +56,7 @@ pub const FREQ_MIN: f32 = 20.0;
 pub const FREQ_MAX: f32 = 20000.0;
 
 /// Number of macro knobs
-pub const NUM_MACROS: usize = 8;
+pub const NUM_MACROS: usize = 4;
 
 /// Default band names based on frequency ranges
 pub fn default_band_name(_freq_low: f32, freq_high: f32) -> &'static str {

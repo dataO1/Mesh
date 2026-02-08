@@ -329,7 +329,7 @@ pub enum EngineCommand {
         param_index: usize,
         value: f32,
     },
-    /// Set a macro value in a stem's multiband container (0-7)
+    /// Set a macro value in a stem's multiband container (0-3)
     ///
     /// The macro system allows one knob to control multiple parameters.
     SetMultibandMacro {
@@ -337,6 +337,25 @@ pub enum EngineCommand {
         stem: Stem,
         macro_index: usize,
         value: f32,
+    },
+    /// Add a macro mapping to route a macro to an effect parameter
+    ///
+    /// When a macro value changes, the mapped parameter will be modulated.
+    AddMultibandMacroMapping {
+        deck: usize,
+        stem: Stem,
+        macro_index: usize,
+        band_index: usize,
+        effect_index: usize,
+        param_index: usize,
+        min_value: f32,
+        max_value: f32,
+    },
+    /// Clear all macro mappings for a macro
+    ClearMultibandMacroMappings {
+        deck: usize,
+        stem: Stem,
+        macro_index: usize,
     },
     /// Add an effect to the pre-fx chain (before multiband split)
     AddMultibandPreFx {

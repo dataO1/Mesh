@@ -1038,10 +1038,31 @@ impl AudioEngine {
                     }
                 }
                 EngineCommand::SetMultibandMacro { deck, stem, macro_index, value } => {
-                    // Macros are exposed as MultibandHost's top-level parameters (indices 0-7)
+                    // Macros are exposed as MultibandHost's top-level parameters (indices 0-3)
                     if let Some(d) = self.decks.get_mut(deck) {
                         if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
                             multiband.set_param(macro_index, value);
+                        }
+                    }
+                }
+                EngineCommand::AddMultibandMacroMapping {
+                    deck, stem, macro_index, band_index, effect_index, param_index, min_value, max_value
+                } => {
+                    // Add a macro mapping to route macro changes to effect parameters
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            use crate::effect::multiband::MacroMapping;
+                            let mapping = MacroMapping::new(band_index, effect_index, param_index)
+                                .with_range(min_value, max_value);
+                            let _ = multiband.add_macro_mapping(macro_index, mapping);
+                        }
+                    }
+                }
+                EngineCommand::ClearMultibandMacroMappings { deck, stem, macro_index } => {
+                    // Clear all mappings for a macro
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        if let Some(multiband) = d.stem_multiband_mut(stem as usize) {
+                            multiband.clear_macro_mappings(macro_index);
                         }
                     }
                 }

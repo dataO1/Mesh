@@ -556,7 +556,7 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             if let Some(knob) = app.multiband_editor.macro_knobs.get_mut(index) {
                 if let Some(new_value) = knob.handle_event(event, DEFAULT_SENSITIVITY) {
                     // Sync to deck view (bidirectional sync for consistency)
-                    if deck < 4 && stem_idx < 4 && index < 8 {
+                    if deck < 4 && stem_idx < 4 && index < multiband::NUM_MACROS {
                         app.deck_views[deck].set_stem_macro(stem_idx, index, new_value);
                     }
 
@@ -875,7 +875,7 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                     if let Some(preset) = app.deck_views[deck].stem_preset_mut(stem_idx) {
                         preset.loaded_preset = Some(name.clone());
                         // Update macro names from preset
-                        for (i, macro_config) in preset_config.macros.iter().enumerate().take(8) {
+                        for (i, macro_config) in preset_config.macros.iter().enumerate().take(multiband::NUM_MACROS) {
                             preset.macro_names[i] = macro_config.name.clone();
                         }
                     }
@@ -1092,7 +1092,7 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             if let Some(index) = app.multiband_editor.dragging_macro_knob {
                 if let Some(knob) = app.multiband_editor.macro_knobs.get_mut(index) {
                     if let Some(new_value) = knob.handle_event(KnobEvent::Moved(position), DEFAULT_SENSITIVITY) {
-                        if deck < 4 && stem_idx < 4 && index < 8 {
+                        if deck < 4 && stem_idx < 4 && index < multiband::NUM_MACROS {
                             app.deck_views[deck].set_stem_macro(stem_idx, index, new_value);
                         }
 
@@ -1589,7 +1589,7 @@ fn sync_from_backend(app: &mut MeshApp) {
     }
 
     // Sync macro values from deck view (which holds the current state)
-    for macro_idx in 0..8 {
+    for macro_idx in 0..multiband::NUM_MACROS {
         let value = app.deck_views[deck].stem_macro_value(stem_idx, macro_idx);
         app.multiband_editor.set_macro_value(macro_idx, value);
     }

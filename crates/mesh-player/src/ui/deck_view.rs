@@ -14,7 +14,7 @@ use iced::{Background, Center, Color, Element, Fill, Length};
 
 use mesh_core::engine::Deck;
 use mesh_core::types::PlayState;
-use mesh_widgets::{CUE_COLORS, StemPresetState, StemPresetMessage};
+use mesh_widgets::{CUE_COLORS, StemPresetState, StemPresetMessage, STEM_PRESET_NUM_MACROS};
 
 use super::midi_learn::HighlightTarget;
 
@@ -233,7 +233,7 @@ impl DeckView {
             self.stem_soloed[i] = stem_state.soloed;
 
             // Sync macro values from the multiband to the stem preset state
-            for k in 0..8 {
+            for k in 0..STEM_PRESET_NUM_MACROS {
                 self.stem_presets[i].macro_values[k] = stem_state.multiband.macro_value(k);
             }
         }
@@ -301,14 +301,14 @@ impl DeckView {
 
     /// Set macro knob value for a stem preset
     pub fn set_stem_macro(&mut self, stem_idx: usize, knob_idx: usize, value: f32) {
-        if stem_idx < 4 && knob_idx < 8 {
+        if stem_idx < 4 && knob_idx < STEM_PRESET_NUM_MACROS {
             self.stem_presets[stem_idx].macro_values[knob_idx] = value;
         }
     }
 
     /// Get macro knob value for a stem preset
     pub fn stem_macro_value(&self, stem_idx: usize, knob_idx: usize) -> f32 {
-        if stem_idx < 4 && knob_idx < 8 {
+        if stem_idx < 4 && knob_idx < STEM_PRESET_NUM_MACROS {
             self.stem_presets[stem_idx].macro_values[knob_idx]
         } else {
             0.5 // Default
@@ -863,13 +863,13 @@ impl DeckView {
             .into()
     }
 
-    /// View the 8 macro knobs for the stem's preset
+    /// View the macro knobs for the stem's preset
     ///
     /// These are interactive sliders that control the preset macros in real-time.
     fn view_chain_knobs(&self, stem_idx: usize) -> Element<'_, DeckMessage> {
         let preset = &self.stem_presets[stem_idx];
 
-        let knobs: Vec<Element<DeckMessage>> = (0..8)
+        let knobs: Vec<Element<DeckMessage>> = (0..STEM_PRESET_NUM_MACROS)
             .map(|k| {
                 let value = preset.macro_values[k];
                 let name = preset.macro_name(k);
@@ -886,7 +886,7 @@ impl DeckView {
                         stem_idx,
                         StemPresetMessage::SetMacro { index: k, value: v }
                     ))
-                    .width(30),
+                    .width(50),  // Wider for better control
                 ]
                 .spacing(1)
                 .align_x(Center)
@@ -895,7 +895,7 @@ impl DeckView {
             .collect();
 
         row![
-            text("MACROS").size(8),
+            text("MACROS").size(9),
             Row::with_children(knobs).spacing(4),
         ]
         .spacing(5)
@@ -1439,7 +1439,7 @@ impl DeckView {
     fn view_chain_knobs_compact(&self, stem_idx: usize) -> Element<'_, DeckMessage> {
         let preset = &self.stem_presets[stem_idx];
 
-        let knobs: Vec<Element<DeckMessage>> = (0..8)
+        let knobs: Vec<Element<DeckMessage>> = (0..STEM_PRESET_NUM_MACROS)
             .map(|k| {
                 let value = preset.macro_values[k];
                 let name = preset.macro_name(k);
@@ -1456,7 +1456,7 @@ impl DeckView {
                         stem_idx,
                         StemPresetMessage::SetMacro { index: k, value: v }
                     ))
-                    .width(28),
+                    .width(50),  // Wider for better control
                 ]
                 .spacing(1)
                 .align_x(Center)

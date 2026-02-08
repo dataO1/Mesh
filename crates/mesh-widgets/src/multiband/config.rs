@@ -43,7 +43,7 @@ impl Default for MultibandPresetConfig {
             crossover_freqs: Vec::new(),
             bands: vec![BandPresetConfig::default()],
             post_fx: Vec::new(),
-            macros: (0..8).map(|i| MacroPresetConfig {
+            macros: (0..super::NUM_MACROS).map(|i| MacroPresetConfig {
                 name: format!("Macro {}", i + 1),
                 value: 0.5,
             }).collect(),

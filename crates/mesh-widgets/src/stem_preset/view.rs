@@ -132,7 +132,7 @@ fn preset_picker_list(state: &StemPresetState) -> Element<'_, StemPresetMessage>
 
 /// Render the macro knobs row
 fn macro_knobs_row(state: &StemPresetState) -> Element<'_, StemPresetMessage> {
-    let knobs: Vec<Element<'_, StemPresetMessage>> = (0..8)
+    let knobs: Vec<Element<'_, StemPresetMessage>> = (0..super::NUM_MACROS)
         .map(|i| macro_knob(state, i))
         .collect();
 

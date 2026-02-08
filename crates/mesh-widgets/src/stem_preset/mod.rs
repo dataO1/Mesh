@@ -3,7 +3,7 @@
 //! A lightweight preset selector for stem effect chains in mesh-player.
 //! Provides:
 //! - Preset dropdown selector
-//! - 8 labeled macro knobs for real-time control
+//! - 4 labeled macro knobs for real-time control
 //!
 //! This is a simplified interface compared to the full MultibandEditorState,
 //! designed for performance use where editing is not needed.
@@ -14,7 +14,7 @@
 //! ┌─────────────────────────────────────────────────────────────────────────┐
 //! │  [Preset Name ▾]  or  [No Preset]                                       │
 //! ├─────────────────────────────────────────────────────────────────────────┤
-//! │  [Macro 1] [Macro 2] [Macro 3] [Macro 4] [Macro 5] [Macro 6] [M7] [M8]  │
+//! │  [Macro 1] [Macro 2] [Macro 3] [Macro 4]                                │
 //! │    (named sliders from preset configuration)                            │
 //! └─────────────────────────────────────────────────────────────────────────┘
 //! ```
@@ -26,12 +26,11 @@ pub use message::StemPresetMessage;
 pub use view::stem_preset_view;
 
 /// Number of macro knobs per preset
-pub const NUM_MACROS: usize = 8;
+pub const NUM_MACROS: usize = 4;
 
 /// Default macro names when no preset is loaded
-pub const DEFAULT_MACRO_NAMES: [&str; 8] = [
+pub const DEFAULT_MACRO_NAMES: [&str; NUM_MACROS] = [
     "Macro 1", "Macro 2", "Macro 3", "Macro 4",
-    "Macro 5", "Macro 6", "Macro 7", "Macro 8",
 ];
 
 /// State for a stem preset selector

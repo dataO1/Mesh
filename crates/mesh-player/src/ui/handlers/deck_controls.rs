@@ -9,7 +9,7 @@ use crate::ui::deck_view::{DeckMessage, ActionButtonMode};
 use crate::ui::handlers::multiband::apply_macro_modulation;
 use crate::ui::message::Message;
 use mesh_core::types::Stem;
-use mesh_widgets::multiband::{load_preset, EffectPresetConfig, MultibandPresetConfig};
+use mesh_widgets::multiband::{load_preset, EffectPresetConfig, MultibandPresetConfig, NUM_MACROS};
 
 /// Handle deck control messages
 pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task<Message> {
@@ -347,14 +347,14 @@ fn handle_preset_selection(
                     preset.picker_open = false;
 
                     // Update macro names from the preset
-                    let mut names: [String; 8] = Default::default();
-                    for (i, macro_config) in config.macros.iter().enumerate().take(8) {
+                    let mut names: [String; NUM_MACROS] = Default::default();
+                    for (i, macro_config) in config.macros.iter().enumerate().take(NUM_MACROS) {
                         names[i] = macro_config.name.clone();
                     }
                     preset.macro_names = names;
 
                     // Reset macro values to center
-                    preset.macro_values = [0.5; 8];
+                    preset.macro_values = [0.5; NUM_MACROS];
                 }
 
                 // Apply the preset to the multiband container
@@ -516,7 +516,60 @@ pub(super) fn apply_preset_to_multiband(
         }
     }
 
+    // Clear existing macro mappings
+    for macro_idx in 0..NUM_MACROS {
+        app.domain.send_command(mesh_core::engine::EngineCommand::ClearMultibandMacroMappings {
+            deck: deck_idx,
+            stem,
+            macro_index: macro_idx,
+        });
+    }
+
+    // Apply macro mappings from the preset
+    // Band effects mappings
+    for (band_idx, band) in config.bands.iter().enumerate() {
+        for (effect_idx, effect) in band.effects.iter().enumerate() {
+            apply_effect_macro_mappings(app, deck_idx, stem, band_idx, effect_idx, effect);
+        }
+    }
+
     log::info!("Applied preset '{}' to deck {} stem {:?}", config.name, deck_idx, stem);
+}
+
+/// Apply macro mappings from an effect's knob assignments to the engine
+fn apply_effect_macro_mappings(
+    app: &mut MeshApp,
+    deck_idx: usize,
+    stem: Stem,
+    band_index: usize,
+    effect_index: usize,
+    effect: &EffectPresetConfig,
+) {
+    for assignment in &effect.knob_assignments {
+        // Only process if knob has a param assigned and a macro mapping
+        if let (Some(param_index), Some(ref mapping)) = (assignment.param_index, &assignment.macro_mapping) {
+            if let Some(macro_index) = mapping.macro_index {
+                // Convert bipolar offset_range to min/max values
+                // UI formula: actual = base + (macro * 2 - 1) * offset_range
+                // At macro=0: min = base - offset_range
+                // At macro=1: max = base + offset_range
+                let base_value = assignment.value;
+                let min_value = (base_value - mapping.offset_range).max(0.0);
+                let max_value = (base_value + mapping.offset_range).min(1.0);
+
+                app.domain.send_command(mesh_core::engine::EngineCommand::AddMultibandMacroMapping {
+                    deck: deck_idx,
+                    stem,
+                    macro_index,
+                    band_index,
+                    effect_index,
+                    param_index,
+                    min_value,
+                    max_value,
+                });
+            }
+        }
+    }
 }
 
 /// Extract all parameter values from an effect preset config
