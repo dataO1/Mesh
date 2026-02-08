@@ -188,7 +188,14 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
                 StemPresetMessage::TogglePicker => {
                     // Toggle the preset picker dropdown
                     if let Some(preset) = app.deck_views[deck_idx].stem_preset_mut(stem_idx) {
-                        preset.picker_open = !preset.picker_open;
+                        let was_open = preset.picker_open;
+                        preset.picker_open = !was_open;
+
+                        // Refresh presets list when opening
+                        if !was_open {
+                            preset.available_presets =
+                                mesh_widgets::multiband::list_presets(&app.config.collection_path);
+                        }
                     }
                 }
                 StemPresetMessage::ClosePicker => {
