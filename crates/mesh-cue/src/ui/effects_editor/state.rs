@@ -103,11 +103,16 @@ impl EffectsEditorState {
             self.preset_name_input = self.editing_preset.clone().unwrap_or_default();
         }
         self.save_dialog_open = true;
+        // Also set inner editor state for the view to pick up
+        // (the view reads from self.editor, not from self)
+        self.editor.save_dialog_open = true;
+        self.editor.preset_name_input = self.preset_name_input.clone();
     }
 
     /// Close save dialog
     pub fn close_save_dialog(&mut self) {
         self.save_dialog_open = false;
+        self.editor.save_dialog_open = false;
     }
 
     /// Set status message

@@ -254,6 +254,13 @@ impl MeshCueApp {
                     }
                     KnobEvent::Released => {
                         self.effects_editor.editor.dragging_macro_knob = None;
+                        // Important: Must also clear the knob's internal drag state here,
+                        // not just in GlobalMouseReleased, because both events may fire
+                        // when releasing over a knob and this handler might run first.
+                        if let Some(knob) = self.effects_editor.editor.macro_knobs.get_mut(index) {
+                            knob.handle_event(event.clone(), DEFAULT_SENSITIVITY);
+                        }
+                        return Task::none(); // Already handled, don't process again below
                     }
                     KnobEvent::Moved(_) => {}
                 }
@@ -277,6 +284,12 @@ impl MeshCueApp {
                     }
                     KnobEvent::Released => {
                         self.effects_editor.editor.dragging_effect_knob = None;
+                        // Important: Must also clear the knob's internal drag state here,
+                        // not just in GlobalMouseReleased, because both events may fire
+                        // when releasing over a knob and this handler might run first.
+                        let knob = self.effects_editor.editor.get_effect_knob(location, effect, param);
+                        knob.handle_event(event.clone(), DEFAULT_SENSITIVITY);
+                        return Task::none(); // Already handled, don't process again below
                     }
                     KnobEvent::Moved(_) => {}
                 }
