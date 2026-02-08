@@ -81,6 +81,10 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   effect chains, parameter values, macro mappings, and learned parameter
   assignments. Presets are saved to `~/.config/mesh/presets/`.
 
+- **Full plugin state in presets** — Presets now capture ALL plugin parameter
+  values, not just the 8 mapped to UI knobs. Settings made via the plugin's
+  native GUI (e.g., reverb mode, filter type) are preserved across save/load.
+
 ### Fixed
 
 - **Effects editor preset loading** — Loading a preset now properly clears stale

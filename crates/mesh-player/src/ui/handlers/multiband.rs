@@ -53,6 +53,7 @@ fn create_effect_state_from_info(
         gui_open: false,
         available_params,
         knob_assignments,
+        saved_param_values: Vec::new(), // Fresh effect, no saved values
     }
 }
 

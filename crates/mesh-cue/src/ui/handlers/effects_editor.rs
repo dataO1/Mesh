@@ -1063,8 +1063,9 @@ impl MeshCueApp {
     /// 1. Load preset config from YAML
     /// 2. Apply to editor UI state
     /// 3. Instantiate CLAP plugins with GUI handles
-    /// 4. Ensure knob state exists for all effects
-    /// 5. Sync to audio if preview is enabled
+    /// 4. Apply ALL saved parameter values to plugins (not just knob-mapped ones)
+    /// 5. Ensure knob state exists for all effects
+    /// 6. Sync to audio if preview is enabled
     fn handle_load_preset(&mut self, name: String) -> Task<Message> {
         match load_preset(&self.domain.collection_root(), &name) {
             Ok(config) => {
@@ -1182,7 +1183,13 @@ impl MeshCueApp {
     }
 
     /// Save the current editor state as a preset
+    ///
+    /// Captures ALL parameter values from CLAP plugins (not just knob-mapped ones)
+    /// before saving. This preserves settings made via the plugin GUI.
     pub fn handle_effects_editor_save(&mut self, name: String) -> Task<Message> {
+        // Capture all param values from CLAP plugins before creating config
+        self.capture_all_effect_param_values();
+
         let config = MultibandPresetConfig::from_editor_state(&self.effects_editor.editor, &name);
 
         match save_preset(&config, &self.domain.collection_root()) {
@@ -1201,6 +1208,122 @@ impl MeshCueApp {
             }
         }
         Task::none()
+    }
+
+    /// Capture current parameter values from all CLAP plugins
+    ///
+    /// Reads ALL param values from each CLAP plugin's GUI handle and stores them
+    /// in the corresponding EffectUiState's saved_param_values field. This ensures
+    /// that settings made via the plugin GUI are preserved in the preset.
+    fn capture_all_effect_param_values(&mut self) {
+        // Helper to generate effect instance ID
+        fn effect_instance_id(id: &str, location: EffectChainLocation, effect_idx: usize) -> String {
+            match location {
+                EffectChainLocation::PreFx => format!("{}_cue_prefx_{}", id, effect_idx),
+                EffectChainLocation::Band(band_idx) => format!("{}_cue_b{}_{}", id, band_idx, effect_idx),
+                EffectChainLocation::PostFx => format!("{}_cue_postfx_{}", id, effect_idx),
+            }
+        }
+
+        // Collect effect info first to avoid borrow conflicts
+        let pre_fx_info: Vec<(usize, String, EffectSourceType)> = self.effects_editor.editor.pre_fx
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (i, e.id.clone(), e.source))
+            .collect();
+
+        let band_effects_info: Vec<(usize, Vec<(usize, String, EffectSourceType)>)> = self.effects_editor.editor.bands
+            .iter()
+            .enumerate()
+            .map(|(band_idx, band)| {
+                let effects: Vec<_> = band.effects
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| (i, e.id.clone(), e.source))
+                    .collect();
+                (band_idx, effects)
+            })
+            .collect();
+
+        let post_fx_info: Vec<(usize, String, EffectSourceType)> = self.effects_editor.editor.post_fx
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (i, e.id.clone(), e.source))
+            .collect();
+
+        // Now capture params from CLAP plugins and update editor state
+        // Pre-FX
+        for (effect_idx, plugin_id, source) in &pre_fx_info {
+            if *source == EffectSourceType::Clap {
+                let instance_id = effect_instance_id(plugin_id, EffectChainLocation::PreFx, *effect_idx);
+                if let Some(params) = self.capture_plugin_params(&instance_id) {
+                    if let Some(effect) = self.effects_editor.editor.pre_fx.get_mut(*effect_idx) {
+                        log::debug!("Captured {} params for pre-fx[{}]", params.len(), effect_idx);
+                        effect.saved_param_values = params;
+                    }
+                }
+            }
+        }
+
+        // Band effects
+        for (band_idx, effects) in &band_effects_info {
+            for (effect_idx, plugin_id, source) in effects {
+                if *source == EffectSourceType::Clap {
+                    let instance_id = effect_instance_id(plugin_id, EffectChainLocation::Band(*band_idx), *effect_idx);
+                    if let Some(params) = self.capture_plugin_params(&instance_id) {
+                        if let Some(band) = self.effects_editor.editor.bands.get_mut(*band_idx) {
+                            if let Some(effect) = band.effects.get_mut(*effect_idx) {
+                                log::debug!("Captured {} params for band[{}].effect[{}]", params.len(), band_idx, effect_idx);
+                                effect.saved_param_values = params;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Post-FX
+        for (effect_idx, plugin_id, source) in &post_fx_info {
+            if *source == EffectSourceType::Clap {
+                let instance_id = effect_instance_id(plugin_id, EffectChainLocation::PostFx, *effect_idx);
+                if let Some(params) = self.capture_plugin_params(&instance_id) {
+                    if let Some(effect) = self.effects_editor.editor.post_fx.get_mut(*effect_idx) {
+                        log::debug!("Captured {} params for post-fx[{}]", params.len(), effect_idx);
+                        effect.saved_param_values = params;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Capture all parameter values from a CLAP plugin instance
+    ///
+    /// Returns normalized (0.0-1.0) param values, or None if plugin not found.
+    fn capture_plugin_params(&self, effect_instance_id: &str) -> Option<Vec<f32>> {
+        let gui_handle = self.domain.get_clap_gui_handle(effect_instance_id)?;
+
+        let mut param_values = Vec::with_capacity(gui_handle.param_ids.len());
+
+        for &param_id in &gui_handle.param_ids {
+            // Get current value and normalize it
+            let value = if let (Some(current), Some((min, max, _default))) = (
+                gui_handle.get_param_value(param_id),
+                gui_handle.get_param_info(param_id),
+            ) {
+                let range = max - min;
+                if range > 0.0 {
+                    ((current - min) / range) as f32
+                } else {
+                    0.5
+                }
+            } else {
+                0.5 // Default if can't read
+            };
+
+            param_values.push(value);
+        }
+
+        Some(param_values)
     }
 
     /// Delete a preset
@@ -1562,13 +1685,24 @@ struct EffectSyncData {
 
 impl EffectSyncData {
     fn from_effect(effect: &mesh_widgets::multiband::EffectUiState) -> Self {
-        // Extract parameters from knob assignments
-        let params: Vec<(usize, f32)> = effect.knob_assignments
-            .iter()
-            .filter_map(|assignment| {
-                assignment.param_index.map(|idx| (idx, assignment.value))
-            })
-            .collect();
+        // If we have saved param values (from preset load), use ALL of them.
+        // Otherwise, extract parameters from knob assignments only.
+        let params: Vec<(usize, f32)> = if !effect.saved_param_values.is_empty() {
+            // Use all saved param values - includes params set via plugin GUI
+            effect.saved_param_values
+                .iter()
+                .enumerate()
+                .map(|(idx, &value)| (idx, value))
+                .collect()
+        } else {
+            // Fresh effect: only sync knob-assigned params
+            effect.knob_assignments
+                .iter()
+                .filter_map(|assignment| {
+                    assignment.param_index.map(|idx| (idx, assignment.value))
+                })
+                .collect()
+        };
 
         Self {
             id: effect.id.clone(),

@@ -183,6 +183,11 @@ pub struct EffectPresetConfig {
     /// Knob assignments (8 knobs per effect)
     /// Each stores: param_index (for learned params), value, macro_mapping
     pub knob_assignments: Vec<KnobAssignmentConfig>,
+    /// All parameter values (normalized 0.0-1.0), indexed by param_index
+    /// This stores the complete plugin state, not just the 8 knob-mapped params.
+    /// Essential for preserving settings made via the plugin GUI (e.g., reverb mode).
+    #[serde(default)]
+    pub all_param_values: Vec<f32>,
 }
 
 /// Knob assignment configuration for preset
@@ -209,6 +214,24 @@ impl Default for KnobAssignmentConfig {
 
 impl EffectPresetConfig {
     fn from_effect_state(effect: &EffectUiState) -> Self {
+        // Use saved_param_values if available (captured from plugin before save)
+        let captured = if !effect.saved_param_values.is_empty() {
+            Some(effect.saved_param_values.clone())
+        } else {
+            None
+        };
+        Self::from_effect_state_with_params(effect, captured)
+    }
+
+    /// Create from effect state with optional captured parameter values
+    ///
+    /// If `captured_param_values` is provided, those values are stored.
+    /// Otherwise, falls back to constructing values from knob assignments
+    /// and available_params defaults.
+    pub fn from_effect_state_with_params(
+        effect: &EffectUiState,
+        captured_param_values: Option<Vec<f32>>,
+    ) -> Self {
         let knob_assignments: Vec<KnobAssignmentConfig> = effect
             .knob_assignments
             .iter()
@@ -218,6 +241,27 @@ impl EffectPresetConfig {
                 macro_mapping: a.macro_mapping.as_ref().map(ParamMappingConfig::from_mapping),
             })
             .collect();
+
+        // Use captured param values if provided, otherwise reconstruct from available data
+        let all_param_values = captured_param_values.unwrap_or_else(|| {
+            // Build from knob assignments and defaults
+            let mut values: Vec<f32> = effect
+                .available_params
+                .iter()
+                .map(|p| p.default)
+                .collect();
+
+            // Override with knob assignment values where assigned
+            for assignment in &effect.knob_assignments {
+                if let Some(param_idx) = assignment.param_index {
+                    if param_idx < values.len() {
+                        values[param_idx] = assignment.value;
+                    }
+                }
+            }
+
+            values
+        });
 
         Self {
             id: effect.id.clone(),
@@ -230,6 +274,7 @@ impl EffectPresetConfig {
             },
             bypassed: effect.bypassed,
             knob_assignments,
+            all_param_values,
         }
     }
 
@@ -261,6 +306,8 @@ impl EffectPresetConfig {
             gui_open: false,
             available_params: Vec::new(), // Will be populated when plugin loads
             knob_assignments,
+            // Restore saved param values so they can be applied when plugin loads
+            saved_param_values: self.all_param_values.clone(),
         }
     }
 }

@@ -169,6 +169,13 @@ pub struct EffectUiState {
     /// UI knob assignments (exactly 8 knobs)
     /// Each knob can be assigned to any parameter index, or be unassigned
     pub knob_assignments: [KnobAssignment; MAX_UI_KNOBS],
+
+    /// Saved parameter values from preset load (normalized 0.0-1.0)
+    /// Contains ALL param values, not just knob-mapped ones.
+    /// This preserves settings made via plugin GUI (e.g., reverb mode).
+    /// Populated when loading a preset, empty for newly added effects.
+    #[serde(skip)]
+    pub saved_param_values: Vec<f32>,
 }
 
 impl EffectUiState {
@@ -206,6 +213,7 @@ impl EffectUiState {
             gui_open: false,
             available_params,
             knob_assignments,
+            saved_param_values: Vec::new(), // Fresh effect, no saved values
         }
     }
 
@@ -235,6 +243,7 @@ impl EffectUiState {
             gui_open: false,
             available_params,
             knob_assignments,
+            saved_param_values: Vec::new(), // Fresh effect, no saved values
         }
     }
 
