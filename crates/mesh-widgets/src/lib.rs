@@ -31,6 +31,7 @@ pub mod multiband;
 pub mod playlist_browser;
 pub mod rotary_knob;
 pub mod slice_editor;
+pub mod stem_preset;
 pub mod subscription;
 pub mod theme;
 pub mod track_table;
@@ -118,6 +119,12 @@ pub use subscription::{mpsc_subscription, mpsc_subscription_owned};
 
 // Multiband effect editor widget
 pub use multiband::{
-    multiband_editor, BandUiState, EffectUiState, MultibandEditorMessage, MultibandEditorState,
+    multiband_editor, multiband_editor_content, BandUiState, EffectUiState, MultibandEditorMessage, MultibandEditorState,
     FREQ_MAX, FREQ_MIN, NUM_MACROS,
+};
+
+// Stem preset selector widget (lightweight, for mesh-player performance use)
+pub use stem_preset::{
+    stem_preset_view, StemPresetMessage, StemPresetState,
+    NUM_MACROS as STEM_PRESET_NUM_MACROS, DEFAULT_MACRO_NAMES,
 };

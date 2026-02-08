@@ -168,6 +168,89 @@ pub fn multiband_editor(
     Some(final_view)
 }
 
+/// Render the multiband editor content without modal wrapper or header
+///
+/// Use this when embedding the editor in a custom modal (e.g., mesh-cue's effects editor).
+/// Returns the crossover bar, processing area (pre-fx, bands, post-fx), and macro bar.
+///
+/// Note: Does NOT include the preset browser/save overlays - handle those in your wrapper.
+pub fn multiband_editor_content(
+    state: &MultibandEditorState,
+) -> Element<'_, MultibandEditorMessage> {
+    let dragging_macro = state.dragging_macro;
+    let learning_knob = state.learning_knob;
+
+    // Build band columns
+    let band_columns: Vec<Element<'_, MultibandEditorMessage>> = state
+        .bands
+        .iter()
+        .enumerate()
+        .map(|(band_idx, band)| {
+            band_column(
+                band,
+                band_idx,
+                state.any_soloed,
+                dragging_macro,
+                &state.effect_knobs,
+                learning_knob,
+            )
+        })
+        .collect();
+
+    // Main processing area: Pre-FX | Bands | Post-FX
+    let processing_area = row![
+        // Pre-FX chain (left side)
+        fx_chain_column(
+            "Pre-FX",
+            &state.pre_fx,
+            EffectChainLocation::PreFx,
+            dragging_macro,
+            &state.effect_knobs,
+            learning_knob,
+        ),
+        // Band columns (center, fill available space)
+        column![
+            row(band_columns)
+                .spacing(4)
+                .width(Length::Fill)
+                .height(Length::Fill),
+            add_band_button(state.bands.len()),
+        ]
+        .spacing(4)
+        .width(Length::Fill)
+        .height(Length::Fill),
+        // Post-FX chain (right side)
+        fx_chain_column(
+            "Post-FX",
+            &state.post_fx,
+            EffectChainLocation::PostFx,
+            dragging_macro,
+            &state.effect_knobs,
+            learning_knob,
+        ),
+    ]
+    .spacing(8)
+    .width(Length::Fill)
+    .height(Length::Fill);
+
+    // Content without header (header is provided by the wrapper)
+    let content = column![
+        // Crossover visualization bar
+        crossover_bar(state),
+        divider(),
+        // Main processing area with pre-fx, bands, post-fx
+        processing_area,
+        divider(),
+        // Macro knobs row
+        macro_bar(&state.macros, &state.macro_knobs, state.dragging_macro),
+    ]
+    .spacing(8)
+    .width(Length::Fill)
+    .height(Length::Fill);
+
+    content.into()
+}
+
 /// Ensure all effect parameter knobs exist in the state
 ///
 /// Call this in update handlers before view is rendered, specifically:
@@ -485,8 +568,8 @@ fn fx_effect_card<'a>(
     .spacing(2)
     .align_y(Alignment::Center);
 
-    // Parameter knobs (show first 6 params in 2 rows of 3)
-    let param_count = effect.param_values.len().min(6);
+    // Parameter knobs (show first 8 params in 2 rows of 4)
+    let param_count = effect.param_values.len().min(8);
     let param_knobs: Vec<Element<'_, MultibandEditorMessage>> = (0..param_count)
         .map(|param_idx| {
             // Check if this knob is in learning mode
@@ -613,10 +696,10 @@ fn fx_effect_card<'a>(
         })
         .collect();
 
-    // Arrange knobs in rows of 3
+    // Arrange knobs in rows of 4
     let knob_rows: Element<'_, MultibandEditorMessage> = {
         let mut knobs_iter = param_knobs.into_iter();
-        let first_row: Vec<_> = knobs_iter.by_ref().take(3).collect();
+        let first_row: Vec<_> = knobs_iter.by_ref().take(4).collect();
         let second_row: Vec<_> = knobs_iter.collect();
 
         if second_row.is_empty() {
