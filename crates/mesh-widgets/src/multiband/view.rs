@@ -53,6 +53,8 @@ fn dry_wet_knob_view<'a>(
     value: f32,
     label: &'static str,
     on_event: impl Fn(KnobEvent) -> MultibandEditorMessage + 'a,
+    is_drag_target: bool,
+    is_mapped: bool,
 ) -> Element<'a, MultibandEditorMessage> {
     let mut knob = Knob::new(32.0);
     knob.set_value(value);
@@ -60,8 +62,17 @@ fn dry_wet_knob_view<'a>(
     let knob_element = knob.view(on_event);
     let value_text = format!("{:.0}%", value * 100.0);
 
+    // Highlight color when dragging macro over or when mapped
+    let label_color = if is_drag_target {
+        ACCENT_COLOR // Highlight as valid drop target
+    } else if is_mapped {
+        Color::from_rgb(0.4, 0.8, 0.4) // Green for mapped
+    } else {
+        DRY_WET_COLOR
+    };
+
     column![
-        text(label).size(10).color(DRY_WET_COLOR),
+        text(label).size(10).color(label_color),
         knob_element,
         text(value_text).size(9).color(TEXT_SECONDARY),
     ]
@@ -77,6 +88,7 @@ fn chain_dry_wet_section<'a>(
     on_event: impl Fn(KnobEvent) -> MultibandEditorMessage + 'a,
     dragging_macro: Option<usize>,
     chain_target: ChainTarget,
+    is_mapped: bool,
 ) -> Element<'a, MultibandEditorMessage> {
     let mut knob = Knob::new(36.0);
     knob.set_value(value);
@@ -84,8 +96,17 @@ fn chain_dry_wet_section<'a>(
     let knob_element = knob.view(on_event);
     let value_text = format!("{:.0}%", value * 100.0);
 
+    // Highlight color when dragging macro or when mapped
+    let label_color = if dragging_macro.is_some() {
+        ACCENT_COLOR // Highlight as valid drop target
+    } else if is_mapped {
+        Color::from_rgb(0.4, 0.8, 0.4) // Green for mapped
+    } else {
+        TEXT_SECONDARY
+    };
+
     let content = row![
-        text(label).size(11).color(TEXT_SECONDARY),
+        text(label).size(11).color(label_color),
         Space::new().width(Length::Fill),
         column![
             knob_element,
@@ -501,6 +522,7 @@ fn band_column<'a>(
         move |event| MultibandEditorMessage::BandChainDryWetKnob { band: band_idx, event },
         dragging_macro,
         ChainTarget::Band(band_idx),
+        band.chain_dry_wet_macro_mapping.is_some(),
     );
 
     container(
@@ -573,10 +595,18 @@ fn fx_chain_column<'a>(
     let effects_column = column(effect_cards).spacing(4).push(add_button);
 
     // Chain dry/wet section at the bottom
-    let (chain_dry_wet, chain_target) = if location == EffectChainLocation::PreFx {
-        (editor_state.pre_fx_chain_dry_wet, ChainTarget::PreFx)
+    let (chain_dry_wet, chain_target, chain_dw_mapped) = if location == EffectChainLocation::PreFx {
+        (
+            editor_state.pre_fx_chain_dry_wet,
+            ChainTarget::PreFx,
+            editor_state.pre_fx_chain_dry_wet_macro_mapping.is_some(),
+        )
     } else {
-        (editor_state.post_fx_chain_dry_wet, ChainTarget::PostFx)
+        (
+            editor_state.post_fx_chain_dry_wet,
+            ChainTarget::PostFx,
+            editor_state.post_fx_chain_dry_wet_macro_mapping.is_some(),
+        )
     };
 
     let chain_dry_wet_section = chain_dry_wet_section(
@@ -591,6 +621,7 @@ fn fx_chain_column<'a>(
         },
         dragging_macro,
         chain_target,
+        chain_dw_mapped,
     );
 
     container(
@@ -858,6 +889,7 @@ fn fx_effect_card<'a>(
 
     // Per-effect dry/wet knob on the left
     let effect_dry_wet = effect.dry_wet;
+    let is_dw_mapped = effect.dry_wet_macro_mapping.is_some();
     let dry_wet_knob = dry_wet_knob_view(
         effect_dry_wet,
         "D/W",
@@ -866,6 +898,8 @@ fn fx_effect_card<'a>(
             effect: effect_idx,
             event,
         },
+        dragging_macro.is_some(), // Highlight when macro is being dragged
+        is_dw_mapped,             // Show mapped indicator
     );
 
     // Wrap dry/wet in macro drop target
@@ -1150,6 +1184,7 @@ fn effect_card<'a>(
 
     // Per-effect dry/wet knob on the left
     let effect_dry_wet = effect.dry_wet;
+    let is_dw_mapped = effect.dry_wet_macro_mapping.is_some();
     let dry_wet_knob = dry_wet_knob_view(
         effect_dry_wet,
         "D/W",
@@ -1158,6 +1193,8 @@ fn effect_card<'a>(
             effect: effect_idx,
             event,
         },
+        dragging_macro.is_some(), // Highlight when macro is being dragged
+        is_dw_mapped,             // Show mapped indicator
     );
 
     // Wrap dry/wet in macro drop target
@@ -1317,6 +1354,7 @@ fn macro_bar<'a>(
 
     // Global dry/wet control
     let global_dry_wet = state.global_dry_wet;
+    let global_dw_mapped = state.global_dry_wet_macro_mapping.is_some();
     let global_dw_knob = {
         let mut knob = Knob::new(48.0);
         knob.set_value(global_dry_wet);
@@ -1324,9 +1362,18 @@ fn macro_bar<'a>(
 
         let value_text = format!("{:.0}%", global_dry_wet * 100.0);
 
+        // Highlight color when dragging macro or when mapped
+        let label_color = if dragging_macro.is_some() {
+            ACCENT_COLOR // Highlight as valid drop target
+        } else if global_dw_mapped {
+            Color::from_rgb(0.4, 0.8, 0.4) // Green for mapped
+        } else {
+            DRY_WET_COLOR
+        };
+
         let content = column![
-            text("Global").size(10).color(DRY_WET_COLOR),
-            text("D/W").size(10).color(DRY_WET_COLOR),
+            text("Global").size(10).color(label_color),
+            text("D/W").size(10).color(label_color),
             knob_element,
             text(value_text).size(10).color(TEXT_SECONDARY),
         ]
