@@ -119,7 +119,8 @@ pub use subscription::{mpsc_subscription, mpsc_subscription_owned};
 
 // Multiband effect editor widget
 pub use multiband::{
-    multiband_editor, multiband_editor_content, BandUiState, EffectUiState, MultibandEditorMessage, MultibandEditorState,
+    multiband_editor, multiband_editor_content, preset_browser_overlay, save_dialog_overlay,
+    BandUiState, EffectUiState, MultibandEditorMessage, MultibandEditorState,
     FREQ_MAX, FREQ_MIN, NUM_MACROS,
 };
 

@@ -1,9 +1,12 @@
 //! Effects editor view
 
-use iced::widget::{button, column, container, row, text, Space};
+use iced::widget::{button, column, container, row, stack, text, Space};
 use iced::{Alignment, Background, Color, Element, Length};
 use mesh_core::types::Stem;
-use mesh_widgets::{multiband_editor_content, MultibandEditorMessage};
+use mesh_widgets::{
+    multiband_editor_content, preset_browser_overlay, save_dialog_overlay,
+    MultibandEditorMessage,
+};
 
 use super::state::EffectsEditorState;
 use crate::ui::message::Message;
@@ -62,11 +65,23 @@ pub fn effects_editor_view(state: &EffectsEditorState) -> Option<Element<'_, Mes
     .width(Length::Fixed(1700.0))
     .height(Length::Fixed(950.0));
 
-    let modal = container(content)
+    let modal: Element<'_, Message> = container(content)
         .style(modal_container_style)
-        .padding(0);
+        .padding(0)
+        .into();
 
-    Some(modal.into())
+    // Layer preset browser or save dialog on top if open
+    let final_view: Element<'_, Message> = if state.editor.preset_browser_open {
+        let overlay = preset_browser_overlay(&state.editor).map(Message::EffectsEditor);
+        stack![modal, overlay].into()
+    } else if state.editor.save_dialog_open {
+        let overlay = save_dialog_overlay(&state.editor).map(Message::EffectsEditor);
+        stack![modal, overlay].into()
+    } else {
+        modal
+    };
+
+    Some(final_view)
 }
 
 /// Render the header row

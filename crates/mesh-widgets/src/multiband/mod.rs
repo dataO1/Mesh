@@ -45,7 +45,10 @@ pub use state::{
     AvailableParam, BandUiState, EffectChainLocation, EffectSourceType, EffectUiState,
     KnobAssignment, MacroUiState, MultibandEditorState, ParamMacroMapping, MAX_UI_KNOBS,
 };
-pub use view::{multiband_editor, multiband_editor_content, ensure_effect_knobs_exist};
+pub use view::{
+    multiband_editor, multiband_editor_content, ensure_effect_knobs_exist,
+    preset_browser_overlay, save_dialog_overlay,
+};
 
 /// Frequency range for crossover display (Hz)
 pub const FREQ_MIN: f32 = 20.0;

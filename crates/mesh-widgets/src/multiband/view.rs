@@ -1106,7 +1106,11 @@ fn macro_bar<'a>(
 // Preset browser overlay
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn preset_browser_overlay(state: &MultibandEditorState) -> Element<'_, MultibandEditorMessage> {
+/// Render the preset browser overlay for loading presets
+///
+/// Shows a scrollable list of available presets with load/delete buttons.
+/// Use this when building a custom modal wrapper around `multiband_editor_content`.
+pub fn preset_browser_overlay(state: &MultibandEditorState) -> Element<'_, MultibandEditorMessage> {
     let preset_list: Vec<Element<'_, MultibandEditorMessage>> = state
         .available_presets
         .iter()
@@ -1184,7 +1188,11 @@ fn preset_browser_overlay(state: &MultibandEditorState) -> Element<'_, Multiband
 // Save dialog overlay
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn save_dialog_overlay(state: &MultibandEditorState) -> Element<'_, MultibandEditorMessage> {
+/// Render the save dialog overlay for saving presets
+///
+/// Shows a text input for preset name and save/cancel buttons.
+/// Use this when building a custom modal wrapper around `multiband_editor_content`.
+pub fn save_dialog_overlay(state: &MultibandEditorState) -> Element<'_, MultibandEditorMessage> {
     let can_save = !state.preset_name_input.trim().is_empty();
 
     let dialog = container(
