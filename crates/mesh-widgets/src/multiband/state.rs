@@ -385,6 +385,21 @@ pub enum EffectChainLocation {
     PostFx,
 }
 
+/// Identifies which dry/wet knob is being dragged (for global mouse capture)
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum DryWetKnobId {
+    /// Per-effect dry/wet (location, effect_index)
+    Effect(EffectChainLocation, usize),
+    /// Pre-FX chain dry/wet
+    PreFxChain,
+    /// Band chain dry/wet (band_index)
+    BandChain(usize),
+    /// Post-FX chain dry/wet
+    PostFxChain,
+    /// Global dry/wet
+    Global,
+}
+
 /// Reference to a macro mapping for the reverse index
 ///
 /// This allows efficient lookup of which parameters are mapped to each macro,
@@ -499,6 +514,10 @@ pub struct MultibandEditorState {
     /// Currently dragging macro knob index (0-7)
     pub dragging_macro_knob: Option<usize>,
 
+    /// Currently dragging dry/wet knob
+    /// When set, global mouse events should be routed to this knob
+    pub dragging_dry_wet_knob: Option<DryWetKnobId>,
+
     // ─────────────────────────────────────────────────────────────────────
     // CLAP Plugin GUI Learning Mode
     // ─────────────────────────────────────────────────────────────────────
@@ -598,6 +617,7 @@ impl MultibandEditorState {
             param_picker_search: String::new(),
             dragging_effect_knob: None,
             dragging_macro_knob: None,
+            dragging_dry_wet_knob: None,
             learning_knob: None,
             macro_mappings_index: Default::default(),
             dragging_mod_range: None,

@@ -5,8 +5,8 @@
 use iced::Task;
 use mesh_core::types::Stem;
 use mesh_widgets::multiband::{
-    ChainTarget, EffectChainLocation, EffectSourceType, MultibandPresetConfig, ParamMacroMapping,
-    load_preset, save_preset,
+    ChainTarget, DryWetKnobId, EffectChainLocation, EffectSourceType, MultibandPresetConfig,
+    ParamMacroMapping, load_preset, save_preset,
 };
 use mesh_widgets::{MultibandEditorMessage, DEFAULT_SENSITIVITY};
 
@@ -1011,6 +1011,42 @@ impl MeshCueApp {
                         }
                     }
                 }
+
+                // Route to dragging dry/wet knob
+                if let Some(dry_wet_id) = self.effects_editor.editor.dragging_dry_wet_knob.clone() {
+                    match dry_wet_id {
+                        DryWetKnobId::Effect(location, effect) => {
+                            let key = (location.clone(), effect);
+                            if let Some(knob) = self.effects_editor.editor.effect_dry_wet_knobs.get_mut(&key) {
+                                if let Some(new_value) = knob.handle_event(KnobEvent::Moved(position), DEFAULT_SENSITIVITY) {
+                                    return self.handle_effects_editor(SetEffectDryWet { location, effect, mix: new_value });
+                                }
+                            }
+                        }
+                        DryWetKnobId::PreFxChain => {
+                            if let Some(new_value) = self.effects_editor.editor.pre_fx_chain_dry_wet_knob.handle_event(KnobEvent::Moved(position), DEFAULT_SENSITIVITY) {
+                                return self.handle_effects_editor(SetPreFxChainDryWet(new_value));
+                            }
+                        }
+                        DryWetKnobId::BandChain(band) => {
+                            if let Some(knob) = self.effects_editor.editor.band_chain_dry_wet_knobs.get_mut(band) {
+                                if let Some(new_value) = knob.handle_event(KnobEvent::Moved(position), DEFAULT_SENSITIVITY) {
+                                    return self.handle_effects_editor(SetBandChainDryWet { band, mix: new_value });
+                                }
+                            }
+                        }
+                        DryWetKnobId::PostFxChain => {
+                            if let Some(new_value) = self.effects_editor.editor.post_fx_chain_dry_wet_knob.handle_event(KnobEvent::Moved(position), DEFAULT_SENSITIVITY) {
+                                return self.handle_effects_editor(SetPostFxChainDryWet(new_value));
+                            }
+                        }
+                        DryWetKnobId::Global => {
+                            if let Some(new_value) = self.effects_editor.editor.global_dry_wet_knob.handle_event(KnobEvent::Moved(position), DEFAULT_SENSITIVITY) {
+                                return self.handle_effects_editor(SetGlobalDryWet(new_value));
+                            }
+                        }
+                    }
+                }
             }
             GlobalMouseReleased => {
                 use mesh_widgets::knob::KnobEvent;
@@ -1025,6 +1061,32 @@ impl MeshCueApp {
                 }
                 // Release dragging mod range indicator
                 self.effects_editor.editor.dragging_mod_range = None;
+
+                // Release dragging dry/wet knob
+                if let Some(dry_wet_id) = self.effects_editor.editor.dragging_dry_wet_knob.take() {
+                    match dry_wet_id {
+                        DryWetKnobId::Effect(location, effect) => {
+                            let key = (location, effect);
+                            if let Some(knob) = self.effects_editor.editor.effect_dry_wet_knobs.get_mut(&key) {
+                                knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
+                            }
+                        }
+                        DryWetKnobId::PreFxChain => {
+                            self.effects_editor.editor.pre_fx_chain_dry_wet_knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
+                        }
+                        DryWetKnobId::BandChain(band) => {
+                            if let Some(knob) = self.effects_editor.editor.band_chain_dry_wet_knobs.get_mut(band) {
+                                knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
+                            }
+                        }
+                        DryWetKnobId::PostFxChain => {
+                            self.effects_editor.editor.post_fx_chain_dry_wet_knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
+                        }
+                        DryWetKnobId::Global => {
+                            self.effects_editor.editor.global_dry_wet_knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
+                        }
+                    }
+                }
             }
 
             // ─────────────────────────────────────────────────────────────────────
@@ -1078,13 +1140,46 @@ impl MeshCueApp {
             }
 
             EffectDryWetKnob { location, effect, event } => {
-                // Use persistent knob from editor state
-                let knob = self.effects_editor.editor.effect_dry_wet_knobs
-                    .entry((location.clone(), effect))
-                    .or_insert_with(|| mesh_widgets::knob::Knob::new(24.0));
+                use mesh_widgets::knob::KnobEvent;
 
-                if let Some(new_value) = knob.handle_event(event, DEFAULT_SENSITIVITY) {
-                    return self.handle_effects_editor(SetEffectDryWet { location, effect, mix: new_value });
+                // Track drag state for global mouse capture
+                match &event {
+                    KnobEvent::Pressed => {
+                        self.effects_editor.editor.dragging_dry_wet_knob =
+                            Some(DryWetKnobId::Effect(location.clone(), effect));
+                    }
+                    KnobEvent::Released => {
+                        self.effects_editor.editor.dragging_dry_wet_knob = None;
+                    }
+                    KnobEvent::Moved(_) => {}
+                }
+
+                // Ensure knob exists with correct initial value
+                let key = (location.clone(), effect);
+                if !self.effects_editor.editor.effect_dry_wet_knobs.contains_key(&key) {
+                    let initial_value = match &location {
+                        EffectChainLocation::PreFx => {
+                            self.effects_editor.editor.pre_fx.get(effect).map(|e| e.dry_wet).unwrap_or(1.0)
+                        }
+                        EffectChainLocation::Band(band) => {
+                            self.effects_editor.editor.bands.get(*band)
+                                .and_then(|b| b.effects.get(effect))
+                                .map(|e| e.dry_wet)
+                                .unwrap_or(1.0)
+                        }
+                        EffectChainLocation::PostFx => {
+                            self.effects_editor.editor.post_fx.get(effect).map(|e| e.dry_wet).unwrap_or(1.0)
+                        }
+                    };
+                    let mut knob = mesh_widgets::knob::Knob::new(24.0);
+                    knob.set_value(initial_value);
+                    self.effects_editor.editor.effect_dry_wet_knobs.insert(key.clone(), knob);
+                }
+
+                if let Some(knob) = self.effects_editor.editor.effect_dry_wet_knobs.get_mut(&key) {
+                    if let Some(new_value) = knob.handle_event(event, DEFAULT_SENSITIVITY) {
+                        return self.handle_effects_editor(SetEffectDryWet { location, effect, mix: new_value });
+                    }
                 }
             }
 
@@ -1098,6 +1193,18 @@ impl MeshCueApp {
             }
 
             PreFxChainDryWetKnob(event) => {
+                use mesh_widgets::knob::KnobEvent;
+
+                match &event {
+                    KnobEvent::Pressed => {
+                        self.effects_editor.editor.dragging_dry_wet_knob = Some(DryWetKnobId::PreFxChain);
+                    }
+                    KnobEvent::Released => {
+                        self.effects_editor.editor.dragging_dry_wet_knob = None;
+                    }
+                    KnobEvent::Moved(_) => {}
+                }
+
                 if let Some(new_value) = self.effects_editor.editor.pre_fx_chain_dry_wet_knob.handle_event(event, DEFAULT_SENSITIVITY) {
                     return self.handle_effects_editor(SetPreFxChainDryWet(new_value));
                 }
@@ -1119,9 +1226,26 @@ impl MeshCueApp {
             }
 
             BandChainDryWetKnob { band, event } => {
-                // Ensure we have enough knobs for this band
+                use mesh_widgets::knob::KnobEvent;
+
+                match &event {
+                    KnobEvent::Pressed => {
+                        self.effects_editor.editor.dragging_dry_wet_knob = Some(DryWetKnobId::BandChain(band));
+                    }
+                    KnobEvent::Released => {
+                        self.effects_editor.editor.dragging_dry_wet_knob = None;
+                    }
+                    KnobEvent::Moved(_) => {}
+                }
+
+                // Ensure we have enough knobs for this band with correct initial value
                 while self.effects_editor.editor.band_chain_dry_wet_knobs.len() <= band {
-                    self.effects_editor.editor.band_chain_dry_wet_knobs.push(mesh_widgets::knob::Knob::new(36.0));
+                    let initial_value = self.effects_editor.editor.bands.get(band)
+                        .map(|b| b.chain_dry_wet)
+                        .unwrap_or(1.0);
+                    let mut knob = mesh_widgets::knob::Knob::new(36.0);
+                    knob.set_value(initial_value);
+                    self.effects_editor.editor.band_chain_dry_wet_knobs.push(knob);
                 }
                 if let Some(new_value) = self.effects_editor.editor.band_chain_dry_wet_knobs[band].handle_event(event, DEFAULT_SENSITIVITY) {
                     return self.handle_effects_editor(SetBandChainDryWet { band, mix: new_value });
@@ -1138,6 +1262,18 @@ impl MeshCueApp {
             }
 
             PostFxChainDryWetKnob(event) => {
+                use mesh_widgets::knob::KnobEvent;
+
+                match &event {
+                    KnobEvent::Pressed => {
+                        self.effects_editor.editor.dragging_dry_wet_knob = Some(DryWetKnobId::PostFxChain);
+                    }
+                    KnobEvent::Released => {
+                        self.effects_editor.editor.dragging_dry_wet_knob = None;
+                    }
+                    KnobEvent::Moved(_) => {}
+                }
+
                 if let Some(new_value) = self.effects_editor.editor.post_fx_chain_dry_wet_knob.handle_event(event, DEFAULT_SENSITIVITY) {
                     return self.handle_effects_editor(SetPostFxChainDryWet(new_value));
                 }
@@ -1153,6 +1289,18 @@ impl MeshCueApp {
             }
 
             GlobalDryWetKnob(event) => {
+                use mesh_widgets::knob::KnobEvent;
+
+                match &event {
+                    KnobEvent::Pressed => {
+                        self.effects_editor.editor.dragging_dry_wet_knob = Some(DryWetKnobId::Global);
+                    }
+                    KnobEvent::Released => {
+                        self.effects_editor.editor.dragging_dry_wet_knob = None;
+                    }
+                    KnobEvent::Moved(_) => {}
+                }
+
                 if let Some(new_value) = self.effects_editor.editor.global_dry_wet_knob.handle_event(event, DEFAULT_SENSITIVITY) {
                     return self.handle_effects_editor(SetGlobalDryWet(new_value));
                 }

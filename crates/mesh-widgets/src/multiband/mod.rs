@@ -42,7 +42,7 @@ pub use config::{
 pub use crossover_bar::{crossover_bar, crossover_controls, CROSSOVER_BAR_HEIGHT};
 pub use message::{ChainTarget, MultibandEditorMessage};
 pub use state::{
-    AvailableParam, BandUiState, EffectChainLocation, EffectSourceType, EffectUiState,
+    AvailableParam, BandUiState, DryWetKnobId, EffectChainLocation, EffectSourceType, EffectUiState,
     KnobAssignment, MacroMappingRef, MacroUiState, ModRangeDrag, MultibandEditorState,
     ParamMacroMapping, MAX_UI_KNOBS,
 };

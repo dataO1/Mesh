@@ -7,8 +7,9 @@ use iced::Task;
 use mesh_core::effect::EffectInfo;
 use mesh_core::types::Stem;
 use mesh_widgets::multiband::{
-    self, ensure_effect_knobs_exist, AvailableParam, ChainTarget, EffectChainLocation, EffectSourceType,
-    EffectUiState, KnobAssignment, MultibandPresetConfig, ParamMacroMapping, MAX_UI_KNOBS,
+    self, ensure_effect_knobs_exist, AvailableParam, ChainTarget, DryWetKnobId, EffectChainLocation,
+    EffectSourceType, EffectUiState, KnobAssignment, MultibandPresetConfig, ParamMacroMapping,
+    MAX_UI_KNOBS,
 };
 use mesh_widgets::{MultibandEditorMessage, DEFAULT_SENSITIVITY};
 
@@ -1202,6 +1203,42 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                 }
             }
 
+            // Route to dragging dry/wet knob
+            if let Some(dry_wet_id) = app.multiband_editor.dragging_dry_wet_knob.clone() {
+                match dry_wet_id {
+                    DryWetKnobId::Effect(location, effect) => {
+                        let key = (location.clone(), effect);
+                        if let Some(knob) = app.multiband_editor.effect_dry_wet_knobs.get_mut(&key) {
+                            if let Some(new_value) = knob.handle_event(KnobEvent::Moved(position), DEFAULT_SENSITIVITY) {
+                                return handle(app, SetEffectDryWet { location, effect, mix: new_value });
+                            }
+                        }
+                    }
+                    DryWetKnobId::PreFxChain => {
+                        if let Some(new_value) = app.multiband_editor.pre_fx_chain_dry_wet_knob.handle_event(KnobEvent::Moved(position), DEFAULT_SENSITIVITY) {
+                            return handle(app, SetPreFxChainDryWet(new_value));
+                        }
+                    }
+                    DryWetKnobId::BandChain(band) => {
+                        if let Some(knob) = app.multiband_editor.band_chain_dry_wet_knobs.get_mut(band) {
+                            if let Some(new_value) = knob.handle_event(KnobEvent::Moved(position), DEFAULT_SENSITIVITY) {
+                                return handle(app, SetBandChainDryWet { band, mix: new_value });
+                            }
+                        }
+                    }
+                    DryWetKnobId::PostFxChain => {
+                        if let Some(new_value) = app.multiband_editor.post_fx_chain_dry_wet_knob.handle_event(KnobEvent::Moved(position), DEFAULT_SENSITIVITY) {
+                            return handle(app, SetPostFxChainDryWet(new_value));
+                        }
+                    }
+                    DryWetKnobId::Global => {
+                        if let Some(new_value) = app.multiband_editor.global_dry_wet_knob.handle_event(KnobEvent::Moved(position), DEFAULT_SENSITIVITY) {
+                            return handle(app, SetGlobalDryWet(new_value));
+                        }
+                    }
+                }
+            }
+
             Task::none()
         }
 
@@ -1552,6 +1589,32 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             // Release dragging mod range indicator
             app.multiband_editor.dragging_mod_range = None;
 
+            // Release dragging dry/wet knob
+            if let Some(dry_wet_id) = app.multiband_editor.dragging_dry_wet_knob.take() {
+                match dry_wet_id {
+                    DryWetKnobId::Effect(location, effect) => {
+                        let key = (location, effect);
+                        if let Some(knob) = app.multiband_editor.effect_dry_wet_knobs.get_mut(&key) {
+                            knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
+                        }
+                    }
+                    DryWetKnobId::PreFxChain => {
+                        app.multiband_editor.pre_fx_chain_dry_wet_knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
+                    }
+                    DryWetKnobId::BandChain(band) => {
+                        if let Some(knob) = app.multiband_editor.band_chain_dry_wet_knobs.get_mut(band) {
+                            knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
+                        }
+                    }
+                    DryWetKnobId::PostFxChain => {
+                        app.multiband_editor.post_fx_chain_dry_wet_knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
+                    }
+                    DryWetKnobId::Global => {
+                        app.multiband_editor.global_dry_wet_knob.handle_event(KnobEvent::Released, DEFAULT_SENSITIVITY);
+                    }
+                }
+            }
+
             Task::none()
         }
 
@@ -1605,11 +1668,41 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         }
 
         EffectDryWetKnob { location, effect, event } => {
-            let key = (location, effect);
-            // Ensure the knob exists
-            app.multiband_editor.effect_dry_wet_knobs
-                .entry(key)
-                .or_insert_with(|| mesh_widgets::knob::Knob::new(32.0));
+            use mesh_widgets::knob::KnobEvent;
+
+            // Track drag state for global mouse capture
+            match &event {
+                KnobEvent::Pressed => {
+                    app.multiband_editor.dragging_dry_wet_knob =
+                        Some(DryWetKnobId::Effect(location.clone(), effect));
+                }
+                KnobEvent::Released => {
+                    app.multiband_editor.dragging_dry_wet_knob = None;
+                }
+                KnobEvent::Moved(_) => {}
+            }
+
+            let key = (location.clone(), effect);
+            // Ensure the knob exists with correct initial value
+            if !app.multiband_editor.effect_dry_wet_knobs.contains_key(&key) {
+                let initial_value = match &location {
+                    EffectChainLocation::PreFx => {
+                        app.multiband_editor.pre_fx.get(effect).map(|e| e.dry_wet).unwrap_or(1.0)
+                    }
+                    EffectChainLocation::Band(band) => {
+                        app.multiband_editor.bands.get(*band)
+                            .and_then(|b| b.effects.get(effect))
+                            .map(|e| e.dry_wet)
+                            .unwrap_or(1.0)
+                    }
+                    EffectChainLocation::PostFx => {
+                        app.multiband_editor.post_fx.get(effect).map(|e| e.dry_wet).unwrap_or(1.0)
+                    }
+                };
+                let mut knob = mesh_widgets::knob::Knob::new(32.0);
+                knob.set_value(initial_value);
+                app.multiband_editor.effect_dry_wet_knobs.insert(key.clone(), knob);
+            }
 
             if let Some(knob) = app.multiband_editor.effect_dry_wet_knobs.get_mut(&key) {
                 if let Some(new_value) = knob.handle_event(event, DEFAULT_SENSITIVITY) {
@@ -1633,6 +1726,19 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         }
 
         PreFxChainDryWetKnob(event) => {
+            use mesh_widgets::knob::KnobEvent;
+
+            // Track drag state for global mouse capture
+            match &event {
+                KnobEvent::Pressed => {
+                    app.multiband_editor.dragging_dry_wet_knob = Some(DryWetKnobId::PreFxChain);
+                }
+                KnobEvent::Released => {
+                    app.multiband_editor.dragging_dry_wet_knob = None;
+                }
+                KnobEvent::Moved(_) => {}
+            }
+
             if let Some(new_value) = app.multiband_editor.pre_fx_chain_dry_wet_knob.handle_event(event, DEFAULT_SENSITIVITY) {
                 return handle(app, SetPreFxChainDryWet(new_value));
             }
@@ -1657,9 +1763,27 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         }
 
         BandChainDryWetKnob { band, event } => {
-            // Ensure band knob exists
+            use mesh_widgets::knob::KnobEvent;
+
+            // Track drag state for global mouse capture
+            match &event {
+                KnobEvent::Pressed => {
+                    app.multiband_editor.dragging_dry_wet_knob = Some(DryWetKnobId::BandChain(band));
+                }
+                KnobEvent::Released => {
+                    app.multiband_editor.dragging_dry_wet_knob = None;
+                }
+                KnobEvent::Moved(_) => {}
+            }
+
+            // Ensure band knob exists with correct initial value
             while app.multiband_editor.band_chain_dry_wet_knobs.len() <= band {
-                app.multiband_editor.band_chain_dry_wet_knobs.push(mesh_widgets::knob::Knob::new(36.0));
+                let initial_value = app.multiband_editor.bands.get(band)
+                    .map(|b| b.chain_dry_wet)
+                    .unwrap_or(1.0);
+                let mut knob = mesh_widgets::knob::Knob::new(36.0);
+                knob.set_value(initial_value);
+                app.multiband_editor.band_chain_dry_wet_knobs.push(knob);
             }
             if let Some(new_value) = app.multiband_editor.band_chain_dry_wet_knobs[band].handle_event(event, DEFAULT_SENSITIVITY) {
                 return handle(app, SetBandChainDryWet { band, mix: new_value });
@@ -1681,6 +1805,19 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         }
 
         PostFxChainDryWetKnob(event) => {
+            use mesh_widgets::knob::KnobEvent;
+
+            // Track drag state for global mouse capture
+            match &event {
+                KnobEvent::Pressed => {
+                    app.multiband_editor.dragging_dry_wet_knob = Some(DryWetKnobId::PostFxChain);
+                }
+                KnobEvent::Released => {
+                    app.multiband_editor.dragging_dry_wet_knob = None;
+                }
+                KnobEvent::Moved(_) => {}
+            }
+
             if let Some(new_value) = app.multiband_editor.post_fx_chain_dry_wet_knob.handle_event(event, DEFAULT_SENSITIVITY) {
                 return handle(app, SetPostFxChainDryWet(new_value));
             }
@@ -1701,6 +1838,19 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         }
 
         GlobalDryWetKnob(event) => {
+            use mesh_widgets::knob::KnobEvent;
+
+            // Track drag state for global mouse capture
+            match &event {
+                KnobEvent::Pressed => {
+                    app.multiband_editor.dragging_dry_wet_knob = Some(DryWetKnobId::Global);
+                }
+                KnobEvent::Released => {
+                    app.multiband_editor.dragging_dry_wet_knob = None;
+                }
+                KnobEvent::Moved(_) => {}
+            }
+
             if let Some(new_value) = app.multiband_editor.global_dry_wet_knob.handle_event(event, DEFAULT_SENSITIVITY) {
                 return handle(app, SetGlobalDryWet(new_value));
             }
