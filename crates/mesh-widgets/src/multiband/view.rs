@@ -655,9 +655,24 @@ fn band_column<'a>(
     // Chain dry/wet section at the bottom
     let band_knob = editor_state.band_chain_dry_wet_knobs.get(band_idx);
     let chain_dw_section = if let Some(knob) = band_knob {
+        // Clone and add modulation ranges if mapped
+        let mut display_knob = knob.clone();
+        if let Some(ref mapping) = band.chain_dry_wet_macro_mapping {
+            if let Some(macro_idx) = mapping.macro_index {
+                let macro_value = editor_state.macro_value(macro_idx);
+                let (mod_min, mod_max) = mapping.modulation_bounds(band.chain_dry_wet);
+                display_knob.set_modulations(vec![ModulationRange::new(
+                    mod_min,
+                    mod_max,
+                    Color::from_rgb(0.9, 0.5, 0.2), // Orange for mod range
+                )]);
+                let modulated_value = mapping.modulate(band.chain_dry_wet, macro_value);
+                display_knob.set_display_value(Some(modulated_value));
+            }
+        }
         chain_dry_wet_section(
             "Chain D/W",
-            knob,
+            &display_knob,
             move |event| MultibandEditorMessage::BandChainDryWetKnob { band: band_idx, event },
             dragging_macro,
             ChainTarget::Band(band_idx),
@@ -761,23 +776,43 @@ fn fx_chain_column<'a>(
     let effects_column = column(effects_with_drops).spacing(2).push(add_button);
 
     // Chain dry/wet section at the bottom
-    let (chain_knob, chain_target, chain_dw_mapped) = if location == EffectChainLocation::PreFx {
+    let (chain_knob, chain_target, chain_dw_mapped, chain_dw_value, chain_dw_mapping) = if location == EffectChainLocation::PreFx {
         (
             &editor_state.pre_fx_chain_dry_wet_knob,
             ChainTarget::PreFx,
             editor_state.pre_fx_chain_dry_wet_macro_mapping.is_some(),
+            editor_state.pre_fx_chain_dry_wet,
+            &editor_state.pre_fx_chain_dry_wet_macro_mapping,
         )
     } else {
         (
             &editor_state.post_fx_chain_dry_wet_knob,
             ChainTarget::PostFx,
             editor_state.post_fx_chain_dry_wet_macro_mapping.is_some(),
+            editor_state.post_fx_chain_dry_wet,
+            &editor_state.post_fx_chain_dry_wet_macro_mapping,
         )
     };
 
+    // Clone and add modulation ranges if mapped
+    let mut display_knob = chain_knob.clone();
+    if let Some(ref mapping) = chain_dw_mapping {
+        if let Some(macro_idx) = mapping.macro_index {
+            let macro_value = editor_state.macro_value(macro_idx);
+            let (mod_min, mod_max) = mapping.modulation_bounds(chain_dw_value);
+            display_knob.set_modulations(vec![ModulationRange::new(
+                mod_min,
+                mod_max,
+                Color::from_rgb(0.9, 0.5, 0.2), // Orange for mod range
+            )]);
+            let modulated_value = mapping.modulate(chain_dw_value, macro_value);
+            display_knob.set_display_value(Some(modulated_value));
+        }
+    }
+
     let chain_dry_wet_section = chain_dry_wet_section(
         "Chain D/W",
-        chain_knob,
+        &display_knob,
         move |event| {
             if location == EffectChainLocation::PreFx {
                 MultibandEditorMessage::PreFxChainDryWetKnob(event)
@@ -1108,8 +1143,23 @@ fn fx_effect_card<'a>(
     let is_dw_mapped = effect.dry_wet_macro_mapping.is_some();
     let dw_key = (location, effect_idx);
     let dry_wet_element: Element<'_, MultibandEditorMessage> = if let Some(knob) = editor_state.effect_dry_wet_knobs.get(&dw_key) {
+        // Clone and add modulation ranges if mapped
+        let mut display_knob = knob.clone();
+        if let Some(ref mapping) = effect.dry_wet_macro_mapping {
+            if let Some(macro_idx) = mapping.macro_index {
+                let macro_value = editor_state.macro_value(macro_idx);
+                let (mod_min, mod_max) = mapping.modulation_bounds(effect.dry_wet);
+                display_knob.set_modulations(vec![ModulationRange::new(
+                    mod_min,
+                    mod_max,
+                    Color::from_rgb(0.9, 0.5, 0.2), // Orange for mod range
+                )]);
+                let modulated_value = mapping.modulate(effect.dry_wet, macro_value);
+                display_knob.set_display_value(Some(modulated_value));
+            }
+        }
         let dry_wet_knob = dry_wet_knob_view(
-            knob,
+            &display_knob,
             "D/W",
             move |event| MultibandEditorMessage::EffectDryWetKnob {
                 location,
@@ -1578,8 +1628,23 @@ fn effect_card<'a>(
     let is_dw_mapped = effect.dry_wet_macro_mapping.is_some();
     let dw_key = (location, effect_idx);
     let dry_wet_element: Element<'_, MultibandEditorMessage> = if let Some(knob) = editor_state.effect_dry_wet_knobs.get(&dw_key) {
+        // Clone and add modulation ranges if mapped
+        let mut display_knob = knob.clone();
+        if let Some(ref mapping) = effect.dry_wet_macro_mapping {
+            if let Some(macro_idx) = mapping.macro_index {
+                let macro_value = editor_state.macro_value(macro_idx);
+                let (mod_min, mod_max) = mapping.modulation_bounds(effect.dry_wet);
+                display_knob.set_modulations(vec![ModulationRange::new(
+                    mod_min,
+                    mod_max,
+                    Color::from_rgb(0.9, 0.5, 0.2), // Orange for mod range
+                )]);
+                let modulated_value = mapping.modulate(effect.dry_wet, macro_value);
+                display_knob.set_display_value(Some(modulated_value));
+            }
+        }
         let dry_wet_knob = dry_wet_knob_view(
-            knob,
+            &display_knob,
             "D/W",
             move |event| MultibandEditorMessage::EffectDryWetKnob {
                 location,
@@ -1781,7 +1846,22 @@ fn macro_bar<'a>(
     let global_dry_wet = state.global_dry_wet;
     let global_dw_mapped = state.global_dry_wet_macro_mapping.is_some();
     let global_dw_knob = {
-        let knob_element = state.global_dry_wet_knob.view(|event| MultibandEditorMessage::GlobalDryWetKnob(event));
+        // Clone and add modulation ranges if mapped
+        let mut display_knob = state.global_dry_wet_knob.clone();
+        if let Some(ref mapping) = state.global_dry_wet_macro_mapping {
+            if let Some(macro_idx) = mapping.macro_index {
+                let macro_value = state.macro_value(macro_idx);
+                let (mod_min, mod_max) = mapping.modulation_bounds(global_dry_wet);
+                display_knob.set_modulations(vec![ModulationRange::new(
+                    mod_min,
+                    mod_max,
+                    Color::from_rgb(0.9, 0.5, 0.2), // Orange for mod range
+                )]);
+                let modulated_value = mapping.modulate(global_dry_wet, macro_value);
+                display_knob.set_display_value(Some(modulated_value));
+            }
+        }
+        let knob_element = display_knob.view(|event| MultibandEditorMessage::GlobalDryWetKnob(event));
 
         let value_text = format!("{:.0}%", global_dry_wet * 100.0);
 
@@ -1872,13 +1952,13 @@ const PARAM_HIGHLIGHT_COLOR: Color = Color::from_rgb(1.0, 0.6, 0.2);
 
 /// Check if a macro button should be highlighted because a mapped param is hovered
 fn is_macro_highlighted(state: &MultibandEditorState, macro_idx: usize) -> bool {
+    use super::state::MappingTarget;
+
     if let Some((location, effect_idx, knob_idx)) = state.hovered_param {
         // Check if this macro is mapped to the hovered param
+        let target = MappingTarget::Param { location, effect_idx, knob_idx };
         for mapping in &state.macro_mappings_index[macro_idx] {
-            if mapping.location == location
-                && mapping.effect_idx == effect_idx
-                && mapping.knob_idx == knob_idx
-            {
+            if mapping.target == target {
                 return true;
             }
         }
@@ -1895,13 +1975,14 @@ fn is_param_highlighted(
     effect_idx: usize,
     knob_idx: usize,
 ) -> bool {
+    use super::state::MappingTarget;
+
+    let target = MappingTarget::Param { location, effect_idx, knob_idx };
+
     // Check if hovering a mod indicator that targets this param
     if let Some((macro_idx, map_idx)) = state.hovered_mapping {
         if let Some(mapping) = state.macro_mappings_index[macro_idx].get(map_idx) {
-            if mapping.location == location
-                && mapping.effect_idx == effect_idx
-                && mapping.knob_idx == knob_idx
-            {
+            if mapping.target == target {
                 return true;
             }
         }
@@ -1909,10 +1990,7 @@ fn is_param_highlighted(
     // Check if dragging a mod range indicator that targets this param
     if let Some(drag) = state.dragging_mod_range {
         if let Some(mapping) = state.macro_mappings_index[drag.macro_index].get(drag.mapping_idx) {
-            if mapping.location == location
-                && mapping.effect_idx == effect_idx
-                && mapping.knob_idx == knob_idx
-            {
+            if mapping.target == target {
                 return true;
             }
         }
@@ -1960,41 +2038,6 @@ fn mod_indicators_column<'a>(
         .width(Length::Fixed(INDICATOR_COLUMN_WIDTH))
         .center_y(Length::Shrink)
         .into()
-}
-
-/// Render a row of mini modulation indicators above a macro knob (legacy)
-#[allow(dead_code)]
-fn mod_indicators_row<'a>(
-    macro_idx: usize,
-    mappings: &[MacroMappingRef],
-    state: &MultibandEditorState,
-) -> Element<'a, MultibandEditorMessage> {
-    // Always use fixed height for consistent layout
-    const INDICATOR_ROW_HEIGHT: f32 = 24.0;
-
-    if mappings.is_empty() {
-        // Empty placeholder with consistent height
-        return container(Space::new())
-            .width(Length::Fill)
-            .height(Length::Fixed(INDICATOR_ROW_HEIGHT))
-            .into();
-    }
-
-    let indicators: Vec<Element<'_, MultibandEditorMessage>> = mappings
-        .iter()
-        .enumerate()
-        .map(|(i, m)| mod_range_indicator(macro_idx, i, m, state))
-        .collect();
-
-    container(
-        row(indicators)
-            .spacing(2)
-            .align_y(Alignment::Center),
-    )
-    .width(Length::Fill)
-    .height(Length::Fixed(INDICATOR_ROW_HEIGHT))
-    .center_x(Length::Fill)
-    .into()
 }
 
 /// Render a modulation range indicator (16px × 28px bipolar bar)

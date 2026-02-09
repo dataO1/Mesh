@@ -95,7 +95,7 @@ impl MeshCueApp {
                 self.effects_editor.editor.crossover_drag_last_x = None;
             }
             DragCrossover(freq) => {
-                // Legacy absolute positioning
+                // Absolute positioning (used by +/- buttons in crossover controls)
                 if let Some(idx) = self.effects_editor.editor.dragging_crossover {
                     self.effects_editor.editor.set_crossover_freq(idx, freq);
                     // Apply to audio preview if enabled
@@ -486,16 +486,18 @@ impl MeshCueApp {
             }
 
             DragModRange { macro_index, mapping_idx, new_offset_range } => {
-                use mesh_widgets::multiband::ParamMacroMapping;
+                use mesh_widgets::multiband::{MappingTarget, ParamMacroMapping};
 
                 // Clamp offset_range to valid range
                 let new_offset_range = new_offset_range.clamp(-1.0, 1.0);
 
                 // Look up the mapping reference to get the effect location
                 if let Some(mapping_ref) = self.effects_editor.editor.macro_mappings_index[macro_index].get(mapping_idx).copied() {
-                    let location = mapping_ref.location;
-                    let effect_idx = mapping_ref.effect_idx;
-                    let knob_idx = mapping_ref.knob_idx;
+                    // Only handle param mappings for now (dry/wet handled separately)
+                    let (location, effect_idx, knob_idx) = match mapping_ref.target {
+                        MappingTarget::Param { location, effect_idx, knob_idx } => (location, effect_idx, knob_idx),
+                        _ => return Task::none(), // Skip dry/wet mappings for now
+                    };
 
                     // Update actual offset_range in the effect's knob assignment
                     let effect_state = match location {
@@ -978,9 +980,12 @@ impl MeshCueApp {
 
                         // Look up the mapping reference to get the effect location
                         if let Some(mapping_ref) = self.effects_editor.editor.macro_mappings_index[macro_index].get(mapping_idx).copied() {
-                            let location = mapping_ref.location;
-                            let effect_idx = mapping_ref.effect_idx;
-                            let knob_idx = mapping_ref.knob_idx;
+                            use mesh_widgets::multiband::MappingTarget;
+                            // Only handle param mappings for now (dry/wet mappings handled separately)
+                            let (location, effect_idx, knob_idx) = match mapping_ref.target {
+                                MappingTarget::Param { location, effect_idx, knob_idx } => (location, effect_idx, knob_idx),
+                                _ => return Task::none(), // Skip dry/wet mappings
+                            };
 
                             // Get base value and actual param index for audio update
                             let (base_value, actual_param_index) = {

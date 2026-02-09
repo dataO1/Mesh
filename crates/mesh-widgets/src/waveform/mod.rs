@@ -67,8 +67,6 @@ pub use canvas::{
     CombinedInteraction, OverviewInteraction, PlayerInteraction, ZoomedInteraction,
     // Player canvas layout constants
     DECK_CELL_HEIGHT, DECK_GRID_GAP, DECK_INTERNAL_GAP,
-    // Legacy constants (for backwards compatibility)
-    OVERVIEW_STACK_GAP, PLAYER_SECTION_GAP, ZOOMED_GRID_GAP,
 };
 
 // Slicer overlay drawing utilities (reusable across mesh-player and mesh-cue)

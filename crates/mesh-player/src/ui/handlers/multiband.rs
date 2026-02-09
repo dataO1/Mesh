@@ -168,7 +168,7 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         }
 
         DragCrossover(freq) => {
-            // Legacy absolute positioning - still used as fallback
+            // Absolute positioning (used by +/- buttons in crossover controls)
             if let Some(index) = app.multiband_editor.dragging_crossover {
                 let deck = app.multiband_editor.deck;
                 let stem = Stem::ALL[app.multiband_editor.stem];
@@ -807,15 +807,18 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
 
         DragModRange { macro_index, mapping_idx, new_offset_range } => {
             use mesh_widgets::knob::ModulationRange;
+            use mesh_widgets::multiband::MappingTarget;
 
             // Clamp offset_range to valid range
             let new_offset_range = new_offset_range.clamp(-1.0, 1.0);
 
             // Look up the mapping reference to get the effect location
             if let Some(mapping_ref) = app.multiband_editor.macro_mappings_index[macro_index].get(mapping_idx).copied() {
-                let location = mapping_ref.location;
-                let effect_idx = mapping_ref.effect_idx;
-                let knob_idx = mapping_ref.knob_idx;
+                // Only handle param mappings for now (dry/wet handled separately)
+                let (location, effect_idx, knob_idx) = match mapping_ref.target {
+                    MappingTarget::Param { location, effect_idx, knob_idx } => (location, effect_idx, knob_idx),
+                    _ => return Task::none(), // TODO: Handle dry/wet mappings
+                };
 
                 // Get base value for modulation bounds calculation
                 let base_value = {
@@ -1209,10 +1212,15 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                     let mapping_idx = drag.mapping_idx;
 
                     // Look up the mapping reference to get the effect location
-                    if let Some(mapping_ref) = app.multiband_editor.macro_mappings_index[macro_index].get(mapping_idx).copied() {
-                        let location = mapping_ref.location;
-                        let effect_idx = mapping_ref.effect_idx;
-                        let knob_idx = mapping_ref.knob_idx;
+                    let mapping_ref = match app.multiband_editor.macro_mappings_index[macro_index].get(mapping_idx) {
+                        Some(m) => *m,
+                        None => return Task::none(),
+                    };
+
+                    use mesh_widgets::multiband::MappingTarget;
+
+                    // Only handle param mappings for now (dry/wet handled separately)
+                    if let MappingTarget::Param { location, effect_idx, knob_idx } = mapping_ref.target {
 
                         // Get base value and actual param index for audio update
                         let (base_value, actual_param_index) = {

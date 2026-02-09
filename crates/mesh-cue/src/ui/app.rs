@@ -286,20 +286,10 @@ impl MeshCueApp {
                 }
                 log::info!("Refreshed collection tree and track lists from database");
             }
-            Message::SelectTrack(index) => {
-                // Legacy: index-based selection (kept for compatibility)
-                self.collection.selected_track = Some(index);
-            }
-            Message::LoadTrack(_index) => {
-                // Legacy: index-based loading is deprecated
-                // Use Message::LoadTrackByPath instead
-                log::warn!("Message::LoadTrack is deprecated, use LoadTrackByPath");
-            }
             // Track loading (delegated to handlers/track_loading.rs)
             Message::TrackMetadataLoaded(result) => return self.handle_track_metadata_loaded(result),
             Message::TrackStemsLoaded(result) => return self.handle_track_stems_loaded(result),
             Message::LinkedStemLoaded(msg) => return self.handle_linked_stem_loaded(msg),
-            Message::TrackLoaded(result) => return self.handle_track_loaded(result),
 
             // Collection: Editor (delegated to handlers/editing.rs)
             Message::SetBpm(bpm) => return self.handle_set_bpm(bpm),

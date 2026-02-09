@@ -406,20 +406,64 @@ pub enum DryWetKnobId {
     Global,
 }
 
+/// Target of a macro mapping - either a parameter knob or a dry/wet control
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MappingTarget {
+    /// Parameter knob: (location, effect_idx, knob_idx)
+    Param {
+        location: EffectChainLocation,
+        effect_idx: usize,
+        knob_idx: usize,
+    },
+    /// Effect dry/wet: (location, effect_idx)
+    EffectDryWet {
+        location: EffectChainLocation,
+        effect_idx: usize,
+    },
+    /// Chain dry/wet: (chain target)
+    ChainDryWet(super::ChainTarget),
+    /// Global dry/wet
+    GlobalDryWet,
+}
+
 /// Reference to a macro mapping for the reverse index
 ///
 /// This allows efficient lookup of which parameters are mapped to each macro,
 /// enabling the mini modulation indicator UI above macro knobs.
 #[derive(Debug, Clone, Copy)]
 pub struct MacroMappingRef {
-    /// Location of the effect in the chain
-    pub location: EffectChainLocation,
-    /// Effect index within the chain
-    pub effect_idx: usize,
-    /// Knob index within the effect (0-7)
-    pub knob_idx: usize,
+    /// What this mapping controls
+    pub target: MappingTarget,
     /// Current offset range (-1 to +1)
     pub offset_range: f32,
+}
+
+impl MacroMappingRef {
+    /// Get the location if this is a param or effect dry/wet mapping
+    pub fn location(&self) -> Option<EffectChainLocation> {
+        match self.target {
+            MappingTarget::Param { location, .. } => Some(location),
+            MappingTarget::EffectDryWet { location, .. } => Some(location),
+            _ => None,
+        }
+    }
+
+    /// Get the effect index if this is a param or effect dry/wet mapping
+    pub fn effect_idx(&self) -> Option<usize> {
+        match self.target {
+            MappingTarget::Param { effect_idx, .. } => Some(effect_idx),
+            MappingTarget::EffectDryWet { effect_idx, .. } => Some(effect_idx),
+            _ => None,
+        }
+    }
+
+    /// Get the knob index if this is a param mapping
+    pub fn knob_idx(&self) -> Option<usize> {
+        match self.target {
+            MappingTarget::Param { knob_idx, .. } => Some(knob_idx),
+            _ => None,
+        }
+    }
 }
 
 /// State for dragging a modulation range indicator
@@ -1327,35 +1371,55 @@ impl MultibandEditorState {
     // Macro Modulation Range Index
     // ─────────────────────────────────────────────────────────────────────
 
-    /// Rebuild the reverse mapping index from all effects
+    /// Rebuild the reverse mapping index from all effects and dry/wet controls
     ///
     /// Scans pre_fx, bands[].effects, and post_fx to find all knob assignments
-    /// that have macro mappings, then builds a reverse index for each macro.
+    /// and dry/wet mappings that have macro mappings, then builds a reverse index.
     /// This enables efficient lookup of which parameters are mapped to each macro.
     pub fn rebuild_macro_mappings_index(&mut self) {
+        use super::ChainTarget;
+
         // Clear existing index
         for mappings in &mut self.macro_mappings_index {
             mappings.clear();
         }
 
-        // Helper closure to extract mappings from an effect
-        fn extract_mappings(
+        // Helper closure to extract param and dry/wet mappings from an effect
+        fn extract_effect_mappings(
             location: EffectChainLocation,
             effect_idx: usize,
             effect: &EffectUiState,
             index: &mut [Vec<MacroMappingRef>; super::NUM_MACROS],
         ) {
+            // Parameter knob mappings
             for (knob_idx, assignment) in effect.knob_assignments.iter().enumerate() {
                 if let Some(ref mapping) = assignment.macro_mapping {
                     if let Some(macro_index) = mapping.macro_index {
                         if macro_index < super::NUM_MACROS {
                             index[macro_index].push(MacroMappingRef {
-                                location,
-                                effect_idx,
-                                knob_idx,
+                                target: MappingTarget::Param {
+                                    location,
+                                    effect_idx,
+                                    knob_idx,
+                                },
                                 offset_range: mapping.offset_range,
                             });
                         }
+                    }
+                }
+            }
+
+            // Effect dry/wet mapping
+            if let Some(ref mapping) = effect.dry_wet_macro_mapping {
+                if let Some(macro_index) = mapping.macro_index {
+                    if macro_index < super::NUM_MACROS {
+                        index[macro_index].push(MacroMappingRef {
+                            target: MappingTarget::EffectDryWet {
+                                location,
+                                effect_idx,
+                            },
+                            offset_range: mapping.offset_range,
+                        });
                     }
                 }
             }
@@ -1363,19 +1427,67 @@ impl MultibandEditorState {
 
         // Scan pre-fx effects
         for (effect_idx, effect) in self.pre_fx.iter().enumerate() {
-            extract_mappings(EffectChainLocation::PreFx, effect_idx, effect, &mut self.macro_mappings_index);
+            extract_effect_mappings(EffectChainLocation::PreFx, effect_idx, effect, &mut self.macro_mappings_index);
         }
 
         // Scan band effects
         for (band_idx, band) in self.bands.iter().enumerate() {
             for (effect_idx, effect) in band.effects.iter().enumerate() {
-                extract_mappings(EffectChainLocation::Band(band_idx), effect_idx, effect, &mut self.macro_mappings_index);
+                extract_effect_mappings(EffectChainLocation::Band(band_idx), effect_idx, effect, &mut self.macro_mappings_index);
+            }
+
+            // Band chain dry/wet mapping
+            if let Some(ref mapping) = band.chain_dry_wet_macro_mapping {
+                if let Some(macro_index) = mapping.macro_index {
+                    if macro_index < super::NUM_MACROS {
+                        self.macro_mappings_index[macro_index].push(MacroMappingRef {
+                            target: MappingTarget::ChainDryWet(ChainTarget::Band(band_idx)),
+                            offset_range: mapping.offset_range,
+                        });
+                    }
+                }
             }
         }
 
         // Scan post-fx effects
         for (effect_idx, effect) in self.post_fx.iter().enumerate() {
-            extract_mappings(EffectChainLocation::PostFx, effect_idx, effect, &mut self.macro_mappings_index);
+            extract_effect_mappings(EffectChainLocation::PostFx, effect_idx, effect, &mut self.macro_mappings_index);
+        }
+
+        // Pre-FX chain dry/wet mapping
+        if let Some(ref mapping) = self.pre_fx_chain_dry_wet_macro_mapping {
+            if let Some(macro_index) = mapping.macro_index {
+                if macro_index < super::NUM_MACROS {
+                    self.macro_mappings_index[macro_index].push(MacroMappingRef {
+                        target: MappingTarget::ChainDryWet(ChainTarget::PreFx),
+                        offset_range: mapping.offset_range,
+                    });
+                }
+            }
+        }
+
+        // Post-FX chain dry/wet mapping
+        if let Some(ref mapping) = self.post_fx_chain_dry_wet_macro_mapping {
+            if let Some(macro_index) = mapping.macro_index {
+                if macro_index < super::NUM_MACROS {
+                    self.macro_mappings_index[macro_index].push(MacroMappingRef {
+                        target: MappingTarget::ChainDryWet(ChainTarget::PostFx),
+                        offset_range: mapping.offset_range,
+                    });
+                }
+            }
+        }
+
+        // Global dry/wet mapping
+        if let Some(ref mapping) = self.global_dry_wet_macro_mapping {
+            if let Some(macro_index) = mapping.macro_index {
+                if macro_index < super::NUM_MACROS {
+                    self.macro_mappings_index[macro_index].push(MacroMappingRef {
+                        target: MappingTarget::GlobalDryWet,
+                        offset_range: mapping.offset_range,
+                    });
+                }
+            }
         }
 
         // Update macro mapping counts
@@ -1386,24 +1498,25 @@ impl MultibandEditorState {
         }
     }
 
-    /// Add a single mapping to the index (called when a new mapping is created)
+    /// Add a single param mapping to the index (called when a new mapping is created)
     pub fn add_mapping_to_index(&mut self, macro_index: usize, location: EffectChainLocation, effect_idx: usize, knob_idx: usize, offset_range: f32) {
         if macro_index < super::NUM_MACROS {
             self.macro_mappings_index[macro_index].push(MacroMappingRef {
-                location,
-                effect_idx,
-                knob_idx,
+                target: MappingTarget::Param {
+                    location,
+                    effect_idx,
+                    knob_idx,
+                },
                 offset_range,
             });
         }
     }
 
-    /// Remove a mapping from the index (called when a mapping is removed)
+    /// Remove a param mapping from the index (called when a mapping is removed)
     pub fn remove_mapping_from_index(&mut self, macro_index: usize, location: EffectChainLocation, effect_idx: usize, knob_idx: usize) {
         if macro_index < super::NUM_MACROS {
-            self.macro_mappings_index[macro_index].retain(|m| {
-                !(m.location == location && m.effect_idx == effect_idx && m.knob_idx == knob_idx)
-            });
+            let target = MappingTarget::Param { location, effect_idx, knob_idx };
+            self.macro_mappings_index[macro_index].retain(|m| m.target != target);
         }
     }
 

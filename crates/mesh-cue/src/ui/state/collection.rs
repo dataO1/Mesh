@@ -101,8 +101,6 @@ impl DragState {
 pub struct CollectionState {
     /// Path to the collection root folder
     pub collection_path: PathBuf,
-    /// Currently selected track index (legacy)
-    pub selected_track: Option<usize>,
     /// Currently loaded track for editing (UI view state)
     pub loaded_track: Option<LoadedTrackState>,
     /// Left browser state
@@ -127,7 +125,6 @@ impl std::fmt::Debug for CollectionState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CollectionState")
             .field("collection_path", &self.collection_path)
-            .field("selected_track", &self.selected_track)
             .field("loaded_track", &self.loaded_track)
             .field("tree_nodes_count", &self.tree_nodes.len())
             .field("left_tracks_count", &self.left_tracks.len())
@@ -188,7 +185,6 @@ impl Default for CollectionState {
 
         Self {
             collection_path: default_path,
-            selected_track: None,
             loaded_track: None,
             browser_left: PlaylistBrowserState::new(),
             browser_right: PlaylistBrowserState::new(),

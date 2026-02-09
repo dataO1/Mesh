@@ -9,7 +9,6 @@ mod player;
 pub use player::{
     PlayerCanvas, PlayerInteraction,
     DECK_CELL_HEIGHT, DECK_GRID_GAP, DECK_INTERNAL_GAP,
-    OVERVIEW_STACK_GAP, PLAYER_SECTION_GAP, ZOOMED_GRID_GAP,
 };
 
 use super::peak_computation::WindowInfo;
@@ -1549,7 +1548,7 @@ fn draw_cue_markers_zoomed(
 /// Draw the zoomed waveform section of the combined view
 ///
 /// Uses pre-computed highres_peaks when available for smooth, jitter-free rendering.
-/// Falls back to cached_peaks if highres_peaks is empty (for backwards compatibility).
+/// Falls back to cached_peaks if highres_peaks not yet computed.
 fn draw_zoomed_section(
     frame: &mut Frame,
     zoomed: &ZoomedState,
@@ -1708,7 +1707,7 @@ fn draw_zoomed_section(
                 zoomed_height,
             );
         } else {
-            // Fallback to cached_peaks for backwards compatibility
+            // Fallback to cached_peaks if highres peaks not yet computed
             draw_cached_peaks(frame, zoomed, &window, width, zoomed_center_y);
         }
 

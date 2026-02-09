@@ -6,7 +6,6 @@
 //!
 //! Also handles:
 //! - LinkedStemLoaded - When a linked stem finishes loading
-//! - TrackLoaded - Legacy single-phase loading (deprecated)
 
 use basedrop::Shared;
 use iced::Task;
@@ -265,100 +264,6 @@ impl MeshCueApp {
             }
             Err(e) => {
                 log::error!("Failed to load linked stem {}: {}", result.stem_idx, e);
-            }
-        }
-        Task::none()
-    }
-
-    /// Handle TrackLoaded message (legacy)
-    ///
-    /// Single-phase track loading (deprecated). Kept for compatibility.
-    /// New code should use the two-phase approach via LoadTrackByPath.
-    pub fn handle_track_loaded(
-        &mut self,
-        result: Result<Arc<LoadedTrack>, String>,
-    ) -> Task<Message> {
-        match result {
-            Ok(track) => {
-                let path = track.path.clone();
-                let bpm = track.bpm();
-                let key = track.key().to_string();
-                let cue_points = track.metadata.cue_points.clone();
-                let beat_grid = track.metadata.beat_grid.beats.clone();
-                let duration_samples = track.duration_samples as u64;
-                let stems = track.stems.clone();
-
-                // Create combined waveform with full track data
-                let mut combined_waveform = CombinedWaveformView::new();
-                combined_waveform.overview = WaveformView::from_track(&track, &cue_points);
-                // Apply grid density from config
-                combined_waveform
-                    .overview
-                    .set_grid_bars(self.domain.config().display.grid_bars);
-
-                // Compute high-resolution peaks for stable zoomed waveform rendering
-                let highres_start = std::time::Instant::now();
-                let highres_peaks = generate_peaks(&stems, HIGHRES_WIDTH);
-                log::info!(
-                    "[PERF] mesh-cue highres peaks: {} samples → {} peaks in {:?}",
-                    duration_samples,
-                    HIGHRES_WIDTH,
-                    highres_start.elapsed()
-                );
-                combined_waveform.overview.set_highres_peaks(highres_peaks);
-
-                combined_waveform.zoomed =
-                    ZoomedWaveformView::from_metadata(bpm, beat_grid.clone(), Vec::new());
-                combined_waveform.zoomed.set_duration(duration_samples);
-                combined_waveform
-                    .zoomed
-                    .set_drop_marker(track.metadata.drop_marker);
-                combined_waveform.zoomed.compute_peaks(&stems, 0, 1600);
-
-                // Load track into audio engine (creates PreparedTrack internally)
-                let track_for_audio = LoadedTrack {
-                    path: track.path.clone(),
-                    stems: track.stems.clone(),
-                    metadata: track.metadata.clone(),
-                    duration_samples: track.duration_samples,
-                    duration_seconds: track.duration_seconds,
-                };
-                self.audio.load_track(track_for_audio);
-                // Set global BPM to track's BPM for original-speed playback (no time-stretching)
-                self.audio.set_global_bpm(bpm);
-                self.audio
-                    .set_loop_length_index(self.domain.config().display.default_loop_length_index);
-
-                self.collection.loaded_track = Some(LoadedTrackState {
-                    path,
-                    track: Some(track.clone()),
-                    stems: Some(stems),
-                    cue_points,
-                    saved_loops: track.metadata.saved_loops.clone(),
-                    bpm,
-                    key,
-                    beat_grid,
-                    drop_marker: track.metadata.drop_marker,
-                    lufs: track.metadata.lufs,
-                    stem_links: track.metadata.stem_links.clone(),
-                    duration_samples,
-                    modified: false,
-                    combined_waveform,
-                    loading_audio: false,
-                    deck_atomics: self.audio.deck_atomics().clone(),
-                    last_playhead_update: std::time::Instant::now(),
-                    slice_editor: {
-                        // Load presets from dedicated file (shared with mesh-player)
-                        let slicer_config =
-                            mesh_widgets::load_slicer_presets(&self.collection.collection_path);
-                        let mut editor = SliceEditorState::new();
-                        slicer_config.apply_to_editor_state(&mut editor);
-                        editor
-                    },
-                });
-            }
-            Err(e) => {
-                log::error!("Failed to load track: {}", e);
             }
         }
         Task::none()

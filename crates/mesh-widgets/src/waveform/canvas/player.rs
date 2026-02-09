@@ -34,16 +34,6 @@ pub const DECK_INTERNAL_GAP: f32 = 2.0;
 pub const DECK_CELL_HEIGHT: f32 =
     DECK_HEADER_HEIGHT + ZOOMED_WAVEFORM_HEIGHT + DECK_INTERNAL_GAP + WAVEFORM_HEIGHT;
 
-// Legacy constants (kept for backwards compatibility with CombinedCanvas)
-/// Gap between zoomed waveform cells in the 2x2 grid
-pub const ZOOMED_GRID_GAP: f32 = 4.0;
-
-/// Gap between overview waveform rows in the stack
-pub const OVERVIEW_STACK_GAP: f32 = 2.0;
-
-/// Gap between the zoomed grid and overview stack
-pub const PLAYER_SECTION_GAP: f32 = 8.0;
-
 // =============================================================================
 // Player Canvas Interaction State
 // =============================================================================

@@ -3,11 +3,10 @@
 //! All message types that can be dispatched in the mesh-cue application.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use iced::keyboard::{Key, Modifiers};
 use iced::Point;
-use mesh_core::audio_file::{LoadedTrack, TrackMetadata};
+use mesh_core::audio_file::TrackMetadata;
 use mesh_core::playlist::NodeId;
 use mesh_widgets::PlaylistBrowserMessage;
 
@@ -28,16 +27,12 @@ pub enum Message {
 
     // Collection: Browser
     RefreshCollection,
-    SelectTrack(usize),
-    LoadTrack(usize),
     /// Phase 1: Metadata loaded (fast), now show UI
     TrackMetadataLoaded(Result<(PathBuf, TrackMetadata), String>),
     /// Phase 2: Audio stems loaded (slow), now enable playback (Shared for RT-safe drop)
     TrackStemsLoaded(StemsLoadResult),
     /// Background linked stem load completed
     LinkedStemLoaded(LinkedStemLoadedMsg),
-    /// Legacy: full track loaded (kept for compatibility)
-    TrackLoaded(Result<Arc<LoadedTrack>, String>),
 
     // Collection: Editor
     SetBpm(f64),

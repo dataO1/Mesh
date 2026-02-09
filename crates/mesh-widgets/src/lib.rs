@@ -29,7 +29,6 @@ pub mod button_styles;
 pub mod knob;
 pub mod multiband;
 pub mod playlist_browser;
-pub mod rotary_knob;
 pub mod slice_editor;
 pub mod stem_preset;
 pub mod subscription;
@@ -46,9 +45,6 @@ pub use button_styles::{
     colored_style, colored_toggle_style, press_release_style, toggle_style,
     ACTIVE_BG, DEFAULT_BG,
 };
-
-// Rotary knob widget (legacy, container-based)
-pub use rotary_knob::{rotary_knob, RotaryKnobState};
 
 // Shader-based knob widget with modulation indicators
 pub use knob::{
@@ -80,8 +76,6 @@ pub use waveform::{waveform_combined, waveform_overview, waveform_player, wavefo
 // Canvas interaction types for advanced usage
 pub use waveform::{
     CombinedInteraction, OverviewInteraction, PlayerInteraction, ZoomedInteraction,
-    // Player canvas layout constants
-    OVERVIEW_STACK_GAP, PLAYER_SECTION_GAP, ZOOMED_GRID_GAP,
 };
 
 // Tree widget for hierarchical navigation

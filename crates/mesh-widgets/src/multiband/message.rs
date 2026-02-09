@@ -51,7 +51,7 @@ pub enum MultibandEditorMessage {
     /// Start dragging a crossover divider
     StartDragCrossover(usize),
 
-    /// Drag crossover to new frequency (in Hz) - absolute positioning (legacy)
+    /// Drag crossover to new frequency (in Hz) - absolute positioning
     DragCrossover(f32),
 
     /// Drag crossover with relative mouse tracking
@@ -68,7 +68,7 @@ pub enum MultibandEditorMessage {
     // ─────────────────────────────────────────────────────────────────────
     // Band management
     // ─────────────────────────────────────────────────────────────────────
-    /// Add a new band (legacy - use AddBandAtFrequency instead)
+    /// Add a new band at the next logical crossover frequency
     AddBand,
 
     /// Add a new band at a specific frequency by clicking the crossover bar
