@@ -489,6 +489,14 @@ impl MeshCueApp {
                 self.effects_editor.editor.hovered_mapping = None;
             }
 
+            HoverParam { location, effect, param } => {
+                self.effects_editor.editor.hovered_param = Some((location, effect, param));
+            }
+
+            UnhoverParam => {
+                self.effects_editor.editor.hovered_param = None;
+            }
+
             // ─────────────────────────────────────────────────────────────────────
             // Parameter picker
             // ─────────────────────────────────────────────────────────────────────

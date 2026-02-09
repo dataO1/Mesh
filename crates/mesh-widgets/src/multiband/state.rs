@@ -542,6 +542,10 @@ pub struct MultibandEditorState {
     /// Used to highlight the target parameter knob when hovering an indicator.
     pub hovered_mapping: Option<(usize, usize)>,
 
+    /// Currently hovered parameter knob: (location, effect_idx, knob_idx)
+    /// Used to highlight the mapped macro button when hovering a param.
+    pub hovered_param: Option<(EffectChainLocation, usize, usize)>,
+
     // ─────────────────────────────────────────────────────────────────────
     // Dry/Wet Mix Controls
     // ─────────────────────────────────────────────────────────────────────
@@ -622,6 +626,7 @@ impl MultibandEditorState {
             macro_mappings_index: Default::default(),
             dragging_mod_range: None,
             hovered_mapping: None,
+            hovered_param: None,
             // Dry/wet mix controls (default: 100% wet = normal processing)
             pre_fx_chain_dry_wet: 1.0,
             pre_fx_chain_dry_wet_macro_mapping: None,
@@ -629,12 +634,28 @@ impl MultibandEditorState {
             post_fx_chain_dry_wet_macro_mapping: None,
             global_dry_wet: 1.0,
             global_dry_wet_macro_mapping: None,
-            // Dry/wet knob widgets
+            // Dry/wet knob widgets - all initialized to 100% (1.0)
             effect_dry_wet_knobs: HashMap::new(),
-            pre_fx_chain_dry_wet_knob: Knob::new(36.0),
-            post_fx_chain_dry_wet_knob: Knob::new(36.0),
-            band_chain_dry_wet_knobs: vec![Knob::new(36.0)], // One band by default
-            global_dry_wet_knob: Knob::new(48.0),
+            pre_fx_chain_dry_wet_knob: {
+                let mut k = Knob::new(36.0);
+                k.set_value(1.0);
+                k
+            },
+            post_fx_chain_dry_wet_knob: {
+                let mut k = Knob::new(36.0);
+                k.set_value(1.0);
+                k
+            },
+            band_chain_dry_wet_knobs: vec![{
+                let mut k = Knob::new(36.0);
+                k.set_value(1.0);
+                k
+            }],
+            global_dry_wet_knob: {
+                let mut k = Knob::new(48.0);
+                k.set_value(1.0);
+                k
+            },
         }
     }
 
@@ -709,7 +730,7 @@ impl MultibandEditorState {
         };
 
         self.effect_knobs.entry(key).or_insert_with(|| {
-            let mut knob = Knob::new(40.0); // Size for effect params
+            let mut knob = Knob::new(48.0); // Size for effect params
             if let Some(value) = initial_value {
                 knob.set_value(value);
             }

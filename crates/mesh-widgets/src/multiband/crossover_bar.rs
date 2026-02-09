@@ -83,8 +83,9 @@ fn single_band_bar() -> Element<'static, MultibandEditorMessage> {
     .into()
 }
 
-/// Expected width of the crossover bar (modal width - padding)
-const CROSSOVER_BAR_WIDTH: f32 = 768.0;
+/// Expected width of the crossover bar for drag calculation
+/// This should approximate the full modal content width
+const CROSSOVER_BAR_WIDTH: f32 = 1200.0;
 
 /// Multi-band display with colored sections and dividers
 /// Wrapped in mouse_area for drag support
@@ -128,8 +129,8 @@ fn multi_band_bar(state: &MultibandEditorState) -> Element<'_, MultibandEditorMe
         ]
         .spacing(2),
     )
-    // Use fixed width to match drag calculation
-    .width(Length::Fixed(CROSSOVER_BAR_WIDTH))
+    // Fill available width
+    .width(Length::Fill)
     .style(|_| container::Style {
         background: Some(Color::from_rgb(0.15, 0.15, 0.17).into()),
         border: iced::Border {
@@ -148,17 +149,14 @@ fn multi_band_bar(state: &MultibandEditorState) -> Element<'_, MultibandEditorMe
     if is_dragging {
         area = area.on_move(move |point: Point| {
             // Convert X position to frequency (log scale)
+            // Using CROSSOVER_BAR_WIDTH as approximate width for calculation
             let x_ratio = (point.x / CROSSOVER_BAR_WIDTH).clamp(0.01, 0.99);
             let freq = position_to_freq(x_ratio);
             MultibandEditorMessage::DragCrossover(freq)
         });
     }
 
-    // Center the fixed-width bar
-    container(area)
-        .width(Length::Fill)
-        .center_x(Length::Fill)
-        .into()
+    area.into()
 }
 
 /// A single band segment

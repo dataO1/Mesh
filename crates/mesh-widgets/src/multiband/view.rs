@@ -377,7 +377,7 @@ pub fn ensure_effect_knobs_exist(state: &mut MultibandEditorState) {
         for knob_idx in 0..MAX_UI_KNOBS {
             let key = (EffectChainLocation::PreFx, effect_idx, knob_idx);
             if !state.effect_knobs.contains_key(&key) {
-                let mut knob = Knob::new(40.0);
+                let mut knob = Knob::new(48.0);
                 knob.set_value(effect.knob_assignments[knob_idx].value);
                 state.effect_knobs.insert(key, knob);
             }
@@ -399,7 +399,7 @@ pub fn ensure_effect_knobs_exist(state: &mut MultibandEditorState) {
             for knob_idx in 0..MAX_UI_KNOBS {
                 let key = (EffectChainLocation::Band(band_idx), effect_idx, knob_idx);
                 if !state.effect_knobs.contains_key(&key) {
-                    let mut knob = Knob::new(40.0);
+                    let mut knob = Knob::new(48.0);
                     knob.set_value(effect.knob_assignments[knob_idx].value);
                     state.effect_knobs.insert(key, knob);
                 }
@@ -421,7 +421,7 @@ pub fn ensure_effect_knobs_exist(state: &mut MultibandEditorState) {
         for knob_idx in 0..MAX_UI_KNOBS {
             let key = (EffectChainLocation::PostFx, effect_idx, knob_idx);
             if !state.effect_knobs.contains_key(&key) {
-                let mut knob = Knob::new(40.0);
+                let mut knob = Knob::new(48.0);
                 knob.set_value(effect.knob_assignments[knob_idx].value);
                 state.effect_knobs.insert(key, knob);
             }
@@ -468,44 +468,41 @@ fn band_column<'a>(
     learning_knob: Option<(EffectChainLocation, usize, usize)>,
     editor_state: &'a MultibandEditorState,
 ) -> Element<'a, MultibandEditorMessage> {
-    // Band header: name and freq range
-    let header = column![
-        text(format!("Band {}", band_idx + 1))
-            .size(14)
-            .color(TEXT_PRIMARY),
-        text(band.name()).size(14).color(TEXT_SECONDARY),
-        text(band.freq_range_str()).size(11).color(TEXT_SECONDARY),
-    ]
-    .spacing(2)
-    .align_x(Alignment::Center);
-
-    // Control buttons row: Solo, Mute, Remove
-    let controls = row![
+    // Band header: name prominently with controls on right
+    let header = row![
+        // Band name and freq range on left
+        column![
+            text(band.name()).size(14).color(TEXT_PRIMARY),
+            text(band.freq_range_str()).size(10).color(TEXT_SECONDARY),
+        ]
+        .spacing(1),
+        Space::new().width(Length::Fill),
+        // Control buttons on right: Solo, Mute, Remove
         button(
             text("S")
-                .size(14)
+                .size(12)
                 .color(if band.soloed { SOLO_COLOR } else { TEXT_SECONDARY })
         )
-        .padding([2, 6])
+        .padding([2, 4])
         .on_press(MultibandEditorMessage::SetBandSolo {
             band: band_idx,
             soloed: !band.soloed,
         }),
         button(
             text("M")
-                .size(14)
+                .size(12)
                 .color(if band.muted { MUTE_COLOR } else { TEXT_SECONDARY })
         )
-        .padding([2, 6])
+        .padding([2, 4])
         .on_press(MultibandEditorMessage::SetBandMute {
             band: band_idx,
             muted: !band.muted,
         }),
-        button(text("×").size(14))
-            .padding([2, 6])
+        button(text("×").size(12))
+            .padding([2, 4])
             .on_press(MultibandEditorMessage::RemoveBand(band_idx)),
     ]
-    .spacing(4)
+    .spacing(2)
     .align_y(Alignment::Center);
 
     // Effect cards stacked vertically
@@ -555,7 +552,6 @@ fn band_column<'a>(
     container(
         column![
             header,
-            controls,
             scrollable(
                 container(effects_column)
                     .padding(iced::Padding { top: 0.0, right: 12.0, bottom: 0.0, left: 0.0 })
@@ -563,11 +559,13 @@ fn band_column<'a>(
             chain_dw_section,
         ]
         .spacing(8)
-        .align_x(Alignment::Center),
+        .align_x(Alignment::Center)
+        .width(Length::Fill),
     )
     .padding(8)
     .width(Length::FillPortion(1))
     .height(Length::Fill)
+    .center_x(Length::FillPortion(1))
     .style(move |_| container::Style {
         background: Some(bg_color.into()),
         border: iced::Border {
@@ -667,7 +665,7 @@ fn fx_chain_column<'a>(
         .align_x(Alignment::Center),
     )
     .padding(8)
-    .width(Length::Fixed(220.0))
+    .width(Length::Fixed(260.0))
     .height(Length::Fill)
     .style(move |_| container::Style {
         background: Some(BG_MEDIUM.into()),
@@ -702,11 +700,11 @@ fn fx_effect_card<'a>(
     // Check if this is a CLAP effect (can open plugin GUI)
     let is_clap = effect.source == EffectSourceType::Clap;
 
-    // Build header with optional GUI button for CLAP effects
+    // Build header with optional settings button for CLAP effects
     let header = if is_clap {
-        // GUI button toggles open/close
-        let gui_button_text = if effect.gui_open { "✕ GUI" } else { "GUI" };
-        let gui_button_color = if effect.gui_open { Color::from_rgb(0.9, 0.5, 0.5) } else { ACCENT_COLOR };
+        // Settings button toggles open/close plugin GUI
+        let settings_icon = if effect.gui_open { "✕" } else { "⚙" };
+        let settings_color = if effect.gui_open { Color::from_rgb(0.9, 0.5, 0.5) } else { ACCENT_COLOR };
         let gui_message = if effect.gui_open {
             MultibandEditorMessage::ClosePluginGui { location, effect: effect_idx }
         } else {
@@ -716,8 +714,8 @@ fn fx_effect_card<'a>(
         row![
             text(&effect.name).size(14).color(name_color),
             Space::new().width(Length::Fill),
-            // GUI button for CLAP plugins (toggles open/close)
-            button(text(gui_button_text).size(11).color(gui_button_color))
+            // Settings button for CLAP plugins (toggles open/close)
+            button(text(settings_icon).size(11).color(settings_color))
                 .padding([1, 3])
                 .on_press(gui_message),
             button(
@@ -799,13 +797,13 @@ fn fx_effect_card<'a>(
                 TEXT_SECONDARY
             };
 
-            // Learning mode shows "LEARN" label
+            // Learning mode shows "LEARN" label, otherwise show truncated param name
+            // Mapped params are indicated by green color, not "M1" label
             let label_text = if is_learning {
                 "LEARN".to_string()
-            } else if let Some(macro_idx) = mapped_macro {
-                format!("M{}", macro_idx + 1)
             } else {
-                param_name[..param_name.len().min(3)].to_string()
+                // Truncate param name to 4 chars max
+                param_name[..param_name.len().min(4)].to_string()
             };
 
             // Get the current value for display
@@ -868,7 +866,7 @@ fn fx_effect_card<'a>(
                         event,
                     })
                 } else {
-                    Space::new().width(40.0).height(40.0).into()
+                    Space::new().width(48.0).height(48.0).into()
                 };
 
             // Value text element (pass owned String to avoid borrow issues)
@@ -909,12 +907,19 @@ fn fx_effect_card<'a>(
                         })
                         .into()
                 } else if is_mapped {
+                    // Mapped params: click to remove, hover to highlight macro button
                     mouse_area(knob_container)
                         .on_press(MultibandEditorMessage::RemoveParamMapping {
                             location,
                             effect: effect_idx,
                             param: knob_idx,
                         })
+                        .on_enter(MultibandEditorMessage::HoverParam {
+                            location,
+                            effect: effect_idx,
+                            param: knob_idx,
+                        })
+                        .on_exit(MultibandEditorMessage::UnhoverParam)
                         .into()
                 } else {
                     knob_container
@@ -1026,11 +1031,11 @@ fn effect_card<'a>(
     // Check if this is a CLAP effect (can open plugin GUI)
     let is_clap = effect.source == EffectSourceType::Clap;
 
-    // Build header with optional GUI button for CLAP effects
+    // Build header with optional settings button for CLAP effects
     let header = if is_clap {
-        // GUI button toggles open/close
-        let gui_button_text = if effect.gui_open { "✕ GUI" } else { "GUI" };
-        let gui_button_color = if effect.gui_open { Color::from_rgb(0.9, 0.5, 0.5) } else { ACCENT_COLOR };
+        // Settings button toggles open/close plugin GUI
+        let settings_icon = if effect.gui_open { "✕" } else { "⚙" };
+        let settings_color = if effect.gui_open { Color::from_rgb(0.9, 0.5, 0.5) } else { ACCENT_COLOR };
         let gui_message = if effect.gui_open {
             MultibandEditorMessage::ClosePluginGui { location, effect: effect_idx }
         } else {
@@ -1040,8 +1045,8 @@ fn effect_card<'a>(
         row![
             text(&effect.name).size(11).color(name_color),
             Space::new().width(Length::Fill),
-            // GUI button for CLAP plugins (toggles open/close)
-            button(text(gui_button_text).size(11).color(gui_button_color))
+            // Settings button for CLAP plugins (toggles open/close)
+            button(text(settings_icon).size(11).color(settings_color))
                 .padding([1, 3])
                 .on_press(gui_message),
             button(
@@ -1119,13 +1124,13 @@ fn effect_card<'a>(
                 TEXT_SECONDARY
             };
 
-            // Learning mode shows "LEARN" label
+            // Learning mode shows "LEARN" label, otherwise show truncated param name
+            // Mapped params are indicated by green color, not "M1" label
             let label_text = if is_learning {
                 "LEARN".to_string()
-            } else if let Some(macro_idx) = mapped_macro {
-                format!("M{}", macro_idx + 1)
             } else {
-                param_name[..param_name.len().min(3)].to_string()
+                // Truncate param name to 4 chars max
+                param_name[..param_name.len().min(4)].to_string()
             };
 
             // Get the current value for display
@@ -1161,7 +1166,7 @@ fn effect_card<'a>(
                         event,
                     })
                 } else {
-                    Space::new().width(40.0).height(40.0).into()
+                    Space::new().width(48.0).height(48.0).into()
                 };
 
             // Build clickable label - for CLAP effects, clicking starts learning mode
@@ -1228,12 +1233,19 @@ fn effect_card<'a>(
                         })
                         .into()
                 } else if is_mapped {
+                    // Mapped params: click to remove, hover to highlight macro button
                     mouse_area(knob_container)
                         .on_press(MultibandEditorMessage::RemoveParamMapping {
                             location,
                             effect: effect_idx,
                             param: knob_idx,
                         })
+                        .on_enter(MultibandEditorMessage::HoverParam {
+                            location,
+                            effect: effect_idx,
+                            param: knob_idx,
+                        })
+                        .on_exit(MultibandEditorMessage::UnhoverParam)
                         .into()
                 } else {
                     knob_container
@@ -1324,8 +1336,8 @@ fn effect_card<'a>(
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn add_band_button(current_bands: usize) -> Element<'static, MultibandEditorMessage> {
-    if current_bands >= 8 {
-        text("Maximum 8 bands")
+    if current_bands >= 3 {
+        text("Maximum 3 bands")
             .size(11)
             .color(TEXT_SECONDARY)
             .into()
@@ -1358,8 +1370,9 @@ fn macro_bar<'a>(
         .enumerate()
         .map(|(index, (m, knob))| {
             let is_mapping_drag = dragging_macro == Some(index);
+            let is_highlighted = is_macro_highlighted(state, index);
 
-            let name_color = if is_mapping_drag {
+            let name_color = if is_mapping_drag || is_highlighted {
                 Color::from_rgb(1.0, 0.8, 0.3)
             } else if m.mapping_count > 0 {
                 ACCENT_COLOR
@@ -1367,11 +1380,14 @@ fn macro_bar<'a>(
                 TEXT_SECONDARY
             };
 
-            let border_color = if is_mapping_drag {
+            // Show border when dragging or when a mapped param is hovered
+            let border_color = if is_mapping_drag || is_highlighted {
                 Color::from_rgb(1.0, 0.8, 0.3)
             } else {
                 Color::TRANSPARENT
             };
+
+            let border_width = if is_mapping_drag || is_highlighted { 2.0 } else { 0.0 };
 
             // Macro knobs don't show modulation indicators - they ARE the modulation source
             // Only target knobs (effect params, dry/wet) should show modulation ranges
@@ -1410,7 +1426,7 @@ fn macro_bar<'a>(
                     .style(move |_| container::Style {
                         border: iced::Border {
                             color: border_color,
-                            width: if is_mapping_drag { 2.0 } else { 0.0 },
+                            width: border_width,
                             radius: 4.0.into(),
                         },
                         ..Default::default()
@@ -1517,6 +1533,22 @@ const MOD_INDICATOR_HIGHLIGHT_COLOR: Color = Color::from_rgb(1.0, 0.7, 0.3);
 /// Color for highlighted parameter knobs (when hovering mod indicator)
 const PARAM_HIGHLIGHT_COLOR: Color = Color::from_rgb(1.0, 0.6, 0.2);
 
+/// Check if a macro button should be highlighted because a mapped param is hovered
+fn is_macro_highlighted(state: &MultibandEditorState, macro_idx: usize) -> bool {
+    if let Some((location, effect_idx, knob_idx)) = state.hovered_param {
+        // Check if this macro is mapped to the hovered param
+        for mapping in &state.macro_mappings_index[macro_idx] {
+            if mapping.location == location
+                && mapping.effect_idx == effect_idx
+                && mapping.knob_idx == knob_idx
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Check if a specific effect parameter knob should be highlighted
 ///
 /// Returns true if the user is hovering OR dragging a modulation indicator that targets this knob.
@@ -1557,10 +1589,14 @@ fn mod_indicators_row<'a>(
     mappings: &[MacroMappingRef],
     state: &MultibandEditorState,
 ) -> Element<'a, MultibandEditorMessage> {
+    // Always use fixed height for consistent layout
+    const INDICATOR_ROW_HEIGHT: f32 = 24.0;
+
     if mappings.is_empty() {
-        return Space::new()
-            .width(Length::Fixed(0.0))
-            .height(Length::Fixed(24.0))
+        // Empty placeholder with consistent height
+        return container(Space::new())
+            .width(Length::Fill)
+            .height(Length::Fixed(INDICATOR_ROW_HEIGHT))
             .into();
     }
 
@@ -1575,9 +1611,9 @@ fn mod_indicators_row<'a>(
             .spacing(2)
             .align_y(Alignment::Center),
     )
-    .width(Length::Shrink)
-    .height(Length::Fixed(24.0))
-    .center_x(Length::Shrink)
+    .width(Length::Fill)
+    .height(Length::Fixed(INDICATOR_ROW_HEIGHT))
+    .center_x(Length::Fill)
     .into()
 }
 

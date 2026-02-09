@@ -196,6 +196,16 @@ pub enum MultibandEditorMessage {
     /// Stop hovering over modulation indicator
     UnhoverModRange,
 
+    /// Hover over parameter knob (highlights mapped macro button)
+    HoverParam {
+        location: EffectChainLocation,
+        effect: usize,
+        param: usize,
+    },
+
+    /// Stop hovering over parameter knob
+    UnhoverParam,
+
     // ─────────────────────────────────────────────────────────────────────
     // Dry/Wet Mix Controls
     // ─────────────────────────────────────────────────────────────────────

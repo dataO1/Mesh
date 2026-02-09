@@ -732,6 +732,16 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             Task::none()
         }
 
+        HoverParam { location, effect, param } => {
+            app.multiband_editor.hovered_param = Some((location, effect, param));
+            Task::none()
+        }
+
+        UnhoverParam => {
+            app.multiband_editor.hovered_param = None;
+            Task::none()
+        }
+
         // ─────────────────────────────────────────────────────────────────────
         // Preset management
         // ─────────────────────────────────────────────────────────────────────
