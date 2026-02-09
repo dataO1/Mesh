@@ -51,8 +51,16 @@ pub enum MultibandEditorMessage {
     /// Start dragging a crossover divider
     StartDragCrossover(usize),
 
-    /// Drag crossover to new frequency (in Hz)
+    /// Drag crossover to new frequency (in Hz) - absolute positioning (legacy)
     DragCrossover(f32),
+
+    /// Drag crossover with relative mouse tracking
+    DragCrossoverRelative {
+        /// New frequency to set
+        new_freq: f32,
+        /// Current mouse X position for tracking
+        mouse_x: f32,
+    },
 
     /// End crossover drag
     EndDragCrossover,
@@ -60,8 +68,11 @@ pub enum MultibandEditorMessage {
     // ─────────────────────────────────────────────────────────────────────
     // Band management
     // ─────────────────────────────────────────────────────────────────────
-    /// Add a new band
+    /// Add a new band (legacy - use AddBandAtFrequency instead)
     AddBand,
+
+    /// Add a new band at a specific frequency by clicking the crossover bar
+    AddBandAtFrequency(f32),
 
     /// Remove a band by index
     RemoveBand(usize),
@@ -74,6 +85,36 @@ pub enum MultibandEditorMessage {
 
     /// Set band gain (linear, 0.0-2.0)
     SetBandGain { band: usize, gain: f32 },
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Band drag and drop (swap processing chains)
+    // ─────────────────────────────────────────────────────────────────────
+    /// Start dragging a band to swap with another
+    StartDragBand(usize),
+
+    /// Update band drop target while dragging
+    SetBandDropTarget(Option<usize>),
+
+    /// Drop band at target position (swaps effect chains)
+    DropBandAt(usize),
+
+    /// Cancel band drag
+    EndDragBand,
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Effect drag and drop (reorder/move effects)
+    // ─────────────────────────────────────────────────────────────────────
+    /// Start dragging an effect
+    StartDragEffect { location: EffectChainLocation, effect: usize },
+
+    /// Update effect drop target while dragging
+    SetEffectDropTarget(Option<(EffectChainLocation, usize)>),
+
+    /// Drop effect at target position
+    DropEffectAt { location: EffectChainLocation, position: usize },
+
+    /// Cancel effect drag
+    EndDragEffect,
 
     // ─────────────────────────────────────────────────────────────────────
     // Band effect management
@@ -132,6 +173,12 @@ pub enum MultibandEditorMessage {
     // ─────────────────────────────────────────────────────────────────────
     /// Rename a macro
     RenameMacro { index: usize, name: String },
+
+    /// Start editing a macro name (double-click on name text)
+    StartEditMacroName(usize),
+
+    /// Finish editing macro name
+    EndEditMacroName,
 
     /// Start dragging a macro for mapping
     StartDragMacro(usize),

@@ -89,8 +89,13 @@ impl MeshCueApp {
             // Crossover control - forward to editor state and audio
             StartDragCrossover(idx) => {
                 self.effects_editor.editor.dragging_crossover = Some(idx);
+                // Store initial frequency for relative calculation
+                let start_freq = self.effects_editor.editor.crossover_freqs.get(idx).copied();
+                self.effects_editor.editor.crossover_drag_start_freq = start_freq;
+                self.effects_editor.editor.crossover_drag_last_x = None;
             }
             DragCrossover(freq) => {
+                // Legacy absolute positioning
                 if let Some(idx) = self.effects_editor.editor.dragging_crossover {
                     self.effects_editor.editor.set_crossover_freq(idx, freq);
                     // Apply to audio preview if enabled
@@ -100,13 +105,33 @@ impl MeshCueApp {
                     }
                 }
             }
+            DragCrossoverRelative { new_freq, mouse_x } => {
+                if let Some(idx) = self.effects_editor.editor.dragging_crossover {
+                    self.effects_editor.editor.set_crossover_freq(idx, new_freq);
+                    self.effects_editor.editor.crossover_drag_last_x = Some(mouse_x);
+                    // Apply to audio preview if enabled
+                    if self.effects_editor.audio_preview_enabled {
+                        let stem = self.effects_editor.preview_stem;
+                        self.audio.set_multiband_crossover(stem, idx, new_freq);
+                    }
+                }
+            }
             EndDragCrossover => {
                 self.effects_editor.editor.dragging_crossover = None;
+                self.effects_editor.editor.crossover_drag_start_freq = None;
+                self.effects_editor.editor.crossover_drag_last_x = None;
             }
 
             // Band management
             AddBand => {
                 self.effects_editor.editor.add_band();
+                if self.effects_editor.audio_preview_enabled {
+                    let stem = self.effects_editor.preview_stem;
+                    self.audio.add_multiband_band(stem);
+                }
+            }
+            AddBandAtFrequency(freq) => {
+                self.effects_editor.editor.add_band_at_frequency(freq);
                 if self.effects_editor.audio_preview_enabled {
                     let stem = self.effects_editor.preview_stem;
                     self.audio.add_multiband_band(stem);
@@ -118,6 +143,64 @@ impl MeshCueApp {
                     let stem = self.effects_editor.preview_stem;
                     self.audio.remove_multiband_band(stem, idx);
                 }
+            }
+
+            // Band drag and drop
+            StartDragBand(band_idx) => {
+                self.effects_editor.editor.dragging_band = Some(band_idx);
+            }
+            SetBandDropTarget(target) => {
+                self.effects_editor.editor.band_drop_target = target;
+            }
+            DropBandAt(target_idx) => {
+                if let Some(source_idx) = self.effects_editor.editor.dragging_band {
+                    self.effects_editor.editor.swap_band_contents(source_idx, target_idx);
+                }
+                self.effects_editor.editor.dragging_band = None;
+                self.effects_editor.editor.band_drop_target = None;
+            }
+            EndDragBand => {
+                self.effects_editor.editor.dragging_band = None;
+                self.effects_editor.editor.band_drop_target = None;
+            }
+
+            // Effect drag and drop
+            StartDragEffect { location, effect } => {
+                // Get the effect name for visual drag overlay
+                let effect_name = match location {
+                    EffectChainLocation::PreFx => {
+                        self.effects_editor.editor.pre_fx.get(effect).map(|e| e.name.clone())
+                    }
+                    EffectChainLocation::Band(band_idx) => {
+                        self.effects_editor.editor.bands.get(band_idx)
+                            .and_then(|b| b.effects.get(effect))
+                            .map(|e| e.name.clone())
+                    }
+                    EffectChainLocation::PostFx => {
+                        self.effects_editor.editor.post_fx.get(effect).map(|e| e.name.clone())
+                    }
+                };
+                self.effects_editor.editor.dragging_effect = Some((location, effect));
+                self.effects_editor.editor.dragging_effect_name = effect_name;
+                self.effects_editor.editor.effect_drag_mouse_pos = None;
+            }
+            SetEffectDropTarget(target) => {
+                self.effects_editor.editor.effect_drop_target = target;
+            }
+            DropEffectAt { location, position } => {
+                if let Some((from_location, from_idx)) = self.effects_editor.editor.dragging_effect {
+                    self.effects_editor.editor.move_effect(from_location, from_idx, location, position);
+                }
+                self.effects_editor.editor.dragging_effect = None;
+                self.effects_editor.editor.effect_drop_target = None;
+                self.effects_editor.editor.dragging_effect_name = None;
+                self.effects_editor.editor.effect_drag_mouse_pos = None;
+            }
+            EndDragEffect => {
+                self.effects_editor.editor.dragging_effect = None;
+                self.effects_editor.editor.effect_drop_target = None;
+                self.effects_editor.editor.dragging_effect_name = None;
+                self.effects_editor.editor.effect_drag_mouse_pos = None;
             }
             SetBandMute { band, muted } => {
                 if let Some(b) = self.effects_editor.editor.bands.get_mut(band) {
@@ -294,7 +377,13 @@ impl MeshCueApp {
             // Macro mapping
             // ─────────────────────────────────────────────────────────────────────
             RenameMacro { index, name } => {
-                self.effects_editor.editor.set_macro_name(index, name);
+                self.effects_editor.editor.set_macro_name(index, name.clone());
+            }
+            StartEditMacroName(index) => {
+                self.effects_editor.editor.editing_macro_name = Some(index);
+            }
+            EndEditMacroName => {
+                self.effects_editor.editor.editing_macro_name = None;
             }
             StartDragMacro(index) => {
                 self.effects_editor.editor.dragging_macro = Some(index);
@@ -995,6 +1084,11 @@ impl MeshCueApp {
                             }
                         }
                     }
+                }
+
+                // Track mouse position during effect drag for visual overlay
+                if self.effects_editor.editor.dragging_effect.is_some() {
+                    self.effects_editor.editor.effect_drag_mouse_pos = Some((position.x, position.y));
                 }
             }
             GlobalMouseReleased => {

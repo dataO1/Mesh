@@ -456,6 +456,12 @@ pub struct MultibandEditorState {
     /// Which crossover divider is being dragged (index)
     pub dragging_crossover: Option<usize>,
 
+    /// Starting frequency when crossover drag began (for relative calculation)
+    pub crossover_drag_start_freq: Option<f32>,
+
+    /// Last mouse X position during crossover drag (for relative movement)
+    pub crossover_drag_last_x: Option<f32>,
+
     /// Which macro is being dragged for mapping (index)
     pub dragging_macro: Option<usize>,
 
@@ -471,6 +477,9 @@ pub struct MultibandEditorState {
 
     /// Macro metadata (names, mapping counts)
     pub macros: Vec<MacroUiState>,
+
+    /// Which macro name is currently being edited (double-click to edit)
+    pub editing_macro_name: Option<usize>,
 
     /// Macro knob widgets (stateful, with stable IDs)
     pub macro_knobs: Vec<Knob>,
@@ -547,6 +556,29 @@ pub struct MultibandEditorState {
     pub hovered_param: Option<(EffectChainLocation, usize, usize)>,
 
     // ─────────────────────────────────────────────────────────────────────
+    // Drag and Drop
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Currently dragging a band (band index)
+    /// When dropped, the band's effects swap with the target band
+    pub dragging_band: Option<usize>,
+
+    /// Drop target for band drag (band index where it would be dropped)
+    pub band_drop_target: Option<usize>,
+
+    /// Currently dragging an effect (location, effect_idx)
+    pub dragging_effect: Option<(EffectChainLocation, usize)>,
+
+    /// Name of the effect being dragged (for overlay display)
+    pub dragging_effect_name: Option<String>,
+
+    /// Current mouse position during effect drag (for overlay positioning)
+    pub effect_drag_mouse_pos: Option<(f32, f32)>,
+
+    /// Drop target for effect drag (location, effect_idx - inserts before this position)
+    pub effect_drop_target: Option<(EffectChainLocation, usize)>,
+
+    // ─────────────────────────────────────────────────────────────────────
     // Dry/Wet Mix Controls
     // ─────────────────────────────────────────────────────────────────────
 
@@ -605,11 +637,14 @@ impl MultibandEditorState {
             pre_fx: Vec::new(),
             crossover_freqs: Vec::new(),
             dragging_crossover: None,
+            crossover_drag_start_freq: None,
+            crossover_drag_last_x: None,
             dragging_macro: None,
             bands: vec![BandUiState::new(0, super::FREQ_MIN, super::FREQ_MAX)],
             post_fx: Vec::new(),
             selected_effect: None,
             macros: (0..super::NUM_MACROS).map(MacroUiState::new).collect(),
+            editing_macro_name: None,
             macro_knobs: (0..super::NUM_MACROS).map(|_| Knob::new(64.0)).collect(),
             effect_knobs: HashMap::new(),
             preset_browser_open: false,
@@ -627,6 +662,13 @@ impl MultibandEditorState {
             dragging_mod_range: None,
             hovered_mapping: None,
             hovered_param: None,
+            // Drag and drop
+            dragging_band: None,
+            band_drop_target: None,
+            dragging_effect: None,
+            dragging_effect_name: None,
+            effect_drag_mouse_pos: None,
+            effect_drop_target: None,
             // Dry/wet mix controls (default: 100% wet = normal processing)
             pre_fx_chain_dry_wet: 1.0,
             pre_fx_chain_dry_wet_macro_mapping: None,
@@ -711,6 +753,8 @@ impl MultibandEditorState {
     pub fn close(&mut self) {
         self.is_open = false;
         self.dragging_crossover = None;
+        self.crossover_drag_start_freq = None;
+        self.crossover_drag_last_x = None;
         self.dragging_macro = None;
     }
 
@@ -851,7 +895,7 @@ impl MultibandEditorState {
 
     /// Add a new band (splits the last band)
     pub fn add_band(&mut self) {
-        if self.bands.len() >= 8 {
+        if self.bands.len() >= 3 {
             return;
         }
 
@@ -866,6 +910,315 @@ impl MultibandEditorState {
         self.bands.push(BandUiState::new(new_index, new_crossover, last_band.freq_high));
 
         self.update_band_frequencies();
+    }
+
+    /// Add a new band at a specific frequency
+    ///
+    /// Inserts a crossover at the given frequency, splitting the band that
+    /// contains that frequency into two. The new band gets the upper portion.
+    pub fn add_band_at_frequency(&mut self, freq: f32) {
+        if self.bands.len() >= 3 {
+            return;
+        }
+
+        // Clamp frequency to valid range
+        let freq = freq.clamp(super::FREQ_MIN + 10.0, super::FREQ_MAX - 10.0);
+
+        // Find which band contains this frequency
+        let band_idx = self.bands.iter().position(|b| freq >= b.freq_low && freq < b.freq_high);
+        let Some(band_idx) = band_idx else {
+            // Frequency not in any band - shouldn't happen but fall back to regular add
+            return self.add_band();
+        };
+
+        // The crossover index is the same as the band index (crossover goes after the band)
+        // Insert the new crossover at the right position to maintain sorted order
+        let crossover_idx = band_idx;
+
+        // Insert crossover frequency
+        self.crossover_freqs.insert(crossover_idx, freq);
+
+        // Insert new band after the current one
+        let new_band_idx = band_idx + 1;
+        let old_band_high = self.bands[band_idx].freq_high;
+        self.bands.insert(new_band_idx, BandUiState::new(new_band_idx, freq, old_band_high));
+
+        // Add a new dry/wet knob for the new band
+        let mut new_knob = super::super::knob::Knob::new(36.0);
+        new_knob.set_value(1.0);
+        self.band_chain_dry_wet_knobs.insert(new_band_idx, new_knob);
+
+        // Update band indices
+        for (i, band) in self.bands.iter_mut().enumerate() {
+            band.index = i;
+        }
+
+        // Update effect knob keys for bands at or after the new one
+        let keys_to_update: Vec<_> = self.effect_knobs.keys()
+            .filter(|&&(loc, _, _)| matches!(loc, EffectChainLocation::Band(b) if b >= new_band_idx))
+            .copied()
+            .collect();
+        for key in keys_to_update {
+            if let Some(knob) = self.effect_knobs.remove(&key) {
+                if let EffectChainLocation::Band(b) = key.0 {
+                    let new_key = (EffectChainLocation::Band(b + 1), key.1, key.2);
+                    self.effect_knobs.insert(new_key, knob);
+                }
+            }
+        }
+
+        // Same for effect dry/wet knobs
+        let dw_keys_to_update: Vec<_> = self.effect_dry_wet_knobs.keys()
+            .filter(|&&(loc, _)| matches!(loc, EffectChainLocation::Band(b) if b >= new_band_idx))
+            .copied()
+            .collect();
+        for key in dw_keys_to_update {
+            if let Some(knob) = self.effect_dry_wet_knobs.remove(&key) {
+                if let EffectChainLocation::Band(b) = key.0 {
+                    let new_key = (EffectChainLocation::Band(b + 1), key.1);
+                    self.effect_dry_wet_knobs.insert(new_key, knob);
+                }
+            }
+        }
+
+        self.update_band_frequencies();
+        self.rebuild_macro_mappings_index();
+    }
+
+    /// Swap the processing contents of two bands
+    ///
+    /// This exchanges the effects, gain, mute/solo state, and dry/wet settings
+    /// between two bands while keeping the frequency ranges intact.
+    pub fn swap_band_contents(&mut self, a: usize, b: usize) {
+        if a >= self.bands.len() || b >= self.bands.len() || a == b {
+            return;
+        }
+
+        // Ensure a < b for split_at_mut
+        let (a, b) = if a < b { (a, b) } else { (b, a) };
+
+        // Split to get mutable references to both bands
+        let (left, right) = self.bands.split_at_mut(b);
+        let band_a = &mut left[a];
+        let band_b = &mut right[0];
+
+        // Swap effect chains
+        std::mem::swap(&mut band_a.effects, &mut band_b.effects);
+
+        // Swap other processing-related fields
+        std::mem::swap(&mut band_a.gain, &mut band_b.gain);
+        std::mem::swap(&mut band_a.muted, &mut band_b.muted);
+        std::mem::swap(&mut band_a.soloed, &mut band_b.soloed);
+        std::mem::swap(&mut band_a.chain_dry_wet, &mut band_b.chain_dry_wet);
+        std::mem::swap(&mut band_a.chain_dry_wet_macro_mapping, &mut band_b.chain_dry_wet_macro_mapping);
+
+        // Swap dry/wet knobs
+        if a < self.band_chain_dry_wet_knobs.len() && b < self.band_chain_dry_wet_knobs.len() {
+            self.band_chain_dry_wet_knobs.swap(a, b);
+        }
+
+        // Update effect knob keys: swap Band(a) <-> Band(b)
+        let keys_a: Vec<_> = self.effect_knobs.keys()
+            .filter(|&&(loc, _, _)| loc == EffectChainLocation::Band(a))
+            .copied()
+            .collect();
+        let keys_b: Vec<_> = self.effect_knobs.keys()
+            .filter(|&&(loc, _, _)| loc == EffectChainLocation::Band(b))
+            .copied()
+            .collect();
+
+        // Remove all and re-insert with swapped band indices
+        let mut knobs_a = Vec::new();
+        let mut knobs_b = Vec::new();
+        for key in keys_a {
+            if let Some(knob) = self.effect_knobs.remove(&key) {
+                knobs_a.push((key, knob));
+            }
+        }
+        for key in keys_b {
+            if let Some(knob) = self.effect_knobs.remove(&key) {
+                knobs_b.push((key, knob));
+            }
+        }
+        for ((_, effect_idx, knob_idx), knob) in knobs_a {
+            self.effect_knobs.insert((EffectChainLocation::Band(b), effect_idx, knob_idx), knob);
+        }
+        for ((_, effect_idx, knob_idx), knob) in knobs_b {
+            self.effect_knobs.insert((EffectChainLocation::Band(a), effect_idx, knob_idx), knob);
+        }
+
+        // Same for effect dry/wet knobs
+        let dw_keys_a: Vec<_> = self.effect_dry_wet_knobs.keys()
+            .filter(|&&(loc, _)| loc == EffectChainLocation::Band(a))
+            .copied()
+            .collect();
+        let dw_keys_b: Vec<_> = self.effect_dry_wet_knobs.keys()
+            .filter(|&&(loc, _)| loc == EffectChainLocation::Band(b))
+            .copied()
+            .collect();
+
+        let mut dw_knobs_a = Vec::new();
+        let mut dw_knobs_b = Vec::new();
+        for key in dw_keys_a {
+            if let Some(knob) = self.effect_dry_wet_knobs.remove(&key) {
+                dw_knobs_a.push((key, knob));
+            }
+        }
+        for key in dw_keys_b {
+            if let Some(knob) = self.effect_dry_wet_knobs.remove(&key) {
+                dw_knobs_b.push((key, knob));
+            }
+        }
+        for ((_, effect_idx), knob) in dw_knobs_a {
+            self.effect_dry_wet_knobs.insert((EffectChainLocation::Band(b), effect_idx), knob);
+        }
+        for ((_, effect_idx), knob) in dw_knobs_b {
+            self.effect_dry_wet_knobs.insert((EffectChainLocation::Band(a), effect_idx), knob);
+        }
+
+        self.any_soloed = self.bands.iter().any(|b| b.soloed);
+        self.rebuild_macro_mappings_index();
+    }
+
+    /// Move an effect from one location to another
+    ///
+    /// The effect is removed from `from` and inserted at `to_position` in `to_location`.
+    /// All macro mappings, parameter values, and knob widgets are preserved.
+    pub fn move_effect(
+        &mut self,
+        from_location: EffectChainLocation,
+        from_idx: usize,
+        to_location: EffectChainLocation,
+        to_position: usize,
+    ) {
+        // Step 1: Extract knobs for the effect being moved (save them, don't delete)
+        let mut saved_knobs: Vec<(usize, Knob)> = Vec::new();
+        for knob_idx in 0..MAX_UI_KNOBS {
+            let key = (from_location, from_idx, knob_idx);
+            if let Some(knob) = self.effect_knobs.remove(&key) {
+                saved_knobs.push((knob_idx, knob));
+            }
+        }
+        let saved_dw_knob = self.effect_dry_wet_knobs.remove(&(from_location, from_idx));
+
+        // Step 2: Get the effect from the source
+        let effect = match from_location {
+            EffectChainLocation::PreFx => {
+                if from_idx >= self.pre_fx.len() { return; }
+                self.pre_fx.remove(from_idx)
+            }
+            EffectChainLocation::Band(band_idx) => {
+                if band_idx >= self.bands.len() { return; }
+                if from_idx >= self.bands[band_idx].effects.len() { return; }
+                self.bands[band_idx].effects.remove(from_idx)
+            }
+            EffectChainLocation::PostFx => {
+                if from_idx >= self.post_fx.len() { return; }
+                self.post_fx.remove(from_idx)
+            }
+        };
+
+        // Step 3: Update knob keys in source chain (shift down for effects after removed)
+        self.shift_effect_knobs_after_remove(from_location, from_idx);
+
+        // Step 4: Calculate effective insert position (account for removal if same chain)
+        let insert_pos = if from_location == to_location && from_idx < to_position {
+            to_position.saturating_sub(1)
+        } else {
+            to_position
+        };
+
+        // Step 5: Update knob keys in destination chain (shift up to make room)
+        self.shift_effect_knobs_after_insert(to_location, insert_pos);
+
+        // Step 6: Insert effect at destination
+        let final_pos = match to_location {
+            EffectChainLocation::PreFx => {
+                let pos = insert_pos.min(self.pre_fx.len());
+                self.pre_fx.insert(pos, effect);
+                pos
+            }
+            EffectChainLocation::Band(band_idx) => {
+                if band_idx >= self.bands.len() { return; }
+                let pos = insert_pos.min(self.bands[band_idx].effects.len());
+                self.bands[band_idx].effects.insert(pos, effect);
+                pos
+            }
+            EffectChainLocation::PostFx => {
+                let pos = insert_pos.min(self.post_fx.len());
+                self.post_fx.insert(pos, effect);
+                pos
+            }
+        };
+
+        // Step 7: Insert saved knobs at new location
+        for (knob_idx, knob) in saved_knobs {
+            let new_key = (to_location, final_pos, knob_idx);
+            self.effect_knobs.insert(new_key, knob);
+        }
+        if let Some(dw_knob) = saved_dw_knob {
+            self.effect_dry_wet_knobs.insert((to_location, final_pos), dw_knob);
+        }
+
+        self.rebuild_macro_mappings_index();
+    }
+
+    /// Shift effect knob keys down after removing an effect
+    fn shift_effect_knobs_after_remove(&mut self, location: EffectChainLocation, removed_idx: usize) {
+        let keys_to_shift: Vec<_> = self.effect_knobs.keys()
+            .filter(|&&(loc, effect_idx, _)| loc == location && effect_idx > removed_idx)
+            .copied()
+            .collect();
+        for key in keys_to_shift {
+            if let Some(knob) = self.effect_knobs.remove(&key) {
+                let new_key = (location, key.1 - 1, key.2);
+                self.effect_knobs.insert(new_key, knob);
+            }
+        }
+
+        // Same for dry/wet knobs
+        let dw_keys_to_shift: Vec<_> = self.effect_dry_wet_knobs.keys()
+            .filter(|&&(loc, effect_idx)| loc == location && effect_idx > removed_idx)
+            .copied()
+            .collect();
+        for key in dw_keys_to_shift {
+            if let Some(knob) = self.effect_dry_wet_knobs.remove(&key) {
+                let new_key = (location, key.1 - 1);
+                self.effect_dry_wet_knobs.insert(new_key, knob);
+            }
+        }
+    }
+
+    /// Shift effect knob keys up after inserting an effect
+    fn shift_effect_knobs_after_insert(&mut self, location: EffectChainLocation, insert_idx: usize) {
+        // Shift keys >= insert_idx up by 1
+        let keys_to_shift: Vec<_> = self.effect_knobs.keys()
+            .filter(|&&(loc, effect_idx, _)| loc == location && effect_idx >= insert_idx)
+            .copied()
+            .collect();
+        // Sort in reverse to avoid overwriting
+        let mut keys_sorted: Vec<_> = keys_to_shift;
+        keys_sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        for key in keys_sorted {
+            if let Some(knob) = self.effect_knobs.remove(&key) {
+                let new_key = (location, key.1 + 1, key.2);
+                self.effect_knobs.insert(new_key, knob);
+            }
+        }
+
+        // Same for dry/wet knobs
+        let dw_keys_to_shift: Vec<_> = self.effect_dry_wet_knobs.keys()
+            .filter(|&&(loc, effect_idx)| loc == location && effect_idx >= insert_idx)
+            .copied()
+            .collect();
+        let mut dw_keys_sorted: Vec<_> = dw_keys_to_shift;
+        dw_keys_sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        for key in dw_keys_sorted {
+            if let Some(knob) = self.effect_dry_wet_knobs.remove(&key) {
+                let new_key = (location, key.1 + 1);
+                self.effect_dry_wet_knobs.insert(new_key, knob);
+            }
+        }
     }
 
     /// Remove a band by index

@@ -108,6 +108,20 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
     for iced's `draw()` method, fixing clipping issues at screen edges
   - **Improved arc calculations** — Fixed angle normalization for arcs crossing 0°
 
+- **Visual effect drag feedback** — Dragging effects between chains now shows a
+  floating effect card following the cursor for clear visual feedback. The card
+  displays the effect name with a styled border and drop shadow, making it easy
+  to see what's being moved during drag-and-drop reordering.
+
+- **Improved crossover bar interaction** — The frequency crossover dividers now
+  track mouse movement relatively rather than using absolute positioning, providing
+  smoother and more intuitive drag behavior regardless of window size. Single-band
+  mode is now clickable to split into multiple bands.
+
+- **Macro name inline editing** — Click directly on a macro name to rename it.
+  A dedicated drag handle (⠿) next to the name initiates drag-to-map operations,
+  separating editing from mapping interactions.
+
 ### Fixed
 
 - **Effects editor preset loading** — Loading a preset now properly clears stale

@@ -8,7 +8,7 @@ use iced::{Alignment, Color, Element, Length, Point};
 
 use super::message::MultibandEditorMessage;
 use super::state::MultibandEditorState;
-use super::{format_freq, freq_to_position, position_to_freq};
+use super::{format_freq, freq_to_position};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Colors
@@ -53,18 +53,29 @@ pub fn crossover_bar(state: &MultibandEditorState) -> Element<'_, MultibandEdito
     multi_band_bar(state)
 }
 
-/// Single band display (no crossovers)
+/// Single band display (clickable to add first split)
 fn single_band_bar() -> Element<'static, MultibandEditorMessage> {
-    container(
+    // Calculate midpoint frequency for splitting (geometric mean of 20Hz-20kHz in log scale)
+    let log_mid = (super::FREQ_MIN.log10() + super::FREQ_MAX.log10()) / 2.0;
+    let mid_freq = 10.0_f32.powf(log_mid); // ~632 Hz
+
+    let band_name = super::default_band_name(super::FREQ_MIN, super::FREQ_MAX);
+
+    let content = container(
         column![
-            text("Single Band Mode")
-                .size(11)
-                .color(TEXT_COLOR),
-            text("Click '+ Add Band' to enable multiband processing")
-                .size(10)
-                .color(Color::from_rgb(0.6, 0.6, 0.6)),
+            text(band_name).size(12).color(TEXT_COLOR),
+            text(format!(
+                "{} - {}",
+                format_freq(super::FREQ_MIN),
+                format_freq(super::FREQ_MAX)
+            ))
+            .size(10)
+            .color(Color::from_rgb(0.7, 0.7, 0.7)),
+            text("click to split into bands")
+                .size(9)
+                .color(Color::from_rgba(1.0, 1.0, 1.0, 0.5)),
         ]
-        .spacing(4)
+        .spacing(3)
         .align_x(Alignment::Center),
     )
     .width(Length::Fill)
@@ -79,19 +90,22 @@ fn single_band_bar() -> Element<'static, MultibandEditorMessage> {
             radius: 4.0.into(),
         },
         ..Default::default()
-    })
-    .into()
-}
+    });
 
-/// Expected width of the crossover bar for drag calculation
-/// This should approximate the full modal content width
-const CROSSOVER_BAR_WIDTH: f32 = 1200.0;
+    // Make the entire bar clickable to add a band at midpoint
+    mouse_area(content)
+        .on_press(MultibandEditorMessage::AddBandAtFrequency(mid_freq))
+        .into()
+}
 
 /// Multi-band display with colored sections and dividers
 /// Wrapped in mouse_area for drag support
 fn multi_band_bar(state: &MultibandEditorState) -> Element<'_, MultibandEditorMessage> {
     let num_bands = state.bands.len();
-    let is_dragging = state.dragging_crossover.is_some();
+    let dragging_index = state.dragging_crossover;
+
+    // Can we add more bands?
+    let can_add_band = num_bands < 3;
 
     // Build band segments
     let mut band_row_elements: Vec<Element<'_, MultibandEditorMessage>> = Vec::new();
@@ -102,9 +116,9 @@ fn multi_band_bar(state: &MultibandEditorState) -> Element<'_, MultibandEditorMe
         let pos_end = freq_to_position(band.freq_high);
         let width_ratio = pos_end - pos_start;
 
-        // Band segment
-        let band_segment = band_segment(i, band.freq_low, band.freq_high, width_ratio);
-        band_row_elements.push(band_segment);
+        // Band segment - clickable to add a split at midpoint
+        let segment = band_segment(i, band.freq_low, band.freq_high, width_ratio, can_add_band);
+        band_row_elements.push(segment);
 
         // Add divider after each band except the last
         if i < num_bands - 1 {
@@ -146,25 +160,49 @@ fn multi_band_bar(state: &MultibandEditorState) -> Element<'_, MultibandEditorMe
         .on_release(MultibandEditorMessage::EndDragCrossover);
 
     // Only track mouse movement when dragging
-    if is_dragging {
+    if let Some(drag_idx) = dragging_index {
+        // Get current frequency and last mouse X for relative calculation
+        let current_freq = state.crossover_freqs.get(drag_idx).copied().unwrap_or(1000.0);
+        let last_x = state.crossover_drag_last_x;
+
         area = area.on_move(move |point: Point| {
-            // Convert X position to frequency (log scale)
-            // Using CROSSOVER_BAR_WIDTH as approximate width for calculation
-            let x_ratio = (point.x / CROSSOVER_BAR_WIDTH).clamp(0.01, 0.99);
-            let freq = position_to_freq(x_ratio);
-            MultibandEditorMessage::DragCrossover(freq)
+            // Use relative movement for precise drag tracking
+            if let Some(prev_x) = last_x {
+                // Calculate delta in pixels
+                let delta_x = point.x - prev_x;
+
+                // Apply logarithmic frequency change
+                // Small movements for fine control, larger for coarse adjustment
+                let log_freq = current_freq.log10();
+                // Sensitivity scales with current position - more sensitive at lower frequencies
+                let octave_scale = 0.001 * (1.0 + log_freq / 4.0);
+                let new_log_freq = log_freq + delta_x * octave_scale;
+                let new_freq = 10.0_f32.powf(new_log_freq).clamp(super::FREQ_MIN, super::FREQ_MAX);
+
+                MultibandEditorMessage::DragCrossoverRelative {
+                    new_freq,
+                    mouse_x: point.x,
+                }
+            } else {
+                // First move - just record position, use absolute calculation as fallback
+                MultibandEditorMessage::DragCrossoverRelative {
+                    new_freq: current_freq,
+                    mouse_x: point.x,
+                }
+            }
         });
     }
 
     area.into()
 }
 
-/// A single band segment
+/// A single band segment (clickable to add split at midpoint)
 fn band_segment<'a>(
     index: usize,
     freq_low: f32,
     freq_high: f32,
     width_ratio: f32,
+    can_add_band: bool,
 ) -> Element<'a, MultibandEditorMessage> {
     let color = BAND_COLORS[index % BAND_COLORS.len()];
     let band_name = super::default_band_name(freq_low, freq_high);
@@ -172,12 +210,21 @@ fn band_segment<'a>(
     // Use FillPortion for proportional sizing
     let portion = ((width_ratio * 1000.0) as u16).max(1);
 
-    container(
+    // Calculate midpoint frequency (log scale)
+    let log_mid = (freq_low.log10() + freq_high.log10()) / 2.0;
+    let mid_freq = 10.0_f32.powf(log_mid);
+
+    let segment = container(
         column![
             text(band_name).size(10).color(TEXT_COLOR),
             text(format!("{} - {}", format_freq(freq_low), format_freq(freq_high)))
                 .size(8)
                 .color(Color::from_rgb(0.7, 0.7, 0.7)),
+            if can_add_band {
+                text("click to split").size(7).color(Color::from_rgba(1.0, 1.0, 1.0, 0.4))
+            } else {
+                text("").size(7)
+            },
         ]
         .spacing(2)
         .align_x(Alignment::Center),
@@ -189,8 +236,16 @@ fn band_segment<'a>(
     .style(move |_| container::Style {
         background: Some(color.into()),
         ..Default::default()
-    })
-    .into()
+    });
+
+    // Wrap in mouse_area if we can add bands
+    if can_add_band {
+        mouse_area(segment)
+            .on_press(MultibandEditorMessage::AddBandAtFrequency(mid_freq))
+            .into()
+    } else {
+        segment.into()
+    }
 }
 
 /// Draggable crossover divider

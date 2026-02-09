@@ -159,10 +159,15 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         // ─────────────────────────────────────────────────────────────────────
         StartDragCrossover(index) => {
             app.multiband_editor.dragging_crossover = Some(index);
+            // Store initial frequency for relative calculation
+            let start_freq = app.multiband_editor.crossover_freqs.get(index).copied();
+            app.multiband_editor.crossover_drag_start_freq = start_freq;
+            app.multiband_editor.crossover_drag_last_x = None; // Will be set on first move
             Task::none()
         }
 
         DragCrossover(freq) => {
+            // Legacy absolute positioning - still used as fallback
             if let Some(index) = app.multiband_editor.dragging_crossover {
                 let deck = app.multiband_editor.deck;
                 let stem = Stem::ALL[app.multiband_editor.stem];
@@ -181,8 +186,32 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             Task::none()
         }
 
+        DragCrossoverRelative { new_freq, mouse_x } => {
+            if let Some(index) = app.multiband_editor.dragging_crossover {
+                let deck = app.multiband_editor.deck;
+                let stem = Stem::ALL[app.multiband_editor.stem];
+
+                // Update UI state with new frequency
+                app.multiband_editor.set_crossover_freq(index, new_freq);
+
+                // Store current mouse X for next delta calculation
+                app.multiband_editor.crossover_drag_last_x = Some(mouse_x);
+
+                // Send to backend crossover
+                app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandCrossover {
+                    deck,
+                    stem,
+                    crossover_index: index,
+                    freq: new_freq,
+                });
+            }
+            Task::none()
+        }
+
         EndDragCrossover => {
             app.multiband_editor.dragging_crossover = None;
+            app.multiband_editor.crossover_drag_start_freq = None;
+            app.multiband_editor.crossover_drag_last_x = None;
             Task::none()
         }
 
@@ -201,6 +230,114 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                 deck,
                 stem,
             });
+            Task::none()
+        }
+
+        AddBandAtFrequency(freq) => {
+            let deck = app.multiband_editor.deck;
+            let stem = Stem::ALL[app.multiband_editor.stem];
+
+            // Update UI state (inserts band at the right position)
+            app.multiband_editor.add_band_at_frequency(freq);
+
+            // Send to backend - for now we send the simple AddBand command
+            // TODO: Add backend support for AddBandAtFrequency with specific crossover
+            app.domain.send_command(mesh_core::engine::EngineCommand::AddMultibandBand {
+                deck,
+                stem,
+            });
+            Task::none()
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Band drag and drop
+        // ─────────────────────────────────────────────────────────────────────
+        StartDragBand(band_idx) => {
+            app.multiband_editor.dragging_band = Some(band_idx);
+            Task::none()
+        }
+
+        SetBandDropTarget(target) => {
+            app.multiband_editor.band_drop_target = target;
+            Task::none()
+        }
+
+        DropBandAt(target_idx) => {
+            if let Some(source_idx) = app.multiband_editor.dragging_band {
+                let deck = app.multiband_editor.deck;
+                let stem = Stem::ALL[app.multiband_editor.stem];
+
+                // Swap band contents in UI
+                app.multiband_editor.swap_band_contents(source_idx, target_idx);
+
+                // TODO: Send swap command to backend when implemented
+                // For now, the backend state will be out of sync - we'd need to
+                // re-sync or add a SwapBandContents engine command
+                let _ = (deck, stem); // Silence unused warnings for now
+            }
+            app.multiband_editor.dragging_band = None;
+            app.multiband_editor.band_drop_target = None;
+            Task::none()
+        }
+
+        EndDragBand => {
+            app.multiband_editor.dragging_band = None;
+            app.multiband_editor.band_drop_target = None;
+            Task::none()
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Effect drag and drop
+        // ─────────────────────────────────────────────────────────────────────
+        StartDragEffect { location, effect } => {
+            // Get the effect name for the drag overlay
+            let effect_name = match location {
+                EffectChainLocation::PreFx => {
+                    app.multiband_editor.pre_fx.get(effect).map(|e| e.name.clone())
+                }
+                EffectChainLocation::Band(band_idx) => {
+                    app.multiband_editor.bands.get(band_idx)
+                        .and_then(|b| b.effects.get(effect))
+                        .map(|e| e.name.clone())
+                }
+                EffectChainLocation::PostFx => {
+                    app.multiband_editor.post_fx.get(effect).map(|e| e.name.clone())
+                }
+            };
+            app.multiband_editor.dragging_effect = Some((location, effect));
+            app.multiband_editor.dragging_effect_name = effect_name;
+            app.multiband_editor.effect_drag_mouse_pos = None; // Will be set on first mouse move
+            Task::none()
+        }
+
+        SetEffectDropTarget(target) => {
+            app.multiband_editor.effect_drop_target = target;
+            Task::none()
+        }
+
+        DropEffectAt { location, position } => {
+            if let Some((from_location, from_idx)) = app.multiband_editor.dragging_effect {
+                let deck = app.multiband_editor.deck;
+                let stem = Stem::ALL[app.multiband_editor.stem];
+
+                // Move effect in UI
+                app.multiband_editor.move_effect(from_location, from_idx, location, position);
+
+                // TODO: Send move command to backend when implemented
+                let _ = (deck, stem); // Silence unused warnings for now
+            }
+            app.multiband_editor.dragging_effect = None;
+            app.multiband_editor.dragging_effect_name = None;
+            app.multiband_editor.effect_drag_mouse_pos = None;
+            app.multiband_editor.effect_drop_target = None;
+            Task::none()
+        }
+
+        EndDragEffect => {
+            app.multiband_editor.dragging_effect = None;
+            app.multiband_editor.dragging_effect_name = None;
+            app.multiband_editor.effect_drag_mouse_pos = None;
+            app.multiband_editor.effect_drop_target = None;
             Task::none()
         }
 
@@ -492,7 +629,17 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         }
 
         RenameMacro { index, name } => {
-            app.multiband_editor.set_macro_name(index, name);
+            app.multiband_editor.set_macro_name(index, name.clone());
+            Task::none()
+        }
+
+        StartEditMacroName(index) => {
+            app.multiband_editor.editing_macro_name = Some(index);
+            Task::none()
+        }
+
+        EndEditMacroName => {
+            app.multiband_editor.editing_macro_name = None;
             Task::none()
         }
 
@@ -936,6 +1083,11 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             let deck = app.multiband_editor.deck;
             let stem = Stem::ALL[app.multiband_editor.stem];
             let stem_idx = app.multiband_editor.stem;
+
+            // Track mouse position during effect drag for visual overlay
+            if app.multiband_editor.dragging_effect.is_some() {
+                app.multiband_editor.effect_drag_mouse_pos = Some((position.x, position.y));
+            }
 
             // Route to dragging effect knob
             if let Some((location, effect, param)) = app.multiband_editor.dragging_effect_knob {

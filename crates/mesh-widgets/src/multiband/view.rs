@@ -28,6 +28,10 @@ const BYPASS_COLOR: Color = Color::from_rgb(0.5, 0.5, 0.5);
 const LEARNING_COLOR: Color = Color::from_rgb(1.0, 0.3, 0.8);
 /// Color for dry/wet knobs (cyan tint)
 const DRY_WET_COLOR: Color = Color::from_rgb(0.3, 0.8, 0.9);
+/// Color for drag source items (being dragged)
+const DRAG_SOURCE_COLOR: Color = Color::from_rgb(0.4, 0.6, 0.8);
+/// Color for drop target items (valid drop location)
+const DROP_TARGET_COLOR: Color = Color::from_rgb(0.4, 0.8, 0.4);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Horizontal divider helper
@@ -42,6 +46,73 @@ fn divider<'a, M: 'a>() -> Element<'a, M> {
             ..Default::default()
         })
         .into()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Effect drag overlay - floating card following the mouse during drag
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Render a floating effect card that follows the mouse during drag operations
+fn effect_drag_overlay(state: &MultibandEditorState) -> Option<Element<'_, MultibandEditorMessage>> {
+    // Only show when we have both a drag name and mouse position
+    let effect_name = state.dragging_effect_name.as_ref()?;
+    let (mouse_x, mouse_y) = state.effect_drag_mouse_pos?;
+
+    // Check if we're over a drop target - if so, we could snap there
+    // For now, always follow the mouse
+    let _drop_target = state.effect_drop_target;
+
+    // Card dimensions - compact floating card
+    const CARD_WIDTH: f32 = 180.0;
+    const CARD_HEIGHT: f32 = 40.0;
+    const OFFSET_X: f32 = 10.0; // Offset from cursor
+    const OFFSET_Y: f32 = 10.0;
+
+    // Create a compact effect card
+    let card_content = container(
+        row![
+            text("⬛").size(14).color(DRAG_SOURCE_COLOR), // Effect icon
+            text(effect_name).size(12).color(TEXT_PRIMARY),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+    )
+    .padding([8, 12])
+    .style(|_| container::Style {
+        background: Some(iced::Background::Color(Color::from_rgba(0.15, 0.15, 0.18, 0.95))),
+        border: iced::Border {
+            color: DRAG_SOURCE_COLOR,
+            width: 2.0,
+            radius: 6.0.into(),
+        },
+        shadow: iced::Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+            offset: iced::Vector::new(2.0, 4.0),
+            blur_radius: 8.0,
+        },
+        ..Default::default()
+    });
+
+    // Position the card at mouse location using row/column spacers
+    // This creates a "virtual grid" where the card is placed at (mouse_x, mouse_y)
+    let card_with_width = container(card_content)
+        .width(Length::Fixed(CARD_WIDTH))
+        .height(Length::Fixed(CARD_HEIGHT));
+
+    let positioned = column![
+        // Vertical spacer (top padding)
+        Space::new().width(Length::Shrink).height(Length::Fixed(mouse_y + OFFSET_Y)),
+        // Row with horizontal spacer and card
+        row![
+            // Horizontal spacer (left padding)
+            Space::new().width(Length::Fixed(mouse_x + OFFSET_X)).height(Length::Shrink),
+            card_with_width,
+        ]
+    ]
+    .width(Length::Fill)
+    .height(Length::Fill);
+
+    Some(positioned.into())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -189,16 +260,11 @@ pub fn multiband_editor(
             state,
         ),
         // Band columns (center, fill available space)
-        column![
-            row(band_columns)
-                .spacing(4)
-                .width(Length::Fill)
-                .height(Length::Fill),
-            add_band_button(state.bands.len()),
-        ]
-        .spacing(4)
-        .width(Length::Fill)
-        .height(Length::Fill),
+        // Click on crossover bar to add bands instead of using a button
+        row(band_columns)
+            .spacing(4)
+            .width(Length::Fill)
+            .height(Length::Fill),
         // Post-FX chain (right side)
         fx_chain_column(
             "Post-FX",
@@ -256,7 +322,7 @@ pub fn multiband_editor(
         });
 
     // Layer preset browser, save dialog, or param picker on top if open
-    let final_view: Element<'_, MultibandEditorMessage> = if state.preset_browser_open {
+    let base_view: Element<'_, MultibandEditorMessage> = if state.preset_browser_open {
         iced::widget::stack![centered, preset_browser_overlay(state),].into()
     } else if state.save_dialog_open {
         iced::widget::stack![centered, save_dialog_overlay(state),].into()
@@ -264,6 +330,13 @@ pub fn multiband_editor(
         iced::widget::stack![centered, param_picker_overlay(state),].into()
     } else {
         centered.into()
+    };
+
+    // Layer effect drag overlay on top if dragging an effect
+    let final_view = if let Some(drag_overlay) = effect_drag_overlay(state) {
+        iced::widget::stack![base_view, drag_overlay].into()
+    } else {
+        base_view
     };
 
     Some(final_view)
@@ -312,16 +385,11 @@ pub fn multiband_editor_content(
             state,
         ),
         // Band columns (center, fill available space)
-        column![
-            row(band_columns)
-                .spacing(4)
-                .width(Length::Fill)
-                .height(Length::Fill),
-            add_band_button(state.bands.len()),
-        ]
-        .spacing(4)
-        .width(Length::Fill)
-        .height(Length::Fill),
+        // Click on crossover bar to add bands instead of using a button
+        row(band_columns)
+            .spacing(4)
+            .width(Length::Fill)
+            .height(Length::Fill),
         // Post-FX chain (right side)
         fx_chain_column(
             "Post-FX",
@@ -468,14 +536,37 @@ fn band_column<'a>(
     learning_knob: Option<(EffectChainLocation, usize, usize)>,
     editor_state: &'a MultibandEditorState,
 ) -> Element<'a, MultibandEditorMessage> {
+    // Check drag-and-drop state for visual feedback
+    let is_being_dragged = editor_state.dragging_band == Some(band_idx);
+    let is_drop_target = editor_state.band_drop_target == Some(band_idx);
+    let another_band_is_dragging = editor_state.dragging_band.is_some() && !is_being_dragged;
+
     // Band header: name prominently with controls on right
+    // Make the name/freq section draggable for band reordering
+    let header_left = column![
+        text(band.name()).size(14).color(if is_being_dragged {
+            DRAG_SOURCE_COLOR
+        } else {
+            TEXT_PRIMARY
+        }),
+        text(band.freq_range_str()).size(10).color(TEXT_SECONDARY),
+        if is_being_dragged {
+            text("dragging...").size(8).color(DRAG_SOURCE_COLOR)
+        } else if another_band_is_dragging {
+            text("drop here to swap").size(8).color(DROP_TARGET_COLOR)
+        } else {
+            text("drag to swap").size(8).color(Color::from_rgba(0.5, 0.5, 0.5, 0.6))
+        },
+    ]
+    .spacing(1);
+
+    // Wrap the left side in mouse_area for drag initiation
+    let header_left_draggable: Element<'_, MultibandEditorMessage> = mouse_area(header_left)
+        .on_press(MultibandEditorMessage::StartDragBand(band_idx))
+        .into();
+
     let header = row![
-        // Band name and freq range on left
-        column![
-            text(band.name()).size(14).color(TEXT_PRIMARY),
-            text(band.freq_range_str()).size(10).color(TEXT_SECONDARY),
-        ]
-        .spacing(1),
+        header_left_draggable,
         Space::new().width(Length::Fill),
         // Control buttons on right: Solo, Mute, Remove
         button(
@@ -505,25 +596,19 @@ fn band_column<'a>(
     .spacing(2)
     .align_y(Alignment::Center);
 
-    // Effect cards stacked vertically
-    let effect_cards: Vec<Element<'_, MultibandEditorMessage>> = band
-        .effects
-        .iter()
-        .enumerate()
-        .map(|(effect_idx, effect)| {
-            effect_card(
-                band_idx,
-                effect_idx,
-                effect,
-                dragging_macro,
-                effect_knobs,
-                learning_knob,
-                editor_state,
-            )
-        })
-        .collect();
+    // Build effect cards with drop indicators for effect drag-and-drop
+    let location = EffectChainLocation::Band(band_idx);
+    let effects_with_drops = build_effect_list_with_drops(
+        &band.effects,
+        location,
+        band_idx,
+        dragging_macro,
+        effect_knobs,
+        learning_knob,
+        editor_state,
+    );
 
-    let effects_column = column(effect_cards).spacing(4).push(
+    let effects_column = column(effects_with_drops).spacing(2).push(
         button(text("+ Add Effect").size(14))
             .padding([6, 12])
             .on_press(MultibandEditorMessage::OpenEffectPicker(band_idx)),
@@ -531,7 +616,17 @@ fn band_column<'a>(
 
     // Dim if muted or not soloed (when something else is soloed)
     let is_active = !band.muted && (!any_soloed || band.soloed);
-    let bg_color = if is_active { BG_MEDIUM } else { BG_DARK };
+
+    // Visual feedback for drag-and-drop state
+    let (bg_color, border_color, border_width) = if is_drop_target {
+        (Color::from_rgba(0.3, 0.5, 0.3, 0.8), DROP_TARGET_COLOR, 3.0)
+    } else if is_being_dragged {
+        (Color::from_rgba(0.3, 0.4, 0.5, 0.6), DRAG_SOURCE_COLOR, 2.0)
+    } else if is_active {
+        (BG_MEDIUM, BORDER_COLOR, 1.0)
+    } else {
+        (BG_DARK, BORDER_COLOR, 1.0)
+    };
 
     // Chain dry/wet section at the bottom
     let band_knob = editor_state.band_chain_dry_wet_knobs.get(band_idx);
@@ -549,7 +644,7 @@ fn band_column<'a>(
         text("D/W").size(11).color(TEXT_SECONDARY).into()
     };
 
-    container(
+    let band_content = container(
         column![
             header,
             scrollable(
@@ -569,13 +664,28 @@ fn band_column<'a>(
     .style(move |_| container::Style {
         background: Some(bg_color.into()),
         border: iced::Border {
-            color: BORDER_COLOR,
-            width: 1.0,
+            color: border_color,
+            width: border_width,
             radius: 4.0.into(),
         },
         ..Default::default()
-    })
-    .into()
+    });
+
+    // If another band is being dragged, make this a drop target
+    if another_band_is_dragging {
+        mouse_area(band_content)
+            .on_enter(MultibandEditorMessage::SetBandDropTarget(Some(band_idx)))
+            .on_exit(MultibandEditorMessage::SetBandDropTarget(None))
+            .on_release(MultibandEditorMessage::DropBandAt(band_idx))
+            .into()
+    } else if is_being_dragged {
+        // When dragging, on_release ends the drag
+        mouse_area(band_content)
+            .on_release(MultibandEditorMessage::EndDragBand)
+            .into()
+    } else {
+        band_content.into()
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -604,13 +714,17 @@ fn fx_chain_column<'a>(
     .spacing(2)
     .align_x(Alignment::Center);
 
-    let effect_cards: Vec<Element<'_, MultibandEditorMessage>> = effects
-        .iter()
-        .enumerate()
-        .map(|(effect_idx, effect)| {
-            fx_effect_card(effect_idx, effect, location, dragging_macro, effect_knobs, learning_knob, editor_state)
-        })
-        .collect();
+    // Build effect cards with drop indicators for effect drag-and-drop
+    // Use 0 for band_idx_opt since this is pre/post-fx (not band effects)
+    let effects_with_drops = build_effect_list_with_drops(
+        effects,
+        location,
+        0, // not used for pre/post-fx
+        dragging_macro,
+        effect_knobs,
+        learning_knob,
+        editor_state,
+    );
 
     let add_button = button(text("+ Add Effect").size(14))
         .padding([6, 12])
@@ -620,7 +734,7 @@ fn fx_chain_column<'a>(
             MultibandEditorMessage::OpenPostFxEffectPicker
         });
 
-    let effects_column = column(effect_cards).spacing(4).push(add_button);
+    let effects_column = column(effects_with_drops).spacing(2).push(add_button);
 
     // Chain dry/wet section at the bottom
     let (chain_knob, chain_target, chain_dw_mapped) = if location == EffectChainLocation::PreFx {
@@ -665,7 +779,7 @@ fn fx_chain_column<'a>(
         .align_x(Alignment::Center),
     )
     .padding(8)
-    .width(Length::Fixed(260.0))
+    .width(Length::Fixed(300.0))
     .height(Length::Fill)
     .style(move |_| container::Style {
         background: Some(BG_MEDIUM.into()),
@@ -1006,6 +1120,128 @@ fn fx_effect_card<'a>(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Effect list with drop indicators (for drag-and-drop)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build a list of effect cards with drop indicators between them for drag-and-drop
+fn build_effect_list_with_drops<'a>(
+    effects: &'a [EffectUiState],
+    location: EffectChainLocation,
+    band_idx_opt: usize, // Used for band effects, ignored for pre/post fx
+    dragging_macro: Option<usize>,
+    effect_knobs: &'a std::collections::HashMap<super::state::EffectKnobKey, Knob>,
+    learning_knob: Option<(EffectChainLocation, usize, usize)>,
+    editor_state: &'a MultibandEditorState,
+) -> Vec<Element<'a, MultibandEditorMessage>> {
+    let dragging_effect = editor_state.dragging_effect;
+    let effect_drop_target = editor_state.effect_drop_target;
+    let _is_dragging_in_this_location = dragging_effect.map(|(loc, _)| loc == location).unwrap_or(false);
+    let is_any_effect_dragging = dragging_effect.is_some();
+
+    let mut elements: Vec<Element<'a, MultibandEditorMessage>> = Vec::new();
+
+    // Add drop indicator at position 0 (before first effect)
+    if is_any_effect_dragging {
+        elements.push(effect_drop_indicator(location, 0, effect_drop_target));
+    }
+
+    for (effect_idx, effect) in effects.iter().enumerate() {
+        let is_being_dragged = dragging_effect == Some((location, effect_idx));
+
+        // Create the effect card
+        let card = match location {
+            EffectChainLocation::Band(_) => effect_card(
+                band_idx_opt,
+                effect_idx,
+                effect,
+                dragging_macro,
+                effect_knobs,
+                learning_knob,
+                editor_state,
+            ),
+            _ => fx_effect_card(
+                effect_idx,
+                effect,
+                location,
+                dragging_macro,
+                effect_knobs,
+                learning_knob,
+                editor_state,
+            ),
+        };
+
+        // Wrap card in mouse_area for drag support
+        let card_with_drag: Element<'a, MultibandEditorMessage> = if is_being_dragged {
+            // Being dragged - show with drag styling
+            let styled_card = container(card)
+                .style(move |_| container::Style {
+                    border: iced::Border {
+                        color: DRAG_SOURCE_COLOR,
+                        width: 2.0,
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                });
+            mouse_area(styled_card)
+                .on_release(MultibandEditorMessage::EndDragEffect)
+                .into()
+        } else if is_any_effect_dragging {
+            // Another effect is being dragged - make this a potential drop target (inserts after this effect)
+            // Hovering/dropping here would place the dragged effect after this one
+            card
+        } else {
+            // No drag in progress - make this card draggable
+            mouse_area(card)
+                .on_press(MultibandEditorMessage::StartDragEffect {
+                    location,
+                    effect: effect_idx,
+                })
+                .into()
+        };
+
+        elements.push(card_with_drag);
+
+        // Add drop indicator after each effect (for inserting after this effect)
+        if is_any_effect_dragging && !is_being_dragged {
+            elements.push(effect_drop_indicator(location, effect_idx + 1, effect_drop_target));
+        }
+    }
+
+    elements
+}
+
+/// Create a drop indicator element for effect drag-and-drop
+fn effect_drop_indicator<'a>(
+    location: EffectChainLocation,
+    position: usize,
+    current_target: Option<(EffectChainLocation, usize)>,
+) -> Element<'a, MultibandEditorMessage> {
+    let is_target = current_target == Some((location, position));
+
+    let indicator = container(Space::new())
+        .width(Length::Fill)
+        .height(Length::Fixed(if is_target { 8.0 } else { 4.0 }))
+        .style(move |_| container::Style {
+            background: Some(if is_target {
+                DROP_TARGET_COLOR.into()
+            } else {
+                Color::from_rgba(0.4, 0.8, 0.4, 0.2).into()
+            }),
+            border: iced::Border {
+                radius: 2.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+    mouse_area(indicator)
+        .on_enter(MultibandEditorMessage::SetEffectDropTarget(Some((location, position))))
+        .on_exit(MultibandEditorMessage::SetEffectDropTarget(None))
+        .on_release(MultibandEditorMessage::DropEffectAt { location, position })
+        .into()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Effect card (for band effects)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1332,28 +1568,6 @@ fn effect_card<'a>(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Add band button
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn add_band_button(current_bands: usize) -> Element<'static, MultibandEditorMessage> {
-    if current_bands >= 3 {
-        text("Maximum 3 bands")
-            .size(11)
-            .color(TEXT_SECONDARY)
-            .into()
-    } else {
-        button(
-            row![text("+").size(14), text("Add Band").size(14),]
-                .spacing(4)
-                .align_y(Alignment::Center),
-        )
-        .padding([6, 16])
-        .on_press(MultibandEditorMessage::AddBand)
-        .into()
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Macro bar
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1396,47 +1610,95 @@ fn macro_bar<'a>(
                 event,
             });
 
-            // Build mini modulation indicator row
-            let mod_indicators = mod_indicators_row(index, &state.macro_mappings_index[index], state);
+            // Build vertical modulation indicator column (on the side of the knob)
+            let mod_indicators = mod_indicators_column(index, &state.macro_mappings_index[index], state);
 
-            let macro_content = column![
-                mod_indicators,
-                text(format!("{:.0}%", knob.value() * 100.0))
-                    .size(14)
-                    .color(TEXT_SECONDARY),
-                knob_widget,
-                text(if m.mapping_count > 0 {
+            // Check if we're editing this macro's name
+            let is_editing = state.editing_macro_name == Some(index);
+
+            // Name display/editor - click to edit directly
+            let name_element: Element<'_, MultibandEditorMessage> = if is_editing {
+                // Show text input when editing
+                text_input("Name...", &m.name)
+                    .on_input(move |new_name| MultibandEditorMessage::RenameMacro {
+                        index,
+                        name: new_name,
+                    })
+                    .on_submit(MultibandEditorMessage::EndEditMacroName)
+                    .size(11)
+                    .width(Length::Fixed(80.0))
+                    .into()
+            } else {
+                // Show text - click to edit
+                let name_text = if m.mapping_count > 0 {
                     format!("{} ({})", m.name, m.mapping_count)
                 } else {
                     m.name.clone()
-                })
-                .size(11)
-                .color(name_color),
-                text("drag to map")
-                    .size(11)
-                    .color(Color::from_rgb(0.4, 0.4, 0.45)),
-            ]
-            .spacing(2)
-            .align_x(Alignment::Center);
+                };
+                mouse_area(
+                    text(name_text).size(11).color(name_color)
+                )
+                .on_press(MultibandEditorMessage::StartEditMacroName(index))
+                .into()
+            };
 
-            // Wrap in mouse_area for mapping drag support
-            let draggable: Element<'_, MultibandEditorMessage> = mouse_area(
-                container(macro_content)
-                    .padding(4)
-                    .style(move |_| container::Style {
-                        border: iced::Border {
-                            color: border_color,
-                            width: border_width,
-                            radius: 4.0.into(),
-                        },
+            // Drag handle (9-dot grid icon) - only this triggers drag-to-map
+            let drag_handle_color = if is_mapping_drag {
+                Color::from_rgb(1.0, 0.8, 0.3)
+            } else {
+                Color::from_rgb(0.5, 0.5, 0.55)
+            };
+            let drag_handle: Element<'_, MultibandEditorMessage> = mouse_area(
+                container(
+                    text("⠿").size(16).color(drag_handle_color) // 9-dot braille pattern
+                )
+                .padding([2, 4])
+                .style(move |_| container::Style {
+                    background: Some(Color::from_rgba(0.3, 0.3, 0.35, 0.5).into()),
+                    border: iced::Border {
+                        radius: 3.0.into(),
                         ..Default::default()
-                    }),
+                    },
+                    ..Default::default()
+                })
             )
             .on_press(MultibandEditorMessage::StartDragMacro(index))
             .on_release(MultibandEditorMessage::EndDragMacro)
             .into();
 
-            container(draggable).width(Length::Fixed(100.0)).into()
+            // Main content: mod indicators on left, knob + name in center
+            let knob_column = column![
+                text(format!("{:.0}%", knob.value() * 100.0))
+                    .size(12)
+                    .color(TEXT_SECONDARY),
+                knob_widget,
+                name_element,
+                drag_handle,
+            ]
+            .spacing(2)
+            .align_x(Alignment::Center);
+
+            let macro_content = row![
+                mod_indicators,
+                knob_column,
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center);
+
+            // Container with highlight border (no drag from container itself)
+            let styled_content: Element<'_, MultibandEditorMessage> = container(macro_content)
+                .padding(4)
+                .style(move |_| container::Style {
+                    border: iced::Border {
+                        color: border_color,
+                        width: border_width,
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                })
+                .into();
+
+            container(styled_content).width(Length::Fixed(130.0)).into()
         })
         .collect();
 
@@ -1503,11 +1765,11 @@ fn macro_bar<'a>(
             ]
             .width(Length::Fill),
             row![
-                row(macro_widgets).spacing(8).padding([0, 8]), // Add horizontal padding for knob circles
+                row(macro_widgets).spacing(16).padding([0, 8]), // More spacing between macro knobs
                 Space::new().width(Length::Fill),
                 global_dw_knob,
             ]
-            .spacing(8)
+            .spacing(16)
             .align_y(Alignment::Center),
         ]
         .spacing(6),
@@ -1583,7 +1845,56 @@ fn is_param_highlighted(
     false
 }
 
-/// Render a row of mini modulation indicators above a macro knob
+/// Render a column of modulation indicators to the side of a macro knob
+fn mod_indicators_column<'a>(
+    macro_idx: usize,
+    mappings: &[MacroMappingRef],
+    state: &MultibandEditorState,
+) -> Element<'a, MultibandEditorMessage> {
+    // Fixed width for the indicator column (accommodates 16px wide indicators)
+    const INDICATOR_COLUMN_WIDTH: f32 = 20.0;
+
+    if mappings.is_empty() {
+        // Empty placeholder with consistent width
+        return container(Space::new())
+            .width(Length::Fixed(INDICATOR_COLUMN_WIDTH))
+            .height(Length::Fixed(64.0)) // Match knob height
+            .into();
+    }
+
+    let indicators: Vec<Element<'_, MultibandEditorMessage>> = mappings
+        .iter()
+        .enumerate()
+        .take(2) // Limit to 2 visible indicators (they're bigger now)
+        .map(|(i, m)| mod_range_indicator(macro_idx, i, m, state))
+        .collect();
+
+    // Show count if there are more mappings
+    let count_indicator: Option<Element<'_, MultibandEditorMessage>> = if mappings.len() > 2 {
+        Some(
+            text(format!("+{}", mappings.len() - 2))
+                .size(8)
+                .color(TEXT_SECONDARY)
+                .into()
+        )
+    } else {
+        None
+    };
+
+    let mut col = column(indicators).spacing(2).align_x(Alignment::Center);
+    if let Some(count) = count_indicator {
+        col = col.push(count);
+    }
+
+    container(col)
+        .width(Length::Fixed(INDICATOR_COLUMN_WIDTH))
+        .height(Length::Fixed(64.0)) // Match knob height
+        .center_y(Length::Fixed(64.0))
+        .into()
+}
+
+/// Render a row of mini modulation indicators above a macro knob (legacy)
+#[allow(dead_code)]
 fn mod_indicators_row<'a>(
     macro_idx: usize,
     mappings: &[MacroMappingRef],
@@ -1617,10 +1928,10 @@ fn mod_indicators_row<'a>(
     .into()
 }
 
-/// Render a single mini modulation range indicator (8px × 24px bipolar bar)
+/// Render a modulation range indicator (16px × 28px bipolar bar)
 ///
 /// Visual design:
-/// - Center line at 12px from top
+/// - Center line at middle
 /// - Positive offset: fills UP from center (orange)
 /// - Negative offset: fills DOWN from center (darker orange)
 fn mod_range_indicator<'a>(
@@ -1644,19 +1955,19 @@ fn mod_range_indicator<'a>(
         MOD_INDICATOR_COLOR
     };
 
-    // Calculate visual representation
+    // Calculate visual representation (doubled from original 8x24 to 16x28)
     // offset_range is -1 to +1, representing full modulation range
     // The bar shows this as a fill from center: up for positive, down for negative
-    let bar_height = 24.0_f32;
+    let bar_width = 16.0_f32;
+    let bar_height = 28.0_f32;
     let center_y = bar_height / 2.0;
 
     // Use full center_y as max fill so 100% offset fills from center to edge
-    // This means 25% offset_range shows as 25% of the bar height from center
     let max_fill = center_y;
 
-    // Absolute fill amount (0 to max_fill), with minimum 2px for visibility
+    // Absolute fill amount (0 to max_fill), with minimum 3px for visibility
     let fill_amount = if offset_range.abs() > 0.01 {
-        (offset_range.abs() * max_fill).max(2.0).min(max_fill)
+        (offset_range.abs() * max_fill).max(3.0).min(max_fill)
     } else {
         0.0
     };
@@ -1677,7 +1988,7 @@ fn mod_range_indicator<'a>(
                 ..Default::default()
             }),
     )
-    .width(Length::Fixed(8.0))
+    .width(Length::Fixed(bar_width))
     .height(Length::Fixed(bar_height))
     .padding(iced::Padding::default().top(top_pad))  // Asymmetric: only top padding
     .style(move |_| container::Style {
