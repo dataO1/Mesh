@@ -68,27 +68,27 @@ fn effect_drag_overlay(state: &MultibandEditorState) -> Option<Element<'_, Multi
     const OFFSET_X: f32 = 10.0; // Offset from cursor
     const OFFSET_Y: f32 = 10.0;
 
-    // Create a compact effect card
+    // Create a compact effect card - fully opaque for clear visibility
     let card_content = container(
         row![
-            text("⬛").size(14).color(DRAG_SOURCE_COLOR), // Effect icon
-            text(effect_name).size(12).color(TEXT_PRIMARY),
+            text("🎛").size(14).color(DRAG_SOURCE_COLOR), // Effect icon
+            text(effect_name).size(13).color(TEXT_PRIMARY),
         ]
         .spacing(8)
         .align_y(Alignment::Center)
     )
-    .padding([8, 12])
+    .padding([10, 14])
     .style(|_| container::Style {
-        background: Some(iced::Background::Color(Color::from_rgba(0.15, 0.15, 0.18, 0.95))),
+        background: Some(iced::Background::Color(Color::from_rgb(0.18, 0.18, 0.22))), // Fully opaque
         border: iced::Border {
             color: DRAG_SOURCE_COLOR,
             width: 2.0,
             radius: 6.0.into(),
         },
         shadow: iced::Shadow {
-            color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
-            offset: iced::Vector::new(2.0, 4.0),
-            blur_radius: 8.0,
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.7),
+            offset: iced::Vector::new(4.0, 6.0),
+            blur_radius: 12.0,
         },
         ..Default::default()
     });
@@ -114,6 +114,27 @@ fn effect_drag_overlay(state: &MultibandEditorState) -> Option<Element<'_, Multi
 
     Some(positioned.into())
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Latency formatting helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Format latency in samples to a readable string (samples or ms at 48kHz)
+fn format_latency(samples: u32) -> String {
+    if samples == 0 {
+        return String::new();
+    }
+    // Approximate conversion at 48kHz
+    let ms = samples as f32 / 48.0;
+    if ms < 1.0 {
+        format!("{}smp", samples)
+    } else {
+        format!("{:.1}ms", ms)
+    }
+}
+
+/// Color for latency labels - subtle gray/cyan
+const LATENCY_COLOR: Color = Color::from_rgb(0.5, 0.6, 0.65);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Dry/Wet knob helper
@@ -284,16 +305,14 @@ pub fn multiband_editor(
         // Header with preset controls and close button
         header_row(state),
         divider(),
-        // Crossover visualization bar
+        // Crossover visualization bar (flush with processing area)
         crossover_bar(state),
-        divider(),
-        // Main processing area with pre-fx, bands, post-fx
+        // Main processing area with pre-fx, bands, post-fx (no gap)
         processing_area,
-        divider(),
-        // Macro knobs row
+        // Macro knobs row (flush with processing area)
         macro_bar(state),
     ]
-    .spacing(8)
+    .spacing(0)
     .padding(16);
 
     // Wrap in modal container (80% of the screen)
@@ -406,21 +425,26 @@ pub fn multiband_editor_content(
     .height(Length::Fill);
 
     // Content without header (header is provided by the wrapper)
-    let content = column![
-        // Crossover visualization bar
+    // No dividers or gaps between crossover bar, processing area, and macro bar
+    let content: Element<'_, MultibandEditorMessage> = column![
+        // Crossover visualization bar (flush with processing area)
         crossover_bar(state),
-        divider(),
-        // Main processing area with pre-fx, bands, post-fx
+        // Main processing area with pre-fx, bands, post-fx (no gap)
         processing_area,
-        divider(),
-        // Macro knobs row
+        // Macro knobs row (flush with processing area)
         macro_bar(state),
     ]
-    .spacing(8)
+    .spacing(0)
     .width(Length::Fill)
-    .height(Length::Fill);
+    .height(Length::Fill)
+    .into();
 
-    content.into()
+    // Layer effect drag overlay on top if dragging an effect
+    if let Some(drag_overlay) = effect_drag_overlay(state) {
+        iced::widget::stack![content, drag_overlay].into()
+    } else {
+        content
+    }
 }
 
 /// Ensure all effect parameter knobs exist in the state
@@ -825,8 +849,19 @@ fn fx_effect_card<'a>(
             MultibandEditorMessage::OpenPluginGui { location, effect: effect_idx }
         };
 
+        // Build name with optional latency
+        let latency_text = format_latency(effect.latency_samples);
+        let name_with_latency: Element<'_, MultibandEditorMessage> = if latency_text.is_empty() {
+            text(&effect.name).size(14).color(name_color).into()
+        } else {
+            row![
+                text(&effect.name).size(14).color(name_color),
+                text(format!(" ({})", latency_text)).size(10).color(LATENCY_COLOR),
+            ].spacing(0).into()
+        };
+
         row![
-            text(&effect.name).size(14).color(name_color),
+            name_with_latency,
             Space::new().width(Length::Fill),
             // Settings button for CLAP plugins (toggles open/close)
             button(text(settings_icon).size(11).color(settings_color))
@@ -852,8 +887,19 @@ fn fx_effect_card<'a>(
                 }),
         ]
     } else {
+        // Build name with optional latency (non-CLAP)
+        let latency_text = format_latency(effect.latency_samples);
+        let name_with_latency: Element<'_, MultibandEditorMessage> = if latency_text.is_empty() {
+            text(&effect.name).size(14).color(name_color).into()
+        } else {
+            row![
+                text(&effect.name).size(14).color(name_color),
+                text(format!(" ({})", latency_text)).size(10).color(LATENCY_COLOR),
+            ].spacing(0).into()
+        };
+
         row![
-            text(&effect.name).size(14).color(name_color),
+            name_with_latency,
             Space::new().width(Length::Fill),
             button(
                 text(if effect.bypassed { "○" } else { "●" })
@@ -1278,8 +1324,19 @@ fn effect_card<'a>(
             MultibandEditorMessage::OpenPluginGui { location, effect: effect_idx }
         };
 
+        // Build name with optional latency
+        let latency_text = format_latency(effect.latency_samples);
+        let name_with_latency: Element<'_, MultibandEditorMessage> = if latency_text.is_empty() {
+            text(&effect.name).size(11).color(name_color).into()
+        } else {
+            row![
+                text(&effect.name).size(11).color(name_color),
+                text(format!(" ({})", latency_text)).size(9).color(LATENCY_COLOR),
+            ].spacing(0).into()
+        };
+
         row![
-            text(&effect.name).size(11).color(name_color),
+            name_with_latency,
             Space::new().width(Length::Fill),
             // Settings button for CLAP plugins (toggles open/close)
             button(text(settings_icon).size(11).color(settings_color))
@@ -1303,8 +1360,19 @@ fn effect_card<'a>(
                 }),
         ]
     } else {
+        // Build name with optional latency (non-CLAP)
+        let latency_text = format_latency(effect.latency_samples);
+        let name_with_latency: Element<'_, MultibandEditorMessage> = if latency_text.is_empty() {
+            text(&effect.name).size(11).color(name_color).into()
+        } else {
+            row![
+                text(&effect.name).size(11).color(name_color),
+                text(format!(" ({})", latency_text)).size(9).color(LATENCY_COLOR),
+            ].spacing(0).into()
+        };
+
         row![
-            text(&effect.name).size(11).color(name_color),
+            name_with_latency,
             Space::new().width(Length::Fill),
             button(
                 text(if effect.bypassed { "○" } else { "●" })
@@ -1666,14 +1734,21 @@ fn macro_bar<'a>(
             .on_release(MultibandEditorMessage::EndDragMacro)
             .into();
 
+            // Name row with drag handle on the left
+            let name_row = row![
+                drag_handle,
+                name_element,
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center);
+
             // Main content: mod indicators on left, knob + name in center
             let knob_column = column![
                 text(format!("{:.0}%", knob.value() * 100.0))
                     .size(12)
                     .color(TEXT_SECONDARY),
                 knob_widget,
-                name_element,
-                drag_handle,
+                name_row,
             ]
             .spacing(2)
             .align_x(Alignment::Center);
@@ -1845,7 +1920,8 @@ fn is_param_highlighted(
     false
 }
 
-/// Render a column of modulation indicators to the side of a macro knob
+/// Render a dynamic column of modulation indicators to the side of a macro knob
+/// Shows all mapped parameters, growing the column as needed
 fn mod_indicators_column<'a>(
     macro_idx: usize,
     mappings: &[MacroMappingRef],
@@ -1853,6 +1929,8 @@ fn mod_indicators_column<'a>(
 ) -> Element<'a, MultibandEditorMessage> {
     // Fixed width for the indicator column (accommodates 16px wide indicators)
     const INDICATOR_COLUMN_WIDTH: f32 = 20.0;
+    // Smaller indicators when there are many mappings
+    const COMPACT_THRESHOLD: usize = 3;
 
     if mappings.is_empty() {
         // Empty placeholder with consistent width
@@ -1862,34 +1940,25 @@ fn mod_indicators_column<'a>(
             .into();
     }
 
+    // Show ALL indicators - dynamically size based on count
     let indicators: Vec<Element<'_, MultibandEditorMessage>> = mappings
         .iter()
         .enumerate()
-        .take(2) // Limit to 2 visible indicators (they're bigger now)
-        .map(|(i, m)| mod_range_indicator(macro_idx, i, m, state))
+        .map(|(i, m)| {
+            if mappings.len() > COMPACT_THRESHOLD {
+                // Compact mode for many mappings
+                mod_range_indicator_compact(macro_idx, i, m, state)
+            } else {
+                mod_range_indicator(macro_idx, i, m, state)
+            }
+        })
         .collect();
 
-    // Show count if there are more mappings
-    let count_indicator: Option<Element<'_, MultibandEditorMessage>> = if mappings.len() > 2 {
-        Some(
-            text(format!("+{}", mappings.len() - 2))
-                .size(8)
-                .color(TEXT_SECONDARY)
-                .into()
-        )
-    } else {
-        None
-    };
-
-    let mut col = column(indicators).spacing(2).align_x(Alignment::Center);
-    if let Some(count) = count_indicator {
-        col = col.push(count);
-    }
+    let col = column(indicators).spacing(1).align_x(Alignment::Center);
 
     container(col)
         .width(Length::Fixed(INDICATOR_COLUMN_WIDTH))
-        .height(Length::Fixed(64.0)) // Match knob height
-        .center_y(Length::Fixed(64.0))
+        .center_y(Length::Shrink)
         .into()
 }
 
@@ -2003,6 +2072,72 @@ fn mod_range_indicator<'a>(
     .into();
 
     // Wrap in mouse_area for drag and hover interactions
+    mouse_area(bar_visual)
+        .on_press(MultibandEditorMessage::StartDragModRange { macro_index: macro_idx, mapping_idx })
+        .on_enter(MultibandEditorMessage::HoverModRange { macro_index: macro_idx, mapping_idx })
+        .on_exit(MultibandEditorMessage::UnhoverModRange)
+        .into()
+}
+
+/// Render a compact modulation range indicator (12px × 16px) for when there are many mappings
+fn mod_range_indicator_compact<'a>(
+    macro_idx: usize,
+    mapping_idx: usize,
+    mapping: &MacroMappingRef,
+    state: &MultibandEditorState,
+) -> Element<'a, MultibandEditorMessage> {
+    let is_hovered = state.hovered_mapping == Some((macro_idx, mapping_idx));
+    let is_dragging = state.dragging_mod_range
+        .map(|d| d.macro_index == macro_idx && d.mapping_idx == mapping_idx)
+        .unwrap_or(false);
+    let offset_range = mapping.offset_range;
+
+    // Determine fill color based on state
+    let fill_color = if is_hovered || is_dragging {
+        MOD_INDICATOR_HIGHLIGHT_COLOR
+    } else if offset_range < 0.0 {
+        MOD_INDICATOR_INVERTED_COLOR
+    } else {
+        MOD_INDICATOR_COLOR
+    };
+
+    // Compact dimensions (smaller than regular)
+    let bar_width = 12.0_f32;
+    let bar_height = 16.0_f32;
+    let center_y = bar_height / 2.0;
+    let max_fill = center_y;
+
+    let fill_amount = if offset_range.abs() > 0.01 {
+        (offset_range.abs() * max_fill).max(2.0).min(max_fill)
+    } else {
+        0.0
+    };
+
+    let top_pad = if offset_range >= 0.0 { center_y - fill_amount } else { center_y };
+
+    let bar_visual: Element<'_, MultibandEditorMessage> = container(
+        container(Space::new().width(Length::Fill).height(Length::Fill))
+            .width(Length::Fill)
+            .height(Length::Fixed(fill_amount))
+            .style(move |_| container::Style {
+                background: Some(fill_color.into()),
+                ..Default::default()
+            }),
+    )
+    .width(Length::Fixed(bar_width))
+    .height(Length::Fixed(bar_height))
+    .padding(iced::Padding::default().top(top_pad))
+    .style(move |_| container::Style {
+        background: Some(BG_LIGHT.into()),
+        border: iced::Border {
+            color: if is_hovered || is_dragging { MOD_INDICATOR_HIGHLIGHT_COLOR } else { BORDER_COLOR },
+            width: 1.0,
+            radius: 2.0.into(),
+        },
+        ..Default::default()
+    })
+    .into();
+
     mouse_area(bar_visual)
         .on_press(MultibandEditorMessage::StartDragModRange { macro_index: macro_idx, mapping_idx })
         .on_enter(MultibandEditorMessage::HoverModRange { macro_index: macro_idx, mapping_idx })

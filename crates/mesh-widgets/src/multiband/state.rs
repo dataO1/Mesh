@@ -185,6 +185,10 @@ pub struct EffectUiState {
     /// Macro mapping for dry/wet parameter
     #[serde(default)]
     pub dry_wet_macro_mapping: Option<ParamMacroMapping>,
+
+    /// Effect latency in samples (reported by plugin, not serialized)
+    #[serde(skip)]
+    pub latency_samples: u32,
 }
 
 /// Default dry/wet value (100% wet = normal processing)
@@ -230,6 +234,7 @@ impl EffectUiState {
             saved_param_values: Vec::new(), // Fresh effect, no saved values
             dry_wet: 1.0,
             dry_wet_macro_mapping: None,
+            latency_samples: 0,
         }
     }
 
@@ -262,6 +267,7 @@ impl EffectUiState {
             saved_param_values: Vec::new(), // Fresh effect, no saved values
             dry_wet: 1.0,
             dry_wet_macro_mapping: None,
+            latency_samples: 0,
         }
     }
 

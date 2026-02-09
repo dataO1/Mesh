@@ -58,6 +58,7 @@ fn create_effect_state_from_info(
         saved_param_values: Vec::new(), // Fresh effect, no saved values
         dry_wet: 1.0,
         dry_wet_macro_mapping: None,
+        latency_samples: effect_info.latency_samples,
     }
 }
 

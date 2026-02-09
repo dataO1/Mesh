@@ -113,6 +113,8 @@ pub struct EffectInfo {
     /// Parameter descriptions (no limit - can be 100+ for CLAP plugins)
     /// The UI's 8 knobs are "slots" that can be assigned to any parameter index
     pub params: Vec<ParamInfo>,
+    /// Processing latency in samples (reported by plugin)
+    pub latency_samples: u32,
 }
 
 impl EffectInfo {
@@ -122,6 +124,7 @@ impl EffectInfo {
             name: name.into(),
             category: category.into(),
             params: Vec::new(),
+            latency_samples: 0,
         }
     }
 
