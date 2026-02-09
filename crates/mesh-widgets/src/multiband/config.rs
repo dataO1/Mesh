@@ -133,6 +133,7 @@ impl StemPresetConfig {
 
         // Clear effect knobs - they reference old effect locations
         state.effect_knobs.clear();
+        state.effect_dry_wet_knobs.clear();
 
         // Clear the macro mappings index - will be rebuilt after
         for mappings in &mut state.macro_mappings_index {
@@ -164,6 +165,19 @@ impl StemPresetConfig {
         state.post_fx_chain_dry_wet_macro_mapping = self.post_fx_chain_dry_wet_macro_mapping.as_ref().map(|m| m.to_mapping());
         state.global_dry_wet = self.global_dry_wet;
         state.global_dry_wet_macro_mapping = self.global_dry_wet_macro_mapping.as_ref().map(|m| m.to_mapping());
+
+        // Rebuild band chain dry/wet knobs to match new band data
+        state.band_chain_dry_wet_knobs.clear();
+        for band in &state.bands {
+            let mut k = crate::knob::Knob::new(36.0);
+            k.set_value(band.chain_dry_wet);
+            state.band_chain_dry_wet_knobs.push(k);
+        }
+
+        // Sync chain-level dry/wet knobs
+        state.pre_fx_chain_dry_wet_knob.set_value(self.pre_fx_chain_dry_wet);
+        state.post_fx_chain_dry_wet_knob.set_value(self.post_fx_chain_dry_wet);
+        state.global_dry_wet_knob.set_value(self.global_dry_wet);
 
         // Update solo state
         state.any_soloed = state.bands.iter().any(|b| b.soloed);

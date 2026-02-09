@@ -1005,11 +1005,11 @@ impl MultibandEditorState {
 
     /// Remove knobs for an effect that was removed
     pub fn remove_effect_knobs(&mut self, location: EffectChainLocation, effect_idx: usize) {
-        // Remove all knobs for this effect
+        // Remove all param knobs for this effect
         self.effect_knobs.retain(|&(loc, eff, _), _| {
             !(loc == location && eff == effect_idx)
         });
-        // Shift indices for effects after the removed one
+        // Shift param knob indices for effects after the removed one
         let keys_to_update: Vec<_> = self.effect_knobs.keys()
             .filter(|&&(loc, eff, _)| loc == location && eff > effect_idx)
             .copied()
@@ -1018,6 +1018,20 @@ impl MultibandEditorState {
             if let Some(knob) = self.effect_knobs.remove(&key) {
                 let new_key = (key.0, key.1 - 1, key.2);
                 self.effect_knobs.insert(new_key, knob);
+            }
+        }
+
+        // Remove the dry/wet knob for this effect
+        self.effect_dry_wet_knobs.remove(&(location, effect_idx));
+        // Shift dry/wet knob indices for effects after the removed one
+        let dw_keys_to_update: Vec<_> = self.effect_dry_wet_knobs.keys()
+            .filter(|&&(loc, eff)| loc == location && eff > effect_idx)
+            .copied()
+            .collect();
+        for key in dw_keys_to_update {
+            if let Some(knob) = self.effect_dry_wet_knobs.remove(&key) {
+                let new_key = (key.0, key.1 - 1);
+                self.effect_dry_wet_knobs.insert(new_key, knob);
             }
         }
     }
@@ -1387,12 +1401,17 @@ impl MultibandEditorState {
             return;
         }
 
-        // Remove effect knobs for this band
+        // Remove effect knobs for this band (both param knobs and dry/wet knobs)
         for effect_idx in 0..self.bands[index].effects.len() {
             self.remove_effect_knobs(EffectChainLocation::Band(index), effect_idx);
         }
 
         self.bands.remove(index);
+
+        // Remove the band's chain dry/wet knob
+        if index < self.band_chain_dry_wet_knobs.len() {
+            self.band_chain_dry_wet_knobs.remove(index);
+        }
 
         // Remove the corresponding crossover frequency
         if !self.crossover_freqs.is_empty() {
@@ -1405,7 +1424,7 @@ impl MultibandEditorState {
             band.index = i;
         }
 
-        // Update effect knob keys for bands after the removed one
+        // Update effect param knob keys for bands after the removed one
         let keys_to_update: Vec<_> = self.effect_knobs.keys()
             .filter(|&&(loc, _, _)| matches!(loc, EffectChainLocation::Band(b) if b > index))
             .copied()
@@ -1419,8 +1438,23 @@ impl MultibandEditorState {
             }
         }
 
+        // Update effect dry/wet knob keys for bands after the removed one
+        let dw_keys_to_update: Vec<_> = self.effect_dry_wet_knobs.keys()
+            .filter(|&&(loc, _)| matches!(loc, EffectChainLocation::Band(b) if b > index))
+            .copied()
+            .collect();
+        for key in dw_keys_to_update {
+            if let Some(knob) = self.effect_dry_wet_knobs.remove(&key) {
+                if let EffectChainLocation::Band(b) = key.0 {
+                    let new_key = (EffectChainLocation::Band(b - 1), key.1);
+                    self.effect_dry_wet_knobs.insert(new_key, knob);
+                }
+            }
+        }
+
         self.update_band_frequencies();
         self.any_soloed = self.bands.iter().any(|b| b.soloed);
+        self.rebuild_macro_mappings_index();
     }
 
     /// Set a crossover frequency

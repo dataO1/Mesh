@@ -249,7 +249,15 @@ impl MeshCueApp {
             // ─────────────────────────────────────────────────────────────────────
             RemovePreFxEffect(idx) => {
                 if idx < self.effects_editor.editor.pre_fx.len() {
+                    // Close plugin GUI and remove handle before removing effect
+                    self.close_clap_gui_for_effect(&EffectChainLocation::PreFx, idx);
+                    self.effects_editor.editor.remove_effect_knobs(EffectChainLocation::PreFx, idx);
                     self.effects_editor.editor.pre_fx.remove(idx);
+                    self.effects_editor.editor.rebuild_macro_mappings_index();
+                    if self.effects_editor.audio_preview_enabled {
+                        let stem = self.effects_editor.active_stem_type();
+                        self.audio.remove_multiband_pre_fx(stem, idx);
+                    }
                     log::info!("Removed pre-fx effect at index {}", idx);
                 }
             }
@@ -270,11 +278,21 @@ impl MeshCueApp {
             // Band effect management
             // ─────────────────────────────────────────────────────────────────────
             RemoveEffect { band, effect } => {
-                if let Some(b) = self.effects_editor.editor.bands.get_mut(band) {
-                    if effect < b.effects.len() {
-                        b.effects.remove(effect);
-                        log::info!("Removed effect {} from band {}", effect, band);
+                let can_remove = self.effects_editor.editor.bands.get(band)
+                    .map(|b| effect < b.effects.len())
+                    .unwrap_or(false);
+                if can_remove {
+                    let location = EffectChainLocation::Band(band);
+                    // Close plugin GUI and remove handle before removing effect
+                    self.close_clap_gui_for_effect(&location, effect);
+                    self.effects_editor.editor.remove_effect_knobs(location, effect);
+                    self.effects_editor.editor.bands[band].effects.remove(effect);
+                    self.effects_editor.editor.rebuild_macro_mappings_index();
+                    if self.effects_editor.audio_preview_enabled {
+                        let stem = self.effects_editor.active_stem_type();
+                        self.audio.remove_multiband_band_effect(stem, band, effect);
                     }
+                    log::info!("Removed effect {} from band {}", effect, band);
                 }
             }
             ToggleEffectBypass { band, effect } => {
@@ -307,7 +325,15 @@ impl MeshCueApp {
             // ─────────────────────────────────────────────────────────────────────
             RemovePostFxEffect(idx) => {
                 if idx < self.effects_editor.editor.post_fx.len() {
+                    // Close plugin GUI and remove handle before removing effect
+                    self.close_clap_gui_for_effect(&EffectChainLocation::PostFx, idx);
+                    self.effects_editor.editor.remove_effect_knobs(EffectChainLocation::PostFx, idx);
                     self.effects_editor.editor.post_fx.remove(idx);
+                    self.effects_editor.editor.rebuild_macro_mappings_index();
+                    if self.effects_editor.audio_preview_enabled {
+                        let stem = self.effects_editor.active_stem_type();
+                        self.audio.remove_multiband_post_fx(stem, idx);
+                    }
                     log::info!("Removed post-fx effect at index {}", idx);
                 }
             }
@@ -1831,6 +1857,23 @@ impl MeshCueApp {
     fn sync_editor_to_audio(&mut self) {
         let stem = self.effects_editor.active_stem_type();
 
+        // 0. Destroy all open plugin GUIs and remove handles before recreating
+        // This prevents orphaned GUI windows pointing to freed plugin wrappers (segfault)
+        self.domain.destroy_all_clap_gui_handles();
+
+        // Also clear gui_open flags in the editor state
+        for effect in &mut self.effects_editor.editor.pre_fx {
+            effect.gui_open = false;
+        }
+        for band in &mut self.effects_editor.editor.bands {
+            for effect in &mut band.effects {
+                effect.gui_open = false;
+            }
+        }
+        for effect in &mut self.effects_editor.editor.post_fx {
+            effect.gui_open = false;
+        }
+
         // 1. Reset the multiband host to clean slate
         self.audio.reset_multiband(stem);
 
@@ -1939,6 +1982,9 @@ impl MeshCueApp {
     fn sync_all_stems_to_audio(&mut self) {
         use mesh_core::types::Stem;
 
+        // Destroy all plugin GUI handles upfront before recreating any effects
+        self.domain.destroy_all_clap_gui_handles();
+
         let active = self.effects_editor.active_stem;
 
         for stem_idx in 0..4 {
@@ -2038,6 +2084,36 @@ impl MeshCueApp {
         }
     }
 
+    /// Generate CLAP effect instance ID for a given location and effect index
+    fn clap_effect_instance_id(plugin_id: &str, location: &EffectChainLocation, effect_idx: usize) -> String {
+        match location {
+            EffectChainLocation::PreFx => format!("{}_cue_prefx_{}", plugin_id, effect_idx),
+            EffectChainLocation::Band(band_idx) => format!("{}_cue_b{}_{}", plugin_id, band_idx, effect_idx),
+            EffectChainLocation::PostFx => format!("{}_cue_postfx_{}", plugin_id, effect_idx),
+        }
+    }
+
+    /// Close and remove the CLAP GUI handle for an effect at the given location
+    ///
+    /// Looks up the effect's plugin ID, builds the instance ID, then destroys
+    /// the GUI window (if open) and removes the handle from domain.
+    fn close_clap_gui_for_effect(&mut self, location: &EffectChainLocation, effect_idx: usize) {
+        let effect_state = match location {
+            EffectChainLocation::PreFx => self.effects_editor.editor.pre_fx.get(effect_idx),
+            EffectChainLocation::Band(band_idx) => self.effects_editor.editor.bands
+                .get(*band_idx)
+                .and_then(|b| b.effects.get(effect_idx)),
+            EffectChainLocation::PostFx => self.effects_editor.editor.post_fx.get(effect_idx),
+        };
+
+        if let Some(effect) = effect_state {
+            if effect.source == EffectSourceType::Clap {
+                let instance_id = Self::clap_effect_instance_id(&effect.id, location, effect_idx);
+                self.domain.remove_clap_gui_handle(&instance_id);
+            }
+        }
+    }
+
     /// Create an audio effect instance by ID, source type, and location
     ///
     /// For CLAP effects, creates the effect WITH a GUI handle so that the same
@@ -2055,15 +2131,7 @@ impl MeshCueApp {
                 self.domain.create_pd_effect(id).ok()
             }
             EffectSourceType::Clap => {
-                // Generate effect instance ID matching the format used in handlers
-                let effect_instance_id = match location {
-                    EffectChainLocation::PreFx => format!("{}_cue_prefx_{}", id, effect_idx),
-                    EffectChainLocation::Band(band_idx) => format!("{}_cue_b{}_{}", id, band_idx, effect_idx),
-                    EffectChainLocation::PostFx => format!("{}_cue_postfx_{}", id, effect_idx),
-                };
-
-                // Create effect WITH GUI handle so audio and GUI share the same wrapper
-                // This ensures parameter learning works correctly
+                let effect_instance_id = Self::clap_effect_instance_id(id, &location, effect_idx);
                 self.domain.create_clap_effect_with_gui(id, effect_instance_id).ok()
             }
             EffectSourceType::Native => {

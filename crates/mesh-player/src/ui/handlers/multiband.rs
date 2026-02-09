@@ -140,7 +140,9 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             let stem = Stem::ALL[app.multiband_editor.stem];
             app.domain.remove_pre_fx_effect(deck, stem, index);
             if index < app.multiband_editor.pre_fx.len() {
+                app.multiband_editor.remove_effect_knobs(EffectChainLocation::PreFx, index);
                 app.multiband_editor.pre_fx.remove(index);
+                app.multiband_editor.rebuild_macro_mappings_index();
             }
             Task::none()
         }
@@ -465,10 +467,13 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             app.domain.remove_effect_from_band(deck, stem, band, effect);
 
             // Update UI state
-            if let Some(band_state) = app.multiband_editor.bands.get_mut(band) {
-                if effect < band_state.effects.len() {
-                    band_state.effects.remove(effect);
-                }
+            let can_remove = app.multiband_editor.bands.get(band)
+                .map(|b| effect < b.effects.len())
+                .unwrap_or(false);
+            if can_remove {
+                app.multiband_editor.remove_effect_knobs(EffectChainLocation::Band(band), effect);
+                app.multiband_editor.bands[band].effects.remove(effect);
+                app.multiband_editor.rebuild_macro_mappings_index();
             }
             Task::none()
         }
@@ -585,7 +590,9 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             app.domain.remove_post_fx_effect(deck, stem, index);
 
             if index < app.multiband_editor.post_fx.len() {
+                app.multiband_editor.remove_effect_knobs(EffectChainLocation::PostFx, index);
                 app.multiband_editor.post_fx.remove(index);
+                app.multiband_editor.rebuild_macro_mappings_index();
             }
             Task::none()
         }

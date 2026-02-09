@@ -1222,8 +1222,22 @@ impl MeshCueDomain {
     }
 
     /// Remove a CLAP GUI handle (when effect is removed)
+    ///
+    /// Destroys the plugin GUI window (if open) before removing the handle.
     pub fn remove_clap_gui_handle(&mut self, effect_instance_id: &str) {
-        self.clap_gui_handles.remove(effect_instance_id);
+        if let Some(handle) = self.clap_gui_handles.remove(effect_instance_id) {
+            handle.destroy_gui();
+        }
+    }
+
+    /// Destroy all CLAP GUI windows and remove all handles
+    ///
+    /// Used before recreating effects (e.g., during audio sync after stem switch)
+    /// to prevent orphaned GUI windows pointing to freed plugin wrappers.
+    pub fn destroy_all_clap_gui_handles(&mut self) {
+        for (_, handle) in self.clap_gui_handles.drain() {
+            handle.destroy_gui();
+        }
     }
 }
 
