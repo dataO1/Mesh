@@ -97,6 +97,17 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
     range, enabling expressive performance control
   - Values are saved and loaded with presets (existing presets default to 100% wet)
 
+- **Reworked shader-based knob visuals** — Complete overhaul of the GPU-accelerated
+  knob rendering for better visual feedback:
+  - **Arc-based value display** — Proper 270° arc showing value from min to max
+  - **Modulation range indicators** — Orange outer arcs on effect knobs show the
+    possible modulation swing when mapped to a macro
+  - **Separate base/display values** — The value arc shows the base parameter value,
+    while the white indicator dot shows the actual modulated position
+  - **Fixed fullscreen triangle rendering** — Corrected viewport coordinate handling
+    for iced's `draw()` method, fixing clipping issues at screen edges
+  - **Improved arc calculations** — Fixed angle normalization for arcs crossing 0°
+
 ### Fixed
 
 - **Effects editor preset loading** — Loading a preset now properly clears stale

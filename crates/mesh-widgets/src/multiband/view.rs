@@ -805,11 +805,30 @@ fn fx_effect_card<'a>(
                     .into()
             };
 
-            // Get knob from state
+            // Get knob from state and apply modulation visualization if mapped
             let key = (location, effect_idx, knob_idx);
             let knob_element: Element<'_, MultibandEditorMessage> =
                 if let Some(knob) = effect_knobs.get(&key) {
-                    knob.view(move |event| MultibandEditorMessage::EffectKnob {
+                    // Check if this knob has a macro mapping
+                    let mut display_knob = knob.clone();
+                    if let Some(ref mapping) = assignment.macro_mapping {
+                        if let Some(macro_idx) = mapping.macro_index {
+                            // Get current macro value
+                            let macro_value = editor_state.macro_value(macro_idx);
+                            // Calculate modulation bounds based on base value
+                            let (mod_min, mod_max) = mapping.modulation_bounds(assignment.value);
+                            // Set modulation range indicator
+                            display_knob.set_modulations(vec![ModulationRange::new(
+                                mod_min,
+                                mod_max,
+                                Color::from_rgb(0.9, 0.5, 0.2), // Orange for mod range
+                            )]);
+                            // Calculate and set the actual modulated value for the indicator dot
+                            let modulated_value = mapping.modulate(assignment.value, macro_value);
+                            display_knob.set_display_value(Some(modulated_value));
+                        }
+                    }
+                    display_knob.view(move |event| MultibandEditorMessage::EffectKnob {
                         location,
                         effect: effect_idx,
                         param: knob_idx,
@@ -1079,11 +1098,30 @@ fn effect_card<'a>(
             // Get the current value for display
             let value_display = format!("{:.0}%", assignment.value * 100.0);
 
-            // Get knob from state
+            // Get knob from state and apply modulation visualization if mapped
             let key = (location, effect_idx, knob_idx);
             let knob_element: Element<'_, MultibandEditorMessage> =
                 if let Some(knob) = effect_knobs.get(&key) {
-                    knob.view(move |event| MultibandEditorMessage::EffectKnob {
+                    // Check if this knob has a macro mapping
+                    let mut display_knob = knob.clone();
+                    if let Some(ref mapping) = assignment.macro_mapping {
+                        if let Some(macro_idx) = mapping.macro_index {
+                            // Get current macro value
+                            let macro_value = editor_state.macro_value(macro_idx);
+                            // Calculate modulation bounds based on base value
+                            let (mod_min, mod_max) = mapping.modulation_bounds(assignment.value);
+                            // Set modulation range indicator
+                            display_knob.set_modulations(vec![ModulationRange::new(
+                                mod_min,
+                                mod_max,
+                                Color::from_rgb(0.9, 0.5, 0.2), // Orange for mod range
+                            )]);
+                            // Calculate and set the actual modulated value for the indicator dot
+                            let modulated_value = mapping.modulate(assignment.value, macro_value);
+                            display_knob.set_display_value(Some(modulated_value));
+                        }
+                    }
+                    display_knob.view(move |event| MultibandEditorMessage::EffectKnob {
                         location,
                         effect: effect_idx,
                         param: knob_idx,
@@ -1302,18 +1340,9 @@ fn macro_bar<'a>(
                 Color::TRANSPARENT
             };
 
-            // Build modulation indicators if this macro has mappings
-            let mut display_knob = knob.clone();
-            if m.mapping_count > 0 {
-                let value = knob.value();
-                display_knob.set_modulations(vec![ModulationRange::new(
-                    (value - 0.1).max(0.0),
-                    (value + 0.1).min(1.0),
-                    Color::from_rgb(0.9, 0.5, 0.2),
-                )]);
-            }
-
-            let knob_widget = display_knob.view(move |event| MultibandEditorMessage::MacroKnob {
+            // Macro knobs don't show modulation indicators - they ARE the modulation source
+            // Only target knobs (effect params, dry/wet) should show modulation ranges
+            let knob_widget = knob.view(move |event| MultibandEditorMessage::MacroKnob {
                 index,
                 event,
             });

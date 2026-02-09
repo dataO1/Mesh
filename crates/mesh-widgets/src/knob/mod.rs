@@ -72,8 +72,11 @@ pub enum KnobEvent {
 pub struct Knob {
     /// Stable unique ID (never changes after creation)
     id: u64,
-    /// Current value (0.0 - 1.0)
+    /// Current value (0.0 - 1.0) - the base/stored value
     value: f32,
+    /// Display value for the indicator dot - if set, shows modulated position
+    /// When None, the indicator shows at `value`
+    display_value: Option<f32>,
     /// Whether currently being dragged
     dragging: bool,
     /// Last cursor position during drag
@@ -106,6 +109,7 @@ impl Knob {
         Self {
             id: KNOB_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             value: 0.5,
+            display_value: None,
             dragging: false,
             last_drag_pos: None,
             size,
@@ -180,6 +184,17 @@ impl Knob {
         self.modulations.clear();
     }
 
+    /// Set the display value (where the indicator dot appears)
+    /// Use this for showing modulated position while keeping base value separate
+    pub fn set_display_value(&mut self, value: Option<f32>) {
+        self.display_value = value.map(|v| v.clamp(0.0, 1.0));
+    }
+
+    /// Get the effective display value (display_value if set, otherwise value)
+    pub fn effective_display_value(&self) -> f32 {
+        self.display_value.unwrap_or(self.value)
+    }
+
     /// Handle a knob event and return the new value if it changed
     ///
     /// Call this from your update function when you receive a `KnobEvent`.
@@ -237,6 +252,7 @@ impl Knob {
         let program = KnobProgram {
             id: self.id,
             value: self.value,
+            display_value: self.effective_display_value(),
             dragging: self.dragging,
             bipolar: self.bipolar,
             modulations: self.modulations.clone(),

@@ -35,6 +35,8 @@ struct Uniforms {
     bounds: [f32; 4],
     // [value, dragging, bipolar, mod_count]
     params: [f32; 4],
+    // [display_value, unused, unused, unused]
+    params2: [f32; 4],
     // [min0, max0, min1, max1]
     mod_ranges_01: [f32; 4],
     // [min2, max2, min3, max3]
@@ -69,8 +71,11 @@ fn color_to_array(c: Color) -> [f32; 4] {
 pub(crate) struct KnobProgram {
     /// Stable ID from the parent Knob widget
     pub id: u64,
-    /// Current value (0.0 - 1.0)
+    /// Current value (0.0 - 1.0) - base value for the value arc
     pub value: f32,
+    /// Display value (0.0 - 1.0) - where the indicator dot appears
+    /// Can differ from value when modulation is active
+    pub display_value: f32,
     /// Whether the knob is being dragged
     pub dragging: bool,
     /// Bipolar mode (value arc from center instead of min)
@@ -100,6 +105,7 @@ impl shader::Program<()> for KnobProgram {
         KnobPrimitive {
             id: self.id,
             value: self.value,
+            display_value: self.display_value,
             dragging: self.dragging,
             bipolar: self.bipolar,
             modulations: self.modulations.clone(),
@@ -116,7 +122,10 @@ impl shader::Program<()> for KnobProgram {
 pub struct KnobPrimitive {
     /// Stable ID for GPU resource lookup
     id: u64,
+    /// Base value for the value arc
     value: f32,
+    /// Display value for the indicator dot (can differ from value when modulated)
+    display_value: f32,
     dragging: bool,
     bipolar: bool,
     modulations: Vec<ModulationRange>,
@@ -163,6 +172,12 @@ impl KnobPrimitive {
                 if self.dragging { 1.0 } else { 0.0 },
                 if self.bipolar { 1.0 } else { 0.0 },
                 self.modulations.len() as f32,
+            ],
+            params2: [
+                self.display_value, // Where the indicator dot appears
+                0.0,
+                0.0,
+                0.0,
             ],
             mod_ranges_01,
             mod_ranges_23,
@@ -314,46 +329,26 @@ impl shader::Primitive for KnobPrimitive {
         queue.write_buffer(&resources.buffer, 0, bytemuck::bytes_of(&uniforms));
     }
 
-    fn render(
+    /// Use draw() instead of render() - iced sets up viewport and scissor for us
+    /// This ensures in.position.xy is relative to the widget viewport
+    fn draw(
         &self,
         pipeline: &Self::Pipeline,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        clip_bounds: &Rectangle<u32>,
-    ) {
+        render_pass: &mut wgpu::RenderPass<'_>,
+    ) -> bool {
         // Look up resources using the stable ID
         let Some(resources) = pipeline.primitive_resources.get(&self.id) else {
-            return; // No resources prepared for this knob
+            return true; // No resources prepared, but we handled it
         };
 
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Knob Render Pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-
-        pass.set_pipeline(&pipeline.pipeline);
-        pass.set_bind_group(0, &resources.bind_group, &[]);
-
-        pass.set_scissor_rect(
-            clip_bounds.x,
-            clip_bounds.y,
-            clip_bounds.width,
-            clip_bounds.height,
-        );
+        render_pass.set_pipeline(&pipeline.pipeline);
+        render_pass.set_bind_group(0, &resources.bind_group, &[]);
 
         // Draw fullscreen triangle (3 vertices, no vertex buffer)
-        pass.draw(0..3, 0..1);
+        // The viewport is already set to widget bounds by iced
+        render_pass.draw(0..3, 0..1);
+
+        true // We handled the rendering
     }
 }
 
