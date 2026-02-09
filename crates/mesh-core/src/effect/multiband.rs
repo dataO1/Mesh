@@ -30,9 +30,76 @@
 //!
 //! Total latency = crossover_latency + max(band_chain_latencies)
 
+use rayon::prelude::*;
+
 use super::native::LinkwitzRileyCrossover;
 use super::{Effect, EffectBase, EffectInfo, ParamInfo, ParamValue};
-use crate::types::StereoBuffer;
+use crate::types::{StereoBuffer, StereoSample, MAX_LATENCY_SAMPLES};
+
+/// Maximum delay for per-effect dry/wet compensation (individual plugins rarely exceed this)
+const MAX_EFFECT_LATENCY: usize = 4096;
+
+/// Ring buffer delay line for internal latency compensation
+///
+/// Used to delay dry signals so they align with wet (processed) signals
+/// at every dry/wet blend point: per-effect, per-chain, inter-band, and global.
+struct DelayLine {
+    buffer: Vec<StereoSample>,
+    write_pos: usize,
+    delay_samples: usize,
+}
+
+impl DelayLine {
+    /// Create a new delay line with the given maximum size
+    fn new(max_samples: usize) -> Self {
+        Self {
+            buffer: vec![StereoSample::silence(); max_samples],
+            write_pos: 0,
+            delay_samples: 0,
+        }
+    }
+
+    /// Set the delay amount in samples
+    fn set_delay(&mut self, samples: usize) {
+        self.delay_samples = samples.min(self.buffer.len().saturating_sub(1));
+    }
+
+    /// Get current delay in samples
+    fn delay(&self) -> usize {
+        self.delay_samples
+    }
+
+    /// Process a single sample through the delay line
+    #[inline]
+    fn process(&mut self, input: StereoSample) -> StereoSample {
+        if self.delay_samples == 0 {
+            return input;
+        }
+
+        // Write input to buffer
+        self.buffer[self.write_pos] = input;
+
+        // Calculate read position (behind write position by delay_samples)
+        let read_pos = if self.write_pos >= self.delay_samples {
+            self.write_pos - self.delay_samples
+        } else {
+            self.buffer.len() - (self.delay_samples - self.write_pos)
+        };
+
+        let output = self.buffer[read_pos];
+
+        // Advance write position
+        self.write_pos = (self.write_pos + 1) % self.buffer.len();
+
+        output
+    }
+
+    /// Clear the delay line (fill with silence)
+    fn clear(&mut self) {
+        self.buffer.fill(StereoSample::silence());
+        self.write_pos = 0;
+    }
+}
 
 /// Maximum number of frequency bands
 pub const MAX_BANDS: usize = 8;
@@ -206,6 +273,15 @@ pub struct Band {
     chain_dry_wet: f32,
     /// Buffer for dry signal (before processing)
     dry_buffer: StereoBuffer,
+
+    // ── Latency compensation delay lines ──
+
+    /// Per-effect dry/wet delay lines — delays dry signal by each effect's latency
+    effect_dry_delay_lines: Vec<DelayLine>,
+    /// Chain dry/wet delay line — delays dry buffer by total chain latency
+    chain_dry_delay_line: DelayLine,
+    /// Band alignment delay line — aligns shorter bands to max band latency
+    alignment_delay_line: DelayLine,
 }
 
 impl Band {
@@ -219,6 +295,9 @@ impl Band {
             effect_dry_wet: Vec::new(),
             chain_dry_wet: 1.0, // Default: 100% wet (normal processing)
             dry_buffer: StereoBuffer::silence(buffer_size),
+            effect_dry_delay_lines: Vec::new(),
+            chain_dry_delay_line: DelayLine::new(MAX_LATENCY_SAMPLES),
+            alignment_delay_line: DelayLine::new(MAX_LATENCY_SAMPLES),
         }
     }
 
@@ -235,20 +314,39 @@ impl Band {
         }
 
         // Process through each effect in the chain with per-effect dry/wet
-        for (i, effect) in self.effects.iter_mut().enumerate() {
-            if !effect.is_bypassed() {
+        // NOTE: We can't use iter_mut() on both effects and delay_lines simultaneously
+        // due to borrow checker, so we use index-based iteration.
+        for i in 0..self.effects.len() {
+            if !self.effects[i].is_bypassed() {
                 let mix = self.effect_dry_wet.get(i).copied().unwrap_or(1.0);
 
                 if mix >= 1.0 {
                     // 100% wet - normal processing
-                    effect.process(&mut self.buffer);
+                    self.effects[i].process(&mut self.buffer);
                 } else if mix <= 0.0 {
-                    // 0% wet - skip effect entirely (dry signal unchanged)
+                    // 0% wet - skip effect entirely
+                    // Still must delay dry signal to maintain time alignment
+                    // with downstream effects
+                    if let Some(dl) = self.effect_dry_delay_lines.get_mut(i) {
+                        if dl.delay() > 0 {
+                            for sample in self.buffer.iter_mut() {
+                                *sample = dl.process(*sample);
+                            }
+                        }
+                    }
                 } else {
                     // Partial mix - store dry, process, then blend
-                    // Use a temporary copy since we need to blend
                     let mut wet_buffer = self.buffer.clone();
-                    effect.process(&mut wet_buffer);
+                    self.effects[i].process(&mut wet_buffer);
+
+                    // Delay dry to match wet's plugin latency
+                    if let Some(dl) = self.effect_dry_delay_lines.get_mut(i) {
+                        if dl.delay() > 0 {
+                            for sample in self.buffer.iter_mut() {
+                                *sample = dl.process(*sample);
+                            }
+                        }
+                    }
 
                     // Blend: output = dry * (1-mix) + wet * mix
                     let dry_gain = 1.0 - mix;
@@ -260,10 +358,17 @@ impl Band {
             }
         }
 
-        // Apply chain dry/wet
+        // Apply chain dry/wet with latency compensation
         if self.chain_dry_wet < 1.0 {
             let wet_gain = self.chain_dry_wet;
             let dry_gain = 1.0 - wet_gain;
+
+            // Delay dry buffer by total chain latency to align with wet
+            if self.chain_dry_delay_line.delay() > 0 {
+                for sample in self.dry_buffer.iter_mut() {
+                    *sample = self.chain_dry_delay_line.process(*sample);
+                }
+            }
 
             for (sample, dry_sample) in self.buffer.iter_mut().zip(self.dry_buffer.iter()) {
                 sample.left = dry_sample.left * dry_gain + sample.left * wet_gain;
@@ -398,6 +503,21 @@ pub struct MultibandHost {
     global_dry_wet: f32,
     /// Buffer for global dry signal
     global_dry_buffer: StereoBuffer,
+
+    // ── Latency compensation delay lines ──
+
+    /// Pre-FX per-effect dry/wet delay lines
+    pre_fx_effect_dry_delay_lines: Vec<DelayLine>,
+    /// Pre-FX chain dry/wet delay line
+    pre_fx_chain_dry_delay_line: DelayLine,
+
+    /// Post-FX per-effect dry/wet delay lines
+    post_fx_effect_dry_delay_lines: Vec<DelayLine>,
+    /// Post-FX chain dry/wet delay line
+    post_fx_chain_dry_delay_line: DelayLine,
+
+    /// Global dry/wet delay line — delays dry signal by total multiband latency
+    global_dry_delay_line: DelayLine,
 }
 
 impl MultibandHost {
@@ -439,6 +559,12 @@ impl MultibandHost {
             post_fx_dry_buffer: StereoBuffer::silence(buffer_size),
             global_dry_wet: 1.0,
             global_dry_buffer: StereoBuffer::silence(buffer_size),
+            // Latency compensation delay lines
+            pre_fx_effect_dry_delay_lines: Vec::new(),
+            pre_fx_chain_dry_delay_line: DelayLine::new(MAX_LATENCY_SAMPLES),
+            post_fx_effect_dry_delay_lines: Vec::new(),
+            post_fx_chain_dry_delay_line: DelayLine::new(MAX_LATENCY_SAMPLES),
+            global_dry_delay_line: DelayLine::new(MAX_LATENCY_SAMPLES),
         }
     }
 
@@ -622,6 +748,7 @@ impl MultibandHost {
         let effect_index = self.pre_fx.len();
         self.pre_fx.push(effect);
         self.pre_fx_effect_dry_wet.push(1.0); // Default: 100% wet
+        self.pre_fx_effect_dry_delay_lines.push(DelayLine::new(MAX_EFFECT_LATENCY));
         self.update_latency();
         Ok(effect_index)
     }
@@ -639,6 +766,9 @@ impl MultibandHost {
         self.pre_fx.remove(index);
         if index < self.pre_fx_effect_dry_wet.len() {
             self.pre_fx_effect_dry_wet.remove(index);
+        }
+        if index < self.pre_fx_effect_dry_delay_lines.len() {
+            self.pre_fx_effect_dry_delay_lines.remove(index);
         }
         self.update_latency();
         Ok(())
@@ -709,6 +839,7 @@ impl MultibandHost {
         let effect_index = self.post_fx.len();
         self.post_fx.push(effect);
         self.post_fx_effect_dry_wet.push(1.0); // Default: 100% wet
+        self.post_fx_effect_dry_delay_lines.push(DelayLine::new(MAX_EFFECT_LATENCY));
         self.update_latency();
         Ok(effect_index)
     }
@@ -726,6 +857,9 @@ impl MultibandHost {
         self.post_fx.remove(index);
         if index < self.post_fx_effect_dry_wet.len() {
             self.post_fx_effect_dry_wet.remove(index);
+        }
+        if index < self.post_fx_effect_dry_delay_lines.len() {
+            self.post_fx_effect_dry_delay_lines.remove(index);
         }
         self.update_latency();
         Ok(())
@@ -788,6 +922,7 @@ impl MultibandHost {
         let effect_index = band.effects.len();
         band.effects.push(effect);
         band.effect_dry_wet.push(1.0); // Default: 100% wet
+        band.effect_dry_delay_lines.push(DelayLine::new(MAX_EFFECT_LATENCY));
         self.update_latency();
         Ok(effect_index)
     }
@@ -817,6 +952,9 @@ impl MultibandHost {
         band.effects.remove(effect_index);
         if effect_index < band.effect_dry_wet.len() {
             band.effect_dry_wet.remove(effect_index);
+        }
+        if effect_index < band.effect_dry_delay_lines.len() {
+            band.effect_dry_delay_lines.remove(effect_index);
         }
 
         // Remove any macro mappings that referenced this effect
@@ -1182,26 +1320,61 @@ impl MultibandHost {
         }
     }
 
-    /// Update cached latency value
+    /// Update cached latency value and configure internal delay lines
+    ///
+    /// Called whenever effects are added, removed, or bypassed.
+    /// Sets delay amounts on all compensation delay lines so that:
+    /// - Per-effect dry/wet blends are phase-aligned
+    /// - Per-chain dry/wet blends are phase-aligned
+    /// - Bands with different latencies are time-aligned before summing
+    /// - Global dry/wet blend is phase-aligned
     fn update_latency(&mut self) {
-        // Pre-FX latency (serial chain)
+        // ── Pre-FX latency (serial chain) ──
         let pre_fx_latency: u32 = self.pre_fx.iter().map(|e| e.latency_samples()).sum();
 
-        // Native LR24 crossover has negligible latency (IIR filter)
-        let crossover_latency = 0_u32;
+        // Update pre-FX per-effect delay lines
+        for (i, effect) in self.pre_fx.iter().enumerate() {
+            if let Some(dl) = self.pre_fx_effect_dry_delay_lines.get_mut(i) {
+                dl.set_delay(effect.latency_samples() as usize);
+            }
+        }
+        self.pre_fx_chain_dry_delay_line.set_delay(pre_fx_latency as usize);
 
-        // Band latency (parallel - take max)
-        let max_band_latency = self
-            .bands
-            .iter()
-            .map(|b| b.latency_samples())
-            .max()
-            .unwrap_or(0);
+        // ── Band latencies + alignment ──
+        let band_latencies: Vec<u32> = self.bands.iter().map(|b| b.latency_samples()).collect();
+        let max_band_latency = band_latencies.iter().copied().max().unwrap_or(0);
 
-        // Post-FX latency (serial chain)
+        for (i, band) in self.bands.iter_mut().enumerate() {
+            let band_lat = band_latencies[i];
+
+            // Alignment: shorter bands get delayed to match the longest
+            band.alignment_delay_line.set_delay((max_band_latency - band_lat) as usize);
+
+            // Per-effect delay lines within each band
+            for (j, effect) in band.effects.iter().enumerate() {
+                if let Some(dl) = band.effect_dry_delay_lines.get_mut(j) {
+                    dl.set_delay(effect.latency_samples() as usize);
+                }
+            }
+
+            // Chain dry/wet delay = total band chain latency
+            band.chain_dry_delay_line.set_delay(band_lat as usize);
+        }
+
+        // ── Post-FX latency (serial chain) ──
         let post_fx_latency: u32 = self.post_fx.iter().map(|e| e.latency_samples()).sum();
 
-        self.cached_latency = pre_fx_latency + crossover_latency + max_band_latency + post_fx_latency;
+        // Update post-FX per-effect delay lines
+        for (i, effect) in self.post_fx.iter().enumerate() {
+            if let Some(dl) = self.post_fx_effect_dry_delay_lines.get_mut(i) {
+                dl.set_delay(effect.latency_samples() as usize);
+            }
+        }
+        self.post_fx_chain_dry_delay_line.set_delay(post_fx_latency as usize);
+
+        // ── Total + global ──
+        self.cached_latency = pre_fx_latency + max_band_latency + post_fx_latency;
+        self.global_dry_delay_line.set_delay(self.cached_latency as usize);
     }
 }
 
@@ -1229,30 +1402,56 @@ impl Effect for MultibandHost {
             self.pre_fx_dry_buffer.copy_from(buffer);
         }
 
-        // Process each pre-fx effect with per-effect dry/wet
-        for (i, effect) in self.pre_fx.iter_mut().enumerate() {
-            if !effect.is_bypassed() {
+        // Process each pre-fx effect with per-effect dry/wet + latency compensation
+        for i in 0..self.pre_fx.len() {
+            if !self.pre_fx[i].is_bypassed() {
                 let mix = self.pre_fx_effect_dry_wet.get(i).copied().unwrap_or(1.0);
 
                 if mix >= 1.0 {
-                    effect.process(buffer);
-                } else if mix > 0.0 {
+                    self.pre_fx[i].process(buffer);
+                } else if mix <= 0.0 {
+                    // 0% wet - still delay dry for time alignment
+                    if let Some(dl) = self.pre_fx_effect_dry_delay_lines.get_mut(i) {
+                        if dl.delay() > 0 {
+                            for sample in buffer.iter_mut() {
+                                *sample = dl.process(*sample);
+                            }
+                        }
+                    }
+                } else {
                     let mut wet_buffer = buffer.clone();
-                    effect.process(&mut wet_buffer);
+                    self.pre_fx[i].process(&mut wet_buffer);
+
+                    // Delay dry to match wet's plugin latency
+                    if let Some(dl) = self.pre_fx_effect_dry_delay_lines.get_mut(i) {
+                        if dl.delay() > 0 {
+                            for sample in buffer.iter_mut() {
+                                *sample = dl.process(*sample);
+                            }
+                        }
+                    }
+
                     let dry_gain = 1.0 - mix;
                     for (sample, wet_sample) in buffer.iter_mut().zip(wet_buffer.iter()) {
                         sample.left = sample.left * dry_gain + wet_sample.left * mix;
                         sample.right = sample.right * dry_gain + wet_sample.right * mix;
                     }
                 }
-                // mix <= 0.0: skip effect (dry signal unchanged)
             }
         }
 
-        // Apply pre-fx chain dry/wet
+        // Apply pre-fx chain dry/wet with latency compensation
         if self.pre_fx_chain_dry_wet < 1.0 {
             let wet_gain = self.pre_fx_chain_dry_wet;
             let dry_gain = 1.0 - wet_gain;
+
+            // Delay dry buffer by total pre-fx chain latency
+            if self.pre_fx_chain_dry_delay_line.delay() > 0 {
+                for sample in self.pre_fx_dry_buffer.iter_mut() {
+                    *sample = self.pre_fx_chain_dry_delay_line.process(*sample);
+                }
+            }
+
             for (sample, dry_sample) in buffer.iter_mut().zip(self.pre_fx_dry_buffer.iter()) {
                 sample.left = dry_sample.left * dry_gain + sample.left * wet_gain;
                 sample.right = dry_sample.right * dry_gain + sample.right * wet_gain;
@@ -1297,15 +1496,24 @@ impl Effect for MultibandHost {
                 }
             }
 
-            // Step 2b: Process each band through its effect chain
-            for band in &mut self.bands {
-                if !band.muted && (!self.any_soloed || band.soloed) {
+            // Step 2b: Process each band through its effect chain (parallel)
+            let any_soloed = self.any_soloed;
+            self.bands.par_iter_mut().for_each(|band| {
+                if !band.muted && (!any_soloed || band.soloed) {
                     band.process();
                 } else {
                     // Muted/not-soloed bands are silent
                     band.buffer.fill_silence();
                 }
-            }
+
+                // Step 2b½: Align this band to max latency
+                // Shorter bands are delayed so all band outputs are time-aligned before summing
+                if band.alignment_delay_line.delay() > 0 {
+                    for sample in band.buffer.iter_mut() {
+                        *sample = band.alignment_delay_line.process(*sample);
+                    }
+                }
+            });
 
             // Step 2c: Sum all bands back together
             buffer.fill_silence();
@@ -1328,30 +1536,56 @@ impl Effect for MultibandHost {
             self.post_fx_dry_buffer.copy_from(buffer);
         }
 
-        // Process each post-fx effect with per-effect dry/wet
-        for (i, effect) in self.post_fx.iter_mut().enumerate() {
-            if !effect.is_bypassed() {
+        // Process each post-fx effect with per-effect dry/wet + latency compensation
+        for i in 0..self.post_fx.len() {
+            if !self.post_fx[i].is_bypassed() {
                 let mix = self.post_fx_effect_dry_wet.get(i).copied().unwrap_or(1.0);
 
                 if mix >= 1.0 {
-                    effect.process(buffer);
-                } else if mix > 0.0 {
+                    self.post_fx[i].process(buffer);
+                } else if mix <= 0.0 {
+                    // 0% wet - still delay dry for time alignment
+                    if let Some(dl) = self.post_fx_effect_dry_delay_lines.get_mut(i) {
+                        if dl.delay() > 0 {
+                            for sample in buffer.iter_mut() {
+                                *sample = dl.process(*sample);
+                            }
+                        }
+                    }
+                } else {
                     let mut wet_buffer = buffer.clone();
-                    effect.process(&mut wet_buffer);
+                    self.post_fx[i].process(&mut wet_buffer);
+
+                    // Delay dry to match wet's plugin latency
+                    if let Some(dl) = self.post_fx_effect_dry_delay_lines.get_mut(i) {
+                        if dl.delay() > 0 {
+                            for sample in buffer.iter_mut() {
+                                *sample = dl.process(*sample);
+                            }
+                        }
+                    }
+
                     let dry_gain = 1.0 - mix;
                     for (sample, wet_sample) in buffer.iter_mut().zip(wet_buffer.iter()) {
                         sample.left = sample.left * dry_gain + wet_sample.left * mix;
                         sample.right = sample.right * dry_gain + wet_sample.right * mix;
                     }
                 }
-                // mix <= 0.0: skip effect (dry signal unchanged)
             }
         }
 
-        // Apply post-fx chain dry/wet
+        // Apply post-fx chain dry/wet with latency compensation
         if self.post_fx_chain_dry_wet < 1.0 {
             let wet_gain = self.post_fx_chain_dry_wet;
             let dry_gain = 1.0 - wet_gain;
+
+            // Delay dry buffer by total post-fx chain latency
+            if self.post_fx_chain_dry_delay_line.delay() > 0 {
+                for sample in self.post_fx_dry_buffer.iter_mut() {
+                    *sample = self.post_fx_chain_dry_delay_line.process(*sample);
+                }
+            }
+
             for (sample, dry_sample) in buffer.iter_mut().zip(self.post_fx_dry_buffer.iter()) {
                 sample.left = dry_sample.left * dry_gain + sample.left * wet_gain;
                 sample.right = dry_sample.right * dry_gain + sample.right * wet_gain;
@@ -1359,11 +1593,19 @@ impl Effect for MultibandHost {
         }
 
         // ═══════════════════════════════════════════════════════════════════
-        // STEP 4: Apply global dry/wet (entire effect rack)
+        // STEP 4: Apply global dry/wet with latency compensation
         // ═══════════════════════════════════════════════════════════════════
         if self.global_dry_wet < 1.0 {
             let wet_gain = self.global_dry_wet;
             let dry_gain = 1.0 - wet_gain;
+
+            // Delay global dry buffer by total multiband latency
+            if self.global_dry_delay_line.delay() > 0 {
+                for sample in self.global_dry_buffer.iter_mut() {
+                    *sample = self.global_dry_delay_line.process(*sample);
+                }
+            }
+
             for (sample, dry_sample) in buffer.iter_mut().zip(self.global_dry_buffer.iter()) {
                 sample.left = dry_sample.left * dry_gain + sample.left * wet_gain;
                 sample.right = dry_sample.right * dry_gain + sample.right * wet_gain;
@@ -1403,12 +1645,21 @@ impl Effect for MultibandHost {
         for effect in &mut self.pre_fx {
             effect.reset();
         }
+        for dl in &mut self.pre_fx_effect_dry_delay_lines {
+            dl.clear();
+        }
+        self.pre_fx_chain_dry_delay_line.clear();
 
-        // Reset all band effects
+        // Reset all band effects and delay lines
         for band in &mut self.bands {
             for effect in &mut band.effects {
                 effect.reset();
             }
+            for dl in &mut band.effect_dry_delay_lines {
+                dl.clear();
+            }
+            band.chain_dry_delay_line.clear();
+            band.alignment_delay_line.clear();
         }
 
         // Reset crossover
@@ -1418,6 +1669,12 @@ impl Effect for MultibandHost {
         for effect in &mut self.post_fx {
             effect.reset();
         }
+        for dl in &mut self.post_fx_effect_dry_delay_lines {
+            dl.clear();
+        }
+        self.post_fx_chain_dry_delay_line.clear();
+
+        self.global_dry_delay_line.clear();
     }
 }
 

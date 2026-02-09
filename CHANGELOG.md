@@ -98,6 +98,23 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   values, not just the 8 mapped to UI knobs. Settings made via the plugin's
   native GUI (e.g., reverb mode, filter type) are preserved across save/load.
 
+- **Multiband latency compensation** — Ring-buffer delay lines at every dry/wet
+  blend point inside `MultibandHost` eliminate phase cancellation when mixing dry
+  and wet signals from plugins that report non-zero latency. Compensation operates
+  at four levels:
+  - **Per-effect** — Dry signal delayed by individual plugin latency before blending
+  - **Per-chain** — Pre-chain snapshot delayed by total chain latency
+  - **Inter-band alignment** — Shorter bands padded to match the longest band,
+    preventing frequency-region time smearing at crossover points
+  - **Global** — Unprocessed input delayed by full pipeline latency
+  Internal compensation is invisible to the external `LatencyCompensator`; reported
+  `latency_samples()` is unchanged so stem-level alignment across decks is unaffected.
+
+- **Parallel band processing** — Multiband bands are processed in parallel via
+  Rayon `par_iter_mut` when more than one band is active, distributing effect
+  processing across CPU cores. Band alignment is folded into the parallel loop
+  since each band's delay line only touches its own buffer.
+
 - **Dry/wet mix controls** — Comprehensive parallel processing support at three
   levels for precise blend control:
   - **Per-effect dry/wet** — A 9th knob (D/W) on each effect card controls the
@@ -136,6 +153,16 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   separating editing from mapping interactions.
 
 ### Fixed
+
+- **mesh-cue CLAP latency display** — CLAP plugin latency is now shown in the
+  effect card header in mesh-cue (e.g., "Compressor (2.3ms)"). Previously always
+  displayed 0 because `EffectUiState.latency_samples` was never set after plugin
+  creation, even though the value was available from the plugin info.
+
+- **Dry/wet phase misalignment** — Dry/wet blending at all levels (per-effect,
+  per-chain, global) no longer causes comb filtering when plugins introduce latency.
+  Multiband frequency regions no longer exhibit time smearing when bands have
+  different total chain latencies.
 
 - **Effects editor preset loading** — Loading a preset now properly clears stale
   UI state (drag handles, hover state, effect knobs) before applying the new

@@ -122,13 +122,14 @@ impl MeshCueApp {
                         );
 
                         // Create UI state with actual params
-                        let effect_state = EffectUiState::new_with_params(
+                        let mut effect_state = EffectUiState::new_with_params(
                             plugin_id.clone(),
                             effect_name.clone(),
                             effect_category,
                             EffectSourceType::Clap,
                             available_params,
                         );
+                        effect_state.latency_samples = effect_info.latency_samples;
 
                         // If audio preview is enabled, add to audio engine
                         if self.effects_editor.audio_preview_enabled {
