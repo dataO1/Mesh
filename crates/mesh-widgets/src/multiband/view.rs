@@ -365,6 +365,15 @@ pub fn ensure_effect_knobs_exist(state: &mut MultibandEditorState) {
 
     // Pre-FX effects
     for (effect_idx, effect) in state.pre_fx.iter().enumerate() {
+        // Ensure dry/wet knob exists
+        let dw_key = (EffectChainLocation::PreFx, effect_idx);
+        if !state.effect_dry_wet_knobs.contains_key(&dw_key) {
+            let mut knob = Knob::new(36.0);
+            knob.set_value(effect.dry_wet);
+            state.effect_dry_wet_knobs.insert(dw_key, knob);
+        }
+
+        // Ensure parameter knobs exist
         for knob_idx in 0..MAX_UI_KNOBS {
             let key = (EffectChainLocation::PreFx, effect_idx, knob_idx);
             if !state.effect_knobs.contains_key(&key) {
@@ -378,6 +387,15 @@ pub fn ensure_effect_knobs_exist(state: &mut MultibandEditorState) {
     // Band effects
     for (band_idx, band) in state.bands.iter().enumerate() {
         for (effect_idx, effect) in band.effects.iter().enumerate() {
+            // Ensure dry/wet knob exists
+            let dw_key = (EffectChainLocation::Band(band_idx), effect_idx);
+            if !state.effect_dry_wet_knobs.contains_key(&dw_key) {
+                let mut knob = Knob::new(36.0);
+                knob.set_value(effect.dry_wet);
+                state.effect_dry_wet_knobs.insert(dw_key, knob);
+            }
+
+            // Ensure parameter knobs exist
             for knob_idx in 0..MAX_UI_KNOBS {
                 let key = (EffectChainLocation::Band(band_idx), effect_idx, knob_idx);
                 if !state.effect_knobs.contains_key(&key) {
@@ -391,6 +409,15 @@ pub fn ensure_effect_knobs_exist(state: &mut MultibandEditorState) {
 
     // Post-FX effects
     for (effect_idx, effect) in state.post_fx.iter().enumerate() {
+        // Ensure dry/wet knob exists
+        let dw_key = (EffectChainLocation::PostFx, effect_idx);
+        if !state.effect_dry_wet_knobs.contains_key(&dw_key) {
+            let mut knob = Knob::new(36.0);
+            knob.set_value(effect.dry_wet);
+            state.effect_dry_wet_knobs.insert(dw_key, knob);
+        }
+
+        // Ensure parameter knobs exist
         for knob_idx in 0..MAX_UI_KNOBS {
             let key = (EffectChainLocation::PostFx, effect_idx, knob_idx);
             if !state.effect_knobs.contains_key(&key) {
@@ -529,7 +556,10 @@ fn band_column<'a>(
         column![
             header,
             controls,
-            scrollable(effects_column).height(Length::Fill),
+            scrollable(
+                container(effects_column)
+                    .padding(iced::Padding { top: 0.0, right: 12.0, bottom: 0.0, left: 0.0 })
+            ).height(Length::Fill),
             chain_dw_section,
         ]
         .spacing(8)
@@ -627,7 +657,10 @@ fn fx_chain_column<'a>(
     container(
         column![
             header,
-            scrollable(effects_column).height(Length::Fill),
+            scrollable(
+                container(effects_column)
+                    .padding(iced::Padding { top: 0.0, right: 12.0, bottom: 0.0, left: 0.0 })
+            ).height(Length::Fill),
             chain_dry_wet_section,
         ]
         .spacing(8)

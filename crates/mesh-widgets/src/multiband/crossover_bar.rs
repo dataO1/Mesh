@@ -128,7 +128,8 @@ fn multi_band_bar(state: &MultibandEditorState) -> Element<'_, MultibandEditorMe
         ]
         .spacing(2),
     )
-    .width(Length::Fill)
+    // Use fixed width to match drag calculation
+    .width(Length::Fixed(CROSSOVER_BAR_WIDTH))
     .style(|_| container::Style {
         background: Some(Color::from_rgb(0.15, 0.15, 0.17).into()),
         border: iced::Border {
@@ -153,7 +154,11 @@ fn multi_band_bar(state: &MultibandEditorState) -> Element<'_, MultibandEditorMe
         });
     }
 
-    area.into()
+    // Center the fixed-width bar
+    container(area)
+        .width(Length::Fill)
+        .center_x(Length::Fill)
+        .into()
 }
 
 /// A single band segment

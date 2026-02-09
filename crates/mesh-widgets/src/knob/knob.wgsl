@@ -125,7 +125,8 @@ fn aa_step(d: f32, aa: f32) -> f32 {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Use UV from vertex shader (0-1 across the widget viewport)
     // iced sets the viewport to widget bounds, so in.uv maps correctly
-    let value = uniforms.params.x;
+    let base_value = uniforms.params.x;           // Base/stored value (for notch indicator)
+    let display_value = uniforms.params2.x;       // Modulated value (for value arc)
     let is_dragging = uniforms.params.y > 0.5;
     let is_bipolar = uniforms.params.z > 0.5;
     let mod_count = i32(uniforms.params.w);
@@ -160,16 +161,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let track_alpha = aa_step(track_dist, aa);
     color = mix(color, uniforms.track_color, track_alpha * uniforms.track_color.a);
 
-    // Draw value arc
-    if value > 0.001 {
+    // Draw value arc (shows modulated/actual value)
+    if display_value > 0.001 {
         var value_start: f32;
         var value_end: f32;
 
         if is_bipolar {
             // Bipolar: arc extends from center (0.5) in both directions
             let center_angle = value_to_angle(0.5);
-            let value_angle = value_to_angle(value);
-            if value > 0.5 {
+            let value_angle = value_to_angle(display_value);
+            if display_value > 0.5 {
                 value_start = center_angle;
                 value_end = value_angle;
             } else {
@@ -179,7 +180,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         } else {
             // Unipolar: arc extends from start to value
             value_start = ARC_START;
-            value_end = value_to_angle(value);
+            value_end = value_to_angle(display_value);
         }
 
         let value_dist = sd_arc(uv, track_radius, arc_width, value_start, value_end);
@@ -217,9 +218,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    // Draw notch/indicator at display value (actual modulated position)
-    let display_value = uniforms.params2.x;
-    let notch_angle = value_to_angle(display_value);
+    // Draw notch/indicator at base value (user's set position)
+    let notch_angle = value_to_angle(base_value);
     let notch_dir = vec2<f32>(cos(notch_angle), sin(notch_angle));
     let notch_center = notch_dir * notch_radius;
     let notch_dist = length(uv - notch_center) - notch_width;
