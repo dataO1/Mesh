@@ -28,8 +28,6 @@ pub struct ClapEffect {
     wrapper: Arc<Mutex<ClapPluginWrapper>>,
     /// Plugin ID for error messages
     plugin_id: String,
-    /// Cached latency
-    latency: u32,
     /// Interleaved audio buffer for processing
     process_buffer: Vec<f32>,
     /// CLAP parameter IDs (maps param index to CLAP param ID)
@@ -90,6 +88,7 @@ impl ClapEffect {
             }
         }
 
+        info.latency_samples = latency;
         let base = EffectBase::new(info);
         let process_buffer = vec![0.0; CLAP_BUFFER_SIZE as usize * 2];
 
@@ -97,7 +96,6 @@ impl ClapEffect {
             base,
             wrapper: Arc::new(Mutex::new(wrapper)),
             plugin_id: plugin_info.id,
-            latency,
             process_buffer,
             clap_param_ids,
             pending_param_changes: Vec::new(),
@@ -233,7 +231,7 @@ impl Effect for ClapEffect {
     }
 
     fn latency_samples(&self) -> u32 {
-        self.latency
+        self.base.info().latency_samples
     }
 
     fn info(&self) -> &EffectInfo {
