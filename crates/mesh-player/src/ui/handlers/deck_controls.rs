@@ -10,7 +10,7 @@ use crate::ui::message::Message;
 use mesh_core::types::Stem;
 use mesh_widgets::multiband::{
     list_deck_presets, list_stem_presets,
-    EffectPresetConfig, MultibandPresetConfig, NUM_MACROS,
+    EffectPresetConfig, StemPresetConfig, NUM_MACROS,
 };
 
 /// Handle deck control messages
@@ -432,7 +432,7 @@ pub(super) fn apply_preset_to_multiband(
     app: &mut MeshApp,
     deck_idx: usize,
     stem: Stem,
-    config: &MultibandPresetConfig,
+    config: &StemPresetConfig,
 ) {
     // Clear existing effects by removing them one by one
     // This is a workaround since we don't have a bulk clear command
@@ -706,7 +706,7 @@ fn apply_macro_modulation_direct_single(
 /// and adds them to the deck-level mapping arrays (with stem_index set).
 fn extract_deck_macro_mappings(
     stem_idx: usize,
-    config: &MultibandPresetConfig,
+    config: &StemPresetConfig,
     mappings: &mut [Vec<mesh_widgets::MacroParamMapping>; NUM_MACROS],
 ) {
     use mesh_widgets::multiband::EffectChainLocation;

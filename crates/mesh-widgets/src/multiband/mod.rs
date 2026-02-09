@@ -36,8 +36,7 @@ mod state;
 mod view;
 
 pub use config::{
-    delete_preset, list_presets, load_preset, multiband_presets_folder, save_preset,
-    EffectPresetConfig, MultibandPresetConfig, StemPresetConfig,
+    EffectPresetConfig, BandPresetConfig, StemPresetConfig,
     // Deck preset types and I/O
     DeckPresetConfig, DeckStemReferences, ResolvedDeckPreset, MacroPresetConfig,
     deck_presets_folder, load_deck_preset, save_deck_preset, list_deck_presets, delete_deck_preset,

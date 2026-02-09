@@ -76,10 +76,23 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   (no modulation) to +1 (full modulation). Hover over an indicator to highlight
   the corresponding parameter knob in the effect chain.
 
-- **Effect preset save/load** — Create and manage effect presets in YAML format.
-  Presets store the complete multiband configuration including band splits,
-  effect chains, parameter values, macro mappings, and learned parameter
-  assignments. Presets are saved to `~/.config/mesh/presets/`.
+- **Stem/deck preset split** — Replaced the flat single-preset system with a
+  two-level hierarchy. **Stem presets** (`presets/stems/`) save one stem's effect
+  chain. **Deck presets** (`presets/decks/`) reference 4 stem presets by name plus
+  4 shared macro knobs, enabling reuse of the same stem preset across multiple
+  decks. A `preset_type` field in YAML prevents accidentally loading the wrong
+  type. Auto-generates stem preset names when saving a deck preset.
+
+- **Non-destructive stem switching** — Switching between stems (VOC/DRM/BAS/OTH)
+  in the effects editor no longer destroys CLAP plugin instances. Plugin GUIs are
+  hidden (not destroyed) and effect state is snapshotted/restored via
+  `StemEffectData`. Stem-indexed CLAP instance IDs (`_cue_s{N}_`) prevent handle
+  collisions between stems.
+
+- **Two-row effects toolbar** — The effects editor toolbar is now split into a
+  deck row (deck preset name, New/Load/Save, audio preview toggle) and a stem row
+  (stem tabs with data indicators, stem preset name, Load/Save). Separate browser
+  and save dialogs for stem-level and deck-level presets.
 
 - **Full plugin state in presets** — Presets now capture ALL plugin parameter
   values, not just the 8 mapped to UI knobs. Settings made via the plugin's
@@ -164,6 +177,11 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   editing system. The editor now maintains its own UI state separate from audio,
   with changes synced to the audio engine only when preview is enabled. This
   provides a responsive editing experience without audio glitches.
+
+- **Preset format (breaking)** — Removed legacy flat preset I/O and the
+  `MultibandPresetConfig` type alias. Presets now use `StemPresetConfig` and
+  `DeckPresetConfig` with explicit `preset_type` validation. Old presets in
+  `presets/` must be moved to `presets/stems/` to be discovered.
 
 ### Known Limitations
 

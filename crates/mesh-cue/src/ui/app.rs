@@ -474,17 +474,65 @@ impl MeshCueApp {
             Message::EffectsEditorNewPreset => {
                 return self.handle_effects_editor_new_preset();
             }
+
+            // Stem preset operations
+            Message::EffectsEditorOpenStemPresetBrowser => {
+                return self.handle_open_stem_preset_browser();
+            }
+            Message::EffectsEditorCloseStemPresetBrowser => {
+                self.effects_editor.close_preset_browser();
+            }
+            Message::EffectsEditorLoadStemPreset(name) => {
+                return self.handle_load_stem_preset(name);
+            }
+            Message::EffectsEditorSaveStemPreset(name) => {
+                return self.handle_save_stem_preset(name);
+            }
+            Message::EffectsEditorDeleteStemPreset(name) => {
+                return self.handle_delete_stem_preset(name);
+            }
+            Message::EffectsEditorOpenStemSaveDialog => {
+                self.effects_editor.open_stem_save_dialog();
+            }
+            Message::EffectsEditorSetStemPresetNameInput(name) => {
+                self.effects_editor.stem_preset_name_input = name;
+            }
+
+            // Deck preset operations
+            Message::EffectsEditorOpenDeckPresetBrowser => {
+                return self.handle_open_deck_preset_browser();
+            }
+            Message::EffectsEditorCloseDeckPresetBrowser => {
+                self.effects_editor.close_preset_browser();
+            }
+            Message::EffectsEditorLoadDeckPreset(name) => {
+                return self.handle_load_deck_preset(name);
+            }
+            Message::EffectsEditorSaveDeckPreset(name) => {
+                return self.handle_save_deck_preset(name);
+            }
+            Message::EffectsEditorDeleteDeckPreset(name) => {
+                return self.handle_delete_deck_preset(name);
+            }
+            Message::EffectsEditorOpenDeckSaveDialog => {
+                self.effects_editor.open_deck_save_dialog();
+            }
+            Message::EffectsEditorSetDeckPresetNameInput(name) => {
+                self.effects_editor.deck_preset_name_input = name;
+            }
+
+            // Legacy messages (from inner editor widget, map to stem operations)
             Message::EffectsEditorOpenSaveDialog => {
-                self.effects_editor.open_save_dialog();
+                self.effects_editor.open_stem_save_dialog();
             }
             Message::EffectsEditorSavePreset(name) => {
-                return self.handle_effects_editor_save(name);
+                return self.handle_save_stem_preset(name);
             }
             Message::EffectsEditorCloseSaveDialog => {
                 self.effects_editor.close_save_dialog();
             }
             Message::EffectsEditorSetPresetName(name) => {
-                self.effects_editor.editor.preset_name_input = name;
+                self.effects_editor.stem_preset_name_input = name;
             }
 
             // Effects Editor Audio Preview

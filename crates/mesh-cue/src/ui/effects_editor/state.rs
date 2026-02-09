@@ -4,13 +4,26 @@ use mesh_core::types::Stem;
 use mesh_widgets::multiband::StemEffectData;
 use mesh_widgets::MultibandEditorState;
 
+/// Which save dialog is currently open
+#[derive(Debug, Clone, PartialEq)]
+pub enum SaveDialogMode {
+    None,
+    Stem,
+    Deck,
+}
+
+/// Which preset browser is currently open
+#[derive(Debug, Clone, PartialEq)]
+pub enum PresetBrowserMode {
+    None,
+    Stem,
+    Deck,
+}
+
 /// State for the effects editor modal
 ///
 /// Wraps the MultibandEditorState from mesh-widgets and adds
 /// mesh-cue specific functionality like preset management UI.
-///
-/// Note: Fields like `save_dialog_open` and `preset_name_input` live in the
-/// inner `editor` state since the view reads from there directly.
 #[derive(Debug, Clone)]
 pub struct EffectsEditorState {
     /// Whether the effects editor modal is open
@@ -43,6 +56,28 @@ pub struct EffectsEditorState {
     /// Whether audio preview is enabled (applies editor changes in real-time)
     /// When enabled, all stems with data get their effects synced to audio.
     pub audio_preview_enabled: bool,
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Preset UI state (managed here, not in inner editor)
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Which save dialog is open (None, Stem, or Deck)
+    pub save_dialog_mode: SaveDialogMode,
+
+    /// Which preset browser is open (None, Stem, or Deck)
+    pub preset_browser_mode: PresetBrowserMode,
+
+    /// Available stem preset names (for the stem preset browser)
+    pub available_stem_presets: Vec<String>,
+
+    /// Available deck preset names (for the deck preset browser)
+    pub available_deck_presets: Vec<String>,
+
+    /// Text in the stem preset name input field
+    pub stem_preset_name_input: String,
+
+    /// Text in the deck preset name input field
+    pub deck_preset_name_input: String,
 }
 
 impl Default for EffectsEditorState {
@@ -63,7 +98,13 @@ impl EffectsEditorState {
             deck_preset_name: None,
             editing_preset: None,
             status: String::new(),
-            audio_preview_enabled: false, // Disabled by default - user can enable
+            audio_preview_enabled: false,
+            save_dialog_mode: SaveDialogMode::None,
+            preset_browser_mode: PresetBrowserMode::None,
+            available_stem_presets: Vec::new(),
+            available_deck_presets: Vec::new(),
+            stem_preset_name_input: String::new(),
+            deck_preset_name_input: String::new(),
         }
     }
 
@@ -79,7 +120,8 @@ impl EffectsEditorState {
     /// Close the effects editor
     pub fn close(&mut self) {
         self.is_open = false;
-        self.editor.save_dialog_open = false;
+        self.save_dialog_mode = SaveDialogMode::None;
+        self.preset_browser_mode = PresetBrowserMode::None;
         self.editor.close();
     }
 
@@ -87,7 +129,7 @@ impl EffectsEditorState {
     pub fn new_preset(&mut self) {
         self.editing_preset = None;
         self.editor = MultibandEditorState::new();
-        self.editor.preset_name_input = "New Preset".to_string();
+        self.stem_preset_name_input = "New Preset".to_string();
         self.editor.open(0, 0, "Preview");
         // Reset stem data for new preset
         self.stem_data = [None, None, None, None];
@@ -109,21 +151,45 @@ impl EffectsEditorState {
     /// Load a preset for editing
     pub fn load_preset(&mut self, name: String) {
         self.editing_preset = Some(name.clone());
-        self.editor.preset_name_input = name;
+        self.stem_preset_name_input = name;
     }
 
-    /// Open save dialog
-    pub fn open_save_dialog(&mut self) {
-        if let Some(ref name) = self.editing_preset {
-            // Use existing name
-            self.editor.preset_name_input = name.clone();
+    /// Open stem save dialog
+    pub fn open_stem_save_dialog(&mut self) {
+        if let Some(ref name) = self.stem_preset_names[self.active_stem] {
+            self.stem_preset_name_input = name.clone();
+        } else if let Some(ref name) = self.editing_preset {
+            self.stem_preset_name_input = name.clone();
         }
-        self.editor.save_dialog_open = true;
+        self.save_dialog_mode = SaveDialogMode::Stem;
+    }
+
+    /// Open deck save dialog
+    pub fn open_deck_save_dialog(&mut self) {
+        if let Some(ref name) = self.deck_preset_name {
+            self.deck_preset_name_input = name.clone();
+        }
+        self.save_dialog_mode = SaveDialogMode::Deck;
     }
 
     /// Close save dialog
     pub fn close_save_dialog(&mut self) {
-        self.editor.save_dialog_open = false;
+        self.save_dialog_mode = SaveDialogMode::None;
+    }
+
+    /// Open stem preset browser
+    pub fn open_stem_preset_browser(&mut self) {
+        self.preset_browser_mode = PresetBrowserMode::Stem;
+    }
+
+    /// Open deck preset browser
+    pub fn open_deck_preset_browser(&mut self) {
+        self.preset_browser_mode = PresetBrowserMode::Deck;
+    }
+
+    /// Close preset browser
+    pub fn close_preset_browser(&mut self) {
+        self.preset_browser_mode = PresetBrowserMode::None;
     }
 
     /// Set status message

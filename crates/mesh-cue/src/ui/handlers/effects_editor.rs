@@ -4,8 +4,8 @@
 
 use iced::Task;
 use mesh_widgets::multiband::{
-    ChainTarget, DryWetKnobId, EffectChainLocation, EffectSourceType, MultibandPresetConfig,
-    ParamMacroMapping, load_preset, save_preset,
+    ChainTarget, DryWetKnobId, EffectChainLocation, EffectSourceType, StemPresetConfig,
+    ParamMacroMapping, load_stem_preset, save_stem_preset, list_stem_presets, delete_stem_preset,
 };
 use mesh_widgets::{MultibandEditorMessage, DEFAULT_SENSITIVITY};
 
@@ -41,48 +41,44 @@ impl MeshCueApp {
                 self.effects_editor.close();
             }
 
-            // Preset management
+            // Preset management (from inner editor widget — map to stem preset operations)
             OpenPresetBrowser => {
-                // Refresh presets list
-                let presets = mesh_widgets::multiband::list_presets(&self.domain.collection_root());
-                self.effects_editor.editor.available_presets = presets;
-                self.effects_editor.editor.preset_browser_open = true;
+                return self.handle_open_stem_preset_browser();
             }
             ClosePresetBrowser => {
-                self.effects_editor.editor.preset_browser_open = false;
+                self.effects_editor.close_preset_browser();
             }
             LoadPreset(name) => {
-                return self.handle_load_preset(name);
+                return self.handle_load_stem_preset(name);
             }
             SavePreset => {
-                // Use current name or prompt
-                let name = if self.effects_editor.editor.preset_name_input.is_empty() {
+                let name = if self.effects_editor.stem_preset_name_input.is_empty() {
                     "Untitled".to_string()
                 } else {
-                    self.effects_editor.editor.preset_name_input.clone()
+                    self.effects_editor.stem_preset_name_input.clone()
                 };
-                return self.handle_effects_editor_save(name);
+                return self.handle_save_stem_preset(name);
             }
             DeletePreset(name) => {
-                return self.handle_delete_preset(name);
+                return self.handle_delete_stem_preset(name);
             }
             RefreshPresets => {
-                let presets = mesh_widgets::multiband::list_presets(&self.domain.collection_root());
-                self.effects_editor.editor.available_presets = presets;
+                let presets = list_stem_presets(&self.domain.collection_root());
+                self.effects_editor.available_stem_presets = presets;
             }
             SetAvailablePresets(presets) => {
-                self.effects_editor.editor.available_presets = presets;
+                self.effects_editor.available_stem_presets = presets;
             }
 
             // Save dialog
             OpenSaveDialog => {
-                self.effects_editor.open_save_dialog();
+                self.effects_editor.open_stem_save_dialog();
             }
             CloseSaveDialog => {
                 self.effects_editor.close_save_dialog();
             }
             SetPresetNameInput(name) => {
-                self.effects_editor.editor.preset_name_input = name;
+                self.effects_editor.stem_preset_name_input = name;
             }
 
             // Crossover control - forward to editor state and audio
@@ -1470,34 +1466,48 @@ impl MeshCueApp {
                     let current_stem = self.effects_editor.active_stem;
 
                     if new_stem != current_stem {
-                        // 1. Snapshot current stem's effects
+                        // 1. Hide current stem's open CLAP GUIs (keep handles alive)
+                        self.domain.hide_clap_guis_for_stem(current_stem);
+
+                        // 2. Clear gui_open flags on current stem's effects
+                        for effect in &mut self.effects_editor.editor.pre_fx {
+                            effect.gui_open = false;
+                        }
+                        for band in &mut self.effects_editor.editor.bands {
+                            for effect in &mut band.effects {
+                                effect.gui_open = false;
+                            }
+                        }
+                        for effect in &mut self.effects_editor.editor.post_fx {
+                            effect.gui_open = false;
+                        }
+
+                        // 3. Snapshot current stem → stem_data[current]
                         let current_data = self.effects_editor.editor.snapshot_stem_data();
                         self.effects_editor.stem_data[current_stem] = Some(current_data);
 
-                        // 2. Load new stem's effects (or clear if none)
+                        // 4. Restore new stem from stem_data[new] (or clear_effects)
                         if let Some(ref data) = self.effects_editor.stem_data[new_stem] {
                             self.effects_editor.editor.restore_stem_data(data);
                         } else {
                             self.effects_editor.editor.clear_effects();
                         }
 
-                        // 3. Update active stem index
+                        // 5. Update active stem index
                         self.effects_editor.active_stem = new_stem;
 
-                        // 4. Rebuild macro_mappings_index (macros stayed, effects changed)
+                        // 6. Rebuild macro_mappings_index (macros stayed, effects changed)
                         self.effects_editor.editor.rebuild_macro_mappings_index();
 
-                        // 5. Ensure knobs exist for new effects
+                        // 7. Ensure knobs exist for new effects
                         mesh_widgets::multiband::ensure_effect_knobs_exist(
                             &mut self.effects_editor.editor,
                         );
 
-                        // 6. Sync audio preview for new stem if enabled
-                        if self.effects_editor.audio_preview_enabled {
-                            self.sync_editor_to_audio();
-                        }
+                        // NO audio resync needed — CLAP handles persist across stem switches
+                        // The audio engine already has the right effects for each stem
 
-                        log::info!("[FX] Switched to stem {} in effects editor", new_stem);
+                        log::info!("[FX] Switched to stem {} (non-destructive, handles persist)", new_stem);
                     }
                 }
             }
@@ -1525,26 +1535,34 @@ impl MeshCueApp {
         Task::none()
     }
 
-    /// Load a preset into the editor
-    ///
-    /// This does the full load including:
-    /// 1. Load preset config from YAML
-    /// 2. Apply to editor UI state
-    /// 3. Instantiate CLAP plugins with GUI handles
-    /// 4. Apply ALL saved parameter values to plugins (not just knob-mapped ones)
-    /// 5. Ensure knob state exists for all effects
-    /// 6. Sync to audio if preview is enabled
-    fn handle_load_preset(&mut self, name: String) -> Task<Message> {
-        match load_preset(&self.domain.collection_root(), &name) {
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Stem Preset Operations
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Open stem preset browser (refresh list first)
+    pub fn handle_open_stem_preset_browser(&mut self) -> Task<Message> {
+        let presets = list_stem_presets(&self.domain.collection_root());
+        self.effects_editor.available_stem_presets = presets;
+        self.effects_editor.open_stem_preset_browser();
+        Task::none()
+    }
+
+    /// Load a stem preset into the active stem
+    pub fn handle_load_stem_preset(&mut self, name: String) -> Task<Message> {
+        let active_stem = self.effects_editor.active_stem;
+        match load_stem_preset(&self.domain.collection_root(), &name) {
             Ok(config) => {
-                log::info!("Loading preset '{}' with {} pre-fx, {} bands, {} post-fx",
+                log::info!("Loading stem preset '{}' with {} pre-fx, {} bands, {} post-fx",
                     name, config.pre_fx.len(), config.bands.len(), config.post_fx.len());
+
+                // Destroy existing CLAP handles for this stem
+                self.domain.destroy_clap_gui_handles_for_stem(active_stem);
 
                 // Apply to UI state (sets up EffectUiState objects)
                 config.apply_to_editor_state(&mut self.effects_editor.editor);
 
-                // Instantiate CLAP plugins with GUI handles
-                self.instantiate_preset_effects();
+                // Instantiate CLAP plugins with stem-indexed GUI handles
+                self.instantiate_preset_effects_for_stem(active_stem);
 
                 // Ensure knob state exists for all effects
                 mesh_widgets::multiband::ensure_effect_knobs_exist(&mut self.effects_editor.editor);
@@ -1552,20 +1570,263 @@ impl MeshCueApp {
                 // Rebuild the macro mappings reverse index
                 self.effects_editor.editor.rebuild_macro_mappings_index();
 
+                // Update stem preset name
+                self.effects_editor.stem_preset_names[active_stem] = Some(name.clone());
+
                 // If preview is enabled, sync the loaded state to audio
                 if self.effects_editor.audio_preview_enabled {
                     self.sync_editor_to_audio();
                 }
 
                 self.effects_editor.load_preset(name.clone());
-                self.effects_editor.set_status(format!("Loaded preset '{}'", name));
-                self.effects_editor.editor.preset_browser_open = false;
+                self.effects_editor.set_status(format!("Loaded stem preset '{}'", name));
+                self.effects_editor.close_preset_browser();
 
-                log::info!("Preset '{}' loaded successfully", name);
+                log::info!("Stem preset '{}' loaded successfully", name);
             }
             Err(e) => {
-                log::error!("Failed to load preset '{}': {}", name, e);
+                log::error!("Failed to load stem preset '{}': {}", name, e);
                 self.effects_editor.set_status(format!("Failed to load: {}", e));
+            }
+        }
+        Task::none()
+    }
+
+    /// Save the active stem as a stem preset
+    pub fn handle_save_stem_preset(&mut self, name: String) -> Task<Message> {
+        let active_stem = self.effects_editor.active_stem;
+
+        // Capture all param values from CLAP plugins before creating config
+        self.capture_all_effect_param_values();
+
+        let config = StemPresetConfig::from_editor_state(&self.effects_editor.editor, &name);
+
+        match save_stem_preset(&config, &self.domain.collection_root()) {
+            Ok(()) => {
+                self.effects_editor.stem_preset_names[active_stem] = Some(name.clone());
+                self.effects_editor.editing_preset = Some(name.clone());
+                self.effects_editor.set_status(format!("Saved stem preset '{}'", name));
+                self.effects_editor.close_save_dialog();
+
+                // Refresh stem presets list
+                let presets = list_stem_presets(&self.domain.collection_root());
+                self.effects_editor.available_stem_presets = presets;
+            }
+            Err(e) => {
+                log::error!("Failed to save stem preset '{}': {}", name, e);
+                self.effects_editor.set_status(format!("Failed to save: {}", e));
+            }
+        }
+        Task::none()
+    }
+
+    /// Delete a stem preset
+    pub fn handle_delete_stem_preset(&mut self, name: String) -> Task<Message> {
+        match delete_stem_preset(&self.domain.collection_root(), &name) {
+            Ok(()) => {
+                self.effects_editor.set_status(format!("Deleted stem preset '{}'", name));
+
+                // If we deleted the currently editing preset, clear it
+                if self.effects_editor.editing_preset.as_ref() == Some(&name) {
+                    self.effects_editor.editing_preset = None;
+                }
+                // Clear stem preset name if it matches
+                let active = self.effects_editor.active_stem;
+                if self.effects_editor.stem_preset_names[active].as_ref() == Some(&name) {
+                    self.effects_editor.stem_preset_names[active] = None;
+                }
+
+                // Refresh stem presets list
+                let presets = list_stem_presets(&self.domain.collection_root());
+                self.effects_editor.available_stem_presets = presets;
+            }
+            Err(e) => {
+                log::error!("Failed to delete stem preset '{}': {}", name, e);
+                self.effects_editor.set_status(format!("Failed to delete: {}", e));
+            }
+        }
+        Task::none()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Deck Preset Operations
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Open deck preset browser (refresh list first)
+    pub fn handle_open_deck_preset_browser(&mut self) -> Task<Message> {
+        use mesh_widgets::multiband::list_deck_presets;
+        let presets = list_deck_presets(&self.domain.collection_root());
+        self.effects_editor.available_deck_presets = presets;
+        self.effects_editor.open_deck_preset_browser();
+        Task::none()
+    }
+
+    /// Save all 4 stems + macros as a deck preset
+    pub fn handle_save_deck_preset(&mut self, name: String) -> Task<Message> {
+        use mesh_widgets::multiband::{DeckPresetConfig, save_deck_preset};
+
+        // 1. Capture param values for active stem
+        self.capture_all_effect_param_values();
+
+        // 2. Snapshot active stem
+        let active = self.effects_editor.active_stem;
+        let active_data = self.effects_editor.editor.snapshot_stem_data();
+        self.effects_editor.stem_data[active] = Some(active_data);
+
+        // 3. For each stem with data, ensure it has a stem preset saved
+        let stem_labels = ["vocals", "drums", "bass", "other"];
+        for stem_idx in 0..4 {
+            if self.effects_editor.stem_data[stem_idx].is_some() {
+                let stem_name = self.effects_editor.stem_preset_names[stem_idx]
+                    .clone()
+                    .unwrap_or_else(|| format!("{}_{}", name, stem_labels[stem_idx]));
+
+                // Build stem preset from snapshot
+                let data = self.effects_editor.stem_data[stem_idx].as_ref().unwrap();
+                let stem_config = StemPresetConfig::from_stem_data(data, &stem_name);
+
+                if let Err(e) = save_stem_preset(&stem_config, &self.domain.collection_root()) {
+                    log::error!("Failed to save stem preset '{}': {}", stem_name, e);
+                    self.effects_editor.set_status(format!("Failed to save stem '{}': {}", stem_name, e));
+                    return Task::none();
+                }
+
+                self.effects_editor.stem_preset_names[stem_idx] = Some(stem_name);
+            }
+        }
+
+        // 4. Build deck preset referencing stem preset names + macros
+        use mesh_widgets::multiband::MacroPresetConfig;
+        let macro_configs: Vec<MacroPresetConfig> = self.effects_editor.editor.macros.iter()
+            .enumerate()
+            .map(|(i, m)| MacroPresetConfig {
+                name: m.name.clone(),
+                value: self.effects_editor.editor.macro_value(i),
+            })
+            .collect();
+        let config = DeckPresetConfig::from_editor_states(
+            &name,
+            &self.effects_editor.stem_preset_names,
+            &macro_configs,
+        );
+
+        match save_deck_preset(&config, &self.domain.collection_root()) {
+            Ok(()) => {
+                self.effects_editor.deck_preset_name = Some(name.clone());
+                self.effects_editor.set_status(format!("Saved deck preset '{}'", name));
+                self.effects_editor.close_save_dialog();
+
+                // Refresh lists
+                use mesh_widgets::multiband::list_deck_presets;
+                self.effects_editor.available_deck_presets = list_deck_presets(&self.domain.collection_root());
+                self.effects_editor.available_stem_presets = list_stem_presets(&self.domain.collection_root());
+            }
+            Err(e) => {
+                log::error!("Failed to save deck preset '{}': {}", name, e);
+                self.effects_editor.set_status(format!("Failed to save deck: {}", e));
+            }
+        }
+        Task::none()
+    }
+
+    /// Load a deck preset (all 4 stems + macros)
+    pub fn handle_load_deck_preset(&mut self, name: String) -> Task<Message> {
+        use mesh_widgets::multiband::DeckPresetConfig;
+
+        // Load resolved: load deck + all referenced stem presets in one step
+        match DeckPresetConfig::load_resolved(&self.domain.collection_root(), &name) {
+            Ok(resolved) => {
+                log::info!("Loading deck preset '{}' with {} stem references",
+                    name, resolved.stems.len());
+
+                // Destroy all CLAP handles before rebuilding
+                self.domain.destroy_all_clap_gui_handles();
+
+                // For each resolved stem, apply to stem_data
+                for (stem_idx, stem_config) in resolved.stems.iter().enumerate() {
+                    if let Some(ref config) = stem_config {
+                        // Create a temporary editor, apply the config, snapshot it
+                        let mut temp_editor = mesh_widgets::MultibandEditorState::new();
+                        config.apply_to_editor_state(&mut temp_editor);
+                        let data = temp_editor.snapshot_stem_data();
+                        self.effects_editor.stem_data[stem_idx] = Some(data);
+                    } else {
+                        self.effects_editor.stem_data[stem_idx] = None;
+                    }
+                }
+
+                // Set stem preset names
+                for (stem_idx, name_opt) in resolved.stem_names.iter().enumerate() {
+                    self.effects_editor.stem_preset_names[stem_idx] = name_opt.clone();
+                }
+
+                // Apply macros from resolved preset
+                for (i, macro_config) in resolved.macros.iter().enumerate() {
+                    if i < self.effects_editor.editor.macros.len() {
+                        self.effects_editor.editor.macros[i].name = macro_config.name.clone();
+                        self.effects_editor.editor.set_macro_value(i, macro_config.value);
+                    }
+                }
+
+                // Restore active stem from stem_data
+                let active = self.effects_editor.active_stem;
+                if let Some(ref data) = self.effects_editor.stem_data[active] {
+                    self.effects_editor.editor.restore_stem_data(data);
+                } else {
+                    self.effects_editor.editor.clear_effects();
+                }
+
+                // Instantiate CLAP for all stems with data
+                for stem_idx in 0..4 {
+                    if self.effects_editor.stem_data[stem_idx].is_some() {
+                        // For the active stem, instantiate from editor state
+                        if stem_idx == active {
+                            self.instantiate_preset_effects_for_stem(stem_idx);
+                        }
+                        // For inactive stems, CLAP handles will be created on first sync
+                    }
+                }
+
+                // Ensure knobs, rebuild macro index
+                mesh_widgets::multiband::ensure_effect_knobs_exist(&mut self.effects_editor.editor);
+                self.effects_editor.editor.rebuild_macro_mappings_index();
+
+                // Sync audio if preview on
+                if self.effects_editor.audio_preview_enabled {
+                    self.sync_all_stems_to_audio();
+                }
+
+                self.effects_editor.deck_preset_name = Some(name.clone());
+                self.effects_editor.set_status(format!("Loaded deck preset '{}'", name));
+                self.effects_editor.close_preset_browser();
+
+                log::info!("Deck preset '{}' loaded successfully", name);
+            }
+            Err(e) => {
+                log::error!("Failed to load deck preset '{}': {}", name, e);
+                self.effects_editor.set_status(format!("Failed to load deck: {}", e));
+            }
+        }
+        Task::none()
+    }
+
+    /// Delete a deck preset
+    pub fn handle_delete_deck_preset(&mut self, name: String) -> Task<Message> {
+        use mesh_widgets::multiband::{delete_deck_preset, list_deck_presets};
+
+        match delete_deck_preset(&self.domain.collection_root(), &name) {
+            Ok(()) => {
+                self.effects_editor.set_status(format!("Deleted deck preset '{}'", name));
+
+                if self.effects_editor.deck_preset_name.as_ref() == Some(&name) {
+                    self.effects_editor.deck_preset_name = None;
+                }
+
+                self.effects_editor.available_deck_presets = list_deck_presets(&self.domain.collection_root());
+            }
+            Err(e) => {
+                log::error!("Failed to delete deck preset '{}': {}", name, e);
+                self.effects_editor.set_status(format!("Failed to delete: {}", e));
             }
         }
         Task::none()
@@ -1575,7 +1836,8 @@ impl MeshCueApp {
     ///
     /// Creates GUI handles for CLAP effects so they can be opened.
     /// Called after loading a preset to ensure plugins are ready.
-    fn instantiate_preset_effects(&mut self) {
+    /// Uses stem-indexed instance IDs to avoid collisions between stems.
+    fn instantiate_preset_effects_for_stem(&mut self, stem_idx: usize) {
         // Collect effect info to avoid borrow conflicts
         let pre_fx_effects: Vec<(usize, String, EffectSourceType)> = self.effects_editor.editor.pre_fx
             .iter()
@@ -1605,7 +1867,7 @@ impl MeshCueApp {
         // Instantiate pre-fx CLAP effects
         for (effect_idx, plugin_id, source) in &pre_fx_effects {
             if *source == EffectSourceType::Clap {
-                let effect_instance_id = format!("{}_cue_prefx_{}", plugin_id, effect_idx);
+                let effect_instance_id = Self::clap_effect_instance_id(plugin_id, stem_idx, &EffectChainLocation::PreFx, *effect_idx);
                 self.instantiate_clap_effect(plugin_id, effect_instance_id);
             }
         }
@@ -1614,7 +1876,7 @@ impl MeshCueApp {
         for (band_idx, effects) in &band_effects {
             for (effect_idx, plugin_id, source) in effects {
                 if *source == EffectSourceType::Clap {
-                    let effect_instance_id = format!("{}_cue_b{}_{}", plugin_id, band_idx, effect_idx);
+                    let effect_instance_id = Self::clap_effect_instance_id(plugin_id, stem_idx, &EffectChainLocation::Band(*band_idx), *effect_idx);
                     self.instantiate_clap_effect(plugin_id, effect_instance_id);
                 }
             }
@@ -1623,7 +1885,7 @@ impl MeshCueApp {
         // Instantiate post-fx CLAP effects
         for (effect_idx, plugin_id, source) in &post_fx_effects {
             if *source == EffectSourceType::Clap {
-                let effect_instance_id = format!("{}_cue_postfx_{}", plugin_id, effect_idx);
+                let effect_instance_id = Self::clap_effect_instance_id(plugin_id, stem_idx, &EffectChainLocation::PostFx, *effect_idx);
                 self.instantiate_clap_effect(plugin_id, effect_instance_id);
             }
         }
@@ -1650,33 +1912,6 @@ impl MeshCueApp {
         }
     }
 
-    /// Save the current editor state as a preset
-    ///
-    /// Captures ALL parameter values from CLAP plugins (not just knob-mapped ones)
-    /// before saving. This preserves settings made via the plugin GUI.
-    pub fn handle_effects_editor_save(&mut self, name: String) -> Task<Message> {
-        // Capture all param values from CLAP plugins before creating config
-        self.capture_all_effect_param_values();
-
-        let config = MultibandPresetConfig::from_editor_state(&self.effects_editor.editor, &name);
-
-        match save_preset(&config, &self.domain.collection_root()) {
-            Ok(()) => {
-                self.effects_editor.editing_preset = Some(name.clone());
-                self.effects_editor.set_status(format!("Saved preset '{}'", name));
-                self.effects_editor.close_save_dialog();
-
-                // Refresh presets list
-                let presets = mesh_widgets::multiband::list_presets(&self.domain.collection_root());
-                self.effects_editor.editor.available_presets = presets;
-            }
-            Err(e) => {
-                log::error!("Failed to save preset '{}': {}", name, e);
-                self.effects_editor.set_status(format!("Failed to save: {}", e));
-            }
-        }
-        Task::none()
-    }
 
     /// Capture current parameter values from all CLAP plugins
     ///
@@ -1684,14 +1919,7 @@ impl MeshCueApp {
     /// in the corresponding EffectUiState's saved_param_values field. This ensures
     /// that settings made via the plugin GUI are preserved in the preset.
     fn capture_all_effect_param_values(&mut self) {
-        // Helper to generate effect instance ID
-        fn effect_instance_id(id: &str, location: EffectChainLocation, effect_idx: usize) -> String {
-            match location {
-                EffectChainLocation::PreFx => format!("{}_cue_prefx_{}", id, effect_idx),
-                EffectChainLocation::Band(band_idx) => format!("{}_cue_b{}_{}", id, band_idx, effect_idx),
-                EffectChainLocation::PostFx => format!("{}_cue_postfx_{}", id, effect_idx),
-            }
-        }
+        let stem_idx = self.effects_editor.active_stem;
 
         // Collect effect info first to avoid borrow conflicts
         let pre_fx_info: Vec<(usize, String, EffectSourceType)> = self.effects_editor.editor.pre_fx
@@ -1723,7 +1951,7 @@ impl MeshCueApp {
         // Pre-FX
         for (effect_idx, plugin_id, source) in &pre_fx_info {
             if *source == EffectSourceType::Clap {
-                let instance_id = effect_instance_id(plugin_id, EffectChainLocation::PreFx, *effect_idx);
+                let instance_id = Self::clap_effect_instance_id(plugin_id, stem_idx, &EffectChainLocation::PreFx, *effect_idx);
                 if let Some(params) = self.capture_plugin_params(&instance_id) {
                     if let Some(effect) = self.effects_editor.editor.pre_fx.get_mut(*effect_idx) {
                         log::debug!("Captured {} params for pre-fx[{}]", params.len(), effect_idx);
@@ -1737,7 +1965,7 @@ impl MeshCueApp {
         for (band_idx, effects) in &band_effects_info {
             for (effect_idx, plugin_id, source) in effects {
                 if *source == EffectSourceType::Clap {
-                    let instance_id = effect_instance_id(plugin_id, EffectChainLocation::Band(*band_idx), *effect_idx);
+                    let instance_id = Self::clap_effect_instance_id(plugin_id, stem_idx, &EffectChainLocation::Band(*band_idx), *effect_idx);
                     if let Some(params) = self.capture_plugin_params(&instance_id) {
                         if let Some(band) = self.effects_editor.editor.bands.get_mut(*band_idx) {
                             if let Some(effect) = band.effects.get_mut(*effect_idx) {
@@ -1753,7 +1981,7 @@ impl MeshCueApp {
         // Post-FX
         for (effect_idx, plugin_id, source) in &post_fx_info {
             if *source == EffectSourceType::Clap {
-                let instance_id = effect_instance_id(plugin_id, EffectChainLocation::PostFx, *effect_idx);
+                let instance_id = Self::clap_effect_instance_id(plugin_id, stem_idx, &EffectChainLocation::PostFx, *effect_idx);
                 if let Some(params) = self.capture_plugin_params(&instance_id) {
                     if let Some(effect) = self.effects_editor.editor.post_fx.get_mut(*effect_idx) {
                         log::debug!("Captured {} params for post-fx[{}]", params.len(), effect_idx);
@@ -1794,28 +2022,6 @@ impl MeshCueApp {
         Some(param_values)
     }
 
-    /// Delete a preset
-    fn handle_delete_preset(&mut self, name: String) -> Task<Message> {
-        match mesh_widgets::multiband::delete_preset(&self.domain.collection_root(), &name) {
-            Ok(()) => {
-                self.effects_editor.set_status(format!("Deleted preset '{}'", name));
-
-                // If we deleted the currently editing preset, clear it
-                if self.effects_editor.editing_preset.as_ref() == Some(&name) {
-                    self.effects_editor.editing_preset = None;
-                }
-
-                // Refresh presets list
-                let presets = mesh_widgets::multiband::list_presets(&self.domain.collection_root());
-                self.effects_editor.editor.available_presets = presets;
-            }
-            Err(e) => {
-                log::error!("Failed to delete preset '{}': {}", name, e);
-                self.effects_editor.set_status(format!("Failed to delete: {}", e));
-            }
-        }
-        Task::none()
-    }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Audio Preview Controls
@@ -1856,10 +2062,11 @@ impl MeshCueApp {
     /// 8. Sync effect parameters and bypass states
     fn sync_editor_to_audio(&mut self) {
         let stem = self.effects_editor.active_stem_type();
+        let active_stem_idx = self.effects_editor.active_stem;
 
-        // 0. Destroy all open plugin GUIs and remove handles before recreating
-        // This prevents orphaned GUI windows pointing to freed plugin wrappers (segfault)
-        self.domain.destroy_all_clap_gui_handles();
+        // 0. Destroy only this stem's GUI handles before recreating
+        // Other stems' handles are preserved for non-destructive switching
+        self.domain.destroy_clap_gui_handles_for_stem(active_stem_idx);
 
         // Also clear gui_open flags in the editor state
         for effect in &mut self.effects_editor.editor.pre_fx {
@@ -1921,7 +2128,7 @@ impl MeshCueApp {
             if let Some(effects) = band_effects.get(band_idx) {
                 for (effect_idx, data) in effects.iter().enumerate() {
                     let location = EffectChainLocation::Band(band_idx);
-                    if let Some(effect) = self.create_effect_for_audio(&data.id, &data.source, location, effect_idx) {
+                    if let Some(effect) = self.create_effect_for_audio(&data.id, &data.source, active_stem_idx, location, effect_idx) {
                         self.audio.add_multiband_band_effect(stem, band_idx, effect);
                         // Sync bypass
                         if data.bypassed {
@@ -1938,7 +2145,7 @@ impl MeshCueApp {
 
         // 5. Add pre-fx effects
         for (effect_idx, data) in pre_fx_effects.iter().enumerate() {
-            if let Some(effect) = self.create_effect_for_audio(&data.id, &data.source, EffectChainLocation::PreFx, effect_idx) {
+            if let Some(effect) = self.create_effect_for_audio(&data.id, &data.source, active_stem_idx, EffectChainLocation::PreFx, effect_idx) {
                 self.audio.add_multiband_pre_fx(stem, effect);
                 // Sync bypass
                 if data.bypassed {
@@ -1953,7 +2160,7 @@ impl MeshCueApp {
 
         // 6. Add post-fx effects
         for (effect_idx, data) in post_fx_effects.iter().enumerate() {
-            if let Some(effect) = self.create_effect_for_audio(&data.id, &data.source, EffectChainLocation::PostFx, effect_idx) {
+            if let Some(effect) = self.create_effect_for_audio(&data.id, &data.source, active_stem_idx, EffectChainLocation::PostFx, effect_idx) {
                 self.audio.add_multiband_post_fx(stem, effect);
                 // Sync bypass
                 if data.bypassed {
@@ -2006,6 +2213,7 @@ impl MeshCueApp {
 
     /// Sync a StemEffectData snapshot to the audio engine for a specific stem
     fn sync_stem_data_to_audio(&mut self, stem: mesh_core::types::Stem, data: mesh_widgets::multiband::StemEffectData) {
+        let stem_idx = stem as usize;
         // 1. Reset
         self.audio.reset_multiband(stem);
 
@@ -2030,7 +2238,7 @@ impl MeshCueApp {
             for (effect_idx, effect) in band.effects.iter().enumerate() {
                 let sync = EffectSyncData::from_effect(effect);
                 let location = EffectChainLocation::Band(band_idx);
-                if let Some(audio_effect) = self.create_effect_for_audio(&sync.id, &sync.source, location, effect_idx) {
+                if let Some(audio_effect) = self.create_effect_for_audio(&sync.id, &sync.source, stem_idx, location, effect_idx) {
                     self.audio.add_multiband_band_effect(stem, band_idx, audio_effect);
                     if sync.bypassed {
                         self.audio.set_multiband_effect_bypass(stem, band_idx, effect_idx, true);
@@ -2045,7 +2253,7 @@ impl MeshCueApp {
         // 5. Pre-FX effects
         for (effect_idx, effect) in data.pre_fx.iter().enumerate() {
             let sync = EffectSyncData::from_effect(effect);
-            if let Some(audio_effect) = self.create_effect_for_audio(&sync.id, &sync.source, EffectChainLocation::PreFx, effect_idx) {
+            if let Some(audio_effect) = self.create_effect_for_audio(&sync.id, &sync.source, stem_idx, EffectChainLocation::PreFx, effect_idx) {
                 self.audio.add_multiband_pre_fx(stem, audio_effect);
                 if sync.bypassed {
                     self.audio.set_multiband_pre_fx_bypass(stem, effect_idx, true);
@@ -2059,7 +2267,7 @@ impl MeshCueApp {
         // 6. Post-FX effects
         for (effect_idx, effect) in data.post_fx.iter().enumerate() {
             let sync = EffectSyncData::from_effect(effect);
-            if let Some(audio_effect) = self.create_effect_for_audio(&sync.id, &sync.source, EffectChainLocation::PostFx, effect_idx) {
+            if let Some(audio_effect) = self.create_effect_for_audio(&sync.id, &sync.source, stem_idx, EffectChainLocation::PostFx, effect_idx) {
                 self.audio.add_multiband_post_fx(stem, audio_effect);
                 if sync.bypassed {
                     self.audio.set_multiband_post_fx_bypass(stem, effect_idx, true);
@@ -2085,11 +2293,11 @@ impl MeshCueApp {
     }
 
     /// Generate CLAP effect instance ID for a given location and effect index
-    fn clap_effect_instance_id(plugin_id: &str, location: &EffectChainLocation, effect_idx: usize) -> String {
+    fn clap_effect_instance_id(plugin_id: &str, stem_idx: usize, location: &EffectChainLocation, effect_idx: usize) -> String {
         match location {
-            EffectChainLocation::PreFx => format!("{}_cue_prefx_{}", plugin_id, effect_idx),
-            EffectChainLocation::Band(band_idx) => format!("{}_cue_b{}_{}", plugin_id, band_idx, effect_idx),
-            EffectChainLocation::PostFx => format!("{}_cue_postfx_{}", plugin_id, effect_idx),
+            EffectChainLocation::PreFx => format!("{}_cue_s{}_prefx_{}", plugin_id, stem_idx, effect_idx),
+            EffectChainLocation::Band(band_idx) => format!("{}_cue_s{}_b{}_{}", plugin_id, stem_idx, band_idx, effect_idx),
+            EffectChainLocation::PostFx => format!("{}_cue_s{}_postfx_{}", plugin_id, stem_idx, effect_idx),
         }
     }
 
@@ -2108,7 +2316,8 @@ impl MeshCueApp {
 
         if let Some(effect) = effect_state {
             if effect.source == EffectSourceType::Clap {
-                let instance_id = Self::clap_effect_instance_id(&effect.id, location, effect_idx);
+                let stem_idx = self.effects_editor.active_stem;
+                let instance_id = Self::clap_effect_instance_id(&effect.id, stem_idx, location, effect_idx);
                 self.domain.remove_clap_gui_handle(&instance_id);
             }
         }
@@ -2123,6 +2332,7 @@ impl MeshCueApp {
         &mut self,
         id: &str,
         source: &EffectSourceType,
+        stem_idx: usize,
         location: EffectChainLocation,
         effect_idx: usize,
     ) -> Option<Box<dyn mesh_core::effect::Effect>> {
@@ -2131,7 +2341,7 @@ impl MeshCueApp {
                 self.domain.create_pd_effect(id).ok()
             }
             EffectSourceType::Clap => {
-                let effect_instance_id = Self::clap_effect_instance_id(id, &location, effect_idx);
+                let effect_instance_id = Self::clap_effect_instance_id(id, stem_idx, &location, effect_idx);
                 self.domain.create_clap_effect_with_gui(id, effect_instance_id).ok()
             }
             EffectSourceType::Native => {

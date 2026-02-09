@@ -342,9 +342,9 @@ pub fn multiband_editor(
 
     // Layer preset browser, save dialog, or param picker on top if open
     let base_view: Element<'_, MultibandEditorMessage> = if state.preset_browser_open {
-        iced::widget::stack![centered, preset_browser_overlay(state),].into()
+        iced::widget::stack![centered, preset_browser_overlay(&state.available_presets),].into()
     } else if state.save_dialog_open {
-        iced::widget::stack![centered, save_dialog_overlay(state),].into()
+        iced::widget::stack![centered, save_dialog_overlay(&state.preset_name_input),].into()
     } else if state.param_picker_open.is_some() {
         iced::widget::stack![centered, param_picker_overlay(state),].into()
     } else {
@@ -2196,9 +2196,10 @@ fn mod_range_indicator_compact<'a>(
 ///
 /// Shows a scrollable list of available presets with load/delete buttons.
 /// Use this when building a custom modal wrapper around `multiband_editor_content`.
-pub fn preset_browser_overlay(state: &MultibandEditorState) -> Element<'_, MultibandEditorMessage> {
-    let preset_list: Vec<Element<'_, MultibandEditorMessage>> = state
-        .available_presets
+///
+/// `available_presets` is the list of preset names to display.
+pub fn preset_browser_overlay(available_presets: &[String]) -> Element<'_, MultibandEditorMessage> {
+    let preset_list: Vec<Element<'_, MultibandEditorMessage>> = available_presets
         .iter()
         .map(|name| {
             let name_clone = name.clone();
@@ -2278,8 +2279,10 @@ pub fn preset_browser_overlay(state: &MultibandEditorState) -> Element<'_, Multi
 ///
 /// Shows a text input for preset name and save/cancel buttons.
 /// Use this when building a custom modal wrapper around `multiband_editor_content`.
-pub fn save_dialog_overlay(state: &MultibandEditorState) -> Element<'_, MultibandEditorMessage> {
-    let can_save = !state.preset_name_input.trim().is_empty();
+///
+/// `preset_name_input` is the current text in the name input field.
+pub fn save_dialog_overlay(preset_name_input: &str) -> Element<'_, MultibandEditorMessage> {
+    let can_save = !preset_name_input.trim().is_empty();
 
     let dialog = container(
         column![
@@ -2293,7 +2296,7 @@ pub fn save_dialog_overlay(state: &MultibandEditorState) -> Element<'_, Multiban
             .align_y(Alignment::Center),
             divider(),
             text("Preset Name:").size(14).color(TEXT_SECONDARY),
-            text_input("Enter preset name...", &state.preset_name_input)
+            text_input("Enter preset name...", preset_name_input)
                 .on_input(MultibandEditorMessage::SetPresetNameInput)
                 .padding(8)
                 .size(14),

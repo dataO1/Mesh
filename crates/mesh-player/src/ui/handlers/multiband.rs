@@ -8,7 +8,7 @@ use mesh_core::effect::EffectInfo;
 use mesh_core::types::Stem;
 use mesh_widgets::multiband::{
     self, ensure_effect_knobs_exist, AvailableParam, ChainTarget, DryWetKnobId, EffectChainLocation,
-    EffectSourceType, EffectUiState, KnobAssignment, MultibandPresetConfig, ParamMacroMapping,
+    EffectSourceType, EffectUiState, KnobAssignment, StemPresetConfig, ParamMacroMapping,
     MAX_UI_KNOBS,
 };
 use mesh_widgets::{MultibandEditorMessage, DEFAULT_SENSITIVITY};
@@ -889,8 +889,8 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         // Preset management
         // ─────────────────────────────────────────────────────────────────────
         OpenPresetBrowser => {
-            // Refresh preset list when opening browser
-            let presets = multiband::list_presets(&app.config.collection_path);
+            // Refresh stem preset list when opening browser
+            let presets = multiband::list_stem_presets(&app.config.collection_path);
             app.multiband_editor.available_presets = presets;
             app.multiband_editor.preset_browser_open = true;
             Task::none()
@@ -923,7 +923,7 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         }
 
         LoadPreset(name) => {
-            match multiband::load_preset(&app.config.collection_path, &name) {
+            match multiband::load_stem_preset(&app.config.collection_path, &name) {
                 Ok(preset_config) => {
                     let deck = app.multiband_editor.deck;
                     let stem_idx = app.multiband_editor.stem;
@@ -965,20 +965,20 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             }
 
             // Create preset config from current editor state
-            let preset_config = MultibandPresetConfig::from_editor_state(
+            let preset_config = StemPresetConfig::from_editor_state(
                 &app.multiband_editor,
                 &name,
             );
 
             // Save to disk
-            match multiband::save_preset(&preset_config, &app.config.collection_path) {
+            match multiband::save_stem_preset(&preset_config, &app.config.collection_path) {
                 Ok(()) => {
                     log::info!("Saved preset '{}'", name);
                     app.status = format!("Saved preset: {}", name);
                     app.multiband_editor.save_dialog_open = false;
-                    // Refresh preset list
+                    // Refresh stem preset list
                     app.multiband_editor.available_presets =
-                        multiband::list_presets(&app.config.collection_path);
+                        multiband::list_stem_presets(&app.config.collection_path);
                 }
                 Err(e) => {
                     log::error!("Failed to save preset: {}", e);
@@ -989,13 +989,13 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
         }
 
         DeletePreset(name) => {
-            match multiband::delete_preset(&app.config.collection_path, &name) {
+            match multiband::delete_stem_preset(&app.config.collection_path, &name) {
                 Ok(()) => {
                     log::info!("Deleted preset '{}'", name);
                     app.status = format!("Deleted preset: {}", name);
-                    // Refresh preset list
+                    // Refresh stem preset list
                     app.multiband_editor.available_presets =
-                        multiband::list_presets(&app.config.collection_path);
+                        multiband::list_stem_presets(&app.config.collection_path);
                 }
                 Err(e) => {
                     log::error!("Failed to delete preset: {}", e);
@@ -1007,7 +1007,7 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
 
         RefreshPresets => {
             app.multiband_editor.available_presets =
-                multiband::list_presets(&app.config.collection_path);
+                multiband::list_stem_presets(&app.config.collection_path);
             Task::none()
         }
 
@@ -2050,8 +2050,7 @@ fn sync_from_backend(app: &mut MeshApp) {
 
     if let Some(preset_name) = loaded_stem_preset_name {
         // Try loading from stems/ first, then fall back to legacy presets/
-        let result = multiband::load_stem_preset(&app.config.collection_path, &preset_name)
-            .or_else(|_| multiband::load_preset(&app.config.collection_path, &preset_name));
+        let result = multiband::load_stem_preset(&app.config.collection_path, &preset_name);
 
         if let Ok(preset_config) = result {
             // Apply stem preset to editor state (effects, macro mappings, etc.)

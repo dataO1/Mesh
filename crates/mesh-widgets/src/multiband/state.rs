@@ -556,20 +556,25 @@ pub struct MultibandEditorState {
     /// Effect parameter knob widgets, keyed by (location, effect_idx, knob_idx)
     pub effect_knobs: HashMap<EffectKnobKey, Knob>,
 
-    /// Whether the preset browser is open (for loading)
-    pub preset_browser_open: bool,
-
-    /// Whether the save dialog is open
-    pub save_dialog_open: bool,
-
-    /// Preset name input for save dialog
-    pub preset_name_input: String,
-
-    /// Available preset names
-    pub available_presets: Vec<String>,
-
     /// Whether any band is soloed (for solo logic display)
     pub any_soloed: bool,
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Preset UI state (used by mesh-player's standalone multiband_editor)
+    // In mesh-cue, EffectsEditorState manages its own preset UI state.
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Whether the preset browser overlay is open
+    pub preset_browser_open: bool,
+
+    /// Whether the save dialog overlay is open
+    pub save_dialog_open: bool,
+
+    /// Text in the preset name input field
+    pub preset_name_input: String,
+
+    /// Available preset names for the browser
+    pub available_presets: Vec<String>,
 
     // ─────────────────────────────────────────────────────────────────────
     // Parameter picker state
@@ -716,11 +721,11 @@ impl MultibandEditorState {
             editing_macro_name: None,
             macro_knobs: (0..super::NUM_MACROS).map(|_| Knob::new(64.0)).collect(),
             effect_knobs: HashMap::new(),
+            any_soloed: false,
             preset_browser_open: false,
             save_dialog_open: false,
             preset_name_input: String::new(),
             available_presets: Vec::new(),
-            any_soloed: false,
             param_picker_open: None,
             param_picker_search: String::new(),
             dragging_effect_knob: None,
@@ -815,7 +820,6 @@ impl MultibandEditorState {
         self.stem = stem;
         self.stem_name = stem_name.to_string();
         self.selected_effect = None;
-        self.preset_browser_open = false;
     }
 
     /// Close the editor

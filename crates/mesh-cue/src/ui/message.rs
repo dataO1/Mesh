@@ -285,13 +285,47 @@ pub enum Message {
     EffectsEditor(MultibandEditorMessage),
     /// Create a new preset in the effects editor
     EffectsEditorNewPreset,
-    /// Open save dialog in the effects editor
+
+    // Stem preset operations
+    /// Open the stem preset browser
+    EffectsEditorOpenStemPresetBrowser,
+    /// Close the stem preset browser
+    EffectsEditorCloseStemPresetBrowser,
+    /// Load a stem preset by name
+    EffectsEditorLoadStemPreset(String),
+    /// Save current stem as a preset
+    EffectsEditorSaveStemPreset(String),
+    /// Delete a stem preset by name
+    EffectsEditorDeleteStemPreset(String),
+    /// Open stem save dialog
+    EffectsEditorOpenStemSaveDialog,
+    /// Update stem preset name input
+    EffectsEditorSetStemPresetNameInput(String),
+
+    // Deck preset operations
+    /// Open the deck preset browser
+    EffectsEditorOpenDeckPresetBrowser,
+    /// Close the deck preset browser
+    EffectsEditorCloseDeckPresetBrowser,
+    /// Load a deck preset by name
+    EffectsEditorLoadDeckPreset(String),
+    /// Save current deck as a preset
+    EffectsEditorSaveDeckPreset(String),
+    /// Delete a deck preset by name
+    EffectsEditorDeleteDeckPreset(String),
+    /// Open deck save dialog
+    EffectsEditorOpenDeckSaveDialog,
+    /// Update deck preset name input
+    EffectsEditorSetDeckPresetNameInput(String),
+
+    // Legacy (forwarded from inner editor widget)
+    /// Open save dialog in the effects editor (legacy, maps to stem save)
     EffectsEditorOpenSaveDialog,
-    /// Save the current preset with the given name
+    /// Save the current preset with the given name (legacy, maps to stem save)
     EffectsEditorSavePreset(String),
     /// Close the save dialog
     EffectsEditorCloseSaveDialog,
-    /// Update preset name input
+    /// Update preset name input (legacy, maps to stem name input)
     EffectsEditorSetPresetName(String),
 
     // Effect Picker

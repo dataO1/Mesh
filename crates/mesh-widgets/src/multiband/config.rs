@@ -18,7 +18,7 @@
 //! A **stem preset** stores the effect chain (pre-fx, bands, post-fx, dry/wet)
 //! without macros — macro mappings on parameters reference deck-level macro indices.
 
-use super::state::{BandUiState, EffectSourceType, EffectUiState, MacroUiState, MultibandEditorState, ParamMacroMapping};
+use super::state::{BandUiState, EffectSourceType, EffectUiState, MacroUiState, MultibandEditorState, ParamMacroMapping, StemEffectData};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -27,9 +27,6 @@ pub const STEM_PRESETS_FOLDER: &str = "presets/stems";
 
 /// Deck presets subfolder within the presets directory
 pub const DECK_PRESETS_FOLDER: &str = "presets/decks";
-
-/// Legacy presets folder (for backwards-compatible listing)
-pub const MULTIBAND_PRESETS_FOLDER: &str = "presets";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Stem Preset Config (per-stem effect chain, no macros)
@@ -51,6 +48,9 @@ pub const MULTIBAND_PRESETS_FOLDER: &str = "presets";
 pub struct StemPresetConfig {
     /// Preset name
     pub name: String,
+    /// Preset type discriminator (always "stem")
+    #[serde(default = "default_stem_preset_type")]
+    pub preset_type: String,
     /// Pre-FX chain effects
     pub pre_fx: Vec<EffectPresetConfig>,
     /// Crossover frequencies (N-1 for N bands)
@@ -81,10 +81,15 @@ pub struct StemPresetConfig {
     pub global_dry_wet_macro_mapping: Option<ParamMappingConfig>,
 }
 
+fn default_stem_preset_type() -> String {
+    "stem".to_string()
+}
+
 impl Default for StemPresetConfig {
     fn default() -> Self {
         Self {
             name: "Default".to_string(),
+            preset_type: default_stem_preset_type(),
             pre_fx: Vec::new(),
             crossover_freqs: Vec::new(),
             bands: vec![BandPresetConfig::default()],
@@ -104,6 +109,7 @@ impl StemPresetConfig {
     pub fn from_editor_state(state: &MultibandEditorState, name: &str) -> Self {
         Self {
             name: name.to_string(),
+            preset_type: default_stem_preset_type(),
             pre_fx: state.pre_fx.iter().map(EffectPresetConfig::from_effect_state).collect(),
             crossover_freqs: state.crossover_freqs.clone(),
             bands: state.bands.iter().map(BandPresetConfig::from_band_state).collect(),
@@ -115,6 +121,33 @@ impl StemPresetConfig {
             post_fx_chain_dry_wet_macro_mapping: state.post_fx_chain_dry_wet_macro_mapping.as_ref().map(ParamMappingConfig::from_mapping),
             global_dry_wet: state.global_dry_wet,
             global_dry_wet_macro_mapping: state.global_dry_wet_macro_mapping.as_ref().map(ParamMappingConfig::from_mapping),
+        }
+    }
+
+    /// Create from a StemEffectData snapshot (for saving non-active stems)
+    pub fn from_stem_data(data: &StemEffectData, name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            preset_type: default_stem_preset_type(),
+            pre_fx: data.pre_fx.iter().map(EffectPresetConfig::from_effect_state).collect(),
+            crossover_freqs: data.crossover_freqs.clone(),
+            bands: data.bands.iter().map(BandPresetConfig::from_band_state).collect(),
+            post_fx: data.post_fx.iter().map(EffectPresetConfig::from_effect_state).collect(),
+            pre_fx_chain_dry_wet: data.pre_fx_chain_dry_wet,
+            pre_fx_chain_dry_wet_macro_mapping: data.pre_fx_chain_dry_wet_macro_mapping.as_ref().map(ParamMappingConfig::from_mapping),
+            post_fx_chain_dry_wet: data.post_fx_chain_dry_wet,
+            post_fx_chain_dry_wet_macro_mapping: data.post_fx_chain_dry_wet_macro_mapping.as_ref().map(ParamMappingConfig::from_mapping),
+            global_dry_wet: data.global_dry_wet,
+            global_dry_wet_macro_mapping: data.global_dry_wet_macro_mapping.as_ref().map(ParamMappingConfig::from_mapping),
+        }
+    }
+
+    /// Validate that this config has the correct preset_type
+    pub fn validate_type(&self) -> Result<(), String> {
+        if self.preset_type != "stem" {
+            Err(format!("Expected preset_type 'stem', got '{}'. This may be a deck preset.", self.preset_type))
+        } else {
+            Ok(())
         }
     }
 
@@ -184,9 +217,6 @@ impl StemPresetConfig {
     }
 }
 
-/// Type alias for backwards compatibility — the old name still works everywhere
-pub type MultibandPresetConfig = StemPresetConfig;
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Deck Preset Config (wrapper: macros + stem preset references)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -210,16 +240,24 @@ pub type MultibandPresetConfig = StemPresetConfig;
 pub struct DeckPresetConfig {
     /// Preset name
     pub name: String,
+    /// Preset type discriminator (always "deck")
+    #[serde(default = "default_deck_preset_type")]
+    pub preset_type: String,
     /// Shared macro knob configurations (4 macros)
     pub macros: Vec<MacroPresetConfig>,
     /// References to stem presets by name
     pub stems: DeckStemReferences,
 }
 
+fn default_deck_preset_type() -> String {
+    "deck".to_string()
+}
+
 impl Default for DeckPresetConfig {
     fn default() -> Self {
         Self {
             name: "Default".to_string(),
+            preset_type: default_deck_preset_type(),
             macros: (0..super::NUM_MACROS).map(|i| MacroPresetConfig {
                 name: format!("Macro {}", i + 1),
                 value: 0.5,
@@ -238,6 +276,7 @@ impl DeckPresetConfig {
     ) -> Self {
         Self {
             name: name.to_string(),
+            preset_type: default_deck_preset_type(),
             macros: macros.to_vec(),
             stems: DeckStemReferences {
                 vocals: stem_preset_names[0].clone(),
@@ -245,6 +284,15 @@ impl DeckPresetConfig {
                 bass: stem_preset_names[2].clone(),
                 other: stem_preset_names[3].clone(),
             },
+        }
+    }
+
+    /// Validate that this config has the correct preset_type
+    pub fn validate_type(&self) -> Result<(), String> {
+        if self.preset_type != "deck" {
+            Err(format!("Expected preset_type 'deck', got '{}'. This may be a stem preset.", self.preset_type))
+        } else {
+            Ok(())
         }
     }
 
@@ -377,7 +425,7 @@ impl Default for BandPresetConfig {
 }
 
 impl BandPresetConfig {
-    fn from_band_state(band: &BandUiState) -> Self {
+    pub fn from_band_state(band: &BandUiState) -> Self {
         Self {
             gain: band.gain,
             muted: band.muted,
@@ -458,7 +506,7 @@ impl Default for KnobAssignmentConfig {
 }
 
 impl EffectPresetConfig {
-    fn from_effect_state(effect: &EffectUiState) -> Self {
+    pub fn from_effect_state(effect: &EffectUiState) -> Self {
         // Use saved_param_values if available (captured from plugin before save)
         let captured = if !effect.saved_param_values.is_empty() {
             Some(effect.saved_param_values.clone())
@@ -679,8 +727,11 @@ pub fn load_stem_preset(collection_path: &Path, preset_name: &str) -> Result<Ste
     let contents = std::fs::read_to_string(&path)
         .map_err(|e| format!("Failed to read stem preset file: {}", e))?;
 
-    serde_yaml::from_str::<StemPresetConfig>(&contents)
-        .map_err(|e| format!("Failed to parse stem preset: {}", e))
+    let config = serde_yaml::from_str::<StemPresetConfig>(&contents)
+        .map_err(|e| format!("Failed to parse stem preset: {}", e))?;
+
+    config.validate_type()?;
+    Ok(config)
 }
 
 /// List available stem preset names
@@ -745,8 +796,11 @@ pub fn load_deck_preset(collection_path: &Path, preset_name: &str) -> Result<Dec
     let contents = std::fs::read_to_string(&path)
         .map_err(|e| format!("Failed to read deck preset file: {}", e))?;
 
-    serde_yaml::from_str::<DeckPresetConfig>(&contents)
-        .map_err(|e| format!("Failed to parse deck preset: {}", e))
+    let config = serde_yaml::from_str::<DeckPresetConfig>(&contents)
+        .map_err(|e| format!("Failed to parse deck preset: {}", e))?;
+
+    config.validate_type()?;
+    Ok(config)
 }
 
 /// List available deck preset names
@@ -764,107 +818,6 @@ pub fn delete_deck_preset(collection_path: &Path, preset_name: &str) -> Result<(
         .map_err(|e| format!("Failed to delete deck preset: {}", e))
 }
 
-// ── Legacy Compatibility ─────────────────────────────────────────────────────
-
-/// Get the legacy multiband presets folder path (presets/)
-pub fn multiband_presets_folder(collection_path: &Path) -> PathBuf {
-    collection_path.join(MULTIBAND_PRESETS_FOLDER)
-}
-
-/// Legacy: Get the preset file path for a given preset name (in legacy presets/ folder)
-pub fn preset_file_path(collection_path: &Path, preset_name: &str) -> PathBuf {
-    let sanitized = sanitize_filename(preset_name);
-    multiband_presets_folder(collection_path).join(format!("{}.yaml", sanitized))
-}
-
-/// Legacy: List available preset names in the legacy presets folder
-pub fn list_presets(collection_path: &Path) -> Vec<String> {
-    list_yaml_files_in(&multiband_presets_folder(collection_path))
-}
-
-/// Legacy: Load a preset from the legacy presets/ folder
-pub fn load_preset(collection_path: &Path, preset_name: &str) -> Result<StemPresetConfig, String> {
-    let path = preset_file_path(collection_path, preset_name);
-    log::info!("load_preset: Loading multiband preset from {:?}", path);
-
-    if !path.exists() {
-        return Err(format!("Preset '{}' not found", preset_name));
-    }
-
-    match std::fs::read_to_string(&path) {
-        Ok(contents) => match serde_yaml::from_str::<StemPresetConfig>(&contents) {
-            Ok(config) => {
-                log::info!(
-                    "load_preset: Loaded preset '{}' with {} bands, {} effects total",
-                    config.name,
-                    config.bands.len(),
-                    config.bands.iter().map(|b| b.effects.len()).sum::<usize>()
-                );
-                Ok(config)
-            }
-            Err(e) => {
-                let msg = format!("Failed to parse preset: {}", e);
-                log::error!("load_preset: {}", msg);
-                Err(msg)
-            }
-        },
-        Err(e) => {
-            let msg = format!("Failed to read preset file: {}", e);
-            log::error!("load_preset: {}", msg);
-            Err(msg)
-        }
-    }
-}
-
-/// Legacy: Save a preset to the legacy presets/ folder
-pub fn save_preset(config: &StemPresetConfig, collection_path: &Path) -> Result<(), String> {
-    let folder = multiband_presets_folder(collection_path);
-    let path = preset_file_path(collection_path, &config.name);
-    log::info!("save_preset: Saving multiband preset to {:?}", path);
-
-    if let Err(e) = std::fs::create_dir_all(&folder) {
-        let msg = format!("Failed to create presets directory: {}", e);
-        log::error!("save_preset: {}", msg);
-        return Err(msg);
-    }
-
-    let yaml = serde_yaml::to_string(config)
-        .map_err(|e| {
-            let msg = format!("Failed to serialize preset: {}", e);
-            log::error!("save_preset: {}", msg);
-            msg
-        })?;
-
-    std::fs::write(&path, yaml)
-        .map_err(|e| {
-            let msg = format!("Failed to write preset file: {}", e);
-            log::error!("save_preset: {}", msg);
-            msg
-        })?;
-
-    log::info!("save_preset: Saved preset '{}' successfully", config.name);
-    Ok(())
-}
-
-/// Legacy: Delete a preset by name from the legacy presets/ folder
-pub fn delete_preset(collection_path: &Path, preset_name: &str) -> Result<(), String> {
-    let path = preset_file_path(collection_path, preset_name);
-    log::info!("delete_preset: Deleting preset at {:?}", path);
-
-    if !path.exists() {
-        return Err(format!("Preset '{}' not found", preset_name));
-    }
-
-    std::fs::remove_file(&path)
-        .map_err(|e| {
-            let msg = format!("Failed to delete preset: {}", e);
-            log::error!("delete_preset: {}", msg);
-            msg
-        })?;
-
-    log::info!("delete_preset: Deleted preset '{}' successfully", preset_name);
-    Ok(())
-}
 
 // ── Shared Helpers ───────────────────────────────────────────────────────────
 

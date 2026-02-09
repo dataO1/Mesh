@@ -1239,6 +1239,37 @@ impl MeshCueDomain {
             handle.destroy_gui();
         }
     }
+
+    /// Hide CLAP GUIs for a specific stem (keeps handles alive)
+    ///
+    /// Hides all GUI windows for effects belonging to `stem_idx`.
+    /// The handles remain in the HashMap for later show/reuse.
+    /// Instance IDs contain `_cue_s{stem_idx}_` to identify the stem.
+    pub fn hide_clap_guis_for_stem(&mut self, stem_idx: usize) {
+        let stem_tag = format!("_cue_s{}_", stem_idx);
+        for (id, handle) in &self.clap_gui_handles {
+            if id.contains(&stem_tag) {
+                let _ = handle.hide_gui();
+            }
+        }
+    }
+
+    /// Destroy CLAP GUI handles for a specific stem only
+    ///
+    /// Destroys GUI windows and removes handles for effects belonging to `stem_idx`.
+    /// Other stems' handles are preserved.
+    pub fn destroy_clap_gui_handles_for_stem(&mut self, stem_idx: usize) {
+        let stem_tag = format!("_cue_s{}_", stem_idx);
+        let to_remove: Vec<String> = self.clap_gui_handles.keys()
+            .filter(|id| id.contains(&stem_tag))
+            .cloned()
+            .collect();
+        for id in to_remove {
+            if let Some(handle) = self.clap_gui_handles.remove(&id) {
+                handle.destroy_gui();
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for MeshCueDomain {
