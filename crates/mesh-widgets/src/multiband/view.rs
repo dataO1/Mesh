@@ -1576,13 +1576,21 @@ fn mod_range_indicator<'a>(
     };
 
     // Calculate visual representation
-    // offset_range is -1 to +1, we normalize to fill position
+    // offset_range is -1 to +1, representing full modulation range
+    // The bar shows this as a fill from center: up for positive, down for negative
     let bar_height = 24.0_f32;
     let center_y = bar_height / 2.0;
-    let max_fill = center_y - 2.0; // Leave 2px margin at top/bottom
 
-    // Absolute fill amount (0 to max_fill)
-    let fill_amount = (offset_range.abs() * max_fill).min(max_fill);
+    // Use full center_y as max fill so 100% offset fills from center to edge
+    // This means 25% offset_range shows as 25% of the bar height from center
+    let max_fill = center_y;
+
+    // Absolute fill amount (0 to max_fill), with minimum 2px for visibility
+    let fill_amount = if offset_range.abs() > 0.01 {
+        (offset_range.abs() * max_fill).max(2.0).min(max_fill)
+    } else {
+        0.0
+    };
 
     // Calculate asymmetric padding to position the fill correctly
     // For positive offset: fill goes UP from center (top padding = center - fill)

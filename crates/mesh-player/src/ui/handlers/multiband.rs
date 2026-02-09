@@ -1085,6 +1085,8 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                         // Update the index cache
                         app.multiband_editor.update_mapping_offset_range(macro_index, mapping_idx, new_offset);
 
+                        log::debug!("Mod range drag: offset_range now = {:.3} (±{:.1}%)", new_offset, new_offset.abs() * 100.0);
+
                         // Update parameter knob modulation visualization
                         let mapping = ParamMacroMapping::new(macro_index, new_offset);
                         let key = (location, effect_idx, knob_idx);
@@ -2015,15 +2017,13 @@ pub(super) fn apply_macro_modulation(app: &mut MeshApp, macro_index: usize, macr
                             }
                         }
 
-                        log::trace!(
-                            "Macro {} modulation: {:?} effect {} knob {} -> param {}: base={:.2} + offset={:.2} = {:.2}",
+                        log::debug!(
+                            "Macro {} modulation: offset_range={:.3} (±{:.1}%), base={:.2}, macro={:.2} -> result={:.2}",
                             macro_index,
-                            location,
-                            effect_idx,
-                            knob_idx,
-                            param_index,
+                            mapping.offset_range,
+                            mapping.offset_range.abs() * 100.0,
                             base_value,
-                            (macro_value * 2.0 - 1.0) * mapping.offset_range,
+                            macro_value,
                             modulated_value
                         );
                     }
