@@ -13,7 +13,6 @@ use mesh_widgets::PlaylistBrowserMessage;
 use crate::analysis::{AnalysisType, ReanalysisProgress, ReanalysisScope};
 use crate::batch_import::{ImportProgress, MixedAudioFile, StemGroup};
 use crate::config::{BackendType, BpmSource, ModelType};
-use mesh_core::types::Stem;
 use mesh_core::usb::UsbMessage;
 use mesh_widgets::MultibandEditorMessage;
 use super::context_menu::ContextMenuKind;
@@ -302,8 +301,6 @@ pub enum Message {
     // Effects Editor Audio Preview
     /// Toggle audio preview on/off in effects editor
     EffectsEditorTogglePreview,
-    /// Set which stem to use for audio preview
-    EffectsEditorSetPreviewStem(Stem),
 
     // Plugin GUI Learning Mode
     /// Poll for parameter learning changes

@@ -1,6 +1,7 @@
 //! Effects editor state
 
 use mesh_core::types::Stem;
+use mesh_widgets::multiband::StemEffectData;
 use mesh_widgets::MultibandEditorState;
 
 /// State for the effects editor modal
@@ -16,7 +17,22 @@ pub struct EffectsEditorState {
     pub is_open: bool,
 
     /// Core multiband editor state (from mesh-widgets)
+    /// Shows the currently active stem's effects
     pub editor: MultibandEditorState,
+
+    /// Saved per-stem effect data (for stem switching without data loss)
+    /// When switching stems, the current stem's effects are snapshotted here
+    /// and the new stem's effects are restored from here.
+    pub stem_data: [Option<StemEffectData>; 4],
+
+    /// Per-stem loaded preset names (from deck preset references)
+    pub stem_preset_names: [Option<String>; 4],
+
+    /// Which stem is currently being edited (0-3)
+    pub active_stem: usize,
+
+    /// Loaded deck preset name
+    pub deck_preset_name: Option<String>,
 
     /// Preset currently being edited (None = new/unsaved)
     pub editing_preset: Option<String>,
@@ -24,10 +40,8 @@ pub struct EffectsEditorState {
     /// Status message to display
     pub status: String,
 
-    /// Which stem to use for audio preview (default: Other for full mix context)
-    pub preview_stem: Stem,
-
     /// Whether audio preview is enabled (applies editor changes in real-time)
+    /// When enabled, all stems with data get their effects synced to audio.
     pub audio_preview_enabled: bool,
 }
 
@@ -43,9 +57,12 @@ impl EffectsEditorState {
         Self {
             is_open: false,
             editor: MultibandEditorState::new(),
+            stem_data: [None, None, None, None],
+            stem_preset_names: [None, None, None, None],
+            active_stem: 0,
+            deck_preset_name: None,
             editing_preset: None,
             status: String::new(),
-            preview_stem: Stem::Other, // Default to "Other" stem for full mix preview
             audio_preview_enabled: false, // Disabled by default - user can enable
         }
     }
@@ -72,12 +89,16 @@ impl EffectsEditorState {
         self.editor = MultibandEditorState::new();
         self.editor.preset_name_input = "New Preset".to_string();
         self.editor.open(0, 0, "Preview");
-        // Preserve preview settings when starting a new preset
+        // Reset stem data for new preset
+        self.stem_data = [None, None, None, None];
+        self.stem_preset_names = [None, None, None, None];
+        self.active_stem = 0;
+        self.deck_preset_name = None;
     }
 
-    /// Set the preview stem
-    pub fn set_preview_stem(&mut self, stem: Stem) {
-        self.preview_stem = stem;
+    /// Get the active stem as a Stem type
+    pub fn active_stem_type(&self) -> Stem {
+        Stem::from_index(self.active_stem).unwrap_or(Stem::Other)
     }
 
     /// Toggle audio preview

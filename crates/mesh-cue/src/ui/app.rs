@@ -491,9 +491,6 @@ impl MeshCueApp {
             Message::EffectsEditorTogglePreview => {
                 return self.handle_effects_editor_toggle_preview();
             }
-            Message::EffectsEditorSetPreviewStem(stem) => {
-                return self.handle_effects_editor_set_preview_stem(stem);
-            }
 
             // Effect Picker
             Message::EffectPicker(picker_msg) => {

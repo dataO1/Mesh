@@ -3,7 +3,6 @@
 //! Handles multiband effects editing, preset save/load, and audio preview routing.
 
 use iced::Task;
-use mesh_core::types::Stem;
 use mesh_widgets::multiband::{
     ChainTarget, DryWetKnobId, EffectChainLocation, EffectSourceType, MultibandPresetConfig,
     ParamMacroMapping, load_preset, save_preset,
@@ -100,7 +99,7 @@ impl MeshCueApp {
                     self.effects_editor.editor.set_crossover_freq(idx, freq);
                     // Apply to audio preview if enabled
                     if self.effects_editor.audio_preview_enabled {
-                        let stem = self.effects_editor.preview_stem;
+                        let stem = self.effects_editor.active_stem_type();
                         self.audio.set_multiband_crossover(stem, idx, freq);
                     }
                 }
@@ -111,7 +110,7 @@ impl MeshCueApp {
                     self.effects_editor.editor.crossover_drag_last_x = Some(mouse_x);
                     // Apply to audio preview if enabled
                     if self.effects_editor.audio_preview_enabled {
-                        let stem = self.effects_editor.preview_stem;
+                        let stem = self.effects_editor.active_stem_type();
                         self.audio.set_multiband_crossover(stem, idx, new_freq);
                     }
                 }
@@ -126,21 +125,21 @@ impl MeshCueApp {
             AddBand => {
                 self.effects_editor.editor.add_band();
                 if self.effects_editor.audio_preview_enabled {
-                    let stem = self.effects_editor.preview_stem;
+                    let stem = self.effects_editor.active_stem_type();
                     self.audio.add_multiband_band(stem);
                 }
             }
             AddBandAtFrequency(freq) => {
                 self.effects_editor.editor.add_band_at_frequency(freq);
                 if self.effects_editor.audio_preview_enabled {
-                    let stem = self.effects_editor.preview_stem;
+                    let stem = self.effects_editor.active_stem_type();
                     self.audio.add_multiband_band(stem);
                 }
             }
             RemoveBand(idx) => {
                 self.effects_editor.editor.remove_band(idx);
                 if self.effects_editor.audio_preview_enabled {
-                    let stem = self.effects_editor.preview_stem;
+                    let stem = self.effects_editor.active_stem_type();
                     self.audio.remove_multiband_band(stem, idx);
                 }
             }
@@ -207,7 +206,7 @@ impl MeshCueApp {
                     b.muted = muted;
                 }
                 if self.effects_editor.audio_preview_enabled {
-                    let stem = self.effects_editor.preview_stem;
+                    let stem = self.effects_editor.active_stem_type();
                     self.audio.set_multiband_band_mute(stem, band, muted);
                 }
             }
@@ -217,7 +216,7 @@ impl MeshCueApp {
                 }
                 self.effects_editor.editor.any_soloed = self.effects_editor.editor.bands.iter().any(|b| b.soloed);
                 if self.effects_editor.audio_preview_enabled {
-                    let stem = self.effects_editor.preview_stem;
+                    let stem = self.effects_editor.active_stem_type();
                     self.audio.set_multiband_band_solo(stem, band, soloed);
                 }
             }
@@ -226,7 +225,7 @@ impl MeshCueApp {
                     b.gain = gain;
                 }
                 if self.effects_editor.audio_preview_enabled {
-                    let stem = self.effects_editor.preview_stem;
+                    let stem = self.effects_editor.active_stem_type();
                     self.audio.set_multiband_band_gain(stem, band, gain);
                 }
             }
@@ -255,13 +254,13 @@ impl MeshCueApp {
                 }
             }
             TogglePreFxBypass(idx) => {
+                let stem = self.effects_editor.active_stem_type();
                 if let Some(effect) = self.effects_editor.editor.pre_fx.get_mut(idx) {
                     effect.bypassed = !effect.bypassed;
                     log::debug!("Toggled pre-fx bypass: {} = {}", idx, effect.bypassed);
 
                     // Send to audio engine if preview enabled
                     if self.effects_editor.audio_preview_enabled {
-                        let stem = self.effects_editor.preview_stem;
                         self.audio.set_multiband_pre_fx_bypass(stem, idx, effect.bypassed);
                     }
                 }
@@ -294,7 +293,7 @@ impl MeshCueApp {
                 // Send to audio engine if preview enabled
                 if let Some(bypassed) = bypassed {
                     if self.effects_editor.audio_preview_enabled {
-                        let stem = self.effects_editor.preview_stem;
+                        let stem = self.effects_editor.active_stem_type();
                         self.audio.set_multiband_effect_bypass(stem, band, effect, bypassed);
                     }
                 }
@@ -313,13 +312,13 @@ impl MeshCueApp {
                 }
             }
             TogglePostFxBypass(idx) => {
+                let stem = self.effects_editor.active_stem_type();
                 if let Some(effect) = self.effects_editor.editor.post_fx.get_mut(idx) {
                     effect.bypassed = !effect.bypassed;
                     log::debug!("Toggled post-fx bypass: {} = {}", idx, effect.bypassed);
 
                     // Send to audio engine if preview enabled
                     if self.effects_editor.audio_preview_enabled {
-                        let stem = self.effects_editor.preview_stem;
                         self.audio.set_multiband_post_fx_bypass(stem, idx, effect.bypassed);
                     }
                 }
@@ -461,9 +460,7 @@ impl MeshCueApp {
                     self.effects_editor.editor.remove_mapping_from_index(macro_index, location, effect, param);
                 }
             }
-            OpenMacroMapper(_) | AddMacroMapping { .. } | ClearMacroMappings(_) => {
-                // Not implemented in mesh-cue (direct drag-drop is used instead)
-            }
+            // (OpenMacroMapper, AddMacroMapping, ClearMacroMappings removed — drag-drop is used instead)
 
             // ─────────────────────────────────────────────────────────────────────
             // Macro Modulation Range Controls
@@ -519,7 +516,7 @@ impl MeshCueApp {
 
                     // If audio preview is enabled, send updated modulation to audio
                     if self.effects_editor.audio_preview_enabled {
-                        let stem = self.effects_editor.preview_stem;
+                        let stem = self.effects_editor.active_stem_type();
                         let macro_value = self.effects_editor.editor.macro_value(macro_index);
 
                         // Get base value and recalculate modulated value
@@ -927,7 +924,7 @@ impl MeshCueApp {
 
                         // Send to audio engine if preview enabled
                         if self.effects_editor.audio_preview_enabled {
-                            let stem = self.effects_editor.preview_stem;
+                            let stem = self.effects_editor.active_stem_type();
 
                             // Calculate value to send (apply modulation if mapped)
                             let value_to_send = if let Some(ref mapping) = macro_mapping {
@@ -1037,7 +1034,7 @@ impl MeshCueApp {
                             if self.effects_editor.audio_preview_enabled {
                                 let macro_value = self.effects_editor.editor.macro_value(macro_index);
                                 let modulated_value = mapping.modulate(base_value, macro_value);
-                                let stem = self.effects_editor.preview_stem;
+                                let stem = self.effects_editor.active_stem_type();
 
                                 match location {
                                     EffectChainLocation::PreFx => {
@@ -1155,7 +1152,7 @@ impl MeshCueApp {
                             fx.dry_wet = mix;
                         }
                         if self.effects_editor.audio_preview_enabled {
-                            let stem = self.effects_editor.preview_stem;
+                            let stem = self.effects_editor.active_stem_type();
                             self.audio.set_multiband_pre_fx_effect_dry_wet(stem, effect, mix);
                         }
                     }
@@ -1166,7 +1163,7 @@ impl MeshCueApp {
                             }
                         }
                         if self.effects_editor.audio_preview_enabled {
-                            let stem = self.effects_editor.preview_stem;
+                            let stem = self.effects_editor.active_stem_type();
                             self.audio.set_multiband_band_effect_dry_wet(stem, *band, effect, mix);
                         }
                     }
@@ -1175,7 +1172,7 @@ impl MeshCueApp {
                             fx.dry_wet = mix;
                         }
                         if self.effects_editor.audio_preview_enabled {
-                            let stem = self.effects_editor.preview_stem;
+                            let stem = self.effects_editor.active_stem_type();
                             self.audio.set_multiband_post_fx_effect_dry_wet(stem, effect, mix);
                         }
                     }
@@ -1237,7 +1234,7 @@ impl MeshCueApp {
                 self.effects_editor.editor.pre_fx_chain_dry_wet = mix;
                 self.effects_editor.editor.pre_fx_chain_dry_wet_knob.set_value(mix);
                 if self.effects_editor.audio_preview_enabled {
-                    let stem = self.effects_editor.preview_stem;
+                    let stem = self.effects_editor.active_stem_type();
                     self.audio.set_multiband_pre_fx_chain_dry_wet(stem, mix);
                 }
             }
@@ -1271,7 +1268,7 @@ impl MeshCueApp {
                 }
                 self.effects_editor.editor.band_chain_dry_wet_knobs[band].set_value(mix);
                 if self.effects_editor.audio_preview_enabled {
-                    let stem = self.effects_editor.preview_stem;
+                    let stem = self.effects_editor.active_stem_type();
                     self.audio.set_multiband_band_chain_dry_wet(stem, band, mix);
                 }
             }
@@ -1309,7 +1306,7 @@ impl MeshCueApp {
                 self.effects_editor.editor.post_fx_chain_dry_wet = mix;
                 self.effects_editor.editor.post_fx_chain_dry_wet_knob.set_value(mix);
                 if self.effects_editor.audio_preview_enabled {
-                    let stem = self.effects_editor.preview_stem;
+                    let stem = self.effects_editor.active_stem_type();
                     self.audio.set_multiband_post_fx_chain_dry_wet(stem, mix);
                 }
             }
@@ -1337,7 +1334,7 @@ impl MeshCueApp {
                 self.effects_editor.editor.global_dry_wet = mix;
                 self.effects_editor.editor.global_dry_wet_knob.set_value(mix);
                 if self.effects_editor.audio_preview_enabled {
-                    let stem = self.effects_editor.preview_stem;
+                    let stem = self.effects_editor.active_stem_type();
                     self.audio.set_multiband_global_dry_wet(stem, mix);
                 }
             }
@@ -1438,6 +1435,46 @@ impl MeshCueApp {
                 log::info!("Mapped macro {} to global dry/wet with ±{:.0}% range",
                     macro_index, offset_range * 100.0);
             }
+
+            // ─────────────────────────────────────────────────────────────────────
+            // Stem switching
+            // ─────────────────────────────────────────────────────────────────────
+            SwitchStem(new_stem) => {
+                if new_stem < 4 {
+                    let current_stem = self.effects_editor.active_stem;
+
+                    if new_stem != current_stem {
+                        // 1. Snapshot current stem's effects
+                        let current_data = self.effects_editor.editor.snapshot_stem_data();
+                        self.effects_editor.stem_data[current_stem] = Some(current_data);
+
+                        // 2. Load new stem's effects (or clear if none)
+                        if let Some(ref data) = self.effects_editor.stem_data[new_stem] {
+                            self.effects_editor.editor.restore_stem_data(data);
+                        } else {
+                            self.effects_editor.editor.clear_effects();
+                        }
+
+                        // 3. Update active stem index
+                        self.effects_editor.active_stem = new_stem;
+
+                        // 4. Rebuild macro_mappings_index (macros stayed, effects changed)
+                        self.effects_editor.editor.rebuild_macro_mappings_index();
+
+                        // 5. Ensure knobs exist for new effects
+                        mesh_widgets::multiband::ensure_effect_knobs_exist(
+                            &mut self.effects_editor.editor,
+                        );
+
+                        // 6. Sync audio preview for new stem if enabled
+                        if self.effects_editor.audio_preview_enabled {
+                            self.sync_editor_to_audio();
+                        }
+
+                        log::info!("[FX] Switched to stem {} in effects editor", new_stem);
+                    }
+                }
+            }
         }
 
         Task::none()
@@ -1452,11 +1489,10 @@ impl MeshCueApp {
         // Reset to clean state
         self.effects_editor.new_preset();
 
-        // If preview is enabled, reset the audio state too
+        // If preview is enabled, reset all stems' audio state
         if self.effects_editor.audio_preview_enabled {
-            let stem = self.effects_editor.preview_stem;
-            self.audio.reset_multiband(stem);
-            log::info!("Reset audio for new preset on stem {:?}", stem);
+            self.reset_all_stems_audio();
+            log::info!("Reset audio for all stems on new preset");
         }
 
         self.effects_editor.set_status("New preset created");
@@ -1761,44 +1797,21 @@ impl MeshCueApp {
 
     /// Toggle audio preview on/off
     ///
-    /// When enabled, syncs the current editor state to the audio engine.
-    /// When disabled, resets the stem's multiband to default (clean) state.
+    /// When enabled, syncs ALL stems with data to the audio engine.
+    /// When disabled, resets all stems to clean state.
     pub fn handle_effects_editor_toggle_preview(&mut self) -> Task<Message> {
         self.effects_editor.toggle_audio_preview();
 
         if self.effects_editor.audio_preview_enabled {
-            // Sync current editor state to audio
-            self.sync_editor_to_audio();
+            // Sync ALL stems to audio
+            self.sync_all_stems_to_audio();
             self.effects_editor.set_status("Audio preview enabled");
-            log::info!("Effects editor: audio preview enabled for stem {:?}", self.effects_editor.preview_stem);
+            log::info!("Effects editor: audio preview enabled for all stems");
         } else {
-            // Reset to clean state
-            let stem = self.effects_editor.preview_stem;
-            self.audio.reset_multiband(stem);
+            // Reset ALL stems to clean state
+            self.reset_all_stems_audio();
             self.effects_editor.set_status("Audio preview disabled");
-            log::info!("Effects editor: audio preview disabled, reset stem {:?}", stem);
-        }
-
-        Task::none()
-    }
-
-    /// Set which stem to use for audio preview
-    ///
-    /// If preview is currently enabled, this resets the old stem and syncs to the new one.
-    pub fn handle_effects_editor_set_preview_stem(&mut self, stem: Stem) -> Task<Message> {
-        let old_stem = self.effects_editor.preview_stem;
-        let was_enabled = self.effects_editor.audio_preview_enabled;
-
-        // Update the preview stem
-        self.effects_editor.set_preview_stem(stem);
-
-        // If preview was enabled, switch stems
-        if was_enabled && old_stem != stem {
-            // Reset old stem
-            self.audio.reset_multiband(old_stem);
-            // Sync to new stem
-            self.sync_editor_to_audio();
-            log::info!("Effects editor: switched preview from {:?} to {:?}", old_stem, stem);
+            log::info!("Effects editor: audio preview disabled, reset all stems");
         }
 
         Task::none()
@@ -1816,7 +1829,7 @@ impl MeshCueApp {
     /// 7. Sync macro values
     /// 8. Sync effect parameters and bypass states
     fn sync_editor_to_audio(&mut self) {
-        let stem = self.effects_editor.preview_stem;
+        let stem = self.effects_editor.active_stem_type();
 
         // 1. Reset the multiband host to clean slate
         self.audio.reset_multiband(stem);
@@ -1919,6 +1932,112 @@ impl MeshCueApp {
             num_bands, pre_fx_effects.len(), post_fx_effects.len());
     }
 
+    /// Sync ALL stems with data to the audio engine
+    ///
+    /// - Active stem: synced from the live editor state
+    /// - Non-active stems: synced from saved stem_data snapshots
+    fn sync_all_stems_to_audio(&mut self) {
+        use mesh_core::types::Stem;
+
+        let active = self.effects_editor.active_stem;
+
+        for stem_idx in 0..4 {
+            let stem = match Stem::from_index(stem_idx) {
+                Some(s) => s,
+                None => continue,
+            };
+
+            if stem_idx == active {
+                // Active stem: sync from live editor state
+                self.sync_editor_to_audio();
+            } else if let Some(ref data) = self.effects_editor.stem_data[stem_idx] {
+                // Non-active stem with saved data: sync from snapshot
+                self.sync_stem_data_to_audio(stem, data.clone());
+            }
+            // else: no data for this stem, leave it clean
+        }
+    }
+
+    /// Sync a StemEffectData snapshot to the audio engine for a specific stem
+    fn sync_stem_data_to_audio(&mut self, stem: mesh_core::types::Stem, data: mesh_widgets::multiband::StemEffectData) {
+        // 1. Reset
+        self.audio.reset_multiband(stem);
+
+        let num_bands = data.bands.len();
+
+        // 2. Add bands
+        for _ in 1..num_bands {
+            self.audio.add_multiband_band(stem);
+        }
+
+        // 3. Set crossover frequencies
+        for (i, freq) in data.crossover_freqs.iter().enumerate() {
+            self.audio.set_multiband_crossover(stem, i, *freq);
+        }
+
+        // 4. Configure bands and add effects
+        for (band_idx, band) in data.bands.iter().enumerate() {
+            self.audio.set_multiband_band_mute(stem, band_idx, band.muted);
+            self.audio.set_multiband_band_solo(stem, band_idx, band.soloed);
+            self.audio.set_multiband_band_gain(stem, band_idx, band.gain);
+
+            for (effect_idx, effect) in band.effects.iter().enumerate() {
+                let sync = EffectSyncData::from_effect(effect);
+                let location = EffectChainLocation::Band(band_idx);
+                if let Some(audio_effect) = self.create_effect_for_audio(&sync.id, &sync.source, location, effect_idx) {
+                    self.audio.add_multiband_band_effect(stem, band_idx, audio_effect);
+                    if sync.bypassed {
+                        self.audio.set_multiband_effect_bypass(stem, band_idx, effect_idx, true);
+                    }
+                    for (param_idx, value) in &sync.params {
+                        self.audio.set_multiband_effect_param(stem, band_idx, effect_idx, *param_idx, *value);
+                    }
+                }
+            }
+        }
+
+        // 5. Pre-FX effects
+        for (effect_idx, effect) in data.pre_fx.iter().enumerate() {
+            let sync = EffectSyncData::from_effect(effect);
+            if let Some(audio_effect) = self.create_effect_for_audio(&sync.id, &sync.source, EffectChainLocation::PreFx, effect_idx) {
+                self.audio.add_multiband_pre_fx(stem, audio_effect);
+                if sync.bypassed {
+                    self.audio.set_multiband_pre_fx_bypass(stem, effect_idx, true);
+                }
+                for (param_idx, value) in &sync.params {
+                    self.audio.set_multiband_pre_fx_param(stem, effect_idx, *param_idx, *value);
+                }
+            }
+        }
+
+        // 6. Post-FX effects
+        for (effect_idx, effect) in data.post_fx.iter().enumerate() {
+            let sync = EffectSyncData::from_effect(effect);
+            if let Some(audio_effect) = self.create_effect_for_audio(&sync.id, &sync.source, EffectChainLocation::PostFx, effect_idx) {
+                self.audio.add_multiband_post_fx(stem, audio_effect);
+                if sync.bypassed {
+                    self.audio.set_multiband_post_fx_bypass(stem, effect_idx, true);
+                }
+                for (param_idx, value) in &sync.params {
+                    self.audio.set_multiband_post_fx_param(stem, effect_idx, *param_idx, *value);
+                }
+            }
+        }
+
+        log::debug!("Synced stem data to audio for {:?}: {} bands, {} pre-fx, {} post-fx",
+            stem, num_bands, data.pre_fx.len(), data.post_fx.len());
+    }
+
+    /// Reset all 4 stems to clean audio state
+    fn reset_all_stems_audio(&mut self) {
+        use mesh_core::types::Stem;
+        for stem_idx in 0..4 {
+            if let Some(stem) = Stem::from_index(stem_idx) {
+                self.audio.reset_multiband(stem);
+            }
+        }
+    }
+
     /// Create an audio effect instance by ID, source type, and location
     ///
     /// For CLAP effects, creates the effect WITH a GUI handle so that the same
@@ -2011,7 +2130,7 @@ impl MeshCueApp {
             return; // No audio preview, no need to modulate
         }
 
-        let stem = self.effects_editor.preview_stem;
+        let stem = self.effects_editor.active_stem_type();
 
         // Collect all modulation commands first (to avoid borrow conflicts)
         // Each command is: (location, effect_idx, param_index, modulated_value)

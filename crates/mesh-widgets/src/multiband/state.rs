@@ -482,6 +482,25 @@ pub struct ModRangeDrag {
 /// Key for effect parameter knobs
 pub type EffectKnobKey = (EffectChainLocation, usize, usize); // (location, effect_idx, param_idx)
 
+/// Stored per-stem effect data (for stem switching without data loss)
+///
+/// Contains everything needed to reconstruct a stem's effect chain state
+/// when switching between stems in the editor. Macros are NOT included
+/// because they are shared at the deck level.
+#[derive(Debug, Clone)]
+pub struct StemEffectData {
+    pub pre_fx: Vec<EffectUiState>,
+    pub crossover_freqs: Vec<f32>,
+    pub bands: Vec<BandUiState>,
+    pub post_fx: Vec<EffectUiState>,
+    pub pre_fx_chain_dry_wet: f32,
+    pub pre_fx_chain_dry_wet_macro_mapping: Option<ParamMacroMapping>,
+    pub post_fx_chain_dry_wet: f32,
+    pub post_fx_chain_dry_wet_macro_mapping: Option<ParamMacroMapping>,
+    pub global_dry_wet: f32,
+    pub global_dry_wet_macro_mapping: Option<ParamMacroMapping>,
+}
+
 /// Complete state for the multiband editor widget
 #[derive(Debug, Clone)]
 pub struct MultibandEditorState {
@@ -806,6 +825,97 @@ impl MultibandEditorState {
         self.crossover_drag_start_freq = None;
         self.crossover_drag_last_x = None;
         self.dragging_macro = None;
+    }
+
+    /// Snapshot current effect data (for stem switching)
+    ///
+    /// Captures all effect chain state so it can be restored later.
+    /// Does NOT capture macros (they're deck-level and stay intact).
+    pub fn snapshot_stem_data(&self) -> StemEffectData {
+        StemEffectData {
+            pre_fx: self.pre_fx.clone(),
+            crossover_freqs: self.crossover_freqs.clone(),
+            bands: self.bands.clone(),
+            post_fx: self.post_fx.clone(),
+            pre_fx_chain_dry_wet: self.pre_fx_chain_dry_wet,
+            pre_fx_chain_dry_wet_macro_mapping: self.pre_fx_chain_dry_wet_macro_mapping.clone(),
+            post_fx_chain_dry_wet: self.post_fx_chain_dry_wet,
+            post_fx_chain_dry_wet_macro_mapping: self.post_fx_chain_dry_wet_macro_mapping.clone(),
+            global_dry_wet: self.global_dry_wet,
+            global_dry_wet_macro_mapping: self.global_dry_wet_macro_mapping.clone(),
+        }
+    }
+
+    /// Restore stem data (for stem switching), keeping macros intact
+    pub fn restore_stem_data(&mut self, data: &StemEffectData) {
+        // Clear drag/hover state that references old effects
+        self.selected_effect = None;
+        self.dragging_effect_knob = None;
+        self.dragging_mod_range = None;
+        self.hovered_mapping = None;
+        self.dragging_crossover = None;
+        self.learning_knob = None;
+        self.param_picker_open = None;
+        self.effect_knobs.clear();
+        self.effect_dry_wet_knobs.clear();
+
+        // Restore effect data
+        self.pre_fx = data.pre_fx.clone();
+        self.crossover_freqs = data.crossover_freqs.clone();
+        self.bands = data.bands.clone();
+        self.post_fx = data.post_fx.clone();
+        self.pre_fx_chain_dry_wet = data.pre_fx_chain_dry_wet;
+        self.pre_fx_chain_dry_wet_macro_mapping = data.pre_fx_chain_dry_wet_macro_mapping.clone();
+        self.post_fx_chain_dry_wet = data.post_fx_chain_dry_wet;
+        self.post_fx_chain_dry_wet_macro_mapping = data.post_fx_chain_dry_wet_macro_mapping.clone();
+        self.global_dry_wet = data.global_dry_wet;
+        self.global_dry_wet_macro_mapping = data.global_dry_wet_macro_mapping.clone();
+
+        // Update derived state
+        self.update_band_frequencies();
+        self.any_soloed = self.bands.iter().any(|b| b.soloed);
+
+        // Rebuild band dry/wet knobs
+        self.band_chain_dry_wet_knobs.clear();
+        for band in &self.bands {
+            let mut k = crate::knob::Knob::new(36.0);
+            k.set_value(band.chain_dry_wet);
+            self.band_chain_dry_wet_knobs.push(k);
+        }
+    }
+
+    /// Clear all effects (empty stem / passthrough)
+    pub fn clear_effects(&mut self) {
+        self.selected_effect = None;
+        self.dragging_effect_knob = None;
+        self.dragging_mod_range = None;
+        self.hovered_mapping = None;
+        self.learning_knob = None;
+        self.param_picker_open = None;
+        self.effect_knobs.clear();
+        self.effect_dry_wet_knobs.clear();
+
+        self.pre_fx.clear();
+        self.crossover_freqs.clear();
+        self.bands = vec![BandUiState::new(0, super::FREQ_MIN, super::FREQ_MAX)];
+        self.post_fx.clear();
+        self.pre_fx_chain_dry_wet = 1.0;
+        self.pre_fx_chain_dry_wet_macro_mapping = None;
+        self.post_fx_chain_dry_wet = 1.0;
+        self.post_fx_chain_dry_wet_macro_mapping = None;
+        self.global_dry_wet = 1.0;
+        self.global_dry_wet_macro_mapping = None;
+        self.any_soloed = false;
+
+        self.band_chain_dry_wet_knobs = vec![{
+            let mut k = crate::knob::Knob::new(36.0);
+            k.set_value(1.0);
+            k
+        }];
+
+        for mappings in &mut self.macro_mappings_index {
+            mappings.clear();
+        }
     }
 
     /// Get the number of bands

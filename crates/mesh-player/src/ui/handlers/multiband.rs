@@ -769,21 +769,6 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             Task::none()
         }
 
-        OpenMacroMapper(_index) => {
-            // TODO: Open macro mapping dialog
-            Task::none()
-        }
-
-        AddMacroMapping { macro_index: _, band: _, effect: _, param: _ } => {
-            // TODO: Add mapping to MultibandHost
-            Task::none()
-        }
-
-        ClearMacroMappings(_index) => {
-            // TODO: Clear all mappings for this macro
-            Task::none()
-        }
-
         // ─────────────────────────────────────────────────────────────────────
         // Macro Modulation Range Controls
         // ─────────────────────────────────────────────────────────────────────
@@ -948,14 +933,11 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                         apply_preset_to_multiband(app, deck, stem, &preset_config);
                     }
 
-                    // Update the deck view's preset state
-                    if let Some(preset) = app.deck_views[deck].stem_preset_mut(stem_idx) {
-                        preset.loaded_preset = Some(name.clone());
-                        // Update macro names from preset
-                        for (i, macro_config) in preset_config.macros.iter().enumerate().take(multiband::NUM_MACROS) {
-                            preset.macro_names[i] = macro_config.name.clone();
-                        }
-                    }
+                    // Note: This loads a legacy per-stem preset into the multiband editor.
+                    // Macro names are managed at the deck preset level now, so we don't
+                    // update them here. The stem preset is applied to audio but macros
+                    // remain deck-level.
+                    log::debug!("Legacy preset '{}' loaded to editor for deck {} stem {}", name, deck, stem_idx);
 
                     log::info!("Loaded preset '{}' to deck {} stem {:?}", name, deck, stem_idx);
                     app.status = format!("Loaded preset: {}", name);
@@ -1174,8 +1156,8 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
             if let Some(index) = app.multiband_editor.dragging_macro_knob {
                 if let Some(knob) = app.multiband_editor.macro_knobs.get_mut(index) {
                     if let Some(new_value) = knob.handle_event(KnobEvent::Moved(position), DEFAULT_SENSITIVITY) {
-                        if deck < 4 && stem_idx < 4 && index < multiband::NUM_MACROS {
-                            app.deck_views[deck].set_stem_macro(stem_idx, index, new_value);
+                        if deck < 4 && index < multiband::NUM_MACROS {
+                            app.deck_views[deck].set_deck_macro(index, new_value);
                         }
 
                         app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandMacro {
@@ -2026,19 +2008,24 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                 macro_index, offset_range * 100.0);
             Task::none()
         }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Stem switching (handled at app level for mesh-cue, stub for mesh-player)
+        // ─────────────────────────────────────────────────────────────────────
+        SwitchStem(_new_stem) => {
+            // In mesh-player, the multiband editor always shows one stem at a time.
+            // Stem switching is a no-op here; it's handled by the mesh-cue effects editor.
+            log::debug!("SwitchStem message received in mesh-player (no-op)");
+            Task::none()
+        }
     }
 }
 
-/// Sync multiband editor UI state from deck view (single source of truth for now)
+/// Sync the multiband editor state from the backend/deck preset state.
 ///
-/// This syncs macro values from deck_views to the multiband editor.
-/// If a preset was loaded via the deck view picker, also loads the preset state
-/// into the editor so macro modulation mappings are available.
-///
-/// The deck_views are synced from the engine when tracks are loaded.
-///
-/// TODO: For true single source of truth, add atomic storage for macros
-/// and read directly from atomics like we do for play_state.
+/// Reads the deck preset's stem reference for the currently edited stem
+/// and loads the stem preset into the editor. Also syncs macro values
+/// from the deck-level shared macros.
 fn sync_from_backend(app: &mut MeshApp) {
     let deck = app.multiband_editor.deck;
     let stem_idx = app.multiband_editor.stem;
@@ -2047,24 +2034,29 @@ fn sync_from_backend(app: &mut MeshApp) {
         return;
     }
 
-    // If there's a loaded preset for this deck/stem, load it into the editor state
-    // This ensures macro modulation mappings are available
-    let loaded_preset_name = app.deck_views[deck]
-        .stem_preset(stem_idx)
-        .and_then(|p| p.loaded_preset.clone());
+    // If there's a loaded stem preset for this stem (from deck preset references),
+    // load it into the editor state
+    let loaded_stem_preset_name = app.deck_views[deck]
+        .deck_preset()
+        .stem_preset_names[stem_idx]
+        .clone();
 
-    if let Some(preset_name) = loaded_preset_name {
-        if let Ok(preset_config) = multiband::load_preset(&app.config.collection_path, &preset_name) {
-            // Apply preset to editor state (effects, macro mappings, etc.)
+    if let Some(preset_name) = loaded_stem_preset_name {
+        // Try loading from stems/ first, then fall back to legacy presets/
+        let result = multiband::load_stem_preset(&app.config.collection_path, &preset_name)
+            .or_else(|_| multiband::load_preset(&app.config.collection_path, &preset_name));
+
+        if let Ok(preset_config) = result {
+            // Apply stem preset to editor state (effects, macro mappings, etc.)
             preset_config.apply_to_editor_state(&mut app.multiband_editor);
             app.multiband_editor.rebuild_macro_mappings_index();
-            log::debug!("sync_from_backend: Loaded preset '{}' into editor state", preset_name);
+            log::debug!("sync_from_backend: Loaded stem preset '{}' into editor state", preset_name);
         }
     }
 
-    // Sync macro values from deck view (which holds the current state)
+    // Sync macro values from deck preset (shared across all stems)
     for macro_idx in 0..multiband::NUM_MACROS {
-        let value = app.deck_views[deck].stem_macro_value(stem_idx, macro_idx);
+        let value = app.deck_views[deck].deck_macro_value(macro_idx);
         app.multiband_editor.set_macro_value(macro_idx, value);
     }
 }

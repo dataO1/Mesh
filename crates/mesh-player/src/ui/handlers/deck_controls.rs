@@ -8,7 +8,10 @@ use crate::ui::app::MeshApp;
 use crate::ui::deck_view::{DeckMessage, ActionButtonMode};
 use crate::ui::message::Message;
 use mesh_core::types::Stem;
-use mesh_widgets::multiband::{load_preset, EffectPresetConfig, MultibandPresetConfig, NUM_MACROS};
+use mesh_widgets::multiband::{
+    list_deck_presets, list_stem_presets,
+    EffectPresetConfig, MultibandPresetConfig, NUM_MACROS,
+};
 
 /// Handle deck control messages
 pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task<Message> {
@@ -154,81 +157,83 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
             // UI-only state, no command needed
             app.deck_views[deck_idx].set_selected_stem(stem_idx);
         }
-        StemPreset(stem_idx, ref preset_msg) => {
-            use mesh_widgets::StemPresetMessage;
+        DeckPreset(ref preset_msg) => {
+            use mesh_widgets::DeckPresetMessage;
 
-            // Handle stem preset messages
+            // Handle deck preset messages (shared macros + preset selector)
             match preset_msg {
-                StemPresetMessage::SetMacro { index, value } => {
+                DeckPresetMessage::SetMacro { index, value } => {
                     log::debug!(
-                        "[MACRO] SetMacro deck={} stem={} macro={} value={:.3}",
-                        deck_idx, stem_idx, index, value
+                        "[MACRO] SetMacro deck={} macro={} value={:.3}",
+                        deck_idx, index, value
                     );
 
                     // Update UI state immediately for responsive feedback
-                    app.deck_views[deck_idx].set_stem_macro(stem_idx, *index, *value);
+                    app.deck_views[deck_idx].set_deck_macro(*index, *value);
 
-                    if let Some(stem) = Stem::from_index(stem_idx) {
-                        // Send macro value to the engine (updates macro_values for engine's apply_macros)
-                        app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandMacro {
-                            deck: deck_idx,
-                            stem,
-                            macro_index: *index,
-                            value: *value,
-                        });
+                    // Apply macro to ALL stems that have loaded presets
+                    let mappings: Vec<_> = app.deck_views[deck_idx]
+                        .deck_preset()
+                        .mappings_for_macro(*index)
+                        .to_vec();
 
-                        // Also apply direct parameter modulation for more reliable control
-                        // This computes the modulated value and sends it directly to effects
-                        if let Some(preset) = app.deck_views[deck_idx].stem_preset(stem_idx) {
-                            apply_macro_modulation_direct(
+                    for mapping in &mappings {
+                        if let Some(stem) = Stem::from_index(mapping.stem_index) {
+                            // Send macro value to the engine
+                            app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandMacro {
+                                deck: deck_idx,
+                                stem,
+                                macro_index: *index,
+                                value: *value,
+                            });
+
+                            // Apply direct parameter modulation
+                            apply_macro_modulation_direct_single(
                                 &mut app.domain,
                                 deck_idx,
                                 stem,
-                                *index,
                                 *value,
-                                preset.mappings_for_macro(*index),
+                                mapping,
                             );
                         }
                     }
                 }
-                StemPresetMessage::SelectPreset(preset_name) => {
-                    // Load the selected preset to this stem
-                    return handle_preset_selection(app, deck_idx, stem_idx, preset_name.clone());
+                DeckPresetMessage::SelectDeckPreset(preset_name) => {
+                    // Load the selected deck preset
+                    return handle_deck_preset_selection(app, deck_idx, preset_name.clone());
                 }
-                StemPresetMessage::TogglePicker => {
+                DeckPresetMessage::TogglePicker => {
                     // Toggle the preset picker dropdown
-                    if let Some(preset) = app.deck_views[deck_idx].stem_preset_mut(stem_idx) {
-                        let was_open = preset.picker_open;
-                        preset.picker_open = !was_open;
+                    let deck_preset = app.deck_views[deck_idx].deck_preset_mut();
+                    let was_open = deck_preset.picker_open;
+                    deck_preset.picker_open = !was_open;
 
-                        // Refresh presets list when opening
-                        if !was_open {
-                            preset.available_presets =
-                                mesh_widgets::multiband::list_presets(&app.config.collection_path);
-                        }
+                    // Refresh presets list when opening
+                    if !was_open {
+                        deck_preset.available_deck_presets =
+                            list_deck_presets(&app.config.collection_path);
+                        deck_preset.available_stem_presets =
+                            list_stem_presets(&app.config.collection_path);
                     }
                 }
-                StemPresetMessage::ClosePicker => {
-                    if let Some(preset) = app.deck_views[deck_idx].stem_preset_mut(stem_idx) {
-                        preset.picker_open = false;
-                    }
+                DeckPresetMessage::ClosePicker => {
+                    app.deck_views[deck_idx].deck_preset_mut().picker_open = false;
                 }
-                StemPresetMessage::RefreshPresets => {
-                    // Refresh the available presets list
-                    let presets = mesh_widgets::multiband::list_presets(&app.config.collection_path);
-                    if let Some(preset) = app.deck_views[deck_idx].stem_preset_mut(stem_idx) {
-                        preset.available_presets = presets;
-                    }
+                DeckPresetMessage::RefreshPresets => {
+                    let deck_presets = list_deck_presets(&app.config.collection_path);
+                    let stem_presets = list_stem_presets(&app.config.collection_path);
+                    let dp = app.deck_views[deck_idx].deck_preset_mut();
+                    dp.available_deck_presets = deck_presets;
+                    dp.available_stem_presets = stem_presets;
                 }
-                StemPresetMessage::SetAvailablePresets(presets) => {
-                    if let Some(preset) = app.deck_views[deck_idx].stem_preset_mut(stem_idx) {
-                        preset.available_presets = presets.clone();
-                    }
+                DeckPresetMessage::SetAvailableDeckPresets(presets) => {
+                    app.deck_views[deck_idx].deck_preset_mut().available_deck_presets = presets.clone();
                 }
-                StemPresetMessage::SetMacroNames(names) => {
-                    if let Some(preset) = app.deck_views[deck_idx].stem_preset_mut(stem_idx) {
-                        preset.macro_names = names.clone();
-                    }
+                DeckPresetMessage::SetAvailableStemPresets(presets) => {
+                    app.deck_views[deck_idx].deck_preset_mut().available_stem_presets = presets.clone();
+                }
+                DeckPresetMessage::SetMacroNames(names) => {
+                    app.deck_views[deck_idx].deck_preset_mut().macro_names = names.clone();
                 }
             }
         }
@@ -334,75 +339,89 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
     Task::none()
 }
 
-/// Handle preset selection for a stem
+/// Handle deck preset selection
 ///
-/// Loads the preset configuration and applies it to the multiband container.
-fn handle_preset_selection(
+/// Loads a deck preset (wrapper referencing stem presets) and applies all
+/// stem presets to their respective multiband containers.
+fn handle_deck_preset_selection(
     app: &mut MeshApp,
     deck_idx: usize,
-    stem_idx: usize,
     preset_name: Option<String>,
 ) -> Task<Message> {
+    use mesh_widgets::multiband::DeckPresetConfig;
+
     if let Some(name) = preset_name {
-        // Load the preset from disk
-        match load_preset(&app.config.collection_path, &name) {
-            Ok(config) => {
-                // Update UI state
-                if let Some(preset) = app.deck_views[deck_idx].stem_preset_mut(stem_idx) {
-                    preset.loaded_preset = Some(name.clone());
-                    preset.picker_open = false;
+        // Load the fully resolved deck preset (wrapper + all referenced stem presets)
+        match DeckPresetConfig::load_resolved(&app.config.collection_path, &name) {
+            Ok(resolved) => {
+                let dp = app.deck_views[deck_idx].deck_preset_mut();
+                dp.loaded_deck_preset = Some(name.clone());
+                dp.picker_open = false;
 
-                    // Update macro names from the preset
-                    let mut names: [String; NUM_MACROS] = Default::default();
-                    for (i, macro_config) in config.macros.iter().enumerate().take(NUM_MACROS) {
-                        names[i] = macro_config.name.clone();
+                // Update macro names from the deck preset
+                let mut macro_names: [String; NUM_MACROS] = Default::default();
+                for (i, macro_config) in resolved.macros.iter().enumerate().take(NUM_MACROS) {
+                    macro_names[i] = macro_config.name.clone();
+                }
+                dp.macro_names = macro_names;
+
+                // Reset macro values to center
+                dp.macro_values = [0.5; NUM_MACROS];
+
+                // Store stem preset references
+                dp.stem_preset_names = resolved.stem_names.clone();
+
+                // Apply each stem preset to its multiband container
+                // and collect macro mappings across all stems
+                let mut all_mappings: [Vec<mesh_widgets::MacroParamMapping>; NUM_MACROS] = Default::default();
+
+                for stem_idx in 0..4 {
+                    if let Some(ref stem_config) = resolved.stems[stem_idx] {
+                        if let Some(stem) = Stem::from_index(stem_idx) {
+                            apply_preset_to_multiband(app, deck_idx, stem, stem_config);
+
+                            // Extract macro mappings for this stem
+                            extract_deck_macro_mappings(
+                                stem_idx,
+                                stem_config,
+                                &mut all_mappings,
+                            );
+                        }
                     }
-                    preset.macro_names = names;
-
-                    // Reset macro values to center
-                    preset.macro_values = [0.5; NUM_MACROS];
-
-                    // Extract and store macro mappings for direct modulation
-                    preset.macro_mappings = extract_macro_mappings(&config);
                 }
 
-                // Apply the preset to the multiband container
-                if let Some(stem) = Stem::from_index(stem_idx) {
-                    apply_preset_to_multiband(app, deck_idx, stem, &config);
+                // Store all macro mappings on the deck preset
+                app.deck_views[deck_idx].deck_preset_mut().macro_mappings = all_mappings;
+
+                // If multiband editor is open for this deck, update it
+                if app.multiband_editor.is_open && app.multiband_editor.deck == deck_idx {
+                    let stem_idx = app.multiband_editor.stem;
+                    if let Some(ref stem_config) = resolved.stems[stem_idx] {
+                        stem_config.apply_to_editor_state(&mut app.multiband_editor);
+                        app.multiband_editor.rebuild_macro_mappings_index();
+                        mesh_widgets::multiband::ensure_effect_knobs_exist(&mut app.multiband_editor);
+                    }
                 }
 
-                // If multiband editor is open for this deck/stem, also populate it
-                // so macro modulation will work from deck view sliders
-                if app.multiband_editor.is_open
-                    && app.multiband_editor.deck == deck_idx
-                    && app.multiband_editor.stem == stem_idx
-                {
-                    config.apply_to_editor_state(&mut app.multiband_editor);
-                    app.multiband_editor.rebuild_macro_mappings_index();
-                    mesh_widgets::multiband::ensure_effect_knobs_exist(&mut app.multiband_editor);
-                }
-
-                app.status = format!("Loaded preset '{}' on deck {} {}", name, deck_idx + 1,
-                    Stem::from_index(stem_idx).map(|s| s.name()).unwrap_or("?"));
+                app.status = format!("Loaded deck preset '{}' on deck {}", name, deck_idx + 1);
             }
             Err(e) => {
-                log::error!("Failed to load preset '{}': {}", name, e);
-                app.status = format!("Failed to load preset: {}", e);
+                log::error!("Failed to load deck preset '{}': {}", name, e);
+                app.status = format!("Failed to load deck preset: {}", e);
             }
         }
     } else {
-        // Clear the preset (passthrough mode)
-        if let Some(preset) = app.deck_views[deck_idx].stem_preset_mut(stem_idx) {
-            preset.clear_preset();
+        // Clear the deck preset (passthrough mode for all stems)
+        app.deck_views[deck_idx].deck_preset_mut().clear_preset();
+
+        // Clear effects from all multiband containers
+        for stem_idx in 0..4 {
+            if let Some(stem) = Stem::from_index(stem_idx) {
+                clear_multiband_effects(app, deck_idx, stem);
+            }
         }
 
-        // Clear effects from the multiband container
-        if let Some(stem) = Stem::from_index(stem_idx) {
-            clear_multiband_effects(app, deck_idx, stem);
-        }
-
-        app.status = format!("Cleared preset on deck {} {}", deck_idx + 1,
-            Stem::from_index(stem_idx).map(|s| s.name()).unwrap_or("?"));
+        app.status = format!("Cleared deck preset on deck {}", deck_idx + 1);
     }
 
     Task::none()
@@ -623,82 +642,75 @@ fn get_effect_params(effect: &EffectPresetConfig) -> Vec<(usize, f32)> {
     }
 }
 
-/// Clear all effects from a multiband container
+/// Clear all effects from a stem's multiband container
 ///
-/// Note: This is a placeholder - we need to query the current effect count
-/// and remove them one by one. For now, we'll just log a warning.
-fn clear_multiband_effects(_app: &mut MeshApp, deck_idx: usize, stem: Stem) {
-    // TODO: Implement proper clearing by querying effect counts and removing
-    // For now, we just log a warning - effects will be added on top
-    log::warn!("clear_multiband_effects not fully implemented - effects may stack on preset changes. deck={}, stem={:?}", deck_idx, stem);
+/// Uses ResetMultiband to atomically replace the MultibandHost with a fresh one,
+/// clearing all bands, effect chains, crossovers, and macro mappings.
+fn clear_multiband_effects(app: &mut MeshApp, deck_idx: usize, stem: Stem) {
+    app.domain.send_command(mesh_core::engine::EngineCommand::ResetMultiband {
+        deck: deck_idx,
+        stem,
+    });
+    log::debug!("Reset multiband for deck {} stem {:?}", deck_idx, stem);
 }
 
-/// Apply macro modulation directly by sending parameter values to effects
+/// Apply macro modulation for a single mapping directly to the engine
 ///
-/// This is a more reliable approach than relying on the engine's apply_macros(),
-/// as it directly computes the modulated values and sends them to the engine.
-fn apply_macro_modulation_direct(
+/// Sends the modulated parameter value directly to the effect.
+fn apply_macro_modulation_direct_single(
     domain: &mut crate::domain::MeshDomain,
     deck_idx: usize,
     stem: Stem,
-    _macro_index: usize,
     macro_value: f32,
-    mappings: &[mesh_widgets::stem_preset::MacroParamMapping],
+    mapping: &mesh_widgets::MacroParamMapping,
 ) {
     use mesh_widgets::multiband::EffectChainLocation;
 
-    for mapping in mappings {
-        let modulated_value = mapping.modulate(macro_value);
+    let modulated_value = mapping.modulate(macro_value);
 
-        match mapping.location {
-            EffectChainLocation::PreFx => {
-                domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPreFxParam {
-                    deck: deck_idx,
-                    stem,
-                    effect_index: mapping.effect_index,
-                    param_index: mapping.param_index,
-                    value: modulated_value,
-                });
-            }
-            EffectChainLocation::Band(band_idx) => {
-                domain.send_command(mesh_core::engine::EngineCommand::SetMultibandEffectParam {
-                    deck: deck_idx,
-                    stem,
-                    band_index: band_idx,
-                    effect_index: mapping.effect_index,
-                    param_index: mapping.param_index,
-                    value: modulated_value,
-                });
-            }
-            EffectChainLocation::PostFx => {
-                domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPostFxParam {
-                    deck: deck_idx,
-                    stem,
-                    effect_index: mapping.effect_index,
-                    param_index: mapping.param_index,
-                    value: modulated_value,
-                });
-            }
+    match mapping.location {
+        EffectChainLocation::PreFx => {
+            domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPreFxParam {
+                deck: deck_idx,
+                stem,
+                effect_index: mapping.effect_index,
+                param_index: mapping.param_index,
+                value: modulated_value,
+            });
         }
-    }
-
-    if !mappings.is_empty() {
-        log::trace!(
-            "[MACRO_DIRECT] Applied {} mappings for deck={} stem={:?} macro_value={:.3}",
-            mappings.len(), deck_idx, stem, macro_value
-        );
+        EffectChainLocation::Band(band_idx) => {
+            domain.send_command(mesh_core::engine::EngineCommand::SetMultibandEffectParam {
+                deck: deck_idx,
+                stem,
+                band_index: band_idx,
+                effect_index: mapping.effect_index,
+                param_index: mapping.param_index,
+                value: modulated_value,
+            });
+        }
+        EffectChainLocation::PostFx => {
+            domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPostFxParam {
+                deck: deck_idx,
+                stem,
+                effect_index: mapping.effect_index,
+                param_index: mapping.param_index,
+                value: modulated_value,
+            });
+        }
     }
 }
 
-/// Extract macro-to-parameter mappings from a preset config
+/// Extract macro-to-parameter mappings from a stem preset config for a specific stem
 ///
-/// Builds a mapping structure that allows direct parameter modulation
-/// without relying on the engine's macro system.
-fn extract_macro_mappings(config: &MultibandPresetConfig) -> [Vec<mesh_widgets::stem_preset::MacroParamMapping>; NUM_MACROS] {
+/// Collects all macro-mapped parameters from a single stem's preset config
+/// and adds them to the deck-level mapping arrays (with stem_index set).
+fn extract_deck_macro_mappings(
+    stem_idx: usize,
+    config: &MultibandPresetConfig,
+    mappings: &mut [Vec<mesh_widgets::MacroParamMapping>; NUM_MACROS],
+) {
     use mesh_widgets::multiband::EffectChainLocation;
-    use mesh_widgets::stem_preset::MacroParamMapping;
-
-    let mut mappings: [Vec<MacroParamMapping>; NUM_MACROS] = Default::default();
+    use mesh_widgets::MacroParamMapping;
 
     // Helper to process an effect's knob assignments
     let mut add_effect_mappings = |location: EffectChainLocation, effect_idx: usize, effect: &EffectPresetConfig| {
@@ -707,6 +719,7 @@ fn extract_macro_mappings(config: &MultibandPresetConfig) -> [Vec<mesh_widgets::
                 if let Some(macro_index) = macro_mapping.macro_index {
                     if macro_index < NUM_MACROS {
                         mappings[macro_index].push(MacroParamMapping {
+                            stem_index: stem_idx,
                             location,
                             effect_index: effect_idx,
                             param_index,
@@ -737,9 +750,7 @@ fn extract_macro_mappings(config: &MultibandPresetConfig) -> [Vec<mesh_widgets::
     }
 
     log::debug!(
-        "[MACRO_EXTRACT] Extracted mappings: macro0={}, macro1={}, macro2={}, macro3={}",
-        mappings[0].len(), mappings[1].len(), mappings[2].len(), mappings[3].len()
+        "[MACRO_EXTRACT] Extracted mappings for stem {}: macro0={}, macro1={}, macro2={}, macro3={}",
+        stem_idx, mappings[0].len(), mappings[1].len(), mappings[2].len(), mappings[3].len()
     );
-
-    mappings
 }

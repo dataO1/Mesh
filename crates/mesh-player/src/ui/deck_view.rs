@@ -14,7 +14,7 @@ use iced::{Background, Center, Color, Element, Fill, Length};
 
 use mesh_core::engine::Deck;
 use mesh_core::types::PlayState;
-use mesh_widgets::{CUE_COLORS, StemPresetState, StemPresetMessage, STEM_PRESET_NUM_MACROS};
+use mesh_widgets::{CUE_COLORS, DeckPresetState, DeckPresetMessage, DECK_PRESET_NUM_MACROS};
 
 use super::midi_learn::HighlightTarget;
 
@@ -65,8 +65,8 @@ pub struct DeckView {
     key_match_enabled: bool,
     /// Currently selected stem for effect chain view (0-3)
     selected_stem: usize,
-    /// Stem preset states (preset selector + macro knobs per stem)
-    stem_presets: [StemPresetState; 4],
+    /// Deck preset state (shared preset + macros across all stems)
+    deck_preset: DeckPresetState,
     /// Current action button mode (HotCue or Slicer)
     action_mode: ActionButtonMode,
     /// Whether slicer is active (synced from atomics)
@@ -124,8 +124,8 @@ pub enum DeckMessage {
     ToggleStemSolo(usize),
     /// Select stem tab for multiband view
     SelectStem(usize),
-    /// Stem preset message (stem_idx, message)
-    StemPreset(usize, StemPresetMessage),
+    /// Deck preset message (shared macros + preset selector)
+    DeckPreset(DeckPresetMessage),
     /// Open multiband editor for a stem (stem_idx) - only used in mapping mode
     OpenMultibandEditor(usize),
     /// Set action button mode (HotCue or Slicer)
@@ -164,12 +164,7 @@ impl DeckView {
             slip_enabled: false,
             key_match_enabled: false,
             selected_stem: 0,       // Start with Vocals selected
-            stem_presets: [
-                StemPresetState::new(),
-                StemPresetState::new(),
-                StemPresetState::new(),
-                StemPresetState::new(),
-            ],
+            deck_preset: DeckPresetState::new(),
             action_mode: ActionButtonMode::default(),
             slicer_active: false,
             slicer_queue: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
@@ -232,9 +227,13 @@ impl DeckView {
             self.stem_muted[i] = stem_state.muted;
             self.stem_soloed[i] = stem_state.soloed;
 
-            // Sync macro values from the multiband to the stem preset state
-            for k in 0..STEM_PRESET_NUM_MACROS {
-                self.stem_presets[i].macro_values[k] = stem_state.multiband.macro_value(k);
+            // Sync macro values from the multiband to the deck preset state
+            // (macros are shared at deck level, but we read them from the engine's per-stem state)
+            if i == 0 {
+                // Only sync from first stem to avoid overwriting - macros are deck-level
+                for k in 0..DECK_PRESET_NUM_MACROS {
+                    self.deck_preset.macro_values[k] = stem_state.multiband.macro_value(k);
+                }
             }
         }
     }
@@ -299,30 +298,24 @@ impl DeckView {
         }
     }
 
-    /// Set macro knob value for a stem preset
-    pub fn set_stem_macro(&mut self, stem_idx: usize, knob_idx: usize, value: f32) {
-        if stem_idx < 4 && knob_idx < STEM_PRESET_NUM_MACROS {
-            self.stem_presets[stem_idx].macro_values[knob_idx] = value;
-        }
+    /// Set a shared macro knob value
+    pub fn set_deck_macro(&mut self, knob_idx: usize, value: f32) {
+        self.deck_preset.set_macro_value(knob_idx, value);
     }
 
-    /// Get macro knob value for a stem preset
-    pub fn stem_macro_value(&self, stem_idx: usize, knob_idx: usize) -> f32 {
-        if stem_idx < 4 && knob_idx < STEM_PRESET_NUM_MACROS {
-            self.stem_presets[stem_idx].macro_values[knob_idx]
-        } else {
-            0.5 // Default
-        }
+    /// Get a shared macro knob value
+    pub fn deck_macro_value(&self, knob_idx: usize) -> f32 {
+        self.deck_preset.macro_value(knob_idx)
     }
 
-    /// Get mutable reference to a stem preset state
-    pub fn stem_preset_mut(&mut self, stem_idx: usize) -> Option<&mut StemPresetState> {
-        self.stem_presets.get_mut(stem_idx)
+    /// Get mutable reference to the deck preset state
+    pub fn deck_preset_mut(&mut self) -> &mut DeckPresetState {
+        &mut self.deck_preset
     }
 
-    /// Get reference to a stem preset state
-    pub fn stem_preset(&self, stem_idx: usize) -> Option<&StemPresetState> {
-        self.stem_presets.get(stem_idx)
+    /// Get reference to the deck preset state
+    pub fn deck_preset(&self) -> &DeckPresetState {
+        &self.deck_preset
     }
 
     /// Check if key matching is enabled
@@ -477,11 +470,9 @@ impl DeckView {
             DeckMessage::OpenMultibandEditor(_stem_idx) => {
                 // Handled at app level - opens multiband editor modal
             }
-            DeckMessage::StemPreset(stem_idx, ref msg) => {
+            DeckMessage::DeckPreset(ref msg) => {
                 // Update local UI state for immediate feedback
-                if let Some(preset) = self.stem_presets.get_mut(stem_idx) {
-                    preset.handle_message(msg.clone());
-                }
+                self.deck_preset.handle_message(msg.clone());
                 // Actual engine update handled at app level
             }
             DeckMessage::SetActionMode(mode) => {
@@ -790,15 +781,15 @@ impl DeckView {
         .into()
     }
 
-    /// View the preset selector for a stem
+    /// View the deck preset selector
     ///
-    /// Shows a dropdown to select preset and the preset name.
-    fn view_effect_chain(&self, stem_idx: usize) -> Element<'_, DeckMessage> {
-        let preset = &self.stem_presets[stem_idx];
+    /// Shows a dropdown to select deck preset.
+    fn view_effect_chain(&self, _stem_idx: usize) -> Element<'_, DeckMessage> {
+        let preset = &self.deck_preset;
 
         // Preset dropdown button
         let label = preset
-            .loaded_preset
+            .loaded_deck_preset
             .as_deref()
             .unwrap_or("No Preset");
 
@@ -807,13 +798,13 @@ impl DeckView {
                 .spacing(4)
                 .align_y(Center)
         )
-        .on_press(DeckMessage::StemPreset(stem_idx, StemPresetMessage::TogglePicker))
+        .on_press(DeckMessage::DeckPreset(DeckPresetMessage::TogglePicker))
         .padding([3, 6])
         .width(Fill);
 
         if preset.picker_open {
             // Show dropdown with preset list
-            let picker_list = self.view_preset_picker_list(stem_idx);
+            let picker_list = self.view_preset_picker_list();
             column![dropdown_btn, picker_list]
                 .spacing(2)
                 .width(Fill)
@@ -824,28 +815,28 @@ impl DeckView {
     }
 
     /// View the preset picker dropdown list
-    fn view_preset_picker_list(&self, stem_idx: usize) -> Element<'_, DeckMessage> {
-        let preset = &self.stem_presets[stem_idx];
+    fn view_preset_picker_list(&self) -> Element<'_, DeckMessage> {
+        let preset = &self.deck_preset;
         let mut items: Vec<Element<'_, DeckMessage>> = Vec::new();
 
         // "No Preset" option (passthrough)
-        let no_preset_selected = preset.loaded_preset.is_none();
+        let no_preset_selected = preset.loaded_deck_preset.is_none();
         items.push(
             button(text("(No Preset)").size(9))
-                .on_press(DeckMessage::StemPreset(stem_idx, StemPresetMessage::SelectPreset(None)))
+                .on_press(DeckMessage::DeckPreset(DeckPresetMessage::SelectDeckPreset(None)))
                 .padding([3, 8])
                 .width(Fill)
                 .style(if no_preset_selected { preset_item_selected_style } else { preset_item_style })
                 .into(),
         );
 
-        // Available presets
-        for preset_name in &preset.available_presets {
-            let is_selected = preset.loaded_preset.as_ref() == Some(preset_name);
+        // Available deck presets
+        for preset_name in &preset.available_deck_presets {
+            let is_selected = preset.loaded_deck_preset.as_ref() == Some(preset_name);
             let name = preset_name.clone();
             items.push(
                 button(text(preset_name).size(9))
-                    .on_press(DeckMessage::StemPreset(stem_idx, StemPresetMessage::SelectPreset(Some(name))))
+                    .on_press(DeckMessage::DeckPreset(DeckPresetMessage::SelectDeckPreset(Some(name))))
                     .padding([3, 8])
                     .width(Fill)
                     .style(if is_selected { preset_item_selected_style } else { preset_item_style })
@@ -863,13 +854,14 @@ impl DeckView {
             .into()
     }
 
-    /// View the macro knobs for the stem's preset
+    /// View the shared macro knobs for the deck preset
     ///
-    /// These are interactive sliders that control the preset macros in real-time.
-    fn view_chain_knobs(&self, stem_idx: usize) -> Element<'_, DeckMessage> {
-        let preset = &self.stem_presets[stem_idx];
+    /// These are interactive sliders that control the shared macros in real-time
+    /// across all stems.
+    fn view_chain_knobs(&self, _stem_idx: usize) -> Element<'_, DeckMessage> {
+        let preset = &self.deck_preset;
 
-        let knobs: Vec<Element<DeckMessage>> = (0..STEM_PRESET_NUM_MACROS)
+        let knobs: Vec<Element<DeckMessage>> = (0..DECK_PRESET_NUM_MACROS)
             .map(|k| {
                 let value = preset.macro_values[k];
                 let name = preset.macro_name(k);
@@ -882,9 +874,8 @@ impl DeckView {
 
                 column![
                     text(display_name).size(7),
-                    slider(0.0..=1.0, value, move |v| DeckMessage::StemPreset(
-                        stem_idx,
-                        StemPresetMessage::SetMacro { index: k, value: v }
+                    slider(0.0..=1.0, value, move |v| DeckMessage::DeckPreset(
+                        DeckPresetMessage::SetMacro { index: k, value: v }
                     ))
                     .step(0.01)  // Ensure continuous control with 100 steps
                     .width(Fill),
@@ -1407,13 +1398,13 @@ impl DeckView {
             .into()
     }
 
-    /// Compact preset selector view
-    fn view_effect_chain_compact(&self, stem_idx: usize) -> Element<'_, DeckMessage> {
-        let preset = &self.stem_presets[stem_idx];
+    /// Compact deck preset selector view
+    fn view_effect_chain_compact(&self, _stem_idx: usize) -> Element<'_, DeckMessage> {
+        let preset = &self.deck_preset;
 
         // Preset dropdown button
         let label = preset
-            .loaded_preset
+            .loaded_deck_preset
             .as_deref()
             .unwrap_or("No Preset");
 
@@ -1422,13 +1413,13 @@ impl DeckView {
                 .spacing(2)
                 .align_y(Center)
         )
-        .on_press(DeckMessage::StemPreset(stem_idx, StemPresetMessage::TogglePicker))
+        .on_press(DeckMessage::DeckPreset(DeckPresetMessage::TogglePicker))
         .padding(2)
         .width(Fill);
 
         if preset.picker_open {
             // Show dropdown with preset list
-            let picker_list = self.view_preset_picker_list(stem_idx);
+            let picker_list = self.view_preset_picker_list();
             column![dropdown_btn, picker_list]
                 .spacing(2)
                 .width(Fill)
@@ -1438,11 +1429,11 @@ impl DeckView {
         }
     }
 
-    /// Compact macro sliders for real-time control
-    fn view_chain_knobs_compact(&self, stem_idx: usize) -> Element<'_, DeckMessage> {
-        let preset = &self.stem_presets[stem_idx];
+    /// Compact macro sliders for real-time control (shared across all stems)
+    fn view_chain_knobs_compact(&self, _stem_idx: usize) -> Element<'_, DeckMessage> {
+        let preset = &self.deck_preset;
 
-        let knobs: Vec<Element<DeckMessage>> = (0..STEM_PRESET_NUM_MACROS)
+        let knobs: Vec<Element<DeckMessage>> = (0..DECK_PRESET_NUM_MACROS)
             .map(|k| {
                 let value = preset.macro_values[k];
                 let name = preset.macro_name(k);
@@ -1455,9 +1446,8 @@ impl DeckView {
 
                 column![
                     text(display_name).size(6),
-                    slider(0.0..=1.0, value, move |v| DeckMessage::StemPreset(
-                        stem_idx,
-                        StemPresetMessage::SetMacro { index: k, value: v }
+                    slider(0.0..=1.0, value, move |v| DeckMessage::DeckPreset(
+                        DeckPresetMessage::SetMacro { index: k, value: v }
                     ))
                     .step(0.01)  // Ensure continuous control with 100 steps
                     .width(Fill),

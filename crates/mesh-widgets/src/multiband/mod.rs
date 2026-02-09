@@ -37,14 +37,18 @@ mod view;
 
 pub use config::{
     delete_preset, list_presets, load_preset, multiband_presets_folder, save_preset,
-    EffectPresetConfig, MultibandPresetConfig,
+    EffectPresetConfig, MultibandPresetConfig, StemPresetConfig,
+    // Deck preset types and I/O
+    DeckPresetConfig, DeckStemReferences, ResolvedDeckPreset, MacroPresetConfig,
+    deck_presets_folder, load_deck_preset, save_deck_preset, list_deck_presets, delete_deck_preset,
+    stem_presets_folder, load_stem_preset, save_stem_preset, list_stem_presets, delete_stem_preset,
 };
 pub use crossover_bar::{crossover_bar, crossover_controls, CROSSOVER_BAR_HEIGHT};
 pub use message::{ChainTarget, MultibandEditorMessage};
 pub use state::{
     AvailableParam, BandUiState, DryWetKnobId, EffectChainLocation, EffectSourceType, EffectUiState,
     KnobAssignment, MacroMappingRef, MacroUiState, MappingTarget, ModRangeDrag, MultibandEditorState,
-    ParamMacroMapping, MAX_UI_KNOBS,
+    ParamMacroMapping, StemEffectData, MAX_UI_KNOBS,
 };
 pub use view::{
     multiband_editor, multiband_editor_content, ensure_effect_knobs_exist,

@@ -201,20 +201,6 @@ pub enum MultibandEditorMessage {
         param: usize,
     },
 
-    /// Open macro mapping dialog for a macro
-    OpenMacroMapper(usize),
-
-    /// Add a mapping from macro to effect parameter
-    AddMacroMapping {
-        macro_index: usize,
-        band: usize,
-        effect: usize,
-        param: usize,
-    },
-
-    /// Clear all mappings for a macro
-    ClearMacroMappings(usize),
-
     // ─────────────────────────────────────────────────────────────────────
     // Macro Modulation Range Controls
     // ─────────────────────────────────────────────────────────────────────
@@ -403,6 +389,16 @@ pub enum MultibandEditorMessage {
         /// The parameter name
         param_name: String,
     },
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Global mouse events (for knob drag capture)
+    // ─────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────
+    // Stem switching (deck-level editing)
+    // ─────────────────────────────────────────────────────────────────────
+    /// Switch the editor to show a different stem's effects
+    /// The handler should snapshot current stem data before switching
+    SwitchStem(usize),
 
     // ─────────────────────────────────────────────────────────────────────
     // Global mouse events (for knob drag capture)

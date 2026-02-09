@@ -26,6 +26,7 @@
 //! - `waveform_combined`: Both views in a single canvas (iced bug #3040 workaround)
 
 pub mod button_styles;
+pub mod deck_preset;
 pub mod knob;
 pub mod multiband;
 pub mod playlist_browser;
@@ -118,8 +119,14 @@ pub use multiband::{
     FREQ_MAX, FREQ_MIN, NUM_MACROS,
 };
 
-// Stem preset selector widget (lightweight, for mesh-player performance use)
+// Stem preset selector widget (legacy, kept for compatibility)
 pub use stem_preset::{
     stem_preset_view, StemPresetMessage, StemPresetState,
     NUM_MACROS as STEM_PRESET_NUM_MACROS, DEFAULT_MACRO_NAMES,
+};
+
+// Deck preset selector widget (replaces per-stem presets with deck-level)
+pub use deck_preset::{
+    deck_preset_view, DeckPresetMessage, DeckPresetState, MacroParamMapping,
+    NUM_MACROS as DECK_PRESET_NUM_MACROS,
 };

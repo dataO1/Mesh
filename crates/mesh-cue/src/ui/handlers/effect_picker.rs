@@ -132,7 +132,7 @@ impl MeshCueApp {
 
                         // If audio preview is enabled, add to audio engine
                         if self.effects_editor.audio_preview_enabled {
-                            let stem = self.effects_editor.preview_stem;
+                            let stem = self.effects_editor.active_stem_type();
                             match target {
                                 EffectPickerTarget::PreFx => {
                                     self.audio.add_multiband_pre_fx(stem, effect);
@@ -200,7 +200,7 @@ impl MeshCueApp {
 
         // If audio preview is enabled, also add to the audio engine
         if self.effects_editor.audio_preview_enabled {
-            let stem = self.effects_editor.preview_stem;
+            let stem = self.effects_editor.active_stem_type();
 
             // Create an audio effect instance (with GUI support for CLAP)
             if let Some(audio_effect) = self.create_audio_effect(&effect, target, effect_idx) {
