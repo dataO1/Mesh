@@ -76,9 +76,8 @@ pub enum HighlightTarget {
     DeckCue(usize),
     DeckLoop(usize),
 
-    // Loop controls
-    DeckLoopHalve(usize),
-    DeckLoopDouble(usize),
+    // Loop size encoder (negative = halve, positive = double)
+    DeckLoopEncoder(usize),
 
     // Beat jump
     DeckBeatJumpBack(usize),
@@ -130,8 +129,7 @@ impl HighlightTarget {
             HighlightTarget::DeckPlay(d) => format!("Press PLAY button on deck {}", d + 1),
             HighlightTarget::DeckCue(d) => format!("Press CUE button on deck {}", d + 1),
             HighlightTarget::DeckLoop(d) => format!("Press LOOP toggle on deck {}", d + 1),
-            HighlightTarget::DeckLoopHalve(d) => format!("Press LOOP HALVE (÷2) on deck {}", d + 1),
-            HighlightTarget::DeckLoopDouble(d) => format!("Press LOOP DOUBLE (×2) on deck {}", d + 1),
+            HighlightTarget::DeckLoopEncoder(d) => format!("Turn LOOP SIZE encoder on deck {} (halve/double)", d + 1),
             HighlightTarget::DeckBeatJumpBack(d) => format!("Press BEAT JUMP BACK on deck {}", d + 1),
             HighlightTarget::DeckBeatJumpForward(d) => format!("Press BEAT JUMP FORWARD on deck {}", d + 1),
             HighlightTarget::DeckHotCueMode(d) => format!("Press HOT CUE mode button on deck {}", d + 1),
@@ -265,12 +263,6 @@ pub struct MidiLearnState {
     /// Last detected hardware type (for display)
     pub detected_hardware: Option<HardwareType>,
 
-    // Encoder press capture state
-    /// True when waiting for user to press an encoder after rotation was captured
-    pub awaiting_encoder_press: bool,
-    /// The target we just mapped (to associate encoder press with it)
-    encoder_rotation_target: Option<HighlightTarget>,
-
     // Setup phase state
     /// Controller name (user input)
     pub controller_name: String,
@@ -313,8 +305,6 @@ impl MidiLearnState {
             last_capture_time: None,
             detection_buffer: None,
             detected_hardware: None,
-            awaiting_encoder_press: false,
-            encoder_rotation_target: None,
             controller_name: String::new(),
             deck_count: 2,
             has_layer_toggle: false,
@@ -404,7 +394,7 @@ impl MidiLearnState {
             LearnPhase::Review => {
                 // Go back to last step of browser phase
                 self.phase = LearnPhase::Browser;
-                self.total_steps = 5 + self.deck_count;
+                self.total_steps = 7 + self.deck_count;
                 self.current_step = self.total_steps - 1;
                 self.update_browser_target();
             }
@@ -471,17 +461,6 @@ impl MidiLearnState {
             .unwrap_or(false)
     }
 
-    /// Check if a target is an encoder that should prompt for press capture
-    fn should_prompt_encoder_press(target: HighlightTarget, hw_type: HardwareType) -> bool {
-        // Only prompt for encoder press if we detected an encoder-type control
-        if !matches!(hw_type, HardwareType::Encoder | HardwareType::JogWheel) {
-            return false;
-        }
-
-        // These targets are encoders that typically have a press function
-        matches!(target, HighlightTarget::BrowserEncoder | HighlightTarget::FxEncoder)
-    }
-
     /// Finalize the mapping with detected hardware type
     pub fn finalize_mapping(&mut self) {
         if let (Some(target), Some(ref buffer)) = (self.highlight_target, &self.detection_buffer) {
@@ -505,71 +484,8 @@ impl MidiLearnState {
                 buffer.get_number()
             );
 
-            // Clear buffer
+            // Clear buffer and advance
             self.detection_buffer = None;
-
-            // Check if we should prompt for encoder press
-            if Self::should_prompt_encoder_press(target, hw_type) {
-                self.awaiting_encoder_press = true;
-                self.encoder_rotation_target = Some(target);
-                self.last_capture_time = None; // Reset debounce so press is captured immediately
-                let press_target = match target {
-                    HighlightTarget::FxEncoder => HighlightTarget::FxSelect,
-                    _ => HighlightTarget::BrowserSelect,
-                };
-                self.highlight_target = Some(press_target);
-                self.status = "Now PRESS the encoder (or skip if it doesn't click)".to_string();
-                self.last_captured = None; // Clear to show waiting state
-                log::info!("MIDI Learn: Prompting for encoder press");
-            } else {
-                self.advance();
-            }
-        }
-    }
-
-    /// Record an encoder press mapping (called when awaiting_encoder_press is true)
-    pub fn record_encoder_press(&mut self, event: CapturedMidiEvent) {
-        if !self.awaiting_encoder_press {
-            return;
-        }
-
-        // Determine the correct press target based on which encoder was rotated
-        let press_target = match self.encoder_rotation_target {
-            Some(HighlightTarget::FxEncoder) => HighlightTarget::FxSelect,
-            _ => HighlightTarget::BrowserSelect,
-        };
-
-        // Store the encoder press mapping
-        self.pending_mappings.push(LearnedMapping {
-            target: press_target,
-            channel: event.channel,
-            number: event.number,
-            is_note: event.is_note,
-            hardware_type: HardwareType::Button, // Encoder press is always a button
-        });
-
-        self.last_captured = Some(event.clone());
-        self.status = format!("Encoder press mapped: {}", event.display());
-        log::info!(
-            "MIDI Learn: Encoder press mapped (ch={}, num={}, is_note={})",
-            event.channel,
-            event.number,
-            event.is_note
-        );
-
-        // Clear encoder press state and advance
-        self.awaiting_encoder_press = false;
-        self.encoder_rotation_target = None;
-        self.mark_captured();
-        self.advance();
-    }
-
-    /// Skip encoder press capture
-    pub fn skip_encoder_press(&mut self) {
-        if self.awaiting_encoder_press {
-            log::info!("MIDI Learn: Encoder press skipped");
-            self.awaiting_encoder_press = false;
-            self.encoder_rotation_target = None;
             self.advance();
         }
     }
@@ -579,20 +495,7 @@ impl MidiLearnState {
     /// Used by go_back methods to remove mappings before re-learning.
     /// This is idempotent - safe to call even if no mapping exists.
     fn remove_mappings_for_target(&mut self, target: HighlightTarget) {
-        self.pending_mappings.retain(|m| {
-            if m.target == target {
-                return false;
-            }
-            // If removing browser encoder, also remove its paired press mapping
-            if target == HighlightTarget::BrowserEncoder && m.target == HighlightTarget::BrowserSelect {
-                return false;
-            }
-            // If removing FX encoder, also remove its paired press mapping
-            if target == HighlightTarget::FxEncoder && m.target == HighlightTarget::FxSelect {
-                return false;
-            }
-            true
-        });
+        self.pending_mappings.retain(|m| m.target != target);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -654,25 +557,24 @@ impl MidiLearnState {
         self.last_capture_time = None;
         self.phase = LearnPhase::Transport;
         self.current_step = 0;
-        // 7 controls per deck:
-        // play, cue, loop, loop halve, loop double, beat jump back, beat jump forward
+        // 6 controls per deck:
+        // play, cue, loop, loop size encoder, beat jump back, beat jump forward
         // (mode buttons moved to pads phase for better workflow)
-        self.total_steps = self.deck_count * 7;
+        self.total_steps = self.deck_count * 6;
         self.update_transport_target();
     }
 
     fn update_transport_target(&mut self) {
-        let deck = self.current_step / 7;
-        let control = self.current_step % 7;
+        let deck = self.current_step / 6;
+        let control = self.current_step % 6;
 
         self.highlight_target = Some(match control {
             0 => HighlightTarget::DeckPlay(deck),
             1 => HighlightTarget::DeckCue(deck),
             2 => HighlightTarget::DeckLoop(deck),
-            3 => HighlightTarget::DeckLoopHalve(deck),
-            4 => HighlightTarget::DeckLoopDouble(deck),
-            5 => HighlightTarget::DeckBeatJumpBack(deck),
-            6 => HighlightTarget::DeckBeatJumpForward(deck),
+            3 => HighlightTarget::DeckLoopEncoder(deck),
+            4 => HighlightTarget::DeckBeatJumpBack(deck),
+            5 => HighlightTarget::DeckBeatJumpForward(deck),
             _ => unreachable!(),
         });
 
@@ -782,8 +684,8 @@ impl MidiLearnState {
         } else {
             // Go back to transport
             self.phase = LearnPhase::Transport;
-            self.current_step = self.deck_count * 7 - 1;
-            self.total_steps = self.deck_count * 7;
+            self.current_step = self.deck_count * 6 - 1;
+            self.total_steps = self.deck_count * 6;
             self.update_transport_target();
         }
     }
@@ -896,20 +798,22 @@ impl MidiLearnState {
         self.last_capture_time = None;
         self.phase = LearnPhase::Browser;
         self.current_step = 0;
-        // Browser: FX encoder + browser encoder + master vol + cue vol + cue mix + load buttons per deck
-        // = 1 (FX encoder) + 1 (browser encoder) + 3 (master) + deck_count (load)
-        self.total_steps = 5 + self.deck_count;
+        // Browser: FX encoder, FX select, browser encoder, browser select,
+        //          master vol, cue vol, cue mix, load buttons per deck
+        self.total_steps = 7 + self.deck_count;
         self.update_browser_target();
     }
 
     fn update_browser_target(&mut self) {
         self.highlight_target = Some(match self.current_step {
             0 => HighlightTarget::FxEncoder,
-            1 => HighlightTarget::BrowserEncoder,
-            2 => HighlightTarget::MasterVolume,
-            3 => HighlightTarget::CueVolume,
-            4 => HighlightTarget::CueMix,
-            n => HighlightTarget::DeckLoad(n - 5),
+            1 => HighlightTarget::FxSelect,
+            2 => HighlightTarget::BrowserEncoder,
+            3 => HighlightTarget::BrowserSelect,
+            4 => HighlightTarget::MasterVolume,
+            5 => HighlightTarget::CueVolume,
+            6 => HighlightTarget::CueMix,
+            n => HighlightTarget::DeckLoad(n - 7),
         });
 
         if let Some(ref target) = self.highlight_target {
@@ -927,12 +831,6 @@ impl MidiLearnState {
     }
 
     fn go_back_browser(&mut self) {
-        // Clear encoder press state if active
-        if self.awaiting_encoder_press {
-            self.awaiting_encoder_press = false;
-            self.encoder_rotation_target = None;
-        }
-
         // Remove mapping for current target (if any exists)
         if let Some(target) = self.highlight_target {
             self.remove_mappings_for_target(target);
@@ -964,14 +862,14 @@ impl MidiLearnState {
     /// Get the overall progress as (current, total)
     pub fn overall_progress(&self) -> (usize, usize) {
         let setup_steps = 5; // name, deck count, layer toggle, pad mode, shift
-        let transport_steps = self.deck_count * 7; // play, cue, loop, loop halve/double, beat jump
+        let transport_steps = self.deck_count * 6; // play, cue, loop, loop size encoder, beat jump
         // Pads phase includes mode buttons + pads:
         // Controller mode: (hot cue mode + 8 pads + slicer mode + 8 pads) = 18 per deck
         // App mode: (hot cue mode + 8 pads + slicer mode) = 10 per deck
         let pads_steps = self.deck_count * self.pads_steps_per_deck();
         let stems_steps = self.deck_count * 4; // 4 stem mute buttons per deck
         let mixer_steps = self.deck_count * 10; // volume, filter, eq hi/mid/lo, cue, 4 FX macros
-        let browser_steps = 5 + self.deck_count; // FX encoder, browser encoder, master vol, cue vol, cue mix, load buttons
+        let browser_steps = 7 + self.deck_count; // FX encoder, FX select, browser encoder, browser select, master vol, cue vol, cue mix, load buttons
         let total = setup_steps + transport_steps + pads_steps + stems_steps + mixer_steps + browser_steps;
 
         let current = match self.phase {
@@ -1025,12 +923,9 @@ impl MidiLearnState {
                     ("deck.toggle_loop".to_string(), Some(d), None, ControlBehavior::Toggle, Some("deck.loop_active"))
                 }
 
-                // Loop controls
-                HighlightTarget::DeckLoopHalve(d) => {
-                    ("deck.loop_halve".to_string(), Some(d), None, ControlBehavior::Momentary, None)
-                }
-                HighlightTarget::DeckLoopDouble(d) => {
-                    ("deck.loop_double".to_string(), Some(d), None, ControlBehavior::Momentary, None)
+                // Loop size encoder (negative delta = halve, positive = double)
+                HighlightTarget::DeckLoopEncoder(d) => {
+                    ("deck.loop_size".to_string(), Some(d), None, ControlBehavior::Continuous, None)
                 }
 
                 // Beat jump
@@ -1479,11 +1374,7 @@ fn view_mapping_phase(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
 
     // Show detected hardware type if available
     let hw_info = if let Some(hw) = state.detected_hardware {
-        if state.awaiting_encoder_press {
-            text(format!("Detected: {:?} - now press it!", hw)).size(12)
-        } else {
-            text(format!("Detected: {:?}", hw)).size(12)
-        }
+        text(format!("Detected: {:?}", hw)).size(12)
     } else {
         text("").size(12)
     };

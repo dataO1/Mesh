@@ -48,6 +48,7 @@ impl ActionRegistry {
             "deck.toggle_loop",
             "deck.loop_halve",
             "deck.loop_double",
+            "deck.loop_size",
             "deck.loop_in",
             "deck.loop_out",
             "deck.beat_jump_forward",
@@ -515,6 +516,22 @@ impl MappingEngine {
                         deck,
                         action: DeckAction::LoopDouble,
                     })
+                } else {
+                    None
+                }
+            }
+            "deck.loop_size" => {
+                if let MidiInputEvent::ControlChange { value, .. } = event {
+                    let mode = mapping.encoder_mode.unwrap_or(EncoderMode::Relative);
+                    let delta = encoder_to_delta(*value, mode);
+                    if delta != 0 {
+                        Some(MidiMessage::Deck {
+                            deck,
+                            action: DeckAction::LoopSize(delta),
+                        })
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }

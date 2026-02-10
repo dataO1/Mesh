@@ -1496,16 +1496,6 @@ impl DeckView {
         let loop_halve = button(text("÷2").size(10))
             .on_press(DeckMessage::LoopHalve)
             .padding([4, 6]);
-        let loop_halve_elem: Element<_> = if self.is_highlighted(HighlightTarget::DeckLoopHalve(self.deck_idx)) {
-            container(loop_halve)
-                .style(|_| container::Style {
-                    border: Self::highlight_border(),
-                    ..Default::default()
-                })
-                .into()
-        } else {
-            loop_halve.into()
-        };
 
         let loop_length_text = format_loop_length(self.loop_length_beats);
         let loop_length = container(text(loop_length_text).size(11))
@@ -1516,15 +1506,17 @@ impl DeckView {
         let loop_double = button(text("×2").size(10))
             .on_press(DeckMessage::LoopDouble)
             .padding([4, 6]);
-        let loop_double_elem: Element<_> = if self.is_highlighted(HighlightTarget::DeckLoopDouble(self.deck_idx)) {
-            container(loop_double)
+
+        let loop_size_row = row![loop_halve, loop_length, loop_double].spacing(2);
+        let loop_size_elem: Element<_> = if self.is_highlighted(HighlightTarget::DeckLoopEncoder(self.deck_idx)) {
+            container(loop_size_row)
                 .style(|_| container::Style {
                     border: Self::highlight_border(),
                     ..Default::default()
                 })
                 .into()
         } else {
-            loop_double.into()
+            loop_size_row.into()
         };
 
         // Beat jump buttons with optional MIDI learn highlights
@@ -1562,9 +1554,7 @@ impl DeckView {
             jump_back_elem,
             jump_fwd_elem,
             Space::new().width(8),
-            loop_halve_elem,
-            loop_length,
-            loop_double_elem,
+            loop_size_elem,
             Space::new().width(8),
             loop_elem,
             slip_btn,

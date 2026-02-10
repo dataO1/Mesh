@@ -802,6 +802,9 @@ pub(crate) fn handle_global_fx_scroll(app: &mut MeshApp, delta: i32) {
         return;
     }
 
+    // Auto-open the dropdown when scrolling via MIDI
+    app.global_fx_picker_open = true;
+
     // Move hover index
     let current = app.global_fx_hover_index.unwrap_or(0) as i32;
     let new_idx = (current + delta).rem_euclid(count as i32) as usize;

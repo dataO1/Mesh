@@ -160,7 +160,9 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 - **MIDI FX encoder browsing** — A dedicated FX encoder (separate from the
   browser encoder) can now scroll through and select FX presets for all decks
   during MIDI exploration. The FX encoder rotation scrolls the preset list with
-  wrapping, and the encoder press confirms the selection.
+  wrapping, and the encoder press confirms the selection. The global FX dropdown
+  renders as a floating overlay and auto-opens when the MIDI encoder scrolls,
+  showing the currently hovered preset name in the header button.
 
 - **MIDI FX macro knobs** — 4 macro knob mappings per deck are now captured
   during the MIDI learn Mixer phase (10 steps per deck: 6 mixer controls + 4
@@ -203,9 +205,20 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 - **MIDI learn phase-skipping** — Fixed phases being silently skipped during
   MIDI learn when controls were pressed within the 1-second capture debounce
-  window. The debounce timer is now reset at each phase transition and when
-  entering encoder press mode, so subsequent captures are accepted immediately.
-  Also fixed progress bar step count mismatch in the Browser phase.
+  window. The debounce timer is now reset at each phase transition so subsequent
+  captures are accepted immediately.
+
+- **MIDI learn encoder press detection** — Encoder button presses (BrowserSelect,
+  FxSelect) are now mapped as standalone learn steps rather than being auto-detected
+  after encoder rotation. The old `awaiting_encoder_press` sub-flow was fragile
+  and often missed presses due to debounce timing. Browser phase now has 7+N steps
+  (FxEncoder, FxSelect, BrowserEncoder, BrowserSelect, master controls, deck loads).
+
+- **MIDI learn loop size encoder** — Replaced separate loop halve/double button
+  mappings with a single loop size encoder target. Previously, mapping an encoder
+  to both halve and double resulted in only double working (second mapping overwrote
+  the first). Now a single `DeckLoopEncoder` target uses encoder rotation direction:
+  negative = halve, positive = double.
 
 - **mesh-player macro modulation** — Macro sliders in the deck view now properly
   modulate effect parameters. Previously, moving a macro slider only updated the

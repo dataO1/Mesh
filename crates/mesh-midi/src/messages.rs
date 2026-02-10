@@ -78,6 +78,8 @@ pub enum DeckAction {
     LoopHalve,
     /// Double loop length
     LoopDouble,
+    /// Loop size from encoder (negative = halve, positive = double)
+    LoopSize(i32),
     /// Set loop in point
     LoopIn,
     /// Set loop out point

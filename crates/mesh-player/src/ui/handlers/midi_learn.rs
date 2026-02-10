@@ -31,11 +31,7 @@ pub fn handle(app: &mut MeshApp, learn_msg: MidiLearnMessage) -> Task<Message> {
             app.midi_learn.go_back();
         }
         Skip => {
-            if app.midi_learn.awaiting_encoder_press {
-                app.midi_learn.skip_encoder_press();
-            } else {
-                app.midi_learn.advance();
-            }
+            app.midi_learn.advance();
         }
         Save => {
             app.status = format!(

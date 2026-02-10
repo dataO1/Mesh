@@ -522,6 +522,13 @@ impl MeshApp {
                     MidiDeckAction::ToggleLoop => Some(DeckMessage::ToggleLoop),
                     MidiDeckAction::LoopHalve => Some(DeckMessage::LoopHalve),
                     MidiDeckAction::LoopDouble => Some(DeckMessage::LoopDouble),
+                    MidiDeckAction::LoopSize(delta) => {
+                        if delta < 0 {
+                            Some(DeckMessage::LoopHalve)
+                        } else {
+                            Some(DeckMessage::LoopDouble)
+                        }
+                    }
                     MidiDeckAction::LoopIn | MidiDeckAction::LoopOut => None, // TODO
                     MidiDeckAction::BeatJumpForward => Some(DeckMessage::BeatJumpForward),
                     MidiDeckAction::BeatJumpBackward => Some(DeckMessage::BeatJumpBack),
@@ -859,6 +866,32 @@ impl MeshApp {
             base
         };
 
+        // Overlay FX dropdown list when open (above content, below modals)
+        let with_fx_dropdown: Element<'a, Message> = if self.global_fx_picker_open {
+            // Transparent backdrop to close dropdown on click-away
+            let backdrop = mouse_area(
+                container(Space::new())
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+            )
+            .on_press(Message::ToggleGlobalFxPicker);
+
+            // The dropdown list, positioned near the top
+            // Use a column with a spacer to push the list below the header
+            let dropdown_list = column![
+                Space::new().height(50),
+                container(self.view_global_fx_list())
+                    .width(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Center),
+            ]
+            .width(Length::Fill)
+            .height(Length::Fill);
+
+            stack![with_drawer, backdrop, dropdown_list].into()
+        } else {
+            with_drawer
+        };
+
         // Overlay settings modal if open
         if self.settings.is_open {
             let backdrop = mouse_area(
@@ -876,17 +909,17 @@ impl MeshApp {
                 .width(Length::Fill)
                 .height(Length::Fill);
 
-            stack![with_drawer, backdrop, modal].into()
+            stack![with_fx_dropdown, backdrop, modal].into()
         } else if self.multiband_editor.is_open {
             // Overlay multiband editor modal
             if let Some(editor_view) = multiband_editor(&self.multiband_editor) {
                 let multiband_modal = editor_view.map(Message::Multiband);
-                stack![with_drawer, multiband_modal].into()
+                stack![with_fx_dropdown, multiband_modal].into()
             } else {
-                with_drawer
+                with_fx_dropdown
             }
         } else {
-            with_drawer
+            with_fx_dropdown
         }
     }
 
@@ -933,63 +966,83 @@ impl MeshApp {
         .into()
     }
 
-    /// View for the global FX preset dropdown in the header
+    /// View for the global FX preset button in the header (list is overlaid separately)
     fn view_global_fx_dropdown(&self) -> Element<'_, Message> {
-        use iced::widget::scrollable;
+        // When open and hovering via MIDI, show the hovered preset name
+        let label = if self.global_fx_picker_open {
+            if let Some(idx) = self.global_fx_hover_index {
+                self.available_deck_presets
+                    .get(idx)
+                    .map(|s| s.as_str())
+                    .unwrap_or("No FX")
+            } else {
+                self.global_fx_preset.as_deref().unwrap_or("No FX")
+            }
+        } else {
+            self.global_fx_preset.as_deref().unwrap_or("No FX")
+        };
 
-        let label = self
-            .global_fx_preset
-            .as_deref()
-            .unwrap_or("No FX");
+        let arrow = if self.global_fx_picker_open { "▴" } else { "▾" };
 
-        let dropdown_btn = button(
-            row![text(label).size(11), Space::new().width(Fill), text("▾").size(11)]
+        button(
+            row![text(label).size(11), Space::new().width(Fill), text(arrow).size(11)]
                 .spacing(4)
                 .align_y(CenterAlign),
         )
         .on_press(Message::ToggleGlobalFxPicker)
         .padding([4, 8])
-        .width(Length::Fixed(140.0));
+        .width(Length::Fixed(140.0))
+        .into()
+    }
 
-        if self.global_fx_picker_open {
-            let mut items: Vec<Element<'_, Message>> = Vec::new();
+    /// Render the FX preset dropdown list (called from apply_overlays when open)
+    fn view_global_fx_list(&self) -> Element<'_, Message> {
+        use iced::widget::scrollable;
 
-            // "No FX" option
-            let no_fx_selected = self.global_fx_preset.is_none();
+        let mut items: Vec<Element<'_, Message>> = Vec::new();
+
+        // "No FX" option
+        let no_fx_selected = self.global_fx_preset.is_none();
+        items.push(
+            button(text("(No FX)").size(10))
+                .on_press(Message::SelectGlobalFxPreset(None))
+                .padding([3, 8])
+                .width(Fill)
+                .style(if no_fx_selected { button::primary } else { button::secondary })
+                .into(),
+        );
+
+        // Available presets
+        for (i, preset_name) in self.available_deck_presets.iter().enumerate() {
+            let is_selected = self.global_fx_preset.as_ref() == Some(preset_name);
+            let is_hovered = self.global_fx_hover_index == Some(i);
+            let name = preset_name.clone();
             items.push(
-                button(text("(No FX)").size(10))
-                    .on_press(Message::SelectGlobalFxPreset(None))
+                button(text(preset_name).size(10))
+                    .on_press(Message::SelectGlobalFxPreset(Some(name)))
                     .padding([3, 8])
                     .width(Fill)
-                    .style(if no_fx_selected { button::primary } else { button::secondary })
+                    .style(if is_selected || is_hovered { button::primary } else { button::secondary })
                     .into(),
             );
-
-            // Available presets
-            for (i, preset_name) in self.available_deck_presets.iter().enumerate() {
-                let is_selected = self.global_fx_preset.as_ref() == Some(preset_name);
-                let is_hovered = self.global_fx_hover_index == Some(i);
-                let name = preset_name.clone();
-                items.push(
-                    button(text(preset_name).size(10))
-                        .on_press(Message::SelectGlobalFxPreset(Some(name)))
-                        .padding([3, 8])
-                        .width(Fill)
-                        .style(if is_selected || is_hovered { button::primary } else { button::secondary })
-                        .into(),
-                );
-            }
-
-            let list = scrollable(column(items).spacing(1).width(Fill))
-                .height(Length::Fixed(150.0));
-
-            column![dropdown_btn, list]
-                .spacing(2)
-                .width(Length::Fixed(140.0))
-                .into()
-        } else {
-            dropdown_btn.into()
         }
+
+        let list = scrollable(column(items).spacing(1).width(Fill))
+            .height(Length::Fixed(200.0));
+
+        container(list)
+            .width(Length::Fixed(160.0))
+            .style(|_theme| container::Style {
+                background: Some(Color::from_rgba(0.12, 0.12, 0.16, 0.98).into()),
+                border: iced::Border {
+                    color: Color::from_rgb(0.3, 0.3, 0.5),
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                ..Default::default()
+            })
+            .padding(4)
+            .into()
     }
 
     /// Get the theme
