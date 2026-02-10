@@ -153,7 +153,7 @@ pub fn range_for_action(action: &str) -> ControlRange {
         "mixer.crossfader" => ControlRange::Unit,
 
         // Deck controls
-        "deck.effect_param" => ControlRange::Unit,
+        "deck.effect_param" | "deck.fx_macro" => ControlRange::Unit,
 
         // Global controls
         "global.master_volume" | "global.cue_volume" => ControlRange::Unit,

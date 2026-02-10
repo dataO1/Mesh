@@ -83,6 +83,14 @@ pub struct MeshApp {
     pub(crate) multiband_editor: MultibandEditorState,
     /// Plugin GUI manager for CLAP plugin windows and parameter learning
     pub(crate) plugin_gui_manager: PluginGuiManager,
+    /// Currently selected global FX preset name (applied to all decks)
+    pub(crate) global_fx_preset: Option<String>,
+    /// Whether the global FX preset picker is open
+    pub(crate) global_fx_picker_open: bool,
+    /// Available deck presets for the global FX dropdown
+    pub(crate) available_deck_presets: Vec<String>,
+    /// Currently hovered preset index for MIDI scroll highlighting
+    pub(crate) global_fx_hover_index: Option<usize>,
 }
 
 // Message enum moved to message.rs
@@ -214,6 +222,10 @@ impl MeshApp {
             stem_link_state: StemLinkState::Idle,
             multiband_editor: MultibandEditorState::new(),
             plugin_gui_manager: PluginGuiManager::new(),
+            global_fx_preset: None,
+            global_fx_picker_open: false,
+            available_deck_presets: Vec::new(),
+            global_fx_hover_index: None,
         }
     }
 
@@ -311,6 +323,20 @@ impl MeshApp {
             Message::PluginGuiTick => {
                 // Poll GUI handles for parameter changes when in learning mode
                 super::handlers::multiband::handle_plugin_gui_tick(self)
+            }
+
+            Message::SelectGlobalFxPreset(preset_name) => {
+                super::handlers::deck_controls::handle_global_fx_preset_selection(self, preset_name)
+            }
+
+            Message::ToggleGlobalFxPicker => {
+                super::handlers::deck_controls::handle_toggle_global_fx_picker(self);
+                Task::none()
+            }
+
+            Message::ScrollGlobalFx(delta) => {
+                super::handlers::deck_controls::handle_global_fx_scroll(self, delta);
+                Task::none()
             }
         }
     }
@@ -520,6 +546,9 @@ impl MeshApp {
                     MidiDeckAction::ToggleStemSolo { stem } => Some(DeckMessage::ToggleStemSolo(stem)),
                     MidiDeckAction::SelectStem { stem } => Some(DeckMessage::SelectStem(stem)),
                     MidiDeckAction::SetEffectParam { .. } => None, // TODO: Not implemented yet
+                    MidiDeckAction::SetFxMacro { macro_index, value } => {
+                        Some(DeckMessage::DeckPreset(mesh_widgets::DeckPresetMessage::SetMacro { index: macro_index, value }))
+                    }
                     MidiDeckAction::ToggleSlip => Some(DeckMessage::ToggleSlip),
                     MidiDeckAction::ToggleKeyMatch => Some(DeckMessage::ToggleKeyMatch),
                     MidiDeckAction::LoadSelected => {
@@ -596,6 +625,16 @@ impl MeshApp {
                     }
                     MidiGlobalAction::SetBpm(_) | MidiGlobalAction::AdjustBpm(_) => {
                         // BPM control not implemented yet
+                    }
+                    MidiGlobalAction::FxScroll(delta) => {
+                        return self.update(Message::ScrollGlobalFx(delta));
+                    }
+                    MidiGlobalAction::FxSelect => {
+                        // Select the currently hovered preset
+                        let preset_name = self
+                            .global_fx_hover_index
+                            .and_then(|i| self.available_deck_presets.get(i).cloned());
+                        return self.update(Message::SelectGlobalFxPreset(preset_name));
                     }
                 }
             }
@@ -863,6 +902,9 @@ impl MeshApp {
             .step(1.0)
             .width(200);
 
+        // Global FX preset selector
+        let fx_element = self.view_global_fx_dropdown();
+
         let connection_status = if self.domain.is_audio_connected() {
             text("● Audio Connected").size(12)
         } else {
@@ -879,6 +921,8 @@ impl MeshApp {
             Space::new().width(Fill),
             bpm_label,
             bpm_slider,
+            Space::new().width(20),
+            fx_element,
             Space::new().width(Fill),
             connection_status,
             settings_btn,
@@ -887,6 +931,65 @@ impl MeshApp {
         .align_y(CenterAlign)
         .padding(10)
         .into()
+    }
+
+    /// View for the global FX preset dropdown in the header
+    fn view_global_fx_dropdown(&self) -> Element<'_, Message> {
+        use iced::widget::scrollable;
+
+        let label = self
+            .global_fx_preset
+            .as_deref()
+            .unwrap_or("No FX");
+
+        let dropdown_btn = button(
+            row![text(label).size(11), Space::new().width(Fill), text("▾").size(11)]
+                .spacing(4)
+                .align_y(CenterAlign),
+        )
+        .on_press(Message::ToggleGlobalFxPicker)
+        .padding([4, 8])
+        .width(Length::Fixed(140.0));
+
+        if self.global_fx_picker_open {
+            let mut items: Vec<Element<'_, Message>> = Vec::new();
+
+            // "No FX" option
+            let no_fx_selected = self.global_fx_preset.is_none();
+            items.push(
+                button(text("(No FX)").size(10))
+                    .on_press(Message::SelectGlobalFxPreset(None))
+                    .padding([3, 8])
+                    .width(Fill)
+                    .style(if no_fx_selected { button::primary } else { button::secondary })
+                    .into(),
+            );
+
+            // Available presets
+            for (i, preset_name) in self.available_deck_presets.iter().enumerate() {
+                let is_selected = self.global_fx_preset.as_ref() == Some(preset_name);
+                let is_hovered = self.global_fx_hover_index == Some(i);
+                let name = preset_name.clone();
+                items.push(
+                    button(text(preset_name).size(10))
+                        .on_press(Message::SelectGlobalFxPreset(Some(name)))
+                        .padding([3, 8])
+                        .width(Fill)
+                        .style(if is_selected || is_hovered { button::primary } else { button::secondary })
+                        .into(),
+                );
+            }
+
+            let list = scrollable(column(items).spacing(1).width(Fill))
+                .height(Length::Fixed(150.0));
+
+            column![dropdown_btn, list]
+                .spacing(2)
+                .width(Length::Fixed(140.0))
+                .into()
+        } else {
+            dropdown_btn.into()
+        }
     }
 
     /// Get the theme

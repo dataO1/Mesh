@@ -170,6 +170,31 @@ impl ActionRegistry {
             },
         );
 
+        // FX preset browsing (global)
+        actions.insert(
+            "global.fx_scroll".to_string(),
+            ActionInfo {
+                deck_targetable: false,
+                value_range: ControlRange::Unit,
+            },
+        );
+        actions.insert(
+            "global.fx_select".to_string(),
+            ActionInfo {
+                deck_targetable: false,
+                value_range: ControlRange::Unit,
+            },
+        );
+
+        // FX macro knobs (per-deck)
+        actions.insert(
+            "deck.fx_macro".to_string(),
+            ActionInfo {
+                deck_targetable: true,
+                value_range: ControlRange::Unit,
+            },
+        );
+
         Self { actions }
     }
 
@@ -787,6 +812,27 @@ impl MappingEngine {
                 }
             }
 
+            // FX macro knobs (per-deck continuous)
+            "deck.fx_macro" => {
+                if let MidiInputEvent::ControlChange { value, .. } = event {
+                    let macro_idx = mapping
+                        .params
+                        .get("macro")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as usize;
+                    let normalized = normalize_cc_value(*value, ControlRange::Unit, None);
+                    Some(MidiMessage::Deck {
+                        deck,
+                        action: DeckAction::SetFxMacro {
+                            macro_index: macro_idx,
+                            value: normalized,
+                        },
+                    })
+                } else {
+                    None
+                }
+            }
+
             // Global actions
             "global.master_volume" => {
                 if let MidiInputEvent::ControlChange { value, .. } = event {
@@ -808,6 +854,28 @@ impl MappingEngine {
                 if let MidiInputEvent::ControlChange { value, .. } = event {
                     let normalized = normalize_cc_value(*value, ControlRange::Unit, None);
                     Some(MidiMessage::Global(GlobalAction::SetCueMix(normalized)))
+                } else {
+                    None
+                }
+            }
+
+            // FX preset browsing
+            "global.fx_scroll" => {
+                if let MidiInputEvent::ControlChange { value, .. } = event {
+                    let mode = mapping.encoder_mode.unwrap_or(EncoderMode::Relative);
+                    let delta = encoder_to_delta(*value, mode);
+                    if delta != 0 {
+                        Some(MidiMessage::Global(GlobalAction::FxScroll(delta)))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            "global.fx_select" => {
+                if event.is_press() {
+                    Some(MidiMessage::Global(GlobalAction::FxSelect))
                 } else {
                     None
                 }

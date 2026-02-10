@@ -91,4 +91,11 @@ pub enum Message {
 
     /// Plugin GUI polling tick (for parameter learning)
     PluginGuiTick,
+
+    /// Select a global FX preset (applied to all decks)
+    SelectGlobalFxPreset(Option<String>),
+    /// Toggle the global FX preset picker dropdown
+    ToggleGlobalFxPicker,
+    /// Scroll through global FX preset list (from MIDI encoder)
+    ScrollGlobalFx(i32),
 }

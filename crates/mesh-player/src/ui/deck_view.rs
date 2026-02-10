@@ -765,16 +765,12 @@ impl DeckView {
         .spacing(5)
         .align_y(Center);
 
-        // Effect chain visualization
-        let effect_chain = self.view_effect_chain(stem_idx);
-
-        // 8 mappable knobs
+        // Macro knobs (shared across all stems)
         let knobs = self.view_chain_knobs(stem_idx);
 
         column![
             row![text("STEM FX").size(10), Space::new().width(Fill), tab_row].align_y(Center),
             stem_controls,
-            effect_chain,
             knobs,
         ]
         .spacing(4)
@@ -1374,17 +1370,12 @@ impl DeckView {
             .padding([4, 6])
             .width(Length::Fixed(28.0));
 
-        // Effect chain visualization
-        let effect_chain = self.view_effect_chain_compact(stem_idx);
-
-        // Top row: tabs + M/S + effect chain
+        // Top row: tabs + M/S
         let top_row = row![
             tabs_row,
             Space::new().width(8),
             mute_elem,
             solo_btn,
-            Space::new().width(8),
-            effect_chain,
         ]
         .spacing(2)
         .align_y(Center);

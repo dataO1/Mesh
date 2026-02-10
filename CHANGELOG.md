@@ -152,6 +152,21 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   A dedicated drag handle (⠿) next to the name initiates drag-to-map operations,
   separating editing from mapping interactions.
 
+- **Global FX preset dropdown (mesh-player)** — Replaced per-deck FX preset
+  dropdowns with a single centralized dropdown in the header bar (next to BPM
+  slider). Selecting a preset applies it to all 4 decks simultaneously, matching
+  the typical live performance workflow where all decks share the same FX chain.
+
+- **MIDI FX encoder browsing** — A dedicated FX encoder (separate from the
+  browser encoder) can now scroll through and select FX presets for all decks
+  during MIDI exploration. The FX encoder rotation scrolls the preset list with
+  wrapping, and the encoder press confirms the selection.
+
+- **MIDI FX macro knobs** — 4 macro knob mappings per deck are now captured
+  during the MIDI learn Mixer phase (10 steps per deck: 6 mixer controls + 4
+  FX macros). Mapped knobs send continuous CC values to the shared deck macro
+  sliders for real-time effect control.
+
 ### Fixed
 
 - **mesh-cue CLAP latency display** — CLAP plugin latency is now shown in the
@@ -185,6 +200,12 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   knob-mapped parameters were applied, ignoring settings made via the plugin's
   native GUI (e.g., reverb mode, filter type). Also fixed bypass state not
   being applied when loading presets.
+
+- **MIDI learn phase-skipping** — Fixed phases being silently skipped during
+  MIDI learn when controls were pressed within the 1-second capture debounce
+  window. The debounce timer is now reset at each phase transition and when
+  entering encoder press mode, so subsequent captures are accepted immediately.
+  Also fixed progress bar step count mismatch in the Browser phase.
 
 - **mesh-player macro modulation** — Macro sliders in the deck view now properly
   modulate effect parameters. Previously, moving a macro slider only updated the

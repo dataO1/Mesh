@@ -355,7 +355,7 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
 ///
 /// Loads a deck preset (wrapper referencing stem presets) and applies all
 /// stem presets to their respective multiband containers.
-fn handle_deck_preset_selection(
+pub(crate) fn handle_deck_preset_selection(
     app: &mut MeshApp,
     deck_idx: usize,
     preset_name: Option<String>,
@@ -752,6 +752,65 @@ fn extract_deck_macro_mappings(
         "[MACRO_EXTRACT] Extracted mappings for stem {}: macro0={}, macro1={}, macro2={}, macro3={}",
         stem_idx, mappings[0].len(), mappings[1].len(), mappings[2].len(), mappings[3].len()
     );
+}
+
+/// Handle global FX preset selection (applied to all 4 decks)
+pub(crate) fn handle_global_fx_preset_selection(
+    app: &mut MeshApp,
+    preset_name: Option<String>,
+) -> Task<Message> {
+    app.global_fx_preset = preset_name.clone();
+    app.global_fx_picker_open = false;
+    app.global_fx_hover_index = None;
+
+    // Apply to all 4 decks
+    let mut task = Task::none();
+    for deck_idx in 0..4 {
+        let t = handle_deck_preset_selection(app, deck_idx, preset_name.clone());
+        task = Task::batch([task, t]);
+    }
+
+    if let Some(ref name) = app.global_fx_preset {
+        app.status = format!("Applied FX preset '{}' to all decks", name);
+    } else {
+        app.status = "Cleared FX preset on all decks".to_string();
+    }
+
+    task
+}
+
+/// Toggle the global FX preset picker dropdown
+pub(crate) fn handle_toggle_global_fx_picker(app: &mut MeshApp) {
+    let was_open = app.global_fx_picker_open;
+    app.global_fx_picker_open = !was_open;
+
+    // Refresh presets list when opening
+    if !was_open {
+        app.available_deck_presets = list_deck_presets(&app.config.collection_path);
+    }
+}
+
+/// Handle scrolling through the global FX preset list (from MIDI encoder)
+pub(crate) fn handle_global_fx_scroll(app: &mut MeshApp, delta: i32) {
+    // Refresh presets list if empty
+    if app.available_deck_presets.is_empty() {
+        app.available_deck_presets = list_deck_presets(&app.config.collection_path);
+    }
+
+    let count = app.available_deck_presets.len();
+    if count == 0 {
+        return;
+    }
+
+    // Move hover index
+    let current = app.global_fx_hover_index.unwrap_or(0) as i32;
+    let new_idx = (current + delta).rem_euclid(count as i32) as usize;
+    app.global_fx_hover_index = Some(new_idx);
+
+    // Update status to show what's highlighted
+    if let Some(name) = app.available_deck_presets.get(new_idx) {
+        app.status = format!("FX: {} ({}/{})", name, new_idx + 1, count);
+    }
 }
 
 /// Handle a completed preset load from the background loader thread.

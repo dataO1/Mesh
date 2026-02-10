@@ -112,6 +112,13 @@ pub enum HighlightTarget {
     BrowserEncoder,
     BrowserSelect,
 
+    // FX preset browsing (separate encoder from browser)
+    FxEncoder,
+    FxSelect,
+
+    // FX macro knobs (deck_index, macro_index 0-3)
+    DeckFxMacro(usize, usize),
+
     // Load buttons (deck)
     DeckLoad(usize),
 }
@@ -150,6 +157,11 @@ impl HighlightTarget {
             HighlightTarget::CueMix => "Move the CUE/MASTER MIX knob".to_string(),
             HighlightTarget::BrowserEncoder => "Turn the BROWSE encoder".to_string(),
             HighlightTarget::BrowserSelect => "Press the BROWSE encoder (or select button)".to_string(),
+            HighlightTarget::FxEncoder => "Turn the FX SCROLL encoder (or skip)".to_string(),
+            HighlightTarget::FxSelect => "Press the FX encoder to SELECT (or skip)".to_string(),
+            HighlightTarget::DeckFxMacro(d, m) => {
+                format!("Turn FX MACRO {} knob on deck {}", m + 1, d + 1)
+            }
             HighlightTarget::DeckLoad(d) => format!("Press LOAD button for deck {}", d + 1),
         }
     }
@@ -392,7 +404,7 @@ impl MidiLearnState {
             LearnPhase::Review => {
                 // Go back to last step of browser phase
                 self.phase = LearnPhase::Browser;
-                self.total_steps = 4 + self.deck_count;
+                self.total_steps = 5 + self.deck_count;
                 self.current_step = self.total_steps - 1;
                 self.update_browser_target();
             }
@@ -467,7 +479,7 @@ impl MidiLearnState {
         }
 
         // These targets are encoders that typically have a press function
-        matches!(target, HighlightTarget::BrowserEncoder)
+        matches!(target, HighlightTarget::BrowserEncoder | HighlightTarget::FxEncoder)
     }
 
     /// Finalize the mapping with detected hardware type
@@ -500,7 +512,12 @@ impl MidiLearnState {
             if Self::should_prompt_encoder_press(target, hw_type) {
                 self.awaiting_encoder_press = true;
                 self.encoder_rotation_target = Some(target);
-                self.highlight_target = Some(HighlightTarget::BrowserSelect);
+                self.last_capture_time = None; // Reset debounce so press is captured immediately
+                let press_target = match target {
+                    HighlightTarget::FxEncoder => HighlightTarget::FxSelect,
+                    _ => HighlightTarget::BrowserSelect,
+                };
+                self.highlight_target = Some(press_target);
                 self.status = "Now PRESS the encoder (or skip if it doesn't click)".to_string();
                 self.last_captured = None; // Clear to show waiting state
                 log::info!("MIDI Learn: Prompting for encoder press");
@@ -516,9 +533,15 @@ impl MidiLearnState {
             return;
         }
 
+        // Determine the correct press target based on which encoder was rotated
+        let press_target = match self.encoder_rotation_target {
+            Some(HighlightTarget::FxEncoder) => HighlightTarget::FxSelect,
+            _ => HighlightTarget::BrowserSelect,
+        };
+
         // Store the encoder press mapping
         self.pending_mappings.push(LearnedMapping {
-            target: HighlightTarget::BrowserSelect,
+            target: press_target,
             channel: event.channel,
             number: event.number,
             is_note: event.is_note,
@@ -562,6 +585,10 @@ impl MidiLearnState {
             }
             // If removing browser encoder, also remove its paired press mapping
             if target == HighlightTarget::BrowserEncoder && m.target == HighlightTarget::BrowserSelect {
+                return false;
+            }
+            // If removing FX encoder, also remove its paired press mapping
+            if target == HighlightTarget::FxEncoder && m.target == HighlightTarget::FxSelect {
                 return false;
             }
             true
@@ -624,6 +651,7 @@ impl MidiLearnState {
     }
 
     fn enter_transport_phase(&mut self) {
+        self.last_capture_time = None;
         self.phase = LearnPhase::Transport;
         self.current_step = 0;
         // 7 controls per deck:
@@ -692,6 +720,7 @@ impl MidiLearnState {
     }
 
     fn enter_pads_phase(&mut self) {
+        self.last_capture_time = None;
         self.phase = LearnPhase::Pads;
         self.current_step = 0;
         self.total_steps = self.deck_count * self.pads_steps_per_deck();
@@ -760,6 +789,7 @@ impl MidiLearnState {
     }
 
     fn enter_stems_phase(&mut self) {
+        self.last_capture_time = None;
         self.phase = LearnPhase::Stems;
         self.current_step = 0;
         // 4 stem mute buttons per deck
@@ -807,24 +837,26 @@ impl MidiLearnState {
     }
 
     fn enter_mixer_phase(&mut self) {
+        self.last_capture_time = None;
         self.phase = LearnPhase::Mixer;
         self.current_step = 0;
-        // 6 controls per channel (volume, filter, eq hi/mid/lo, cue) × deck_count
-        self.total_steps = self.deck_count * 6;
+        // 10 controls per channel: 6 mixer (volume, filter, eq hi/mid/lo, cue) + 4 FX macros
+        self.total_steps = self.deck_count * 10;
         self.update_mixer_target();
     }
 
     fn update_mixer_target(&mut self) {
-        let channel = self.current_step / 6;
-        let control = self.current_step % 6;
+        let deck = self.current_step / 10;
+        let control = self.current_step % 10;
 
         self.highlight_target = Some(match control {
-            0 => HighlightTarget::MixerVolume(channel),
-            1 => HighlightTarget::MixerFilter(channel),
-            2 => HighlightTarget::MixerEqHi(channel),
-            3 => HighlightTarget::MixerEqMid(channel),
-            4 => HighlightTarget::MixerEqLo(channel),
-            5 => HighlightTarget::MixerCue(channel),
+            0 => HighlightTarget::MixerVolume(deck),
+            1 => HighlightTarget::MixerFilter(deck),
+            2 => HighlightTarget::MixerEqHi(deck),
+            3 => HighlightTarget::MixerEqMid(deck),
+            4 => HighlightTarget::MixerEqLo(deck),
+            5 => HighlightTarget::MixerCue(deck),
+            n @ 6..=9 => HighlightTarget::DeckFxMacro(deck, n - 6),
             _ => unreachable!(),
         });
 
@@ -861,23 +893,23 @@ impl MidiLearnState {
     }
 
     fn enter_browser_phase(&mut self) {
+        self.last_capture_time = None;
         self.phase = LearnPhase::Browser;
         self.current_step = 0;
-        // Browser: encoder + Master: master vol, cue vol, cue mix + Load buttons per deck
-        // = 1 (browser encoder) + 3 (master) + deck_count (load)
-        // NOTE: BrowserSelect removed - use separate DeckLoad buttons instead
-        self.total_steps = 4 + self.deck_count;
+        // Browser: FX encoder + browser encoder + master vol + cue vol + cue mix + load buttons per deck
+        // = 1 (FX encoder) + 1 (browser encoder) + 3 (master) + deck_count (load)
+        self.total_steps = 5 + self.deck_count;
         self.update_browser_target();
     }
 
     fn update_browser_target(&mut self) {
         self.highlight_target = Some(match self.current_step {
-            0 => HighlightTarget::BrowserEncoder,
-            // BrowserSelect removed - encoder press does nothing, use DeckLoad buttons
-            1 => HighlightTarget::MasterVolume,
-            2 => HighlightTarget::CueVolume,
-            3 => HighlightTarget::CueMix,
-            n => HighlightTarget::DeckLoad(n - 4),
+            0 => HighlightTarget::FxEncoder,
+            1 => HighlightTarget::BrowserEncoder,
+            2 => HighlightTarget::MasterVolume,
+            3 => HighlightTarget::CueVolume,
+            4 => HighlightTarget::CueMix,
+            n => HighlightTarget::DeckLoad(n - 5),
         });
 
         if let Some(ref target) = self.highlight_target {
@@ -912,8 +944,8 @@ impl MidiLearnState {
         } else {
             // Go back to mixer
             self.phase = LearnPhase::Mixer;
-            self.current_step = self.deck_count * 6 - 1;
-            self.total_steps = self.deck_count * 6;
+            self.current_step = self.deck_count * 10 - 1;
+            self.total_steps = self.deck_count * 10;
             self.update_mixer_target();
         }
     }
@@ -938,8 +970,8 @@ impl MidiLearnState {
         // App mode: (hot cue mode + 8 pads + slicer mode) = 10 per deck
         let pads_steps = self.deck_count * self.pads_steps_per_deck();
         let stems_steps = self.deck_count * 4; // 4 stem mute buttons per deck
-        let mixer_steps = self.deck_count * 6; // volume, filter, eq hi/mid/lo, cue
-        let browser_steps = 5 + self.deck_count; // encoder, select, master vol, cue vol, cue mix, load buttons
+        let mixer_steps = self.deck_count * 10; // volume, filter, eq hi/mid/lo, cue, 4 FX macros
+        let browser_steps = 5 + self.deck_count; // FX encoder, browser encoder, master vol, cue vol, cue mix, load buttons
         let total = setup_steps + transport_steps + pads_steps + stems_steps + mixer_steps + browser_steps;
 
         let current = match self.phase {
@@ -1070,6 +1102,15 @@ impl MidiLearnState {
                 HighlightTarget::BrowserSelect => {
                     ("browser.select".to_string(), None, None, ControlBehavior::Momentary, None)
                 }
+                HighlightTarget::FxEncoder => {
+                    ("global.fx_scroll".to_string(), None, None, ControlBehavior::Continuous, None)
+                }
+                HighlightTarget::FxSelect => {
+                    ("global.fx_select".to_string(), None, None, ControlBehavior::Momentary, None)
+                }
+                HighlightTarget::DeckFxMacro(d, _m) => {
+                    ("deck.fx_macro".to_string(), Some(d), None, ControlBehavior::Continuous, None)
+                }
                 HighlightTarget::DeckLoad(d) => {
                     ("deck.load_selected".to_string(), Some(d), None, ControlBehavior::Momentary, None)
                 }
@@ -1086,6 +1127,9 @@ impl MidiLearnState {
                 }
                 HighlightTarget::DeckStemMute(_, stem) => {
                     params.insert("stem".to_string(), serde_yaml::Value::Number(stem.into()));
+                }
+                HighlightTarget::DeckFxMacro(_, m) => {
+                    params.insert("macro".to_string(), serde_yaml::Value::Number(m.into()));
                 }
                 _ => {}
             }

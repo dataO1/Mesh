@@ -156,6 +156,14 @@ pub enum DeckAction {
         /// Nudge direction and amount (-1.0 to 1.0)
         amount: f32,
     },
+
+    /// Set FX macro value (macro_index 0-3, value 0.0-1.0)
+    SetFxMacro {
+        /// Macro index (0-3)
+        macro_index: usize,
+        /// Normalized value (0.0-1.0)
+        value: f32,
+    },
 }
 
 /// Mixer actions
@@ -204,6 +212,10 @@ pub enum GlobalAction {
     SetCueVolume(f32),
     /// Set cue/master mix for headphones (0.0 = all cue, 1.0 = all master)
     SetCueMix(f32),
+    /// Scroll FX preset list (delta from encoder)
+    FxScroll(i32),
+    /// Select/confirm current FX preset
+    FxSelect,
 }
 
 impl MidiMessage {
