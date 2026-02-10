@@ -37,6 +37,7 @@ use mesh_core::loader::LinkedStemResultReceiver;
 use mesh_core::clap::{ClapManager, ClapPluginCategory, DiscoveredClapPlugin, ClapGuiHandle};
 use std::collections::HashMap;
 use mesh_core::pd::{DiscoveredEffect, PdManager};
+use mesh_core::preset_loader::{PresetLoader, PresetLoadResultReceiver, MultibandBuildSpec};
 use mesh_core::usb::get_or_open_usb_database;
 use mesh_core::types::{Stem, StereoBuffer};
 use mesh_core::usb::{UsbCommand, UsbManager, UsbMessage};
@@ -124,6 +125,9 @@ pub struct MeshDomain {
     /// CLAP effect manager (discovers and creates CLAP plugin effects)
     clap_manager: ClapManager,
 
+    /// Background preset loader (builds MultibandHost off UI thread)
+    preset_loader: PresetLoader,
+
     /// GUI handles for CLAP plugin window hosting (keyed by unique effect instance ID)
     /// These are stored when effects are created via `add_clap_effect_*` methods.
     clap_gui_handles: HashMap<String, ClapGuiHandle>,
@@ -195,6 +199,19 @@ impl MeshDomain {
             clap_manager.available_plugins().len()
         );
 
+        // Spawn background preset loader with its own plugin managers
+        // Reconstruct the CLAP path (original was moved into clap_manager)
+        let loader_clap_path = local_collection_path.join("effects").join("clap");
+        let clap_extra_paths = if loader_clap_path.exists() {
+            vec![loader_clap_path]
+        } else {
+            vec![]
+        };
+        let preset_loader = PresetLoader::spawn(
+            local_collection_path.clone(),
+            clap_extra_paths,
+        );
+
         Self {
             local_db: local_db.clone(),
             active_storage: StorageSource::Local,
@@ -207,6 +224,7 @@ impl MeshDomain {
             linked_stem_receiver,
             pd_manager,
             clap_manager,
+            preset_loader,
             clap_gui_handles: HashMap::new(),
             // Domain state
             deck_stems: [None, None, None, None],
@@ -399,6 +417,18 @@ impl MeshDomain {
     /// Returns None if audio engine is not connected (offline mode).
     pub fn linked_stem_result_receiver(&self) -> Option<&LinkedStemResultReceiver> {
         self.linked_stem_receiver.as_ref()
+    }
+
+    /// Get the preset loader's result receiver for subscriptions
+    pub fn preset_loader_result_receiver(&self) -> PresetLoadResultReceiver {
+        self.preset_loader.result_receiver()
+    }
+
+    /// Request a preset build on the background loader thread (non-blocking).
+    ///
+    /// Returns the request ID for stale detection.
+    pub fn load_preset(&self, deck: usize, stem: Stem, spec: MultibandBuildSpec) -> u64 {
+        self.preset_loader.load(deck, stem, spec, mesh_core::engine::MAX_BUFFER_SIZE)
     }
 
     /// Send a command to the USB manager

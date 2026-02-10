@@ -9,7 +9,7 @@ use super::collection_browser::CollectionBrowserMessage;
 use super::deck_view::DeckMessage;
 use super::midi_learn::MidiLearnMessage;
 use super::mixer_view::MixerMessage;
-use super::state::{LinkedStemLoadedMsg, TrackLoadedMsg};
+use super::state::{LinkedStemLoadedMsg, PresetLoadedMsg, TrackLoadedMsg};
 use mesh_core::usb::UsbMessage;
 
 /// Settings-related messages
@@ -60,6 +60,8 @@ pub enum Message {
     PeaksComputed(PeaksComputeResult),
     /// Background linked stem load completed
     LinkedStemLoaded(LinkedStemLoadedMsg),
+    /// Background preset load completed (MultibandHost built on loader thread)
+    PresetLoaded(PresetLoadedMsg),
     /// Deck-specific message
     Deck(usize, DeckMessage),
     /// Mixer message

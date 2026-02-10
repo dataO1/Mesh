@@ -779,6 +779,18 @@ impl AudioState {
             stem,
         });
     }
+
+    /// Swap the entire MultibandHost for a stem (atomic preset load)
+    ///
+    /// Replaces 300-1000+ individual commands with a single swap of a
+    /// fully-built MultibandHost from the background PresetLoader.
+    pub fn swap_multiband(&mut self, stem: mesh_core::types::Stem, multiband: mesh_core::effect::MultibandHost) {
+        self.send(EngineCommand::SwapMultiband {
+            deck: PREVIEW_DECK,
+            stem,
+            multiband: Box::new(multiband),
+        });
+    }
 }
 
 /// Start the audio system for mesh-cue

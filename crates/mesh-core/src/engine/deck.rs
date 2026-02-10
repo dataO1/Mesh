@@ -1284,6 +1284,19 @@ impl Deck {
         }
     }
 
+    /// Atomically swap a stem's MultibandHost with a fully-built replacement.
+    ///
+    /// This is the receiving end of the PresetLoader's background building.
+    /// The old MultibandHost is dropped (with its effects), and the new one
+    /// takes over immediately. The drop happens on the audio thread but is
+    /// rare (only on preset load) so the brief allocation is acceptable.
+    pub fn swap_multiband(&mut self, stem: Stem, multiband: MultibandHost) {
+        let stem_idx = stem as usize;
+        if stem_idx < self.stems.len() {
+            self.stems[stem_idx].multiband = multiband;
+        }
+    }
+
     /// Trigger hot cue (for UI compatibility)
     pub fn trigger_hot_cue(&mut self, slot: usize) {
         self.hot_cue_press(slot);

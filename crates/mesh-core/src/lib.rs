@@ -16,5 +16,6 @@ pub mod usb;
 pub mod db;
 pub mod services;
 pub mod export;
+pub mod preset_loader;
 
 pub use types::*;

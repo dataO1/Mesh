@@ -20,7 +20,7 @@ pub use super::message::Message;
 pub use super::state::{
     BrowserSide, CollectionState, DragState, ExportPhase, ExportState,
     ImportPhase, ImportState, LinkedStemLoadedMsg, LoadedTrackState,
-    PendingDragState, ReanalysisState, SettingsState, StemsLoadResult, View,
+    PendingDragState, PresetLoadedMsg, ReanalysisState, SettingsState, StemsLoadResult, View,
     DRAG_THRESHOLD,
 };
 pub use super::utils::{
@@ -549,6 +549,11 @@ impl MeshCueApp {
             Message::PluginGuiTick => {
                 return self.poll_learning_mode();
             }
+
+            // Background preset load completed
+            Message::PresetLoaded(msg) => {
+                return self.handle_preset_loaded(msg);
+            }
         }
 
         Task::none()
@@ -784,6 +789,12 @@ impl MeshCueApp {
             iced::Subscription::none()
         };
 
+        // Background preset load results (MultibandHost built on loader thread)
+        let preset_load_sub = mpsc_subscription(self.domain.preset_loader_result_receiver())
+            .map(|result| Message::PresetLoaded(PresetLoadedMsg(
+                Arc::new(std::sync::Mutex::new(Some(result)))
+            )));
+
         // Always run tick at 60fps for smooth waveform animation
         // This matches mesh-player's approach and ensures cueing/preview states work correctly
         iced::Subscription::batch([
@@ -794,6 +805,7 @@ impl MeshCueApp {
             linked_stem_sub,
             usb_sub,
             learning_sub,
+            preset_load_sub,
         ])
     }
 

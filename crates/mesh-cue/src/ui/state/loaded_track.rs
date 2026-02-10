@@ -193,3 +193,16 @@ impl std::fmt::Debug for LinkedStemLoadedMsg {
             .finish_non_exhaustive()
     }
 }
+
+/// Wrapper for PresetLoadResult enabling use in Message enum.
+///
+/// Uses `Arc<Mutex<Option<T>>>` because `MultibandHost` contains `Box<dyn Effect>`
+/// which is not `Sync` — the Mutex provides the Sync bound that Arc requires.
+#[derive(Clone)]
+pub struct PresetLoadedMsg(pub Arc<std::sync::Mutex<Option<mesh_core::preset_loader::PresetLoadResult>>>);
+
+impl std::fmt::Debug for PresetLoadedMsg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PresetLoadedMsg").finish_non_exhaustive()
+    }
+}

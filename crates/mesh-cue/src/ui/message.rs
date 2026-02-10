@@ -16,7 +16,7 @@ use crate::config::{BackendType, BpmSource, ModelType};
 use mesh_core::usb::UsbMessage;
 use mesh_widgets::MultibandEditorMessage;
 use super::context_menu::ContextMenuKind;
-use super::state::{BrowserSide, ImportMode, LinkedStemLoadedMsg, StemsLoadResult, View};
+use super::state::{BrowserSide, ImportMode, LinkedStemLoadedMsg, PresetLoadedMsg, StemsLoadResult, View};
 
 /// Application messages
 #[derive(Debug, Clone)]
@@ -339,4 +339,8 @@ pub enum Message {
     // Plugin GUI Learning Mode
     /// Poll for parameter learning changes
     PluginGuiTick,
+
+    // Background Preset Loading
+    /// Background preset load completed (MultibandHost built on loader thread)
+    PresetLoaded(PresetLoadedMsg),
 }

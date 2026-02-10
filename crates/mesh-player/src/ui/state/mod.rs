@@ -2,9 +2,10 @@
 //!
 //! Extracted from app.rs for better organization and maintainability.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::loader::TrackLoadResult;
+use mesh_core::preset_loader::PresetLoadResult;
 
 /// UI display mode - affects layout only, not engine behavior
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -71,5 +72,20 @@ impl std::fmt::Debug for LinkedStemLoadedMsg {
             .field("deck_idx", &self.0.host_deck_idx)
             .field("stem_idx", &self.0.stem_idx)
             .finish_non_exhaustive()
+    }
+}
+
+/// Wrapper for PresetLoadResult enabling use in Message enum.
+///
+/// Uses `Arc<Mutex<Option<T>>>` instead of plain `Arc<T>` because
+/// `MultibandHost` contains `Box<dyn Effect>` which is not `Sync`.
+/// The Mutex provides the Sync bound that Arc requires for Send,
+/// and Option allows `take()` for zero-copy extraction.
+#[derive(Clone)]
+pub struct PresetLoadedMsg(pub Arc<Mutex<Option<PresetLoadResult>>>);
+
+impl std::fmt::Debug for PresetLoadedMsg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PresetLoadedMsg").finish_non_exhaustive()
     }
 }

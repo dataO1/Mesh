@@ -151,6 +151,104 @@ impl StemPresetConfig {
         }
     }
 
+    /// Convert to a MultibandBuildSpec for the PresetLoader.
+    ///
+    /// This is fast (pure data mapping, no plugin creation) and runs on the UI thread.
+    /// The resulting spec is sent to the loader thread which does the expensive work.
+    pub fn to_build_spec(&self) -> mesh_core::preset_loader::MultibandBuildSpec {
+        use mesh_core::preset_loader::{
+            BandBuildSpec, EffectBuildSpec, EffectSourceType, MacroMappingSpec, MultibandBuildSpec,
+        };
+        use mesh_core::effect::multiband::EffectLocation;
+
+        // Helper to convert EffectPresetConfig → EffectBuildSpec
+        let convert_effect = |effect: &EffectPresetConfig| -> EffectBuildSpec {
+            let source = match effect.source.as_str() {
+                "pd" => EffectSourceType::Pd,
+                "clap" => EffectSourceType::Clap,
+                _ => EffectSourceType::Pd, // fallback
+            };
+
+            // Extract all parameter values
+            let params: Vec<(usize, f32)> = if !effect.all_param_values.is_empty() {
+                effect.all_param_values.iter().enumerate().map(|(i, &v)| (i, v)).collect()
+            } else {
+                effect.knob_assignments.iter()
+                    .filter_map(|a| a.param_index.map(|idx| (idx, a.value)))
+                    .collect()
+            };
+
+            EffectBuildSpec {
+                plugin_id: effect.id.clone(),
+                source,
+                params,
+                bypass: effect.bypassed,
+                dry_wet: effect.dry_wet,
+            }
+        };
+
+        // Helper to extract macro mappings from an effect's knob assignments
+        let extract_mappings = |effect: &EffectPresetConfig, location: EffectLocation, effect_index: usize| -> Vec<(usize, MacroMappingSpec)> {
+            let mut mappings = Vec::new();
+            for assignment in &effect.knob_assignments {
+                if let (Some(param_index), Some(ref mapping)) = (assignment.param_index, &assignment.macro_mapping) {
+                    if let Some(macro_index) = mapping.macro_index {
+                        let base_value = assignment.value;
+                        let min_value = (base_value - mapping.offset_range).max(0.0);
+                        let max_value = (base_value + mapping.offset_range).min(1.0);
+                        mappings.push((macro_index, MacroMappingSpec {
+                            location,
+                            effect_index,
+                            param_index,
+                            min_value,
+                            max_value,
+                        }));
+                    }
+                }
+            }
+            mappings
+        };
+
+        // Build macro mappings from all effects
+        let mut macro_mappings = Vec::new();
+
+        // Pre-FX mappings
+        for (effect_idx, effect) in self.pre_fx.iter().enumerate() {
+            macro_mappings.extend(extract_mappings(effect, EffectLocation::PreFx, effect_idx));
+        }
+
+        // Band effect mappings
+        for (band_idx, band) in self.bands.iter().enumerate() {
+            for (effect_idx, effect) in band.effects.iter().enumerate() {
+                macro_mappings.extend(extract_mappings(effect, EffectLocation::Band(band_idx), effect_idx));
+            }
+        }
+
+        // Post-FX mappings
+        for (effect_idx, effect) in self.post_fx.iter().enumerate() {
+            macro_mappings.extend(extract_mappings(effect, EffectLocation::PostFx, effect_idx));
+        }
+
+        MultibandBuildSpec {
+            crossover_freqs: self.crossover_freqs.clone(),
+            bands: self.bands.iter().map(|band| {
+                BandBuildSpec {
+                    gain: band.gain,
+                    muted: band.muted,
+                    soloed: band.soloed,
+                    chain_dry_wet: band.chain_dry_wet,
+                    effects: band.effects.iter().map(&convert_effect).collect(),
+                }
+            }).collect(),
+            pre_fx: self.pre_fx.iter().map(&convert_effect).collect(),
+            post_fx: self.post_fx.iter().map(&convert_effect).collect(),
+            pre_fx_chain_dry_wet: self.pre_fx_chain_dry_wet,
+            post_fx_chain_dry_wet: self.post_fx_chain_dry_wet,
+            global_dry_wet: self.global_dry_wet,
+            macro_mappings,
+        }
+    }
+
     /// Apply effect data to MultibandEditorState (does NOT touch macros)
     pub fn apply_to_editor_state(&self, state: &mut MultibandEditorState) {
         // Clear any active drag/hover state that references old effects

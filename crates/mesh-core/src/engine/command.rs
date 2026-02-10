@@ -416,6 +416,17 @@ pub enum EngineCommand {
     /// Used when disabling audio preview to return the stem to a clean state.
     ResetMultiband { deck: usize, stem: Stem },
 
+    /// Atomically swap the entire MultibandHost on a stem
+    ///
+    /// Replaces 300-1000+ individual commands with a single pointer-sized
+    /// command containing a fully-built MultibandHost from the preset loader.
+    /// The Box is pointer-sized so it fits easily in the ring buffer queue.
+    SwapMultiband {
+        deck: usize,
+        stem: Stem,
+        multiband: Box<crate::effect::MultibandHost>,
+    },
+
     // ─────────────────────────────────────────────────────────────
     // Multiband Dry/Wet Mix Control
     // ─────────────────────────────────────────────────────────────

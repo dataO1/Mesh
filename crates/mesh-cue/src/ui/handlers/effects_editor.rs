@@ -2570,6 +2570,51 @@ impl MeshCueApp {
             self.audio.set_multiband_global_dry_wet(stem, modulated);
         }
     }
+
+    /// Handle a completed preset load from the background loader thread.
+    ///
+    /// Extracts the built MultibandHost and sends a single `SwapMultiband` command
+    /// to the audio engine.
+    pub fn handle_preset_loaded(
+        &mut self,
+        msg: crate::ui::app::PresetLoadedMsg,
+    ) -> Task<Message> {
+        let result = match msg.0.lock() {
+            Ok(mut guard) => match guard.take() {
+                Some(r) => r,
+                None => {
+                    log::warn!("[PRESET_LOADER] PresetLoadResult already consumed");
+                    return Task::none();
+                }
+            },
+            Err(e) => {
+                log::error!("[PRESET_LOADER] Failed to lock PresetLoadResult: {}", e);
+                return Task::none();
+            }
+        };
+
+        let deck = result.deck;
+        let stem = result.stem;
+
+        match result.result {
+            Ok(multiband) => {
+                log::info!(
+                    "[PRESET_LOADER] Swapping multiband for deck {} stem {:?} (id={})",
+                    deck, stem, result.id
+                );
+                self.audio.swap_multiband(stem, multiband);
+            }
+            Err(e) => {
+                log::error!(
+                    "[PRESET_LOADER] Failed to build multiband for deck {} stem {:?}: {}",
+                    deck, stem, e
+                );
+                self.effects_editor.set_status(format!("Preset load failed: {}", e));
+            }
+        }
+
+        Task::none()
+    }
 }
 
 /// Collect modulation commands for a single effect's parameters

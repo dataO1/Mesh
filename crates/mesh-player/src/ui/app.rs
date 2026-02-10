@@ -39,7 +39,7 @@ use super::settings::SettingsState;
 
 // Re-export extracted modules for use by other UI modules
 pub use super::message::{Message, SettingsMessage};
-pub use super::state::{AppMode, LinkedStemLoadedMsg, StemLinkState, TrackLoadedMsg};
+pub use super::state::{AppMode, LinkedStemLoadedMsg, PresetLoadedMsg, StemLinkState, TrackLoadedMsg};
 
 /// Application state
 pub struct MeshApp {
@@ -301,6 +301,8 @@ impl MeshApp {
             Message::MidiLearn(learn_msg) => super::handlers::midi_learn::handle(self, learn_msg),
 
             Message::Usb(usb_msg) => super::handlers::browser::handle_usb(self, usb_msg),
+
+            Message::PresetLoaded(msg) => super::handlers::deck_controls::handle_preset_loaded(self, msg),
 
             Message::Multiband(multiband_msg) => {
                 super::handlers::multiband::handle(self, multiband_msg)
@@ -668,6 +670,11 @@ impl MeshApp {
             // Background peak computation results
             mpsc_subscription(self.domain.peaks_result_receiver())
                 .map(Message::PeaksComputed),
+            // Background preset load results (MultibandHost built on loader thread)
+            mpsc_subscription(self.domain.preset_loader_result_receiver())
+                .map(|result| Message::PresetLoaded(PresetLoadedMsg(
+                    Arc::new(std::sync::Mutex::new(Some(result)))
+                ))),
             // Background linked stem load results (from engine's loader)
             linked_stem_sub,
             // USB device events (connect, disconnect, mount complete)

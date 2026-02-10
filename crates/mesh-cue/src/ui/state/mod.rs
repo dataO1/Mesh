@@ -14,7 +14,7 @@ pub mod settings;
 pub use collection::{BrowserSide, CollectionState, DragState, PendingDragState, DRAG_THRESHOLD};
 pub use export::{ExportPhase, ExportState};
 pub use import::{ImportMode, ImportPhase, ImportState};
-pub use loaded_track::{LinkedStemLoadedMsg, LoadedTrackState, StemsLoadResult};
+pub use loaded_track::{LinkedStemLoadedMsg, LoadedTrackState, PresetLoadedMsg, StemsLoadResult};
 pub use reanalysis::ReanalysisState;
 pub use settings::SettingsState;
 

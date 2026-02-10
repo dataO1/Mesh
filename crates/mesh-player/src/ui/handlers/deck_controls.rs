@@ -392,10 +392,12 @@ fn handle_deck_preset_selection(
                     if let Some(ref stem_config) = resolved.stems[stem_idx] {
                         if let Some(stem) = Stem::from_index(stem_idx) {
                             log::info!(
-                                "[PRESET_LOAD] Loading stem {} ({}) preset '{}' for deck {}",
+                                "[PRESET_LOAD] Loading stem {} ({}) preset '{}' for deck {} (background)",
                                 stem_idx, stem_names[stem_idx], stem_config.name, deck_idx
                             );
-                            apply_preset_to_multiband(app, deck_idx, stem, stem_config);
+                            // Build MultibandHost on background thread instead of blocking UI
+                            let spec = stem_config.to_build_spec();
+                            app.domain.load_preset(deck_idx, stem, spec);
 
                             // Extract macro mappings for this stem
                             extract_deck_macro_mappings(
@@ -1070,4 +1072,55 @@ fn extract_deck_macro_mappings(
         "[MACRO_EXTRACT] Extracted mappings for stem {}: macro0={}, macro1={}, macro2={}, macro3={}",
         stem_idx, mappings[0].len(), mappings[1].len(), mappings[2].len(), mappings[3].len()
     );
+}
+
+/// Handle a completed preset load from the background loader thread.
+///
+/// Extracts the built MultibandHost and sends a single `SwapMultiband` command
+/// to the audio engine, replacing 300-1000+ individual commands with one atomic swap.
+pub(crate) fn handle_preset_loaded(
+    app: &mut MeshApp,
+    msg: crate::ui::app::PresetLoadedMsg,
+) -> Task<Message> {
+    // Extract the result from the Arc<Mutex<Option<>>> wrapper
+    let result = match msg.0.lock() {
+        Ok(mut guard) => match guard.take() {
+            Some(r) => r,
+            None => {
+                log::warn!("[PRESET_LOADER] PresetLoadResult already consumed");
+                return Task::none();
+            }
+        },
+        Err(e) => {
+            log::error!("[PRESET_LOADER] Failed to lock PresetLoadResult: {}", e);
+            return Task::none();
+        }
+    };
+
+    let deck = result.deck;
+    let stem = result.stem;
+
+    match result.result {
+        Ok(multiband) => {
+            log::info!(
+                "[PRESET_LOADER] Swapping multiband for deck {} stem {:?} (id={})",
+                deck, stem, result.id
+            );
+            // Send a single SwapMultiband command — replaces the entire MultibandHost atomically
+            app.domain.send_command(mesh_core::engine::EngineCommand::SwapMultiband {
+                deck,
+                stem,
+                multiband: Box::new(multiband),
+            });
+        }
+        Err(e) => {
+            log::error!(
+                "[PRESET_LOADER] Failed to build multiband for deck {} stem {:?}: {}",
+                deck, stem, e
+            );
+            app.status = format!("Preset load failed: {}", e);
+        }
+    }
+
+    Task::none()
 }

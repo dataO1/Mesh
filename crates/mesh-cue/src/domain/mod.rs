@@ -25,6 +25,7 @@ use mesh_core::audio_file::{CuePoint, SavedLoop, StemLinkReference};
 use mesh_core::playlist::{DatabaseStorage, NodeId, NodeKind, PlaylistNode, PlaylistStorage};
 use mesh_core::pd::{DiscoveredEffect, PdManager};
 use mesh_core::clap::{ClapManager, ClapGuiHandle, DiscoveredClapPlugin};
+use mesh_core::preset_loader::{PresetLoader, PresetLoadResultReceiver, MultibandBuildSpec};
 use std::collections::HashMap;
 use mesh_widgets::TrackRow;
 use mesh_core::usb::{UsbManager, UsbCommand, UsbMessage, SyncPlan, ExportableConfig};
@@ -124,6 +125,9 @@ pub struct MeshCueDomain {
     /// GUI handles for CLAP plugin window hosting (keyed by unique effect instance ID)
     /// These are stored when effects are created via `create_clap_effect_with_gui`.
     clap_gui_handles: HashMap<String, ClapGuiHandle>,
+
+    /// Background preset loader (builds MultibandHost off UI thread)
+    preset_loader: PresetLoader,
 }
 
 impl MeshCueDomain {
@@ -184,6 +188,18 @@ impl MeshCueDomain {
             clap_manager.available_plugins().len()
         );
 
+        // Spawn background preset loader with its own plugin managers
+        let loader_clap_path = collection_root.join("effects").join("clap");
+        let clap_extra_paths = if loader_clap_path.exists() {
+            vec![loader_clap_path]
+        } else {
+            vec![]
+        };
+        let preset_loader = PresetLoader::spawn(
+            collection_root.clone(),
+            clap_extra_paths,
+        );
+
         Ok(Self {
             db_service,
             collection_root,
@@ -201,6 +217,7 @@ impl MeshCueDomain {
             pd_manager,
             clap_manager,
             clap_gui_handles: HashMap::new(),
+            preset_loader,
         })
     }
 
@@ -1063,6 +1080,18 @@ impl MeshCueDomain {
     /// Use this with `mpsc_subscription` to receive USB events in the UI.
     pub fn usb_message_receiver(&self) -> Arc<Mutex<Receiver<UsbMessage>>> {
         self.usb_manager.message_receiver()
+    }
+
+    /// Get the preset loader's result receiver for subscriptions
+    pub fn preset_loader_result_receiver(&self) -> PresetLoadResultReceiver {
+        self.preset_loader.result_receiver()
+    }
+
+    /// Request a preset build on the background loader thread (non-blocking).
+    ///
+    /// Returns the request ID for stale detection.
+    pub fn load_preset(&self, deck: usize, stem: mesh_core::types::Stem, spec: MultibandBuildSpec) -> u64 {
+        self.preset_loader.load(deck, stem, spec, mesh_core::engine::MAX_BUFFER_SIZE)
     }
 
     /// Mount a USB device by path

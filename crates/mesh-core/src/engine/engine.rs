@@ -1157,6 +1157,12 @@ impl AudioEngine {
                     }
                     self.update_deck_latencies(deck);
                 }
+                EngineCommand::SwapMultiband { deck, stem, multiband } => {
+                    if let Some(d) = self.decks.get_mut(deck) {
+                        d.swap_multiband(stem, *multiband);
+                    }
+                    self.update_deck_latencies(deck);
+                }
 
                 // Multiband Dry/Wet Mix Control
                 EngineCommand::SetMultibandPreFxEffectDryWet { deck, stem, effect_index, mix } => {

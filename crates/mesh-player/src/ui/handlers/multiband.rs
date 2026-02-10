@@ -14,7 +14,6 @@ use mesh_widgets::multiband::{
 use mesh_widgets::{MultibandEditorMessage, DEFAULT_SENSITIVITY};
 
 use crate::ui::app::MeshApp;
-use crate::ui::handlers::deck_controls::apply_preset_to_multiband;
 use crate::ui::message::Message;
 
 /// Create an EffectUiState from actual effect info returned by the backend
@@ -936,9 +935,10 @@ pub fn handle(app: &mut MeshApp, msg: MultibandEditorMessage) -> Task<Message> {
                     // Rebuild the macro mappings index after loading preset
                     app.multiband_editor.rebuild_macro_mappings_index();
 
-                    // Apply preset to audio backend
+                    // Apply preset to audio backend (background thread)
                     if let Some(stem) = Stem::from_index(stem_idx) {
-                        apply_preset_to_multiband(app, deck, stem, &preset_config);
+                        let spec = preset_config.to_build_spec();
+                        app.domain.load_preset(deck, stem, spec);
                     }
 
                     // Note: This loads a legacy per-stem preset into the multiband editor.
