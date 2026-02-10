@@ -184,6 +184,8 @@ impl MeshCueApp {
             }
             DropEffectAt { location, position } => {
                 if let Some((from_location, from_idx)) = self.effects_editor.editor.dragging_effect {
+                    // Hide GUI window before move (keep handle alive for reopening)
+                    self.hide_clap_gui_for_effect(&from_location, from_idx);
                     self.effects_editor.editor.move_effect(from_location, from_idx, location, position);
                 }
                 self.effects_editor.editor.dragging_effect = None;
@@ -648,7 +650,7 @@ impl MeshCueApp {
             OpenPluginGui { location, effect } => {
                 log::info!("OpenPluginGui: location={:?}, effect={}", location, effect);
 
-                // Get effect info
+                // Get effect info and stored instance ID
                 let effect_state = match location {
                     EffectChainLocation::PreFx => self.effects_editor.editor.pre_fx.get(effect),
                     EffectChainLocation::Band(band_idx) => self.effects_editor.editor.bands
@@ -657,23 +659,22 @@ impl MeshCueApp {
                     EffectChainLocation::PostFx => self.effects_editor.editor.post_fx.get(effect),
                 };
 
-                let (plugin_id, source, effect_instance_id) = match effect_state {
+                let (plugin_id, effect_instance_id) = match effect_state {
+                    Some(e) if e.source == EffectSourceType::Clap => {
+                        match &e.gui_instance_id {
+                            Some(id) => (e.id.clone(), id.clone()),
+                            None => {
+                                log::warn!("CLAP effect has no gui_instance_id");
+                                return Task::none();
+                            }
+                        }
+                    }
                     Some(e) => {
-                        // Generate effect instance ID for mesh-cue (simplified, no deck/stem)
-                        let instance_id = match location {
-                            EffectChainLocation::PreFx => format!("{}_cue_prefx_{}", e.id, effect),
-                            EffectChainLocation::Band(band_idx) => format!("{}_cue_b{}_{}", e.id, band_idx, effect),
-                            EffectChainLocation::PostFx => format!("{}_cue_postfx_{}", e.id, effect),
-                        };
-                        (e.id.clone(), e.source, instance_id)
+                        log::warn!("Cannot open plugin GUI for non-CLAP effect: {:?}", e.source);
+                        return Task::none();
                     }
                     None => return Task::none(),
                 };
-
-                if source != EffectSourceType::Clap {
-                    log::warn!("Cannot open plugin GUI for non-CLAP effect: {:?}", source);
-                    return Task::none();
-                }
 
                 // Get GUI handle from domain and create/show
                 if let Some(gui_handle) = self.domain.get_clap_gui_handle(&effect_instance_id) {
@@ -718,7 +719,7 @@ impl MeshCueApp {
             ClosePluginGui { location, effect } => {
                 log::info!("ClosePluginGui: location={:?}, effect={}", location, effect);
 
-                // Get effect info to build instance ID
+                // Get stored instance ID from effect
                 let effect_state = match location {
                     EffectChainLocation::PreFx => self.effects_editor.editor.pre_fx.get(effect),
                     EffectChainLocation::Band(band_idx) => self.effects_editor.editor.bands
@@ -727,30 +728,24 @@ impl MeshCueApp {
                     EffectChainLocation::PostFx => self.effects_editor.editor.post_fx.get(effect),
                 };
 
-                if let Some(e) = effect_state {
-                    let effect_instance_id = match location {
-                        EffectChainLocation::PreFx => format!("{}_cue_prefx_{}", e.id, effect),
-                        EffectChainLocation::Band(band_idx) => format!("{}_cue_b{}_{}", e.id, band_idx, effect),
-                        EffectChainLocation::PostFx => format!("{}_cue_postfx_{}", e.id, effect),
-                    };
-
-                    // Get GUI handle and destroy the GUI
-                    if let Some(gui_handle) = self.domain.get_clap_gui_handle(&effect_instance_id) {
+                if let Some(instance_id) = effect_state.and_then(|e| e.gui_instance_id.clone()) {
+                    // Get GUI handle and destroy the GUI window (keep handle alive)
+                    if let Some(gui_handle) = self.domain.get_clap_gui_handle(&instance_id) {
                         gui_handle.destroy_gui();
                         log::info!("Closed plugin GUI");
                     }
+                }
 
-                    // Update UI state
-                    let effect_state = match location {
-                        EffectChainLocation::PreFx => self.effects_editor.editor.pre_fx.get_mut(effect),
-                        EffectChainLocation::Band(band_idx) => self.effects_editor.editor.bands
-                            .get_mut(band_idx)
-                            .and_then(|b| b.effects.get_mut(effect)),
-                        EffectChainLocation::PostFx => self.effects_editor.editor.post_fx.get_mut(effect),
-                    };
-                    if let Some(e) = effect_state {
-                        e.gui_open = false;
-                    }
+                // Update UI state
+                let effect_state = match location {
+                    EffectChainLocation::PreFx => self.effects_editor.editor.pre_fx.get_mut(effect),
+                    EffectChainLocation::Band(band_idx) => self.effects_editor.editor.bands
+                        .get_mut(band_idx)
+                        .and_then(|b| b.effects.get_mut(effect)),
+                    EffectChainLocation::PostFx => self.effects_editor.editor.post_fx.get_mut(effect),
+                };
+                if let Some(e) = effect_state {
+                    e.gui_open = false;
                 }
             }
 
@@ -760,7 +755,7 @@ impl MeshCueApp {
                     location, effect, knob
                 );
 
-                // Check that this is a CLAP effect and get its instance ID
+                // Check that this is a CLAP effect and get its stored instance ID
                 let effect_state = match location {
                     EffectChainLocation::PreFx => self.effects_editor.editor.pre_fx.get(effect),
                     EffectChainLocation::Band(band_idx) => self.effects_editor.editor.bands
@@ -771,11 +766,12 @@ impl MeshCueApp {
 
                 let effect_instance_id = match effect_state {
                     Some(e) if e.source == EffectSourceType::Clap => {
-                        // Generate mesh-cue effect instance ID
-                        match location {
-                            EffectChainLocation::PreFx => format!("{}_cue_prefx_{}", e.id, effect),
-                            EffectChainLocation::Band(band_idx) => format!("{}_cue_b{}_{}", e.id, band_idx, effect),
-                            EffectChainLocation::PostFx => format!("{}_cue_postfx_{}", e.id, effect),
+                        match &e.gui_instance_id {
+                            Some(id) => id.clone(),
+                            None => {
+                                log::warn!("[CLAP_LEARN] CLAP effect has no gui_instance_id");
+                                return Task::none();
+                            }
                         }
                     }
                     Some(e) => {
@@ -836,11 +832,7 @@ impl MeshCueApp {
                     EffectChainLocation::PostFx => self.effects_editor.editor.post_fx.get(effect),
                 };
 
-                let effect_instance_id = effect_state.map(|e| match location {
-                    EffectChainLocation::PreFx => format!("{}_cue_prefx_{}", e.id, effect),
-                    EffectChainLocation::Band(band_idx) => format!("{}_cue_b{}_{}", e.id, band_idx, effect),
-                    EffectChainLocation::PostFx => format!("{}_cue_postfx_{}", e.id, effect),
-                });
+                let effect_instance_id = effect_state.and_then(|e| e.gui_instance_id.clone());
 
                 // Look up param index and current value from GUI handle
                 let (param_index, current_value) = if let Some(ref id) = effect_instance_id {
@@ -1864,29 +1856,40 @@ impl MeshCueApp {
             .map(|(i, e)| (i, e.id.clone(), e.source.clone()))
             .collect();
 
-        // Instantiate pre-fx CLAP effects
+        // Instantiate pre-fx CLAP effects and store gui_instance_id
         for (effect_idx, plugin_id, source) in &pre_fx_effects {
             if *source == EffectSourceType::Clap {
                 let effect_instance_id = Self::clap_effect_instance_id(plugin_id, stem_idx, &EffectChainLocation::PreFx, *effect_idx);
-                self.instantiate_clap_effect(plugin_id, effect_instance_id);
-            }
-        }
-
-        // Instantiate band CLAP effects
-        for (band_idx, effects) in &band_effects {
-            for (effect_idx, plugin_id, source) in effects {
-                if *source == EffectSourceType::Clap {
-                    let effect_instance_id = Self::clap_effect_instance_id(plugin_id, stem_idx, &EffectChainLocation::Band(*band_idx), *effect_idx);
-                    self.instantiate_clap_effect(plugin_id, effect_instance_id);
+                self.instantiate_clap_effect(plugin_id, effect_instance_id.clone());
+                if let Some(effect) = self.effects_editor.editor.pre_fx.get_mut(*effect_idx) {
+                    effect.gui_instance_id = Some(effect_instance_id);
                 }
             }
         }
 
-        // Instantiate post-fx CLAP effects
+        // Instantiate band CLAP effects and store gui_instance_id
+        for (band_idx, effects) in &band_effects {
+            for (effect_idx, plugin_id, source) in effects {
+                if *source == EffectSourceType::Clap {
+                    let effect_instance_id = Self::clap_effect_instance_id(plugin_id, stem_idx, &EffectChainLocation::Band(*band_idx), *effect_idx);
+                    self.instantiate_clap_effect(plugin_id, effect_instance_id.clone());
+                    if let Some(band) = self.effects_editor.editor.bands.get_mut(*band_idx) {
+                        if let Some(effect) = band.effects.get_mut(*effect_idx) {
+                            effect.gui_instance_id = Some(effect_instance_id);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Instantiate post-fx CLAP effects and store gui_instance_id
         for (effect_idx, plugin_id, source) in &post_fx_effects {
             if *source == EffectSourceType::Clap {
                 let effect_instance_id = Self::clap_effect_instance_id(plugin_id, stem_idx, &EffectChainLocation::PostFx, *effect_idx);
-                self.instantiate_clap_effect(plugin_id, effect_instance_id);
+                self.instantiate_clap_effect(plugin_id, effect_instance_id.clone());
+                if let Some(effect) = self.effects_editor.editor.post_fx.get_mut(*effect_idx) {
+                    effect.gui_instance_id = Some(effect_instance_id);
+                }
             }
         }
     }
@@ -1919,40 +1922,40 @@ impl MeshCueApp {
     /// in the corresponding EffectUiState's saved_param_values field. This ensures
     /// that settings made via the plugin GUI are preserved in the preset.
     fn capture_all_effect_param_values(&mut self) {
-        let stem_idx = self.effects_editor.active_stem;
-
-        // Collect effect info first to avoid borrow conflicts
-        let pre_fx_info: Vec<(usize, String, EffectSourceType)> = self.effects_editor.editor.pre_fx
+        // Collect stored instance IDs to avoid borrow conflicts
+        let pre_fx_ids: Vec<(usize, Option<String>)> = self.effects_editor.editor.pre_fx
             .iter()
             .enumerate()
-            .map(|(i, e)| (i, e.id.clone(), e.source))
+            .filter(|(_, e)| e.source == EffectSourceType::Clap)
+            .map(|(i, e)| (i, e.gui_instance_id.clone()))
             .collect();
 
-        let band_effects_info: Vec<(usize, Vec<(usize, String, EffectSourceType)>)> = self.effects_editor.editor.bands
+        let band_effect_ids: Vec<(usize, Vec<(usize, Option<String>)>)> = self.effects_editor.editor.bands
             .iter()
             .enumerate()
             .map(|(band_idx, band)| {
                 let effects: Vec<_> = band.effects
                     .iter()
                     .enumerate()
-                    .map(|(i, e)| (i, e.id.clone(), e.source))
+                    .filter(|(_, e)| e.source == EffectSourceType::Clap)
+                    .map(|(i, e)| (i, e.gui_instance_id.clone()))
                     .collect();
                 (band_idx, effects)
             })
             .collect();
 
-        let post_fx_info: Vec<(usize, String, EffectSourceType)> = self.effects_editor.editor.post_fx
+        let post_fx_ids: Vec<(usize, Option<String>)> = self.effects_editor.editor.post_fx
             .iter()
             .enumerate()
-            .map(|(i, e)| (i, e.id.clone(), e.source))
+            .filter(|(_, e)| e.source == EffectSourceType::Clap)
+            .map(|(i, e)| (i, e.gui_instance_id.clone()))
             .collect();
 
         // Now capture params from CLAP plugins and update editor state
         // Pre-FX
-        for (effect_idx, plugin_id, source) in &pre_fx_info {
-            if *source == EffectSourceType::Clap {
-                let instance_id = Self::clap_effect_instance_id(plugin_id, stem_idx, &EffectChainLocation::PreFx, *effect_idx);
-                if let Some(params) = self.capture_plugin_params(&instance_id) {
+        for (effect_idx, instance_id) in &pre_fx_ids {
+            if let Some(id) = instance_id {
+                if let Some(params) = self.capture_plugin_params(id) {
                     if let Some(effect) = self.effects_editor.editor.pre_fx.get_mut(*effect_idx) {
                         log::debug!("Captured {} params for pre-fx[{}]", params.len(), effect_idx);
                         effect.saved_param_values = params;
@@ -1962,11 +1965,10 @@ impl MeshCueApp {
         }
 
         // Band effects
-        for (band_idx, effects) in &band_effects_info {
-            for (effect_idx, plugin_id, source) in effects {
-                if *source == EffectSourceType::Clap {
-                    let instance_id = Self::clap_effect_instance_id(plugin_id, stem_idx, &EffectChainLocation::Band(*band_idx), *effect_idx);
-                    if let Some(params) = self.capture_plugin_params(&instance_id) {
+        for (band_idx, effects) in &band_effect_ids {
+            for (effect_idx, instance_id) in effects {
+                if let Some(id) = instance_id {
+                    if let Some(params) = self.capture_plugin_params(id) {
                         if let Some(band) = self.effects_editor.editor.bands.get_mut(*band_idx) {
                             if let Some(effect) = band.effects.get_mut(*effect_idx) {
                                 log::debug!("Captured {} params for band[{}].effect[{}]", params.len(), band_idx, effect_idx);
@@ -1979,10 +1981,9 @@ impl MeshCueApp {
         }
 
         // Post-FX
-        for (effect_idx, plugin_id, source) in &post_fx_info {
-            if *source == EffectSourceType::Clap {
-                let instance_id = Self::clap_effect_instance_id(plugin_id, stem_idx, &EffectChainLocation::PostFx, *effect_idx);
-                if let Some(params) = self.capture_plugin_params(&instance_id) {
+        for (effect_idx, instance_id) in &post_fx_ids {
+            if let Some(id) = instance_id {
+                if let Some(params) = self.capture_plugin_params(id) {
                     if let Some(effect) = self.effects_editor.editor.post_fx.get_mut(*effect_idx) {
                         log::debug!("Captured {} params for post-fx[{}]", params.len(), effect_idx);
                         effect.saved_param_values = params;
@@ -2178,6 +2179,9 @@ impl MeshCueApp {
             self.audio.set_multiband_macro(stem, idx, *value);
         }
 
+        // 8. Update gui_instance_id on all CLAP effects to match the new handles
+        self.update_gui_instance_ids(active_stem_idx);
+
         log::debug!("Synced editor state to audio: {} bands, {} pre-fx, {} post-fx",
             num_bands, pre_fx_effects.len(), post_fx_effects.len());
     }
@@ -2301,10 +2305,40 @@ impl MeshCueApp {
         }
     }
 
+    /// Update gui_instance_id on all CLAP effects in the editor to match current handles
+    ///
+    /// Called after sync_editor_to_audio recreates all plugin handles, to keep
+    /// the stored IDs consistent with the HashMap keys in domain.clap_gui_handles.
+    fn update_gui_instance_ids(&mut self, stem_idx: usize) {
+        for (effect_idx, effect) in self.effects_editor.editor.pre_fx.iter_mut().enumerate() {
+            if effect.source == EffectSourceType::Clap {
+                effect.gui_instance_id = Some(Self::clap_effect_instance_id(
+                    &effect.id, stem_idx, &EffectChainLocation::PreFx, effect_idx,
+                ));
+            }
+        }
+        for (band_idx, band) in self.effects_editor.editor.bands.iter_mut().enumerate() {
+            for (effect_idx, effect) in band.effects.iter_mut().enumerate() {
+                if effect.source == EffectSourceType::Clap {
+                    effect.gui_instance_id = Some(Self::clap_effect_instance_id(
+                        &effect.id, stem_idx, &EffectChainLocation::Band(band_idx), effect_idx,
+                    ));
+                }
+            }
+        }
+        for (effect_idx, effect) in self.effects_editor.editor.post_fx.iter_mut().enumerate() {
+            if effect.source == EffectSourceType::Clap {
+                effect.gui_instance_id = Some(Self::clap_effect_instance_id(
+                    &effect.id, stem_idx, &EffectChainLocation::PostFx, effect_idx,
+                ));
+            }
+        }
+    }
+
     /// Close and remove the CLAP GUI handle for an effect at the given location
     ///
-    /// Looks up the effect's plugin ID, builds the instance ID, then destroys
-    /// the GUI window (if open) and removes the handle from domain.
+    /// Reads the effect's stored gui_instance_id, then destroys the GUI window
+    /// (if open) and removes the handle from domain.
     fn close_clap_gui_for_effect(&mut self, location: &EffectChainLocation, effect_idx: usize) {
         let effect_state = match location {
             EffectChainLocation::PreFx => self.effects_editor.editor.pre_fx.get(effect_idx),
@@ -2314,11 +2348,32 @@ impl MeshCueApp {
             EffectChainLocation::PostFx => self.effects_editor.editor.post_fx.get(effect_idx),
         };
 
+        if let Some(instance_id) = effect_state.and_then(|e| e.gui_instance_id.clone()) {
+            self.domain.remove_clap_gui_handle(&instance_id);
+        }
+    }
+
+    /// Hide (but keep alive) the CLAP GUI for an effect at the given location
+    ///
+    /// Used before moving an effect to close the visible window while preserving
+    /// the handle in the HashMap so it can be reopened after the move.
+    fn hide_clap_gui_for_effect(&mut self, location: &EffectChainLocation, effect_idx: usize) {
+        let effect_state = match location {
+            EffectChainLocation::PreFx => self.effects_editor.editor.pre_fx.get_mut(effect_idx),
+            EffectChainLocation::Band(band_idx) => self.effects_editor.editor.bands
+                .get_mut(*band_idx)
+                .and_then(|b| b.effects.get_mut(effect_idx)),
+            EffectChainLocation::PostFx => self.effects_editor.editor.post_fx.get_mut(effect_idx),
+        };
+
         if let Some(effect) = effect_state {
-            if effect.source == EffectSourceType::Clap {
-                let stem_idx = self.effects_editor.active_stem;
-                let instance_id = Self::clap_effect_instance_id(&effect.id, stem_idx, location, effect_idx);
-                self.domain.remove_clap_gui_handle(&instance_id);
+            if effect.gui_open {
+                if let Some(ref id) = effect.gui_instance_id {
+                    if let Some(handle) = self.domain.get_clap_gui_handle(id) {
+                        handle.destroy_gui();
+                    }
+                }
+                effect.gui_open = false;
             }
         }
     }

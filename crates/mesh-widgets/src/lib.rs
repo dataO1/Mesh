@@ -128,5 +128,5 @@ pub use stem_preset::{
 // Deck preset selector widget (replaces per-stem presets with deck-level)
 pub use deck_preset::{
     deck_preset_view, DeckPresetMessage, DeckPresetState, MacroParamMapping,
-    NUM_MACROS as DECK_PRESET_NUM_MACROS,
+    MacroTargetType, NUM_MACROS as DECK_PRESET_NUM_MACROS,
 };

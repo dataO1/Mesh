@@ -163,31 +163,43 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
             // Handle deck preset messages (shared macros + preset selector)
             match preset_msg {
                 DeckPresetMessage::SetMacro { index, value } => {
-                    log::debug!(
-                        "[MACRO] SetMacro deck={} macro={} value={:.3}",
-                        deck_idx, index, value
-                    );
-
                     // Update UI state immediately for responsive feedback
                     app.deck_views[deck_idx].set_deck_macro(*index, *value);
 
-                    // Apply macro to ALL stems that have loaded presets
+                    // Read stem preset names and UI-side mappings (releases borrow before mut access)
+                    let stem_has_preset: [bool; 4] = {
+                        let dp = app.deck_views[deck_idx].deck_preset();
+                        std::array::from_fn(|i| dp.stem_preset_names[i].is_some())
+                    };
                     let mappings: Vec<_> = app.deck_views[deck_idx]
                         .deck_preset()
                         .mappings_for_macro(*index)
                         .to_vec();
 
+                    log::info!(
+                        "[MACRO] SetMacro deck={} macro={} value={:.3} ui_mappings={} stems_with_preset={}",
+                        deck_idx, index, value, mappings.len(),
+                        stem_has_preset.iter().filter(|&&b| b).count()
+                    );
+
+                    // Send macro value to engine for ALL stems with loaded presets
+                    // This ensures engine-side apply_macros() works even if UI-side mappings are empty
+                    for stem_idx in 0..4 {
+                        if stem_has_preset[stem_idx] {
+                            if let Some(stem) = Stem::from_index(stem_idx) {
+                                app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandMacro {
+                                    deck: deck_idx,
+                                    stem,
+                                    macro_index: *index,
+                                    value: *value,
+                                });
+                            }
+                        }
+                    }
+
+                    // Apply UI-side direct modulation (handles dry/wet and other non-engine-mapped targets)
                     for mapping in &mappings {
                         if let Some(stem) = Stem::from_index(mapping.stem_index) {
-                            // Send macro value to the engine
-                            app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandMacro {
-                                deck: deck_idx,
-                                stem,
-                                macro_index: *index,
-                                value: *value,
-                            });
-
-                            // Apply direct parameter modulation
                             apply_macro_modulation_direct_single(
                                 &mut app.domain,
                                 deck_idx,
@@ -365,7 +377,7 @@ fn handle_deck_preset_selection(
                 }
                 dp.macro_names = macro_names;
 
-                // Reset macro values to center
+                // Always start macros at neutral (center) position
                 dp.macro_values = [0.5; NUM_MACROS];
 
                 // Store stem preset references
@@ -375,9 +387,14 @@ fn handle_deck_preset_selection(
                 // and collect macro mappings across all stems
                 let mut all_mappings: [Vec<mesh_widgets::MacroParamMapping>; NUM_MACROS] = Default::default();
 
+                let stem_names = ["Vocals", "Drums", "Bass", "Other"];
                 for stem_idx in 0..4 {
                     if let Some(ref stem_config) = resolved.stems[stem_idx] {
                         if let Some(stem) = Stem::from_index(stem_idx) {
+                            log::info!(
+                                "[PRESET_LOAD] Loading stem {} ({}) preset '{}' for deck {}",
+                                stem_idx, stem_names[stem_idx], stem_config.name, deck_idx
+                            );
                             apply_preset_to_multiband(app, deck_idx, stem, stem_config);
 
                             // Extract macro mappings for this stem
@@ -387,11 +404,43 @@ fn handle_deck_preset_selection(
                                 &mut all_mappings,
                             );
                         }
+                    } else {
+                        log::info!(
+                            "[PRESET_LOAD] No stem preset for {} ({}) on deck {}",
+                            stem_idx, stem_names[stem_idx], deck_idx
+                        );
+                    }
+                }
+
+                // Log mapping summary
+                for (i, mappings) in all_mappings.iter().enumerate() {
+                    if !mappings.is_empty() {
+                        log::info!(
+                            "[PRESET_LOAD] Macro {} has {} UI-side mappings",
+                            i, mappings.len()
+                        );
                     }
                 }
 
                 // Store all macro mappings on the deck preset
                 app.deck_views[deck_idx].deck_preset_mut().macro_mappings = all_mappings;
+
+                // Send initial neutral macro values (0.5) to all stems
+                // so engine-side apply_macros() starts from center position
+                for macro_idx in 0..NUM_MACROS {
+                    for stem_idx in 0..4 {
+                        if resolved.stems[stem_idx].is_some() {
+                            if let Some(stem) = Stem::from_index(stem_idx) {
+                                app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandMacro {
+                                    deck: deck_idx,
+                                    stem,
+                                    macro_index: macro_idx,
+                                    value: 0.5,
+                                });
+                            }
+                        }
+                    }
+                }
 
                 // If multiband editor is open for this deck, update it
                 if app.multiband_editor.is_open && app.multiband_editor.deck == deck_idx {
@@ -434,9 +483,16 @@ pub(super) fn apply_preset_to_multiband(
     stem: Stem,
     config: &StemPresetConfig,
 ) {
-    // Clear existing effects by removing them one by one
-    // This is a workaround since we don't have a bulk clear command
+    // Reset multiband to clean single-band state
     clear_multiband_effects(app, deck_idx, stem);
+
+    // Add extra bands if preset has more than 1
+    for _ in 1..config.bands.len() {
+        app.domain.send_command(mesh_core::engine::EngineCommand::AddMultibandBand {
+            deck: deck_idx,
+            stem,
+        });
+    }
 
     // Apply crossover frequencies
     for (i, &freq) in config.crossover_freqs.iter().enumerate() {
@@ -456,23 +512,35 @@ pub(super) fn apply_preset_to_multiband(
             _ => continue,
         };
 
-        if let Ok(_info) = result {
-            // Apply ALL parameter values (not just knob-mapped ones)
-            // This preserves settings made via the plugin GUI (e.g., reverb mode)
-            let params = get_effect_params(effect);
-            for (param_idx, value) in params {
-                app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPreFxParam {
-                    deck: deck_idx,
-                    stem,
-                    effect_index: effect_idx,
-                    param_index: param_idx,
-                    value,
-                });
-            }
+        match &result {
+            Ok(info) => {
+                log::info!(
+                    "[PRESET_LOAD] Added pre-fx '{}' ({}) to deck {} stem {:?} ({} params)",
+                    effect.name, effect.source, deck_idx, stem, info.params.len()
+                );
+                // Apply ALL parameter values (not just knob-mapped ones)
+                // This preserves settings made via the plugin GUI (e.g., reverb mode)
+                let params = get_effect_params(effect);
+                for (param_idx, value) in params {
+                    app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPreFxParam {
+                        deck: deck_idx,
+                        stem,
+                        effect_index: effect_idx,
+                        param_index: param_idx,
+                        value,
+                    });
+                }
 
-            // Apply bypass state
-            if effect.bypassed {
-                app.domain.set_pre_fx_bypass(deck_idx, stem, effect_idx, true);
+                // Apply bypass state
+                if effect.bypassed {
+                    app.domain.set_pre_fx_bypass(deck_idx, stem, effect_idx, true);
+                }
+            }
+            Err(e) => {
+                log::error!(
+                    "[PRESET_LOAD] FAILED to create pre-fx '{}' ({}) for deck {} stem {:?}: {}",
+                    effect.name, effect.source, deck_idx, stem, e
+                );
             }
         }
     }
@@ -494,23 +562,35 @@ pub(super) fn apply_preset_to_multiband(
                 _ => continue,
             };
 
-            if let Ok(_info) = result {
-                // Apply ALL parameter values (not just knob-mapped ones)
-                let params = get_effect_params(effect);
-                for (param_idx, value) in params {
-                    app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandEffectParam {
-                        deck: deck_idx,
-                        stem,
-                        band_index: band_idx,
-                        effect_index: effect_idx,
-                        param_index: param_idx,
-                        value,
-                    });
-                }
+            match &result {
+                Ok(info) => {
+                    log::info!(
+                        "[PRESET_LOAD] Added band {} effect '{}' ({}) to deck {} stem {:?} ({} params)",
+                        band_idx, effect.name, effect.source, deck_idx, stem, info.params.len()
+                    );
+                    // Apply ALL parameter values (not just knob-mapped ones)
+                    let params = get_effect_params(effect);
+                    for (param_idx, value) in params {
+                        app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandEffectParam {
+                            deck: deck_idx,
+                            stem,
+                            band_index: band_idx,
+                            effect_index: effect_idx,
+                            param_index: param_idx,
+                            value,
+                        });
+                    }
 
-                // Apply bypass state
-                if effect.bypassed {
-                    app.domain.set_band_effect_bypass(deck_idx, stem, band_idx, effect_idx, effect.bypassed);
+                    // Apply bypass state
+                    if effect.bypassed {
+                        app.domain.set_band_effect_bypass(deck_idx, stem, band_idx, effect_idx, effect.bypassed);
+                    }
+                }
+                Err(e) => {
+                    log::error!(
+                        "[PRESET_LOAD] FAILED to create band {} effect '{}' ({}) for deck {} stem {:?}: {}",
+                        band_idx, effect.name, effect.source, deck_idx, stem, e
+                    );
                 }
             }
         }
@@ -524,25 +604,91 @@ pub(super) fn apply_preset_to_multiband(
             _ => continue,
         };
 
-        if let Ok(_info) = result {
-            // Apply ALL parameter values (not just knob-mapped ones)
-            let params = get_effect_params(effect);
-            for (param_idx, value) in params {
-                app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPostFxParam {
-                    deck: deck_idx,
-                    stem,
-                    effect_index: effect_idx,
-                    param_index: param_idx,
-                    value,
-                });
-            }
+        match &result {
+            Ok(info) => {
+                log::info!(
+                    "[PRESET_LOAD] Added post-fx '{}' ({}) to deck {} stem {:?} ({} params)",
+                    effect.name, effect.source, deck_idx, stem, info.params.len()
+                );
+                // Apply ALL parameter values (not just knob-mapped ones)
+                let params = get_effect_params(effect);
+                for (param_idx, value) in params {
+                    app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPostFxParam {
+                        deck: deck_idx,
+                        stem,
+                        effect_index: effect_idx,
+                        param_index: param_idx,
+                        value,
+                    });
+                }
 
-            // Apply bypass state
-            if effect.bypassed {
-                app.domain.set_post_fx_bypass(deck_idx, stem, effect_idx, true);
+                // Apply bypass state
+                if effect.bypassed {
+                    app.domain.set_post_fx_bypass(deck_idx, stem, effect_idx, true);
+                }
+            }
+            Err(e) => {
+                log::error!(
+                    "[PRESET_LOAD] FAILED to create post-fx '{}' ({}) for deck {} stem {:?}: {}",
+                    effect.name, effect.source, deck_idx, stem, e
+                );
             }
         }
     }
+
+    // Apply dry/wet values from preset
+    // Pre-fx effect dry/wet
+    for (effect_idx, effect) in config.pre_fx.iter().enumerate() {
+        app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPreFxEffectDryWet {
+            deck: deck_idx,
+            stem,
+            effect_index: effect_idx,
+            mix: effect.dry_wet,
+        });
+    }
+    // Band effect dry/wet + band chain dry/wet
+    for (band_idx, band) in config.bands.iter().enumerate() {
+        for (effect_idx, effect) in band.effects.iter().enumerate() {
+            app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandBandEffectDryWet {
+                deck: deck_idx,
+                stem,
+                band_index: band_idx,
+                effect_index: effect_idx,
+                mix: effect.dry_wet,
+            });
+        }
+        app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandBandChainDryWet {
+            deck: deck_idx,
+            stem,
+            band_index: band_idx,
+            mix: band.chain_dry_wet,
+        });
+    }
+    // Post-fx effect dry/wet
+    for (effect_idx, effect) in config.post_fx.iter().enumerate() {
+        app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPostFxEffectDryWet {
+            deck: deck_idx,
+            stem,
+            effect_index: effect_idx,
+            mix: effect.dry_wet,
+        });
+    }
+    // Chain-level and global dry/wet
+    app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPreFxChainDryWet {
+        deck: deck_idx,
+        stem,
+        mix: config.pre_fx_chain_dry_wet,
+    });
+    app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPostFxChainDryWet {
+        deck: deck_idx,
+        stem,
+        mix: config.post_fx_chain_dry_wet,
+    });
+    app.domain.send_command(mesh_core::engine::EngineCommand::SetMultibandGlobalDryWet {
+        deck: deck_idx,
+        stem,
+        mix: config.global_dry_wet,
+    });
 
     // Clear existing macro mappings
     for macro_idx in 0..NUM_MACROS {
@@ -555,7 +701,7 @@ pub(super) fn apply_preset_to_multiband(
 
     use mesh_core::effect::multiband::EffectLocation;
 
-    // Apply macro mappings from the preset
+    // Apply macro mappings from the preset (engine-side for knob assignment params)
     // Pre-FX effects mappings
     for (effect_idx, effect) in config.pre_fx.iter().enumerate() {
         apply_effect_macro_mappings(app, deck_idx, stem, EffectLocation::PreFx, effect_idx, effect);
@@ -573,7 +719,15 @@ pub(super) fn apply_preset_to_multiband(
         apply_effect_macro_mappings(app, deck_idx, stem, EffectLocation::PostFx, effect_idx, effect);
     }
 
-    log::info!("Applied preset '{}' to deck {} stem {:?}", config.name, deck_idx, stem);
+    log::info!(
+        "[PRESET_LOAD] Applied '{}' to deck {} stem {:?}: {} pre-fx, {} bands ({} band effects total), {} post-fx, global_dry_wet={:.2}",
+        config.name, deck_idx, stem,
+        config.pre_fx.len(),
+        config.bands.len(),
+        config.bands.iter().map(|b| b.effects.len()).sum::<usize>(),
+        config.post_fx.len(),
+        config.global_dry_wet,
+    );
 }
 
 /// Apply macro mappings from an effect's knob assignments to the engine
@@ -656,7 +810,7 @@ fn clear_multiband_effects(app: &mut MeshApp, deck_idx: usize, stem: Stem) {
 
 /// Apply macro modulation for a single mapping directly to the engine
 ///
-/// Sends the modulated parameter value directly to the effect.
+/// Sends the modulated value directly. Handles both effect params and dry/wet targets.
 fn apply_macro_modulation_direct_single(
     domain: &mut crate::domain::MeshDomain,
     deck_idx: usize,
@@ -665,36 +819,111 @@ fn apply_macro_modulation_direct_single(
     mapping: &mesh_widgets::MacroParamMapping,
 ) {
     use mesh_widgets::multiband::EffectChainLocation;
+    use mesh_widgets::MacroTargetType;
 
     let modulated_value = mapping.modulate(macro_value);
 
-    match mapping.location {
-        EffectChainLocation::PreFx => {
-            domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPreFxParam {
-                deck: deck_idx,
-                stem,
-                effect_index: mapping.effect_index,
-                param_index: mapping.param_index,
-                value: modulated_value,
-            });
+    log::info!(
+        "[MACRO_DIRECT] stem={} {:?} target={:?} loc={:?} effect={} param={} base={:.3} offset={:.3} macro={:.3} -> modulated={:.3}",
+        mapping.stem_index, stem, mapping.target, mapping.location,
+        mapping.effect_index, mapping.param_index,
+        mapping.base_value, mapping.offset_range,
+        macro_value, modulated_value,
+    );
+
+    match mapping.target {
+        MacroTargetType::EffectParam => {
+            match mapping.location {
+                EffectChainLocation::PreFx => {
+                    domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPreFxParam {
+                        deck: deck_idx,
+                        stem,
+                        effect_index: mapping.effect_index,
+                        param_index: mapping.param_index,
+                        value: modulated_value,
+                    });
+                }
+                EffectChainLocation::Band(band_idx) => {
+                    domain.send_command(mesh_core::engine::EngineCommand::SetMultibandEffectParam {
+                        deck: deck_idx,
+                        stem,
+                        band_index: band_idx,
+                        effect_index: mapping.effect_index,
+                        param_index: mapping.param_index,
+                        value: modulated_value,
+                    });
+                }
+                EffectChainLocation::PostFx => {
+                    domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPostFxParam {
+                        deck: deck_idx,
+                        stem,
+                        effect_index: mapping.effect_index,
+                        param_index: mapping.param_index,
+                        value: modulated_value,
+                    });
+                }
+            }
         }
-        EffectChainLocation::Band(band_idx) => {
-            domain.send_command(mesh_core::engine::EngineCommand::SetMultibandEffectParam {
-                deck: deck_idx,
-                stem,
-                band_index: band_idx,
-                effect_index: mapping.effect_index,
-                param_index: mapping.param_index,
-                value: modulated_value,
-            });
+        MacroTargetType::EffectDryWet => {
+            match mapping.location {
+                EffectChainLocation::PreFx => {
+                    domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPreFxEffectDryWet {
+                        deck: deck_idx,
+                        stem,
+                        effect_index: mapping.effect_index,
+                        mix: modulated_value,
+                    });
+                }
+                EffectChainLocation::Band(band_idx) => {
+                    domain.send_command(mesh_core::engine::EngineCommand::SetMultibandBandEffectDryWet {
+                        deck: deck_idx,
+                        stem,
+                        band_index: band_idx,
+                        effect_index: mapping.effect_index,
+                        mix: modulated_value,
+                    });
+                }
+                EffectChainLocation::PostFx => {
+                    domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPostFxEffectDryWet {
+                        deck: deck_idx,
+                        stem,
+                        effect_index: mapping.effect_index,
+                        mix: modulated_value,
+                    });
+                }
+            }
         }
-        EffectChainLocation::PostFx => {
-            domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPostFxParam {
+        MacroTargetType::ChainDryWet => {
+            match mapping.location {
+                EffectChainLocation::PreFx => {
+                    domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPreFxChainDryWet {
+                        deck: deck_idx,
+                        stem,
+                        mix: modulated_value,
+                    });
+                }
+                EffectChainLocation::Band(band_idx) => {
+                    domain.send_command(mesh_core::engine::EngineCommand::SetMultibandBandChainDryWet {
+                        deck: deck_idx,
+                        stem,
+                        band_index: band_idx,
+                        mix: modulated_value,
+                    });
+                }
+                EffectChainLocation::PostFx => {
+                    domain.send_command(mesh_core::engine::EngineCommand::SetMultibandPostFxChainDryWet {
+                        deck: deck_idx,
+                        stem,
+                        mix: modulated_value,
+                    });
+                }
+            }
+        }
+        MacroTargetType::GlobalDryWet => {
+            domain.send_command(mesh_core::engine::EngineCommand::SetMultibandGlobalDryWet {
                 deck: deck_idx,
                 stem,
-                effect_index: mapping.effect_index,
-                param_index: mapping.param_index,
-                value: modulated_value,
+                mix: modulated_value,
             });
         }
     }
@@ -710,43 +939,131 @@ fn extract_deck_macro_mappings(
     mappings: &mut [Vec<mesh_widgets::MacroParamMapping>; NUM_MACROS],
 ) {
     use mesh_widgets::multiband::EffectChainLocation;
-    use mesh_widgets::MacroParamMapping;
+    use mesh_widgets::{MacroParamMapping, MacroTargetType};
 
-    // Helper to process an effect's knob assignments
-    let mut add_effect_mappings = |location: EffectChainLocation, effect_idx: usize, effect: &EffectPresetConfig| {
+    /// Push a mapping if the macro index is valid
+    fn push(mappings: &mut [Vec<MacroParamMapping>; NUM_MACROS], macro_index: usize, mapping: MacroParamMapping) {
+        if macro_index < NUM_MACROS {
+            mappings[macro_index].push(mapping);
+        }
+    }
+
+    /// Extract macro mappings from a single effect (knob params + dry/wet)
+    fn extract_effect(
+        mappings: &mut [Vec<MacroParamMapping>; NUM_MACROS],
+        stem_idx: usize,
+        location: EffectChainLocation,
+        effect_idx: usize,
+        effect: &EffectPresetConfig,
+    ) {
+        // Knob assignment macro mappings (effect params)
         for assignment in &effect.knob_assignments {
             if let (Some(param_index), Some(ref macro_mapping)) = (assignment.param_index, &assignment.macro_mapping) {
                 if let Some(macro_index) = macro_mapping.macro_index {
-                    if macro_index < NUM_MACROS {
-                        mappings[macro_index].push(MacroParamMapping {
-                            stem_index: stem_idx,
-                            location,
-                            effect_index: effect_idx,
-                            param_index,
-                            base_value: assignment.value,
-                            offset_range: macro_mapping.offset_range,
-                        });
-                    }
+                    push(mappings, macro_index, MacroParamMapping {
+                        stem_index: stem_idx,
+                        location,
+                        effect_index: effect_idx,
+                        param_index,
+                        target: MacroTargetType::EffectParam,
+                        base_value: assignment.value,
+                        offset_range: macro_mapping.offset_range,
+                    });
                 }
             }
         }
-    };
+
+        // Per-effect dry/wet macro mapping
+        if let Some(ref dw_mapping) = effect.dry_wet_macro_mapping {
+            if let Some(macro_index) = dw_mapping.macro_index {
+                push(mappings, macro_index, MacroParamMapping {
+                    stem_index: stem_idx,
+                    location,
+                    effect_index: effect_idx,
+                    param_index: 0,
+                    target: MacroTargetType::EffectDryWet,
+                    base_value: effect.dry_wet,
+                    offset_range: dw_mapping.offset_range,
+                });
+            }
+        }
+    }
 
     // Process pre-fx effects
     for (effect_idx, effect) in config.pre_fx.iter().enumerate() {
-        add_effect_mappings(EffectChainLocation::PreFx, effect_idx, effect);
+        extract_effect(mappings, stem_idx, EffectChainLocation::PreFx, effect_idx, effect);
     }
 
-    // Process band effects
+    // Process band effects + band chain dry/wet
     for (band_idx, band) in config.bands.iter().enumerate() {
         for (effect_idx, effect) in band.effects.iter().enumerate() {
-            add_effect_mappings(EffectChainLocation::Band(band_idx), effect_idx, effect);
+            extract_effect(mappings, stem_idx, EffectChainLocation::Band(band_idx), effect_idx, effect);
+        }
+
+        // Band chain dry/wet macro mapping
+        if let Some(ref chain_dw) = band.chain_dry_wet_macro_mapping {
+            if let Some(macro_index) = chain_dw.macro_index {
+                push(mappings, macro_index, MacroParamMapping {
+                    stem_index: stem_idx,
+                    location: EffectChainLocation::Band(band_idx),
+                    effect_index: 0,
+                    param_index: 0,
+                    target: MacroTargetType::ChainDryWet,
+                    base_value: band.chain_dry_wet,
+                    offset_range: chain_dw.offset_range,
+                });
+            }
         }
     }
 
     // Process post-fx effects
     for (effect_idx, effect) in config.post_fx.iter().enumerate() {
-        add_effect_mappings(EffectChainLocation::PostFx, effect_idx, effect);
+        extract_effect(mappings, stem_idx, EffectChainLocation::PostFx, effect_idx, effect);
+    }
+
+    // Pre-FX chain dry/wet macro mapping
+    if let Some(ref m) = config.pre_fx_chain_dry_wet_macro_mapping {
+        if let Some(macro_index) = m.macro_index {
+            push(mappings, macro_index, MacroParamMapping {
+                stem_index: stem_idx,
+                location: EffectChainLocation::PreFx,
+                effect_index: 0,
+                param_index: 0,
+                target: MacroTargetType::ChainDryWet,
+                base_value: config.pre_fx_chain_dry_wet,
+                offset_range: m.offset_range,
+            });
+        }
+    }
+
+    // Post-FX chain dry/wet macro mapping
+    if let Some(ref m) = config.post_fx_chain_dry_wet_macro_mapping {
+        if let Some(macro_index) = m.macro_index {
+            push(mappings, macro_index, MacroParamMapping {
+                stem_index: stem_idx,
+                location: EffectChainLocation::PostFx,
+                effect_index: 0,
+                param_index: 0,
+                target: MacroTargetType::ChainDryWet,
+                base_value: config.post_fx_chain_dry_wet,
+                offset_range: m.offset_range,
+            });
+        }
+    }
+
+    // Global dry/wet macro mapping
+    if let Some(ref m) = config.global_dry_wet_macro_mapping {
+        if let Some(macro_index) = m.macro_index {
+            push(mappings, macro_index, MacroParamMapping {
+                stem_index: stem_idx,
+                location: EffectChainLocation::PreFx, // unused for global
+                effect_index: 0,
+                param_index: 0,
+                target: MacroTargetType::GlobalDryWet,
+                base_value: config.global_dry_wet,
+                offset_range: m.offset_range,
+            });
+        }
     }
 
     log::debug!(

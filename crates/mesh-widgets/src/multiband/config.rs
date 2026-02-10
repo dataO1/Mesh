@@ -606,6 +606,7 @@ impl EffectPresetConfig {
             dry_wet: self.dry_wet,
             dry_wet_macro_mapping: self.dry_wet_macro_mapping.as_ref().map(|m| m.to_mapping()),
             latency_samples: 0, // Will be populated when plugin loads
+            gui_instance_id: None, // Will be set when CLAP plugin is instantiated
         }
     }
 }

@@ -189,6 +189,10 @@ pub struct EffectUiState {
     /// Effect latency in samples (reported by plugin, not serialized)
     #[serde(skip)]
     pub latency_samples: u32,
+
+    /// CLAP GUI handle instance ID (travels with effect during moves, not serialized)
+    #[serde(skip)]
+    pub gui_instance_id: Option<String>,
 }
 
 /// Default dry/wet value (100% wet = normal processing)
@@ -235,6 +239,7 @@ impl EffectUiState {
             dry_wet: 1.0,
             dry_wet_macro_mapping: None,
             latency_samples: 0,
+            gui_instance_id: None,
         }
     }
 
@@ -268,6 +273,7 @@ impl EffectUiState {
             dry_wet: 1.0,
             dry_wet_macro_mapping: None,
             latency_samples: 0,
+            gui_instance_id: None,
         }
     }
 

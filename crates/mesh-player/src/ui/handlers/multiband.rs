@@ -59,6 +59,7 @@ fn create_effect_state_from_info(
         dry_wet: 1.0,
         dry_wet_macro_mapping: None,
         latency_samples: effect_info.latency_samples,
+        gui_instance_id: None,
     }
 }
 

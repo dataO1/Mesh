@@ -33,6 +33,19 @@ pub const DEFAULT_MACRO_NAMES: [&str; NUM_MACROS] = [
     "Macro 1", "Macro 2", "Macro 3", "Macro 4",
 ];
 
+/// What a macro mapping targets
+#[derive(Debug, Clone, PartialEq)]
+pub enum MacroTargetType {
+    /// Regular effect parameter (uses param_index)
+    EffectParam,
+    /// Per-effect dry/wet mix (uses location + effect_index)
+    EffectDryWet,
+    /// Per-band or per-chain dry/wet (uses location to determine which chain)
+    ChainDryWet,
+    /// Global dry/wet for entire multiband rack (only uses stem_index)
+    GlobalDryWet,
+}
+
 /// A macro-to-parameter mapping for direct modulation
 ///
 /// Stores all the information needed to compute and send modulated
@@ -45,10 +58,12 @@ pub struct MacroParamMapping {
     pub stem_index: usize,
     /// Which chain the effect is in
     pub location: crate::multiband::EffectChainLocation,
-    /// Which effect in the chain
+    /// Which effect in the chain (unused for ChainDryWet, GlobalDryWet)
     pub effect_index: usize,
-    /// Which parameter on the effect (the actual CLAP param index)
+    /// Which parameter on the effect (only used for EffectParam target)
     pub param_index: usize,
+    /// What this mapping controls
+    pub target: MacroTargetType,
     /// Base value (normalized 0-1)
     pub base_value: f32,
     /// Bipolar offset range (-1 to +1)

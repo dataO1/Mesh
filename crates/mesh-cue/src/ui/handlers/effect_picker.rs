@@ -89,15 +89,16 @@ impl MeshCueApp {
                     EffectPickerTarget::PostFx => self.effects_editor.editor.post_fx.len(),
                 };
 
-                // Generate effect instance ID
+                // Generate effect instance ID (includes stem for stem-based cleanup)
+                let stem_idx = self.effects_editor.active_stem;
                 let effect_instance_id = match target {
-                    EffectPickerTarget::PreFx => format!("{}_cue_prefx_{}", plugin_id, effect_idx),
-                    EffectPickerTarget::Band(band_idx) => format!("{}_cue_b{}_{}", plugin_id, band_idx, effect_idx),
-                    EffectPickerTarget::PostFx => format!("{}_cue_postfx_{}", plugin_id, effect_idx),
+                    EffectPickerTarget::PreFx => format!("{}_cue_s{}_prefx_{}", plugin_id, stem_idx, effect_idx),
+                    EffectPickerTarget::Band(band_idx) => format!("{}_cue_s{}_b{}_{}", plugin_id, stem_idx, band_idx, effect_idx),
+                    EffectPickerTarget::PostFx => format!("{}_cue_s{}_postfx_{}", plugin_id, stem_idx, effect_idx),
                 };
 
                 // Create the CLAP effect with GUI support to get actual params
-                match self.domain.create_clap_effect_with_gui(&plugin_id, effect_instance_id) {
+                match self.domain.create_clap_effect_with_gui(&plugin_id, effect_instance_id.clone()) {
                     Ok(effect) => {
                         // Extract info before potentially moving the effect
                         let effect_info = effect.info();
@@ -130,6 +131,7 @@ impl MeshCueApp {
                             available_params,
                         );
                         effect_state.latency_samples = effect_info.latency_samples;
+                        effect_state.gui_instance_id = Some(effect_instance_id.clone());
                         log::info!(
                             "[CLAP_LATENCY_UI] Plugin '{}' EffectInfo.latency_samples={} → EffectUiState.latency_samples={}",
                             plugin_id, effect_info.latency_samples, effect_state.latency_samples
@@ -254,11 +256,12 @@ impl MeshCueApp {
                 self.domain.create_pd_effect(&effect_ui.id).ok()
             }
             EffectSourceType::Clap => {
-                // Generate effect instance ID for mesh-cue (matches handler's ID format)
+                // Generate effect instance ID for mesh-cue (stem-aware format)
+                let stem_idx = self.effects_editor.active_stem;
                 let effect_instance_id = match target {
-                    EffectPickerTarget::PreFx => format!("{}_cue_prefx_{}", effect_ui.id, effect_idx),
-                    EffectPickerTarget::Band(band_idx) => format!("{}_cue_b{}_{}", effect_ui.id, band_idx, effect_idx),
-                    EffectPickerTarget::PostFx => format!("{}_cue_postfx_{}", effect_ui.id, effect_idx),
+                    EffectPickerTarget::PreFx => format!("{}_cue_s{}_prefx_{}", effect_ui.id, stem_idx, effect_idx),
+                    EffectPickerTarget::Band(band_idx) => format!("{}_cue_s{}_b{}_{}", effect_ui.id, stem_idx, band_idx, effect_idx),
+                    EffectPickerTarget::PostFx => format!("{}_cue_s{}_postfx_{}", effect_ui.id, stem_idx, effect_idx),
                 };
 
                 // Create with GUI support so we can open plugin windows
