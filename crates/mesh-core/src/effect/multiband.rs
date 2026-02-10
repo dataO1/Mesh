@@ -1198,6 +1198,25 @@ impl MultibandHost {
         self.global_dry_wet
     }
 
+    /// Get the current latency of a pre-FX effect (in samples)
+    pub fn pre_fx_latency(&self, index: usize) -> u32 {
+        self.pre_fx.get(index).map(|e| e.latency_samples()).unwrap_or(0)
+    }
+
+    /// Get the current latency of a band effect (in samples)
+    pub fn band_effect_latency(&self, band_index: usize, effect_index: usize) -> u32 {
+        self.bands
+            .get(band_index)
+            .and_then(|b| b.effects.get(effect_index))
+            .map(|e| e.latency_samples())
+            .unwrap_or(0)
+    }
+
+    /// Get the current latency of a post-FX effect (in samples)
+    pub fn post_fx_latency(&self, index: usize) -> u32 {
+        self.post_fx.get(index).map(|e| e.latency_samples()).unwrap_or(0)
+    }
+
     /// Set macro name
     pub fn set_macro_name(&mut self, index: usize, name: String) -> MultibandResult<()> {
         if index >= NUM_MACROS {
@@ -1386,6 +1405,33 @@ impl Effect for MultibandHost {
 
         // Apply macro values to effect parameters
         self.apply_macros();
+
+        // Poll all effects for pending restarts (CLAP latency changes)
+        // If any effect's latency changed, recalculate all delay lines
+        {
+            let mut any_changed = false;
+            for effect in self.pre_fx.iter_mut() {
+                if effect.poll_restart().is_some() {
+                    any_changed = true;
+                }
+            }
+            for band in self.bands.iter_mut() {
+                for effect in band.effects.iter_mut() {
+                    if effect.poll_restart().is_some() {
+                        any_changed = true;
+                    }
+                }
+            }
+            for effect in self.post_fx.iter_mut() {
+                if effect.poll_restart().is_some() {
+                    any_changed = true;
+                }
+            }
+            if any_changed {
+                self.update_latency();
+                log::info!("[CLAP_RESTART] Delay lines reconfigured after plugin restart");
+            }
+        }
 
         // ═══════════════════════════════════════════════════════════════════
         // STEP 0: Store global dry signal (before any processing)

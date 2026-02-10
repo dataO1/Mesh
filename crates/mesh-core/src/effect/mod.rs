@@ -177,6 +177,18 @@ pub trait Effect: Send {
 
     /// Reset the effect state (called on track load, etc.)
     fn reset(&mut self);
+
+    /// Check for a pending plugin restart and handle it
+    ///
+    /// CLAP plugins may request a restart when their latency changes (e.g.,
+    /// lookahead parameter adjusted). This method performs the
+    /// deactivate → reactivate cycle and returns `Some(new_latency)` if the
+    /// latency changed, or `None` if no restart was pending.
+    ///
+    /// Default implementation returns `None` (no restart support).
+    fn poll_restart(&mut self) -> Option<u32> {
+        None
+    }
 }
 
 /// Base implementation helper for effects
@@ -207,6 +219,13 @@ impl EffectBase {
     /// Get the effect info
     pub fn info(&self) -> &EffectInfo {
         &self.info
+    }
+
+    /// Get mutable access to the effect info
+    ///
+    /// Used by ClapEffect to update latency_samples after a plugin restart.
+    pub fn info_mut(&mut self) -> &mut EffectInfo {
+        &mut self.info
     }
 
     /// Get the current parameter values

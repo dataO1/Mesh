@@ -136,11 +136,13 @@ pub struct MeshClapHostShared {
     plugin_id: String,
     /// Flag set when plugin requests a parameter flush (from GUI thread)
     flush_requested: Arc<AtomicBool>,
+    /// Flag set when plugin requests a restart (latency or port config changed)
+    restart_requested: Arc<AtomicBool>,
 }
 
 impl MeshClapHostShared {
-    fn new(plugin_id: String, flush_requested: Arc<AtomicBool>) -> Self {
-        Self { plugin_id, flush_requested }
+    fn new(plugin_id: String, flush_requested: Arc<AtomicBool>, restart_requested: Arc<AtomicBool>) -> Self {
+        Self { plugin_id, flush_requested, restart_requested }
     }
 }
 
@@ -150,7 +152,8 @@ impl<'a> SharedHandler<'a> for MeshClapHostShared {
     }
 
     fn request_restart(&self) {
-        log::debug!("CLAP plugin '{}' requested restart (ignored)", self.plugin_id);
+        log::info!("[CLAP] Plugin '{}' requested restart (latency may have changed)", self.plugin_id);
+        self.restart_requested.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn request_process(&self) {
@@ -158,14 +161,20 @@ impl<'a> SharedHandler<'a> for MeshClapHostShared {
     }
 
     fn request_callback(&self) {
-        // We don't support main-thread callbacks in the audio thread context
-        log::trace!("CLAP plugin '{}' requested callback (ignored)", self.plugin_id);
+        // LSP plugins use request_callback() → on_main_thread() → request_restart()
+        // to handle latency changes. Since we don't have a main-thread event loop
+        // to dispatch on_main_thread(), we treat this as a restart request directly.
+        log::info!(
+            "[CLAP] Plugin '{}' requested main-thread callback (treating as restart request)",
+            self.plugin_id
+        );
+        self.restart_requested.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
 /// Main thread host data
 pub struct MeshClapHostMainThread<'a> {
-    _shared: &'a MeshClapHostShared,
+    shared: &'a MeshClapHostShared,
     #[allow(dead_code)]
     plugin: Option<InitializedPluginHandle<'a>>,
     /// Plugin params extension (if supported)
@@ -177,7 +186,7 @@ pub struct MeshClapHostMainThread<'a> {
 impl<'a> MeshClapHostMainThread<'a> {
     fn new(shared: &'a MeshClapHostShared) -> Self {
         Self {
-            _shared: shared,
+            shared,
             plugin: None,
             params_ext: None,
             latency_ext: None,
@@ -189,15 +198,20 @@ impl<'a> MainThreadHandler<'a> for MeshClapHostMainThread<'a> {
     fn initialized(&mut self, instance: InitializedPluginHandle<'a>) {
         self.params_ext = instance.get_extension();
         self.latency_ext = instance.get_extension();
+        log::info!(
+            "[CLAP_LATENCY] Plugin initialized: latency extension = {}",
+            if self.latency_ext.is_some() { "SUPPORTED" } else { "NOT SUPPORTED" }
+        );
         self.plugin = Some(instance);
     }
 }
 
 impl HostLatencyImpl for MeshClapHostMainThread<'_> {
     fn changed(&mut self) {
-        // Plugin notified us that its latency changed
-        // We'll query it on the next process cycle
-        log::debug!("CLAP plugin latency changed notification received");
+        // Plugin signals latency changed (during activation or via restart cycle).
+        // Set restart flag so we deactivate → reactivate → re-query latency.
+        log::info!("[CLAP_LATENCY] Plugin latency changed() callback received, requesting restart");
+        self.shared.restart_requested.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -245,6 +259,8 @@ pub struct ClapPluginWrapper {
     param_change_sender: Sender<ParamChangeEvent>,
     /// Flag set by host when plugin GUI requests a param flush
     flush_requested: Arc<AtomicBool>,
+    /// Flag set by host when plugin requests a restart (latency/config change)
+    restart_requested: Arc<AtomicBool>,
     /// Current buffer size
     buffer_size: usize,
     /// Sample rate
@@ -284,13 +300,15 @@ impl ClapPluginWrapper {
                 reason: format!("Failed to create host info: {:?}", e),
             })?;
 
-        // Create shared flush flag for host<->wrapper communication
+        // Create shared flags for host<->wrapper communication
         let flush_requested = Arc::new(AtomicBool::new(false));
         let flush_flag_for_host = Arc::clone(&flush_requested);
+        let restart_requested = Arc::new(AtomicBool::new(false));
+        let restart_flag_for_host = Arc::clone(&restart_requested);
 
         let cloned_id = plugin_info.id.clone();
         let instance = PluginInstance::<MeshClapHost>::new(
-            |_| MeshClapHostShared::new(cloned_id.clone(), flush_flag_for_host),
+            |_| MeshClapHostShared::new(cloned_id.clone(), flush_flag_for_host, restart_flag_for_host),
             |shared| MeshClapHostMainThread::new(shared),
             &bundle,
             &plugin_id,
@@ -319,6 +337,7 @@ impl ClapPluginWrapper {
                 output_event_buffer: EventBuffer::with_capacity(32),
                 param_change_sender: sender,
                 flush_requested,
+                restart_requested,
                 buffer_size,
                 sample_rate: CLAP_SAMPLE_RATE,
                 activated: false,
@@ -371,13 +390,31 @@ impl ClapPluginWrapper {
         })?;
 
         // Query latency using the latency extension
+        let has_latency_ext = instance.access_handler(|h| h.latency_ext).is_some();
         self.latency_samples = instance
             .access_handler(|h| h.latency_ext)
             .map(|ext| {
                 let mut handle = instance.plugin_handle();
-                ext.get(&mut handle)
+                let lat = ext.get(&mut handle);
+                log::info!(
+                    "[CLAP_LATENCY] Plugin '{}' latency extension present, get() returned {} samples",
+                    self.info.id, lat
+                );
+                lat
             })
-            .unwrap_or(0);
+            .unwrap_or_else(|| {
+                log::warn!(
+                    "[CLAP_LATENCY] Plugin '{}' does NOT support the latency extension (clap.latency)",
+                    self.info.id
+                );
+                0
+            });
+        if !has_latency_ext {
+            log::info!(
+                "[CLAP_LATENCY] Plugin '{}': latency_ext is None — plugin does not expose clap.latency",
+                self.info.id
+            );
+        }
 
         self.instance = Some(instance);
         self.processor = Some(processor);
@@ -418,6 +455,57 @@ impl ClapPluginWrapper {
     /// Get the plugin's latency in samples
     pub fn latency(&self) -> u32 {
         self.latency_samples
+    }
+
+    /// Handle a pending restart request from the plugin
+    ///
+    /// CLAP plugins call `host->request_restart()` when their latency or
+    /// configuration changes (e.g., when a lookahead parameter is adjusted).
+    /// This method checks the restart flag, performs a full
+    /// deactivate → reactivate cycle, and re-queries latency.
+    ///
+    /// Returns `Some(new_latency)` if a restart was performed, `None` if no
+    /// restart was pending.
+    pub fn handle_pending_restart(&mut self) -> Option<u32> {
+        if !self.restart_requested.swap(false, Ordering::AcqRel) {
+            return None;
+        }
+
+        log::info!(
+            "[CLAP_RESTART] Performing restart for plugin '{}' (latency may have changed)",
+            self.info.id
+        );
+
+        let sample_rate = self.sample_rate;
+        let buffer_size = self.buffer_size as u32;
+        let old_latency = self.latency_samples;
+
+        // Deactivate → reactivate cycle
+        self.deactivate();
+
+        if let Err(e) = self.activate(sample_rate, buffer_size) {
+            log::error!(
+                "[CLAP_RESTART] Failed to reactivate plugin '{}': {}",
+                self.info.id, e
+            );
+            return None;
+        }
+
+        let new_latency = self.latency_samples;
+        if new_latency != old_latency {
+            log::info!(
+                "[CLAP_RESTART] Plugin '{}' latency changed: {} → {} samples ({:.2}ms → {:.2}ms @ 48kHz)",
+                self.info.id, old_latency, new_latency,
+                old_latency as f32 / 48.0, new_latency as f32 / 48.0
+            );
+        } else {
+            log::info!(
+                "[CLAP_RESTART] Plugin '{}' restarted, latency unchanged at {} samples",
+                self.info.id, new_latency
+            );
+        }
+
+        Some(new_latency)
     }
 
     /// Get plugin info

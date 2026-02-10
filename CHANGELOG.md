@@ -174,6 +174,12 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   lookahead limiters, linear-phase EQs). Previously, all CLAP plugins reported
   0 latency, causing drum tracks to drift out of sync across decks.
 
+- **CLAP `request_restart()` handling** — Plugins that change latency dynamically
+  (e.g., LSP compressors adjusting lookahead) now trigger a deactivate → reactivate
+  cycle with latency re-query. Previously, `request_restart()` was ignored, so
+  plugins reporting 0 at activation but changing latency later (common with LSP
+  plugins) would cause phase misalignment at partial dry/wet settings.
+
 - **mesh-player preset loading** — Presets loaded in mesh-player now correctly
   apply ALL plugin parameters to the audio engine. Previously only the 8
   knob-mapped parameters were applied, ignoring settings made via the plugin's

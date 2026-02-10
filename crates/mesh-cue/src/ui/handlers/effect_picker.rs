@@ -130,6 +130,10 @@ impl MeshCueApp {
                             available_params,
                         );
                         effect_state.latency_samples = effect_info.latency_samples;
+                        log::info!(
+                            "[CLAP_LATENCY_UI] Plugin '{}' EffectInfo.latency_samples={} → EffectUiState.latency_samples={}",
+                            plugin_id, effect_info.latency_samples, effect_state.latency_samples
+                        );
 
                         // If audio preview is enabled, add to audio engine
                         if self.effects_editor.audio_preview_enabled {

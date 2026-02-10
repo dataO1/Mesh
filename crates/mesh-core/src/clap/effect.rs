@@ -89,6 +89,10 @@ impl ClapEffect {
         }
 
         info.latency_samples = latency;
+        log::info!(
+            "[CLAP_LATENCY] Plugin '{}' reports {} samples latency ({:.2}ms @ 48kHz)",
+            plugin_info.id, latency, latency as f32 / 48.0
+        );
         let base = EffectBase::new(info);
         let process_buffer = vec![0.0; CLAP_BUFFER_SIZE as usize * 2];
 
@@ -266,6 +270,19 @@ impl Effect for ClapEffect {
         // CLAP plugins don't have a standard reset mechanism
         // We could deactivate and reactivate, but that's heavy
         // For now, do nothing - state is maintained
+    }
+
+    fn poll_restart(&mut self) -> Option<u32> {
+        // Lock the wrapper — this blocks the audio thread briefly during restart,
+        // but request_restart() is rare (only when plugin config changes)
+        let mut wrapper = self.wrapper.lock().ok()?;
+        if let Some(new_latency) = wrapper.handle_pending_restart() {
+            // Update our EffectInfo so latency_samples() returns the new value
+            self.base.info_mut().latency_samples = new_latency;
+            Some(new_latency)
+        } else {
+            None
+        }
     }
 }
 
