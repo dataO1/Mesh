@@ -1113,6 +1113,12 @@ pub struct PlayerCanvasState {
     lufs_gain_db: [Option<f32>; 4],
     /// Whether cue (headphone monitoring) is enabled per deck
     cue_enabled: [bool; 4],
+    /// Current loop length in beats per deck (None if no track loaded)
+    loop_length_beats: [Option<f32>; 4],
+    /// Whether loop is currently active per deck
+    loop_active: [bool; 4],
+    /// Channel volume per deck (0.0-1.0, for waveform dimming)
+    volume: [f32; 4],
 }
 
 impl PlayerCanvasState {
@@ -1151,6 +1157,9 @@ impl PlayerCanvasState {
             linked_stems_active: [[false; 4]; 4], // All using original stems
             lufs_gain_db: [None; 4],             // No LUFS data initially
             cue_enabled: [false; 4],             // No cue enabled by default
+            loop_length_beats: [None; 4],        // No loop length initially
+            loop_active: [false; 4],             // No loop active initially
+            volume: [1.0; 4],                    // Full volume by default
         }
     }
 
@@ -1321,6 +1330,54 @@ impl PlayerCanvasState {
             self.cue_enabled[idx]
         } else {
             false
+        }
+    }
+
+    /// Set loop length in beats for a deck
+    pub fn set_loop_length_beats(&mut self, idx: usize, beats: Option<f32>) {
+        if idx < 4 {
+            self.loop_length_beats[idx] = beats;
+        }
+    }
+
+    /// Get loop length in beats for a deck
+    pub fn loop_length_beats(&self, idx: usize) -> Option<f32> {
+        if idx < 4 {
+            self.loop_length_beats[idx]
+        } else {
+            None
+        }
+    }
+
+    /// Set loop active state for a deck
+    pub fn set_loop_active(&mut self, idx: usize, active: bool) {
+        if idx < 4 {
+            self.loop_active[idx] = active;
+        }
+    }
+
+    /// Get loop active state for a deck
+    pub fn loop_active(&self, idx: usize) -> bool {
+        if idx < 4 {
+            self.loop_active[idx]
+        } else {
+            false
+        }
+    }
+
+    /// Set channel volume for a deck (0.0-1.0)
+    pub fn set_volume(&mut self, idx: usize, volume: f32) {
+        if idx < 4 {
+            self.volume[idx] = volume;
+        }
+    }
+
+    /// Get channel volume for a deck (0.0-1.0)
+    pub fn volume(&self, idx: usize) -> f32 {
+        if idx < 4 {
+            self.volume[idx]
+        } else {
+            1.0
         }
     }
 

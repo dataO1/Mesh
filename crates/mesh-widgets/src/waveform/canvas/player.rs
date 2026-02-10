@@ -279,6 +279,9 @@ where
             let track_bpm = self.state.track_bpm(deck_idx);
 
             let cue_enabled = self.state.cue_enabled(deck_idx);
+            let loop_length_beats = self.state.loop_length_beats(deck_idx);
+            let loop_active = self.state.loop_active(deck_idx);
+            let volume = self.state.volume(deck_idx);
 
             draw_deck_quadrant(
                 &mut frame,
@@ -300,6 +303,9 @@ where
                 linked_active,
                 lufs_gain_db,
                 track_bpm,
+                loop_length_beats,
+                loop_active,
+                volume,
             );
         }
 
@@ -345,6 +351,9 @@ fn draw_deck_quadrant(
     linked_active: &[bool; 4],
     lufs_gain_db: Option<f32>,
     track_bpm: Option<f64>,
+    loop_length_beats: Option<f32>,
+    loop_active: bool,
+    volume: f32,
 ) {
     use iced::widget::canvas::Text;
     use iced::alignment::{Horizontal, Vertical};
@@ -415,18 +424,19 @@ fn draw_deck_quadrant(
         ..Text::default()
     });
 
-    // Calculate reserved space for right-side elements (Key, LUFS, BPM)
+    // Calculate reserved space for right-side elements (Key, LUFS, Loop, BPM)
     let key_space = if deck.overview.has_track && !track_key.is_empty() { 80.0 } else { 0.0 };
     let lufs_space = if deck.overview.has_track && lufs_gain_db.is_some() { 50.0 } else { 0.0 };
+    let loop_space = if deck.overview.has_track && loop_length_beats.is_some() { 40.0 } else { 0.0 };
     let bpm_space = if deck.overview.has_track && track_bpm.is_some() { 55.0 } else { 0.0 };
 
-    // Draw BPM indicator (to the left of LUFS gain)
+    // Draw BPM indicator (to the left of loop length)
     let bpm_display_width = if deck.overview.has_track {
         if let Some(bpm) = track_bpm {
             let bpm_text = format!("{:.1}", bpm);
 
-            // Position to the left of LUFS gain (which is left of key)
-            let bpm_x = x + width - key_space - lufs_space - 8.0;
+            // Position to the left of loop (which is left of LUFS, which is left of key)
+            let bpm_x = x + width - key_space - lufs_space - loop_space - 8.0;
             frame.fill_text(Text {
                 content: bpm_text,
                 position: Point::new(bpm_x, y + DECK_HEADER_HEIGHT / 2.0),
@@ -437,6 +447,40 @@ fn draw_deck_quadrant(
                 ..Text::default()
             });
             bpm_space
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
+    // Draw loop length indicator (between BPM and LUFS gain)
+    let loop_display_width = if deck.overview.has_track {
+        if let Some(beats) = loop_length_beats {
+            let loop_text = if beats < 1.0 {
+                format!("1/{:.0}", 1.0 / beats)
+            } else {
+                format!("{:.0}", beats)
+            };
+
+            // Color: bright when loop is active, dim when inactive
+            let loop_color = if loop_active {
+                Color::from_rgb(0.4, 0.9, 0.4) // Green when active
+            } else {
+                Color::from_rgb(0.5, 0.5, 0.5) // Gray when inactive
+            };
+
+            let loop_x = x + width - key_space - lufs_space - 8.0;
+            frame.fill_text(Text {
+                content: format!("\u{21BB}{}", loop_text),
+                position: Point::new(loop_x, y + DECK_HEADER_HEIGHT / 2.0),
+                size: 10.0.into(),
+                color: loop_color,
+                align_x: Horizontal::Right.into(),
+                align_y: Vertical::Center.into(),
+                ..Text::default()
+            });
+            loop_space
         } else {
             0.0
         }
@@ -554,7 +598,7 @@ fn draw_deck_quadrant(
     // Draw track name text (if loaded)
     let linked_indicator_space = if has_any_links { 48.0 } else { 0.0 };
     let name_x = x + badge_margin + badge_width + 8.0 + linked_indicator_space;
-    let max_name_width = width - badge_width - badge_margin * 2.0 - 16.0 - key_space - linked_indicator_space - gain_display_width - bpm_display_width;
+    let max_name_width = width - badge_width - badge_margin * 2.0 - 16.0 - key_space - linked_indicator_space - gain_display_width - bpm_display_width - loop_display_width;
 
     if deck.overview.has_track && !track_name.is_empty() {
         // Truncate track name if too long
@@ -646,6 +690,19 @@ fn draw_deck_quadrant(
         linked_stems,
         linked_active,
     );
+
+    // Draw volume dimming overlay over the waveform area (not the header)
+    // At full volume (1.0) no dimming, at zero volume max dimming (0.4 alpha)
+    if volume < 0.99 {
+        let dim_alpha = (1.0 - volume) * 0.4;
+        let waveform_area_y = y + DECK_HEADER_HEIGHT;
+        let waveform_area_height = ZOOMED_WAVEFORM_HEIGHT + DECK_INTERNAL_GAP + WAVEFORM_HEIGHT;
+        frame.fill_rectangle(
+            Point::new(x, waveform_area_y),
+            Size::new(width, waveform_area_height),
+            Color::from_rgba(0.0, 0.0, 0.0, dim_alpha),
+        );
+    }
 }
 
 /// Draw a zoomed waveform at a specific position

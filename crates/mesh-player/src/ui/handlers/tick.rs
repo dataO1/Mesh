@@ -157,6 +157,19 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
             app.deck_views[i].sync_play_state(atomics[i].play_state());
             app.deck_views[i].sync_loop_length_index(atomics[i].loop_length_index());
 
+            // Sync loop length and active state to canvas
+            let has_track = app.player_canvas_state.decks[i].overview.has_track;
+            if has_track {
+                app.player_canvas_state.set_loop_length_beats(i, Some(app.deck_views[i].loop_length_beats()));
+                app.player_canvas_state.set_loop_active(i, loop_active);
+            } else {
+                app.player_canvas_state.set_loop_length_beats(i, None);
+                app.player_canvas_state.set_loop_active(i, false);
+            }
+
+            // Sync channel volume from mixer for waveform dimming
+            app.player_canvas_state.set_volume(i, app.mixer_view.channel_volume(i));
+
             // Sync stem active states to canvas
             // Check if any stem is soloed
             let any_soloed = (0..4).any(|s| app.deck_views[i].is_stem_soloed(s));

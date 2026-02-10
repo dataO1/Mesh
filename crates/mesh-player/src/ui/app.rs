@@ -638,9 +638,13 @@ impl MeshApp {
                     }
                     MidiGlobalAction::FxSelect => {
                         // Select the currently hovered preset
+                        // Hover index: 0 = "No FX", 1..=N = preset at index (i-1)
                         let preset_name = self
                             .global_fx_hover_index
-                            .and_then(|i| self.available_deck_presets.get(i).cloned());
+                            .and_then(|i| {
+                                if i == 0 { None }
+                                else { self.available_deck_presets.get(i - 1).cloned() }
+                            });
                         return self.update(Message::SelectGlobalFxPreset(preset_name));
                     }
                 }
@@ -969,12 +973,17 @@ impl MeshApp {
     /// View for the global FX preset button in the header (list is overlaid separately)
     fn view_global_fx_dropdown(&self) -> Element<'_, Message> {
         // When open and hovering via MIDI, show the hovered preset name
+        // Hover index: 0 = "No FX", 1..=N = preset at index (i-1)
         let label = if self.global_fx_picker_open {
             if let Some(idx) = self.global_fx_hover_index {
-                self.available_deck_presets
-                    .get(idx)
-                    .map(|s| s.as_str())
-                    .unwrap_or("No FX")
+                if idx == 0 {
+                    "No FX"
+                } else {
+                    self.available_deck_presets
+                        .get(idx - 1)
+                        .map(|s| s.as_str())
+                        .unwrap_or("No FX")
+                }
             } else {
                 self.global_fx_preset.as_deref().unwrap_or("No FX")
             }
@@ -1001,21 +1010,22 @@ impl MeshApp {
 
         let mut items: Vec<Element<'_, Message>> = Vec::new();
 
-        // "No FX" option
+        // "No FX" option (hover index 0)
         let no_fx_selected = self.global_fx_preset.is_none();
+        let no_fx_hovered = self.global_fx_hover_index == Some(0);
         items.push(
             button(text("(No FX)").size(10))
                 .on_press(Message::SelectGlobalFxPreset(None))
                 .padding([3, 8])
                 .width(Fill)
-                .style(if no_fx_selected { button::primary } else { button::secondary })
+                .style(if no_fx_selected || no_fx_hovered { button::primary } else { button::secondary })
                 .into(),
         );
 
-        // Available presets
+        // Available presets (hover index 1..=N maps to preset index i-1)
         for (i, preset_name) in self.available_deck_presets.iter().enumerate() {
             let is_selected = self.global_fx_preset.as_ref() == Some(preset_name);
-            let is_hovered = self.global_fx_hover_index == Some(i);
+            let is_hovered = self.global_fx_hover_index == Some(i + 1);
             let name = preset_name.clone();
             items.push(
                 button(text(preset_name).size(10))

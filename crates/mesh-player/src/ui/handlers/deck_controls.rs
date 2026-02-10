@@ -791,28 +791,32 @@ pub(crate) fn handle_toggle_global_fx_picker(app: &mut MeshApp) {
 }
 
 /// Handle scrolling through the global FX preset list (from MIDI encoder)
+///
+/// Hover index includes "No FX" at position 0:
+///   0 = "No FX", 1..=N = preset at index (i-1) in available_deck_presets
 pub(crate) fn handle_global_fx_scroll(app: &mut MeshApp, delta: i32) {
     // Refresh presets list if empty
     if app.available_deck_presets.is_empty() {
         app.available_deck_presets = list_deck_presets(&app.config.collection_path);
     }
 
-    let count = app.available_deck_presets.len();
-    if count == 0 {
-        return;
-    }
+    let preset_count = app.available_deck_presets.len();
+    // Total items = "No FX" + presets
+    let total_count = 1 + preset_count;
 
     // Auto-open the dropdown when scrolling via MIDI
     app.global_fx_picker_open = true;
 
-    // Move hover index
+    // Move hover index (wrapping, 0 = "No FX")
     let current = app.global_fx_hover_index.unwrap_or(0) as i32;
-    let new_idx = (current + delta).rem_euclid(count as i32) as usize;
+    let new_idx = (current + delta).rem_euclid(total_count as i32) as usize;
     app.global_fx_hover_index = Some(new_idx);
 
     // Update status to show what's highlighted
-    if let Some(name) = app.available_deck_presets.get(new_idx) {
-        app.status = format!("FX: {} ({}/{})", name, new_idx + 1, count);
+    if new_idx == 0 {
+        app.status = format!("FX: (No FX) (1/{})", total_count);
+    } else if let Some(name) = app.available_deck_presets.get(new_idx - 1) {
+        app.status = format!("FX: {} ({}/{})", name, new_idx + 1, total_count);
     }
 }
 

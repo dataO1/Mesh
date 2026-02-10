@@ -205,6 +205,11 @@ impl MixerView {
         self.channel_cue.get(ch).copied().unwrap_or(false)
     }
 
+    /// Get the channel volume (0.0-1.0)
+    pub fn channel_volume(&self, ch: usize) -> f32 {
+        self.channel_volumes.get(ch).copied().unwrap_or(1.0)
+    }
+
     /// Set cue enabled state for a channel (local UI state only)
     pub fn set_cue_enabled(&mut self, ch: usize, enabled: bool) {
         if ch < 4 {

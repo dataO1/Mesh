@@ -169,6 +169,19 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   FX macros). Mapped knobs send continuous CC values to the shared deck macro
   sliders for real-time effect control.
 
+- **"No FX" encoder selection** — The global FX dropdown now includes "No FX"
+  as the first item reachable via MIDI encoder scroll. Selecting it clears the
+  FX preset from all decks, returning them to passthrough mode.
+
+- **Loop length indicator in waveform header** — The canvas deck header now
+  displays the current loop length (e.g., "↻4", "↻1/2") next to the BPM
+  indicator. The text turns green when the loop is active, gray when inactive.
+
+- **Volume-based waveform dimming** — Waveforms now visually dim based on the
+  channel volume fader position. At full volume no dimming is applied; as
+  the fader lowers, a semi-transparent overlay gradually darkens the waveform
+  area, providing instant visual feedback of relative deck volumes.
+
 ### Fixed
 
 - **mesh-cue CLAP latency display** — CLAP plugin latency is now shown in the

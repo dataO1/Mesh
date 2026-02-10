@@ -373,6 +373,11 @@ impl DeckView {
         self.loop_active
     }
 
+    /// Get current loop length in beats
+    pub fn loop_length_beats(&self) -> f32 {
+        self.loop_length_beats
+    }
+
     /// Check if slip mode is enabled
     pub fn slip_enabled(&self) -> bool {
         self.slip_enabled
