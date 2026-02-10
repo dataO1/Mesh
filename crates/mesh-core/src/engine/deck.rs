@@ -399,7 +399,7 @@ impl Deck {
             shift_held: false,
             stretch_ratio: 1.0, // No stretching by default
             hot_cue_preview_return: None,
-            slip_enabled: false,
+            slip_enabled: true,
             slip_position: None,
             atomics: Arc::new(DeckAtomics::new()),
             stem_buffers: std::array::from_fn(|_| StereoBuffer::silence(MAX_BUFFER_SIZE)),

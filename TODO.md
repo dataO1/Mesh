@@ -285,10 +285,9 @@ and mesh-widget and only if necessary in the ui.
     - [x] the stem linking buttons should be moved to a column with 4 rows for
       each button right to the waveforms canvas, fitting the height.
     - [x] now the slice widget lives underneight the queue and loop buttons.
-
 - [ ] a single morph knob for slicer per deck. this should scroll through a
       presets preset banks. preset banks have up to 8 presets
-
+- [x] slip mode should be on per default for each deck.
 
 
 # Bugs
@@ -364,6 +363,11 @@ and mesh-widget and only if necessary in the ui.
 - [x] file browser both in mesh-cue and mesh-player sometimes takes up to much
   space, it should just be as big without blocking the rest of the ui. for
   example the hot cue buttons should have a fixed size in mesh-cue.
+- [x] if beat jumping with the main/master track its not aligned properly, since
+  we dont have a reference for aligning it. beat jumping/pressing hot cues
+  should switch the master/main track to the second oldest running track, then
+  perform the action on the old master, so its automatically synced to the
+  new master. this should be an atomic action and abstracted away in the engine.
 - [x] drag and drop should also work on the file list of the file browser (right
   column), not only the playlist label(left column)
 - [x] stem linking visuals:
@@ -390,16 +394,11 @@ and mesh-widget and only if necessary in the ui.
 - [ ] The beat grid analysis is not really good, we need to check if we can fine
   tune this. research the essentia beatgrid/rythm section and check if we can
   use edm specific beat grid detection, ive read this exists.
-- [ ] the initial state of the mixer etc is not in sync with the hardware, for
+- [x] the initial state of the mixer etc is not in sync with the hardware, for
   example channel volume faders are down on hardware but initally up in
   software, which leads to jumping the first time we move hardware. read the
   hardware state at initialization. i think this should be its own stage during
   player generation.
-- [ ] if beat jumping with the main/master track its not aligned properly, since
-  we dont have a reference for aligning it. beat jumping/pressing hot cues
-  should switch the master/main track to the second oldest running track, then
-  perform the action on the old master, so its automatically synced to the
-  new master. this should be an atomic action and abstracted away in the engine.
 
 # Performance
 - [ ] Can we optimize how stems are stored, this is currently roughly 200-300 mb
@@ -413,6 +412,13 @@ and mesh-widget and only if necessary in the ui.
   the computational overhead for each frame and how we can factor out some
   not-frequently changing information into message/subscription instead of tick
   handlers. currently the canvas sometimes skips frames.
+
+# Open questions
+- [ ] How do we manage user settings in a B2B setting? so when more than on user
+  play on the same device, each having their stick with settings put in the
+  hardware. how does the system determine which settings to take on? the first
+  one? should we have a b2b mode, where one deck or two decks in case of 4 total
+  decks per player use the djs settings?
 
 # Package Building
 - debian now builds for older target (ubuntu 22.04, works on older popos as well)
@@ -542,3 +548,9 @@ and mesh-widget and only if necessary in the ui.
   1. Time stretching (76% of linked stem load) - Would need GPU acceleration or quality tradeoffs
   2. USB I/O (~450ms per track) - Hardware limited, could potentially use async prefetching
   3. Buffer allocation (~270-500ms) - Could pool/reuse buffers across loads
+
+# Changelog
+
+## v0.6.13
+- fix: preserve master deck phase offset on beat jump and hot cue press
+- feat: enable slip mode by default for all decks
