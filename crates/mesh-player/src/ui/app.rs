@@ -184,6 +184,31 @@ impl MeshApp {
             config.audio.loudness.clone(),
         );
 
+        // Sync initial mixer state to engine (UI defaults to 0.0 volume,
+        // engine defaults to 1.0 — must agree to avoid fader jump on first move)
+        for ch in 0..4 {
+            domain.set_volume(ch, 0.0);
+        }
+        domain.set_master_volume(0.8);
+        domain.set_cue_volume(0.8);
+
+        // Apply default loop length from config to all decks
+        let default_loop_idx = config.display.default_loop_length_index;
+        for deck in 0..4 {
+            domain.set_loop_length_index(deck, default_loop_idx);
+        }
+
+        // Initialize deck views with configured loop length
+        let mut deck_views = [
+            DeckView::new(0),
+            DeckView::new(1),
+            DeckView::new(2),
+            DeckView::new(3),
+        ];
+        for dv in &mut deck_views {
+            dv.sync_loop_length_index(default_loop_idx as u8);
+        }
+
         Self {
             domain,
             deck_atomics,
@@ -194,12 +219,7 @@ impl MeshApp {
                 state.set_stem_colors(config.display.stem_color_palette.colors());
                 state
             },
-            deck_views: [
-                DeckView::new(0),
-                DeckView::new(1),
-                DeckView::new(2),
-                DeckView::new(3),
-            ],
+            deck_views,
             mixer_view: MixerView::new(),
             collection_browser: CollectionBrowserState::new(
                 config.collection_path.clone(),

@@ -66,7 +66,7 @@ impl MixerView {
     /// Create a new mixer view
     pub fn new() -> Self {
         Self {
-            channel_volumes: [0.75; 4],
+            channel_volumes: [0.0; 4],
             channel_filters: [0.0; 4],
             channel_eq_hi: [0.5; 4],
             channel_eq_mid: [0.5; 4],

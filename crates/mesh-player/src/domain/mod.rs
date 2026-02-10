@@ -594,6 +594,11 @@ impl MeshDomain {
         self.send_command(EngineCommand::AdjustLoopLength { deck, direction });
     }
 
+    /// Set loop length by index (0-6 maps to 0.25, 0.5, 1, 2, 4, 8, 16 beats)
+    pub fn set_loop_length_index(&mut self, deck: usize, index: usize) {
+        self.send_command(EngineCommand::SetLoopLengthIndex { deck, index });
+    }
+
     /// Toggle slip mode
     pub fn toggle_slip(&mut self, deck: usize) {
         self.send_command(EngineCommand::ToggleSlip { deck });
