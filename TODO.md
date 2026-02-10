@@ -200,6 +200,10 @@ and mesh-widget and only if necessary in the ui.
      energy instead of exact key match (so the user has 3 options, lower energy,
      keep, or up the energy)?
    - [ ] backup of database (without wav files, just db)
+- [ ] MIDI Light feedback:
+  - [ ] sometimes flickering
+  - [ ] we need to distinguish RGB or fixed light color? how does this work?
+    also different actions/states need different colors if we support rgb.
 
 # Changes
 - [x] The waveform indicators of hot cues use colors, but the hot cue buttons
@@ -386,6 +390,16 @@ and mesh-widget and only if necessary in the ui.
 - [ ] The beat grid analysis is not really good, we need to check if we can fine
   tune this. research the essentia beatgrid/rythm section and check if we can
   use edm specific beat grid detection, ive read this exists.
+- [ ] the initial state of the mixer etc is not in sync with the hardware, for
+  example channel volume faders are down on hardware but initally up in
+  software, which leads to jumping the first time we move hardware. read the
+  hardware state at initialization. i think this should be its own stage during
+  player generation.
+- [ ] if beat jumping with the main/master track its not aligned properly, since
+  we dont have a reference for aligning it. beat jumping/pressing hot cues
+  should switch the master/main track to the second oldest running track, then
+  perform the action on the old master, so its automatically synced to the
+  new master. this should be an atomic action and abstracted away in the engine.
 
 # Performance
 - [ ] Can we optimize how stems are stored, this is currently roughly 200-300 mb
