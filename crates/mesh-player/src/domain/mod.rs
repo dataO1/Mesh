@@ -344,15 +344,38 @@ impl MeshDomain {
         self.command_sender.is_some()
     }
 
-    /// Send a command to the audio engine
+    /// Send a command to the audio engine with retry on queue-full
     ///
-    /// Returns true if the command was sent, false if the engine is not connected.
+    /// Returns true if the command was sent, false if the engine is not connected
+    /// or the command was dropped after exhausting retries.
     pub fn send_command(&mut self, command: EngineCommand) -> bool {
         if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(command);
-            true
+            Self::send_with_retry(sender, command)
         } else {
             false
+        }
+    }
+
+    /// Send a command via a CommandSender with retry-on-full logic
+    ///
+    /// When the ring buffer is full (e.g. during bulk preset loading which can
+    /// send 300-500+ commands), this retries with brief sleeps to let the audio
+    /// thread drain the queue. The UI thread can tolerate a few milliseconds of
+    /// delay; silently dropping commands cannot be tolerated.
+    fn send_with_retry(sender: &mut CommandSender, command: EngineCommand) -> bool {
+        match sender.send(command) {
+            Ok(()) => true,
+            Err(mut cmd) => {
+                for _ in 0..50 {
+                    std::thread::sleep(std::time::Duration::from_micros(100));
+                    match sender.send(cmd) {
+                        Ok(()) => return true,
+                        Err(returned) => cmd = returned,
+                    }
+                }
+                log::warn!("[COMMAND] Dropped engine command after 50 retries (queue full for >5ms)");
+                false
+            }
         }
     }
 
@@ -471,30 +494,22 @@ impl MeshDomain {
 
     /// Toggle play/pause on a deck
     pub fn toggle_play(&mut self, deck: usize) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::TogglePlay { deck });
-        }
+        self.send_command(EngineCommand::TogglePlay { deck });
     }
 
     /// Start playback on a deck
     pub fn play(&mut self, deck: usize) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::Play { deck });
-        }
+        self.send_command(EngineCommand::Play { deck });
     }
 
     /// Pause playback on a deck
     pub fn pause(&mut self, deck: usize) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::Pause { deck });
-        }
+        self.send_command(EngineCommand::Pause { deck });
     }
 
     /// Seek to a specific sample position
     pub fn seek(&mut self, deck: usize, position: usize) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::Seek { deck, position });
-        }
+        self.send_command(EngineCommand::Seek { deck, position });
     }
 
     // =========================================================================
@@ -503,23 +518,17 @@ impl MeshDomain {
 
     /// CDJ-style cue button press
     pub fn cue_press(&mut self, deck: usize) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::CuePress { deck });
-        }
+        self.send_command(EngineCommand::CuePress { deck });
     }
 
     /// CDJ-style cue button release
     pub fn cue_release(&mut self, deck: usize) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::CueRelease { deck });
-        }
+        self.send_command(EngineCommand::CueRelease { deck });
     }
 
     /// Set cue point at current position
     pub fn set_cue_point(&mut self, deck: usize) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetCuePoint { deck });
-        }
+        self.send_command(EngineCommand::SetCuePoint { deck });
     }
 
     // =========================================================================
@@ -528,23 +537,17 @@ impl MeshDomain {
 
     /// Hot cue button press (set/jump depending on state)
     pub fn hot_cue_press(&mut self, deck: usize, slot: usize) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::HotCuePress { deck, slot });
-        }
+        self.send_command(EngineCommand::HotCuePress { deck, slot });
     }
 
     /// Hot cue button release
     pub fn hot_cue_release(&mut self, deck: usize) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::HotCueRelease { deck });
-        }
+        self.send_command(EngineCommand::HotCueRelease { deck });
     }
 
     /// Clear a hot cue slot
     pub fn clear_hot_cue(&mut self, deck: usize, slot: usize) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::ClearHotCue { deck, slot });
-        }
+        self.send_command(EngineCommand::ClearHotCue { deck, slot });
     }
 
     // =========================================================================
@@ -553,23 +556,17 @@ impl MeshDomain {
 
     /// Toggle loop on/off
     pub fn toggle_loop(&mut self, deck: usize) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::ToggleLoop { deck });
-        }
+        self.send_command(EngineCommand::ToggleLoop { deck });
     }
 
     /// Adjust loop length (direction: positive = longer, negative = shorter)
     pub fn adjust_loop_length(&mut self, deck: usize, direction: i32) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::AdjustLoopLength { deck, direction });
-        }
+        self.send_command(EngineCommand::AdjustLoopLength { deck, direction });
     }
 
     /// Toggle slip mode
     pub fn toggle_slip(&mut self, deck: usize) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::ToggleSlip { deck });
-        }
+        self.send_command(EngineCommand::ToggleSlip { deck });
     }
 
     // =========================================================================
@@ -578,16 +575,12 @@ impl MeshDomain {
 
     /// Jump forward by beat_jump_size beats
     pub fn beat_jump_forward(&mut self, deck: usize) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::BeatJumpForward { deck });
-        }
+        self.send_command(EngineCommand::BeatJumpForward { deck });
     }
 
     /// Jump backward by beat_jump_size beats
     pub fn beat_jump_backward(&mut self, deck: usize) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::BeatJumpBackward { deck });
-        }
+        self.send_command(EngineCommand::BeatJumpBackward { deck });
     }
 
     // =========================================================================
@@ -596,16 +589,12 @@ impl MeshDomain {
 
     /// Toggle mute for a stem
     pub fn toggle_stem_mute(&mut self, deck: usize, stem: Stem) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::ToggleStemMute { deck, stem });
-        }
+        self.send_command(EngineCommand::ToggleStemMute { deck, stem });
     }
 
     /// Toggle solo for a stem
     pub fn toggle_stem_solo(&mut self, deck: usize, stem: Stem) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::ToggleStemSolo { deck, stem });
-        }
+        self.send_command(EngineCommand::ToggleStemSolo { deck, stem });
     }
 
     // =========================================================================
@@ -614,9 +603,7 @@ impl MeshDomain {
 
     /// Enable/disable automatic key matching for a deck
     pub fn set_key_match_enabled(&mut self, deck: usize, enabled: bool) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetKeyMatchEnabled { deck, enabled });
-        }
+        self.send_command(EngineCommand::SetKeyMatchEnabled { deck, enabled });
     }
 
     // =========================================================================
@@ -625,28 +612,22 @@ impl MeshDomain {
 
     /// Enable/disable slicer for a stem on a deck
     pub fn set_slicer_enabled(&mut self, deck: usize, stem: Stem, enabled: bool) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetSlicerEnabled { deck, stem, enabled });
-        }
+        self.send_command(EngineCommand::SetSlicerEnabled { deck, stem, enabled });
     }
 
     /// Unified slicer button action from UI
     pub fn slicer_button_action(&mut self, deck: usize, stem: Stem, button_idx: usize, shift_held: bool) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SlicerButtonAction {
-                deck,
-                stem,
-                button_idx,
-                shift_held,
-            });
-        }
+        self.send_command(EngineCommand::SlicerButtonAction {
+            deck,
+            stem,
+            button_idx,
+            shift_held,
+        });
     }
 
     /// Reset slicer queue to default order
     pub fn slicer_reset_queue(&mut self, deck: usize, stem: Stem) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SlicerResetQueue { deck, stem });
-        }
+        self.send_command(EngineCommand::SlicerResetQueue { deck, stem });
     }
 
     // =========================================================================
@@ -655,9 +636,7 @@ impl MeshDomain {
 
     /// Toggle linked stem playback (mute/unmute)
     pub fn toggle_linked_stem(&mut self, deck: usize, stem: Stem) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::ToggleLinkedStem { deck, stem });
-        }
+        self.send_command(EngineCommand::ToggleLinkedStem { deck, stem });
     }
 
     // =========================================================================
@@ -666,65 +645,47 @@ impl MeshDomain {
 
     /// Set channel volume (0.0 - 1.0)
     pub fn set_volume(&mut self, deck: usize, volume: f32) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetVolume { deck, volume });
-        }
+        self.send_command(EngineCommand::SetVolume { deck, volume });
     }
 
     /// Enable/disable cue listen (headphone monitoring) for a deck
     pub fn set_cue_listen(&mut self, deck: usize, enabled: bool) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetCueListen { deck, enabled });
-        }
+        self.send_command(EngineCommand::SetCueListen { deck, enabled });
     }
 
     /// Set high EQ (-1.0 to 1.0, 0.0 = neutral)
     pub fn set_eq_hi(&mut self, deck: usize, value: f32) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetEqHi { deck, value });
-        }
+        self.send_command(EngineCommand::SetEqHi { deck, value });
     }
 
     /// Set mid EQ (-1.0 to 1.0, 0.0 = neutral)
     pub fn set_eq_mid(&mut self, deck: usize, value: f32) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetEqMid { deck, value });
-        }
+        self.send_command(EngineCommand::SetEqMid { deck, value });
     }
 
     /// Set low EQ (-1.0 to 1.0, 0.0 = neutral)
     pub fn set_eq_lo(&mut self, deck: usize, value: f32) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetEqLo { deck, value });
-        }
+        self.send_command(EngineCommand::SetEqLo { deck, value });
     }
 
     /// Set filter position (-1.0 to 1.0, 0.0 = bypass)
     pub fn set_filter(&mut self, deck: usize, value: f32) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetFilter { deck, value });
-        }
+        self.send_command(EngineCommand::SetFilter { deck, value });
     }
 
     /// Set master output volume (0.0 - 1.0)
     pub fn set_master_volume(&mut self, volume: f32) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetMasterVolume { volume });
-        }
+        self.send_command(EngineCommand::SetMasterVolume { volume });
     }
 
     /// Set cue/master mix for headphone output (0.0 = cue only, 1.0 = master only)
     pub fn set_cue_mix(&mut self, mix: f32) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetCueMix { mix });
-        }
+        self.send_command(EngineCommand::SetCueMix { mix });
     }
 
     /// Set cue/headphone output volume (0.0 - 1.0)
     pub fn set_cue_volume(&mut self, volume: f32) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetCueVolume { volume });
-        }
+        self.send_command(EngineCommand::SetCueVolume { volume });
     }
 
     // =========================================================================
@@ -734,9 +695,7 @@ impl MeshDomain {
     /// Set global BPM and send to audio engine
     pub fn set_global_bpm_with_engine(&mut self, bpm: f64) {
         self.global_bpm = bpm;
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetGlobalBpm(bpm));
-        }
+        self.send_command(EngineCommand::SetGlobalBpm(bpm));
     }
 
     // =========================================================================
@@ -780,12 +739,10 @@ impl MeshDomain {
     /// Prefer using `apply_loaded_track()` which handles all domain state.
     /// This method is for cases where you need direct engine control.
     fn load_track_to_engine(&mut self, deck: usize, prepared: PreparedTrack) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::LoadTrack {
-                deck,
-                track: Box::new(prepared),
-            });
-        }
+        self.send_command(EngineCommand::LoadTrack {
+            deck,
+            track: Box::new(prepared),
+        });
     }
 
     // =========================================================================
@@ -797,14 +754,12 @@ impl MeshDomain {
     /// Called after the engine has loaded and aligned the linked stem.
     /// The LinkedStemData is boxed because it contains audio buffers.
     pub fn link_stem(&mut self, deck: usize, stem: Stem, linked_data: LinkedStemData, host_lufs: Option<f32>) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::LinkStem {
-                deck,
-                stem,
-                linked_stem: Box::new(linked_data),
-                host_lufs,
-            });
-        }
+        self.send_command(EngineCommand::LinkStem {
+            deck,
+            stem,
+            linked_stem: Box::new(linked_data),
+            host_lufs,
+        });
     }
 
     /// Request loading a linked stem (processed by audio engine)
@@ -819,21 +774,16 @@ impl MeshDomain {
         host_drop_marker: u64,
         host_duration: u64,
     ) -> bool {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::LoadLinkedStem(Box::new(
-                mesh_core::engine::LoadLinkedStemRequest {
-                    deck,
-                    stem_idx,
-                    path,
-                    host_bpm,
-                    host_drop_marker,
-                    host_duration,
-                },
-            )));
-            true
-        } else {
-            false
-        }
+        self.send_command(EngineCommand::LoadLinkedStem(Box::new(
+            mesh_core::engine::LoadLinkedStemRequest {
+                deck,
+                stem_idx,
+                path,
+                host_bpm,
+                host_drop_marker,
+                host_duration,
+            },
+        )))
     }
 
     // =========================================================================
@@ -842,23 +792,17 @@ impl MeshDomain {
 
     /// Enable/disable phase sync for beat matching
     pub fn set_phase_sync(&mut self, enabled: bool) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetPhaseSync(enabled));
-        }
+        self.send_command(EngineCommand::SetPhaseSync(enabled));
     }
 
     /// Set loudness configuration (triggers recalculation for all decks)
     pub fn set_loudness_config(&mut self, config: LoudnessConfig) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetLoudnessConfig(config));
-        }
+        self.send_command(EngineCommand::SetLoudnessConfig(config));
     }
 
     /// Set slicer buffer bars for a specific deck and stem
     pub fn set_slicer_buffer_bars(&mut self, deck: usize, stem: Stem, bars: u32) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetSlicerBufferBars { deck, stem, bars });
-        }
+        self.send_command(EngineCommand::SetSlicerBufferBars { deck, stem, bars });
     }
 
     /// Apply slicer buffer bars to all decks and stems
@@ -875,11 +819,9 @@ impl MeshDomain {
     ///
     /// Presets are loaded from shared config and define per-stem patterns.
     pub fn set_slicer_presets(&mut self, presets: [SlicerPreset; 8]) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetSlicerPresets {
-                presets: Box::new(presets),
-            });
-        }
+        self.send_command(EngineCommand::SetSlicerPresets {
+            presets: Box::new(presets),
+        });
     }
 
     // =========================================================================
@@ -955,7 +897,7 @@ impl MeshDomain {
 
         // Send to audio engine via command (add to specified band of multiband container)
         if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::AddMultibandBandEffect {
+            Self::send_with_retry(sender, EngineCommand::AddMultibandBandEffect {
                 deck,
                 stem,
                 band_index,
@@ -1020,7 +962,7 @@ impl MeshDomain {
 
         // Send to audio engine via command (add to specified band of multiband container)
         if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::AddMultibandBandEffect {
+            Self::send_with_retry(sender, EngineCommand::AddMultibandBandEffect {
                 deck,
                 stem,
                 band_index,
@@ -1112,14 +1054,12 @@ impl MeshDomain {
 
     /// Add an effect to a specific band in a stem's multiband container
     pub fn add_effect_to_band(&mut self, deck: usize, stem: Stem, band_index: usize, effect: Box<dyn Effect>) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::AddMultibandBandEffect {
-                deck,
-                stem,
-                band_index,
-                effect,
-            });
-        }
+        self.send_command(EngineCommand::AddMultibandBandEffect {
+            deck,
+            stem,
+            band_index,
+            effect,
+        });
     }
 
     /// Remove an effect from band 0 of a stem's multiband container by index
@@ -1129,14 +1069,12 @@ impl MeshDomain {
 
     /// Remove an effect from a specific band in a stem's multiband container
     pub fn remove_effect_from_band(&mut self, deck: usize, stem: Stem, band_index: usize, effect_index: usize) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::RemoveMultibandBandEffect {
-                deck,
-                stem,
-                band_index,
-                effect_index,
-            });
-        }
+        self.send_command(EngineCommand::RemoveMultibandBandEffect {
+            deck,
+            stem,
+            band_index,
+            effect_index,
+        });
     }
 
     /// Set bypass state for an effect in band 0 of a stem's multiband container
@@ -1146,15 +1084,13 @@ impl MeshDomain {
 
     /// Set bypass state for an effect in a specific band
     pub fn set_band_effect_bypass(&mut self, deck: usize, stem: Stem, band_index: usize, effect_index: usize, bypass: bool) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetMultibandEffectBypass {
-                deck,
-                stem,
-                band_index,
-                effect_index,
-                bypass,
-            });
-        }
+        self.send_command(EngineCommand::SetMultibandEffectBypass {
+            deck,
+            stem,
+            band_index,
+            effect_index,
+            bypass,
+        });
     }
 
     /// Set a parameter value on an effect in band 0
@@ -1186,16 +1122,14 @@ impl MeshDomain {
         param_index: usize,
         value: f32,
     ) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetMultibandEffectParam {
-                deck,
-                stem,
-                band_index,
-                effect_index,
-                param_index,
-                value,
-            });
-        }
+        self.send_command(EngineCommand::SetMultibandEffectParam {
+            deck,
+            stem,
+            band_index,
+            effect_index,
+            param_index,
+            value,
+        });
     }
 
     // =========================================================================
@@ -1212,7 +1146,7 @@ impl MeshDomain {
         let effect_info = effect.info().clone();
 
         if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::AddMultibandPreFx { deck, stem, effect });
+            Self::send_with_retry(sender, EngineCommand::AddMultibandPreFx { deck, stem, effect });
             log::info!("Added PD pre-fx '{}' to deck {} stem {:?} ({} params)",
                 effect_id, deck, stem, effect_info.params.len());
             Ok(effect_info)
@@ -1234,7 +1168,7 @@ impl MeshDomain {
         self.clap_gui_handles.insert(effect_instance_id.clone(), gui_handle);
 
         if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::AddMultibandPreFx { deck, stem, effect });
+            Self::send_with_retry(sender, EngineCommand::AddMultibandPreFx { deck, stem, effect });
             log::info!("Added CLAP pre-fx '{}' to deck {} stem {:?} ({} params, GUI handle stored)",
                 plugin_id, deck, stem, effect_info.params.len());
             Ok(effect_info)
@@ -1246,23 +1180,17 @@ impl MeshDomain {
 
     /// Remove a pre-fx effect by index
     pub fn remove_pre_fx_effect(&mut self, deck: usize, stem: Stem, effect_index: usize) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::RemoveMultibandPreFx { deck, stem, effect_index });
-        }
+        self.send_command(EngineCommand::RemoveMultibandPreFx { deck, stem, effect_index });
     }
 
     /// Set bypass state for a pre-fx effect
     pub fn set_pre_fx_bypass(&mut self, deck: usize, stem: Stem, effect_index: usize, bypass: bool) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetMultibandPreFxBypass { deck, stem, effect_index, bypass });
-        }
+        self.send_command(EngineCommand::SetMultibandPreFxBypass { deck, stem, effect_index, bypass });
     }
 
     /// Set a parameter value on a pre-fx effect
     pub fn set_pre_fx_param(&mut self, deck: usize, stem: Stem, effect_index: usize, param_index: usize, value: f32) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetMultibandPreFxParam { deck, stem, effect_index, param_index, value });
-        }
+        self.send_command(EngineCommand::SetMultibandPreFxParam { deck, stem, effect_index, param_index, value });
     }
 
     // =========================================================================
@@ -1279,7 +1207,7 @@ impl MeshDomain {
         let effect_info = effect.info().clone();
 
         if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::AddMultibandPostFx { deck, stem, effect });
+            Self::send_with_retry(sender, EngineCommand::AddMultibandPostFx { deck, stem, effect });
             log::info!("Added PD post-fx '{}' to deck {} stem {:?} ({} params)",
                 effect_id, deck, stem, effect_info.params.len());
             Ok(effect_info)
@@ -1301,7 +1229,7 @@ impl MeshDomain {
         self.clap_gui_handles.insert(effect_instance_id.clone(), gui_handle);
 
         if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::AddMultibandPostFx { deck, stem, effect });
+            Self::send_with_retry(sender, EngineCommand::AddMultibandPostFx { deck, stem, effect });
             log::info!("Added CLAP post-fx '{}' to deck {} stem {:?} ({} params, GUI handle stored)",
                 plugin_id, deck, stem, effect_info.params.len());
             Ok(effect_info)
@@ -1313,23 +1241,17 @@ impl MeshDomain {
 
     /// Remove a post-fx effect by index
     pub fn remove_post_fx_effect(&mut self, deck: usize, stem: Stem, effect_index: usize) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::RemoveMultibandPostFx { deck, stem, effect_index });
-        }
+        self.send_command(EngineCommand::RemoveMultibandPostFx { deck, stem, effect_index });
     }
 
     /// Set bypass state for a post-fx effect
     pub fn set_post_fx_bypass(&mut self, deck: usize, stem: Stem, effect_index: usize, bypass: bool) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetMultibandPostFxBypass { deck, stem, effect_index, bypass });
-        }
+        self.send_command(EngineCommand::SetMultibandPostFxBypass { deck, stem, effect_index, bypass });
     }
 
     /// Set a parameter value on a post-fx effect
     pub fn set_post_fx_param(&mut self, deck: usize, stem: Stem, effect_index: usize, param_index: usize, value: f32) {
-        if let Some(ref mut sender) = self.command_sender {
-            let _ = sender.send(EngineCommand::SetMultibandPostFxParam { deck, stem, effect_index, param_index, value });
-        }
+        self.send_command(EngineCommand::SetMultibandPostFxParam { deck, stem, effect_index, param_index, value });
     }
 
     /// Rescan for effects (e.g., after user adds new effects to the folder)

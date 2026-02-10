@@ -546,9 +546,10 @@ pub enum EngineCommand {
 
 /// Capacity of the command queue
 ///
-/// 64 commands is enough for ~1 second of rapid button presses at 60fps.
-/// If the queue fills up, new commands are dropped (better than blocking).
-pub const COMMAND_QUEUE_CAPACITY: usize = 64;
+/// Bulk operations like preset loading can send 300-500+ commands in a burst
+/// (effects, parameters, dry/wet values, macro mappings per stem). 1024
+/// provides headroom while keeping memory usage modest (~200 KB per channel).
+pub const COMMAND_QUEUE_CAPACITY: usize = 1024;
 
 /// Create a new command channel (producer/consumer pair)
 ///

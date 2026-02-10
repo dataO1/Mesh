@@ -194,6 +194,15 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   modulated parameter values are computed and sent directly to the audio engine,
   matching the proven approach used in mesh-cue.
 
+- **Engine macro mappings dropped during preset loading** — Deck presets with
+  macro mappings now load correctly in mesh-player. Previously, bulk preset
+  loading sent 300-500+ commands in a tight burst that overflowed the 64-slot
+  `rtrb` ring buffer. `AddMultibandMacroMapping` commands near the end of each
+  stem's burst were silently dropped, resulting in `(has 0 mappings)` for all
+  stems. Fixed by increasing queue capacity to 1024 and adding retry-with-backoff
+  logic so the UI thread briefly yields when the queue is full instead of
+  discarding commands.
+
 ### Changed
 
 - **Unified effects directory** — Each effect type has its own subfolder:
