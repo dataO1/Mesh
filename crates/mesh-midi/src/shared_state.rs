@@ -1,18 +1,19 @@
-//! Shared MIDI state between input callback thread and mapping engine
+//! Shared state between input callback thread and mapping engine
 //!
-//! This module provides thread-safe shared state that both the midir input callback
-//! and the mapping engine can access. The input callback writes shift/layer state,
-//! while the mapping engine reads it to resolve deck targeting and shift actions.
+//! This module provides thread-safe shared state that both input callbacks
+//! (MIDI driver thread, HID I/O thread) and the mapping engine can access.
+//! The input callbacks write shift/layer state, while the mapping engine
+//! reads it to resolve deck targeting and shift actions.
 
 use crate::deck_target::DeckTargetState;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
 
-/// Shared state between MIDI input callback and mapping engine
+/// Shared state between input callbacks and mapping engine
 ///
-/// Both the input callback (midir driver thread) and the mapping engine
-/// reference this via `Arc<SharedMidiState>`.
-pub struct SharedMidiState {
+/// Both input callbacks (MIDI/HID threads) and the mapping engine
+/// reference this via `Arc<SharedState>`.
+pub struct SharedState {
     /// Global shift: true if ANY shift button is held
     pub shift_held_global: AtomicBool,
     /// Per-physical-deck shift state (index 0 = left, 1 = right)
@@ -21,7 +22,10 @@ pub struct SharedMidiState {
     pub deck_target: RwLock<DeckTargetState>,
 }
 
-impl SharedMidiState {
+/// Backwards-compatible type alias
+pub type SharedMidiState = SharedState;
+
+impl SharedState {
     /// Create new shared state from a deck target configuration
     pub fn new(deck_target: DeckTargetState) -> Self {
         Self {
@@ -91,7 +95,7 @@ impl SharedMidiState {
     }
 }
 
-impl Default for SharedMidiState {
+impl Default for SharedState {
     fn default() -> Self {
         Self::new(DeckTargetState::default())
     }

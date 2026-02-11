@@ -6,8 +6,9 @@
 use crate::config::MidiControlConfig;
 use crate::mapping::MappingEngine;
 use crate::messages::MidiMessage;
-use crate::shared_state::SharedMidiState;
-use crate::MidiConnectionError;
+use crate::shared_state::SharedState;
+use crate::types::{ControlAddress, MidiAddress};
+use super::connection::MidiConnectionError;
 use flume::Sender;
 use midir::MidiInputConnection;
 use std::sync::Arc;
@@ -136,18 +137,31 @@ impl MidiInputEvent {
     }
 }
 
+/// Convert a raw MIDI event to a ControlAddress for matching against config
+fn midi_event_to_address(event: &MidiInputEvent) -> ControlAddress {
+    match event {
+        MidiInputEvent::NoteOn { channel, note, .. }
+        | MidiInputEvent::NoteOff { channel, note, .. } => {
+            ControlAddress::Midi(MidiAddress::Note { channel: *channel, note: *note })
+        }
+        MidiInputEvent::ControlChange { channel, cc, .. } => {
+            ControlAddress::Midi(MidiAddress::CC { channel: *channel, cc: *cc })
+        }
+    }
+}
+
 /// Callback data passed to midir
 struct CallbackData {
     message_tx: Sender<MidiMessage>,
     /// Optional raw event sender for learn mode
     raw_event_tx: Option<Sender<MidiInputEvent>>,
     mapping_engine: Arc<MappingEngine>,
-    /// Per-physical-deck shift buttons: (control, physical_deck)
-    shift_buttons: Vec<(MidiControlConfig, usize)>,
-    /// Layer toggle controls: (control, physical_deck)
-    toggle_controls: Vec<(MidiControlConfig, usize)>,
+    /// Per-physical-deck shift buttons: (control address, physical_deck)
+    shift_buttons: Vec<(ControlAddress, usize)>,
+    /// Layer toggle controls: (control address, physical_deck)
+    toggle_controls: Vec<(ControlAddress, usize)>,
     /// Shared state for shift/layer (shared with mapping engine and app)
-    shared_state: Arc<SharedMidiState>,
+    shared_state: Arc<SharedState>,
 }
 
 /// MIDI input handler
@@ -157,7 +171,7 @@ pub struct MidiInputHandler {
     /// The midir connection (kept alive for the duration)
     _connection: MidiInputConnection<CallbackData>,
     /// Shared MIDI state (shift, layers)
-    shared_state: Arc<SharedMidiState>,
+    shared_state: Arc<SharedState>,
     /// Raw event receiver for learn mode
     raw_event_rx: Option<flume::Receiver<MidiInputEvent>>,
 }
@@ -170,9 +184,9 @@ impl MidiInputHandler {
         port_match: &str,
         message_tx: Sender<MidiMessage>,
         mapping_engine: Arc<MappingEngine>,
-        shared_state: Arc<SharedMidiState>,
-        shift_buttons: Vec<(MidiControlConfig, usize)>,
-        toggle_controls: Vec<(MidiControlConfig, usize)>,
+        shared_state: Arc<SharedState>,
+        shift_buttons: Vec<(ControlAddress, usize)>,
+        toggle_controls: Vec<(ControlAddress, usize)>,
     ) -> Result<Self, MidiConnectionError> {
         Self::connect_with_raw_events(
             port_match, message_tx, mapping_engine, shared_state,
@@ -188,12 +202,12 @@ impl MidiInputHandler {
         port_match: &str,
         message_tx: Sender<MidiMessage>,
         mapping_engine: Arc<MappingEngine>,
-        shared_state: Arc<SharedMidiState>,
-        shift_buttons: Vec<(MidiControlConfig, usize)>,
-        toggle_controls: Vec<(MidiControlConfig, usize)>,
+        shared_state: Arc<SharedState>,
+        shift_buttons: Vec<(ControlAddress, usize)>,
+        toggle_controls: Vec<(ControlAddress, usize)>,
         capture_raw: bool,
     ) -> Result<Self, MidiConnectionError> {
-        let (midi_in, port) = crate::connection::MidiConnection::find_input_port(port_match)?;
+        let (midi_in, port) = super::connection::MidiConnection::find_input_port(port_match)?;
 
         // Create raw event channel if requested
         let (raw_event_tx, raw_event_rx) = if capture_raw {
@@ -249,9 +263,12 @@ impl MidiInputHandler {
             let _ = raw_tx.try_send(event);
         }
 
+        // Build the ControlAddress for this MIDI event (for matching shift/toggle)
+        let event_address = midi_event_to_address(&event);
+
         // Check for per-deck shift buttons FIRST (before mapping engine)
-        for (shift_ctrl, physical_deck) in &callback_data.shift_buttons {
-            if event.matches(shift_ctrl) {
+        for (shift_addr, physical_deck) in &callback_data.shift_buttons {
+            if *shift_addr == event_address {
                 let held = event.is_press();
                 callback_data.shared_state.set_shift_for_deck(*physical_deck, held);
                 log::debug!(
@@ -270,8 +287,8 @@ impl MidiInputHandler {
         }
 
         // Check for layer toggle buttons
-        for (toggle_ctrl, physical_deck) in &callback_data.toggle_controls {
-            if event.matches(toggle_ctrl) {
+        for (toggle_addr, physical_deck) in &callback_data.toggle_controls {
+            if *toggle_addr == event_address {
                 if event.is_press() {
                     callback_data.shared_state.toggle_layer(*physical_deck);
                     log::debug!(
@@ -287,8 +304,9 @@ impl MidiInputHandler {
             }
         }
 
-        // Map event to action (shift state is read from shared state inside map_event)
-        if let Some(ref message) = callback_data.mapping_engine.map_event(&event) {
+        // Convert to protocol-agnostic ControlEvent, then map to action
+        let control_event = crate::types::ControlEvent::from(&event);
+        if let Some(ref message) = callback_data.mapping_engine.map_event(&control_event) {
             log::debug!("[MIDI IN] -> {:?}", message);
             // Send to app (non-blocking)
             if callback_data.message_tx.try_send(message.clone()).is_err() {

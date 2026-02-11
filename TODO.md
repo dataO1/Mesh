@@ -75,6 +75,26 @@ as much as possible in mesh-core and mesh-widget and only if necessary in the ui
 - [ ] Beat grid analysis quality is not good enough. Research essentia
   beatgrid/rhythm section for EDM-specific beat grid detection.
 
+## HID/MIDI Unification
+- [ ] HID learn capture race from Settings UI: when learn mode is started from
+  the Settings UI (not --midi-learn), the existing controller has profiles
+  matched to HID devices. drain() in tick handler consumes HID events through
+  the mapping engine before learn-mode capture code can see them. Fix: skip
+  drain() when learn mode is active, or reconnect controller in learn-only
+  mode when entering learn from Settings. (mesh-player/src/ui/handlers/tick.rs)
+- [ ] Shared HID event channel has no device tag: all HID devices share one
+  hid_event_rx channel. In drain(), each event is checked against every HID
+  device's mapping engine. If two identical devices (e.g. two Kontrol F1s) are
+  connected, an event from one could match the other's profile. Fix: tag
+  ControlEvent with a device_id and match against the originating device only.
+  (mesh-midi/src/lib.rs, mesh-midi/src/hid/thread.rs)
+- [ ] FeedbackChangeTracker is value-only, not color-aware: tracks by
+  (ControlAddress, u8 value) but not RGB color. If two states have the same
+  value but different colors (e.g. on_value: 127 red vs alt_on_value: 127
+  green), the color change is suppressed. Fix: track (value, Option<[u8;3]>)
+  as cached state. Currently not triggered because layer feedback uses
+  different values (127 vs 50). (mesh-midi/src/feedback.rs)
+
 # Performance
 - [ ] Optimise stem storage (currently ~200-300 MB per multi-track file).
 - [ ] Reduce code in tick handlers (both player and cue) to lower per-frame

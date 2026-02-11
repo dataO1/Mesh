@@ -3,6 +3,7 @@
 //! Configuration is stored as YAML in the mesh collection folder.
 //! Default location: ~/Music/mesh-collection/midi.yaml
 
+use crate::types::ControlAddress;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -15,7 +16,7 @@ pub struct MidiConfig {
     pub devices: Vec<DeviceProfile>,
 }
 
-/// Configuration for a specific MIDI device
+/// Configuration for a specific controller device (MIDI, HID, or mixed)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceProfile {
     /// Human-readable device name
@@ -29,6 +30,16 @@ pub struct DeviceProfile {
     /// e.g., "DDJ-SB2 MIDI 1" - used for precise matching before falling back to port_match
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub learned_port_name: Option<String>,
+
+    /// Device type identifier for HID devices (e.g., "kontrol_f1")
+    /// Used to select the correct HID driver at connection time
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_type: Option<String>,
+
+    /// HID product name substring to match (case-insensitive)
+    /// Matched against USB product descriptor for HID device association
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hid_product_match: Option<String>,
 
     /// Deck targeting configuration
     #[serde(default)]
@@ -64,9 +75,9 @@ pub enum DeckTargetConfig {
     /// Layer toggle mode (for 2-deck controllers accessing 4 virtual decks)
     Layer {
         /// Toggle button for left physical deck (Deck 1/3)
-        toggle_left: MidiControlConfig,
+        toggle_left: ControlAddress,
         /// Toggle button for right physical deck (Deck 2/4)
-        toggle_right: MidiControlConfig,
+        toggle_right: ControlAddress,
         /// Virtual deck indices for Layer A (default layer)
         layer_a: Vec<usize>,
         /// Virtual deck indices for Layer B (toggled layer)
@@ -128,8 +139,8 @@ impl MidiControlConfig {
 /// Per-physical-deck shift button configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShiftButtonConfig {
-    /// MIDI control for this shift button
-    pub control: MidiControlConfig,
+    /// Control address for this shift button (MIDI or HID)
+    pub control: ControlAddress,
     /// Which physical deck this shift button belongs to (0 = left, 1 = right)
     pub physical_deck: usize,
 }
@@ -137,8 +148,8 @@ pub struct ShiftButtonConfig {
 /// Single control-to-action mapping
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlMapping {
-    /// MIDI control identifier
-    pub control: MidiControlConfig,
+    /// Control address (MIDI note/CC or HID named control)
+    pub control: ControlAddress,
 
     /// Action to trigger (e.g., "deck.play", "mixer.volume")
     pub action: String,
@@ -282,10 +293,10 @@ pub struct FeedbackMapping {
     #[serde(default)]
     pub params: HashMap<String, serde_yaml::Value>,
 
-    /// MIDI output control
-    pub output: MidiControlConfig,
+    /// Output control address (MIDI note/CC or HID named control)
+    pub output: ControlAddress,
 
-    /// Value to send when state is true/active
+    /// Value to send when state is true/active (MIDI velocity / LED brightness)
     pub on_value: u8,
 
     /// Value to send when state is false/inactive
@@ -295,6 +306,18 @@ pub struct FeedbackMapping {
     /// When set and state is "deck.layer_active", Layer A uses on_value, Layer B uses alt_on_value
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alt_on_value: Option<u8>,
+
+    /// RGB color when state is active (for HID devices with RGB LEDs)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_color: Option<[u8; 3]>,
+
+    /// RGB color when state is inactive
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub off_color: Option<[u8; 3]>,
+
+    /// RGB color for Layer B active state (alternative to on_color)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alt_on_color: Option<[u8; 3]>,
 }
 
 /// Get the default MIDI config file path
@@ -467,24 +490,28 @@ devices:
     deck_target:
       type: "Layer"
       toggle_left:
-        type: "Note"
+        protocol: "midi"
+        type: "note"
         channel: 0
         note: 0x72
       toggle_right:
-        type: "Note"
+        protocol: "midi"
+        type: "note"
         channel: 1
         note: 0x72
       layer_a: [0, 1]
       layer_b: [2, 3]
     shift_buttons:
       - control:
-          type: "Note"
+          protocol: "midi"
+          type: "note"
           channel: 0
           note: 0x63
         physical_deck: 0
     mappings:
       - control:
-          type: "Note"
+          protocol: "midi"
+          type: "note"
           channel: 0
           note: 0x0B
         action: "deck.play"
@@ -497,6 +524,44 @@ devices:
         assert_eq!(config.devices[0].name, "Test Controller");
         assert_eq!(config.devices[0].mappings.len(), 1);
         assert_eq!(config.devices[0].mappings[0].action, "deck.play");
+    }
+
+    #[test]
+    fn test_yaml_parsing_hid() {
+        let yaml = r#"
+devices:
+  - name: "Kontrol F1"
+    port_match: ""
+    device_type: "kontrol_f1"
+    hid_product_match: "Kontrol F1"
+    mappings:
+      - control:
+          protocol: "hid"
+          name: "grid_1"
+        action: "deck.pad_press"
+        physical_deck: 0
+        behavior: momentary
+        params:
+          pad: 0
+    feedback:
+      - state: "deck.hot_cue_set"
+        physical_deck: 0
+        params:
+          slot: 0
+        output:
+          protocol: "hid"
+          name: "grid_1"
+        on_value: 127
+        off_value: 0
+        on_color: [127, 0, 0]
+        off_color: [0, 0, 0]
+"#;
+
+        let config: MidiConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.devices.len(), 1);
+        assert_eq!(config.devices[0].device_type, Some("kontrol_f1".to_string()));
+        assert_eq!(config.devices[0].mappings[0].action, "deck.pad_press");
+        assert_eq!(config.devices[0].feedback[0].on_color, Some([127, 0, 0]));
     }
 
     #[test]
@@ -544,6 +609,8 @@ devices:
             name: "My SB2".to_string(),
             port_match: "sb2".to_string(),
             learned_port_name: Some("DDJ-SB2:DDJ-SB2 MIDI 1".to_string()),
+            device_type: None,
+            hid_product_match: None,
             deck_target: DeckTargetConfig::default(),
             pad_mode_source: PadModeSource::default(),
             shift_buttons: vec![],
@@ -563,6 +630,8 @@ devices:
             name: "My SB2".to_string(),
             port_match: "sb2".to_string(),
             learned_port_name: Some("DDJ-SB2 MIDI 1".to_string()),
+            device_type: None,
+            hid_product_match: None,
             deck_target: DeckTargetConfig::default(),
             pad_mode_source: PadModeSource::default(),
             shift_buttons: vec![],
@@ -576,6 +645,8 @@ devices:
             name: "My SB2".to_string(),
             port_match: "sb2".to_string(),
             learned_port_name: None,
+            device_type: None,
+            hid_product_match: None,
             deck_target: DeckTargetConfig::default(),
             pad_mode_source: PadModeSource::default(),
             shift_buttons: vec![],

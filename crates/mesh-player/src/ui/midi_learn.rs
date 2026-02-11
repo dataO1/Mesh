@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 use iced::widget::{button, column, container, row, text, text_input, Space};
 use iced::{Alignment, Color, Element, Length};
 use mesh_midi::{
-    ControlBehavior, ControlMapping, DeckTargetConfig, DeviceProfile, FeedbackMapping,
-    HardwareType, MidiConfig, MidiControlConfig, MidiSampleBuffer, ShiftButtonConfig,
+    ControlAddress, ControlBehavior, ControlMapping, DeckTargetConfig, DeviceProfile,
+    FeedbackMapping, HardwareType, MidiAddress, MidiConfig, MidiSampleBuffer, ShiftButtonConfig,
 };
 
 /// Debounce duration for MIDI capture (prevents release/encoder spam from double-mapping)
@@ -183,44 +183,96 @@ impl HighlightTarget {
     }
 }
 
-/// A learned MIDI mapping (input captured during learn mode)
+/// A learned mapping (input captured during learn mode)
 #[derive(Debug, Clone)]
 pub struct LearnedMapping {
     /// The target this mapping is for
     pub target: HighlightTarget,
-    /// MIDI channel (0-15)
-    pub channel: u8,
-    /// Note number (for Note messages) or CC number (for CC messages)
-    pub number: u8,
-    /// Whether this is a Note or CC message
-    pub is_note: bool,
-    /// Detected hardware type (Button, Knob, Fader, Encoder, etc.)
+    /// Protocol-agnostic control address
+    pub address: ControlAddress,
+    /// Detected or known hardware type (Button, Knob, Fader, Encoder, etc.)
     pub hardware_type: HardwareType,
+    /// Source device name (for display and config generation)
+    pub source_device: Option<String>,
 }
 
-/// Raw MIDI event captured during learn mode
+/// Protocol-agnostic captured event during learn mode
 #[derive(Debug, Clone)]
-pub struct CapturedMidiEvent {
-    /// MIDI channel (0-15)
-    pub channel: u8,
-    /// Note or CC number
-    pub number: u8,
-    /// Value (0-127)
+pub struct CapturedEvent {
+    /// Protocol-agnostic control address
+    pub address: ControlAddress,
+    /// Value (0-127 scale, normalized from any source)
     pub value: u8,
-    /// True if Note On/Off, false if CC
-    pub is_note: bool,
+    /// Known hardware type (Some for HID, None for MIDI — triggers detection)
+    pub hardware_type: Option<HardwareType>,
+    /// Source device name for display
+    pub source_device: Option<String>,
 }
 
-impl CapturedMidiEvent {
+impl CapturedEvent {
     /// Format for display
     pub fn display(&self) -> String {
-        let msg_type = if self.is_note { "Note" } else { "CC" };
-        format!(
-            "{} ch{} 0x{:02X} val={}",
-            msg_type, self.channel, self.number, self.value
-        )
+        match &self.address {
+            ControlAddress::Midi(midi_addr) => {
+                let (msg_type, ch, num) = match midi_addr {
+                    mesh_midi::MidiAddress::Note { channel, note } => ("Note", *channel, *note),
+                    mesh_midi::MidiAddress::CC { channel, cc } => ("CC", *channel, *cc),
+                };
+                format!("{} ch{} 0x{:02X} val={}", msg_type, ch, num, self.value)
+            }
+            ControlAddress::Hid { name } => {
+                format!("HID {} val={}", name, self.value)
+            }
+        }
+    }
+
+    /// Check if this is a MIDI Note event
+    pub fn is_midi_note(&self) -> bool {
+        matches!(&self.address, ControlAddress::Midi(mesh_midi::MidiAddress::Note { .. }))
+    }
+
+    /// Check if this is a MIDI CC event
+    pub fn is_midi_cc(&self) -> bool {
+        matches!(&self.address, ControlAddress::Midi(mesh_midi::MidiAddress::CC { .. }))
+    }
+
+    /// Get MIDI channel (returns 0 for HID events)
+    pub fn midi_channel(&self) -> u8 {
+        match &self.address {
+            ControlAddress::Midi(mesh_midi::MidiAddress::Note { channel, .. }) => *channel,
+            ControlAddress::Midi(mesh_midi::MidiAddress::CC { channel, .. }) => *channel,
+            ControlAddress::Hid { .. } => 0,
+        }
+    }
+
+    /// Get MIDI note/CC number (returns 0 for HID events)
+    pub fn midi_number(&self) -> u8 {
+        match &self.address {
+            ControlAddress::Midi(mesh_midi::MidiAddress::Note { note, .. }) => *note,
+            ControlAddress::Midi(mesh_midi::MidiAddress::CC { cc, .. }) => *cc,
+            ControlAddress::Hid { .. } => 0,
+        }
     }
 }
+
+impl LearnedMapping {
+    /// Check if this mapping is for a MIDI Note (or HID button)
+    pub fn address_is_note(&self) -> bool {
+        match &self.address {
+            ControlAddress::Midi(mesh_midi::MidiAddress::Note { .. }) => true,
+            ControlAddress::Hid { .. } => self.hardware_type == HardwareType::Button,
+            _ => false,
+        }
+    }
+
+    /// Check if this is a continuous control (MIDI CC knob/fader, or HID continuous)
+    pub fn is_continuous(&self) -> bool {
+        self.hardware_type.is_continuous()
+    }
+}
+
+// Keep old type alias for in-progress migration of message types
+pub type CapturedMidiEvent = CapturedEvent;
 
 /// Messages for MIDI learn mode
 #[derive(Debug, Clone)]
@@ -276,8 +328,8 @@ pub struct MidiLearnState {
     pub highlight_target: Option<HighlightTarget>,
     /// All learned mappings so far
     pub pending_mappings: Vec<LearnedMapping>,
-    /// Last captured MIDI event (for display)
-    pub last_captured: Option<CapturedMidiEvent>,
+    /// Last captured event (for display)
+    pub last_captured: Option<CapturedEvent>,
     /// Timestamp of last successful capture (for debouncing)
     last_capture_time: Option<Instant>,
 
@@ -349,25 +401,20 @@ impl MidiLearnState {
         }
     }
 
-    /// Check if a MIDI event should be captured
+    /// Check if a captured event should be accepted
     ///
     /// Filters out:
     /// - Note Off events (we only capture on press, release uses same note)
+    /// - HID button releases (value == 0)
     /// - Events during debounce period (1 second after last capture)
-    /// - CC values below threshold (filters encoder noise)
-    pub fn should_capture(&self, event: &CapturedMidiEvent) -> bool {
-        // Filter Note Off events - we only want button presses
-        // The mapping system knows release uses the same note
-        if event.is_note && event.value == 0 {
+    pub fn should_capture(&self, event: &CapturedEvent) -> bool {
+        // Filter Note Off / button release events
+        if event.is_midi_note() && event.value == 0 {
             return false;
         }
-
-        // For CC events, require a minimum value to filter initial encoder touches
-        // Value > 10 for absolute, or significant relative movement
-        if !event.is_note && event.value < 10 && event.value > 117 {
-            // Values 0-10 or 118-127 might be noise/initial state
-            // Actually for relative encoders, 64 is center, so this logic needs refinement
-            // For now, just accept any CC - the debounce will handle rapid values
+        // Filter HID button releases
+        if matches!(&event.address, ControlAddress::Hid { .. }) && event.value == 0 {
+            return false;
         }
 
         // Check debounce - must wait 1 second between captures
@@ -434,45 +481,72 @@ impl MidiLearnState {
         }
     }
 
-    /// Record a captured MIDI event for the current target
+    /// Record a captured event for the current target
     ///
-    /// This starts the hardware detection process by creating a sample buffer.
-    /// Call `add_sample` for subsequent events, then `finalize_mapping` when complete.
-    pub fn record_mapping(&mut self, event: CapturedMidiEvent) {
+    /// For HID events with known hardware_type: finalizes immediately (no detection needed).
+    /// For MIDI events: starts hardware detection via MidiSampleBuffer.
+    pub fn record_mapping(&mut self, event: CapturedEvent) {
         self.last_captured = Some(event.clone());
 
         if self.highlight_target.is_some() {
-            // Start sampling for hardware detection
-            self.detection_buffer = Some(MidiSampleBuffer::new(
-                event.channel,
-                event.number,
-                event.is_note,
-            ));
+            // HID path: hardware type is already known from the driver
+            if let Some(hw_type) = event.hardware_type {
+                self.detected_hardware = Some(hw_type);
+                self.pending_mappings.push(LearnedMapping {
+                    target: self.highlight_target.unwrap(),
+                    address: event.address.clone(),
+                    hardware_type: hw_type,
+                    source_device: event.source_device.clone(),
+                });
+
+                self.status = format!("Mapped as {:?} (HID)", hw_type);
+                log::info!(
+                    "Learn: Mapped {:?} as {:?} (HID: {:?})",
+                    self.highlight_target.unwrap(),
+                    hw_type,
+                    event.address
+                );
+
+                self.detection_buffer = None;
+                self.advance();
+                return;
+            }
+
+            // MIDI path: start sampling for hardware detection
+            let channel = event.midi_channel();
+            let number = event.midi_number();
+            let is_note = event.is_midi_note();
+
+            self.detection_buffer = Some(MidiSampleBuffer::new(channel, number, is_note));
 
             // Add the first sample
-            let is_note_on = event.is_note && event.value > 0;
+            let is_note_on = is_note && event.value > 0;
             if let Some(ref mut buffer) = self.detection_buffer {
-                buffer.add_sample(event.value, is_note_on, Some(event.number));
+                buffer.add_sample(event.value, is_note_on, Some(number));
             }
 
             self.status = format!("Sampling: {} (move control...)", event.display());
 
             // For Note events (buttons), complete immediately
-            if event.is_note {
+            if is_note {
                 self.finalize_mapping();
             }
         }
     }
 
-    /// Add a sample to the active detection buffer
+    /// Add a sample to the active detection buffer (MIDI only)
     ///
     /// Returns true if the buffer is now complete and ready to finalize
-    pub fn add_detection_sample(&mut self, event: &CapturedMidiEvent) -> bool {
+    pub fn add_detection_sample(&mut self, event: &CapturedEvent) -> bool {
         if let Some(ref mut buffer) = self.detection_buffer {
+            let channel = event.midi_channel();
+            let number = event.midi_number();
+            let is_note = event.is_midi_note();
+
             // Check if event matches the control being sampled
-            if buffer.matches(event.channel, event.number, event.is_note) {
-                let is_note_on = event.is_note && event.value > 0;
-                buffer.add_sample(event.value, is_note_on, Some(event.number));
+            if buffer.matches(channel, number, is_note) {
+                let is_note_on = is_note && event.value > 0;
+                buffer.add_sample(event.value, is_note_on, Some(number));
                 self.last_captured = Some(event.clone());
 
                 // Update status with sample count
@@ -494,27 +568,37 @@ impl MidiLearnState {
             .unwrap_or(false)
     }
 
-    /// Finalize the mapping with detected hardware type
+    /// Finalize the mapping with detected hardware type (MIDI detection path)
     pub fn finalize_mapping(&mut self) {
         if let (Some(target), Some(ref buffer)) = (self.highlight_target, &self.detection_buffer) {
             let hw_type = buffer.analyze();
             self.detected_hardware = Some(hw_type);
 
+            let address = if buffer.is_note() {
+                ControlAddress::Midi(mesh_midi::MidiAddress::Note {
+                    channel: buffer.get_channel(),
+                    note: buffer.get_number(),
+                })
+            } else {
+                ControlAddress::Midi(mesh_midi::MidiAddress::CC {
+                    channel: buffer.get_channel(),
+                    cc: buffer.get_number(),
+                })
+            };
+
             self.pending_mappings.push(LearnedMapping {
                 target,
-                channel: buffer.get_channel(),
-                number: buffer.get_number(),
-                is_note: buffer.is_note(),
+                address: address.clone(),
                 hardware_type: hw_type,
+                source_device: None, // MIDI source captured at port level
             });
 
             self.status = format!("Mapped as {:?}", hw_type);
             log::info!(
-                "MIDI Learn: Mapped {:?} as {:?} (ch={}, num={})",
+                "Learn: Mapped {:?} as {:?} ({:?})",
                 target,
                 hw_type,
-                buffer.get_channel(),
-                buffer.get_number()
+                address,
             );
 
             // Clear buffer and advance
@@ -1012,11 +1096,8 @@ impl MidiLearnState {
         let mut feedback = Vec::new();
 
         for learned in &self.pending_mappings {
-            let control = if learned.is_note {
-                MidiControlConfig::note(learned.channel, learned.number)
-            } else {
-                MidiControlConfig::cc(learned.channel, learned.number)
-            };
+            let control = learned.address.clone();
+            let is_note = learned.address_is_note();
 
             // Determine action and deck targeting based on target
             let (action, physical_deck, deck_index, behavior, state) = match learned.target {
@@ -1146,7 +1227,7 @@ impl MidiLearnState {
             }
 
             // Use detected hardware type to determine encoder mode
-            let encoder_mode = if !learned.is_note {
+            let encoder_mode = if !is_note {
                 learned.hardware_type.default_encoder_mode()
             } else {
                 None
@@ -1174,9 +1255,16 @@ impl MidiLearnState {
                 hardware_type: Some(learned.hardware_type),
             });
 
-            // Generate LED feedback for buttons with state (same-note assumption)
+            // Generate LED feedback for buttons with state (same-note/same-control assumption)
             if let Some(state_name) = state {
-                if learned.is_note {
+                let is_hid = matches!(&control, ControlAddress::Hid { .. });
+                if is_note || is_hid {
+                    // HID buttons get RGB colors, MIDI buttons get value-based feedback
+                    let (on_color, off_color) = if is_hid {
+                        (Some([0, 127, 0]), Some([20, 20, 20]))  // Green on, dim off
+                    } else {
+                        (None, None)
+                    };
                     feedback.push(FeedbackMapping {
                         state: state_name.to_string(),
                         physical_deck,
@@ -1186,6 +1274,9 @@ impl MidiLearnState {
                         on_value: 127,
                         off_value: 0,
                         alt_on_value: None,
+                        on_color,
+                        off_color,
+                        alt_on_color: None,
                     });
                 }
             }
@@ -1194,17 +1285,16 @@ impl MidiLearnState {
         // Build deck target config
         let deck_target = if self.has_layer_toggle && self.deck_count == 2 {
             // Build toggle controls from learned mappings
-            let make_control = |event: &Option<CapturedMidiEvent>| -> MidiControlConfig {
+            let make_toggle_addr = |event: &Option<CapturedEvent>| -> ControlAddress {
                 match event {
-                    Some(e) if e.is_note => MidiControlConfig::note(e.channel, e.number),
-                    Some(e) => MidiControlConfig::cc(e.channel, e.number),
-                    None => MidiControlConfig::note(0, 0x00), // Fallback (skipped)
+                    Some(e) => e.address.clone(),
+                    None => ControlAddress::Midi(MidiAddress::Note { channel: 0, note: 0x00 }), // Fallback (skipped)
                 }
             };
 
             DeckTargetConfig::Layer {
-                toggle_left: make_control(&self.toggle_mapping_left),
-                toggle_right: make_control(&self.toggle_mapping_right),
+                toggle_left: make_toggle_addr(&self.toggle_mapping_left),
+                toggle_right: make_toggle_addr(&self.toggle_mapping_right),
                 layer_a: vec![0, 1],
                 layer_b: vec![2, 3],
             }
@@ -1219,22 +1309,18 @@ impl MidiLearnState {
 
         // Build shift buttons from per-side mappings
         let mut shift_buttons = Vec::new();
-        let make_shift = |event: &CapturedMidiEvent| -> MidiControlConfig {
-            if event.is_note {
-                MidiControlConfig::note(event.channel, event.number)
-            } else {
-                MidiControlConfig::cc(event.channel, event.number)
-            }
+        let make_shift_addr = |event: &CapturedEvent| -> ControlAddress {
+            event.address.clone()
         };
         if let Some(ref event) = self.shift_mapping_left {
             shift_buttons.push(ShiftButtonConfig {
-                control: make_shift(event),
+                control: make_shift_addr(event),
                 physical_deck: 0,
             });
         }
         if let Some(ref event) = self.shift_mapping_right {
             shift_buttons.push(ShiftButtonConfig {
-                control: make_shift(event),
+                control: make_shift_addr(event),
                 physical_deck: 1,
             });
         }
@@ -1242,40 +1328,70 @@ impl MidiLearnState {
         // Add layer toggle LED feedback with alt_on_value for color differentiation
         if self.has_layer_toggle {
             if let Some(ref event) = self.toggle_mapping_left {
-                if event.is_note {
+                let is_hid = matches!(&event.address, ControlAddress::Hid { .. });
+                if event.is_midi_note() || is_hid {
+                    let (on_color, alt_on_color) = if is_hid {
+                        (Some([127, 0, 0]), Some([0, 127, 0]))  // Red=Layer A, Green=Layer B
+                    } else {
+                        (None, None)
+                    };
                     feedback.push(FeedbackMapping {
                         state: "deck.layer_active".to_string(),
                         physical_deck: Some(0),
                         deck_index: None,
                         params: HashMap::new(),
-                        output: MidiControlConfig::note(event.channel, event.number),
-                        on_value: 127,    // Layer A color (e.g., red)
+                        output: event.address.clone(),
+                        on_value: 127,    // Layer A (MIDI)
                         off_value: 0,
-                        alt_on_value: Some(50), // Layer B color (e.g., green)
+                        alt_on_value: Some(50), // Layer B (MIDI)
+                        on_color,
+                        off_color: Some([20, 20, 20]),
+                        alt_on_color,
                     });
                 }
             }
             if let Some(ref event) = self.toggle_mapping_right {
-                if event.is_note {
+                let is_hid = matches!(&event.address, ControlAddress::Hid { .. });
+                if event.is_midi_note() || is_hid {
+                    let (on_color, alt_on_color) = if is_hid {
+                        (Some([127, 0, 0]), Some([0, 127, 0]))  // Red=Layer A, Green=Layer B
+                    } else {
+                        (None, None)
+                    };
                     feedback.push(FeedbackMapping {
                         state: "deck.layer_active".to_string(),
                         physical_deck: Some(1),
                         deck_index: None,
                         params: HashMap::new(),
-                        output: MidiControlConfig::note(event.channel, event.number),
-                        on_value: 127,    // Layer A color
+                        output: event.address.clone(),
+                        on_value: 127,    // Layer A (MIDI)
                         off_value: 0,
-                        alt_on_value: Some(50), // Layer B color
+                        alt_on_value: Some(50), // Layer B (MIDI)
+                        on_color,
+                        off_color: Some([20, 20, 20]),
+                        alt_on_color,
                     });
                 }
             }
         }
+
+        // Detect if any learned mappings came from an HID device
+        let hid_source = self.pending_mappings.iter()
+            .find_map(|m| {
+                if let ControlAddress::Hid { .. } = &m.address {
+                    m.source_device.clone()
+                } else {
+                    None
+                }
+            });
 
         let profile = DeviceProfile {
             name: self.controller_name.clone(),
             // Use captured port name for exact matching, fall back to user-entered name for fuzzy match
             port_match: self.captured_port_name.clone().unwrap_or_else(|| self.controller_name.clone()),
             learned_port_name: self.captured_port_name.clone(),
+            device_type: hid_source.as_ref().map(|_| "hid".to_string()),
+            hid_product_match: hid_source,
             deck_target,
             pad_mode_source: self.pad_mode_source,
             shift_buttons,

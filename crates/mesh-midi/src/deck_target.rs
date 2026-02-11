@@ -230,8 +230,8 @@ mod tests {
     #[test]
     fn test_layer_mode() {
         let config = DeckTargetConfig::Layer {
-            toggle_left: crate::config::MidiControlConfig::note(0, 0x72),
-            toggle_right: crate::config::MidiControlConfig::note(1, 0x72),
+            toggle_left: crate::types::ControlAddress::Midi(crate::types::MidiAddress::Note { channel: 0, note: 0x72 }),
+            toggle_right: crate::types::ControlAddress::Midi(crate::types::MidiAddress::Note { channel: 1, note: 0x72 }),
             layer_a: vec![0, 1],
             layer_b: vec![2, 3],
         };

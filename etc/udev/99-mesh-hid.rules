@@ -1,0 +1,10 @@
+# Mesh DJ - USB HID controller access rules
+#
+# Install: sudo cp 99-mesh-hid.rules /etc/udev/rules.d/
+# Reload:  sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# On NixOS, add to configuration.nix instead:
+#   services.udev.extraRules = builtins.readFile ./99-mesh-hid.rules;
+
+# Native Instruments Traktor Kontrol F1
+KERNEL=="hidraw*", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1120", TAG+="uaccess"
