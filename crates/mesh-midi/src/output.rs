@@ -3,7 +3,8 @@
 //! Sends MIDI messages to update controller LEDs based on application state.
 
 use crate::config::{DeviceProfile, FeedbackMapping, MidiControlConfig};
-use crate::deck_target::{DeckTargetState, LayerSelection};
+use crate::deck_target::DeckTargetState;
+use crate::deck_target::LayerSelection;
 use midir::MidiOutputConnection;
 use std::collections::HashMap;
 
@@ -112,6 +113,17 @@ impl MidiOutputHandler {
             .feedback_mappings
             .iter()
             .map(|mapping| {
+                // Special handling for layer indicator LEDs with alt_on_value
+                if mapping.state == "deck.layer_active" {
+                    let physical_deck = mapping.physical_deck.unwrap_or(0);
+                    let current_layer = deck_target.get_layer(physical_deck);
+                    let midi_value = match current_layer {
+                        LayerSelection::A => mapping.on_value,
+                        LayerSelection::B => mapping.alt_on_value.unwrap_or(mapping.on_value),
+                    };
+                    return (mapping.output.clone(), midi_value);
+                }
+
                 let value = Self::evaluate_state_static(mapping, state, deck_target);
                 let midi_value = if value {
                     mapping.on_value
@@ -146,18 +158,10 @@ impl MidiOutputHandler {
         let deck_idx = deck_idx.min(3);
         let deck_state = &state.decks[deck_idx];
 
-        // Check for layer indicator (special case)
+        // Layer indicator is now handled in update() with alt_on_value tri-value logic
         if mapping.state == "deck.layer_active" {
-            if let Some(ref layer_str) = mapping.layer {
-                let physical_deck = mapping.physical_deck.unwrap_or(0);
-                let current_layer = deck_target.get_layer(physical_deck);
-                let target_layer = match layer_str.to_uppercase().as_str() {
-                    "A" => LayerSelection::A,
-                    "B" => LayerSelection::B,
-                    _ => LayerSelection::A,
-                };
-                return current_layer == target_layer;
-            }
+            // Always return true so update() controls the value
+            return true;
         }
 
         // Evaluate state based on state string

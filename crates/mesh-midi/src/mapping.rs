@@ -3,11 +3,12 @@
 //! Maps MIDI events to application actions based on the device profile configuration.
 
 use crate::config::{ControlBehavior, ControlMapping, DeviceProfile, EncoderMode, MidiControlConfig};
-use crate::deck_target::DeckTargetState;
 use crate::input::MidiInputEvent;
 use crate::messages::{BrowserAction, DeckAction, GlobalAction, MidiMessage, MixerAction};
 use crate::normalize::{encoder_to_delta, normalize_cc_value, range_for_action, ControlRange};
+use crate::shared_state::SharedMidiState;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Action registry - defines available mappable actions
 ///
@@ -218,8 +219,8 @@ pub struct MappingEngine {
     /// Control-to-mapping lookup (key is (channel, note/cc))
     note_mappings: HashMap<(u8, u8), ControlMapping>,
     cc_mappings: HashMap<(u8, u8), ControlMapping>,
-    /// Deck target state for resolving physical → virtual deck
-    deck_target: DeckTargetState,
+    /// Shared state for shift/layer resolution (shared with input callback)
+    shared_state: Arc<SharedMidiState>,
     /// Action registry for value ranges
     action_registry: ActionRegistry,
     /// Debounce state with interior mutability for use from Arc<Self>
@@ -230,8 +231,8 @@ pub struct MappingEngine {
 }
 
 impl MappingEngine {
-    /// Create a new mapping engine from device profile
-    pub fn new(profile: &DeviceProfile) -> Self {
+    /// Create a new mapping engine from device profile with shared state
+    pub fn new(profile: &DeviceProfile, shared_state: Arc<SharedMidiState>) -> Self {
         let mut note_mappings = HashMap::new();
         let mut cc_mappings = HashMap::new();
 
@@ -246,8 +247,6 @@ impl MappingEngine {
             }
         }
 
-        let deck_target = DeckTargetState::from_config(&profile.deck_target);
-
         log::info!(
             "MIDI: Loaded {} note mappings, {} CC mappings",
             note_mappings.len(),
@@ -257,7 +256,7 @@ impl MappingEngine {
         Self {
             note_mappings,
             cc_mappings,
-            deck_target,
+            shared_state,
             action_registry: ActionRegistry::new(),
             debounce: std::sync::Mutex::new(DebounceState {
                 last_browser_select: None,
@@ -268,7 +267,10 @@ impl MappingEngine {
     }
 
     /// Map a MIDI event to an app message
-    pub fn map_event(&self, event: &MidiInputEvent, shift_held: bool) -> Option<MidiMessage> {
+    ///
+    /// Shift state is read from the shared state based on the mapping's physical_deck.
+    /// If the mapping has a physical_deck, the per-deck shift is used; otherwise global shift.
+    pub fn map_event(&self, event: &MidiInputEvent) -> Option<MidiMessage> {
         let mapping = match self.find_mapping(event) {
             Some(m) => m,
             None => {
@@ -284,6 +286,13 @@ impl MappingEngine {
                 }
                 return None;
             }
+        };
+
+        // Determine effective shift: per-deck if mapping has physical_deck, else global
+        let shift_held = if let Some(pd) = mapping.physical_deck {
+            self.shared_state.is_shift_held_for_deck(pd)
+        } else {
+            self.shared_state.is_shift_held_global()
         };
 
         // Check if this is CC-as-button (continuous hardware mapped to momentary action)
@@ -417,7 +426,7 @@ impl MappingEngine {
             deck_index
         } else if let Some(physical_deck) = mapping.physical_deck {
             // Layer-resolved deck (for transport/pads)
-            self.deck_target.resolve_deck(physical_deck)
+            self.shared_state.resolve_deck(physical_deck)
         } else {
             // Default to deck 0
             0
@@ -905,14 +914,9 @@ impl MappingEngine {
         }
     }
 
-    /// Update deck target state (for layer toggle)
-    pub fn toggle_layer(&mut self, physical_deck: usize) {
-        self.deck_target.toggle_layer(physical_deck);
-    }
-
     /// Get current deck for a physical deck
     pub fn resolve_deck_for_physical(&self, physical_deck: usize) -> usize {
-        self.deck_target.resolve_deck(physical_deck)
+        self.shared_state.resolve_deck(physical_deck)
     }
 }
 

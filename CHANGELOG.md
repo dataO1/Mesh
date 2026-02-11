@@ -32,6 +32,31 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 ### Added
 
+- **Per-physical-deck MIDI mapping** — Complete rework of MIDI controller mapping
+  for 2-deck controllers with layer toggle controlling 4 virtual decks:
+  - **Per-deck shift buttons** — Each physical deck side has its own shift button
+    instead of a single global shift. Shift state is tracked per-deck via
+    `SharedMidiState`, and the mapping engine resolves shift based on the
+    mapping's physical deck association.
+  - **Layer toggle wiring** — Layer toggle buttons are now learned during MIDI
+    learn (no more placeholder config). Toggle detection happens in the input
+    callback and updates shared state directly.
+  - **Per-deck browser encoders** — In layer mode, each physical deck side gets
+    its own browser encoder and select button, loading tracks to the active
+    virtual deck on that side.
+  - **Stem mute direct mapping** — Stem mute buttons use `deck_index` (direct
+    deck addressing) instead of `physical_deck` (layer-resolved), so the physical
+    4x4 button matrix always maps to fixed virtual decks.
+  - **Layer toggle LED colors** — `FeedbackMapping` gains `alt_on_value` for
+    Layer B color differentiation (e.g., red for Layer A, green for Layer B).
+  - **UI layer indicators** — Deck labels are colorized based on active MIDI
+    layer (red = Layer A, green = Layer B, white = not targeted).
+  - **Thread-safe shared state** — New `SharedMidiState` (`Arc`-wrapped) shared
+    between midir input callback and mapping engine, using `AtomicBool` for shift
+    and `RwLock` for layer/deck target state.
+  - **Breaking:** MIDI config format changed — `shift` field replaced with
+    `shift_buttons: Vec<ShiftButtonConfig>`. Old configs must be re-learned.
+
 - **Standalone CLAP plugin support** — CLAP plugins can now bundle their runtime
   dependencies in a `lib/` subdirectory for fully portable operation. Essential
   for NixOS and other non-FHS Linux distributions.

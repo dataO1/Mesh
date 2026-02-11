@@ -79,6 +79,10 @@ pub struct DeckView {
     shift_held: bool,
     /// Current highlight target for MIDI learn mode (if any)
     highlight_target: Option<HighlightTarget>,
+    /// Whether this deck is currently targeted by a physical MIDI deck
+    midi_active: bool,
+    /// Whether this deck is on Layer B (secondary layer)
+    is_secondary_layer: bool,
 }
 
 /// Messages for deck interaction
@@ -171,6 +175,8 @@ impl DeckView {
             slicer_current_slice: 0,
             shift_held: false,
             highlight_target: None,
+            midi_active: false,
+            is_secondary_layer: false,
         }
     }
 
@@ -355,6 +361,16 @@ impl DeckView {
         self.shift_held
     }
 
+    /// Set whether this deck is currently targeted by a physical MIDI deck
+    pub fn set_midi_active(&mut self, active: bool) {
+        self.midi_active = active;
+    }
+
+    /// Set whether this deck is on Layer B (secondary layer)
+    pub fn set_secondary_layer(&mut self, is_secondary: bool) {
+        self.is_secondary_layer = is_secondary;
+    }
+
     /// Get hot cues bitmap (bit N = hot cue N is set)
     ///
     /// Used for LED feedback to MIDI controllers.
@@ -514,9 +530,19 @@ impl DeckView {
     /// │ Pitch slider                                   │
     /// └────────────────────────────────────────────────┘
     pub fn view(&self) -> Element<'_, DeckMessage> {
-        // Top: Deck label + track info
+        // Top: Deck label + track info (color indicates layer state)
+        let deck_label_color = if self.midi_active {
+            if self.is_secondary_layer {
+                Color::from_rgb(0.2, 0.8, 0.2) // Green = Layer B
+            } else {
+                Color::from_rgb(0.9, 0.3, 0.3) // Red = Layer A
+            }
+        } else {
+            Color::WHITE // Not targeted by MIDI
+        };
         let deck_label = text(format!("DECK {}", self.deck_idx + 1))
-            .size(16);
+            .size(16)
+            .color(deck_label_color);
 
         let track_info = if self.track_name.is_empty() {
             text("No track loaded").size(12)

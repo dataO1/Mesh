@@ -680,19 +680,56 @@ impl MeshApp {
             }
 
             MidiMsg::LayerToggle { physical_deck } => {
-                // Handled internally by MidiController
+                // State already toggled in shared state by input callback
+                // Update UI indicators for all deck views
                 log::debug!("MIDI: Layer toggle for physical deck {}", physical_deck);
+                self.update_layer_indicators();
             }
 
-            MidiMsg::ShiftChanged { held } => {
-                // Update deck views' shift state
-                for deck_view in &mut self.deck_views {
-                    deck_view.set_shift_held(held);
+            MidiMsg::ShiftChanged { held, physical_deck } => {
+                // Per-deck shift: update only the active virtual deck for this physical deck
+                if let Some(ref midi) = self.midi_controller {
+                    let vd = midi.resolve_deck(physical_deck);
+                    if vd < self.deck_views.len() {
+                        self.deck_views[vd].set_shift_held(held);
+                    }
                 }
             }
         }
 
         Task::none()
+    }
+
+    /// Update deck view layer indicators based on MIDI controller state
+    ///
+    /// Sets `midi_active` and `is_secondary_layer` on each deck view
+    /// so the UI can color-code deck labels by active layer.
+    pub(crate) fn update_layer_indicators(&mut self) {
+        if let Some(ref midi) = self.midi_controller {
+            if midi.is_layer_mode() {
+                // For each physical deck (0=left, 1=right), find which virtual deck it targets
+                for physical in 0..2 {
+                    let virtual_deck = midi.resolve_deck(physical);
+                    let layer = midi.get_layer(physical);
+                    let is_secondary = layer == mesh_midi::LayerSelection::B;
+
+                    // Mark the targeted virtual deck as active
+                    if virtual_deck < self.deck_views.len() {
+                        self.deck_views[virtual_deck].set_midi_active(true);
+                        self.deck_views[virtual_deck].set_secondary_layer(is_secondary);
+                    }
+                }
+
+                // Mark non-targeted decks as inactive
+                for d in 0..self.deck_views.len() {
+                    let is_targeted = (0..2).any(|p| midi.resolve_deck(p) == d);
+                    if !is_targeted {
+                        self.deck_views[d].set_midi_active(false);
+                        self.deck_views[d].set_secondary_layer(false);
+                    }
+                }
+            }
+        }
     }
 
     /// Subscribe to periodic updates and async results

@@ -34,10 +34,12 @@ pub enum MidiMessage {
         physical_deck: usize,
     },
 
-    /// Shift state changed
+    /// Shift state changed (per-physical-deck)
     ShiftChanged {
         /// Whether shift is now held
         held: bool,
+        /// Which physical deck's shift button changed (0 = left, 1 = right)
+        physical_deck: usize,
     },
 }
 

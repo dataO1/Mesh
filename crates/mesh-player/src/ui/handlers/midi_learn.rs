@@ -98,8 +98,20 @@ pub fn handle(app: &mut MeshApp, learn_msg: MidiLearnMessage) -> Task<Message> {
         SetPadModeSource(source) => {
             app.midi_learn.pad_mode_source = source;
         }
-        ShiftDetected(event) => {
-            app.midi_learn.shift_mapping = event;
+        ShiftLeftDetected(event) => {
+            app.midi_learn.shift_mapping_left = event;
+            app.midi_learn.advance();
+        }
+        ShiftRightDetected(event) => {
+            app.midi_learn.shift_mapping_right = event;
+            app.midi_learn.advance();
+        }
+        ToggleLeftDetected(event) => {
+            app.midi_learn.toggle_mapping_left = event;
+            app.midi_learn.advance();
+        }
+        ToggleRightDetected(event) => {
+            app.midi_learn.toggle_mapping_right = event;
             app.midi_learn.advance();
         }
         MidiCaptured(event) => {

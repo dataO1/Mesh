@@ -38,8 +38,9 @@ pub struct DeviceProfile {
     #[serde(default)]
     pub pad_mode_source: PadModeSource,
 
-    /// Shift button configuration
-    pub shift: Option<MidiControlConfig>,
+    /// Per-physical-deck shift button configurations
+    #[serde(default)]
+    pub shift_buttons: Vec<ShiftButtonConfig>,
 
     /// Control-to-action mappings
     #[serde(default)]
@@ -122,6 +123,15 @@ impl MidiControlConfig {
             Self::ControlChange { channel, .. } => *channel,
         }
     }
+}
+
+/// Per-physical-deck shift button configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShiftButtonConfig {
+    /// MIDI control for this shift button
+    pub control: MidiControlConfig,
+    /// Which physical deck this shift button belongs to (0 = left, 1 = right)
+    pub physical_deck: usize,
 }
 
 /// Single control-to-action mapping
@@ -281,8 +291,10 @@ pub struct FeedbackMapping {
     /// Value to send when state is false/inactive
     pub off_value: u8,
 
-    /// For layer indicator LEDs: which layer activates this LED
-    pub layer: Option<String>,
+    /// Alternative on_value for Layer B (e.g., different LED color)
+    /// When set and state is "deck.layer_active", Layer A uses on_value, Layer B uses alt_on_value
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alt_on_value: Option<u8>,
 }
 
 /// Get the default MIDI config file path
@@ -464,10 +476,12 @@ devices:
         note: 0x72
       layer_a: [0, 1]
       layer_b: [2, 3]
-    shift:
-      type: "Note"
-      channel: 0
-      note: 0x63
+    shift_buttons:
+      - control:
+          type: "Note"
+          channel: 0
+          note: 0x63
+        physical_deck: 0
     mappings:
       - control:
           type: "Note"
@@ -532,7 +546,7 @@ devices:
             learned_port_name: Some("DDJ-SB2:DDJ-SB2 MIDI 1".to_string()),
             deck_target: DeckTargetConfig::default(),
             pad_mode_source: PadModeSource::default(),
-            shift: None,
+            shift_buttons: vec![],
             mappings: vec![],
             feedback: vec![],
         };
@@ -551,7 +565,7 @@ devices:
             learned_port_name: Some("DDJ-SB2 MIDI 1".to_string()),
             deck_target: DeckTargetConfig::default(),
             pad_mode_source: PadModeSource::default(),
-            shift: None,
+            shift_buttons: vec![],
             mappings: vec![],
             feedback: vec![],
         };
@@ -564,7 +578,7 @@ devices:
             learned_port_name: None,
             deck_target: DeckTargetConfig::default(),
             pad_mode_source: PadModeSource::default(),
-            shift: None,
+            shift_buttons: vec![],
             mappings: vec![],
             feedback: vec![],
         };

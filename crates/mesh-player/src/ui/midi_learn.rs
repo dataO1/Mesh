@@ -15,7 +15,7 @@ use iced::widget::{button, column, container, row, text, text_input, Space};
 use iced::{Alignment, Color, Element, Length};
 use mesh_midi::{
     ControlBehavior, ControlMapping, DeckTargetConfig, DeviceProfile, FeedbackMapping,
-    HardwareType, MidiConfig, MidiControlConfig, MidiSampleBuffer,
+    HardwareType, MidiConfig, MidiControlConfig, MidiSampleBuffer, ShiftButtonConfig,
 };
 
 /// Debounce duration for MIDI capture (prevents release/encoder spam from double-mapping)
@@ -65,7 +65,14 @@ pub enum SetupStep {
     DeckCount,
     LayerToggle,
     PadModeSource,
-    ShiftButton,
+    /// Left physical deck shift button
+    ShiftButtonLeft,
+    /// Right physical deck shift button
+    ShiftButtonRight,
+    /// Left layer toggle button (only when has_layer_toggle)
+    ToggleButtonLeft,
+    /// Right layer toggle button (only when has_layer_toggle)
+    ToggleButtonRight,
 }
 
 /// UI element to highlight during learning
@@ -107,9 +114,12 @@ pub enum HighlightTarget {
     CueVolume,
     CueMix,
 
-    // Browser
+    // Browser (global — when not in layer mode)
     BrowserEncoder,
     BrowserSelect,
+    // Browser (per physical deck — when in layer mode)
+    BrowserEncoderDeck(usize),
+    BrowserSelectDeck(usize),
 
     // FX preset browsing (separate encoder from browser)
     FxEncoder,
@@ -155,6 +165,14 @@ impl HighlightTarget {
             HighlightTarget::CueMix => "Move the CUE/MASTER MIX knob".to_string(),
             HighlightTarget::BrowserEncoder => "Turn the BROWSE encoder".to_string(),
             HighlightTarget::BrowserSelect => "Press the BROWSE encoder (or select button)".to_string(),
+            HighlightTarget::BrowserEncoderDeck(d) => {
+                let side = if *d == 0 { "LEFT" } else { "RIGHT" };
+                format!("Turn the {} deck BROWSE encoder", side)
+            }
+            HighlightTarget::BrowserSelectDeck(d) => {
+                let side = if *d == 0 { "LEFT" } else { "RIGHT" };
+                format!("Press the {} deck BROWSE select button", side)
+            }
             HighlightTarget::FxEncoder => "Turn the FX SCROLL encoder (or skip)".to_string(),
             HighlightTarget::FxSelect => "Press the FX encoder to SELECT (or skip)".to_string(),
             HighlightTarget::DeckFxMacro(d, m) => {
@@ -231,8 +249,14 @@ pub enum MidiLearnMessage {
     SetHasLayerToggle(bool),
     /// Set pad mode source (controller vs app driven)
     SetPadModeSource(mesh_midi::PadModeSource),
-    /// Shift button detected (or skipped)
-    ShiftDetected(Option<CapturedMidiEvent>),
+    /// Left shift button detected (or skipped)
+    ShiftLeftDetected(Option<CapturedMidiEvent>),
+    /// Right shift button detected (or skipped)
+    ShiftRightDetected(Option<CapturedMidiEvent>),
+    /// Left toggle button detected (or skipped)
+    ToggleLeftDetected(Option<CapturedMidiEvent>),
+    /// Right toggle button detected (or skipped)
+    ToggleRightDetected(Option<CapturedMidiEvent>),
 
     /// MIDI event captured (used during mapping phase)
     MidiCaptured(CapturedMidiEvent),
@@ -272,8 +296,14 @@ pub struct MidiLearnState {
     pub has_layer_toggle: bool,
     /// How pad button actions are determined (controller vs app driven)
     pub pad_mode_source: mesh_midi::PadModeSource,
-    /// Shift button mapping (if detected)
-    pub shift_mapping: Option<CapturedMidiEvent>,
+    /// Left shift button mapping (physical deck 0)
+    pub shift_mapping_left: Option<CapturedMidiEvent>,
+    /// Right shift button mapping (physical deck 1)
+    pub shift_mapping_right: Option<CapturedMidiEvent>,
+    /// Left layer toggle button mapping
+    pub toggle_mapping_left: Option<CapturedMidiEvent>,
+    /// Right layer toggle button mapping
+    pub toggle_mapping_right: Option<CapturedMidiEvent>,
     /// Current setup step
     pub setup_step: SetupStep,
 
@@ -309,7 +339,10 @@ impl MidiLearnState {
             deck_count: 2,
             has_layer_toggle: false,
             pad_mode_source: Default::default(),
-            shift_mapping: None,
+            shift_mapping_left: None,
+            shift_mapping_right: None,
+            toggle_mapping_left: None,
+            toggle_mapping_right: None,
             setup_step: SetupStep::ControllerName,
             status: String::new(),
             captured_port_name: None,
@@ -394,7 +427,7 @@ impl MidiLearnState {
             LearnPhase::Review => {
                 // Go back to last step of browser phase
                 self.phase = LearnPhase::Browser;
-                self.total_steps = 7 + self.deck_count;
+                self.total_steps = self.browser_step_count();
                 self.current_step = self.total_steps - 1;
                 self.update_browser_target();
             }
@@ -519,10 +552,27 @@ impl MidiLearnState {
                 self.status = "How does your controller handle pad modes?".to_string();
             }
             SetupStep::PadModeSource => {
-                self.setup_step = SetupStep::ShiftButton;
-                self.status = "Press your SHIFT button (or skip)".to_string();
+                self.setup_step = SetupStep::ShiftButtonLeft;
+                self.status = "Press LEFT deck SHIFT button (or skip)".to_string();
             }
-            SetupStep::ShiftButton => {
+            SetupStep::ShiftButtonLeft => {
+                self.setup_step = SetupStep::ShiftButtonRight;
+                self.status = "Press RIGHT deck SHIFT button (or skip)".to_string();
+            }
+            SetupStep::ShiftButtonRight => {
+                if self.has_layer_toggle {
+                    self.setup_step = SetupStep::ToggleButtonLeft;
+                    self.status = "Press LEFT LAYER TOGGLE button (or skip)".to_string();
+                } else {
+                    // No layer toggle — done with setup
+                    self.enter_transport_phase();
+                }
+            }
+            SetupStep::ToggleButtonLeft => {
+                self.setup_step = SetupStep::ToggleButtonRight;
+                self.status = "Press RIGHT LAYER TOGGLE button (or skip)".to_string();
+            }
+            SetupStep::ToggleButtonRight => {
                 // Done with setup, move to transport
                 self.enter_transport_phase();
             }
@@ -546,9 +596,21 @@ impl MidiLearnState {
                 self.setup_step = SetupStep::LayerToggle;
                 self.status = "Does your controller have layer toggle buttons?".to_string();
             }
-            SetupStep::ShiftButton => {
+            SetupStep::ShiftButtonLeft => {
                 self.setup_step = SetupStep::PadModeSource;
                 self.status = "How does your controller handle pad modes?".to_string();
+            }
+            SetupStep::ShiftButtonRight => {
+                self.setup_step = SetupStep::ShiftButtonLeft;
+                self.status = "Press LEFT deck SHIFT button (or skip)".to_string();
+            }
+            SetupStep::ToggleButtonLeft => {
+                self.setup_step = SetupStep::ShiftButtonRight;
+                self.status = "Press RIGHT deck SHIFT button (or skip)".to_string();
+            }
+            SetupStep::ToggleButtonRight => {
+                self.setup_step = SetupStep::ToggleButtonLeft;
+                self.status = "Press LEFT LAYER TOGGLE button (or skip)".to_string();
             }
         }
     }
@@ -602,11 +664,16 @@ impl MidiLearnState {
             self.current_step -= 1;
             self.update_transport_target();
         } else {
-            // Go back to setup
+            // Go back to last setup step
             self.phase = LearnPhase::Setup;
-            self.setup_step = SetupStep::ShiftButton;
             self.highlight_target = None;
-            self.status = "Press your SHIFT button (or skip)".to_string();
+            if self.has_layer_toggle {
+                self.setup_step = SetupStep::ToggleButtonRight;
+                self.status = "Press RIGHT LAYER TOGGLE button (or skip)".to_string();
+            } else {
+                self.setup_step = SetupStep::ShiftButtonRight;
+                self.status = "Press RIGHT deck SHIFT button (or skip)".to_string();
+            }
         }
     }
 
@@ -794,26 +861,62 @@ impl MidiLearnState {
         }
     }
 
+    /// Calculate number of steps in the browser phase
+    fn browser_step_count(&self) -> usize {
+        if self.has_layer_toggle {
+            // FxEncoder, FxSelect, BrowserEncoder(0), BrowserSelect(0),
+            // BrowserEncoder(1), BrowserSelect(1),
+            // MasterVolume, CueVolume, CueMix, DeckLoad×N
+            9 + self.deck_count
+        } else {
+            // FxEncoder, FxSelect, BrowserEncoder, BrowserSelect,
+            // MasterVolume, CueVolume, CueMix, DeckLoad×N
+            7 + self.deck_count
+        }
+    }
+
     fn enter_browser_phase(&mut self) {
         self.last_capture_time = None;
         self.phase = LearnPhase::Browser;
         self.current_step = 0;
-        // Browser: FX encoder, FX select, browser encoder, browser select,
-        //          master vol, cue vol, cue mix, load buttons per deck
-        self.total_steps = 7 + self.deck_count;
+        self.total_steps = self.browser_step_count();
         self.update_browser_target();
     }
 
     fn update_browser_target(&mut self) {
-        self.highlight_target = Some(match self.current_step {
-            0 => HighlightTarget::FxEncoder,
-            1 => HighlightTarget::FxSelect,
-            2 => HighlightTarget::BrowserEncoder,
-            3 => HighlightTarget::BrowserSelect,
-            4 => HighlightTarget::MasterVolume,
-            5 => HighlightTarget::CueVolume,
-            6 => HighlightTarget::CueMix,
-            n => HighlightTarget::DeckLoad(n - 7),
+        self.highlight_target = Some(if self.has_layer_toggle {
+            // Per-physical-deck browse layout:
+            // 0: FxEncoder, 1: FxSelect,
+            // 2: BrowserEncoder(left), 3: BrowserSelect(left),
+            // 4: BrowserEncoder(right), 5: BrowserSelect(right),
+            // 6: MasterVolume, 7: CueVolume, 8: CueMix,
+            // 9+: DeckLoad(n)
+            match self.current_step {
+                0 => HighlightTarget::FxEncoder,
+                1 => HighlightTarget::FxSelect,
+                2 => HighlightTarget::BrowserEncoderDeck(0),
+                3 => HighlightTarget::BrowserSelectDeck(0),
+                4 => HighlightTarget::BrowserEncoderDeck(1),
+                5 => HighlightTarget::BrowserSelectDeck(1),
+                6 => HighlightTarget::MasterVolume,
+                7 => HighlightTarget::CueVolume,
+                8 => HighlightTarget::CueMix,
+                n => HighlightTarget::DeckLoad(n - 9),
+            }
+        } else {
+            // Global browse layout (unchanged):
+            // 0: FxEncoder, 1: FxSelect, 2: BrowserEncoder, 3: BrowserSelect,
+            // 4: MasterVolume, 5: CueVolume, 6: CueMix, 7+: DeckLoad(n)
+            match self.current_step {
+                0 => HighlightTarget::FxEncoder,
+                1 => HighlightTarget::FxSelect,
+                2 => HighlightTarget::BrowserEncoder,
+                3 => HighlightTarget::BrowserSelect,
+                4 => HighlightTarget::MasterVolume,
+                5 => HighlightTarget::CueVolume,
+                6 => HighlightTarget::CueMix,
+                n => HighlightTarget::DeckLoad(n - 7),
+            }
         });
 
         if let Some(ref target) = self.highlight_target {
@@ -861,7 +964,9 @@ impl MidiLearnState {
 
     /// Get the overall progress as (current, total)
     pub fn overall_progress(&self) -> (usize, usize) {
-        let setup_steps = 5; // name, deck count, layer toggle, pad mode, shift
+        // name, deck count, layer toggle, pad mode, shift left, shift right
+        // + optionally toggle left, toggle right
+        let setup_steps = if self.has_layer_toggle { 8 } else { 6 };
         let transport_steps = self.deck_count * 6; // play, cue, loop, loop size encoder, beat jump
         // Pads phase includes mode buttons + pads:
         // Controller mode: (hot cue mode + 8 pads + slicer mode + 8 pads) = 18 per deck
@@ -869,7 +974,7 @@ impl MidiLearnState {
         let pads_steps = self.deck_count * self.pads_steps_per_deck();
         let stems_steps = self.deck_count * 4; // 4 stem mute buttons per deck
         let mixer_steps = self.deck_count * 10; // volume, filter, eq hi/mid/lo, cue, 4 FX macros
-        let browser_steps = 7 + self.deck_count; // FX encoder, FX select, browser encoder, browser select, master vol, cue vol, cue mix, load buttons
+        let browser_steps = self.browser_step_count();
         let total = setup_steps + transport_steps + pads_steps + stems_steps + mixer_steps + browser_steps;
 
         let current = match self.phase {
@@ -878,7 +983,10 @@ impl MidiLearnState {
                 SetupStep::DeckCount => 1,
                 SetupStep::LayerToggle => 2,
                 SetupStep::PadModeSource => 3,
-                SetupStep::ShiftButton => 4,
+                SetupStep::ShiftButtonLeft => 4,
+                SetupStep::ShiftButtonRight => 5,
+                SetupStep::ToggleButtonLeft => 6,
+                SetupStep::ToggleButtonRight => 7,
             },
             LearnPhase::Transport => setup_steps + self.current_step,
             LearnPhase::Pads => setup_steps + transport_steps + self.current_step,
@@ -954,9 +1062,9 @@ impl MidiLearnState {
                     ("deck.slicer_trigger".to_string(), Some(d), None, ControlBehavior::Momentary, Some("deck.slicer_slice_active"))
                 }
 
-                // Stem mute buttons
+                // Stem mute buttons — direct deck_index (not layer-resolved)
                 HighlightTarget::DeckStemMute(d, _stem) => {
-                    ("deck.stem_mute".to_string(), Some(d), None, ControlBehavior::Toggle, Some("deck.stem_muted"))
+                    ("deck.stem_mute".to_string(), None, Some(d), ControlBehavior::Toggle, Some("deck.stem_muted"))
                 }
 
                 // Mixer controls - direct deck index (not layer-resolved)
@@ -1008,6 +1116,14 @@ impl MidiLearnState {
                 }
                 HighlightTarget::DeckLoad(d) => {
                     ("deck.load_selected".to_string(), Some(d), None, ControlBehavior::Momentary, None)
+                }
+
+                // Per-physical-deck browser (layer mode)
+                HighlightTarget::BrowserEncoderDeck(pd) => {
+                    ("browser.scroll".to_string(), Some(pd), None, ControlBehavior::Continuous, None)
+                }
+                HighlightTarget::BrowserSelectDeck(pd) => {
+                    ("deck.load_selected".to_string(), Some(pd), None, ControlBehavior::Momentary, None)
                 }
             };
 
@@ -1069,7 +1185,7 @@ impl MidiLearnState {
                         output: control,
                         on_value: 127,
                         off_value: 0,
-                        layer: None,
+                        alt_on_value: None,
                     });
                 }
             }
@@ -1077,12 +1193,18 @@ impl MidiLearnState {
 
         // Build deck target config
         let deck_target = if self.has_layer_toggle && self.deck_count == 2 {
-            // 2-deck controller with layer toggle
-            // We don't have the toggle buttons learned, so use a placeholder
-            // The user would need to manually add these or we could add a step
+            // Build toggle controls from learned mappings
+            let make_control = |event: &Option<CapturedMidiEvent>| -> MidiControlConfig {
+                match event {
+                    Some(e) if e.is_note => MidiControlConfig::note(e.channel, e.number),
+                    Some(e) => MidiControlConfig::cc(e.channel, e.number),
+                    None => MidiControlConfig::note(0, 0x00), // Fallback (skipped)
+                }
+            };
+
             DeckTargetConfig::Layer {
-                toggle_left: MidiControlConfig::note(0, 0x72),  // Placeholder
-                toggle_right: MidiControlConfig::note(1, 0x72), // Placeholder
+                toggle_left: make_control(&self.toggle_mapping_left),
+                toggle_right: make_control(&self.toggle_mapping_right),
                 layer_a: vec![0, 1],
                 layer_b: vec![2, 3],
             }
@@ -1095,14 +1217,59 @@ impl MidiLearnState {
             DeckTargetConfig::Direct { channel_to_deck }
         };
 
-        // Build shift config
-        let shift = self.shift_mapping.as_ref().map(|event| {
+        // Build shift buttons from per-side mappings
+        let mut shift_buttons = Vec::new();
+        let make_shift = |event: &CapturedMidiEvent| -> MidiControlConfig {
             if event.is_note {
                 MidiControlConfig::note(event.channel, event.number)
             } else {
                 MidiControlConfig::cc(event.channel, event.number)
             }
-        });
+        };
+        if let Some(ref event) = self.shift_mapping_left {
+            shift_buttons.push(ShiftButtonConfig {
+                control: make_shift(event),
+                physical_deck: 0,
+            });
+        }
+        if let Some(ref event) = self.shift_mapping_right {
+            shift_buttons.push(ShiftButtonConfig {
+                control: make_shift(event),
+                physical_deck: 1,
+            });
+        }
+
+        // Add layer toggle LED feedback with alt_on_value for color differentiation
+        if self.has_layer_toggle {
+            if let Some(ref event) = self.toggle_mapping_left {
+                if event.is_note {
+                    feedback.push(FeedbackMapping {
+                        state: "deck.layer_active".to_string(),
+                        physical_deck: Some(0),
+                        deck_index: None,
+                        params: HashMap::new(),
+                        output: MidiControlConfig::note(event.channel, event.number),
+                        on_value: 127,    // Layer A color (e.g., red)
+                        off_value: 0,
+                        alt_on_value: Some(50), // Layer B color (e.g., green)
+                    });
+                }
+            }
+            if let Some(ref event) = self.toggle_mapping_right {
+                if event.is_note {
+                    feedback.push(FeedbackMapping {
+                        state: "deck.layer_active".to_string(),
+                        physical_deck: Some(1),
+                        deck_index: None,
+                        params: HashMap::new(),
+                        output: MidiControlConfig::note(event.channel, event.number),
+                        on_value: 127,    // Layer A color
+                        off_value: 0,
+                        alt_on_value: Some(50), // Layer B color
+                    });
+                }
+            }
+        }
 
         let profile = DeviceProfile {
             name: self.controller_name.clone(),
@@ -1111,7 +1278,7 @@ impl MidiLearnState {
             learned_port_name: self.captured_port_name.clone(),
             deck_target,
             pad_mode_source: self.pad_mode_source,
-            shift,
+            shift_buttons,
             mappings,
             feedback,
         };
@@ -1347,8 +1514,22 @@ fn view_setup_phase(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
             .spacing(5)
             .into()
         }
-        SetupStep::ShiftButton => {
-            let label = text("Press your SHIFT button (or skip if none):").size(14);
+        SetupStep::ShiftButtonLeft | SetupStep::ShiftButtonRight => {
+            let side = if state.setup_step == SetupStep::ShiftButtonLeft { "LEFT" } else { "RIGHT" };
+            let label = text(format!("Press {} deck SHIFT button (or skip):", side)).size(14);
+            let last_midi = if let Some(ref event) = state.last_captured {
+                text(format!("Detected: {}", event.display())).size(12)
+            } else {
+                text("Waiting for MIDI input...").size(12)
+            };
+
+            row![label, Space::new().width(20), last_midi]
+                .align_y(Alignment::Center)
+                .into()
+        }
+        SetupStep::ToggleButtonLeft | SetupStep::ToggleButtonRight => {
+            let side = if state.setup_step == SetupStep::ToggleButtonLeft { "LEFT" } else { "RIGHT" };
+            let label = text(format!("Press {} LAYER TOGGLE button (or skip):", side)).size(14);
             let last_midi = if let Some(ref event) = state.last_captured {
                 text(format!("Detected: {}", event.display())).size(12)
             } else {

@@ -6,10 +6,10 @@
 use crate::config::MidiControlConfig;
 use crate::mapping::MappingEngine;
 use crate::messages::MidiMessage;
+use crate::shared_state::SharedMidiState;
 use crate::MidiConnectionError;
 use flume::Sender;
 use midir::MidiInputConnection;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// Raw MIDI input event (before action mapping)
@@ -142,8 +142,12 @@ struct CallbackData {
     /// Optional raw event sender for learn mode
     raw_event_tx: Option<Sender<MidiInputEvent>>,
     mapping_engine: Arc<MappingEngine>,
-    shift_control: Option<MidiControlConfig>,
-    shift_held: Arc<AtomicBool>,
+    /// Per-physical-deck shift buttons: (control, physical_deck)
+    shift_buttons: Vec<(MidiControlConfig, usize)>,
+    /// Layer toggle controls: (control, physical_deck)
+    toggle_controls: Vec<(MidiControlConfig, usize)>,
+    /// Shared state for shift/layer (shared with mapping engine and app)
+    shared_state: Arc<SharedMidiState>,
 }
 
 /// MIDI input handler
@@ -152,8 +156,8 @@ struct CallbackData {
 pub struct MidiInputHandler {
     /// The midir connection (kept alive for the duration)
     _connection: MidiInputConnection<CallbackData>,
-    /// Shift state (shared with callback)
-    shift_held: Arc<AtomicBool>,
+    /// Shared MIDI state (shift, layers)
+    shared_state: Arc<SharedMidiState>,
     /// Raw event receiver for learn mode
     raw_event_rx: Option<flume::Receiver<MidiInputEvent>>,
 }
@@ -166,9 +170,14 @@ impl MidiInputHandler {
         port_match: &str,
         message_tx: Sender<MidiMessage>,
         mapping_engine: Arc<MappingEngine>,
-        shift_control: Option<MidiControlConfig>,
+        shared_state: Arc<SharedMidiState>,
+        shift_buttons: Vec<(MidiControlConfig, usize)>,
+        toggle_controls: Vec<(MidiControlConfig, usize)>,
     ) -> Result<Self, MidiConnectionError> {
-        Self::connect_with_raw_events(port_match, message_tx, mapping_engine, shift_control, false)
+        Self::connect_with_raw_events(
+            port_match, message_tx, mapping_engine, shared_state,
+            shift_buttons, toggle_controls, false,
+        )
     }
 
     /// Connect to a MIDI port with optional raw event capture
@@ -179,12 +188,12 @@ impl MidiInputHandler {
         port_match: &str,
         message_tx: Sender<MidiMessage>,
         mapping_engine: Arc<MappingEngine>,
-        shift_control: Option<MidiControlConfig>,
+        shared_state: Arc<SharedMidiState>,
+        shift_buttons: Vec<(MidiControlConfig, usize)>,
+        toggle_controls: Vec<(MidiControlConfig, usize)>,
         capture_raw: bool,
     ) -> Result<Self, MidiConnectionError> {
         let (midi_in, port) = crate::connection::MidiConnection::find_input_port(port_match)?;
-
-        let shift_held = Arc::new(AtomicBool::new(false));
 
         // Create raw event channel if requested
         let (raw_event_tx, raw_event_rx) = if capture_raw {
@@ -198,8 +207,9 @@ impl MidiInputHandler {
             message_tx,
             raw_event_tx,
             mapping_engine,
-            shift_control,
-            shift_held: shift_held.clone(),
+            shift_buttons,
+            toggle_controls,
+            shared_state: shared_state.clone(),
         };
 
         let connection = midi_in
@@ -215,7 +225,7 @@ impl MidiInputHandler {
 
         Ok(Self {
             _connection: connection,
-            shift_held,
+            shared_state,
             raw_event_rx,
         })
     }
@@ -239,24 +249,46 @@ impl MidiInputHandler {
             let _ = raw_tx.try_send(event);
         }
 
-        // Check for shift button
-        if let Some(ref shift_ctrl) = callback_data.shift_control {
+        // Check for per-deck shift buttons FIRST (before mapping engine)
+        for (shift_ctrl, physical_deck) in &callback_data.shift_buttons {
             if event.matches(shift_ctrl) {
                 let held = event.is_press();
-                callback_data.shift_held.store(held, Ordering::Relaxed);
-                log::debug!("[MIDI IN] -> Shift {}", if held { "pressed" } else { "released" });
+                callback_data.shared_state.set_shift_for_deck(*physical_deck, held);
+                log::debug!(
+                    "[MIDI IN] -> Shift {} (physical deck {})",
+                    if held { "pressed" } else { "released" },
+                    physical_deck
+                );
 
-                // Send shift state change to app
-                let _ = callback_data
-                    .message_tx
-                    .try_send(MidiMessage::ShiftChanged { held });
+                // Send per-deck shift state change to app
+                let _ = callback_data.message_tx.try_send(MidiMessage::ShiftChanged {
+                    held,
+                    physical_deck: *physical_deck,
+                });
                 return;
             }
         }
 
-        // Map event to action
-        let shift = callback_data.shift_held.load(Ordering::Relaxed);
-        if let Some(ref message) = callback_data.mapping_engine.map_event(&event, shift) {
+        // Check for layer toggle buttons
+        for (toggle_ctrl, physical_deck) in &callback_data.toggle_controls {
+            if event.matches(toggle_ctrl) {
+                if event.is_press() {
+                    callback_data.shared_state.toggle_layer(*physical_deck);
+                    log::debug!(
+                        "[MIDI IN] -> Layer toggle (physical deck {})",
+                        physical_deck
+                    );
+
+                    let _ = callback_data.message_tx.try_send(MidiMessage::LayerToggle {
+                        physical_deck: *physical_deck,
+                    });
+                }
+                return;
+            }
+        }
+
+        // Map event to action (shift state is read from shared state inside map_event)
+        if let Some(ref message) = callback_data.mapping_engine.map_event(&event) {
             log::debug!("[MIDI IN] -> {:?}", message);
             // Send to app (non-blocking)
             if callback_data.message_tx.try_send(message.clone()).is_err() {
@@ -267,9 +299,9 @@ impl MidiInputHandler {
         }
     }
 
-    /// Check if shift is currently held
+    /// Check if shift is currently held (global)
     pub fn is_shift_held(&self) -> bool {
-        self.shift_held.load(Ordering::Relaxed)
+        self.shared_state.is_shift_held_global()
     }
 
     /// Drain all pending raw MIDI events (for learn mode)

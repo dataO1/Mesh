@@ -37,8 +37,14 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
     if app.midi_learn.is_active {
         let needs_capture = match app.midi_learn.phase {
             LearnPhase::Setup => {
-                // Only capture during ShiftButton step
-                app.midi_learn.setup_step == SetupStep::ShiftButton
+                // Capture during shift and toggle button steps
+                matches!(
+                    app.midi_learn.setup_step,
+                    SetupStep::ShiftButtonLeft
+                        | SetupStep::ShiftButtonRight
+                        | SetupStep::ToggleButtonLeft
+                        | SetupStep::ToggleButtonRight
+                )
             }
             LearnPhase::Review => false,
             // All other phases need MIDI capture
@@ -83,8 +89,22 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
 
                         // Handle based on current phase
                         if app.midi_learn.phase == LearnPhase::Setup {
-                            // Shift button detection - auto-advance
-                            app.midi_learn.shift_mapping = Some(captured);
+                            // Setup phase button detection - route to correct field
+                            match app.midi_learn.setup_step {
+                                SetupStep::ShiftButtonLeft => {
+                                    app.midi_learn.shift_mapping_left = Some(captured);
+                                }
+                                SetupStep::ShiftButtonRight => {
+                                    app.midi_learn.shift_mapping_right = Some(captured);
+                                }
+                                SetupStep::ToggleButtonLeft => {
+                                    app.midi_learn.toggle_mapping_left = Some(captured);
+                                }
+                                SetupStep::ToggleButtonRight => {
+                                    app.midi_learn.toggle_mapping_right = Some(captured);
+                                }
+                                _ => {}
+                            }
                             app.midi_learn.advance();
                         } else {
                             // Mapping phase - start hardware detection

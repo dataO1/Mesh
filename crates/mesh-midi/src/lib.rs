@@ -26,11 +26,12 @@ mod mapping;
 mod messages;
 mod normalize;
 mod output;
+mod shared_state;
 
 pub use config::{
     default_midi_config_path, load_midi_config, normalize_port_name, port_matches, save_midi_config,
     ControlBehavior, ControlMapping, DeckTargetConfig, DeviceProfile, EncoderMode, FeedbackMapping,
-    HardwareType, MidiConfig, MidiControlConfig, PadModeSource,
+    HardwareType, MidiConfig, MidiControlConfig, PadModeSource, ShiftButtonConfig,
 };
 pub use connection::{MidiConnection, MidiConnectionError};
 pub use detection::{MidiSample, MidiSampleBuffer};
@@ -40,6 +41,7 @@ pub use mapping::{ActionRegistry, MappingEngine};
 pub use messages::{DeckAction, GlobalAction, MidiMessage, MixerAction, BrowserAction};
 pub use normalize::{normalize_cc_value, ControlRange};
 pub use output::{ActionMode, DeckFeedbackState, FeedbackState, MidiOutputHandler, MixerFeedbackState};
+pub use shared_state::SharedMidiState;
 
 use flume::{Receiver, Sender};
 use std::collections::HashMap;
@@ -53,8 +55,8 @@ struct ConnectedDevice {
     input_handler: MidiInputHandler,
     /// Output handler for LED feedback (optional - some devices are input-only)
     output_handler: Option<MidiOutputHandler>,
-    /// Deck targeting state for this device
-    deck_target_state: DeckTargetState,
+    /// Shared state for this device (shift, layers)
+    shared_state: Arc<SharedMidiState>,
 }
 
 /// Main MIDI controller manager
@@ -71,8 +73,6 @@ pub struct MidiController {
     message_rx: Receiver<MidiMessage>,
     /// Sender for MIDI messages (passed to all handlers)
     message_tx: Sender<MidiMessage>,
-    /// Current shift state (global across all devices)
-    shift_held: bool,
 }
 
 /// Error type for MIDI controller operations
@@ -89,6 +89,30 @@ pub enum MidiError {
 
     #[error("MIDI output error: {0}")]
     OutputError(String),
+}
+
+/// Extract shift button controls from a device profile
+fn extract_shift_buttons(profile: &DeviceProfile) -> Vec<(MidiControlConfig, usize)> {
+    profile
+        .shift_buttons
+        .iter()
+        .map(|sb| (sb.control.clone(), sb.physical_deck))
+        .collect()
+}
+
+/// Extract layer toggle controls from a device profile's deck target config
+fn extract_toggle_controls(profile: &DeviceProfile) -> Vec<(MidiControlConfig, usize)> {
+    match &profile.deck_target {
+        DeckTargetConfig::Layer {
+            toggle_left,
+            toggle_right,
+            ..
+        } => vec![
+            (toggle_left.clone(), 0),
+            (toggle_right.clone(), 1),
+        ],
+        DeckTargetConfig::Direct { .. } => vec![],
+    }
 }
 
 impl MidiController {
@@ -121,7 +145,6 @@ impl MidiController {
             connected_devices: HashMap::new(),
             message_rx,
             message_tx: message_tx.clone(),
-            shift_held: false,
         };
 
         // Try to connect to all matching devices
@@ -144,7 +167,6 @@ impl MidiController {
             connected_devices: HashMap::new(),
             message_rx,
             message_tx: message_tx.clone(),
-            shift_held: false,
         };
 
         // Connect to ALL available ports
@@ -186,20 +208,25 @@ impl MidiController {
                 learned_port_name: Some(normalized.clone()),
                 deck_target: DeckTargetConfig::default(),
                 pad_mode_source: PadModeSource::default(),
-                shift: None,
+                shift_buttons: vec![],
                 mappings: vec![],
                 feedback: vec![],
             };
 
+            // Create shared state (default - no layers, no shift)
+            let shared_state = Arc::new(SharedMidiState::default());
+
             // Create a dummy mapping engine (won't be used, we only want raw events)
-            let mapping_engine = Arc::new(MappingEngine::new(&learn_profile));
+            let mapping_engine = Arc::new(MappingEngine::new(&learn_profile, shared_state.clone()));
 
             match MidiInputHandler::connect_with_raw_events(
                 port_name,
                 self.message_tx.clone(),
                 mapping_engine,
-                None, // No shift button in learn mode
-                true, // Always capture raw in learn mode
+                shared_state.clone(),
+                vec![], // No shift buttons in learn mode
+                vec![], // No toggle controls in learn mode
+                true,   // Always capture raw in learn mode
             ) {
                 Ok(input_handler) => {
                     log::info!("MIDI Learn: Connected to '{}'", port_name);
@@ -210,7 +237,7 @@ impl MidiController {
                             profile: learn_profile,
                             input_handler,
                             output_handler: None, // No output needed for learn
-                            deck_target_state: DeckTargetState::default(),
+                            shared_state,
                         },
                     );
                 }
@@ -271,15 +298,25 @@ impl MidiController {
                     continue;
                 }
 
+                // Create shared state from profile's deck target config
+                let deck_target_state = DeckTargetState::from_config(&profile.deck_target);
+                let shared_state = Arc::new(SharedMidiState::new(deck_target_state));
+
+                // Extract shift buttons and toggle controls from config
+                let shift_buttons = extract_shift_buttons(profile);
+                let toggle_controls = extract_toggle_controls(profile);
+
                 // Create mapping engine for this profile
-                let mapping_engine = Arc::new(MappingEngine::new(profile));
+                let mapping_engine = Arc::new(MappingEngine::new(profile, shared_state.clone()));
 
                 // Try to connect input handler
                 match MidiInputHandler::connect_with_raw_events(
                     port_name, // Use actual port name for connection
                     self.message_tx.clone(),
                     mapping_engine,
-                    profile.shift.clone(),
+                    shared_state.clone(),
+                    shift_buttons,
+                    toggle_controls,
                     capture_raw,
                 ) {
                     Ok(input_handler) => {
@@ -288,9 +325,6 @@ impl MidiController {
                             profile.name,
                             port_name
                         );
-
-                        // Set up deck targeting from profile
-                        let deck_target_state = DeckTargetState::from_config(&profile.deck_target);
 
                         // Try to connect output for LED feedback
                         let output_handler =
@@ -305,7 +339,7 @@ impl MidiController {
                                 profile: profile.clone(),
                                 input_handler,
                                 output_handler,
-                                deck_target_state,
+                                shared_state,
                             },
                         );
                     }
@@ -390,44 +424,35 @@ impl MidiController {
         std::iter::from_fn(|| self.try_recv())
     }
 
-    /// Handle a layer toggle event
-    ///
-    /// Called when a deck layer toggle button is pressed.
-    /// Toggles layer on all connected devices for consistency.
-    pub fn toggle_layer(&mut self, physical_deck: usize) {
-        for device in self.connected_devices.values_mut() {
-            device.deck_target_state.toggle_layer(physical_deck);
-        }
-        // Log using first device's state (they should all be in sync)
-        if let Some(device) = self.connected_devices.values().next() {
-            log::debug!(
-                "MIDI: Layer toggled for physical deck {}, now {:?}",
-                physical_deck,
-                device.deck_target_state.get_layer(physical_deck)
-            );
-        }
-    }
-
     /// Get the current virtual deck for a physical deck
     ///
-    /// Uses the first connected device's state (devices are kept in sync).
+    /// Uses the first connected device's shared state.
     pub fn resolve_deck(&self, physical_deck: usize) -> usize {
         self.connected_devices
             .values()
             .next()
-            .map(|d| d.deck_target_state.resolve_deck(physical_deck))
+            .map(|d| d.shared_state.resolve_deck(physical_deck))
             .unwrap_or(physical_deck)
     }
 
     /// Get current layer selection for a physical deck
     ///
-    /// Uses the first connected device's state (devices are kept in sync).
+    /// Uses the first connected device's shared state.
     pub fn get_layer(&self, physical_deck: usize) -> LayerSelection {
         self.connected_devices
             .values()
             .next()
-            .map(|d| d.deck_target_state.get_layer(physical_deck))
+            .map(|d| d.shared_state.get_layer(physical_deck))
             .unwrap_or(LayerSelection::A)
+    }
+
+    /// Check if we're in layer mode
+    pub fn is_layer_mode(&self) -> bool {
+        self.connected_devices
+            .values()
+            .next()
+            .map(|d| d.shared_state.is_layer_mode())
+            .unwrap_or(false)
     }
 
     /// Update LED feedback based on current application state
@@ -437,21 +462,12 @@ impl MidiController {
     pub fn update_feedback(&mut self, state: &FeedbackState) {
         for device in self.connected_devices.values_mut() {
             if let Some(ref mut output) = device.output_handler {
-                output.update(state, &device.deck_target_state);
+                // Read the deck target state from shared state for feedback evaluation
+                if let Ok(deck_target) = device.shared_state.deck_target.read() {
+                    output.update(state, &deck_target);
+                }
             }
         }
-    }
-
-    /// Set shift state (for coordinating with app's shift state)
-    ///
-    /// Shift state is global across all devices.
-    pub fn set_shift(&mut self, held: bool) {
-        self.shift_held = held;
-    }
-
-    /// Get current shift state
-    pub fn is_shift_held(&self) -> bool {
-        self.shift_held
     }
 
     /// Get the pad mode source from the first connected device
