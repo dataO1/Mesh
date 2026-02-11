@@ -183,6 +183,11 @@ impl AudioEngine {
         self.linked_stem_loader.result_receiver()
     }
 
+    /// Get the master clipper's clip indicator atomic (for UI)
+    pub fn clip_indicator(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.mixer.clip_indicator()
+    }
+
     /// Get a reference to the mixer
     pub fn mixer(&self) -> &Mixer {
         &self.mixer

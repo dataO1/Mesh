@@ -13,6 +13,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use mesh_core::db::DatabaseService;
 use iced::widget::{button, center, column, container, mouse_area, opaque, row, slider, stack, text, Space};
@@ -53,6 +54,10 @@ pub struct MeshApp {
     pub(crate) slicer_atomics: Option<[Arc<SlicerAtomics>; NUM_DECKS]>,
     /// Lock-free linked stem state for UI reads (which stems have links)
     pub(crate) linked_stem_atomics: Option<[Arc<LinkedStemAtomics>; NUM_DECKS]>,
+    /// Master clipper clip indicator (true = clipping occurred this buffer)
+    pub(crate) clip_indicator: Option<Arc<AtomicBool>>,
+    /// Hold timer for clip indicator UI (decremented each tick, show red dot when > 0)
+    pub(crate) clip_hold_frames: u8,
     /// Unified waveform state for all 4 decks
     pub(crate) player_canvas_state: PlayerCanvasState,
     /// Local deck view states (controls only, waveform moved to player_canvas_state)
@@ -106,6 +111,7 @@ impl MeshApp {
     /// - `slicer_atomics`: Lock-free slicer state for UI reads (None for offline mode)
     /// - `linked_stem_atomics`: Lock-free linked stem state for UI reads (None for offline mode)
     /// - `linked_stem_receiver`: Receiver for linked stem load results (engine owns the loader)
+    /// - `clip_indicator`: Atomic flag set by master clipper when clipping occurs (None for offline mode)
     /// - `sample_rate`: Audio system's sample rate for track loading (e.g., 48000 or 44100)
     pub fn new(
         db_service: Arc<DatabaseService>,
@@ -114,6 +120,7 @@ impl MeshApp {
         slicer_atomics: Option<[Arc<SlicerAtomics>; NUM_DECKS]>,
         linked_stem_atomics: Option<[Arc<LinkedStemAtomics>; NUM_DECKS]>,
         linked_stem_receiver: Option<mesh_core::loader::LinkedStemResultReceiver>,
+        clip_indicator: Option<Arc<AtomicBool>>,
         sample_rate: u32,
         mapping_mode: bool,
     ) -> Self {
@@ -214,6 +221,8 @@ impl MeshApp {
             deck_atomics,
             slicer_atomics,
             linked_stem_atomics,
+            clip_indicator,
+            clip_hold_frames: 0,
             player_canvas_state: {
                 let mut state = PlayerCanvasState::new();
                 state.set_stem_colors(config.display.stem_color_palette.colors());
@@ -968,6 +977,13 @@ impl MeshApp {
             text("○ Audio Disconnected").size(12)
         };
 
+        // Master clip indicator: red dot when clipper is active
+        let clip_indicator: Element<'_, Message> = if self.clip_hold_frames > 0 {
+            text("CLIP").size(11).color(Color::from_rgb(1.0, 0.2, 0.2)).into()
+        } else {
+            Space::new().width(0).into()
+        };
+
         // Settings gear icon (⚙ U+2699)
         let settings_btn = button(text("⚙").size(20))
             .on_press(Message::Settings(SettingsMessage::Open))
@@ -981,6 +997,7 @@ impl MeshApp {
             Space::new().width(20),
             fx_element,
             Space::new().width(Fill),
+            clip_indicator,
             connection_status,
             settings_btn,
         ]

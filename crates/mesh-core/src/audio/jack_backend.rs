@@ -189,6 +189,7 @@ pub fn start_audio_system(
     let slicer_atomics = engine.slicer_atomics();
     let linked_stem_atomics = engine.linked_stem_atomics();
     let linked_stem_receiver = engine.linked_stem_result_receiver();
+    let clip_indicator = engine.clip_indicator();
 
     // Create lock-free command channel
     let (command_tx, command_rx) = command_channel();
@@ -244,6 +245,7 @@ pub fn start_audio_system(
         slicer_atomics,
         linked_stem_atomics,
         linked_stem_receiver,
+        clip_indicator,
         sample_rate,
         buffer_size,
         latency_ms,

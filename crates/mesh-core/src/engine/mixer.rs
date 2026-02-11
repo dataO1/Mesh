@@ -4,8 +4,12 @@
 //! - Per-channel trim, 3-band EQ, filter, volume, cue
 //! - Master volume and cue/master blend
 
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+
 use rayon::prelude::*;
 
+use super::master_clipper::MasterClipper;
 use crate::types::{StereoBuffer, StereoSample, NUM_DECKS, SAMPLE_RATE};
 
 /// Biquad filter state for EQ bands
@@ -342,6 +346,8 @@ pub struct Mixer {
     cue_mix: f32,
     /// Cue/headphone output volume (0.0 to 1.0)
     cue_volume: f32,
+    /// Master bus safety clipper (ClipOnly2-style)
+    clipper: MasterClipper,
 }
 
 impl Mixer {
@@ -352,6 +358,7 @@ impl Mixer {
             master_volume: 1.0,
             cue_mix: 0.0,
             cue_volume: 0.8,
+            clipper: MasterClipper::new(),
         }
     }
 
@@ -383,6 +390,11 @@ impl Mixer {
     /// Get cue mix
     pub fn cue_mix(&self) -> f32 {
         self.cue_mix
+    }
+
+    /// Get the master clipper's clip indicator atomic (for UI)
+    pub fn clip_indicator(&self) -> Arc<AtomicBool> {
+        self.clipper.clip_indicator()
     }
 
     /// Set cue/headphone volume (0.0 to 1.0)
@@ -444,6 +456,9 @@ impl Mixer {
 
         // Apply master volume
         master_out.scale(self.master_volume);
+
+        // Safety clipper: prevents overs on master output
+        self.clipper.process(master_out);
 
         // Mix cue/master for headphones (cue_out becomes the headphone output)
         for i in 0..buffer_len {

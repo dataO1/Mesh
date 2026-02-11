@@ -9,6 +9,7 @@
 //! - Audio thread owns the AudioEngine exclusively
 //! - Atomics for lock-free state reads
 
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use crate::db::DatabaseService;
@@ -56,6 +57,8 @@ pub struct AudioSystemResult {
     pub linked_stem_atomics: [Arc<LinkedStemAtomics>; NUM_DECKS],
     /// Receiver for linked stem load results
     pub linked_stem_receiver: LinkedStemResultReceiver,
+    /// Master clipper clip indicator (true = clipping occurred)
+    pub clip_indicator: Arc<AtomicBool>,
     /// Sample rate of the audio system
     pub sample_rate: u32,
     /// Actual buffer size in frames

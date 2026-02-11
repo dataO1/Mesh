@@ -153,6 +153,7 @@ fn start_master_only(
     let slicer_atomics = engine.slicer_atomics();
     let linked_stem_atomics = engine.linked_stem_atomics();
     let linked_stem_receiver = engine.linked_stem_result_receiver();
+    let clip_indicator = engine.clip_indicator();
 
     // Create command channel
     let (command_tx, command_rx) = command_channel();
@@ -183,6 +184,7 @@ fn start_master_only(
         slicer_atomics,
         linked_stem_atomics,
         linked_stem_receiver,
+        clip_indicator,
         sample_rate,
         buffer_size,
         latency_ms,
@@ -268,6 +270,7 @@ fn start_master_and_cue(
     let slicer_atomics = engine.slicer_atomics();
     let linked_stem_atomics = engine.linked_stem_atomics();
     let linked_stem_receiver = engine.linked_stem_result_receiver();
+    let clip_indicator = engine.clip_indicator();
 
     // Create command channel
     let (command_tx, command_rx) = command_channel();
@@ -321,6 +324,7 @@ fn start_master_and_cue(
         slicer_atomics,
         linked_stem_atomics,
         linked_stem_receiver,
+        clip_indicator,
         sample_rate,
         buffer_size,
         latency_ms,

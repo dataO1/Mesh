@@ -11,6 +11,7 @@
 //! - Audio Thread: Owns the AudioEngine exclusively
 //! - Atomics: UI reads playback state without locks
 
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use mesh_core::audio::{self, AudioConfig, AudioHandle, AudioResult, DeviceId};
@@ -32,7 +33,8 @@ pub type AudioSystemResult = (
     [Arc<SlicerAtomics>; NUM_DECKS],
     [Arc<LinkedStemAtomics>; NUM_DECKS],
     LinkedStemResultReceiver,
-    u32, // sample_rate
+    Arc<AtomicBool>, // clip_indicator
+    u32,             // sample_rate
 );
 
 /// Start the audio system for mesh-player (master + cue outputs)
@@ -45,7 +47,7 @@ pub type AudioSystemResult = (
 /// * `db_service` - Database service for the audio engine
 ///
 /// # Returns
-/// Tuple of (handle, command_sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, sample_rate)
+/// Tuple of (handle, command_sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, sample_rate)
 pub fn start_audio_system(
     _client_name: &str,
     db_service: Arc<DatabaseService>,
@@ -62,6 +64,7 @@ pub fn start_audio_system(
         result.slicer_atomics,
         result.linked_stem_atomics,
         result.linked_stem_receiver,
+        result.clip_indicator,
         result.sample_rate,
     ))
 }
@@ -88,6 +91,7 @@ pub fn start_audio_system_with_devices(
         result.slicer_atomics,
         result.linked_stem_atomics,
         result.linked_stem_receiver,
+        result.clip_indicator,
         result.sample_rate,
     ))
 }

@@ -114,6 +114,17 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
     }
     app.mixer_view.set_highlight(highlight);
 
+    // Read master clipper clip indicator (LOCK-FREE)
+    // Swap to false so we know if any new clipping happens next tick
+    if let Some(ref clip_indicator) = app.clip_indicator {
+        if clip_indicator.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            // Clipping detected — set hold timer (~500ms at 60fps = 30 frames)
+            app.clip_hold_frames = 30;
+        }
+    }
+    // Decrement hold timer each tick
+    app.clip_hold_frames = app.clip_hold_frames.saturating_sub(1);
+
     // Read deck positions from atomics (LOCK-FREE - never blocks audio thread)
     // Position/state reads happen ~60Hz with zero contention
     let mut deck_positions: [Option<u64>; 4] = [None; 4];

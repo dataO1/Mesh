@@ -14,6 +14,8 @@ as much as possible in mesh-core and mesh-widget and only if necessary in the ui
   deletion of track from playlist/collection in the mesh-widget via del key.
   Same for playlists. Always require confirmation via a small popup. Also need
   a right-click context menu for rename/delete/re-analyse.
+- [ ] Sort by multiple columns: click column headers to sort by BPM, key,
+  artist, etc. Standard library UX.
 
 ## MIDI
 - [ ] Jog wheel beat nudging for backwards compatibility with older devices
@@ -48,10 +50,14 @@ as much as possible in mesh-core and mesh-widget and only if necessary in the ui
   - [ ] Database backup (without wav files, just DB).
 
 ## Audio Processing
+- [ ] Master limiter/clipper — prevents speaker damage and distortion.
+- [ ] Live peak meter per channel and master channel.
+- [ ] Set recording master output.
 - [ ] Real-time short-term LUFS normalisation per stem (no latency) using
   essentia, ebur128 or lufs crate. Goal: stems after FX processing should be
   comparable loudness to input stem loudness, since processing can be very
   loud or silent.
+- [ ] Built-in native effects (beat-synced echo, flanger, phaser, gater, etc.).
 
 # Bugs
 - [ ] Virtual deck toggle buttons need similar logic to action pad modes. On
@@ -75,6 +81,12 @@ as much as possible in mesh-core and mesh-widget and only if necessary in the ui
   overhead. Factor out infrequently-changing information into
   message/subscription instead of tick handlers. Canvas sometimes skips
   frames.
+- [ ] Real-time thread priority: set SCHED_FIFO with priority ~70 (below
+  JACK's 80) for the audio callback thread when not using JACK. On a typical
+  Linux desktop a CPU spike from another process can preempt the audio thread.
+- [ ] Watchdog / xrun detection: monitor audio callback timing. If a callback
+  takes too long, warn and adapt. Show xrun counts in diagnostics (like
+  Traktor).
 
 # Open Questions
 - [ ] B2B settings management: when multiple DJs play on the same device, each
