@@ -108,6 +108,13 @@ pkgs.writeShellApplication {
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
 
+        # Install CMake 3.25+ from Kitware APT repo (Ubuntu 22.04 ships 3.22, libpd needs 3.25)
+        echo "    Adding Kitware APT repository for CMake 3.25+..."
+        apt-get install -y ca-certificates gpg wget 2>&1 | grep -E "^(Setting up|Processing)" || true
+        wget -qO - https://apt.kitware.com/keys/kitware-archive-latest.asc | gpg --dearmor -o /usr/share/keyrings/kitware-archive-keyring.gpg
+        echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ jammy main' > /etc/apt/sources.list.d/kitware.list
+        apt-get update -qq
+
         echo "    Installing packages (this takes 1-2 minutes on first run)..."
         apt-get install -y \
           curl \
@@ -124,6 +131,8 @@ pkgs.writeShellApplication {
           libwayland-dev \
           libfontconfig1-dev \
           libx11-dev \
+          libx11-xcb-dev \
+          libxcb1-dev \
           libxcursor-dev \
           libxrandr-dev \
           libxi-dev \

@@ -222,6 +222,11 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 ### Fixed
 
+- **Container .deb build fixes** — Fixed two build failures in the Ubuntu 22.04
+  container: added Kitware APT repository for CMake 3.25+ (Ubuntu 22.04 ships
+  3.22, but libpd requires 3.25), and added missing `libx11-xcb-dev` and
+  `libxcb1-dev` dependencies needed by recent iced/wgpu versions.
+
 - **mesh-cue CLAP latency display** — CLAP plugin latency is now shown in the
   effect card header in mesh-cue (e.g., "Compressor (2.3ms)"). Previously always
   displayed 0 because `EffectUiState.latency_samples` was never set after plugin
