@@ -10,6 +10,7 @@ use std::sync::Arc;
 use rayon::prelude::*;
 
 use super::master_clipper::MasterClipper;
+use super::master_limiter::MasterLimiter;
 use crate::types::{StereoBuffer, StereoSample, NUM_DECKS, SAMPLE_RATE};
 
 /// Biquad filter state for EQ bands
@@ -346,7 +347,9 @@ pub struct Mixer {
     cue_mix: f32,
     /// Cue/headphone output volume (0.0 to 1.0)
     cue_volume: f32,
-    /// Master bus safety clipper (ClipOnly2-style)
+    /// Master bus lookahead limiter (transparent, before clipper)
+    limiter: MasterLimiter,
+    /// Master bus safety clipper (ClipOnly2-style, after limiter)
     clipper: MasterClipper,
 }
 
@@ -358,6 +361,7 @@ impl Mixer {
             master_volume: 1.0,
             cue_mix: 0.0,
             cue_volume: 0.8,
+            limiter: MasterLimiter::new(),
             clipper: MasterClipper::new(),
         }
     }
@@ -457,8 +461,11 @@ impl Mixer {
         // Apply master volume
         master_out.scale(self.master_volume);
 
-        // Safety clipper: prevents overs on master output
+        // Safety clipper: shaves transient peaks cleanly (zero latency)
         self.clipper.process(master_out);
+
+        // Lookahead limiter: transparent gain reduction for sustained overs
+        self.limiter.process(master_out);
 
         // Mix cue/master for headphones (cue_out becomes the headphone output)
         for i in 0..buffer_len {

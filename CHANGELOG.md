@@ -182,6 +182,19 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   the fader lowers, a semi-transparent overlay gradually darkens the waveform
   area, providing instant visual feedback of relative deck volumes.
 
+- **Two-stage master bus protection** — Prevents digital overs and protects PA
+  systems with a clipper → limiter chain on the master output:
+  - **ClipOnly2-style safety clipper** — Stateful clipper based on the Airwindows
+    algorithm using Dottie number interpolation. Shaves transient peaks cleanly
+    with ~1 sample latency and zero processing when below threshold (−0.3 dBFS).
+  - **Transparent lookahead limiter** — Feed-forward limiter with 1.5 ms lookahead
+    (72 samples at 48 kHz). Smoothly reduces gain for sustained overs using
+    sliding-window peak detection and exponential attack/release envelope.
+    100 ms release time-constant prevents audible pumping.
+  - **Clip indicator** — The "Audio Connected" dot in the header flashes red when
+    the clipper engages (~150 ms hold), providing real-time visual feedback of
+    master output clipping via a lock-free `AtomicBool` from the audio thread.
+
 ### Fixed
 
 - **mesh-cue CLAP latency display** — CLAP plugin latency is now shown in the

@@ -971,17 +971,19 @@ impl MeshApp {
         // Global FX preset selector
         let fx_element = self.view_global_fx_dropdown();
 
-        let connection_status = if self.domain.is_audio_connected() {
-            text("● Audio Connected").size(12)
+        let clipping = self.clip_hold_frames > 0;
+        let dot_color = if clipping {
+            Color::from_rgb(1.0, 0.15, 0.15)
         } else {
-            text("○ Audio Disconnected").size(12)
+            Color::from_rgb(0.3, 0.8, 0.3)
         };
-
-        // Master clip indicator: red dot when clipper is active
-        let clip_indicator: Element<'_, Message> = if self.clip_hold_frames > 0 {
-            text("CLIP").size(11).color(Color::from_rgb(1.0, 0.2, 0.2)).into()
+        let connection_status: Element<'_, Message> = if self.domain.is_audio_connected() {
+            row![
+                text("●").size(12).color(dot_color),
+                text(" Audio Connected").size(12),
+            ].into()
         } else {
-            Space::new().width(0).into()
+            text("○ Audio Disconnected").size(12).into()
         };
 
         // Settings gear icon (⚙ U+2699)
@@ -997,7 +999,6 @@ impl MeshApp {
             Space::new().width(20),
             fx_element,
             Space::new().width(Fill),
-            clip_indicator,
             connection_status,
             settings_btn,
         ]

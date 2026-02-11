@@ -55,6 +55,7 @@ Mesh also includes **built-in stem separation** — drop any MP3, FLAC, or WAV f
 
 - **Zero-dropout loading** — Load new tracks while playing without audio glitches
 - **High-quality time stretching** — Tempo changes without pitch artifacts
+- **Master bus protection** — Built-in limiter and clipper prevent distortion and protect your speakers, even when mixing hot
 - **Low-latency audio** — JACK on Linux, WASAPI on Windows
 - **Professional routing** — Separate master and cue outputs for headphone monitoring
 
@@ -225,6 +226,7 @@ Install CLAP plugins from your distro's package manager or download from plugin 
 - [x] USB export for portable performance
 - [x] Track similarity search (audio fingerprinting)
 - [x] Auto-gain loudness normalization
+- [x] Master bus limiter and clipper (PA protection)
 - [x] Effects: filter, delay, reverb
 - [x] Pure Data effect patches (custom DSP via PD)
 - [x] CLAP plugin hosting (LSP, Dragonfly, Airwindows, etc.)

@@ -118,8 +118,8 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
     // Swap to false so we know if any new clipping happens next tick
     if let Some(ref clip_indicator) = app.clip_indicator {
         if clip_indicator.swap(false, std::sync::atomic::Ordering::Relaxed) {
-            // Clipping detected — set hold timer (~500ms at 60fps = 30 frames)
-            app.clip_hold_frames = 30;
+            // Clipping detected — set hold timer (~150ms at 60fps = 9 frames)
+            app.clip_hold_frames = 9;
         }
     }
     // Decrement hold timer each tick
