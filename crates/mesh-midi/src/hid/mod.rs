@@ -171,6 +171,19 @@ impl HidOutputHandler {
         }
     }
 
+    /// Get the device_id for this handler
+    pub fn device_id(&self) -> &str {
+        &self.device_id
+    }
+
+    /// Send a display text command directly (e.g., for layer indicator)
+    pub fn send_display(&self, text: &str) {
+        let cmd = FeedbackCommand::SetDisplay { text: text.to_string() };
+        if self.feedback_tx.try_send(cmd).is_err() {
+            log::warn!("HID: Display feedback channel full");
+        }
+    }
+
     /// Apply evaluated feedback results for HID controls
     pub fn apply_feedback(&mut self, results: &[crate::feedback::FeedbackResult]) {
         for result in results {

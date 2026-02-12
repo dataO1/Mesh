@@ -764,6 +764,30 @@ impl ControllerManager {
                     let results = evaluate_feedback(&profile.feedback, state, &deck_target);
                     device.output_handler.apply_feedback(&results);
                 }
+
+                // Send layer indicator to 7-segment display (if device has one)
+                // Find this device's physical deck by matching device_id in shift_buttons
+                if let Some(ref shared_state) = device.shared_state {
+                    if shared_state.is_layer_mode() {
+                        let hid_device_id = device.output_handler.device_id();
+                        let physical_deck = profile.shift_buttons.iter().find_map(|sb| {
+                            if let ControlAddress::Hid { device_id, .. } = &sb.control {
+                                if device_id == hid_device_id {
+                                    return Some(sb.physical_deck);
+                                }
+                            }
+                            None
+                        });
+                        if let Some(pd) = physical_deck {
+                            let layer = shared_state.get_layer(pd);
+                            let text = match layer {
+                                LayerSelection::A => "A",
+                                LayerSelection::B => "b",
+                            };
+                            device.output_handler.send_display(text);
+                        }
+                    }
+                }
             }
         }
     }

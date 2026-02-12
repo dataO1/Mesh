@@ -498,9 +498,10 @@ fn grid_pad_rgb_offset(name: &str) -> Option<usize> {
     }
 }
 
-/// 7-segment digit encoding lookup table.
-/// Each digit is encoded as which of the 7 segments (a-g) are lit.
-/// The F1 uses 4 bytes per digit position (segment groups).
+/// 7-segment display encoding for the Kontrol F1.
+///
+/// The F1 has a 2-digit 7-segment display. Each digit uses 8 bytes in the
+/// output report: 1 decimal point + 7 individual segment brightness values.
 ///
 /// Segment layout:
 ///  _a_
@@ -511,38 +512,40 @@ fn grid_pad_rgb_offset(name: &str) -> Option<usize> {
 /// e   c
 /// |_d_| .dp
 ///
-/// The F1's 16-byte display area encodes 4 digits, each using 4 bytes that
-/// control individual segment groups. The exact bit-to-segment mapping is
-/// empirical. For simplicity, we use a nibble-based encoding.
-const SEVEN_SEG: [u8; 16] = [
-    0x3F, // 0: a b c d e f
-    0x06, // 1: b c
-    0x5B, // 2: a b d e g
-    0x4F, // 3: a b c d g
-    0x66, // 4: b c f g
-    0x6D, // 5: a c d f g
-    0x7D, // 6: a c d e f g
-    0x07, // 7: a b c
-    0x7F, // 8: a b c d e f g
-    0x6F, // 9: a b c d f g
-    0x77, // A: a b c e f g
-    0x7C, // b: c d e f g
-    0x39, // C: a d e f
-    0x5E, // d: b c d e g
-    0x79, // E: a d e f g
-    0x71, // F: a e f g
+/// Output byte order per digit: [dp, g, c, b, a, f, e, d]
+/// Right digit: output bytes 1-8, Left digit: output bytes 9-16.
+/// Each byte is a brightness value: 0x00 (off) to 0x7F (full).
+
+const SEG_ON: u8 = 0x7F;
+
+/// Segment patterns for digits 0-9.
+/// Byte order: [g, c, b, a, f, e, d] (matches F1 hardware layout, dp excluded).
+const DIGIT_SEGS: [[u8; 7]; 10] = [
+    [0,      SEG_ON, SEG_ON, SEG_ON, SEG_ON, SEG_ON, SEG_ON], // 0: abcdef
+    [0,      SEG_ON, SEG_ON, 0,      0,      0,      0     ], // 1: bc
+    [SEG_ON, 0,      SEG_ON, SEG_ON, 0,      SEG_ON, SEG_ON], // 2: abdeg
+    [SEG_ON, SEG_ON, SEG_ON, SEG_ON, 0,      0,      SEG_ON], // 3: abcdg
+    [SEG_ON, SEG_ON, SEG_ON, 0,      SEG_ON, 0,      0     ], // 4: bcfg
+    [SEG_ON, SEG_ON, 0,      SEG_ON, SEG_ON, 0,      SEG_ON], // 5: acdfg
+    [SEG_ON, SEG_ON, 0,      SEG_ON, SEG_ON, SEG_ON, SEG_ON], // 6: acdefg
+    [0,      SEG_ON, SEG_ON, SEG_ON, 0,      0,      0     ], // 7: abc
+    [SEG_ON, SEG_ON, SEG_ON, SEG_ON, SEG_ON, SEG_ON, SEG_ON], // 8: abcdefg
+    [SEG_ON, SEG_ON, SEG_ON, SEG_ON, SEG_ON, 0,      SEG_ON], // 9: abcdfg
 ];
 
-/// Blank segment (all off)
-const SEG_BLANK: u8 = 0x00;
-/// Dash segment (g only)
-const SEG_DASH: u8 = 0x40;
+/// Letter segment patterns [g, c, b, a, f, e, d]
+const SEG_LETTER_A: [u8; 7] = [SEG_ON, SEG_ON, SEG_ON, SEG_ON, SEG_ON, SEG_ON, 0     ]; // A: abcefg
+const SEG_LETTER_B: [u8; 7] = [SEG_ON, SEG_ON, 0,      0,      SEG_ON, SEG_ON, SEG_ON]; // b: cdefg
+const SEG_LETTER_C: [u8; 7] = [0,      0,      0,      SEG_ON, SEG_ON, SEG_ON, SEG_ON]; // C: adef
+const SEG_LETTER_D: [u8; 7] = [SEG_ON, SEG_ON, SEG_ON, 0,      0,      SEG_ON, SEG_ON]; // d: bcdeg
+const SEG_LETTER_E: [u8; 7] = [SEG_ON, 0,      0,      SEG_ON, SEG_ON, SEG_ON, SEG_ON]; // E: adefg
+const SEG_LETTER_F: [u8; 7] = [SEG_ON, 0,      0,      SEG_ON, SEG_ON, SEG_ON, 0     ]; // F: aefg
+const SEG_BLANK: [u8; 7]    = [0; 7];
+const SEG_DASH: [u8; 7]     = [SEG_ON, 0, 0, 0, 0, 0, 0]; // g only
 
-/// Encode a string into 7-segment display bytes (16 bytes for 4 digit positions).
+/// Encode a string into the F1's 7-segment display bytes (16 bytes for 2 digits).
 ///
-/// The F1's display encoding uses 4 bytes per digit position where each byte
-/// controls a pair of segments. We map the standard 7-segment encoding to
-/// the F1's byte layout.
+/// Right-justifies: "A" shows on the right digit, "1A" shows 1 on left, A on right.
 fn encode_7segment(text: &str, display: &mut [u8]) {
     if display.len() < 16 {
         return;
@@ -551,34 +554,29 @@ fn encode_7segment(text: &str, display: &mut [u8]) {
     // Clear display
     display.iter_mut().for_each(|b| *b = 0);
 
-    // Right-justify: fill from the right (digit 3 = rightmost)
-    let chars: Vec<char> = text.chars().take(4).collect();
-    let start = 4usize.saturating_sub(chars.len());
+    let chars: Vec<char> = text.chars().take(2).collect();
+    let start = 2usize.saturating_sub(chars.len());
 
     for (i, ch) in chars.iter().enumerate() {
-        let pos = start + i;
-        let seg = match ch {
-            '0'..='9' => SEVEN_SEG[(*ch as u8 - b'0') as usize],
-            'a'..='f' => SEVEN_SEG[10 + (*ch as u8 - b'a') as usize],
-            'A'..='F' => SEVEN_SEG[10 + (*ch as u8 - b'A') as usize],
-            '-' => SEG_DASH,
-            ' ' => SEG_BLANK,
-            _ => SEG_DASH, // Unknown char = dash
+        let pos = start + i; // 0 = left, 1 = right
+        let segments = match ch {
+            '0'..='9' => &DIGIT_SEGS[(*ch as u8 - b'0') as usize],
+            'A' | 'a' => &SEG_LETTER_A,
+            'B' | 'b' => &SEG_LETTER_B,
+            'C' | 'c' => &SEG_LETTER_C,
+            'D' | 'd' => &SEG_LETTER_D,
+            'E' | 'e' => &SEG_LETTER_E,
+            'F' | 'f' => &SEG_LETTER_F,
+            '-' => &SEG_DASH,
+            ' ' => &SEG_BLANK,
+            _ => &SEG_DASH,
         };
 
-        // Map 7-segment bits to F1's 4-byte-per-digit layout.
-        // Each digit position uses 4 consecutive bytes (4 × 4 = 16 total).
-        // The F1 uses a direct segment-to-byte mapping: each byte in the
-        // 4-byte group controls specific segments of that digit position.
-        let base = pos * 4;
-        // Byte 0: segments a,b (bits 0,1 of seg value)
-        display[base] = ((seg & 0x01) << 0) | ((seg & 0x02) << 0);
-        // Byte 1: segments c,g (bits 2,6)
-        display[base + 1] = ((seg >> 2) & 0x01) | (((seg >> 6) & 0x01) << 1);
-        // Byte 2: segments d,e (bits 3,4)
-        display[base + 2] = ((seg >> 3) & 0x01) | (((seg >> 4) & 0x01) << 1);
-        // Byte 3: segment f + dp (bit 5)
-        display[base + 3] = (seg >> 5) & 0x01;
+        // Right digit = bytes 0-7, Left digit = bytes 8-15 (within the display slice)
+        let base = if pos == 0 { 8 } else { 0 };
+        // Byte 0 = dp (off), bytes 1-7 = segment values
+        display[base] = 0; // dp off
+        display[base + 1..base + 8].copy_from_slice(segments);
     }
 }
 
