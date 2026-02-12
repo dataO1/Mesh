@@ -8,17 +8,13 @@ use crate::config::FeedbackMapping;
 use crate::deck_target::{DeckTargetState, LayerSelection};
 use crate::types::ControlAddress;
 use std::collections::HashMap;
-use std::time::Instant;
 
-/// Global start time for pulsing animations
-static PULSE_START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-
-/// Compute a smooth pulse brightness (0.0-1.0) using a sine wave
-fn pulse_brightness() -> f32 {
-    let start = PULSE_START.get_or_init(Instant::now);
-    let elapsed = start.elapsed().as_secs_f32();
-    // ~2.5 Hz sine wave, range 0.15 to 1.0 for visible-but-not-off pulsing
-    let phase = (elapsed * 2.5 * std::f32::consts::TAU).sin();
+/// Compute a smooth pulse brightness (0.0-1.0) from beat phase
+///
+/// `beat_phase` is 0.0-1.0 within a beat (from beatgrid-aligned playhead).
+/// Uses a cosine curve so brightness peaks at beat start and dips mid-beat.
+fn pulse_brightness(beat_phase: f32) -> f32 {
+    let phase = (beat_phase * std::f32::consts::TAU).cos();
     0.575 + 0.425 * phase
 }
 
@@ -31,6 +27,8 @@ pub struct FeedbackState {
     pub decks: [DeckFeedbackState; 4],
     /// Per-channel mixer state
     pub mixer: [MixerFeedbackState; 4],
+    /// Beat phase from master deck (0.0-1.0, beatgrid-aligned, for tempo-synced animations)
+    pub beat_phase: f32,
 }
 
 /// Action button mode (what the pad grid currently controls)
@@ -129,8 +127,8 @@ pub fn evaluate_feedback(
                     let is_active = deck_state.slicer_selected_preset == slot;
 
                     let (value, color) = if is_active && is_assigned {
-                        // Active preset: pulse between on and off colors
-                        let t = pulse_brightness();
+                        // Active preset: pulse between on and off colors, synced to beatgrid
+                        let t = pulse_brightness(state.beat_phase);
                         let on = mapping.on_color.unwrap_or([0, 127, 0]);
                         let off = mapping.off_color.unwrap_or([20, 20, 20]);
                         let r = (off[0] as f32 + (on[0] as f32 - off[0] as f32) * t) as u8;

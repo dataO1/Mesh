@@ -432,6 +432,23 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
     if let Some(ref mut controller) = app.controller {
         let mut feedback = mesh_midi::FeedbackState::default();
 
+        // Compute beat phase from master deck's playhead + beatgrid
+        if let Some(ref atomics) = app.deck_atomics {
+            let global_bpm = app.domain.global_bpm();
+            if global_bpm > 0.0 {
+                // Find master deck, or fall back to deck 0
+                let master_idx = (0..4).find(|&i| atomics[i].is_master()).unwrap_or(0);
+                let position = atomics[master_idx].position() as f64;
+                let first_beat = app.deck_views[master_idx].first_beat_sample() as f64;
+                let samples_per_beat = 48000.0 * 60.0 / global_bpm;
+                // Beat phase: how far through the current beat (0.0-1.0)
+                // Halve the rate for fast tempos (>150 BPM) to keep the pulse comfortable
+                let effective_spb = if global_bpm > 150.0 { samples_per_beat * 2.0 } else { samples_per_beat };
+                let offset = (position - first_beat).rem_euclid(effective_spb);
+                feedback.beat_phase = (offset / effective_spb) as f32;
+            }
+        }
+
         for deck_idx in 0..4 {
             // Get play state and loop active from atomics
             if let Some(ref atomics) = app.deck_atomics {
