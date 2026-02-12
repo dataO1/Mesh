@@ -281,6 +281,7 @@ impl ControllerManager {
                 learned_port_name: Some(normalized.clone()),
                 device_type: None,
                 hid_product_match: None,
+                hid_device_id: None,
                 deck_target: DeckTargetConfig::default(),
                 pad_mode_source: PadModeSource::default(),
                 shift_buttons: vec![],
@@ -451,14 +452,26 @@ impl ControllerManager {
             match hid::connect_device(info, event_tx) {
                 Ok((connection, control_descriptors)) => {
                     log::info!("HID: Connected to '{}' at {}", info.product_name, info.path);
-                    let output_handler = hid::HidOutputHandler::new(connection.feedback_sender());
+                    let output_handler = hid::HidOutputHandler::new(connection.feedback_sender(), connection.device_id.clone());
 
-                    // Look up matching DeviceProfile by hid_product_match
-                    let matched_profile = self.config.devices.iter().find(|p| {
-                        p.hid_product_match.as_ref().map_or(false, |pattern| {
-                            info.product_name.to_lowercase().contains(&pattern.to_lowercase())
+                    // Look up matching DeviceProfile:
+                    // 1. Prefer exact device_id match (serial number)
+                    // 2. Fall back to hid_product_match (product name substring)
+                    let matched_profile = self.config.devices.iter()
+                        .find(|p| {
+                            p.hid_device_id.as_ref().map_or(false, |id| {
+                                id == &connection.device_id
+                            })
                         })
-                    });
+                        .or_else(|| {
+                            self.config.devices.iter().find(|p| {
+                                // Only fall back to product match if no device_id is set on the profile
+                                p.hid_device_id.is_none() &&
+                                p.hid_product_match.as_ref().map_or(false, |pattern| {
+                                    info.product_name.to_lowercase().contains(&pattern.to_lowercase())
+                                })
+                            })
+                        });
 
                     let (profile, mapping_engine, shared_state) = if let Some(p) = matched_profile {
                         log::info!(
@@ -515,7 +528,7 @@ impl ControllerManager {
             match hid::connect_device(info, event_tx) {
                 Ok((connection, control_descriptors)) => {
                     log::info!("HID Learn: Connected to '{}' at {}", info.product_name, info.path);
-                    let output_handler = hid::HidOutputHandler::new(connection.feedback_sender());
+                    let output_handler = hid::HidOutputHandler::new(connection.feedback_sender(), connection.device_id.clone());
                     self.hid_devices.insert(
                         info.path.clone(),
                         ConnectedHidDevice {

@@ -35,6 +35,8 @@ pub struct HidConnection {
     feedback_tx: Sender<FeedbackCommand>,
     /// Device info
     pub info: HidDeviceInfo,
+    /// Unique device identifier (USB serial or VID/PID fallback)
+    pub device_id: String,
 }
 
 impl HidConnection {
@@ -102,8 +104,14 @@ pub fn connect_device(
     info: &HidDeviceInfo,
     event_tx: Sender<ControlEvent>,
 ) -> Result<(HidConnection, Vec<crate::types::ControlDescriptor>), String> {
+    // Compute device_id from USB serial number (or fall back to VID/PID)
+    let device_id = info.serial.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| {
+        format!("{:#06x}_{:#06x}", info.vendor_id, info.product_id)
+    });
+    log::info!("HID: device_id for '{}' = {}", info.product_name, device_id);
+
     // Create driver for this device
-    let driver = devices::create_driver(info.vendor_id, info.product_id)
+    let driver = devices::create_driver(info.vendor_id, info.product_id, device_id.clone())
         .ok_or_else(|| format!("No driver for VID={:#06x} PID={:#06x}", info.vendor_id, info.product_id))?;
 
     // Collect control descriptors before moving driver into I/O thread
@@ -132,29 +140,33 @@ pub fn connect_device(
         info.product_name.clone(),
     );
 
-    log::info!("HID: Connected to '{}' at {} ({} controls)", info.product_name, info.path, descriptors.len());
+    log::info!("HID: Connected to '{}' at {} ({} controls, device_id={})", info.product_name, info.path, descriptors.len(), device_id);
 
     Ok((HidConnection {
         _io_thread: io_thread,
         feedback_tx,
         info: info.clone(),
+        device_id,
     }, descriptors))
 }
 
 /// Output handler for HID feedback
 ///
 /// Translates FeedbackResults into FeedbackCommands and sends them to the
-/// device's I/O thread via channel.
+/// device's I/O thread via channel. Filters results by `device_id` so that
+/// each handler only sends commands to its own physical device.
 pub struct HidOutputHandler {
     feedback_tx: Sender<FeedbackCommand>,
+    device_id: String,
     change_tracker: crate::feedback::FeedbackChangeTracker,
 }
 
 impl HidOutputHandler {
     /// Create a new output handler from a connected device
-    pub fn new(feedback_tx: Sender<FeedbackCommand>) -> Self {
+    pub fn new(feedback_tx: Sender<FeedbackCommand>, device_id: String) -> Self {
         Self {
             feedback_tx,
+            device_id,
             change_tracker: crate::feedback::FeedbackChangeTracker::new(),
         }
     }
@@ -162,8 +174,11 @@ impl HidOutputHandler {
     /// Apply evaluated feedback results for HID controls
     pub fn apply_feedback(&mut self, results: &[crate::feedback::FeedbackResult]) {
         for result in results {
-            // Only handle HID addresses
-            if let crate::types::ControlAddress::Hid { name } = &result.address {
+            // Only handle HID addresses matching this device
+            if let crate::types::ControlAddress::Hid { device_id, name } = &result.address {
+                if device_id != &self.device_id {
+                    continue;
+                }
                 if let Some(value) = self.change_tracker.update(&result.address, result.value) {
                     // Use RGB color if available, otherwise fall back to brightness
                     let cmd = if let Some([r, g, b]) = result.color {

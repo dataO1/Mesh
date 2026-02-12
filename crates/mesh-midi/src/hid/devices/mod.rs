@@ -43,7 +43,7 @@ struct KnownDevice {
     vendor_id: u16,
     product_id: u16,
     name: &'static str,
-    create: fn() -> Box<dyn HidDeviceDriver>,
+    create: fn(String) -> Box<dyn HidDeviceDriver>,
 }
 
 /// Registry of known HID devices
@@ -52,16 +52,18 @@ static KNOWN_DEVICES: &[KnownDevice] = &[
         vendor_id: kontrol_f1::VID,
         product_id: kontrol_f1::PID,
         name: "Traktor Kontrol F1",
-        create: || Box::new(kontrol_f1::KontrolF1Driver::new()),
+        create: |id| Box::new(kontrol_f1::KontrolF1Driver::new(id)),
     },
 ];
 
 /// Create a driver for a known HID device, or None if unrecognized
-pub fn create_driver(vendor_id: u16, product_id: u16) -> Option<Box<dyn HidDeviceDriver>> {
+///
+/// `device_id` uniquely identifies this physical device instance (typically the USB serial number).
+pub fn create_driver(vendor_id: u16, product_id: u16, device_id: String) -> Option<Box<dyn HidDeviceDriver>> {
     KNOWN_DEVICES
         .iter()
         .find(|d| d.vendor_id == vendor_id && d.product_id == product_id)
-        .map(|d| (d.create)())
+        .map(|d| (d.create)(device_id))
 }
 
 /// Check if a VID/PID pair is a known supported device

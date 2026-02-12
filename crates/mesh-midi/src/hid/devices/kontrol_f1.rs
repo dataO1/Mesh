@@ -69,6 +69,8 @@ const BTN_PAD_BASE: u32 = 16;
 
 /// Kontrol F1 HID driver
 pub struct KontrolF1Driver {
+    /// Unique device identifier (USB serial number or VID/PID fallback)
+    device_id: String,
     /// Previous input report for delta detection
     prev_input: [u8; INPUT_SIZE],
     /// Whether we've received at least one report (for initialization)
@@ -77,23 +79,33 @@ pub struct KontrolF1Driver {
     descriptors: Vec<ControlDescriptor>,
 }
 
+/// Build an HID control address with device identity
+fn hid_addr(device_id: &str, name: &str) -> ControlAddress {
+    ControlAddress::Hid {
+        device_id: device_id.to_string(),
+        name: name.to_string(),
+    }
+}
+
 impl KontrolF1Driver {
-    pub fn new() -> Self {
+    pub fn new(device_id: String) -> Self {
+        let descriptors = Self::build_descriptors(&device_id);
         Self {
+            device_id,
             prev_input: [0; INPUT_SIZE],
             has_prev: false,
-            descriptors: Self::build_descriptors(),
+            descriptors,
         }
     }
 
     /// Build control descriptors for all F1 controls
-    fn build_descriptors() -> Vec<ControlDescriptor> {
+    fn build_descriptors(device_id: &str) -> Vec<ControlDescriptor> {
         let mut descs = Vec::with_capacity(49);
 
         // 16 grid pads (RGB)
         for i in 1..=16 {
             descs.push(ControlDescriptor {
-                address: ControlAddress::Hid { name: format!("grid_{}", i) },
+                address: hid_addr(device_id, &format!("grid_{}", i)),
                 name: format!("Grid Pad {}", i),
                 control_type: HardwareType::Button,
                 has_led: false,
@@ -104,7 +116,7 @@ impl KontrolF1Driver {
         // 4 play buttons (single-color LED)
         for i in 1..=4 {
             descs.push(ControlDescriptor {
-                address: ControlAddress::Hid { name: format!("play_{}", i) },
+                address: hid_addr(device_id, &format!("play_{}", i)),
                 name: format!("Play {}", i),
                 control_type: HardwareType::Button,
                 has_led: true,
@@ -113,7 +125,7 @@ impl KontrolF1Driver {
         }
 
         // Function buttons
-        for (name, label, has_led) in [
+        for (ctrl_name, label, has_led) in [
             ("browse", "Browse", true),
             ("size", "Size", true),
             ("type_btn", "Type", true),
@@ -125,7 +137,7 @@ impl KontrolF1Driver {
             ("encoder_push", "Encoder Push", false),
         ] {
             descs.push(ControlDescriptor {
-                address: ControlAddress::Hid { name: name.to_string() },
+                address: hid_addr(device_id, ctrl_name),
                 name: label.to_string(),
                 control_type: HardwareType::Button,
                 has_led,
@@ -136,7 +148,7 @@ impl KontrolF1Driver {
         // 4 knobs
         for i in 1..=4 {
             descs.push(ControlDescriptor {
-                address: ControlAddress::Hid { name: format!("knob_{}", i) },
+                address: hid_addr(device_id, &format!("knob_{}", i)),
                 name: format!("Knob {}", i),
                 control_type: HardwareType::Knob,
                 has_led: false,
@@ -147,7 +159,7 @@ impl KontrolF1Driver {
         // 4 faders
         for i in 1..=4 {
             descs.push(ControlDescriptor {
-                address: ControlAddress::Hid { name: format!("fader_{}", i) },
+                address: hid_addr(device_id, &format!("fader_{}", i)),
                 name: format!("Fader {}", i),
                 control_type: HardwareType::Fader,
                 has_led: false,
@@ -157,7 +169,7 @@ impl KontrolF1Driver {
 
         // Encoder
         descs.push(ControlDescriptor {
-            address: ControlAddress::Hid { name: "encoder".to_string() },
+            address: hid_addr(device_id, "encoder"),
             name: "Encoder".to_string(),
             control_type: HardwareType::Encoder,
             has_led: false,
@@ -191,7 +203,7 @@ impl KontrolF1Driver {
         for (name, mask) in function_buttons {
             if changed & mask != 0 {
                 events.push(ControlEvent {
-                    address: ControlAddress::Hid { name: name.to_string() },
+                    address: hid_addr(&self.device_id, name),
                     value: ControlValue::Button(current & mask != 0),
                 });
             }
@@ -208,7 +220,7 @@ impl KontrolF1Driver {
         for (name, mask) in play_buttons {
             if changed & mask != 0 {
                 events.push(ControlEvent {
-                    address: ControlAddress::Hid { name: name.to_string() },
+                    address: hid_addr(&self.device_id, name),
                     value: ControlValue::Button(current & mask != 0),
                 });
             }
@@ -219,7 +231,7 @@ impl KontrolF1Driver {
             let mask = 1 << (BTN_PAD_BASE + i);
             if changed & mask != 0 {
                 events.push(ControlEvent {
-                    address: ControlAddress::Hid { name: format!("grid_{}", i + 1) },
+                    address: hid_addr(&self.device_id, &format!("grid_{}", i + 1)),
                     value: ControlValue::Button(current & mask != 0),
                 });
             }
@@ -241,7 +253,7 @@ impl KontrolF1Driver {
         }
 
         Some(ControlEvent {
-            address: ControlAddress::Hid { name: "encoder".to_string() },
+            address: hid_addr(&self.device_id, "encoder"),
             value: ControlValue::Relative(delta as i32),
         })
     }
@@ -269,7 +281,7 @@ impl KontrolF1Driver {
         let normalized = normalized.clamp(0.0, 1.0);
 
         Some(ControlEvent {
-            address: ControlAddress::Hid { name: name.to_string() },
+            address: hid_addr(&self.device_id, name),
             value: ControlValue::Absolute(normalized),
         })
     }
@@ -524,7 +536,7 @@ mod tests {
 
     #[test]
     fn test_first_report_no_events() {
-        let mut driver = KontrolF1Driver::new();
+        let mut driver = KontrolF1Driver::new("test".to_string());
         let report = make_report();
         let events = driver.parse_input(&report);
         assert!(events.is_empty(), "First report should produce no events");
@@ -532,7 +544,7 @@ mod tests {
 
     #[test]
     fn test_button_press() {
-        let mut driver = KontrolF1Driver::new();
+        let mut driver = KontrolF1Driver::new("test".to_string());
 
         // First report: baseline (all buttons released)
         let report1 = make_report();
@@ -544,13 +556,13 @@ mod tests {
         let events = driver.parse_input(&report2);
 
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0].address, ControlAddress::Hid { name } if name == "browse"));
+        assert!(matches!(&events[0].address, ControlAddress::Hid { name, .. } if name == "browse"));
         assert!(matches!(&events[0].value, ControlValue::Button(true)));
     }
 
     #[test]
     fn test_button_release() {
-        let mut driver = KontrolF1Driver::new();
+        let mut driver = KontrolF1Driver::new("test".to_string());
 
         // Baseline with browse pressed
         let mut report1 = make_report();
@@ -562,13 +574,13 @@ mod tests {
         let events = driver.parse_input(&report2);
 
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0].address, ControlAddress::Hid { name } if name == "browse"));
+        assert!(matches!(&events[0].address, ControlAddress::Hid { name, .. } if name == "browse"));
         assert!(matches!(&events[0].value, ControlValue::Button(false)));
     }
 
     #[test]
     fn test_grid_pad() {
-        let mut driver = KontrolF1Driver::new();
+        let mut driver = KontrolF1Driver::new("test".to_string());
         driver.parse_input(&make_report()); // Baseline
 
         // Press grid pad 1 (bit 16)
@@ -577,13 +589,13 @@ mod tests {
         let events = driver.parse_input(&report);
 
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0].address, ControlAddress::Hid { name } if name == "grid_1"));
+        assert!(matches!(&events[0].address, ControlAddress::Hid { name, .. } if name == "grid_1"));
         assert!(matches!(&events[0].value, ControlValue::Button(true)));
     }
 
     #[test]
     fn test_encoder_clockwise() {
-        let mut driver = KontrolF1Driver::new();
+        let mut driver = KontrolF1Driver::new("test".to_string());
 
         // Baseline: encoder at position 100
         let mut report1 = make_report();
@@ -596,13 +608,13 @@ mod tests {
         let events = driver.parse_input(&report2);
 
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0].address, ControlAddress::Hid { name } if name == "encoder"));
+        assert!(matches!(&events[0].address, ControlAddress::Hid { name, .. } if name == "encoder"));
         assert!(matches!(&events[0].value, ControlValue::Relative(3)));
     }
 
     #[test]
     fn test_encoder_wrap_around() {
-        let mut driver = KontrolF1Driver::new();
+        let mut driver = KontrolF1Driver::new("test".to_string());
 
         // Baseline: encoder at position 254
         let mut report1 = make_report();
@@ -624,7 +636,7 @@ mod tests {
 
     #[test]
     fn test_fader_movement() {
-        let mut driver = KontrolF1Driver::new();
+        let mut driver = KontrolF1Driver::new("test".to_string());
         driver.parse_input(&make_report()); // Baseline
 
         // Move fader 1 (bytes 14-15) to ~50%
@@ -636,7 +648,7 @@ mod tests {
         let events = driver.parse_input(&report);
 
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0].address, ControlAddress::Hid { name } if name == "fader_1"));
+        assert!(matches!(&events[0].address, ControlAddress::Hid { name, .. } if name == "fader_1"));
         if let ControlValue::Absolute(v) = &events[0].value {
             assert!((*v - 0.5).abs() < 0.01, "Expected ~0.5, got {}", v);
         } else {
@@ -646,7 +658,7 @@ mod tests {
 
     #[test]
     fn test_knob_deadzone() {
-        let mut driver = KontrolF1Driver::new();
+        let mut driver = KontrolF1Driver::new("test".to_string());
 
         // Baseline: knob 1 at value 100
         let mut report1 = make_report();
@@ -669,7 +681,7 @@ mod tests {
 
     #[test]
     fn test_multiple_simultaneous_changes() {
-        let mut driver = KontrolF1Driver::new();
+        let mut driver = KontrolF1Driver::new("test".to_string());
         driver.parse_input(&make_report()); // Baseline
 
         // Simultaneously: browse pressed + fader 1 moved
@@ -686,7 +698,7 @@ mod tests {
 
     #[test]
     fn test_descriptor_count() {
-        let driver = KontrolF1Driver::new();
+        let driver = KontrolF1Driver::new("test".to_string());
         let descs = driver.controls();
         // 16 pads + 4 play + 9 function + 4 knobs + 4 faders + 1 encoder = 38
         assert_eq!(descs.len(), 38);
@@ -694,7 +706,7 @@ mod tests {
 
     #[test]
     fn test_no_change_no_events() {
-        let mut driver = KontrolF1Driver::new();
+        let mut driver = KontrolF1Driver::new("test".to_string());
 
         let report = make_report();
         driver.parse_input(&report); // Baseline
@@ -714,7 +726,7 @@ mod tests {
 
     #[test]
     fn test_function_button_led() {
-        let mut driver = KontrolF1Driver::new();
+        let mut driver = KontrolF1Driver::new("test".to_string());
         let mut output = make_output();
 
         driver.apply_feedback(&mut output, FeedbackCommand::SetLed {
@@ -732,7 +744,7 @@ mod tests {
 
     #[test]
     fn test_play_button_led() {
-        let mut driver = KontrolF1Driver::new();
+        let mut driver = KontrolF1Driver::new("test".to_string());
         let mut output = make_output();
 
         driver.apply_feedback(&mut output, FeedbackCommand::SetLed {
@@ -754,7 +766,7 @@ mod tests {
 
     #[test]
     fn test_grid_pad_rgb() {
-        let mut driver = KontrolF1Driver::new();
+        let mut driver = KontrolF1Driver::new("test".to_string());
         let mut output = make_output();
 
         // Grid pad 1 = bytes 25,26,27 in BRG order
@@ -797,7 +809,7 @@ mod tests {
 
     #[test]
     fn test_unknown_control_ignored() {
-        let mut driver = KontrolF1Driver::new();
+        let mut driver = KontrolF1Driver::new("test".to_string());
         let mut output = make_output();
         let original = output.clone();
 
@@ -811,7 +823,7 @@ mod tests {
 
     #[test]
     fn test_7segment_display() {
-        let mut driver = KontrolF1Driver::new();
+        let mut driver = KontrolF1Driver::new("test".to_string());
         let mut output = make_output();
 
         driver.apply_feedback(&mut output, FeedbackCommand::SetDisplay {

@@ -220,7 +220,7 @@ impl CapturedEvent {
                 };
                 format!("{} ch{} 0x{:02X} val={}", msg_type, ch, num, self.value)
             }
-            ControlAddress::Hid { name } => {
+            ControlAddress::Hid { name, .. } => {
                 format!("HID {} val={}", name, self.value)
             }
         }
@@ -1385,6 +1385,15 @@ impl MidiLearnState {
                 }
             });
 
+        // Extract device_id from the first HID address in pending mappings
+        let hid_device_id = self.pending_mappings.iter().find_map(|m| {
+            if let ControlAddress::Hid { device_id, .. } = &m.address {
+                Some(device_id.clone())
+            } else {
+                None
+            }
+        });
+
         let profile = DeviceProfile {
             name: self.controller_name.clone(),
             // Use captured port name for exact matching, fall back to user-entered name for fuzzy match
@@ -1392,6 +1401,7 @@ impl MidiLearnState {
             learned_port_name: self.captured_port_name.clone(),
             device_type: hid_source.as_ref().map(|_| "hid".to_string()),
             hid_product_match: hid_source,
+            hid_device_id,
             deck_target,
             pad_mode_source: self.pad_mode_source,
             shift_buttons,

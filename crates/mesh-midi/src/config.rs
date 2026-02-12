@@ -41,6 +41,11 @@ pub struct DeviceProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hid_product_match: Option<String>,
 
+    /// USB serial number for exact HID device matching
+    /// Distinguishes multiple identical devices (e.g., two Kontrol F1s)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hid_device_id: Option<String>,
+
     /// Deck targeting configuration
     #[serde(default)]
     pub deck_target: DeckTargetConfig,
@@ -611,6 +616,7 @@ devices:
             learned_port_name: Some("DDJ-SB2:DDJ-SB2 MIDI 1".to_string()),
             device_type: None,
             hid_product_match: None,
+            hid_device_id: None,
             deck_target: DeckTargetConfig::default(),
             pad_mode_source: PadModeSource::default(),
             shift_buttons: vec![],
@@ -632,6 +638,7 @@ devices:
             learned_port_name: Some("DDJ-SB2 MIDI 1".to_string()),
             device_type: None,
             hid_product_match: None,
+            hid_device_id: None,
             deck_target: DeckTargetConfig::default(),
             pad_mode_source: PadModeSource::default(),
             shift_buttons: vec![],
@@ -647,6 +654,7 @@ devices:
             learned_port_name: None,
             device_type: None,
             hid_product_match: None,
+            hid_device_id: None,
             deck_target: DeckTargetConfig::default(),
             pad_mode_source: PadModeSource::default(),
             shift_buttons: vec![],

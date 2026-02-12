@@ -17,7 +17,12 @@ pub enum ControlAddress {
     /// MIDI control (Note or CC)
     Midi(MidiAddress),
     /// HID named control (e.g., "grid_1", "fader_2", "encoder")
-    Hid { name: String },
+    /// `device_id` distinguishes multiple identical devices (e.g., two Kontrol F1s)
+    Hid {
+        #[serde(default)]
+        device_id: String,
+        name: String,
+    },
 }
 
 /// MIDI-specific address (channel + note/CC)
@@ -287,7 +292,7 @@ mod tests {
         let parsed: ControlAddress = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(parsed, midi_note);
 
-        let hid = ControlAddress::Hid { name: "grid_1".to_string() };
+        let hid = ControlAddress::Hid { device_id: "test_serial".to_string(), name: "grid_1".to_string() };
         let yaml = serde_yaml::to_string(&hid).unwrap();
         let parsed: ControlAddress = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(parsed, hid);

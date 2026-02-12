@@ -232,7 +232,7 @@ mod tests {
     #[test]
     fn test_feedback_change_tracker() {
         let mut tracker = FeedbackChangeTracker::new();
-        let addr = ControlAddress::Hid { name: "test".to_string() };
+        let addr = ControlAddress::Hid { device_id: "test".to_string(), name: "test".to_string() };
 
         // First update should always return Some
         assert_eq!(tracker.update(&addr, 127), Some(127));
