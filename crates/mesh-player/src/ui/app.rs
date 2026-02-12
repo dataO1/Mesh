@@ -367,6 +367,10 @@ impl MeshApp {
                 super::handlers::deck_controls::handle_global_fx_scroll(self, delta);
                 Task::none()
             }
+
+            Message::SuggestionsReady(result) => {
+                super::handlers::browser::handle_suggestions_ready(self, result)
+            }
         }
     }
 

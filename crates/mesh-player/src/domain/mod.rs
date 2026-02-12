@@ -287,6 +287,14 @@ impl MeshDomain {
         }
     }
 
+    /// Get the active database as an Arc (for async closures)
+    pub fn active_db_arc(&self) -> Arc<DatabaseService> {
+        match &self.active_storage {
+            StorageSource::Local => self.local_db.clone(),
+            StorageSource::Usb { db, .. } => db.clone(),
+        }
+    }
+
     /// Get the local database service
     pub fn local_db(&self) -> &DatabaseService {
         &self.local_db

@@ -7,6 +7,7 @@ use iced::Task;
 
 use crate::config;
 use crate::ui::app::MeshApp;
+use crate::ui::handlers::browser::trigger_suggestion_query;
 use crate::ui::message::{Message, SettingsMessage};
 use crate::ui::settings::SettingsState;
 
@@ -62,6 +63,10 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             app.settings.draft_show_local_collection = enabled;
             Task::none()
         }
+        UpdateSuggestionMode(mode) => {
+            app.settings.draft_suggestion_mode = mode;
+            Task::none()
+        }
         UpdateMasterPair(index) => {
             app.settings.draft_master_device = index;
             Task::none()
@@ -82,6 +87,7 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             new_config.display.grid_bars = app.settings.draft_grid_bars;
             new_config.display.stem_color_palette = app.settings.draft_stem_color_palette;
             new_config.display.show_local_collection = app.settings.draft_show_local_collection;
+            new_config.display.suggestion_mode = app.settings.draft_suggestion_mode;
             // Save global BPM from current state
             new_config.audio.global_bpm = app.domain.global_bpm();
             // Save phase sync setting
@@ -133,16 +139,26 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             let buffer_bars = new_config.slicer.validated_buffer_bars();
             app.domain.apply_slicer_buffer_bars_all(buffer_bars);
 
+            // Apply suggestion mode change to browser and refresh if active
+            app.collection_browser.set_suggestion_mode(app.settings.draft_suggestion_mode);
+            let suggest_task = if app.collection_browser.is_suggestions_enabled() {
+                app.collection_browser.set_suggestion_loading(true);
+                trigger_suggestion_query(app)
+            } else {
+                Task::none()
+            };
+
             // Save to disk in background
             let config_clone = new_config;
             let config_path = app.config_path.clone();
-            Task::perform(
+            let save_task = Task::perform(
                 async move {
                     config::save_config(&config_clone, &config_path)
                         .map_err(|e| e.to_string())
                 },
                 |result| Message::Settings(SettingsMessage::SaveComplete(result)),
-            )
+            );
+            Task::batch([save_task, suggest_task])
         }
         SaveComplete(result) => {
             match result {

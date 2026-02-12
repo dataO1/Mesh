@@ -5,7 +5,7 @@
 use super::message::{Message, SettingsMessage};
 use super::midi_learn::MidiLearnMessage;
 use crate::audio::{get_available_stereo_pairs, StereoPair};
-use crate::config::{LOOP_LENGTH_OPTIONS, StemColorPalette};
+use crate::config::{LOOP_LENGTH_OPTIONS, StemColorPalette, SuggestionMode};
 use iced::widget::{button, column, container, pick_list, row, scrollable, text, toggler, Space};
 use iced::{Alignment, Element, Length};
 
@@ -54,6 +54,8 @@ pub struct SettingsState {
     pub draft_target_lufs_index: usize,
     /// Draft show local collection in browser
     pub draft_show_local_collection: bool,
+    /// Draft smart suggestion mode
+    pub draft_suggestion_mode: SuggestionMode,
     /// Draft master device index (for audio routing)
     pub draft_master_device: usize,
     /// Draft cue device index (for audio routing)
@@ -82,6 +84,7 @@ impl SettingsState {
             draft_auto_gain_enabled: config.audio.loudness.auto_gain_enabled,
             draft_target_lufs_index: lufs_to_index(config.audio.loudness.target_lufs),
             draft_show_local_collection: config.display.show_local_collection,
+            draft_suggestion_mode: config.display.suggestion_mode,
             draft_master_device: config.audio.outputs.master_device.unwrap_or(0),
             draft_cue_device: config.audio.outputs.cue_device.unwrap_or_else(|| {
                 if num_devices >= 2 { 1 } else { 0 }
@@ -107,6 +110,7 @@ impl SettingsState {
             draft_auto_gain_enabled: true, // Auto-gain on by default
             draft_target_lufs_index: 1, // -9 LUFS (balanced)
             draft_show_local_collection: false, // USB-only by default
+            draft_suggestion_mode: SuggestionMode::default(),
             draft_master_device: 0, // First device
             draft_cue_device: if num_devices >= 2 { 1 } else { 0 }, // Second device or fallback
             available_devices,
@@ -395,12 +399,43 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
             Space::new().height(10),
             browser_subsection,
             local_collection_row,
+            Space::new().height(10),
+            view_suggestion_mode_section(state),
         ]
         .spacing(8),
     )
     .padding(15)
     .width(Length::Fill)
     .into()
+}
+
+/// Smart suggestions mode selector
+fn view_suggestion_mode_section(state: &SettingsState) -> Element<'_, Message> {
+    let subsection_title = text("Smart Suggestions").size(14);
+    let hint = text("How suggested tracks are scored when browsing")
+        .size(12);
+
+    let mode_buttons: Vec<Element<Message>> = SuggestionMode::ALL
+        .iter()
+        .map(|&mode| {
+            let is_selected = state.draft_suggestion_mode == mode;
+            let btn = button(text(mode.display_name()).size(11))
+                .on_press(Message::Settings(SettingsMessage::UpdateSuggestionMode(mode)))
+                .style(if is_selected {
+                    iced::widget::button::primary
+                } else {
+                    iced::widget::button::secondary
+                })
+                .width(Length::Fixed(75.0));
+            btn.into()
+        })
+        .collect();
+
+    let mode_row = row(mode_buttons).spacing(4).align_y(Alignment::Center);
+
+    column![subsection_title, hint, mode_row]
+        .spacing(8)
+        .into()
 }
 
 /// Loudness normalization settings (auto-gain, target LUFS)

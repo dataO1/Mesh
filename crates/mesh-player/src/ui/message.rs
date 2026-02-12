@@ -2,9 +2,11 @@
 //!
 //! All message types that can be dispatched in the mesh-player application.
 
+use std::sync::Arc;
 use mesh_widgets::{MultibandEditorMessage, PeaksComputeResult};
 
-use crate::config::StemColorPalette;
+use crate::config::{StemColorPalette, SuggestionMode};
+use crate::suggestions::SuggestedTrack;
 use super::collection_browser::CollectionBrowserMessage;
 use super::deck_view::DeckMessage;
 use super::midi_learn::MidiLearnMessage;
@@ -37,6 +39,8 @@ pub enum SettingsMessage {
     UpdateTargetLufs(usize),
     /// Update draft show local collection
     UpdateShowLocalCollection(bool),
+    /// Update draft suggestion mode
+    UpdateSuggestionMode(SuggestionMode),
     /// Update master device index
     UpdateMasterPair(usize),
     /// Update cue device index
@@ -98,4 +102,7 @@ pub enum Message {
     ToggleGlobalFxPicker,
     /// Scroll through global FX preset list (from MIDI encoder)
     ScrollGlobalFx(i32),
+
+    /// Smart suggestions query completed
+    SuggestionsReady(Arc<Result<Vec<SuggestedTrack>, String>>),
 }

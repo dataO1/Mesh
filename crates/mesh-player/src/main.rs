@@ -22,6 +22,7 @@ mod config;
 mod domain;
 mod loader;
 mod plugin_gui;
+mod suggestions;
 mod ui;
 
 use iced::{Size, Task};

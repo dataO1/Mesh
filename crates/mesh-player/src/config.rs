@@ -12,6 +12,44 @@ pub use mesh_core::config::{
     default_collection_path, load_config, save_config, LoudnessConfig,
 };
 
+/// Smart suggestion mode for the collection browser
+///
+/// Controls how similar tracks are scored and ranked when the
+/// suggestion toggle is active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SuggestionMode {
+    /// Pure HNSW audio feature distance (timbral similarity)
+    #[default]
+    Similar,
+    /// Filter by Camelot wheel key compatibility
+    HarmonicMix,
+    /// Weight energy/LUFS proximity higher
+    EnergyMatch,
+    /// Composite: 0.5*audio + 0.3*key + 0.2*bpm
+    Combined,
+}
+
+impl SuggestionMode {
+    /// All available modes for UI selection
+    pub const ALL: [SuggestionMode; 4] = [
+        SuggestionMode::Similar,
+        SuggestionMode::HarmonicMix,
+        SuggestionMode::EnergyMatch,
+        SuggestionMode::Combined,
+    ];
+
+    /// Get the display name for this mode
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            SuggestionMode::Similar => "Similar",
+            SuggestionMode::HarmonicMix => "Harmonic",
+            SuggestionMode::EnergyMatch => "Energy",
+            SuggestionMode::Combined => "Combined",
+        }
+    }
+}
+
 /// Stem color palette selection
 ///
 /// Maps to predefined palettes in mesh-widgets/src/theme.rs
@@ -162,6 +200,8 @@ pub struct DisplayConfig {
     /// Show local collection in browser (default: false for USB-only mode)
     /// When false, only USB devices appear in the collection browser
     pub show_local_collection: bool,
+    /// Smart suggestion mode for browser track recommendations
+    pub suggestion_mode: SuggestionMode,
 }
 
 /// Loop length options in beats (matches mesh-core/deck.rs LOOP_LENGTHS)
@@ -176,6 +216,7 @@ impl Default for DisplayConfig {
             grid_bars: 8,                 // Default grid density to 8 bars
             stem_color_palette: StemColorPalette::default(), // Natural palette
             show_local_collection: false, // USB-only mode by default
+            suggestion_mode: SuggestionMode::default(),
         }
     }
 }

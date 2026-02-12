@@ -85,6 +85,8 @@ pub struct DeckView {
     midi_active: bool,
     /// Whether this deck is on Layer B (secondary layer)
     is_secondary_layer: bool,
+    /// Full path of the currently loaded track (for suggestion seed queries)
+    loaded_track_path: Option<String>,
 }
 
 /// Messages for deck interaction
@@ -180,6 +182,7 @@ impl DeckView {
             highlight_target: None,
             midi_active: false,
             is_secondary_layer: false,
+            loaded_track_path: None,
         }
     }
 
@@ -374,6 +377,16 @@ impl DeckView {
     /// Set whether this deck is on Layer B (secondary layer)
     pub fn set_secondary_layer(&mut self, is_secondary: bool) {
         self.is_secondary_layer = is_secondary;
+    }
+
+    /// Get the loaded track path (for suggestion queries)
+    pub fn loaded_track_path(&self) -> Option<&str> {
+        self.loaded_track_path.as_deref()
+    }
+
+    /// Set the loaded track path
+    pub fn set_loaded_track_path(&mut self, path: Option<String>) {
+        self.loaded_track_path = path;
     }
 
     /// Get hot cues bitmap (bit N = hot cue N is set)

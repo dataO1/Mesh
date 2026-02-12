@@ -2,16 +2,43 @@
 //!
 //! Handles collection browser navigation, track selection, and USB device events.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 use iced::Task;
 
+use mesh_core::playlist::NodeId;
 use mesh_core::usb::UsbMessage as UsbMsg;
-use mesh_widgets::scroll_to_centered_selection;
+use mesh_widgets::{scroll_to_centered_selection, TrackRow};
+use crate::suggestions::{query_suggestions, SuggestedTrack};
 use crate::ui::app::MeshApp;
 use crate::ui::collection_browser::CollectionBrowserMessage;
 use crate::ui::message::Message;
 
 /// Handle collection browser messages
 pub fn handle_browser(app: &mut MeshApp, browser_msg: CollectionBrowserMessage) -> Task<Message> {
+    // Intercept suggestion messages before delegating to browser state
+    match &browser_msg {
+        CollectionBrowserMessage::ToggleSuggestions => {
+            let was_enabled = app.collection_browser.is_suggestions_enabled();
+            app.collection_browser.set_suggestions_enabled(!was_enabled);
+            if !was_enabled {
+                // Just turned on — trigger query
+                app.collection_browser.set_suggestion_loading(true);
+                return trigger_suggestion_query(app);
+            }
+            return Task::none();
+        }
+        CollectionBrowserMessage::RefreshSuggestions => {
+            if app.collection_browser.is_suggestions_enabled() {
+                app.collection_browser.set_suggestion_loading(true);
+                return trigger_suggestion_query(app);
+            }
+            return Task::none();
+        }
+        _ => {}
+    }
+
     // Check if this is a scroll message (for auto-scroll after)
     let is_scroll = matches!(browser_msg, CollectionBrowserMessage::ScrollBy(_));
 
@@ -119,4 +146,78 @@ pub fn handle_usb(app: &mut MeshApp, usb_msg: UsbMsg) -> Task<Message> {
         }
     }
     Task::none()
+}
+
+/// Handle the result of a background suggestion query.
+///
+/// Converts `Vec<SuggestedTrack>` into `Vec<TrackRow<NodeId>>` with
+/// "suggestion:" prefixed IDs, and builds a path lookup map.
+pub fn handle_suggestions_ready(
+    app: &mut MeshApp,
+    result: Arc<Result<Vec<SuggestedTrack>, String>>,
+) -> Task<Message> {
+    match result.as_ref() {
+        Ok(suggested) => {
+            let mut tracks = Vec::with_capacity(suggested.len());
+            let mut paths = HashMap::new();
+
+            for (i, s) in suggested.iter().enumerate() {
+                let track = &s.track;
+                let node_id = NodeId(format!("suggestion:{}", track.id.unwrap_or(i as i64)));
+
+                let mut row = TrackRow::new(
+                    node_id.clone(),
+                    track.name.clone(),
+                    i as i32,
+                );
+                if let Some(ref artist) = track.artist {
+                    row = row.with_artist(artist.clone());
+                }
+                if let Some(bpm) = track.bpm {
+                    row = row.with_bpm(bpm);
+                }
+                if let Some(ref key) = track.key {
+                    row = row.with_key(key.clone());
+                }
+                row = row.with_duration(track.duration_seconds);
+                if let Some(lufs) = track.lufs {
+                    row = row.with_lufs(lufs);
+                }
+
+                paths.insert(node_id, track.path.clone());
+                tracks.push(row);
+            }
+
+            log::info!("Suggestions ready: {} tracks", tracks.len());
+            app.collection_browser.apply_suggestion_results(tracks, paths);
+        }
+        Err(e) => {
+            log::warn!("Suggestion query failed: {}", e);
+            app.collection_browser.set_suggestion_loading(false);
+            app.status = format!("Suggestions: {}", e);
+        }
+    }
+    Task::none()
+}
+
+/// Build and dispatch a background suggestion query from current deck seeds.
+///
+/// Collects loaded track paths from all decks, then runs the similarity
+/// query on a background thread via `Task::perform()`.
+pub fn trigger_suggestion_query(app: &MeshApp) -> Task<Message> {
+    let seed_paths: Vec<String> = (0..4)
+        .filter_map(|i| app.deck_views[i].loaded_track_path().map(String::from))
+        .collect();
+
+    if seed_paths.is_empty() {
+        return Task::none();
+    }
+
+    let db = app.domain.active_db_arc();
+    let mode = app.collection_browser.suggestion_mode();
+
+    Task::perform(
+        async move { query_suggestions(&db, seed_paths, mode, 30, 50) },
+        |result| Message::SuggestionsReady(Arc::new(result)),
+    )
 }

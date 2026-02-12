@@ -11,8 +11,8 @@
 //! - No drag-drop between playlists
 //! - No inline metadata editing
 
-use iced::widget::{button, column, container, row, text};
-use iced::{Element, Length};
+use iced::widget::{button, column, container, row, text, Space};
+use iced::{Alignment, Background, Color, Element, Length};
 use mesh_core::db::DatabaseService;
 use mesh_core::playlist::{DatabaseStorage, NodeId, NodeKind, PlaylistNode, PlaylistStorage};
 use mesh_core::usb::{UsbDevice, UsbStorage};
@@ -20,8 +20,12 @@ use mesh_widgets::{
     playlist_browser, sort_tracks, PlaylistBrowserMessage, PlaylistBrowserState, TrackRow,
     TrackTableMessage, TreeIcon, TreeMessage, TreeNode,
 };
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+use crate::config::SuggestionMode;
+use crate::suggestions::SuggestedTrack;
 
 /// State for the collection browser
 pub struct CollectionBrowserState {
@@ -45,6 +49,16 @@ pub struct CollectionBrowserState {
     pub usb_storages: Vec<(PathBuf, UsbStorage)>,
     /// Currently active source: None = local, Some(idx) = USB device
     active_usb_idx: Option<usize>,
+    /// Whether smart suggestions mode is active
+    suggestions_enabled: bool,
+    /// Current suggestion scoring mode
+    suggestion_mode: SuggestionMode,
+    /// Suggested tracks for display (replaces normal tracks when enabled)
+    suggestion_tracks: Vec<TrackRow<NodeId>>,
+    /// Mapping from suggestion track IDs to file paths (for loading)
+    suggestion_paths: HashMap<NodeId, PathBuf>,
+    /// Whether a suggestion query is in progress
+    suggestion_loading: bool,
 }
 
 /// Messages from the collection browser
@@ -62,6 +76,10 @@ pub enum CollectionBrowserMessage {
     SelectCurrent,
     /// Navigate back (exit playlist to tree, or go up hierarchy in tree)
     Back,
+    /// Toggle smart suggestions mode on/off
+    ToggleSuggestions,
+    /// Refresh suggestions (re-query with current seeds)
+    RefreshSuggestions,
 }
 
 impl CollectionBrowserState {
@@ -107,6 +125,11 @@ impl CollectionBrowserState {
             usb_devices: Vec::new(),
             usb_storages: Vec::new(),
             active_usb_idx: None,
+            suggestions_enabled: false,
+            suggestion_mode: SuggestionMode::default(),
+            suggestion_tracks: Vec::new(),
+            suggestion_paths: HashMap::new(),
+            suggestion_loading: false,
         }
     }
 
@@ -362,15 +385,19 @@ impl CollectionBrowserState {
                 None
             }
             CollectionBrowserMessage::ScrollBy(delta) => {
+                // Pick the active track list (suggestions or normal)
+                let active_tracks = if self.suggestions_enabled && !self.suggestion_tracks.is_empty() {
+                    &self.suggestion_tracks
+                } else {
+                    &self.tracks
+                };
+
                 // If no tracks loaded, scroll through folders (tree view)
-                // Note: scrolling only highlights folders, doesn't enter them
-                // User must press encoder/click (SelectCurrent) to enter a playlist
-                if self.tracks.is_empty() {
+                if active_tracks.is_empty() {
                     self.scroll_tree(delta);
                     return None;
                 }
 
-                // Otherwise, scroll through tracks in the current folder
                 // Find current selection index
                 let current_idx = self
                     .browser
@@ -379,21 +406,21 @@ impl CollectionBrowserState {
                     .iter()
                     .next()
                     .and_then(|selected| {
-                        self.tracks
+                        active_tracks
                             .iter()
                             .position(|t| &t.id == selected)
                     })
                     .unwrap_or(0);
 
-                // Calculate new index with wrapping
+                // Calculate new index with clamping
                 let new_idx = if delta > 0 {
-                    (current_idx + delta as usize).min(self.tracks.len() - 1)
+                    (current_idx + delta as usize).min(active_tracks.len() - 1)
                 } else {
                     current_idx.saturating_sub((-delta) as usize)
                 };
 
                 // Select the new track
-                if let Some(track) = self.tracks.get(new_idx) {
+                if let Some(track) = active_tracks.get(new_idx) {
                     self.browser.table_state.select(track.id.clone());
                     self.selected_track_path = self.get_track_path(&track.id);
                 }
@@ -412,11 +439,24 @@ impl CollectionBrowserState {
                 }
                 None
             }
+            CollectionBrowserMessage::ToggleSuggestions
+            | CollectionBrowserMessage::RefreshSuggestions => {
+                // Handled at app level in handlers/browser.rs (needs access to deck state)
+                None
+            }
             CollectionBrowserMessage::Back => {
                 // Navigate back in the browser hierarchy:
+                // 0. If suggestions are enabled, turn them off first
                 // 1. If viewing tracks in a playlist, go back to folder view (clear tracks)
                 // 2. If in folder view, go up to parent folder
                 // 3. If at root level, do nothing
+
+                if self.suggestions_enabled {
+                    self.suggestions_enabled = false;
+                    self.clear_suggestions();
+                    log::debug!("browser.back: exited suggestions mode");
+                    return None;
+                }
 
                 if !self.tracks.is_empty() {
                     // Currently viewing a playlist's tracks - go back to folder view
@@ -508,8 +548,13 @@ impl CollectionBrowserState {
         }
     }
 
-    /// Get track path by ID from storage (local or USB)
+    /// Get track path by ID from storage (local, USB, or suggestion)
     fn get_track_path(&self, track_id: &NodeId) -> Option<PathBuf> {
+        // Check if this is a suggestion track
+        if track_id.0.starts_with("suggestion:") {
+            return self.suggestion_paths.get(track_id).cloned();
+        }
+
         // Check if this is a USB track (ID starts with "usb:")
         if track_id.0.starts_with("usb:") {
             // Track ID is prefixed like "usb:/dev/sda/playlists/Detox/track.wav"
@@ -547,25 +592,37 @@ impl CollectionBrowserState {
     /// Get the currently selected track index (for auto-scroll)
     /// Returns None if no track is selected or tracks list is empty
     pub fn get_selected_index(&self) -> Option<usize> {
+        let active_tracks = self.active_track_list();
         self.browser
             .table_state
             .selected
             .iter()
             .next()
-            .and_then(|selected| self.tracks.iter().position(|t| &t.id == selected))
+            .and_then(|selected| active_tracks.iter().position(|t| &t.id == selected))
     }
 
     /// Get total track count (for scroll calculations)
     pub fn track_count(&self) -> usize {
-        self.tracks.len()
+        self.active_track_list().len()
+    }
+
+    /// Get the active track list (suggestions when enabled, otherwise normal tracks)
+    fn active_track_list(&self) -> &[TrackRow<NodeId>] {
+        if self.suggestions_enabled && !self.suggestion_tracks.is_empty() {
+            &self.suggestion_tracks
+        } else {
+            &self.tracks
+        }
     }
 
     /// Build the view with deck load buttons at top (centered)
     pub fn view(&self) -> Element<'_, CollectionBrowserMessage> {
+        let display_tracks = self.active_track_list();
+
         // mesh-player uses simple single-selection (no Shift/Ctrl modifier tracking)
         let browser_element = playlist_browser(
             &self.tree_nodes,
-            &self.tracks,
+            display_tracks,
             &self.browser,
             CollectionBrowserMessage::Browser,
         );
@@ -593,9 +650,16 @@ impl CollectionBrowserState {
             row![text("Select a track to load").size(11),].into()
         };
 
-        let load_bar = container(load_buttons)
+        // Suggest toggle button
+        let suggest_btn = self.view_suggest_button();
+
+        let load_bar = container(
+            row![load_buttons, Space::new().width(Length::Fill), suggest_btn]
+                .spacing(8)
+                .align_y(Alignment::Center)
+        )
             .padding([6, 10])
-            .center_x(Length::Fill);
+            .width(Length::Fill);
 
         column![load_bar, browser_element]
             .spacing(0)
@@ -605,12 +669,48 @@ impl CollectionBrowserState {
 
     /// Compact view without load buttons (for performance mode)
     pub fn view_compact(&self) -> Element<'_, CollectionBrowserMessage> {
-        playlist_browser(
+        let display_tracks = self.active_track_list();
+
+        let browser_element = playlist_browser(
             &self.tree_nodes,
-            &self.tracks,
+            display_tracks,
             &self.browser,
             CollectionBrowserMessage::Browser,
-        )
+        );
+
+        // Header with just the suggest button
+        let suggest_btn = self.view_suggest_button();
+        let header = container(suggest_btn)
+            .padding([4, 8])
+            .width(Length::Fill);
+
+        column![header, browser_element]
+            .spacing(0)
+            .height(Length::Fill)
+            .into()
+    }
+
+    /// Build the "SUGGEST" toggle button
+    fn view_suggest_button(&self) -> Element<'_, CollectionBrowserMessage> {
+        let label = if self.suggestion_loading {
+            "SUGGEST ..."
+        } else if self.suggestions_enabled {
+            "SUGGEST \u{25CF}" // ● filled circle
+        } else {
+            "SUGGEST"
+        };
+
+        let style = if self.suggestions_enabled {
+            suggest_active_style
+        } else {
+            suggest_inactive_style
+        };
+
+        button(text(label).size(11))
+            .on_press(CollectionBrowserMessage::ToggleSuggestions)
+            .padding([4, 10])
+            .style(style)
+            .into()
     }
 
     /// Scroll through tree nodes (folders) when not viewing tracks
@@ -741,6 +841,60 @@ impl CollectionBrowserState {
     pub fn is_browsing_usb(&self) -> bool {
         self.active_usb_idx.is_some()
     }
+
+    // ─── Smart Suggestions ──────────────────────────────────────────────
+
+    /// Check if suggestions mode is enabled
+    pub fn is_suggestions_enabled(&self) -> bool {
+        self.suggestions_enabled
+    }
+
+    /// Toggle suggestions mode on/off
+    pub fn set_suggestions_enabled(&mut self, enabled: bool) {
+        self.suggestions_enabled = enabled;
+        if !enabled {
+            self.clear_suggestions();
+        }
+    }
+
+    /// Set the suggestion scoring mode
+    pub fn set_suggestion_mode(&mut self, mode: SuggestionMode) {
+        self.suggestion_mode = mode;
+    }
+
+    /// Get the current suggestion mode
+    pub fn suggestion_mode(&self) -> SuggestionMode {
+        self.suggestion_mode
+    }
+
+    /// Mark suggestion query as loading
+    pub fn set_suggestion_loading(&mut self, loading: bool) {
+        self.suggestion_loading = loading;
+    }
+
+    /// Apply suggestion results from the background query
+    pub fn apply_suggestion_results(
+        &mut self,
+        tracks: Vec<TrackRow<NodeId>>,
+        paths: HashMap<NodeId, PathBuf>,
+    ) {
+        self.suggestion_tracks = tracks;
+        self.suggestion_paths = paths;
+        self.suggestion_loading = false;
+
+        // Auto-select first suggestion
+        if let Some(first) = self.suggestion_tracks.first() {
+            self.browser.table_state.select(first.id.clone());
+            self.selected_track_path = self.suggestion_paths.get(&first.id).cloned();
+        }
+    }
+
+    /// Clear suggestion state
+    pub fn clear_suggestions(&mut self) {
+        self.suggestion_tracks.clear();
+        self.suggestion_paths.clear();
+        self.suggestion_loading = false;
+    }
 }
 
 /// Build tree nodes from storage (read-only: no create/rename allowed)
@@ -843,4 +997,32 @@ fn build_usb_node_children(
             .with_rename(false)
         })
         .collect()
+}
+
+// ─── Suggest Button Styles ──────────────────────────────────────────────
+
+fn suggest_active_style(_theme: &iced::Theme, _status: iced::widget::button::Status) -> iced::widget::button::Style {
+    iced::widget::button::Style {
+        background: Some(Background::Color(Color::from_rgb(0.2, 0.55, 0.35))),
+        text_color: Color::WHITE,
+        border: iced::Border {
+            color: Color::from_rgb(0.3, 0.7, 0.4),
+            width: 1.0,
+            radius: 4.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
+fn suggest_inactive_style(_theme: &iced::Theme, _status: iced::widget::button::Status) -> iced::widget::button::Style {
+    iced::widget::button::Style {
+        background: Some(Background::Color(Color::from_rgb(0.2, 0.2, 0.2))),
+        text_color: Color::from_rgb(0.7, 0.7, 0.7),
+        border: iced::Border {
+            color: Color::from_rgb(0.35, 0.35, 0.35),
+            width: 1.0,
+            radius: 4.0.into(),
+        },
+        ..Default::default()
+    }
 }
