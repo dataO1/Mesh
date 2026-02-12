@@ -439,6 +439,14 @@ impl ControllerManager {
             return;
         }
 
+        // Collect shared states from already-connected MIDI devices so HID devices
+        // sharing the same profile can reuse them (single shift/layer state for all).
+        // This ensures layer toggles on any device are visible to all devices' feedback.
+        let mut profile_states: HashMap<String, Arc<SharedState>> = HashMap::new();
+        for midi_dev in self.midi_devices.values() {
+            profile_states.insert(midi_dev.profile.name.clone(), midi_dev.shared_state.clone());
+        }
+
         for info in &devices {
             if self.hid_devices.contains_key(&info.path) {
                 continue;
@@ -457,6 +465,8 @@ impl ControllerManager {
                     // Look up matching DeviceProfile:
                     // 1. Prefer exact device_id match (serial number)
                     // 2. Fall back to hid_product_match (product name substring)
+                    //    This allows multiple identical devices (e.g. two F1s) to share
+                    //    one profile — each device's output handler filters by device_id.
                     let matched_profile = self.config.devices.iter()
                         .find(|p| {
                             p.hid_device_id.as_ref().map_or(false, |id| {
@@ -465,8 +475,6 @@ impl ControllerManager {
                         })
                         .or_else(|| {
                             self.config.devices.iter().find(|p| {
-                                // Only fall back to product match if no device_id is set on the profile
-                                p.hid_device_id.is_none() &&
                                 p.hid_product_match.as_ref().map_or(false, |pattern| {
                                     info.product_name.to_lowercase().contains(&pattern.to_lowercase())
                                 })
@@ -475,11 +483,15 @@ impl ControllerManager {
 
                     let (profile, mapping_engine, shared_state) = if let Some(p) = matched_profile {
                         log::info!(
-                            "HID: Matched profile '{}' for '{}' ({} mappings)",
-                            p.name, info.product_name, p.mappings.len()
+                            "HID: Matched profile '{}' for '{}' (device_id={}, {} mappings)",
+                            p.name, info.product_name, connection.device_id, p.mappings.len()
                         );
-                        let deck_target_state = DeckTargetState::from_config(&p.deck_target);
-                        let state = Arc::new(SharedState::new(deck_target_state));
+                        // Reuse shared state from first device with same profile so all
+                        // devices share one shift/layer state (including MIDI devices)
+                        let state = profile_states.entry(p.name.clone()).or_insert_with(|| {
+                            let deck_target_state = DeckTargetState::from_config(&p.deck_target);
+                            Arc::new(SharedState::new(deck_target_state))
+                        }).clone();
                         let engine = Arc::new(MappingEngine::new(p, state.clone()));
                         (Some(p.clone()), Some(engine), Some(state))
                     } else {

@@ -128,8 +128,6 @@ pub enum HighlightTarget {
     // FX macro knobs (deck_index, macro_index 0-3)
     DeckFxMacro(usize, usize),
 
-    // Load buttons (deck)
-    DeckLoad(usize),
 }
 
 impl HighlightTarget {
@@ -178,7 +176,6 @@ impl HighlightTarget {
             HighlightTarget::DeckFxMacro(d, m) => {
                 format!("Turn FX MACRO {} knob on deck {}", m + 1, d + 1)
             }
-            HighlightTarget::DeckLoad(d) => format!("Press LOAD button for deck {}", d + 1),
         }
     }
 }
@@ -950,12 +947,12 @@ impl MidiLearnState {
         if self.has_layer_toggle {
             // FxEncoder, FxSelect, BrowserEncoder(0), BrowserSelect(0),
             // BrowserEncoder(1), BrowserSelect(1),
-            // MasterVolume, CueVolume, CueMix, DeckLoad×N
-            9 + self.deck_count
+            // MasterVolume, CueVolume, CueMix
+            9
         } else {
             // FxEncoder, FxSelect, BrowserEncoder, BrowserSelect,
-            // MasterVolume, CueVolume, CueMix, DeckLoad×N
-            7 + self.deck_count
+            // MasterVolume, CueVolume, CueMix
+            7
         }
     }
 
@@ -974,7 +971,7 @@ impl MidiLearnState {
             // 2: BrowserEncoder(left), 3: BrowserSelect(left),
             // 4: BrowserEncoder(right), 5: BrowserSelect(right),
             // 6: MasterVolume, 7: CueVolume, 8: CueMix,
-            // 9+: DeckLoad(n)
+            // 9 steps total (0-8)
             match self.current_step {
                 0 => HighlightTarget::FxEncoder,
                 1 => HighlightTarget::FxSelect,
@@ -984,13 +981,12 @@ impl MidiLearnState {
                 5 => HighlightTarget::BrowserSelectDeck(1),
                 6 => HighlightTarget::MasterVolume,
                 7 => HighlightTarget::CueVolume,
-                8 => HighlightTarget::CueMix,
-                n => HighlightTarget::DeckLoad(n - 9),
+                _ => HighlightTarget::CueMix,
             }
         } else {
             // Global browse layout (unchanged):
             // 0: FxEncoder, 1: FxSelect, 2: BrowserEncoder, 3: BrowserSelect,
-            // 4: MasterVolume, 5: CueVolume, 6: CueMix, 7+: DeckLoad(n)
+            // 7 steps total (0-6)
             match self.current_step {
                 0 => HighlightTarget::FxEncoder,
                 1 => HighlightTarget::FxSelect,
@@ -998,8 +994,7 @@ impl MidiLearnState {
                 3 => HighlightTarget::BrowserSelect,
                 4 => HighlightTarget::MasterVolume,
                 5 => HighlightTarget::CueVolume,
-                6 => HighlightTarget::CueMix,
-                n => HighlightTarget::DeckLoad(n - 7),
+                _ => HighlightTarget::CueMix,
             }
         });
 
@@ -1195,10 +1190,6 @@ impl MidiLearnState {
                 HighlightTarget::DeckFxMacro(d, _m) => {
                     ("deck.fx_macro".to_string(), Some(d), None, ControlBehavior::Continuous, None)
                 }
-                HighlightTarget::DeckLoad(d) => {
-                    ("deck.load_selected".to_string(), Some(d), None, ControlBehavior::Momentary, None)
-                }
-
                 // Per-physical-deck browser (layer mode)
                 HighlightTarget::BrowserEncoderDeck(pd) => {
                     ("browser.scroll".to_string(), Some(pd), None, ControlBehavior::Continuous, None)
