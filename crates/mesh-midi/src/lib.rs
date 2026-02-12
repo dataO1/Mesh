@@ -353,29 +353,54 @@ impl ControllerManager {
         log::debug!("MIDI: Available ports: {:?}", available_ports);
 
         for profile in &self.config.devices {
-            let matching_port = available_ports.iter().find(|port| port_matches(port, profile));
+            // Check if this profile has any MIDI protocol mappings.
+            // If so, we need to connect to ALL available MIDI ports because the MIDI
+            // controls might come from a different device than port_match indicates
+            // (e.g., HID profile with mixed MIDI+HID mappings from separate hardware).
+            let has_midi_mappings = profile.mappings.iter()
+                .any(|m| matches!(&m.control, ControlAddress::Midi(_)));
 
-            if let Some(port_name) = matching_port {
+            // Determine which ports to connect:
+            // - Profile with MIDI mappings: connect ALL ports (MappingEngine filters by ch/note/CC)
+            // - Profile without MIDI mappings: only connect the port matching port_match
+            let ports_to_connect: Vec<&String> = if has_midi_mappings {
+                available_ports.iter()
+                    .filter(|p| !p.to_lowercase().contains("midi through"))
+                    .collect()
+            } else {
+                match available_ports.iter().find(|port| port_matches(port, profile)) {
+                    Some(port) => vec![port],
+                    None => vec![],
+                }
+            };
+
+            if ports_to_connect.is_empty() {
+                log::debug!(
+                    "MIDI: No ports to connect for profile '{}' (port_match: '{}', learned: {:?})",
+                    profile.name, profile.port_match, profile.learned_port_name
+                );
+                continue;
+            }
+
+            // Create shared state and mapping engine once per profile
+            let deck_target_state = DeckTargetState::from_config(&profile.deck_target);
+            let shared_state = Arc::new(SharedState::new(deck_target_state));
+            let mapping_engine = Arc::new(MappingEngine::new(profile, shared_state.clone()));
+
+            for port_name in ports_to_connect {
                 let normalized = normalize_port_name(port_name);
 
                 if self.midi_devices.contains_key(&normalized) {
-                    log::debug!(
-                        "MIDI: Port '{}' already connected, skipping duplicate profile '{}'",
-                        normalized, profile.name
-                    );
                     continue;
                 }
 
-                let deck_target_state = DeckTargetState::from_config(&profile.deck_target);
-                let shared_state = Arc::new(SharedState::new(deck_target_state));
                 let shift_buttons = extract_shift_buttons(profile);
                 let toggle_controls = extract_toggle_controls(profile);
-                let mapping_engine = Arc::new(MappingEngine::new(profile, shared_state.clone()));
 
                 match MidiInputHandler::connect_with_raw_events(
                     port_name,
                     self.message_tx.clone(),
-                    mapping_engine,
+                    mapping_engine.clone(),
                     shared_state.clone(),
                     shift_buttons,
                     toggle_controls,
@@ -396,7 +421,7 @@ impl ControllerManager {
                                 profile: profile.clone(),
                                 input_handler,
                                 output_handler,
-                                shared_state,
+                                shared_state: shared_state.clone(),
                             },
                         );
                     }
@@ -407,11 +432,6 @@ impl ControllerManager {
                         );
                     }
                 }
-            } else {
-                log::debug!(
-                    "MIDI: No matching port for profile '{}' (port_match: '{}', learned: {:?})",
-                    profile.name, profile.port_match, profile.learned_port_name
-                );
             }
         }
 
