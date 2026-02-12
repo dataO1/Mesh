@@ -1262,6 +1262,12 @@ impl MidiLearnState {
                 behavior
             };
 
+            // Per-deck browser select gets browse_back as shift action
+            let shift_action = match learned.target {
+                HighlightTarget::BrowserSelectDeck(_) => Some("deck.browse_back".to_string()),
+                _ => None,
+            };
+
             mappings.push(ControlMapping {
                 control: control.clone(),
                 action,
@@ -1269,7 +1275,7 @@ impl MidiLearnState {
                 deck_index,
                 params: params.clone(),
                 behavior: actual_behavior,
-                shift_action: None,
+                shift_action,
                 encoder_mode,
                 hardware_type: Some(learned.hardware_type),
             });

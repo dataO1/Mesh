@@ -148,8 +148,10 @@ pub enum DeckAction {
     ToggleSlip,
     /// Toggle key match
     ToggleKeyMatch,
-    /// Load selected track from browser
+    /// Load selected track from browser, or enter selected playlist
     LoadSelected,
+    /// Navigate back/up in browser hierarchy
+    BrowseBack,
     /// Seek to position (from jog wheel or waveform touch)
     Seek {
         /// Normalized position (0.0-1.0)

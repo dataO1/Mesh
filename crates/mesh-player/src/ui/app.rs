@@ -588,10 +588,21 @@ impl MeshApp {
                     MidiDeckAction::ToggleSlip => Some(DeckMessage::ToggleSlip),
                     MidiDeckAction::ToggleKeyMatch => Some(DeckMessage::ToggleKeyMatch),
                     MidiDeckAction::LoadSelected => {
-                        // Load currently selected track in browser to this deck
+                        // If a track is selected, load it to this deck
                         if let Some(track_path) = self.collection_browser.get_selected_track_path() {
                             let _ = self.update(Message::LoadTrack(deck, track_path.to_string_lossy().to_string()));
+                        } else {
+                            // No track selected — enter the selected folder/playlist
+                            let _ = self.update(Message::CollectionBrowser(
+                                CollectionBrowserMessage::SelectCurrent,
+                            ));
                         }
+                        None
+                    }
+                    MidiDeckAction::BrowseBack => {
+                        let _ = self.update(Message::CollectionBrowser(
+                            CollectionBrowserMessage::Back,
+                        ));
                         None
                     }
                     MidiDeckAction::Seek { .. } | MidiDeckAction::Nudge { .. } => None, // TODO

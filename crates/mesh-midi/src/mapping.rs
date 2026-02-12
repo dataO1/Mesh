@@ -66,6 +66,7 @@ impl ActionRegistry {
             "deck.slip",
             "deck.key_match",
             "deck.load_selected",
+            "deck.browse_back",
             "deck.pad_press",
             "deck.pad_release",
         ] {
@@ -421,6 +422,13 @@ impl MappingEngine {
                         debounce.last_deck_load[deck] = Some(now);
                     }
                     Some(MidiMessage::Deck { deck, action: DeckAction::LoadSelected })
+                } else {
+                    None
+                }
+            }
+            "deck.browse_back" => {
+                if event.value.is_press() {
+                    Some(MidiMessage::Deck { deck, action: DeckAction::BrowseBack })
                 } else {
                     None
                 }
