@@ -525,7 +525,7 @@ impl MeshApp {
                             // App-driven: check current action mode
                             match self.deck_views[deck].action_mode() {
                                 super::deck_view::ActionButtonMode::HotCue => Some(DeckMessage::HotCuePressed(slot)),
-                                super::deck_view::ActionButtonMode::Slicer => Some(DeckMessage::SlicerTrigger(slot)),
+                                super::deck_view::ActionButtonMode::Slicer => Some(DeckMessage::SlicerPresetSelect(slot)),
                             }
                         }
                     }

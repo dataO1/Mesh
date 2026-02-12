@@ -17,8 +17,8 @@ static PULSE_START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 fn pulse_brightness() -> f32 {
     let start = PULSE_START.get_or_init(Instant::now);
     let elapsed = start.elapsed().as_secs_f32();
-    // ~1.5 Hz sine wave, range 0.15 to 1.0 for visible-but-not-off pulsing
-    let phase = (elapsed * 1.5 * std::f32::consts::TAU).sin();
+    // ~2.5 Hz sine wave, range 0.15 to 1.0 for visible-but-not-off pulsing
+    let phase = (elapsed * 2.5 * std::f32::consts::TAU).sin();
     0.575 + 0.425 * phase
 }
 
