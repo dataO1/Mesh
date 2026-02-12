@@ -398,6 +398,18 @@ impl MidiLearnState {
         }
     }
 
+    /// Number of mixer channels to learn.
+    /// Mixer controls (volume, EQ, filter, cue, stem mutes, FX macros) are physically
+    /// per-channel on hardware, independent of the layer toggle. So with 2 physical
+    /// decks + layer toggle = 4 mixer channels.
+    fn num_mixer_channels(&self) -> usize {
+        if self.has_layer_toggle {
+            self.deck_count * 2
+        } else {
+            self.deck_count
+        }
+    }
+
     /// Check if a captured event should be accepted
     ///
     /// Filters out:
@@ -842,8 +854,8 @@ impl MidiLearnState {
         self.last_capture_time = None;
         self.phase = LearnPhase::Stems;
         self.current_step = 0;
-        // 4 stem mute buttons per deck
-        self.total_steps = self.deck_count * 4;
+        // 4 stem mute buttons per channel (per virtual deck, not layer-resolved)
+        self.total_steps = self.num_mixer_channels() * 4;
         self.update_stems_target();
     }
 
@@ -886,28 +898,42 @@ impl MidiLearnState {
         }
     }
 
+    /// Total steps in the mixer phase:
+    /// 6 channel controls per virtual deck + 4 FX macros per physical deck
+    fn mixer_step_count(&self) -> usize {
+        self.num_mixer_channels() * 6 + self.deck_count * 4
+    }
+
     fn enter_mixer_phase(&mut self) {
         self.last_capture_time = None;
         self.phase = LearnPhase::Mixer;
         self.current_step = 0;
-        // 10 controls per channel: 6 mixer (volume, filter, eq hi/mid/lo, cue) + 4 FX macros
-        self.total_steps = self.deck_count * 10;
+        self.total_steps = self.mixer_step_count();
         self.update_mixer_target();
     }
 
     fn update_mixer_target(&mut self) {
-        let deck = self.current_step / 10;
-        let control = self.current_step % 10;
+        let channel_steps = self.num_mixer_channels() * 6;
 
-        self.highlight_target = Some(match control {
-            0 => HighlightTarget::MixerVolume(deck),
-            1 => HighlightTarget::MixerFilter(deck),
-            2 => HighlightTarget::MixerEqHi(deck),
-            3 => HighlightTarget::MixerEqMid(deck),
-            4 => HighlightTarget::MixerEqLo(deck),
-            5 => HighlightTarget::MixerCue(deck),
-            n @ 6..=9 => HighlightTarget::DeckFxMacro(deck, n - 6),
-            _ => unreachable!(),
+        self.highlight_target = Some(if self.current_step < channel_steps {
+            // Channel controls: 6 per virtual deck (volume, filter, eq hi/mid/lo, cue)
+            let deck = self.current_step / 6;
+            let control = self.current_step % 6;
+            match control {
+                0 => HighlightTarget::MixerVolume(deck),
+                1 => HighlightTarget::MixerFilter(deck),
+                2 => HighlightTarget::MixerEqHi(deck),
+                3 => HighlightTarget::MixerEqMid(deck),
+                4 => HighlightTarget::MixerEqLo(deck),
+                5 => HighlightTarget::MixerCue(deck),
+                _ => unreachable!(),
+            }
+        } else {
+            // FX macros: 4 per physical deck (layer-resolved)
+            let macro_step = self.current_step - channel_steps;
+            let deck = macro_step / 4;
+            let macro_idx = macro_step % 4;
+            HighlightTarget::DeckFxMacro(deck, macro_idx)
         });
 
         if let Some(ref target) = self.highlight_target {
@@ -934,10 +960,11 @@ impl MidiLearnState {
             self.current_step -= 1;
             self.update_mixer_target();
         } else {
-            // Go back to stems
+            // Go back to stems (uses num_mixer_channels, same as enter_stems_phase)
+            let channels = self.num_mixer_channels();
             self.phase = LearnPhase::Stems;
-            self.current_step = self.deck_count * 4 - 1;
-            self.total_steps = self.deck_count * 4;
+            self.current_step = channels * 4 - 1;
+            self.total_steps = channels * 4;
             self.update_stems_target();
         }
     }
@@ -1051,8 +1078,9 @@ impl MidiLearnState {
         // Controller mode: (hot cue mode + 8 pads + slicer mode + 8 pads) = 18 per deck
         // App mode: (hot cue mode + 8 pads + slicer mode) = 10 per deck
         let pads_steps = self.deck_count * self.pads_steps_per_deck();
-        let stems_steps = self.deck_count * 4; // 4 stem mute buttons per deck
-        let mixer_steps = self.deck_count * 10; // volume, filter, eq hi/mid/lo, cue, 4 FX macros
+        let mixer_channels = self.num_mixer_channels();
+        let stems_steps = mixer_channels * 4; // 4 stem mute buttons per channel
+        let mixer_steps = self.mixer_step_count(); // 6 channel controls per virtual deck + 4 FX macros per physical deck
         let browser_steps = self.browser_step_count();
         let total = setup_steps + transport_steps + pads_steps + stems_steps + mixer_steps + browser_steps;
 
