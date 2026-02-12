@@ -436,6 +436,7 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
             // Get play state and loop active from atomics
             if let Some(ref atomics) = app.deck_atomics {
                 feedback.decks[deck_idx].is_playing = atomics[deck_idx].is_playing();
+                feedback.decks[deck_idx].is_cueing = atomics[deck_idx].is_cueing();
                 feedback.decks[deck_idx].loop_active = atomics[deck_idx].loop_active();
                 feedback.decks[deck_idx].key_match_enabled =
                     atomics[deck_idx].key_match_enabled.load(std::sync::atomic::Ordering::Relaxed);

@@ -18,9 +18,9 @@
 //! |-------|---------|
 //! | 1     | Report ID (0x80) |
 //! | 2-17  | 7-segment display (16 bytes, 4 digits × 4 segments) |
-//! | 18-25 | Function button LEDs (8 bytes, brightness 0-127) |
-//! | 26-73 | Grid pad RGB LEDs (48 bytes = 16 pads × 3 BRG) |
-//! | 74-81 | Play button LEDs (8 bytes = 4 × 2 sub-LEDs, 0-255) |
+//! | 18-25 | Function button LEDs (8 bytes, brightness 0x00-0x7F) |
+//! | 26-73 | Grid pad RGB LEDs (48 bytes = 16 pads × 3 BRG, 0x00-0x7F) |
+//! | 74-81 | Play button LEDs (8 bytes = 4 × 2 sub-LEDs, 0x00-0x7F, reversed: play_4 first) |
 
 use super::{HidDeviceDriver};
 use crate::config::HardwareType;
@@ -43,29 +43,61 @@ const ANALOG_MAX: u16 = 4092;
 /// Minimum change in analog value to trigger an event (noise filtering)
 const ANALOG_DEADZONE: u16 = 2;
 
-// Button bit positions in the 32-bit bitmask (bytes 1-4, little-endian)
-// Determined by empirical testing with the hardware
-const BTN_BROWSE: u32     = 1 << 0;
-const BTN_SIZE: u32       = 1 << 1;
-const BTN_TYPE: u32       = 1 << 2;
-const BTN_REVERSE: u32    = 1 << 3;
-const BTN_SHIFT: u32      = 1 << 4;
-const BTN_CAPTURE: u32    = 1 << 5;
-const BTN_QUANT: u32      = 1 << 6;
-const BTN_SYNC: u32       = 1 << 7;
-const BTN_PLAY_1: u32     = 1 << 8;
-const BTN_PLAY_2: u32     = 1 << 9;
-const BTN_PLAY_3: u32     = 1 << 10;
-const BTN_PLAY_4: u32     = 1 << 11;
-const BTN_ENCODER: u32    = 1 << 12;
+// Button bit positions in the 32-bit bitmask (bytes 1-4 of input report, little-endian u32)
+// Reference: Mixxx Traktor-Kontrol-F1-scripts.js, hack-the-f1 protocol analysis
+//
+// Byte layout (report bytes 2-5 → u32 LE from data[1..5]):
+//   data[1] (bits 0-7):   Grid pads 8..1 (reversed within byte)
+//   data[2] (bits 8-15):  Grid pads 16..9 (reversed within byte)
+//   data[3] (bits 16-23): Encoder push, Browse, Size, Type, Reverse, Shift
+//   data[4] (bits 24-31): Capture, Quant, Sync, Play/Kill 4..1
 
-// Grid pad buttons: bits 16-31 (pad 1 = bit 16, pad 16 = bit 31)
-// Layout (looking at the F1 from the front, top-left = pad 13):
-//   13 14 15 16   (top row)
-//    9 10 11 12
-//    5  6  7  8
-//    1  2  3  4   (bottom row)
-const BTN_PAD_BASE: u32 = 16;
+// Function buttons (data[3], bits 18-23)
+const BTN_ENCODER: u32    = 1 << 18;
+const BTN_BROWSE: u32     = 1 << 19;
+const BTN_SIZE: u32       = 1 << 20;
+const BTN_TYPE: u32       = 1 << 21;
+const BTN_REVERSE: u32    = 1 << 22;
+const BTN_SHIFT: u32      = 1 << 23;
+
+// Lower function buttons (data[4], bits 25-27)
+const BTN_CAPTURE: u32    = 1 << 25;
+const BTN_QUANT: u32      = 1 << 26;
+const BTN_SYNC: u32       = 1 << 27;
+
+// Play/Kill (stop) buttons below the grid (data[4], bits 28-31, reversed order)
+const BTN_PLAY_4: u32     = 1 << 28;
+const BTN_PLAY_3: u32     = 1 << 29;
+const BTN_PLAY_2: u32     = 1 << 30;
+const BTN_PLAY_1: u32     = 1 << 31;
+
+// Grid pad button bitmasks (data[1-2], bits 0-15)
+// Physical layout (looking at F1 from the front):
+//   grid_1  grid_2  grid_3  grid_4   (top row)
+//   grid_5  grid_6  grid_7  grid_8
+//   grid_9  grid_10 grid_11 grid_12
+//   grid_13 grid_14 grid_15 grid_16  (bottom row)
+//
+// Bits are reversed within each byte: pad 1 = bit 7, pad 8 = bit 0,
+// pad 9 = bit 15, pad 16 = bit 8.
+const PAD_BITS: [u32; 16] = [
+    1 << 7,  // grid_1
+    1 << 6,  // grid_2
+    1 << 5,  // grid_3
+    1 << 4,  // grid_4
+    1 << 3,  // grid_5
+    1 << 2,  // grid_6
+    1 << 1,  // grid_7
+    1 << 0,  // grid_8
+    1 << 15, // grid_9
+    1 << 14, // grid_10
+    1 << 13, // grid_11
+    1 << 12, // grid_12
+    1 << 11, // grid_13
+    1 << 10, // grid_14
+    1 << 9,  // grid_15
+    1 << 8,  // grid_16
+];
 
 /// Kontrol F1 HID driver
 pub struct KontrolF1Driver {
@@ -226,9 +258,9 @@ impl KontrolF1Driver {
             }
         }
 
-        // Grid pads (16 pads, bits 16-31)
-        for i in 0..16u32 {
-            let mask = 1 << (BTN_PAD_BASE + i);
+        // Grid pads (16 pads, bits reversed within each byte)
+        for i in 0..16 {
+            let mask = PAD_BITS[i];
             if changed & mask != 0 {
                 events.push(ControlEvent {
                     address: hid_addr(&self.device_id, &format!("grid_{}", i + 1)),
@@ -357,24 +389,48 @@ impl HidDeviceDriver for KontrolF1Driver {
 
         match cmd {
             FeedbackCommand::SetLed { ref control, brightness } => {
-                // Function button LEDs: bytes 17-24 (brightness 0-127)
+                let val = brightness.min(0x7F);
+                // Function button LEDs: bytes 17-24 (brightness 0x00-0x7F)
                 if let Some(offset) = function_button_led_offset(control) {
-                    output[offset] = brightness.min(127);
+                    log::debug!("[F1 LED] SetLed '{}' → byte {} = {:#04x}", control, offset, val);
+                    output[offset] = val;
                 }
-                // Play button LEDs: bytes 73-80 (2 sub-LEDs per button, 0-255)
+                // Play button LEDs: bytes 73-80 (2 sub-LEDs per button, 0x00-0x7F)
                 else if let Some(offset) = play_button_led_offset(control) {
-                    // Both sub-LEDs to same brightness (scaled 0-127 → 0-255)
-                    let scaled = (brightness as u16 * 255 / 127).min(255) as u8;
-                    output[offset] = scaled;
-                    output[offset + 1] = scaled;
+                    log::debug!("[F1 LED] SetLed '{}' → bytes {},{} = {:#04x}", control, offset, offset+1, val);
+                    output[offset] = val;
+                    output[offset + 1] = val;
+                }
+                else {
+                    log::debug!("[F1 LED] SetLed '{}' → NO MATCH (dropped)", control);
                 }
             }
             FeedbackCommand::SetRgb { ref control, r, g, b } => {
-                // Grid pad RGB: bytes 25-72 (16 pads × 3 bytes BRG order)
+                // Grid pad RGB: bytes 25-72 (16 pads × 3 bytes BRG order, 0x00-0x7F)
                 if let Some(offset) = grid_pad_rgb_offset(control) {
-                    output[offset] = b.min(127);     // Blue
-                    output[offset + 1] = r.min(127); // Red
-                    output[offset + 2] = g.min(127); // Green
+                    log::debug!("[F1 LED] SetRgb '{}' → bytes {}-{} = BRG({:#04x},{:#04x},{:#04x})",
+                        control, offset, offset+2, b.min(0x7F), r.min(0x7F), g.min(0x7F));
+                    output[offset] = b.min(0x7F);     // Blue
+                    output[offset + 1] = r.min(0x7F); // Red
+                    output[offset + 2] = g.min(0x7F); // Green
+                }
+                // Fallback: function buttons are single-color, convert RGB to brightness
+                else if let Some(offset) = function_button_led_offset(control) {
+                    let val = r.max(g).max(b).min(0x7F);
+                    log::debug!("[F1 LED] SetRgb→Led '{}' → byte {} = {:#04x} (from RGB {},{},{})",
+                        control, offset, val, r, g, b);
+                    output[offset] = val;
+                }
+                // Fallback: play buttons are single-color, convert RGB to brightness
+                else if let Some(offset) = play_button_led_offset(control) {
+                    let val = r.max(g).max(b).min(0x7F);
+                    log::debug!("[F1 LED] SetRgb→Led '{}' → bytes {},{} = {:#04x} (from RGB {},{},{})",
+                        control, offset, offset+1, val, r, g, b);
+                    output[offset] = val;
+                    output[offset + 1] = val;
+                }
+                else {
+                    log::debug!("[F1 LED] SetRgb '{}' → NO MATCH (dropped)", control);
                 }
             }
             FeedbackCommand::SetDisplay { ref text } => {
@@ -418,13 +474,14 @@ fn function_button_led_offset(name: &str) -> Option<usize> {
 }
 
 /// Map play button name to its LED byte offset (first of 2 sub-LED bytes).
-/// Play button LEDs occupy bytes 73-80: play_1 = [73,74], play_2 = [75,76], etc.
+/// Play button LEDs occupy bytes 73-80 in REVERSE order:
+/// play_4 = [73,74], play_3 = [75,76], play_2 = [77,78], play_1 = [79,80].
 fn play_button_led_offset(name: &str) -> Option<usize> {
     match name {
-        "play_1" => Some(73),
-        "play_2" => Some(75),
-        "play_3" => Some(77),
-        "play_4" => Some(79),
+        "play_4" => Some(73),
+        "play_3" => Some(75),
+        "play_2" => Some(77),
+        "play_1" => Some(79),
         _ => None,
     }
 }
@@ -550,9 +607,9 @@ mod tests {
         let report1 = make_report();
         driver.parse_input(&report1);
 
-        // Second report: browse button pressed (bit 0 of button bitmask)
+        // Second report: browse button pressed (bit 19 of u32 = data[3] bit 3)
         let mut report2 = make_report();
-        report2[1] = 0x01; // Bit 0 = browse button
+        report2[3] = 0x08; // Bit 19 = browse button
         let events = driver.parse_input(&report2);
 
         assert_eq!(events.len(), 1);
@@ -564,9 +621,9 @@ mod tests {
     fn test_button_release() {
         let mut driver = KontrolF1Driver::new("test".to_string());
 
-        // Baseline with browse pressed
+        // Baseline with browse pressed (bit 19 of u32 = data[3] bit 3)
         let mut report1 = make_report();
-        report1[1] = 0x01;
+        report1[3] = 0x08;
         driver.parse_input(&report1);
 
         // Release browse
@@ -583,9 +640,9 @@ mod tests {
         let mut driver = KontrolF1Driver::new("test".to_string());
         driver.parse_input(&make_report()); // Baseline
 
-        // Press grid pad 1 (bit 16)
+        // Press grid pad 1 (bit 7 of u32 = data[1] bit 7)
         let mut report = make_report();
-        report[3] = 0x01; // Byte 3, bit 0 = overall bit 16 = grid_1
+        report[1] = 0x80; // data[1] bit 7 = grid_1 (top-left pad)
         let events = driver.parse_input(&report);
 
         assert_eq!(events.len(), 1);
@@ -686,7 +743,7 @@ mod tests {
 
         // Simultaneously: browse pressed + fader 1 moved
         let mut report = make_report();
-        report[1] = 0x01; // browse button
+        report[3] = 0x08; // browse button (bit 19 = data[3] bit 3)
         let value: u16 = 4092; // fader 1 max
         let bytes = value.to_le_bytes();
         report[14] = bytes[0];
@@ -747,21 +804,19 @@ mod tests {
         let mut driver = KontrolF1Driver::new("test".to_string());
         let mut output = make_output();
 
+        // Play button order is reversed in hardware: play_4 at [73,74], play_1 at [79,80]
         driver.apply_feedback(&mut output, FeedbackCommand::SetLed {
             control: "play_1".to_string(),
             brightness: 127,
         });
-        // 127 scaled to 255
-        assert_eq!(output[73], 255, "Play 1 sub-LED A at byte 73");
-        assert_eq!(output[74], 255, "Play 1 sub-LED B at byte 74");
+        assert_eq!(output[79], 127, "Play 1 sub-LED A at byte 79");
+        assert_eq!(output[80], 127, "Play 1 sub-LED B at byte 80");
 
         driver.apply_feedback(&mut output, FeedbackCommand::SetLed {
             control: "play_3".to_string(),
             brightness: 64,
         });
-        // 64 * 255 / 127 ≈ 128
-        let expected = (64u16 * 255 / 127).min(255) as u8;
-        assert_eq!(output[77], expected);
+        assert_eq!(output[75], 64, "Play 3 at byte 75");
     }
 
     #[test]
@@ -805,6 +860,46 @@ mod tests {
         // grid_0 and grid_17 should not resolve
         assert!(grid_pad_rgb_offset("grid_0").is_none());
         assert!(grid_pad_rgb_offset("grid_17").is_none());
+    }
+
+    #[test]
+    fn test_rgb_fallback_to_function_button() {
+        // When SetRgb is sent to a function button (single-color LED),
+        // it should convert RGB to brightness using max(r,g,b)
+        let mut driver = KontrolF1Driver::new("test".to_string());
+        let mut output = make_output();
+
+        driver.apply_feedback(&mut output, FeedbackCommand::SetRgb {
+            control: "capture".to_string(),
+            r: 127,
+            g: 0,
+            b: 0,
+        });
+        assert_eq!(output[22], 127, "Capture LED should light from RGB fallback");
+
+        driver.apply_feedback(&mut output, FeedbackCommand::SetRgb {
+            control: "shift".to_string(),
+            r: 0,
+            g: 64,
+            b: 0,
+        });
+        assert_eq!(output[21], 64, "Shift LED should light from RGB fallback");
+    }
+
+    #[test]
+    fn test_rgb_fallback_to_play_button() {
+        let mut driver = KontrolF1Driver::new("test".to_string());
+        let mut output = make_output();
+
+        driver.apply_feedback(&mut output, FeedbackCommand::SetRgb {
+            control: "play_2".to_string(),
+            r: 0,
+            g: 127,
+            b: 0,
+        });
+        // play_2 is at byte 77-78 (reversed order)
+        assert_eq!(output[77], 127, "Play 2 sub-LED A from RGB fallback");
+        assert_eq!(output[78], 127, "Play 2 sub-LED B from RGB fallback");
     }
 
     #[test]

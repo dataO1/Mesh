@@ -109,6 +109,16 @@ impl HidIoThread {
 
             // Write output report if anything changed
             if output_dirty {
+                // Hex dump of non-zero output bytes for debugging
+                if log::log_enabled!(log::Level::Trace) {
+                    let non_zero: Vec<String> = output_buf.iter().enumerate()
+                        .filter(|(i, b)| *i > 0 && **b != 0)
+                        .map(|(i, b)| format!("[{:2}]={:#04x}", i, b))
+                        .collect();
+                    if !non_zero.is_empty() {
+                        log::trace!("[HID {}] Output: {}", name, non_zero.join(" "));
+                    }
+                }
                 match device.write(&output_buf) {
                     Ok(_) => {
                         output_dirty = false;
