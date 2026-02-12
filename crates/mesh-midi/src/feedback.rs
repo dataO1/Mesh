@@ -8,6 +8,19 @@ use crate::config::FeedbackMapping;
 use crate::deck_target::{DeckTargetState, LayerSelection};
 use crate::types::ControlAddress;
 use std::collections::HashMap;
+use std::time::Instant;
+
+/// Global start time for pulsing animations
+static PULSE_START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+/// Compute a smooth pulse brightness (0.0-1.0) using a sine wave
+fn pulse_brightness() -> f32 {
+    let start = PULSE_START.get_or_init(Instant::now);
+    let elapsed = start.elapsed().as_secs_f32();
+    // ~1.5 Hz sine wave, range 0.15 to 1.0 for visible-but-not-off pulsing
+    let phase = (elapsed * 1.5 * std::f32::consts::TAU).sin();
+    0.575 + 0.425 * phase
+}
 
 /// Application state for LED feedback
 ///
@@ -45,6 +58,10 @@ pub struct DeckFeedbackState {
     pub slicer_active: bool,
     /// Current slicer slice (0-15)
     pub slicer_current_slice: u8,
+    /// Which slicer presets have patterns assigned? (bitmap, bit N = preset N has a pattern)
+    pub slicer_presets_assigned: u8,
+    /// Currently selected/active slicer preset (0-7)
+    pub slicer_selected_preset: u8,
     /// Is key match enabled?
     pub key_match_enabled: bool,
     /// Which stems are muted? (bitmap, bit N = stem N is muted)
@@ -99,6 +116,39 @@ pub fn evaluate_feedback(
                 return FeedbackResult { address, value, color };
             }
 
+            // Slicer preset overlay: when deck is in slicer mode, hot_cue_set
+            // pads show slicer preset state instead (assigned/active with pulsing)
+            if mapping.state == "deck.hot_cue_set" {
+                let deck_idx = resolve_feedback_deck(mapping, deck_target);
+                let deck_state = &state.decks[deck_idx];
+                if deck_state.action_mode == ActionMode::Slicer {
+                    let slot = mapping.params.get("slot")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as u8;
+                    let is_assigned = (deck_state.slicer_presets_assigned & (1 << slot)) != 0;
+                    let is_active = deck_state.slicer_selected_preset == slot;
+
+                    let (value, color) = if is_active && is_assigned {
+                        // Active preset: pulse between on and off colors
+                        let t = pulse_brightness();
+                        let on = mapping.on_color.unwrap_or([0, 127, 0]);
+                        let off = mapping.off_color.unwrap_or([20, 20, 20]);
+                        let r = (off[0] as f32 + (on[0] as f32 - off[0] as f32) * t) as u8;
+                        let g = (off[1] as f32 + (on[1] as f32 - off[1] as f32) * t) as u8;
+                        let b = (off[2] as f32 + (on[2] as f32 - off[2] as f32) * t) as u8;
+                        let v = (mapping.off_value as f32 + (mapping.on_value as f32 - mapping.off_value as f32) * t) as u8;
+                        (v, Some([r, g, b]))
+                    } else if is_assigned {
+                        // Assigned but not active: steady on
+                        (mapping.on_value, mapping.on_color)
+                    } else {
+                        // No preset: off
+                        (mapping.off_value, mapping.off_color)
+                    };
+                    return FeedbackResult { address, value, color };
+                }
+            }
+
             let active = evaluate_state(mapping, state, deck_target);
             let (value, color) = if active {
                 (mapping.on_value, mapping.on_color)
@@ -110,20 +160,23 @@ pub fn evaluate_feedback(
         .collect()
 }
 
+/// Resolve deck index from a feedback mapping (physical_deck → layer-resolved, or direct deck_index)
+fn resolve_feedback_deck(mapping: &FeedbackMapping, deck_target: &DeckTargetState) -> usize {
+    let deck_idx = if let Some(physical_deck) = mapping.physical_deck {
+        deck_target.resolve_deck(physical_deck)
+    } else {
+        mapping.deck_index.unwrap_or(0)
+    };
+    deck_idx.min(3)
+}
+
 /// Evaluate a single state condition
 fn evaluate_state(
     mapping: &FeedbackMapping,
     state: &FeedbackState,
     deck_target: &DeckTargetState,
 ) -> bool {
-    // Determine which deck to check
-    let deck_idx = if let Some(physical_deck) = mapping.physical_deck {
-        deck_target.resolve_deck(physical_deck)
-    } else {
-        mapping.deck_index.unwrap_or(0)
-    };
-
-    let deck_idx = deck_idx.min(3);
+    let deck_idx = resolve_feedback_deck(mapping, deck_target);
     let deck_state = &state.decks[deck_idx];
 
     match mapping.state.as_str() {
