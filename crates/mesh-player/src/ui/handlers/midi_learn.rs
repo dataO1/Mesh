@@ -4,7 +4,7 @@
 
 use iced::Task;
 
-use mesh_midi::MidiController;
+use mesh_midi::ControllerManager;
 use crate::ui::app::MeshApp;
 use crate::ui::message::Message;
 use crate::ui::midi_learn::MidiLearnMessage;
@@ -61,10 +61,10 @@ pub fn handle(app: &mut MeshApp, learn_msg: MidiLearnMessage) -> Task<Message> {
 
                     // Reload MIDI controller with new config
                     // Drop old controller first to release the port
-                    app.midi_controller = None;
+                    app.controller = None;
 
                     // Create new controller with fresh config
-                    match MidiController::new_with_options(None, true) {
+                    match ControllerManager::new_with_options(None, true) {
                         Ok(controller) => {
                             if controller.is_connected() {
                                 log::info!("MIDI: Reloaded controller with new config");
@@ -72,7 +72,7 @@ pub fn handle(app: &mut MeshApp, learn_msg: MidiLearnMessage) -> Task<Message> {
                             } else {
                                 app.status = "MIDI config saved (no device connected)".to_string();
                             }
-                            app.midi_controller = Some(controller);
+                            app.controller = Some(controller);
                         }
                         Err(e) => {
                             log::warn!("MIDI: Failed to reload controller: {}", e);

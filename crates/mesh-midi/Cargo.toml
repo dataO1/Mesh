@@ -9,6 +9,9 @@ description = "MIDI controller support for mesh DJ application"
 midir = "0.10"
 midly = "0.5"
 
+# HID device I/O
+hidapi = { version = "2.6", default-features = false, features = ["linux-static-hidraw"] }
+
 # Async-capable channel for callback → app bridge
 flume = "0.11"
 

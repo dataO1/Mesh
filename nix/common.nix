@@ -82,6 +82,9 @@ let
     vulkan-loader
     libGL
 
+    # HID device support (hidapi links libudev for device enumeration)
+    systemdLibs  # provides libudev.so
+
     # Misc
     openssl
   ];
@@ -92,6 +95,8 @@ let
     # X11 development files for baseview (CLAP plugin GUI hosting)
     xorg.libX11.dev
     xorg.libxcb.dev
+    # HID device support (hidapi needs libudev.h and libudev.pc)
+    systemdLibs.dev
     pkg-config
   ];
 

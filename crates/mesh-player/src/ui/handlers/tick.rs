@@ -10,7 +10,7 @@
 use iced::Task;
 
 use mesh_widgets::{PeaksComputeRequest, ZoomedViewMode};
-use crate::ui::app::{MeshApp, convert_midi_event_to_captured};
+use crate::ui::app::{MeshApp, convert_midi_event_to_captured, convert_hid_event_to_captured};
 use crate::ui::message::Message;
 use crate::ui::midi_learn::{LearnPhase, SetupStep};
 
@@ -20,9 +20,9 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
     // MIDI messages are processed at 60fps, providing ~16ms latency
     // Collect first to release borrow before calling handle_midi_message
     let midi_messages: Vec<_> = app
-        .midi_controller
+        .controller
         .as_ref()
-        .map(|m| m.drain().collect())
+        .map(|m| m.drain())
         .unwrap_or_default();
 
     // Collect Tasks from MIDI message handling (most return Task::none, but scroll needs it)
@@ -52,7 +52,7 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
         };
 
         if needs_capture {
-            if let Some(ref controller) = app.midi_controller {
+            if let Some(ref controller) = app.controller {
                 // Check if we're in hardware detection mode (sampling in progress)
                 let sampling_active = app.midi_learn.detection_buffer.is_some();
 
@@ -121,6 +121,67 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
                 // Check if detection timed out (1 second elapsed)
                 if app.midi_learn.is_detection_complete() {
                     app.midi_learn.finalize_mapping();
+                }
+
+                // HID event capture for learn mode
+                // HID controls have known hardware types from ControlDescriptor,
+                // so they skip the MidiSampleBuffer detection and finalize immediately.
+                if !sampling_active {
+                    for hid_event in controller.drain_hid_events() {
+                        let descriptor = controller.hid_descriptor_for(&hid_event.address);
+                        let device_name = controller.first_hid_device_name().unwrap_or("HID Device");
+                        let captured = convert_hid_event_to_captured(
+                            &hid_event,
+                            descriptor,
+                            device_name,
+                        );
+
+                        // Capture device name for HID
+                        if app.midi_learn.captured_port_name.is_none() {
+                            if let Some(ref name) = captured.source_device {
+                                log::info!("Learn: Captured HID source device '{}'", name);
+                                app.midi_learn.captured_port_name = Some(name.to_string());
+                            }
+                        }
+
+                        log::info!("[HID Learn] Captured: {}", captured.display());
+                        app.midi_learn.last_captured = Some(captured.clone());
+
+                        if !app.midi_learn.should_capture(&captured) {
+                            continue;
+                        }
+
+                        log::info!("[HID Learn] Accepted: {} (phase={:?})", captured.display(), app.midi_learn.phase);
+                        app.midi_learn.mark_captured();
+
+                        if app.midi_learn.phase == LearnPhase::Setup {
+                            match app.midi_learn.setup_step {
+                                SetupStep::ShiftButtonLeft => {
+                                    app.midi_learn.shift_mapping_left = Some(captured);
+                                }
+                                SetupStep::ShiftButtonRight => {
+                                    app.midi_learn.shift_mapping_right = Some(captured);
+                                }
+                                SetupStep::ToggleButtonLeft => {
+                                    app.midi_learn.toggle_mapping_left = Some(captured);
+                                }
+                                SetupStep::ToggleButtonRight => {
+                                    app.midi_learn.toggle_mapping_right = Some(captured);
+                                }
+                                _ => {}
+                            }
+                            app.midi_learn.advance();
+                        } else {
+                            // HID events go through record_mapping which finalizes
+                            // immediately if hardware_type is known
+                            app.midi_learn.record_mapping(captured);
+                        }
+
+                        break; // One capture per tick
+                    }
+                } else {
+                    // Sampling active (MIDI detection in progress) — drain HID to prevent overflow
+                    for _hid_event in controller.drain_hid_events() {}
                 }
             }
         }
@@ -368,13 +429,31 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
 
     // Update MIDI LED feedback (send state to controller LEDs)
     // Only runs if controller has output connection and feedback mappings
-    if let Some(ref mut controller) = app.midi_controller {
+    if let Some(ref mut controller) = app.controller {
         let mut feedback = mesh_midi::FeedbackState::default();
+
+        // Compute beat phase from master deck's playhead + beatgrid
+        if let Some(ref atomics) = app.deck_atomics {
+            let global_bpm = app.domain.global_bpm();
+            if global_bpm > 0.0 {
+                // Find master deck, or fall back to deck 0
+                let master_idx = (0..4).find(|&i| atomics[i].is_master()).unwrap_or(0);
+                let position = atomics[master_idx].position() as f64;
+                let first_beat = app.deck_views[master_idx].first_beat_sample() as f64;
+                let samples_per_beat = 48000.0 * 60.0 / global_bpm;
+                // Beat phase: how far through the current beat (0.0-1.0)
+                // Halve the rate for fast tempos (>150 BPM) to keep the pulse comfortable
+                let effective_spb = if global_bpm > 150.0 { samples_per_beat * 2.0 } else { samples_per_beat };
+                let offset = (position - first_beat).rem_euclid(effective_spb);
+                feedback.beat_phase = (offset / effective_spb) as f32;
+            }
+        }
 
         for deck_idx in 0..4 {
             // Get play state and loop active from atomics
             if let Some(ref atomics) = app.deck_atomics {
                 feedback.decks[deck_idx].is_playing = atomics[deck_idx].is_playing();
+                feedback.decks[deck_idx].is_cueing = atomics[deck_idx].is_cueing();
                 feedback.decks[deck_idx].loop_active = atomics[deck_idx].loop_active();
                 feedback.decks[deck_idx].key_match_enabled =
                     atomics[deck_idx].key_match_enabled.load(std::sync::atomic::Ordering::Relaxed);
@@ -399,6 +478,15 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
                 ActionButtonMode::HotCue => mesh_midi::ActionMode::HotCue,
                 ActionButtonMode::Slicer => mesh_midi::ActionMode::Slicer,
             };
+
+            // Slicer preset assignment bitmap and selected preset
+            feedback.decks[deck_idx].slicer_presets_assigned = app.slice_editor.presets
+                .iter()
+                .enumerate()
+                .fold(0u8, |acc, (i, p)| {
+                    if p.stems.iter().any(|s| s.is_some()) { acc | (1 << i) } else { acc }
+                });
+            feedback.decks[deck_idx].slicer_selected_preset = app.slice_editor.selected_preset as u8;
 
             // Get mixer cue (PFL) state
             feedback.mixer[deck_idx].cue_enabled = app.mixer_view.cue_enabled(deck_idx);

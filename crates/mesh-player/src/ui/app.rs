@@ -26,7 +26,7 @@ use crate::config::{self, PlayerConfig};
 use crate::domain::MeshDomain;
 use crate::plugin_gui::PluginGuiManager;
 
-use mesh_midi::{MidiController, MidiMessage as MidiMsg, MidiInputEvent, DeckAction as MidiDeckAction, MixerAction as MidiMixerAction, BrowserAction as MidiBrowserAction};
+use mesh_midi::{ControllerManager, MidiMessage as MidiMsg, MidiInputEvent, DeckAction as MidiDeckAction, MixerAction as MidiMixerAction, BrowserAction as MidiBrowserAction};
 use mesh_core::engine::{DeckAtomics, LinkedStemAtomics, SlicerAtomics};
 use mesh_core::types::NUM_DECKS;
 use mesh_widgets::{mpsc_subscription, multiband_editor, MultibandEditorState, SliceEditorState};
@@ -74,8 +74,8 @@ pub struct MeshApp {
     pub(crate) config_path: PathBuf,
     /// Settings modal state
     pub(crate) settings: SettingsState,
-    /// MIDI controller (optional - works without MIDI)
-    pub(crate) midi_controller: Option<MidiController>,
+    /// Controller manager (MIDI + HID, optional - works without controllers)
+    pub(crate) controller: Option<ControllerManager>,
     /// MIDI learn mode state
     pub(crate) midi_learn: MidiLearnState,
     /// UI display mode (performance vs mapping)
@@ -137,8 +137,8 @@ impl MeshApp {
         // Initialize MIDI controller
         // In mapping mode: connect to ALL available ports (for device discovery)
         // In normal mode: connect only to devices matching config (with raw capture for live learning)
-        let midi_controller = if mapping_mode {
-            match MidiController::new_for_learn_mode() {
+        let controller = if mapping_mode {
+            match ControllerManager::new_for_learn_mode() {
                 Ok(controller) => {
                     if controller.is_connected() {
                         log::info!(
@@ -156,7 +156,7 @@ impl MeshApp {
                 }
             }
         } else {
-            match MidiController::new_with_options(None, true) {
+            match ControllerManager::new_with_options(None, true) {
                 Ok(controller) => {
                     if controller.is_connected() {
                         log::info!("MIDI controller connected (raw capture enabled)");
@@ -245,7 +245,7 @@ impl MeshApp {
             config,
             config_path,
             settings,
-            midi_controller,
+            controller,
             midi_learn: MidiLearnState::new(),
             app_mode: if mapping_mode { AppMode::Mapping } else { AppMode::Performance },
             stem_link_state: StemLinkState::Idle,
@@ -513,7 +513,7 @@ impl MeshApp {
                     MidiDeckAction::Sync => None, // TODO: Add sync support
                     MidiDeckAction::HotCuePress { slot } => {
                         // Check pad mode source to determine routing
-                        let pad_mode_source = self.midi_controller
+                        let pad_mode_source = self.controller
                             .as_ref()
                             .map(|c| c.pad_mode_source())
                             .unwrap_or_default();
@@ -525,13 +525,13 @@ impl MeshApp {
                             // App-driven: check current action mode
                             match self.deck_views[deck].action_mode() {
                                 super::deck_view::ActionButtonMode::HotCue => Some(DeckMessage::HotCuePressed(slot)),
-                                super::deck_view::ActionButtonMode::Slicer => Some(DeckMessage::SlicerTrigger(slot)),
+                                super::deck_view::ActionButtonMode::Slicer => Some(DeckMessage::SlicerPresetSelect(slot)),
                             }
                         }
                     }
                     MidiDeckAction::HotCueRelease { slot } => {
                         // Check pad mode source for release handling
-                        let pad_mode_source = self.midi_controller
+                        let pad_mode_source = self.controller
                             .as_ref()
                             .map(|c| c.pad_mode_source())
                             .unwrap_or_default();
@@ -588,10 +588,21 @@ impl MeshApp {
                     MidiDeckAction::ToggleSlip => Some(DeckMessage::ToggleSlip),
                     MidiDeckAction::ToggleKeyMatch => Some(DeckMessage::ToggleKeyMatch),
                     MidiDeckAction::LoadSelected => {
-                        // Load currently selected track in browser to this deck
+                        // If a track is selected, load it to this deck
                         if let Some(track_path) = self.collection_browser.get_selected_track_path() {
                             let _ = self.update(Message::LoadTrack(deck, track_path.to_string_lossy().to_string()));
+                        } else {
+                            // No track selected — enter the selected folder/playlist
+                            let _ = self.update(Message::CollectionBrowser(
+                                CollectionBrowserMessage::SelectCurrent,
+                            ));
                         }
+                        None
+                    }
+                    MidiDeckAction::BrowseBack => {
+                        let _ = self.update(Message::CollectionBrowser(
+                            CollectionBrowserMessage::Back,
+                        ));
                         None
                     }
                     MidiDeckAction::Seek { .. } | MidiDeckAction::Nudge { .. } => None, // TODO
@@ -688,7 +699,7 @@ impl MeshApp {
 
             MidiMsg::ShiftChanged { held, physical_deck } => {
                 // Per-deck shift: update only the active virtual deck for this physical deck
-                if let Some(ref midi) = self.midi_controller {
+                if let Some(ref midi) = self.controller {
                     let vd = midi.resolve_deck(physical_deck);
                     if vd < self.deck_views.len() {
                         self.deck_views[vd].set_shift_held(held);
@@ -705,7 +716,7 @@ impl MeshApp {
     /// Sets `midi_active` and `is_secondary_layer` on each deck view
     /// so the UI can color-code deck labels by active layer.
     pub(crate) fn update_layer_indicators(&mut self) {
-        if let Some(ref midi) = self.midi_controller {
+        if let Some(ref midi) = self.controller {
             if midi.is_layer_mode() {
                 // For each physical deck (0=left, 1=right), find which virtual deck it targets
                 for physical in 0..2 {
@@ -1138,28 +1149,46 @@ impl MeshApp {
 
 // Note: MeshApp no longer implements Default as it requires a DatabaseService
 
-/// Convert a raw MidiInputEvent to CapturedMidiEvent for learn mode
-pub(crate) fn convert_midi_event_to_captured(event: &MidiInputEvent) -> super::midi_learn::CapturedMidiEvent {
-    use super::midi_learn::CapturedMidiEvent;
+/// Convert a raw MidiInputEvent to CapturedEvent for learn mode
+pub(crate) fn convert_midi_event_to_captured(event: &MidiInputEvent) -> super::midi_learn::CapturedEvent {
+    use super::midi_learn::CapturedEvent;
+    use mesh_midi::{ControlAddress, MidiAddress};
 
-    match event {
-        MidiInputEvent::NoteOn { channel, note, velocity } => CapturedMidiEvent {
-            channel: *channel,
-            number: *note,
-            value: *velocity,
-            is_note: true,
-        },
-        MidiInputEvent::NoteOff { channel, note, velocity } => CapturedMidiEvent {
-            channel: *channel,
-            number: *note,
-            value: *velocity,
-            is_note: true,
-        },
-        MidiInputEvent::ControlChange { channel, cc, value } => CapturedMidiEvent {
-            channel: *channel,
-            number: *cc,
-            value: *value,
-            is_note: false,
-        },
+    let (address, value) = match event {
+        MidiInputEvent::NoteOn { channel, note, velocity } => (
+            ControlAddress::Midi(MidiAddress::Note { channel: *channel, note: *note }),
+            *velocity,
+        ),
+        MidiInputEvent::NoteOff { channel, note, velocity } => (
+            ControlAddress::Midi(MidiAddress::Note { channel: *channel, note: *note }),
+            *velocity,
+        ),
+        MidiInputEvent::ControlChange { channel, cc, value } => (
+            ControlAddress::Midi(MidiAddress::CC { channel: *channel, cc: *cc }),
+            *value,
+        ),
+    };
+
+    CapturedEvent {
+        address,
+        value,
+        hardware_type: None, // MIDI: needs detection via MidiSampleBuffer
+        source_device: None, // Source captured at port level in tick.rs
+    }
+}
+
+/// Convert a HID ControlEvent to CapturedEvent for learn mode
+pub(crate) fn convert_hid_event_to_captured(
+    event: &mesh_midi::ControlEvent,
+    descriptor: Option<&mesh_midi::ControlDescriptor>,
+    device_name: &str,
+) -> super::midi_learn::CapturedEvent {
+    use super::midi_learn::CapturedEvent;
+
+    CapturedEvent {
+        address: event.address.clone(),
+        value: event.value.as_midi_value(),
+        hardware_type: descriptor.map(|d| d.control_type),
+        source_device: Some(device_name.to_string()),
     }
 }

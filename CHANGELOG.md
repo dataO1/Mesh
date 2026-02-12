@@ -30,7 +30,32 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 ## [Unreleased]
 
+---
+
+## [0.6.16] - 2026-02-12
+
 ### Added
+
+- **HID controller support** — Native USB HID device support alongside MIDI,
+  starting with the Native Instruments Traktor Kontrol F1. HID devices are
+  auto-discovered via hidapi, with dedicated I/O threads for low-latency input
+  parsing and LED/RGB feedback output. A protocol-agnostic abstraction layer
+  (`ControlEvent`, `ControlAddress`, `ControlValue`) allows the mapping engine,
+  feedback system, and learn mode to work identically for MIDI and HID devices.
+
+- **Multi-HID-device support** — Multiple identical HID devices (e.g., two
+  Kontrol F1s) are now independently addressable. Each device is identified by
+  its USB serial number (`device_id`), which is embedded into every
+  `ControlAddress::Hid` to produce distinct HashMap keys in the mapping engine.
+  Device profiles can target specific physical units via the new `hid_device_id`
+  config field, with automatic fallback to product-name matching for single-device
+  setups. MIDI learn captures the serial and writes it into the generated config.
+
+- **Kontrol F1 HID driver** — Full protocol implementation for the NI Kontrol F1:
+  16 RGB grid pads, 4 play buttons with LEDs, 9 function buttons (8 with LEDs),
+  4 analog knobs, 4 analog faders, 1 rotary encoder with push, and a 4-digit
+  7-segment display. Input uses delta detection with analog deadzone filtering;
+  output uses BRG byte-order RGB and brightness-scaled single-color LEDs.
 
 - **Per-physical-deck MIDI mapping** — Complete rework of MIDI controller mapping
   for 2-deck controllers with layer toggle controlling 4 virtual decks:
