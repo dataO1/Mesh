@@ -602,7 +602,7 @@ impl SimilarityQuery {
             ?[track_id, path, folder_path, name, artist, bpm, original_bpm, key,
               duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path, dist] :=
                 *audio_features{track_id: $track_id, vec: query_vec},
-                ~audio_features:similarity_index{track_id | query: query_vec, k: $k, ef: 50 | dist},
+                ~audio_features:similarity_index{track_id | query: query_vec, k: $k, ef: 50, bind_distance: dist},
                 track_id != $track_id,
                 *tracks{id: track_id, path, folder_path, name, artist, bpm, original_bpm, key,
                         duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
