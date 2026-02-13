@@ -104,6 +104,7 @@ impl MlAnalyzer {
         if patches.is_empty() {
             return Err("Audio too short for ML analysis".to_string());
         }
+        log::debug!("ML: running EffNet on {} patches ({} mel frames)", patches.len(), mel.frames.len());
 
         // Run EffNet on each patch — get both genre predictions and embeddings
         let mut all_genre_preds: Vec<Vec<f32>> = Vec::new();
@@ -173,17 +174,15 @@ impl MlAnalyzer {
 
         // EffNet has 2 outputs: [0]=genre_preds [n,400], [1]=embedding [n,1280]
         let mut output_iter = outputs.iter();
-        let (genre_name, genre_value) = output_iter.next()
+        let (_, genre_value) = output_iter.next()
             .ok_or("EffNet produced no output")?;
-        log::debug!("EffNet genre output: {}", genre_name);
 
         let (_shape, genre_data) = genre_value.try_extract_tensor::<f32>()
             .map_err(|e| format!("EffNet genre extraction error: {}", e))?;
         let genre_preds = genre_data.to_vec();
 
         // Second output is the embedding (fall back to genre if only one output)
-        let embedding = if let Some((emb_name, emb_value)) = output_iter.next() {
-            log::debug!("EffNet embedding output: {}", emb_name);
+        let embedding = if let Some((_, emb_value)) = output_iter.next() {
             let (_shape, emb_data) = emb_value.try_extract_tensor::<f32>()
                 .map_err(|e| format!("EffNet embedding extraction error: {}", e))?;
             emb_data.to_vec()
