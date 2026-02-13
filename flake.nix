@@ -76,6 +76,11 @@
           inherit pkgs demucs-onnx;
         };
 
+        # ML classification head conversion (Essentia TF → ONNX)
+        convertMlModelApp = import ./nix/apps/convert-ml-model.nix {
+          inherit pkgs;
+        };
+
         # Build nn~ Pure Data external for neural audio effects
         buildNnTildeApp = import ./nix/apps/build-nn-tilde.nix {
           inherit pkgs;
@@ -129,6 +134,10 @@
           convert-model = {
             type = "app";
             program = "${convertModelApp}/bin/convert-model";
+          };
+          convert-ml-model = {
+            type = "app";
+            program = "${convertMlModelApp}/bin/convert-ml-model";
           };
           build-nn-tilde = {
             type = "app";
