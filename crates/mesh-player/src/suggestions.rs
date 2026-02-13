@@ -357,59 +357,35 @@ fn transition_type_label(tt: TransitionType) -> &'static str {
 
 /// Generate human-readable reason tags from the scoring breakdown.
 ///
-/// Each tag gets its own directional arrow based on the per-track relationship:
-/// - **Key**: ↑ if the transition raises musical energy (AdjacentUp, EnergyBoost,
-///   MoodLift, DiagonalUp, SemitoneUp), ↓ if it cools, ═ if neutral (SameKey)
-/// - **BPM**: ↑ if candidate BPM > seed, ↓ if lower, ═ if close (<2% diff)
-/// - **Energy**: ↑ if candidate louder than seeds, ↓ if quieter
+/// Produces a single key-relationship tag with a directional arrow indicating
+/// the Camelot wheel movement direction:
+/// - **▲** = transition raises musical tension (clockwise on Camelot wheel)
+/// - **▼** = transition cools musical tension (counter-clockwise)
+/// - **━** = same key (no movement)
 fn generate_reason_tags(
     transition_type: TransitionType,
     key_score: f32,
-    bpm_penalty: f32,
-    bpm_diff: f32,
-    lufs_diff: f32,
-    energy_bias: f32,
 ) -> Vec<(String, Option<String>)> {
-    let mut tags = Vec::new();
-
     // Key direction: derived from the transition type itself
     let key_dir = match transition_type {
-        TransitionType::SameKey => "═",
+        TransitionType::SameKey => "\u{2501}",  // ━ (heavy horizontal bar)
         TransitionType::AdjacentUp | TransitionType::EnergyBoost
         | TransitionType::MoodLift | TransitionType::DiagonalUp
-        | TransitionType::SemitoneUp => "↑",
+        | TransitionType::SemitoneUp => "\u{25B2}",  // ▲
         TransitionType::AdjacentDown | TransitionType::EnergyCool
         | TransitionType::MoodDarken | TransitionType::DiagonalDown
-        | TransitionType::SemitoneDown => "↓",
-        TransitionType::Tritone => "↓",
-        TransitionType::FarStep(s) => if s > 0 { "↑" } else { "↓" },
-        TransitionType::FarCross(s) => if s > 0 { "↑" } else { "↓" },
+        | TransitionType::SemitoneDown => "\u{25BC}",  // ▼
+        TransitionType::Tritone => "\u{25BC}",
+        TransitionType::FarStep(s) => if s > 0 { "\u{25B2}" } else { "\u{25BC}" },
+        TransitionType::FarCross(s) => if s > 0 { "\u{25B2}" } else { "\u{25BC}" },
     };
 
-    // Key tag — always show, most important signal
     let key_label = transition_type_label(transition_type);
     let key_color = if key_score >= 0.7 { "#2d8a4e" }      // green = great
                     else if key_score >= 0.4 { "#c49a2a" }  // amber = ok
                     else { "#a63d40" };                       // red = risky
-    tags.push((format!("{} {}", key_label, key_dir), Some(key_color.to_string())));
 
-    // BPM tag — direction from actual BPM difference
-    if bpm_penalty < 0.15 {
-        tags.push(("BPM ═".to_string(), Some("#2d8a4e".to_string())));
-    } else if bpm_penalty < 0.5 {
-        let bpm_dir = if bpm_diff > 1.0 { "↑" } else if bpm_diff < -1.0 { "↓" } else { "═" };
-        tags.push((format!("BPM {}", bpm_dir), Some("#c49a2a".to_string())));
-    }
-
-    // Energy/LUFS tag — direction from actual loudness difference
-    if energy_bias.abs() > 0.2 {
-        let energy_dir = if lufs_diff > 0.5 { "↑" } else if lufs_diff < -0.5 { "↓" } else { "═" };
-        let lufs_aligned = lufs_diff * energy_bias > 0.0; // louder when raising, quieter when dropping
-        let lufs_color = if lufs_aligned { "#2d8a4e" } else { "#c49a2a" };
-        tags.push((format!("Energy {}", energy_dir), Some(lufs_color.to_string())));
-    }
-
-    tags
+    vec![(format!("{} {}", key_dir, key_label), Some(key_color.to_string()))]
 }
 
 /// Query the database for track suggestions based on loaded deck seeds.
@@ -553,11 +529,8 @@ pub fn query_suggestions(
 
             // LUFS direction bonus (negative = better when aligned)
             let lufs_bonus = lufs_direction_bonus(track.lufs, avg_seed_lufs, energy_bias);
-            // Signed LUFS difference for per-track reason tags
-            let lufs_diff = track.lufs.map(|l| l - avg_seed_lufs).unwrap_or(0.0);
 
-            // BPM: signed difference and normalized penalty
-            let bpm_diff = track.bpm.map(|b| (b - avg_seed_bpm) as f32).unwrap_or(0.0);
+            // BPM penalty: normalized distance (10 BPM diff → 1.0 penalty)
             let bpm_penalty = track
                 .bpm
                 .map(|b| {
@@ -571,7 +544,7 @@ pub fn query_suggestions(
                 + 0.15 * lufs_bonus
                 + 0.15 * bpm_penalty;
 
-            let reason_tags = generate_reason_tags(best_tt, best_key_score, bpm_penalty, bpm_diff, lufs_diff, energy_bias);
+            let reason_tags = generate_reason_tags(best_tt, best_key_score);
 
             Some(SuggestedTrack { track, score, reason_tags })
         })

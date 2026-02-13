@@ -773,9 +773,11 @@ where
         let pills: Vec<Element<'a, Message>> = track.tags.iter().map(|tag| {
             let bg = tag.color.unwrap_or(Color::from_rgb8(80, 80, 80));
             container(
-                text(&tag.label).size(9)
+                text(&tag.label)
+                    .size(10)
+                    .wrapping(iced::widget::text::Wrapping::None)
             )
-            .padding(Padding::from([1, 4]))
+            .padding(Padding::from([2, 5]))
             .style(move |_theme: &Theme| container::Style {
                 background: Some(Background::Color(bg)),
                 border: Border { radius: 3.0.into(), ..Default::default() },
@@ -785,7 +787,7 @@ where
             .into()
         }).collect();
 
-        return container(row(pills).spacing(2))
+        return container(row(pills).spacing(3))
             .width(column.width())
             .clip(true)
             .into();

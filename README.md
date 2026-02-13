@@ -219,41 +219,39 @@ When you toggle suggestions on in the collection browser, Mesh analyzes the trac
 
 ### Reason Tags
 
-Each suggestion row shows small colored pills describing the musical relationship to your currently playing tracks:
+Each suggestion row shows a colored pill describing the key relationship to your currently playing tracks. The arrow indicates the direction of movement on the Camelot wheel:
 
 | Tag | Meaning |
 |-----|---------|
-| **Same Key ═** | Candidate is in the same key — maximum harmonic safety |
-| **Adjacent ↑** | One step clockwise on the Camelot wheel — lifts energy while staying harmonically safe |
-| **Adjacent ↓** | One step counter-clockwise — cools energy, still safe |
-| **Diagonal ↑** | Cross-mode step up (e.g., 8B→9A) — shifts mood while raising energy |
-| **Diagonal ↓** | Cross-mode step down (e.g., 8A→7B) — shifts mood while cooling |
-| **Boost ↑** | Two steps clockwise (+2) — noticeable energy increase, fewer shared notes |
-| **Cool ↓** | Two steps counter-clockwise (-2) — noticeable energy decrease |
-| **Mood Lift ↑** | Minor→major at the same Camelot position (e.g., 8A→8B = Am→C) — brightens mood |
-| **Darken ↓** | Major→minor at the same position (e.g., 8B→8A = C→Am) — darkens mood |
-| **Semitone ↑** | Classic pop key change (+7 on Camelot = one semitone up in pitch) — dramatic lift |
-| **Semitone ↓** | One semitone down (-7 on Camelot) — dramatic drop |
-| **Far ↑/↓** | 3-5 steps on the Camelot wheel — risky but available at extreme energy settings |
-| **Tritone ↓** | 6 steps (maximum dissonance) — only appears at extreme energy drop settings |
+| **━ Same Key** | Same key — maximum harmonic safety |
+| **▲ Adjacent** | One step clockwise on the Camelot wheel — lifts energy while staying harmonically safe |
+| **▼ Adjacent** | One step counter-clockwise — cools energy, still safe |
+| **▲ Diagonal** | Cross-mode step up (e.g., 8B→9A) — shifts mood while raising energy |
+| **▼ Diagonal** | Cross-mode step down (e.g., 8A→7B) — shifts mood while cooling |
+| **▲ Boost** | Two steps clockwise (+2) — noticeable energy increase, fewer shared notes |
+| **▼ Cool** | Two steps counter-clockwise (-2) — noticeable energy decrease |
+| **▲ Mood Lift** | Minor→major at the same Camelot position (e.g., 8A→8B = Am→C) — brightens mood |
+| **▼ Darken** | Major→minor at the same position (e.g., 8B→8A = C→Am) — darkens mood |
+| **▲ Semitone** | Classic pop key change (+7 on Camelot = one semitone up in pitch) — dramatic lift |
+| **▼ Semitone** | One semitone down (-7 on Camelot) — dramatic drop |
+| **▲/▼ Far** | 3-5 steps on the Camelot wheel — risky but available at extreme energy settings |
+| **▼ Tritone** | 6 steps (maximum dissonance) — only appears at extreme energy drop settings |
 
-### Arrow Symbols
+### Symbols
 
-Each tag has its own directional arrow based on the **per-track relationship**, not a global setting:
-
-- **Key arrows** (↑/↓/═) — Derived from the Camelot transition direction. ↑ means the transition moves clockwise (raises musical tension), ↓ means counter-clockwise (releases tension), ═ means same key.
-- **BPM arrows** — ↑ if the candidate's BPM is higher than your current tracks, ↓ if lower, ═ if within ~1 BPM.
-- **Energy arrows** — ↑ if the candidate is louder (higher LUFS) than your current tracks, ↓ if quieter. Only shown when the energy direction fader is active.
+- **▲** — Transition moves clockwise on the Camelot wheel (raises musical tension)
+- **▼** — Transition moves counter-clockwise (releases musical tension)
+- **━** — Same key (no movement)
 
 ### Color Coding
 
-Tag pill colors use a traffic-light system based on compatibility:
+Tag pill colors use a traffic-light system based on harmonic compatibility:
 
 | Color | Meaning |
 |-------|---------|
-| **Green** | Excellent match (key score ≥ 0.7, BPM close, loudness aligned with energy intent) |
-| **Amber** | Acceptable match (moderate compatibility or BPM difference) |
-| **Red** | Risky match (low key compatibility — use with caution) |
+| **Green** | Excellent match (key score ≥ 0.7) — harmonically safe transition |
+| **Amber** | Acceptable match (key score ≥ 0.4) — use with care |
+| **Red** | Risky match (key score < 0.4) — clashing keys, dramatic effect only |
 
 ### Energy Direction Fader
 
