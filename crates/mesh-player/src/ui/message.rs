@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use mesh_widgets::{MultibandEditorMessage, PeaksComputeResult};
 
-use crate::config::{StemColorPalette, SuggestionMode};
+use crate::config::{StemColorPalette, KeyScoringModel};
 use crate::suggestions::SuggestedTrack;
 use super::collection_browser::CollectionBrowserMessage;
 use super::deck_view::DeckMessage;
@@ -39,8 +39,8 @@ pub enum SettingsMessage {
     UpdateTargetLufs(usize),
     /// Update draft show local collection
     UpdateShowLocalCollection(bool),
-    /// Update draft suggestion mode
-    UpdateSuggestionMode(SuggestionMode),
+    /// Update draft key scoring model
+    UpdateKeyScoringModel(KeyScoringModel),
     /// Update master device index
     UpdateMasterPair(usize),
     /// Update cue device index

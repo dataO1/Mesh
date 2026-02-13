@@ -1124,6 +1124,30 @@ devices:
     shift_action: null
     encoder_mode: null
     hardware_type: button
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: fader_1
+    action: deck.suggestion_energy
+    physical_deck: 0
+    deck_index: null
+    params: {}
+    behavior: continuous
+    shift_action: null
+    encoder_mode: null
+    hardware_type: fader
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: fader_1
+    action: deck.suggestion_energy
+    physical_deck: 1
+    deck_index: null
+    params: {}
+    behavior: continuous
+    shift_action: null
+    encoder_mode: null
+    hardware_type: fader
   feedback:
   - state: deck.is_playing
     physical_deck: 0

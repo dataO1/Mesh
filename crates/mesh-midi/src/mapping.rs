@@ -104,6 +104,9 @@ impl ActionRegistry {
         // FX macro knobs (per-deck)
         actions.insert("deck.fx_macro".to_string(), ActionInfo { deck_targetable: true, value_range: ControlRange::Unit });
 
+        // Suggestion energy direction (per-deck routed, controls global slider)
+        actions.insert("deck.suggestion_energy".to_string(), ActionInfo { deck_targetable: true, value_range: ControlRange::Unit });
+
         Self { actions }
     }
 
@@ -495,6 +498,15 @@ impl MappingEngine {
                 normalized.map(|v| MidiMessage::Deck {
                     deck,
                     action: DeckAction::SetFxMacro { macro_index: macro_idx, value: v },
+                })
+            }
+
+            // Suggestion energy direction (per-deck routed, controls global slider)
+            "deck.suggestion_energy" => {
+                let normalized = self.extract_continuous_value(event, action, mapping, None);
+                normalized.map(|v| MidiMessage::Deck {
+                    deck,
+                    action: DeckAction::SetSuggestionEnergy(v),
                 })
             }
 

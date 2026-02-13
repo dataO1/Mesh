@@ -49,6 +49,9 @@ Mesh also includes **built-in stem separation** — drop any MP3, FLAC, or WAV f
 - **Stem slicer** — Real-time remixing by rearranging slice playback order
 - **Effects** — DJ filter, delay, reverb, plus CLAP plugins and Pure Data patches with per-stem routing
 - **MIDI controller support** — Configure any controller with MIDI Learn wizard
+- **Smart suggestions** — AI-powered track recommendations based on what's currently loaded. Finds harmonically compatible tracks using audio fingerprint similarity, key matching, BPM proximity, and loudness alignment. An energy direction fader lets you steer suggestions toward higher-energy or cooler tracks. Choose between two key matching algorithms in Settings:
+  - **Camelot** — Classic DJ wheel with hand-tuned transition scores
+  - **Krumhansl** — Perceptual key distance based on music psychology research, better at rating cross-mode transitions (e.g., C major to C minor)
 - **Auto-gain** — Tracks are loudness-normalized so volumes are consistent
 
 ### Audio Quality
@@ -225,6 +228,7 @@ Install CLAP plugins from your distro's package manager or download from plugin 
 - [x] MIDI controller support with learn wizard
 - [x] USB export for portable performance
 - [x] Track similarity search (audio fingerprinting)
+- [x] Smart suggestions with energy direction control
 - [x] Auto-gain loudness normalization
 - [x] Master bus limiter and clipper (PA protection)
 - [x] Effects: filter, delay, reverb
@@ -236,7 +240,6 @@ Install CLAP plugins from your distro's package manager or download from plugin 
 ### Coming Soon
 
 - [ ] Session history and set reconstruction
-- [ ] Smart playlists based on energy/key
 - [ ] Beat grid analysis improvements (EDM-specific detection)
 - [ ] On-the-fly stem linking during performance
 - [ ] Slicer morph knob for preset banks

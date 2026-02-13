@@ -170,6 +170,9 @@ pub enum DeckAction {
         /// Normalized value (0.0-1.0)
         value: f32,
     },
+
+    /// Set suggestion energy direction (0.0-1.0)
+    SetSuggestionEnergy(f32),
 }
 
 /// Mixer actions

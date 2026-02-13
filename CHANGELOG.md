@@ -30,6 +30,28 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 ## [Unreleased]
 
+### Added
+
+- **Smart track suggestions** — The collection browser now recommends tracks
+  based on what's loaded across all 4 decks. Combines audio fingerprint
+  similarity (HNSW index), harmonic key compatibility, BPM proximity, and
+  loudness alignment into a unified score. Toggle suggestions on/off from the
+  browser toolbar.
+
+- **Energy direction fader** — A horizontal slider in the suggestions panel
+  steers recommendations toward higher-energy tracks (right) or cooler tracks
+  (left). At center, suggestions prioritize safe harmonic transitions. Moving
+  the fader unlocks progressively bolder key changes — energy boosts, semitone
+  lifts, and even tritone drops become available at extreme positions.
+
+- **Krumhansl key scoring model** — Alternative harmonic matching algorithm
+  based on the Krumhansl-Kessler probe-tone research (1982). Computes a 24×24
+  perceptual key distance matrix using Pearson correlations between pitch-class
+  profiles. Selectable in Settings → Display → Key Matching. Compared to the
+  default Camelot model, Krumhansl rates parallel-key transitions (e.g., C major
+  to C minor) significantly higher, matching real-world DJ experience where
+  parallel keys mix well despite being far apart on the Camelot wheel.
+
 ---
 
 ## [0.6.16] - 2026-02-12

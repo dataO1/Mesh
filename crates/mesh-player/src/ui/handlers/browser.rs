@@ -36,6 +36,14 @@ pub fn handle_browser(app: &mut MeshApp, browser_msg: CollectionBrowserMessage) 
             }
             return Task::none();
         }
+        CollectionBrowserMessage::SetEnergyDirection(value) => {
+            let changed = app.collection_browser.set_energy_direction(*value);
+            if changed && app.collection_browser.is_suggestions_enabled() {
+                app.collection_browser.set_suggestion_loading(true);
+                return trigger_suggestion_query(app);
+            }
+            return Task::none();
+        }
         _ => {}
     }
 
@@ -214,10 +222,11 @@ pub fn trigger_suggestion_query(app: &MeshApp) -> Task<Message> {
     }
 
     let db = app.domain.active_db_arc();
-    let mode = app.collection_browser.suggestion_mode();
+    let energy_direction = app.collection_browser.energy_direction();
+    let key_model = app.config.display.key_scoring_model;
 
     Task::perform(
-        async move { query_suggestions(&db, seed_paths, mode, 30, 50) },
+        async move { query_suggestions(&db, seed_paths, energy_direction, key_model, 30, 50) },
         |result| Message::SuggestionsReady(Arc::new(result)),
     )
 }

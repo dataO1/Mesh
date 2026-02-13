@@ -11,7 +11,7 @@
 //! - No drag-drop between playlists
 //! - No inline metadata editing
 
-use iced::widget::{button, column, container, row, text, Space};
+use iced::widget::{button, column, container, row, slider, text, Space};
 use iced::{Alignment, Background, Color, Element, Length};
 use mesh_core::db::DatabaseService;
 use mesh_core::playlist::{DatabaseStorage, NodeId, NodeKind, PlaylistNode, PlaylistStorage};
@@ -24,7 +24,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::config::SuggestionMode;
 use crate::suggestions::SuggestedTrack;
 
 /// State for the collection browser
@@ -51,14 +50,14 @@ pub struct CollectionBrowserState {
     active_usb_idx: Option<usize>,
     /// Whether smart suggestions mode is active
     suggestions_enabled: bool,
-    /// Current suggestion scoring mode
-    suggestion_mode: SuggestionMode,
     /// Suggested tracks for display (replaces normal tracks when enabled)
     suggestion_tracks: Vec<TrackRow<NodeId>>,
     /// Mapping from suggestion track IDs to file paths (for loading)
     suggestion_paths: HashMap<NodeId, PathBuf>,
     /// Whether a suggestion query is in progress
     suggestion_loading: bool,
+    /// Energy direction fader (0.0 = drop, 0.5 = maintain, 1.0 = peak)
+    energy_direction: f32,
 }
 
 /// Messages from the collection browser
@@ -80,6 +79,8 @@ pub enum CollectionBrowserMessage {
     ToggleSuggestions,
     /// Refresh suggestions (re-query with current seeds)
     RefreshSuggestions,
+    /// Set energy direction fader value (0.0-1.0)
+    SetEnergyDirection(f32),
 }
 
 impl CollectionBrowserState {
@@ -126,10 +127,10 @@ impl CollectionBrowserState {
             usb_storages: Vec::new(),
             active_usb_idx: None,
             suggestions_enabled: false,
-            suggestion_mode: SuggestionMode::default(),
             suggestion_tracks: Vec::new(),
             suggestion_paths: HashMap::new(),
             suggestion_loading: false,
+            energy_direction: 0.5,
         }
     }
 
@@ -440,7 +441,8 @@ impl CollectionBrowserState {
                 None
             }
             CollectionBrowserMessage::ToggleSuggestions
-            | CollectionBrowserMessage::RefreshSuggestions => {
+            | CollectionBrowserMessage::RefreshSuggestions
+            | CollectionBrowserMessage::SetEnergyDirection(_) => {
                 // Handled at app level in handlers/browser.rs (needs access to deck state)
                 None
             }
@@ -650,14 +652,18 @@ impl CollectionBrowserState {
             row![text("Select a track to load").size(11),].into()
         };
 
-        // Suggest toggle button
+        // Suggest toggle button + energy slider
         let suggest_btn = self.view_suggest_button();
 
-        let load_bar = container(
-            row![load_buttons, Space::new().width(Length::Fill), suggest_btn]
-                .spacing(8)
-                .align_y(Alignment::Center)
-        )
+        let mut header_row = row![load_buttons, Space::new().width(Length::Fill)]
+            .spacing(8)
+            .align_y(Alignment::Center);
+        if let Some(energy_slider) = self.view_energy_slider() {
+            header_row = header_row.push(energy_slider);
+            header_row = header_row.push(Space::new().width(4));
+        }
+        header_row = header_row.push(suggest_btn);
+        let load_bar = container(header_row)
             .padding([6, 10])
             .width(Length::Fill);
 
@@ -678,9 +684,14 @@ impl CollectionBrowserState {
             CollectionBrowserMessage::Browser,
         );
 
-        // Header with just the suggest button
+        // Header with energy slider + suggest button
         let suggest_btn = self.view_suggest_button();
-        let header = container(suggest_btn)
+        let mut header_row = row![].spacing(8).align_y(Alignment::Center);
+        if let Some(energy_slider) = self.view_energy_slider() {
+            header_row = header_row.push(energy_slider);
+        }
+        header_row = header_row.push(suggest_btn);
+        let header = container(header_row)
             .padding([4, 8])
             .width(Length::Fill);
 
@@ -711,6 +722,37 @@ impl CollectionBrowserState {
             .padding([4, 10])
             .style(style)
             .into()
+    }
+
+    /// Build the energy direction slider (only visible when suggestions are active)
+    fn view_energy_slider(&self) -> Option<Element<'_, CollectionBrowserMessage>> {
+        if !self.suggestions_enabled {
+            return None;
+        }
+
+        let label = match self.energy_direction {
+            d if d < 0.15 => "DROP",
+            d if d < 0.35 => "COOL",
+            d if d < 0.65 => "HOLD",
+            d if d < 0.85 => "RISE",
+            _ => "PEAK",
+        };
+
+        Some(
+            row![
+                text(label).size(9).width(Length::Fixed(30.0)),
+                slider(
+                    0.0..=1.0,
+                    self.energy_direction,
+                    CollectionBrowserMessage::SetEnergyDirection,
+                )
+                .step(0.01)
+                .width(80),
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center)
+            .into(),
+        )
     }
 
     /// Scroll through tree nodes (folders) when not viewing tracks
@@ -857,14 +899,17 @@ impl CollectionBrowserState {
         }
     }
 
-    /// Set the suggestion scoring mode
-    pub fn set_suggestion_mode(&mut self, mode: SuggestionMode) {
-        self.suggestion_mode = mode;
+    /// Get energy direction value
+    pub fn energy_direction(&self) -> f32 {
+        self.energy_direction
     }
 
-    /// Get the current suggestion mode
-    pub fn suggestion_mode(&self) -> SuggestionMode {
-        self.suggestion_mode
+    /// Set energy direction, returns true if changed significantly (>0.05 threshold for debounce)
+    pub fn set_energy_direction(&mut self, value: f32) -> bool {
+        let clamped = value.clamp(0.0, 1.0);
+        let changed = (clamped - self.energy_direction).abs() > 0.05;
+        self.energy_direction = clamped;
+        changed
     }
 
     /// Mark suggestion query as loading

@@ -63,8 +63,8 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             app.settings.draft_show_local_collection = enabled;
             Task::none()
         }
-        UpdateSuggestionMode(mode) => {
-            app.settings.draft_suggestion_mode = mode;
+        UpdateKeyScoringModel(model) => {
+            app.settings.draft_key_scoring_model = model;
             Task::none()
         }
         UpdateMasterPair(index) => {
@@ -87,7 +87,7 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             new_config.display.grid_bars = app.settings.draft_grid_bars;
             new_config.display.stem_color_palette = app.settings.draft_stem_color_palette;
             new_config.display.show_local_collection = app.settings.draft_show_local_collection;
-            new_config.display.suggestion_mode = app.settings.draft_suggestion_mode;
+            new_config.display.key_scoring_model = app.settings.draft_key_scoring_model;
             // Save global BPM from current state
             new_config.audio.global_bpm = app.domain.global_bpm();
             // Save phase sync setting
@@ -139,8 +139,7 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             let buffer_bars = new_config.slicer.validated_buffer_bars();
             app.domain.apply_slicer_buffer_bars_all(buffer_bars);
 
-            // Apply suggestion mode change to browser and refresh if active
-            app.collection_browser.set_suggestion_mode(app.settings.draft_suggestion_mode);
+            // Refresh suggestions if active (picks up any config changes)
             let suggest_task = if app.collection_browser.is_suggestions_enabled() {
                 app.collection_browser.set_suggestion_loading(true);
                 trigger_suggestion_query(app)
