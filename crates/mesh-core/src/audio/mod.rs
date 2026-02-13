@@ -43,7 +43,7 @@ mod device;
 mod error;
 
 // Platform-specific backends
-#[cfg(not(all(target_os = "linux", feature = "jack-backend")))]
+// CPAL is always compiled — serves as fallback when JACK is unavailable
 mod cpal_backend;
 
 #[cfg(all(target_os = "linux", feature = "jack-backend"))]

@@ -74,8 +74,7 @@ pub struct AudioSystemResult {
 ///
 /// Keeps the audio streams/client alive. Drop this to stop audio.
 pub enum AudioHandle {
-    /// CPAL-based handle (Windows/macOS/Linux fallback)
-    #[cfg(not(all(target_os = "linux", feature = "jack-backend")))]
+    /// CPAL-based handle (cross-platform, also JACK fallback on Linux)
     Cpal(super::cpal_backend::CpalAudioHandle),
 
     /// Native JACK handle (Linux with jack-backend feature)
@@ -87,7 +86,6 @@ impl AudioHandle {
     /// Get the sample rate of the audio system
     pub fn sample_rate(&self) -> u32 {
         match self {
-            #[cfg(not(all(target_os = "linux", feature = "jack-backend")))]
             AudioHandle::Cpal(h) => h.sample_rate(),
             #[cfg(all(target_os = "linux", feature = "jack-backend"))]
             AudioHandle::Jack(h) => h.sample_rate(),
@@ -97,7 +95,6 @@ impl AudioHandle {
     /// Get the actual buffer size in frames
     pub fn buffer_size(&self) -> u32 {
         match self {
-            #[cfg(not(all(target_os = "linux", feature = "jack-backend")))]
             AudioHandle::Cpal(h) => h.buffer_size(),
             #[cfg(all(target_os = "linux", feature = "jack-backend"))]
             AudioHandle::Jack(h) => h.buffer_size(),
@@ -107,7 +104,6 @@ impl AudioHandle {
     /// Get the audio latency in milliseconds
     pub fn latency_ms(&self) -> f32 {
         match self {
-            #[cfg(not(all(target_os = "linux", feature = "jack-backend")))]
             AudioHandle::Cpal(h) => h.latency_ms(),
             #[cfg(all(target_os = "linux", feature = "jack-backend"))]
             AudioHandle::Jack(h) => h.latency_ms(),
@@ -151,7 +147,7 @@ impl CommandSender {
 /// Start the audio system with the given configuration
 ///
 /// Automatically selects the appropriate backend:
-/// - **Linux with jack-backend feature**: Native JACK for pro-audio routing
+/// - **Linux with jack-backend feature**: Try JACK first, fall back to CPAL
 /// - **Other platforms**: CPAL for cross-platform support
 ///
 /// # Arguments
@@ -166,7 +162,13 @@ pub fn start_audio_system(
 ) -> AudioResult<AudioSystemResult> {
     #[cfg(all(target_os = "linux", feature = "jack-backend"))]
     {
-        super::jack_backend::start_audio_system(config, db_service)
+        match super::jack_backend::start_audio_system(config, db_service.clone()) {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                log::warn!("JACK backend failed: {} — falling back to CPAL", e);
+                super::cpal_backend::start_audio_system(config, db_service)
+            }
+        }
     }
 
     #[cfg(not(all(target_os = "linux", feature = "jack-backend")))]
@@ -182,7 +184,13 @@ pub fn start_audio_system(
 pub fn get_available_stereo_pairs() -> Vec<StereoPair> {
     #[cfg(all(target_os = "linux", feature = "jack-backend"))]
     {
-        super::jack_backend::get_available_stereo_pairs()
+        let pairs = super::jack_backend::get_available_stereo_pairs();
+        if pairs.is_empty() {
+            // JACK not available — fall back to CPAL device list
+            super::cpal_backend::get_available_stereo_pairs()
+        } else {
+            pairs
+        }
     }
 
     #[cfg(not(all(target_os = "linux", feature = "jack-backend")))]
