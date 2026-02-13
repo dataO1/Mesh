@@ -19,6 +19,40 @@ use std::collections::HashSet;
 use std::hash::Hash;
 use std::sync::LazyLock;
 
+/// A visual tag displayed in the track table's Tags column.
+///
+/// Can represent user-defined genre/mood tags or auto-generated
+/// suggestion reason tags. Rendered as colored pills.
+#[derive(Debug, Clone)]
+pub struct TrackTag {
+    /// Short display text (e.g., "Techno", "Key ↑", "BPM ═")
+    pub label: String,
+    /// Background color for the pill (None = theme default grey)
+    pub color: Option<Color>,
+}
+
+impl TrackTag {
+    pub fn new(label: impl Into<String>) -> Self {
+        Self { label: label.into(), color: None }
+    }
+
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.color = Some(color);
+        self
+    }
+}
+
+/// Parse a "#RRGGBB" hex string into an iced Color.
+/// Returns None on invalid input.
+pub fn parse_hex_color(hex: &str) -> Option<Color> {
+    let hex = hex.strip_prefix('#').unwrap_or(hex);
+    if hex.len() != 6 { return None; }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some(Color::from_rgb8(r, g, b))
+}
+
 /// Row height for track table rows (used for scroll calculations)
 pub const TRACK_ROW_HEIGHT: f32 = 28.0;
 
@@ -113,6 +147,8 @@ pub enum TrackColumn {
     Order,
     /// Track name
     Name,
+    /// Tags (user-defined + suggestion reasons)
+    Tags,
     /// Artist name
     Artist,
     /// BPM (beats per minute)
@@ -131,6 +167,7 @@ impl TrackColumn {
         match self {
             Self::Order => "#",
             Self::Name => "Name",
+            Self::Tags => "Tags",
             Self::Artist => "Artist",
             Self::Bpm => "BPM",
             Self::Key => "Key",
@@ -149,6 +186,7 @@ impl TrackColumn {
         match self {
             Self::Order => Length::Fixed(35.0),
             Self::Name => Length::Fill,
+            Self::Tags => Length::Fixed(150.0),
             Self::Artist => Length::Fixed(120.0),
             Self::Bpm => Length::Fixed(60.0),
             Self::Key => Length::Fixed(50.0),
@@ -162,6 +200,7 @@ impl TrackColumn {
         &[
             TrackColumn::Order,
             TrackColumn::Name,
+            TrackColumn::Tags,
             TrackColumn::Artist,
             TrackColumn::Bpm,
             TrackColumn::Key,
@@ -190,6 +229,8 @@ pub struct TrackRow<Id: Clone> {
     pub duration: Option<f64>,
     /// LUFS loudness if known
     pub lufs: Option<f32>,
+    /// Tags to display (user-defined + suggestion reason)
+    pub tags: Vec<TrackTag>,
 }
 
 impl<Id: Clone> TrackRow<Id> {
@@ -204,6 +245,7 @@ impl<Id: Clone> TrackRow<Id> {
             key: None,
             duration: None,
             lufs: None,
+            tags: Vec::new(),
         }
     }
 
@@ -234,6 +276,12 @@ impl<Id: Clone> TrackRow<Id> {
     /// Set the LUFS loudness
     pub fn with_lufs(mut self, lufs: f32) -> Self {
         self.lufs = Some(lufs);
+        self
+    }
+
+    /// Set tags for this row
+    pub fn with_tags(mut self, tags: Vec<TrackTag>) -> Self {
+        self.tags = tags;
         self
     }
 
@@ -324,6 +372,11 @@ pub fn compare_tracks_by_column<Id: Clone>(
                 (None, Some(_)) => Ordering::Greater,
                 (None, None) => Ordering::Equal,
             }
+        }
+        TrackColumn::Tags => {
+            let a_tags: String = a.tags.iter().map(|t| t.label.as_str()).collect::<Vec<_>>().join(",");
+            let b_tags: String = b.tags.iter().map(|t| t.label.as_str()).collect::<Vec<_>>().join(",");
+            a_tags.cmp(&b_tags)
         }
     }
 }
@@ -715,12 +768,36 @@ where
     Id: Clone + PartialEq + Eq + Hash + 'a,
     Message: Clone + 'a,
 {
+    // Tags column renders as colored pills — handle before the text-based path
+    if column == TrackColumn::Tags {
+        let pills: Vec<Element<'a, Message>> = track.tags.iter().map(|tag| {
+            let bg = tag.color.unwrap_or(Color::from_rgb8(80, 80, 80));
+            container(
+                text(&tag.label).size(9)
+            )
+            .padding(Padding::from([1, 4]))
+            .style(move |_theme: &Theme| container::Style {
+                background: Some(Background::Color(bg)),
+                border: Border { radius: 3.0.into(), ..Default::default() },
+                text_color: Some(Color::WHITE),
+                ..Default::default()
+            })
+            .into()
+        }).collect();
+
+        return container(row(pills).spacing(2))
+            .width(column.width())
+            .clip(true)
+            .into();
+    }
+
     let is_editing = state.is_editing(&track.id, column);
 
     // Get the display value for this cell
     let display_value = match column {
         TrackColumn::Order => track.order.to_string(),
         TrackColumn::Name => track.name.clone(),
+        TrackColumn::Tags => unreachable!(), // handled above
         TrackColumn::Artist => track.artist.clone().unwrap_or_else(|| "-".to_string()),
         TrackColumn::Bpm => track.format_bpm(),
         TrackColumn::Key => track.key.clone().unwrap_or_else(|| "-".to_string()),

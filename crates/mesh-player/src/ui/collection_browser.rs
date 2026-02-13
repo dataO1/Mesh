@@ -17,8 +17,8 @@ use mesh_core::db::DatabaseService;
 use mesh_core::playlist::{DatabaseStorage, NodeId, NodeKind, PlaylistNode, PlaylistStorage};
 use mesh_core::usb::{UsbDevice, UsbStorage};
 use mesh_widgets::{
-    playlist_browser, sort_tracks, PlaylistBrowserMessage, PlaylistBrowserState, TrackRow,
-    TrackTableMessage, TreeIcon, TreeMessage, TreeNode,
+    parse_hex_color, playlist_browser, sort_tracks, PlaylistBrowserMessage, PlaylistBrowserState,
+    TrackRow, TrackTableMessage, TrackTag, TreeIcon, TreeMessage, TreeNode,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -997,6 +997,18 @@ fn get_tracks_for_folder(storage: &dyn PlaylistStorage, folder_id: &NodeId) -> V
             }
             if let Some(lufs) = info.lufs {
                 row = row.with_lufs(lufs);
+            }
+            if !info.tags.is_empty() {
+                let tags: Vec<TrackTag> = info.tags.iter().map(|(label, color)| {
+                    let mut tag = TrackTag::new(label);
+                    if let Some(hex) = color {
+                        if let Some(c) = parse_hex_color(hex) {
+                            tag = tag.with_color(c);
+                        }
+                    }
+                    tag
+                }).collect();
+                row = row.with_tags(tags);
             }
             row
         })

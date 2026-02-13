@@ -85,7 +85,7 @@ pub use tree::{tree_view, TreeIcon, TreeMessage, TreeNode, TreeState};
 // Track table widget for displaying tracks
 pub use track_table::{
     sort_tracks, track_table, SelectModifiers, TrackColumn, TrackRow, TrackTableMessage,
-    TrackTableState,
+    TrackTableState, TrackTag, parse_hex_color,
     // Constants and functions for programmatic scrolling
     TRACK_ROW_HEIGHT, TRACK_TABLE_SCROLLABLE_ID,
     calculate_scroll_offset_for_centered_selection, scroll_to_centered_selection,

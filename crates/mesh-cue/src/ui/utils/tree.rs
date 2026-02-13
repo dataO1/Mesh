@@ -4,7 +4,7 @@
 
 use crate::domain::DomainTrack;
 use mesh_core::playlist::{NodeId, NodeKind, PlaylistNode, PlaylistStorage};
-use mesh_widgets::{TrackRow, TreeIcon, TreeNode};
+use mesh_widgets::{parse_hex_color, TrackRow, TrackTag, TreeIcon, TreeNode};
 
 /// Build tree nodes from playlist storage
 pub fn build_tree_nodes(storage: &dyn PlaylistStorage) -> Vec<TreeNode<NodeId>> {
@@ -65,6 +65,18 @@ pub fn get_tracks_for_folder(storage: &dyn PlaylistStorage, folder_id: &NodeId) 
             }
             if let Some(lufs) = info.lufs {
                 row = row.with_lufs(lufs);
+            }
+            if !info.tags.is_empty() {
+                let tags: Vec<TrackTag> = info.tags.iter().map(|(label, color)| {
+                    let mut tag = TrackTag::new(label);
+                    if let Some(hex) = color {
+                        if let Some(c) = parse_hex_color(hex) {
+                            tag = tag.with_color(c);
+                        }
+                    }
+                    tag
+                }).collect();
+                row = row.with_tags(tags);
             }
             row
         })

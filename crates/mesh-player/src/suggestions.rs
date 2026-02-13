@@ -15,6 +15,8 @@ use crate::config::KeyScoringModel;
 pub struct SuggestedTrack {
     pub track: Track,
     pub score: f32,
+    /// Auto-generated reason tags as (label, hex_color)
+    pub reason_tags: Vec<(String, Option<String>)>,
 }
 
 /// Classification of the musical relationship between two keys.
@@ -336,6 +338,63 @@ fn lufs_direction_bonus(candidate_lufs: Option<f32>, avg_seed_lufs: f32, energy_
         .unwrap_or(0.0)
 }
 
+/// Human-readable label for a transition type
+fn transition_type_label(tt: TransitionType) -> &'static str {
+    match tt {
+        TransitionType::SameKey => "Same Key",
+        TransitionType::AdjacentUp | TransitionType::AdjacentDown => "Adjacent",
+        TransitionType::DiagonalUp | TransitionType::DiagonalDown => "Diagonal",
+        TransitionType::EnergyBoost => "Boost",
+        TransitionType::EnergyCool => "Cool",
+        TransitionType::MoodLift => "Mood Lift",
+        TransitionType::MoodDarken => "Darken",
+        TransitionType::SemitoneUp | TransitionType::SemitoneDown => "Semitone",
+        TransitionType::FarStep(_) => "Far",
+        TransitionType::FarCross(_) => "Cross",
+        TransitionType::Tritone => "Tritone",
+    }
+}
+
+/// Generate human-readable reason tags from the scoring breakdown.
+///
+/// Direction symbols: ↑ (higher energy), ↓ (lower energy), ═ (maintain)
+fn generate_reason_tags(
+    transition_type: TransitionType,
+    key_score: f32,
+    bpm_penalty: f32,
+    lufs_bonus: f32,
+    energy_bias: f32,
+) -> Vec<(String, Option<String>)> {
+    let mut tags = Vec::new();
+
+    // Direction symbol based on energy bias
+    let dir = if energy_bias > 0.2 { "↑" }
+              else if energy_bias < -0.2 { "↓" }
+              else { "═" };
+
+    // Key tag — always show, it's the most important signal
+    let key_label = transition_type_label(transition_type);
+    let key_color = if key_score >= 0.7 { "#2d8a4e" }      // green = great
+                    else if key_score >= 0.4 { "#c49a2a" }  // amber = ok
+                    else { "#a63d40" };                       // red = risky
+    tags.push((format!("{} {}", key_label, dir), Some(key_color.to_string())));
+
+    // BPM tag — only if notable
+    if bpm_penalty < 0.15 {
+        tags.push(("BPM ═".to_string(), Some("#2d8a4e".to_string()))); // green
+    } else if bpm_penalty < 0.5 {
+        tags.push((format!("BPM {}", dir), Some("#c49a2a".to_string())));
+    }
+
+    // Energy/LUFS tag — only when energy direction is active
+    if energy_bias.abs() > 0.2 {
+        let lufs_color = if lufs_bonus < 0.0 { "#2d8a4e" } else { "#c49a2a" };
+        tags.push((format!("Energy {}", dir), Some(lufs_color.to_string())));
+    }
+
+    tags
+}
+
 /// Query the database for track suggestions based on loaded deck seeds.
 ///
 /// This runs on a background thread via `Task::perform()`.
@@ -450,17 +509,23 @@ pub fn query_suggestions(
         .into_values()
         .filter_map(|(track, hnsw_dist)| {
             // Key transition score: best match across all seeds
-            let best_key_score = track
+            // Also capture transition type for reason tag generation
+            let (best_key_score, best_tt) = track
                 .key
                 .as_deref()
                 .and_then(|k| MusicalKey::parse(k))
                 .map(|ck| {
                     seed_keys
                         .iter()
-                        .map(|sk| key_transition_score(sk, &ck, energy_bias, key_scoring_model))
-                        .fold(0.0f32, f32::max)
+                        .map(|sk| {
+                            let tt = classify_transition(sk, &ck);
+                            let score = key_transition_score(sk, &ck, energy_bias, key_scoring_model);
+                            (score, tt)
+                        })
+                        .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+                        .unwrap_or((0.3, TransitionType::FarStep(6)))
                 })
-                .unwrap_or(0.3); // No key = moderate penalty
+                .unwrap_or((0.3, TransitionType::FarStep(6))); // No key = moderate penalty
 
             // Apply adaptive filter threshold
             if best_key_score < filter_threshold {
@@ -486,7 +551,9 @@ pub fn query_suggestions(
                 + 0.15 * lufs_bonus
                 + 0.15 * bpm_penalty;
 
-            Some(SuggestedTrack { track, score })
+            let reason_tags = generate_reason_tags(best_tt, best_key_score, bpm_penalty, lufs_bonus, energy_bias);
+
+            Some(SuggestedTrack { track, score, reason_tags })
         })
         .collect();
 

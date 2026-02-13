@@ -38,6 +38,7 @@ impl DatabaseStorage {
             key: track.key.clone(),
             duration: Some(track.duration_seconds),
             lufs: track.lufs,
+            tags: Vec::new(),
         }
     }
 
@@ -247,6 +248,7 @@ impl PlaylistStorage for DatabaseStorage {
                                     key: track.key.clone(),
                                     duration: Some(track.duration_seconds),
                                     lufs: track.lufs,
+                                    tags: Vec::new(), // Playlist tracks don't batch-load tags yet
                                 })
                                 .collect();
                         }
@@ -271,10 +273,20 @@ impl PlaylistStorage for DatabaseStorage {
             }
         };
 
+        // Batch-load tags for all tracks in this folder
+        let track_ids: Vec<i64> = tracks.iter().filter_map(|t| t.id).collect();
+        let tags_map = self.service.get_tags_batch(&track_ids).unwrap_or_default();
+
         // Use enumerate for collection tracks - order represents import order
         tracks.iter()
             .enumerate()
-            .map(|(i, track)| Self::track_to_info(track, folder_id, (i + 1) as i32))
+            .map(|(i, track)| {
+                let mut info = Self::track_to_info(track, folder_id, (i + 1) as i32);
+                if let Some(id) = track.id {
+                    info.tags = tags_map.get(&id).cloned().unwrap_or_default();
+                }
+                info
+            })
             .collect()
     }
 

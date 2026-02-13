@@ -16,6 +16,11 @@ as much as possible in mesh-core and mesh-widget and only if necessary in the ui
   a right-click context menu for rename/delete/re-analyse.
 - [ ] Sort by multiple columns: click column headers to sort by BPM, key,
   artist, etc. Standard library UX.
+- [ ] Tag editing UI: support adding, removing, and editing tags on tracks
+  directly from the browser. Needs inline tag editor or context menu with
+  autocomplete from existing tags (get_all_tags). Color picker optional.
+- [ ] USB tag export: ensure the track_tags relation is exported alongside
+  other metadata when exporting collections to USB sticks.
 
 ## MIDI
 - [ ] Jog wheel beat nudging for backwards compatibility with older devices
@@ -38,35 +43,37 @@ as much as possible in mesh-core and mesh-widget and only if necessary in the ui
 - [ ] Single morph knob per deck that scrolls through preset banks (up to 8
   presets per bank).
 
-## Smart Suggestions (v2 — Intent-Driven)
+## Smart Suggestions (v3 — Future Improvements)
 
-The current implementation (v1) provides basic mode-based scoring (Similar /
-Harmonic / Energy / Combined). V2 should let the DJ steer the direction of
-the set through intent-based configuration.
+V2 (current) uses a unified scoring formula with energy direction fader and
+selectable key scoring model (Camelot / Krumhansl). The following are ideas
+for v3 and beyond.
 
-### Set Direction / Energy Steering
-- [ ] **Energy intent selector**: the DJ picks a direction — *raise energy*,
-  *maintain*, *cool down*, *drop to ambient*. The scoring function biases
-  candidates accordingly:
-  - *Raise*: favour candidates with higher LUFS / energy features than the
-    current average seed, while still requiring harmonic compatibility.
-  - *Maintain*: keep energy within a narrow band (current ± small delta).
-  - *Cool down*: favour lower energy, softer timbres. Camelot movement of
-    −1 or same position is preferred (smooth key descent).
-  - *Drop to ambient*: aggressive energy decrease, allow wider harmonic
-    distance (atonal ambient/textural tracks may lack key info).
-- [ ] **Camelot transition presets**: expose well-known harmonic mixing rules
-  as named strategies the DJ can pick from:
-  - *Same key* (0 steps)
-  - *Energy boost* (+1 Camelot, same letter — classic uplift)
-  - *Energy drop* (−1 Camelot, same letter)
-  - *Mood shift* (same number, A↔B — relative major/minor swap)
-  - *Diagonal* (+1 number + letter swap — subtle mood + energy change)
-  - *Open* (any compatible key within ±2)
-  These can be combined with the energy intent to form a composite filter.
-- [ ] **BPM range constraint**: allow the DJ to set a target BPM window
-  (e.g. ±5 from current). Candidates outside the window get penalised or
-  filtered. Useful when gradually accelerating or decelerating a set.
+### History-Informed Suggestions (requires deep research)
+- [ ] **Play history graph**: once mesh-player records session history to the
+  USB stick (see DJ History below), feed co-play data into the suggestion
+  algorithm via the graph DB. Tracks that have been played together frequently
+  across sessions should score higher as candidates — they have proven
+  real-world compatibility that audio features alone cannot capture.
+- [ ] **Pattern mining from play history**: research existing algorithms and
+  systems for finding patterns in DJ play histories. Areas to investigate:
+  - Collaborative filtering (item-item similarity from co-occurrence matrices)
+  - Sequential pattern mining (frequent subsequences in set tracklists)
+  - Graph-based recommendations (PageRank / random walks on the track
+    co-play graph, weighted by recency and frequency)
+  - Transition probability models (Markov chains over track-to-track
+    transitions, conditioned on energy/key context)
+  - Session-aware recommendation systems from the RecSys literature
+    (e.g. GRU4Rec, STAMP, SR-GNN — adapted for DJ set context)
+  - Existing DJ-specific research: DJ mix graph datasets, automatic
+    playlist continuation, set.fm / 1001tracklists data analysis
+  This needs a dedicated research document before implementation.
+- [ ] **Negative signals**: tracks that were loaded but immediately skipped
+  (played < 30 seconds) could receive a soft penalty in future sessions,
+  especially when paired with the same seed tracks.
+- [ ] **DJ profile divergence**: when multiple DJs use the same collection
+  (B2B, shared USB), per-DJ history should be kept separate so suggestions
+  reflect each DJ's mixing style, not a blended average.
 
 ### Stem-Specific Search
 - [ ] **"Find a fitting vocal"** mode: search for tracks whose *vocal* stem
@@ -86,23 +93,16 @@ the set through intent-based configuration.
 - [ ] **Tag-based exclusion**: allow the DJ to exclude tags (e.g. "no vocals",
   "no breakbeat") to narrow results.
 
-### UI (open — design TBD)
-- [ ] The suggestion UI needs to surface intent controls without cluttering
-  the browser. Options to explore:
-  - Compact row of mode chips above the suggestion list (energy direction +
-    Camelot strategy as quick-select chips).
-  - MIDI-mappable encoder to cycle through intents hands-free.
-  - Overlay panel triggered by long-press on the SUGGEST button.
-  - Per-deck vs global suggestion scope toggle.
+### UI
 - [ ] Visual feedback: show *why* a track was suggested (e.g. small tag like
   "↑ energy", "same key", "similar timbre") next to each suggestion row.
+- [ ] Per-deck vs global suggestion scope toggle.
 
 ### Infrastructure
 - [ ] Per-stem audio feature indexing (HNSW per stem type) for stem-specific
   similarity queries.
-- [ ] Composite scoring function that accepts an `Intent` struct instead of
-  the current flat `SuggestionMode` enum. The enum can wrap or desugar into
-  an Intent for backwards compatibility.
+- [ ] BPM range constraint: allow the DJ to set a target BPM window
+  (e.g. ±5 from current). Useful when gradually accelerating or decelerating.
 
 ## DJ History & Playlists
 - [ ] Keep DJ history per session, per DJ, persisted to DB while playing.
@@ -239,22 +239,26 @@ Remaining Bottlenecks:
 # Changelog
 
 ## v0.7.0
-- feat: smart suggestions in collection browser — toggle SUGGEST button to
-  get track recommendations based on loaded decks using HNSW audio feature
-  similarity from CozoDB
-- feat: four suggestion scoring modes: Similar (pure timbral distance),
-  Harmonic (Camelot wheel key compatibility filter), Energy (LUFS proximity
-  weighting), Combined (composite of audio + key + BPM)
-- feat: suggestion mode configurable in Settings > Display > Smart Suggestions
+- feat: tag system — TrackTag type in mesh-widgets, Tags column with colored
+  pill rendering, track_tags CozoDB relation with batch loading, tag CRUD on
+  DatabaseService (get/add/remove/batch/filter), and tag-based query methods
+  (find_tracks_by_tags_all, find_tracks_by_tags_any)
+- feat: suggestion reason tags — auto-generated colored tags on suggestion rows
+  showing transition type, key compatibility, BPM match, and energy direction
+  with symbols (↑/↓/═) and traffic-light color coding (green/amber/red)
+- feat: smart suggestions v2 — unified scoring formula
+  (0.40*hnsw + 0.30*key + 0.15*lufs + 0.15*bpm) replaces v1 mode-based system
+- feat: energy direction fader — continuous slider steers suggestions toward
+  higher or lower energy with adaptive filter threshold
+- feat: Krumhansl-Kessler key scoring model — 24×24 perceptual key distance
+  matrix selectable in Settings alongside the default Camelot model
+- feat: energy-aware Camelot transition types — 15 categories (SameKey,
+  AdjacentUp/Down, EnergyBoost/Cool, MoodLift/Darken, DiagonalUp/Down,
+  SemitoneUp/Down, FarStep, FarCross, Tritone) with directional modifiers
 - feat: multi-seed merge — all loaded decks act as seeds, results merged
   keeping best distance per candidate
-- feat: Camelot wheel harmonic scoring with circular distance (same key 1.0,
-  relative major/minor 0.85, adjacent 0.9, ±2 steps 0.6)
-- feat: auto-refresh suggestions when loading a new track to any deck
-- feat: mode change in settings triggers immediate re-query when active
-- feat: Back button exits suggestions mode before normal folder navigation
-- feat: MIDI encoder scroll works through suggestion list
-- feat: loaded track path stored on DeckView for suggestion seed resolution
+- feat: auto-refresh suggestions on track load and settings save
+- feat: MIDI encoder scroll and energy fader mapping for suggestions
 
 ## v0.6.13
 - fix: preserve master deck phase offset on beat jump and hot cue press

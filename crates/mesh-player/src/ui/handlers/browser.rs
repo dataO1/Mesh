@@ -9,7 +9,7 @@ use iced::Task;
 
 use mesh_core::playlist::NodeId;
 use mesh_core::usb::UsbMessage as UsbMsg;
-use mesh_widgets::{scroll_to_centered_selection, TrackRow};
+use mesh_widgets::{parse_hex_color, scroll_to_centered_selection, TrackRow, TrackTag};
 use crate::suggestions::{query_suggestions, SuggestedTrack};
 use crate::ui::app::MeshApp;
 use crate::ui::collection_browser::CollectionBrowserMessage;
@@ -190,6 +190,20 @@ pub fn handle_suggestions_ready(
                 row = row.with_duration(track.duration_seconds);
                 if let Some(lufs) = track.lufs {
                     row = row.with_lufs(lufs);
+                }
+
+                // Convert suggestion reason tags to UI TrackTags
+                if !s.reason_tags.is_empty() {
+                    let tags: Vec<TrackTag> = s.reason_tags.iter().map(|(label, color)| {
+                        let mut tag = TrackTag::new(label);
+                        if let Some(hex) = color {
+                            if let Some(c) = parse_hex_color(hex) {
+                                tag = tag.with_color(c);
+                            }
+                        }
+                        tag
+                    }).collect();
+                    row = row.with_tags(tags);
                 }
 
                 paths.insert(node_id, track.path.clone());

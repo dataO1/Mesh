@@ -357,6 +357,12 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
         create_harmonic_match_relation(db)?;
     }
 
+    // Tag relation
+    if !existing.contains("track_tags") {
+        log::debug!("Creating 'track_tags' relation");
+        create_track_tags_relation(db)?;
+    }
+
     // Vector index (HNSW) - check for audio_features relation
     if !existing.contains("audio_features") {
         log::debug!("Creating 'audio_features' HNSW index");
@@ -478,6 +484,17 @@ fn create_harmonic_match_relation(db: &DbInstance) -> Result<(), DbError> {
             from_track: Int,
             to_track: Int =>
             match_type: String
+        }}
+    "#)
+}
+
+fn create_track_tags_relation(db: &DbInstance) -> Result<(), DbError> {
+    run_schema(db, r#"
+        {:create track_tags {
+            track_id: Int,
+            label: String =>
+            color: String?,
+            sort_order: Int default 0
         }}
     "#)
 }

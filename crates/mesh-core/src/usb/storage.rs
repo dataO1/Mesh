@@ -252,6 +252,7 @@ impl PlaylistStorage for UsbStorage {
                     key: track.key,
                     duration: Some(track.duration_seconds),
                     lufs: track.lufs,
+                    tags: Vec::new(),
                 }
             })
             .collect()

@@ -31,6 +31,8 @@ use super::batch::BatchQuery;
 use super::queries::{TrackQuery, PlaylistQuery, SimilarityQuery, CuePointQuery, SavedLoopQuery, StemLinkQuery};
 use super::schema::{TrackRow, Playlist, AudioFeatures, CuePoint, SavedLoop, StemLink};
 use super::{MeshDb, DbError};
+use cozo::DataValue;
+use std::collections::BTreeMap;
 
 // ============================================================================
 // Track - The Public API Type
@@ -724,6 +726,150 @@ impl DatabaseService {
         let stem_links = StemLinkQuery::get_for_track(&self.db, track_id)?;
 
         Ok(Track::from_row(row, cue_points, saved_loops, stem_links))
+    }
+
+    // ========================================================================
+    // Tag Operations
+    // ========================================================================
+
+    /// Get all tags for a single track
+    pub fn get_tags(&self, track_id: i64) -> Result<Vec<(String, Option<String>)>, DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("tid".to_string(), DataValue::from(track_id));
+
+        let result = self.db.run_query(r#"
+            ?[label, color, sort_order] := *track_tags{track_id: $tid, label, color, sort_order}
+            :order sort_order, label
+        "#, params)?;
+
+        Ok(result.rows.iter().map(|row| {
+            let label = row[0].get_str().unwrap_or("").to_string();
+            let color = row[1].get_str().map(|s| s.to_string());
+            (label, color)
+        }).collect())
+    }
+
+    /// Get tags for multiple tracks in one query (avoids N+1)
+    pub fn get_tags_batch(&self, track_ids: &[i64]) -> Result<std::collections::HashMap<i64, Vec<(String, Option<String>)>>, DbError> {
+        use std::collections::HashMap;
+
+        if track_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let id_values: Vec<DataValue> = track_ids.iter().map(|&id| DataValue::from(id)).collect();
+        let mut params = BTreeMap::new();
+        params.insert("ids".to_string(), DataValue::List(id_values));
+
+        let result = self.db.run_query(r#"
+            ?[track_id, label, color, sort_order] := *track_tags{track_id, label, color, sort_order},
+                                                     track_id in $ids
+            :order track_id, sort_order, label
+        "#, params)?;
+
+        let mut map: HashMap<i64, Vec<(String, Option<String>)>> = HashMap::new();
+        for row in &result.rows {
+            let tid = row[0].get_int().unwrap_or(0);
+            let label = row[1].get_str().unwrap_or("").to_string();
+            let color = row[2].get_str().map(|s| s.to_string());
+            map.entry(tid).or_default().push((label, color));
+        }
+        Ok(map)
+    }
+
+    /// Add a tag to a track (upsert — if label exists, updates color)
+    pub fn add_tag(&self, track_id: i64, label: &str, color: Option<&str>) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("tid".to_string(), DataValue::from(track_id));
+        params.insert("label".to_string(), DataValue::Str(label.into()));
+        params.insert("color".to_string(), match color {
+            Some(c) => DataValue::Str(c.into()),
+            None => DataValue::Null,
+        });
+
+        self.db.run_script(r#"
+            ?[track_id, label, color] <- [[$tid, $label, $color]]
+            :put track_tags {track_id, label => color}
+        "#, params)?;
+
+        Ok(())
+    }
+
+    /// Remove a tag from a track
+    pub fn remove_tag(&self, track_id: i64, label: &str) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("tid".to_string(), DataValue::from(track_id));
+        params.insert("label".to_string(), DataValue::Str(label.into()));
+
+        self.db.run_script(r#"
+            ?[track_id, label] <- [[$tid, $label]]
+            :rm track_tags {track_id, label}
+        "#, params)?;
+
+        Ok(())
+    }
+
+    /// Get all unique tag labels in the database (for autocomplete/filter UI)
+    pub fn get_all_tags(&self) -> Result<Vec<(String, Option<String>)>, DbError> {
+        let result = self.db.run_query(r#"
+            ?[label, color] := *track_tags{label, color}
+        "#, BTreeMap::new())?;
+
+        Ok(result.rows.iter().map(|row| {
+            let label = row[0].get_str().unwrap_or("").to_string();
+            let color = row[1].get_str().map(|s| s.to_string());
+            (label, color)
+        }).collect())
+    }
+
+    /// Find all tracks that have ALL of the given tags (AND query)
+    pub fn find_tracks_by_tags_all(&self, tags: &[&str]) -> Result<Vec<i64>, DbError> {
+        if tags.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build Datalog rules: each tag constrains the same tid variable
+        let tag_rules: Vec<String> = tags.iter().enumerate().map(|(i, _)| {
+            format!("*track_tags{{track_id: tid, label: $tag{}}}", i)
+        }).collect();
+
+        let script = format!(
+            "?[tid] := {}\n:order tid",
+            tag_rules.join(",\n           ")
+        );
+
+        let mut params = BTreeMap::new();
+        for (i, tag) in tags.iter().enumerate() {
+            params.insert(format!("tag{}", i), DataValue::Str((*tag).into()));
+        }
+
+        let result = self.db.run_query(&script, params)?;
+        Ok(result.rows.iter().filter_map(|row| row[0].get_int()).collect())
+    }
+
+    /// Find all tracks that have ANY of the given tags (OR query)
+    ///
+    /// Returns (track_id, matching_tag_count) sorted by match count descending.
+    pub fn find_tracks_by_tags_any(&self, tags: &[&str]) -> Result<Vec<(i64, usize)>, DbError> {
+        if tags.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let tag_values: Vec<DataValue> = tags.iter().map(|&t| DataValue::Str(t.into())).collect();
+        let mut params = BTreeMap::new();
+        params.insert("tags".to_string(), DataValue::List(tag_values));
+
+        let result = self.db.run_query(r#"
+            ?[tid, count(label)] := *track_tags{track_id: tid, label},
+                                     label in $tags
+            :order -count(label), tid
+        "#, params)?;
+
+        Ok(result.rows.iter().filter_map(|row| {
+            let tid = row[0].get_int()?;
+            let count = row[1].get_int()? as usize;
+            Some((tid, count))
+        }).collect())
     }
 
     // ========================================================================

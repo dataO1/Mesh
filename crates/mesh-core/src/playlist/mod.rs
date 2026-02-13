@@ -159,6 +159,8 @@ pub struct TrackInfo {
     pub duration: Option<f64>,
     /// LUFS loudness value
     pub lufs: Option<f32>,
+    /// User-defined tags as (label, optional_hex_color) pairs
+    pub tags: Vec<(String, Option<String>)>,
 }
 
 impl TrackInfo {
