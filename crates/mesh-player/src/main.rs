@@ -78,11 +78,11 @@ fn main() -> iced::Result {
     // Try to start audio system
     // Returns AudioHandle, CommandSender (lock-free queue), DeckAtomics, SlicerAtomics,
     // LinkedStemAtomics, LinkedStemResultReceiver, and sample rate
-    let (audio_handle, command_sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, audio_sample_rate) =
+    let (audio_handle, command_sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, audio_sample_rate, audio_client_name) =
         match start_audio_system(CLIENT_NAME, db_service.clone()) {
-            Ok((handle, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, sample_rate)) => {
-                println!("Audio system started successfully ({} Hz)", sample_rate);
-                (Some(handle), Some(sender), Some(deck_atomics), Some(slicer_atomics), Some(linked_stem_atomics), Some(linked_stem_receiver), Some(clip_indicator), sample_rate)
+            Ok((handle, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, sample_rate, client_name)) => {
+                println!("Audio system started successfully ({} Hz, client: {})", sample_rate, client_name);
+                (Some(handle), Some(sender), Some(deck_atomics), Some(slicer_atomics), Some(linked_stem_atomics), Some(linked_stem_receiver), Some(clip_indicator), sample_rate, client_name)
             }
             Err(e) => {
                 eprintln!("Warning: Could not start audio system: {}", e);
@@ -90,7 +90,7 @@ fn main() -> iced::Result {
                 eprintln!();
                 eprintln!("Check that audio devices are available and not in use by other applications.");
                 // Default to 44100 Hz when audio is not available
-                (None, None, None, None, None, None, None, 44100)
+                (None, None, None, None, None, None, None, 44100, "mesh-player".to_string())
             }
         };
 
@@ -123,7 +123,7 @@ fn main() -> iced::Result {
             let linked_stem_receiver = linked_stem_receiver_cell.borrow_mut().take();
             let clip_indicator = clip_indicator_cell.borrow_mut().take();
             // mapping_mode = true shows full UI with controls, false = performance mode
-            let app = MeshApp::new(db_service, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, audio_sample_rate, start_midi_learn);
+            let app = MeshApp::new(db_service, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, audio_sample_rate, audio_client_name.clone(), start_midi_learn);
 
             // If --midi-learn flag was passed, start MIDI learn mode (opens the drawer)
             let startup_task = if start_midi_learn {

@@ -152,15 +152,17 @@ pub fn start_audio_system(
     config: &AudioConfig,
     db_service: Arc<DatabaseService>,
 ) -> AudioResult<AudioSystemResult> {
-    // Create JACK client
-    let (client, _status) = Client::new("mesh-player", ClientOptions::NO_START_SERVER)
+    // Create JACK client (JACK may rename if another client has the same name)
+    let (client, _status) = Client::new(&config.client_name, ClientOptions::NO_START_SERVER)
         .map_err(|e| AudioError::ConfigError(format!("Failed to create JACK client: {}", e)))?;
+    let actual_client_name = client.name().to_string();
 
     let sample_rate = client.sample_rate() as u32;
     let buffer_size = client.buffer_size();
 
     log::info!(
-        "JACK client created (sample rate: {}Hz, buffer: {} frames, latency: {:.1}ms)",
+        "JACK client '{}' created (sample rate: {}Hz, buffer: {} frames, latency: {:.1}ms)",
+        actual_client_name,
         sample_rate,
         buffer_size,
         (buffer_size as f32 / sample_rate as f32) * 1000.0
@@ -225,7 +227,7 @@ pub fn start_audio_system(
             }
         });
 
-        if let Err(e) = connect_ports("mesh-player", Some(master_idx), Some(cue_idx)) {
+        if let Err(e) = connect_ports(&actual_client_name, Some(master_idx), Some(cue_idx)) {
             log::warn!("Auto-connect failed: {}", e);
         }
     }
@@ -239,6 +241,7 @@ pub fn start_audio_system(
     };
 
     Ok(AudioSystemResult {
+        client_name: actual_client_name,
         handle: AudioHandle::Jack(handle),
         command_sender: CommandSender { producer: command_tx },
         deck_atomics,

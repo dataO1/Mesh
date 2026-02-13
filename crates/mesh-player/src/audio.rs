@@ -35,6 +35,7 @@ pub type AudioSystemResult = (
     LinkedStemResultReceiver,
     Arc<AtomicBool>, // clip_indicator
     u32,             // sample_rate
+    String,          // actual JACK client name
 );
 
 /// Start the audio system for mesh-player (master + cue outputs)
@@ -66,6 +67,7 @@ pub fn start_audio_system(
         result.linked_stem_receiver,
         result.clip_indicator,
         result.sample_rate,
+        result.client_name,
     ))
 }
 
@@ -93,6 +95,7 @@ pub fn start_audio_system_with_devices(
         result.linked_stem_receiver,
         result.clip_indicator,
         result.sample_rate,
+        result.client_name,
     ))
 }
 

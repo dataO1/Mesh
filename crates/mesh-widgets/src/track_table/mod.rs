@@ -186,7 +186,7 @@ impl TrackColumn {
         match self {
             Self::Order => Length::Fixed(35.0),
             Self::Name => Length::Fill,
-            Self::Tags => Length::Fixed(150.0),
+            Self::Tags => Length::Fixed(300.0),
             Self::Artist => Length::Fixed(120.0),
             Self::Bpm => Length::Fixed(60.0),
             Self::Key => Length::Fixed(50.0),

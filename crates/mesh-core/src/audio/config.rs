@@ -118,6 +118,10 @@ impl DeviceId {
 /// Configuration for the audio backend
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioConfig {
+    /// JACK client name (e.g., "mesh-player" or "mesh-cue")
+    /// JACK may suffix this if the name is already taken.
+    pub client_name: String,
+
     /// Output mode (master-only or master+cue)
     pub output_mode: OutputMode,
 
@@ -150,6 +154,7 @@ pub struct AudioConfig {
 impl Default for AudioConfig {
     fn default() -> Self {
         Self {
+            client_name: "mesh".to_string(),
             output_mode: OutputMode::default(),
             master_device: None,
             cue_device: None,
@@ -165,6 +170,7 @@ impl AudioConfig {
     /// Create config for mesh-cue (master-only, single stereo output)
     pub fn master_only() -> Self {
         Self {
+            client_name: "mesh-cue".to_string(),
             output_mode: OutputMode::MasterOnly,
             ..Default::default()
         }
@@ -173,6 +179,7 @@ impl AudioConfig {
     /// Create config for mesh-player (master + cue outputs)
     pub fn master_and_cue() -> Self {
         Self {
+            client_name: "mesh-player".to_string(),
             output_mode: OutputMode::MasterAndCue,
             ..Default::default()
         }

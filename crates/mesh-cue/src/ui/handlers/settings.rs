@@ -187,7 +187,7 @@ impl MeshCueApp {
         if audio_changed {
             // mesh-cue uses master-only mode, so pass the same device for both master and cue
             let success = crate::audio::reconnect_ports(
-                "mesh-player",  // JACK client name (shared with mesh-player in mesh-core)
+                &self.audio.client_name,
                 new_device,
                 new_device,  // Same device for cue in master-only mode
             );

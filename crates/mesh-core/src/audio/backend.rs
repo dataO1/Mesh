@@ -45,6 +45,9 @@ impl std::fmt::Display for StereoPair {
 ///
 /// Contains all the handles and communication channels needed by the UI.
 pub struct AudioSystemResult {
+    /// Actual JACK client name (may differ from requested if name was taken)
+    /// Used for port connection/reconnection.
+    pub client_name: String,
     /// Handle to keep audio alive (drop to stop)
     pub handle: AudioHandle,
     /// Command sender for UI thread (lock-free)

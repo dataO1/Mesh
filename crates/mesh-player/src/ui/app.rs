@@ -96,6 +96,8 @@ pub struct MeshApp {
     pub(crate) available_deck_presets: Vec<String>,
     /// Currently hovered preset index for MIDI scroll highlighting
     pub(crate) global_fx_hover_index: Option<usize>,
+    /// Actual JACK client name (for port reconnection)
+    pub(crate) audio_client_name: String,
 }
 
 // Message enum moved to message.rs
@@ -122,6 +124,7 @@ impl MeshApp {
         linked_stem_receiver: Option<mesh_core::loader::LinkedStemResultReceiver>,
         clip_indicator: Option<Arc<AtomicBool>>,
         sample_rate: u32,
+        audio_client_name: String,
         mapping_mode: bool,
     ) -> Self {
         // Load configuration
@@ -255,6 +258,7 @@ impl MeshApp {
             global_fx_picker_open: false,
             available_deck_presets: Vec::new(),
             global_fx_hover_index: None,
+            audio_client_name,
         }
     }
 

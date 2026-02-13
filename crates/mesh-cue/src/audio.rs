@@ -43,6 +43,8 @@ pub struct AudioHandle {
 /// Provides high-level API for preview playback using deck 0.
 /// All operations are lock-free via command queue and atomics.
 pub struct AudioState {
+    /// Actual JACK client name (for port reconnection)
+    pub client_name: String,
     /// Command sender (None if audio unavailable)
     command_sender: Option<CommandSender>,
     /// Deck atomics for reading playback state
@@ -60,6 +62,7 @@ pub struct AudioState {
 impl AudioState {
     /// Create audio state from startup results
     fn new(
+        client_name: String,
         command_sender: CommandSender,
         deck_atomics: Arc<DeckAtomics>,
         slicer_atomics: [Arc<SlicerAtomics>; 4],
@@ -68,6 +71,7 @@ impl AudioState {
         sample_rate: u32,
     ) -> Self {
         Self {
+            client_name,
             command_sender: Some(command_sender),
             deck_atomics,
             slicer_atomics,
@@ -80,6 +84,7 @@ impl AudioState {
     /// Create a disconnected audio state (when audio is unavailable)
     pub fn disconnected() -> Self {
         Self {
+            client_name: "mesh-cue".to_string(),
             command_sender: None,
             deck_atomics: Arc::new(DeckAtomics::new()),
             slicer_atomics: [
@@ -822,6 +827,7 @@ pub fn start_audio_system(
 
     // Set deck 0 volume to 1.0 (master) for preview
     let mut audio_state = AudioState::new(
+        result.client_name,
         result.command_sender,
         result.deck_atomics[PREVIEW_DECK].clone(),
         slicer_atomics,

@@ -178,6 +178,7 @@ fn start_master_only(
     };
 
     Ok(AudioSystemResult {
+        client_name: config.client_name.clone(),
         handle: AudioHandle::Cpal(handle),
         command_sender: CommandSender { producer: command_tx },
         deck_atomics,
@@ -318,6 +319,7 @@ fn start_master_and_cue(
     };
 
     Ok(AudioSystemResult {
+        client_name: config.client_name.clone(),
         handle: AudioHandle::Cpal(handle),
         command_sender: CommandSender { producer: command_tx },
         deck_atomics,

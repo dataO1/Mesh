@@ -111,7 +111,7 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             // Hot-swap audio outputs if device selection changed
             if audio_changed {
                 let success = mesh_core::audio::reconnect_ports(
-                    "mesh-player",
+                    &app.audio_client_name,
                     Some(app.settings.draft_master_device),
                     Some(app.settings.draft_cue_device),
                 );
