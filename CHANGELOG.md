@@ -76,6 +76,14 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   relationship to currently playing tracks (e.g., "▲ Adjacent", "━ Same Key")
   with traffic-light coloring (green/amber/red) based on harmonic compatibility.
 
+### Fixed
+
+- **procspawn subprocess library resolution** — Added `libopenmpt` and `mpg123`
+  to the binary's RUNPATH via build.rs rpath flags, and to the Nix devshell
+  runtime inputs. FFmpeg's transitive dependencies were not resolvable by
+  the procspawn analysis subprocess, causing `mpg123_open_handle64` symbol
+  lookup failures on NixOS.
+
 ---
 
 ## [0.6.16] - 2026-02-12

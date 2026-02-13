@@ -85,6 +85,11 @@ let
     # HID device support (hidapi links libudev for device enumeration)
     systemdLibs  # provides libudev.so
 
+    # FFmpeg transitive deps (Essentia → FFmpeg → libopenmpt → mpg123)
+    # Needed in LD_LIBRARY_PATH for procspawn subprocess to resolve symbols
+    libopenmpt
+    mpg123
+
     # Misc
     openssl
   ];
@@ -107,6 +112,11 @@ let
   libraryPath = pkgs.lib.makeLibraryPath runtimeInputs;
 
   # Essentia dependencies (needed for both essentia build and mesh builds)
+  # Includes FFmpeg's transitive deps (libopenmpt, mpg123) that must be
+  # in the binary's RUNPATH for the procspawn subprocess to find them.
+  # Without these, the subprocess may fail with symbol lookup errors
+  # (e.g., mpg123_open_handle64) since DT_RUNPATH doesn't propagate
+  # transitively like the deprecated DT_RPATH does.
   essentiaDeps = with pkgs; [
     eigen
     fftwFloat
@@ -115,6 +125,8 @@ let
     libsamplerate
     libyaml
     ffmpeg_4-headless
+    libopenmpt     # FFmpeg → libopenmpt (tracker audio format support)
+    mpg123         # libopenmpt → mpg123 (MPEG audio decoding)
     zlib
   ];
 
