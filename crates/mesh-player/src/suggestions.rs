@@ -321,21 +321,18 @@ fn adaptive_filter_threshold(energy_bias: f32) -> f32 {
     }
 }
 
-/// Compute LUFS-based direction bonus.
+/// Compute arousal-based direction bonus.
 ///
-/// Rewards candidates that are louder when raising energy, quieter when dropping.
+/// Rewards candidates whose perceived energy (arousal) aligns with the energy fader.
+/// Arousal is 0.0–1.0 (from ML analysis); higher = more energetic.
 /// Returns ±0.1 max, negative = better match.
-fn lufs_direction_bonus(candidate_lufs: Option<f32>, avg_seed_lufs: f32, energy_bias: f32) -> f32 {
+fn arousal_direction_bonus(candidate_arousal: f32, avg_seed_arousal: f32, energy_bias: f32) -> f32 {
     if energy_bias.abs() < 0.05 {
         return 0.0;
     }
-    candidate_lufs
-        .map(|l| {
-            let diff = l - avg_seed_lufs; // positive = louder
-            let alignment = diff * energy_bias; // positive when matching desired direction
-            -(alignment.clamp(-6.0, 6.0) / 60.0) // ±0.1 max, negative = better
-        })
-        .unwrap_or(0.0)
+    let diff = candidate_arousal - avg_seed_arousal; // positive = more energetic
+    let alignment = diff * energy_bias; // positive when matching desired direction
+    -(alignment.clamp(-0.5, 0.5) / 5.0) // ±0.1 max, negative = better
 }
 
 /// Human-readable label for a transition type
@@ -396,7 +393,7 @@ fn generate_reason_tags(
 /// 1. Resolve each seed path to a track ID
 /// 2. For each seed, find similar tracks via HNSW index
 /// 3. Merge results keeping the best (minimum) distance per candidate
-/// 4. Score using unified formula: hnsw + key_transition + lufs + bpm
+/// 4. Score using unified formula: hnsw + key_transition + arousal + bpm
 /// 5. Filter by adaptive harmonic threshold
 /// 6. Sort and return the top results
 pub fn query_suggestions(
@@ -464,12 +461,20 @@ pub fn query_suggestions(
     }
 
     // Step 4: Compute seed averages for scoring
-    let avg_seed_lufs = {
-        let lufs_values: Vec<f32> = seed_tracks.iter().filter_map(|t| t.lufs).collect();
-        if lufs_values.is_empty() {
-            -9.0 // fallback
+
+    // Batch-fetch arousal values for candidates + seeds
+    let candidate_ids: Vec<i64> = candidates.keys().copied().collect();
+    let arousal_map = db.get_arousal_batch(&candidate_ids).unwrap_or_default();
+    let seed_arousal_map = db.get_arousal_batch(&seed_ids).unwrap_or_default();
+
+    let avg_seed_arousal = {
+        let arousal_values: Vec<f32> = seed_ids.iter()
+            .filter_map(|id| seed_arousal_map.get(id).copied())
+            .collect();
+        if arousal_values.is_empty() {
+            0.5 // neutral fallback
         } else {
-            lufs_values.iter().sum::<f32>() / lufs_values.len() as f32
+            arousal_values.iter().sum::<f32>() / arousal_values.len() as f32
         }
     };
 
@@ -494,10 +499,14 @@ pub fn query_suggestions(
 
     // Step 5: Unified scoring — single formula for all candidates
     //
+    // With arousal data:
     // score = 0.40 * hnsw_dist           (audio similarity / genre / style)
     //       + 0.30 * (1.0 - key_score)   (harmonic compatibility, energy-aware)
-    //       + 0.15 * lufs_bonus           (loudness alignment with energy intent)
+    //       + 0.15 * arousal_bonus        (perceived energy alignment with fader)
     //       + 0.15 * bpm_penalty          (tempo compatibility)
+    //
+    // Without arousal data (fallback):
+    // score = 0.45 * hnsw_dist + 0.35 * key_penalty + 0.20 * bpm_penalty
     let mut suggestions: Vec<SuggestedTrack> = candidates
         .into_values()
         .filter_map(|(track, hnsw_dist)| {
@@ -527,9 +536,6 @@ pub fn query_suggestions(
 
             let key_penalty = 1.0 - best_key_score;
 
-            // LUFS direction bonus (negative = better when aligned)
-            let lufs_bonus = lufs_direction_bonus(track.lufs, avg_seed_lufs, energy_bias);
-
             // BPM penalty: normalized distance (10 BPM diff → 1.0 penalty)
             let bpm_penalty = track
                 .bpm
@@ -539,10 +545,18 @@ pub fn query_suggestions(
                 })
                 .unwrap_or(0.5);
 
-            let score = 0.40 * hnsw_dist
-                + 0.30 * key_penalty
-                + 0.15 * lufs_bonus
-                + 0.15 * bpm_penalty;
+            // Arousal-based energy direction (replaces LUFS)
+            let track_id = track.id.unwrap_or(-1);
+            let score = match arousal_map.get(&track_id) {
+                Some(&arousal) => {
+                    let energy_component = arousal_direction_bonus(arousal, avg_seed_arousal, energy_bias);
+                    0.40 * hnsw_dist + 0.30 * key_penalty + 0.15 * energy_component + 0.15 * bpm_penalty
+                }
+                None => {
+                    // No arousal data — redistribute the 0.15 weight across HNSW and key
+                    0.45 * hnsw_dist + 0.35 * key_penalty + 0.20 * bpm_penalty
+                }
+            };
 
             let reason_tags = generate_reason_tags(best_tt, best_key_score);
 
@@ -750,25 +764,25 @@ mod tests {
         assert_eq!(extreme, 0.10);
     }
 
-    // ─── LUFS Direction Bonus ───────────────────────────────────────
+    // ─── Arousal Direction Bonus ─────────────────────────────────────
 
     #[test]
-    fn test_lufs_direction_center_is_zero() {
-        assert_eq!(lufs_direction_bonus(Some(-8.0), -10.0, 0.0), 0.0);
+    fn test_arousal_direction_center_is_zero() {
+        assert_eq!(arousal_direction_bonus(0.7, 0.5, 0.0), 0.0);
     }
 
     #[test]
-    fn test_lufs_direction_raise_prefers_louder() {
-        let louder = lufs_direction_bonus(Some(-6.0), -10.0, 1.0); // +4 dB
-        let quieter = lufs_direction_bonus(Some(-14.0), -10.0, 1.0); // -4 dB
-        assert!(louder < quieter, "Lower score = better, louder should score lower when raising");
+    fn test_arousal_direction_raise_prefers_energetic() {
+        let high = arousal_direction_bonus(0.8, 0.5, 1.0); // more energetic
+        let low = arousal_direction_bonus(0.2, 0.5, 1.0); // less energetic
+        assert!(high < low, "Lower score = better, higher arousal should score lower when raising energy");
     }
 
     #[test]
-    fn test_lufs_direction_drop_prefers_quieter() {
-        let louder = lufs_direction_bonus(Some(-6.0), -10.0, -1.0);
-        let quieter = lufs_direction_bonus(Some(-14.0), -10.0, -1.0);
-        assert!(quieter < louder, "Quieter should score lower when dropping");
+    fn test_arousal_direction_drop_prefers_calm() {
+        let high = arousal_direction_bonus(0.8, 0.5, -1.0);
+        let low = arousal_direction_bonus(0.2, 0.5, -1.0);
+        assert!(low < high, "Lower arousal should score lower when dropping energy");
     }
 
     // ─── Krumhansl Matrix Validation ────────────────────────────────

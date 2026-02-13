@@ -915,6 +915,7 @@ impl MeshCueDomain {
             loudness_config: self.config.analysis.loudness.clone(),
             parallel_processes: self.config.analysis.parallel_processes,
             separation_config: Some(self.config.analysis.separation.clone()),
+            experimental_ml: self.config.analysis.experimental_ml,
         };
 
         let cancel = cancel_flag.clone();
@@ -957,6 +958,7 @@ impl MeshCueDomain {
             loudness_config: self.config.analysis.loudness.clone(),
             parallel_processes: self.config.analysis.parallel_processes,
             separation_config: Some(self.config.analysis.separation.clone()),
+            experimental_ml: self.config.analysis.experimental_ml,
         };
 
         let cancel = cancel_flag.clone();

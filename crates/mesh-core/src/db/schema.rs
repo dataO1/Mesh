@@ -288,6 +288,30 @@ impl AudioFeatures {
 }
 
 // ============================================================================
+// ML Analysis Data
+// ============================================================================
+
+/// ML analysis results for a track (voice detection, genre, arousal/valence, mood)
+///
+/// This struct is used across crates (mesh-core, mesh-cue, mesh-player) to pass
+/// ML analysis results. It has no iced dependencies.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MlAnalysisData {
+    /// Vocal presence ratio (0.0 = instrumental, 1.0 = vocal throughout)
+    pub vocal_presence: f32,
+    /// Perceived energy level from EffNet arousal model (experimental)
+    pub arousal: Option<f32>,
+    /// Perceived mood valence from EffNet model (experimental)
+    pub valence: Option<f32>,
+    /// Primary genre label (highest confidence)
+    pub top_genre: Option<String>,
+    /// Top genre scores above threshold: Vec<(label, confidence)> serialized as JSON
+    pub genre_scores: Vec<(String, f32)>,
+    /// Jamendo mood/theme tags (experimental): Vec<(label, confidence)>
+    pub mood_themes: Option<Vec<(String, f32)>>,
+}
+
+// ============================================================================
 // Schema Creation
 // ============================================================================
 
@@ -361,6 +385,12 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
     if !existing.contains("track_tags") {
         log::debug!("Creating 'track_tags' relation");
         create_track_tags_relation(db)?;
+    }
+
+    // ML analysis relation
+    if !existing.contains("ml_analysis") {
+        log::debug!("Creating 'ml_analysis' relation");
+        create_ml_analysis_relation(db)?;
     }
 
     // Vector index (HNSW) - check for audio_features relation
@@ -495,6 +525,20 @@ fn create_track_tags_relation(db: &DbInstance) -> Result<(), DbError> {
             label: String =>
             color: String?,
             sort_order: Int default 0
+        }}
+    "#)
+}
+
+fn create_ml_analysis_relation(db: &DbInstance) -> Result<(), DbError> {
+    run_schema(db, r#"
+        {:create ml_analysis {
+            track_id: Int =>
+            vocal_presence: Float?,
+            arousal: Float?,
+            valence: Float?,
+            top_genre: String?,
+            genre_scores_json: String?,
+            mood_scores_json: String?
         }}
     "#)
 }

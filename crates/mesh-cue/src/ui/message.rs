@@ -154,6 +154,8 @@ pub enum Message {
     UpdateSettingsSeparationModel(ModelType),
     /// Update separation shift augmentation (1-5)
     UpdateSettingsSeparationShifts(u8),
+    /// Toggle experimental ML analysis (arousal/valence, mood/theme)
+    UpdateSettingsExperimentalMl(bool),
     /// Refresh available audio devices
     RefreshAudioDevices,
     SaveSettings,

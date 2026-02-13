@@ -121,6 +121,12 @@ pub struct AnalysisConfig {
     pub parallel_processes: u8,
     /// Stem separation settings (for mixed audio import)
     pub separation: SeparationConfig,
+    /// Enable experimental ML analysis (arousal/valence, mood/theme tags)
+    ///
+    /// When enabled, imports will download and run additional ONNX models
+    /// (~20 MB total) for arousal/valence regression and Jamendo mood tagging.
+    /// Genre detection and voice detection are always enabled.
+    pub experimental_ml: bool,
 }
 
 impl Default for AnalysisConfig {
@@ -130,6 +136,7 @@ impl Default for AnalysisConfig {
             loudness: LoudnessConfig::default(),
             parallel_processes: 4,
             separation: SeparationConfig::default(),
+            experimental_ml: false,
         }
     }
 }
@@ -300,6 +307,7 @@ mod tests {
                 loudness: LoudnessConfig::default(),
                 parallel_processes: 4,
                 separation: SeparationConfig::default(),
+                experimental_ml: false,
             },
             display: DisplayConfig::default(),
             audio: AudioConfig::default(),

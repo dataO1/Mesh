@@ -37,6 +37,7 @@ Mesh also includes **built-in stem separation** — drop any MP3, FLAC, or WAV f
 - **Beat grid editing** — Fine-tune beat markers, set downbeats, adjust BPM with visual feedback
 - **8 hot cues per track** — Set, edit, and color-code cue points
 - **Stem linking** — Prepare mashups by linking stems from different tracks (e.g., vocals from track A over instrumentals from track B)
+- **ML-enhanced audio analysis** — Automatic genre classification and mood tagging using neural network models (EffNet + Discogs400). Vocal/instrumental detection via stem energy analysis. Optional arousal/valence estimation for smarter energy-aware suggestions
 - **Playlist management** — Organize tracks into playlists with drag-and-drop
 - **USB export** — Sync playlists to USB drives for portable performance
 
@@ -49,7 +50,7 @@ Mesh also includes **built-in stem separation** — drop any MP3, FLAC, or WAV f
 - **Stem slicer** — Real-time remixing by rearranging slice playback order
 - **Effects** — DJ filter, delay, reverb, plus CLAP plugins and Pure Data patches with per-stem routing
 - **MIDI controller support** — Configure any controller with MIDI Learn wizard
-- **Smart suggestions** — AI-powered track recommendations based on what's currently loaded. Finds harmonically compatible tracks using audio fingerprint similarity, key matching, BPM proximity, and loudness alignment. An energy direction fader lets you steer suggestions toward higher-energy or cooler tracks. Choose between two key matching algorithms in Settings:
+- **Smart suggestions** — AI-powered track recommendations based on what's currently loaded. Finds harmonically compatible tracks using audio fingerprint similarity, key matching, BPM proximity, and perceptual arousal. An energy direction fader lets you steer suggestions toward higher-energy or cooler tracks. Choose between two key matching algorithms in Settings:
   - **Camelot** — Classic DJ wheel with hand-tuned transition scores
   - **Krumhansl** — Perceptual key distance based on music psychology research, better at rating cross-mode transitions (e.g., C major to C minor)
 - **Auto-gain** — Tracks are loudness-normalized so volumes are consistent
@@ -291,6 +292,7 @@ Two algorithms are available in **Settings → Display → Key Matching**:
 - [x] USB export for portable performance
 - [x] Track similarity search (audio fingerprinting)
 - [x] Smart suggestions with energy direction control
+- [x] ML genre classification and mood tagging (EffNet/Discogs400)
 - [x] Auto-gain loudness normalization
 - [x] Master bus limiter and clipper (PA protection)
 - [x] Effects: filter, delay, reverb
@@ -420,7 +422,7 @@ Please open an issue to discuss major changes before submitting a PR.
 
 AGPL-3.0 — see [LICENSE](LICENSE) for details.
 
-Uses [Essentia](https://essentia.upf.edu/) (AGPL-3.0) and [Demucs](https://github.com/facebookresearch/demucs) for audio analysis and stem separation.
+Uses [Essentia](https://essentia.upf.edu/) (AGPL-3.0) and [Demucs](https://github.com/facebookresearch/demucs) for audio analysis and stem separation. Genre and mood classification models from the [Essentia model hub](https://essentia.upf.edu/models.html) (CC BY-NC-SA 4.0).
 
 ---
 

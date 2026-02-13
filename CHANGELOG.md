@@ -52,6 +52,30 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   to C minor) significantly higher, matching real-world DJ experience where
   parallel keys mix well despite being far apart on the Camelot wheel.
 
+- **ML-enhanced audio analysis** — Automatic genre classification and mood
+  tagging during track import using ONNX neural network models from the Essentia
+  model hub (~20 MB, downloaded on first use). The pipeline extracts a mel
+  spectrogram, runs it through EffNet to produce a 1280-dimensional audio
+  embedding, then classifies against 400 Discogs genre labels and 56 Jamendo
+  mood/theme tags. Vocal/instrumental detection uses RMS energy on the separated
+  vocal stem (no model needed). Results are stored in the database and
+  auto-populate the track tag system with colored genre (blue) and mood (purple)
+  pills. Mood classification and arousal/valence derivation require enabling
+  "ML Analysis (Experimental)" in Settings.
+
+- **Arousal-based energy direction** — Smart suggestions now use perceptual
+  arousal (derived from mood predictions) instead of LUFS loudness for the
+  energy direction fader. Arousal captures musical energy from content
+  (energetic, fast, heavy vs. calm, relaxing, soft) rather than just volume
+  level, producing more musically meaningful energy-steering. Tracks without
+  arousal data fall back to a redistributed scoring formula.
+
+- **Track tags** — Color-coded tag pills in the collection browser. Tags are
+  displayed between the track name and artist columns. ML analysis auto-generates
+  genre and mood tags; suggestion results include reason tags showing the key
+  relationship to currently playing tracks (e.g., "▲ Adjacent", "━ Same Key")
+  with traffic-light coloring (green/amber/red) based on harmonic compatibility.
+
 ---
 
 ## [0.6.16] - 2026-02-12

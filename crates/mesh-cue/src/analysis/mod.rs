@@ -159,6 +159,10 @@ pub struct AnalysisResult {
     /// 16-dimensional audio features for similarity search
     /// Includes rhythm, harmony, energy, and timbre features
     pub audio_features: Option<mesh_core::db::AudioFeatures>,
+    /// Mel spectrogram for ML analysis (96 bands, computed in worker thread)
+    /// Only populated when ML analysis is enabled
+    #[serde(skip)]
+    pub mel_spectrogram: Option<crate::ml_analysis::preprocessing::MelSpectrogramResult>,
 }
 
 impl Default for AnalysisResult {
@@ -171,6 +175,7 @@ impl Default for AnalysisResult {
             confidence: 0.0,
             lufs: None,
             audio_features: None,
+            mel_spectrogram: None,
         }
     }
 }
@@ -246,6 +251,7 @@ pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<
         confidence: 0.8, // TODO: Get from essentia
         lufs,
         audio_features,
+        mel_spectrogram: None, // Computed in worker thread, not subprocess
     })
 }
 

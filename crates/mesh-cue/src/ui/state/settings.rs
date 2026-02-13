@@ -40,6 +40,9 @@ pub struct SettingsState {
     pub draft_separation_use_gpu: bool,
     /// Draft shift augmentation value (1-5)
     pub draft_separation_shifts: u8,
+    // ── ML Analysis Settings ───────────────────────────────────────────────
+    /// Draft experimental ML flag (arousal/valence, mood/theme)
+    pub draft_experimental_ml: bool,
 }
 
 impl SettingsState {
@@ -63,6 +66,8 @@ impl SettingsState {
             draft_separation_model: config.analysis.separation.model,
             draft_separation_use_gpu: config.analysis.separation.use_gpu,
             draft_separation_shifts: config.analysis.separation.shifts,
+            // ML Analysis
+            draft_experimental_ml: config.analysis.experimental_ml,
         }
     }
 

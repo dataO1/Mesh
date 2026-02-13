@@ -373,6 +373,7 @@ impl MeshCueApp {
             Message::UpdateSettingsSeparationBackend(backend) => return self.handle_update_settings_separation_backend(backend),
             Message::UpdateSettingsSeparationModel(model) => return self.handle_update_settings_separation_model(model),
             Message::UpdateSettingsSeparationShifts(shifts) => return self.handle_update_settings_separation_shifts(shifts),
+            Message::UpdateSettingsExperimentalMl(enabled) => return self.handle_update_settings_experimental_ml(enabled),
             Message::RefreshAudioDevices => return self.handle_refresh_audio_devices(),
             Message::SaveSettings => return self.handle_save_settings(),
             Message::SaveSettingsComplete(result) => return self.handle_save_settings_complete(result),

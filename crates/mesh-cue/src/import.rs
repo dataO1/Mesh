@@ -219,6 +219,24 @@ impl StemImporter {
         Ok(mono)
     }
 
+    /// Get vocals-only mono audio for voice detection
+    ///
+    /// Used by ML analysis to compute vocal presence (RMS-based,
+    /// no model needed). Returns the vocal stem as mono samples.
+    pub fn get_vocals_mono(&self) -> Result<Vec<f32>> {
+        log::info!("get_vocals_mono: Loading vocals stem for voice detection");
+        let imported = self.import()?;
+        let buffers = &imported.buffers;
+        let len = buffers.len();
+
+        let mono: Vec<f32> = (0..len)
+            .map(|i| (buffers.vocals[i].left + buffers.vocals[i].right) * 0.5)
+            .collect();
+
+        log::info!("get_vocals_mono: Complete, {} mono samples", mono.len());
+        Ok(mono)
+    }
+
     /// Get drums-only mono audio for BPM analysis
     ///
     /// Drums typically have the clearest beat for tempo detection,

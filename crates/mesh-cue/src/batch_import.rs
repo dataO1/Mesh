@@ -34,9 +34,10 @@ use crate::analysis::{analyze_audio, AnalysisResult};
 use crate::config::{BpmConfig, BpmSource, LoudnessConfig};
 use crate::export::export_stem_file_with_gain;
 use crate::import::StemImporter;
+use crate::ml_analysis::{self, MlAnalyzer};
 use crate::separation::{SeparationConfig, SeparationService};
 use anyhow::{Context, Result};
-use mesh_core::db::{DatabaseService, Track};
+use mesh_core::db::{DatabaseService, MlAnalysisData, Track};
 use mesh_core::types::SAMPLE_RATE;
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -44,7 +45,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// RAII guard for temp file cleanup - deletes file on drop unless disarmed.
@@ -299,6 +300,9 @@ pub struct ImportConfig {
     pub parallel_processes: u8,
     /// Stem separation configuration (for mixed audio files)
     pub separation_config: Option<SeparationConfig>,
+    /// Enable experimental ML analysis (arousal/valence, mood/theme)
+    /// Genre detection runs regardless; this flag controls the extra models
+    pub experimental_ml: bool,
 }
 
 /// A mixed audio file to be separated into stems
@@ -489,8 +493,13 @@ pub fn scan_and_group_stems(import_folder: &Path) -> Result<Vec<StemGroup>> {
 
 /// Process a single track group: load stems, analyze, export
 ///
-/// This is run by worker threads.
-fn process_single_track(group: &StemGroup, config: &ImportConfig) -> TrackImportResult {
+/// This is run by worker threads. When `ml_analyzer` is provided,
+/// also runs ML analysis (genre, arousal/valence, mood) and auto-tagging.
+fn process_single_track(
+    group: &StemGroup,
+    config: &ImportConfig,
+    ml_analyzer: Option<&Arc<Mutex<MlAnalyzer>>>,
+) -> TrackImportResult {
     let base_name = group.base_name.clone();
     log::info!("process_single_track: Processing '{}'", base_name);
 
@@ -647,6 +656,90 @@ fn process_single_track(group: &StemGroup, config: &ImportConfig) -> TrackImport
         final_path
     );
 
+    // ── ML Analysis (vocal presence + mel spectrogram → genre/arousal/mood) ──
+    let ml_result: Option<MlAnalysisData> = if ml_analyzer.is_some() {
+        // Compute vocal presence from separated vocals (pure Rust, no model)
+        let vocal_presence = match importer.get_vocals_mono() {
+            Ok(vocals) => {
+                let vp = ml_analysis::compute_vocal_presence(&vocals, SAMPLE_RATE);
+                log::info!("process_single_track: '{}' vocal_presence={:.2}", base_name, vp);
+                vp
+            }
+            Err(e) => {
+                log::warn!("process_single_track: '{}' failed to get vocals mono: {}", base_name, e);
+                0.0
+            }
+        };
+
+        // Compute mel spectrogram from full mix mono (pure Rust DSP)
+        let mono_for_mel = match importer.get_mono_sum() {
+            Ok(m) => m,
+            Err(_) => Vec::new(),
+        };
+        let mel = if !mono_for_mel.is_empty() {
+            match ml_analysis::preprocessing::compute_mel_spectrogram(&mono_for_mel, SAMPLE_RATE as f32) {
+                Ok(mel) => {
+                    log::info!(
+                        "process_single_track: '{}' mel spectrogram: {} frames × {} bands",
+                        base_name, mel.frames.len(), mel.n_bands
+                    );
+                    Some(mel)
+                }
+                Err(e) => {
+                    log::warn!("process_single_track: '{}' mel spectrogram failed: {}", base_name, e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Run EffNet + classification heads
+        if let (Some(analyzer_arc), Some(mel)) = (ml_analyzer, mel) {
+            match analyzer_arc.lock() {
+                Ok(mut analyzer) => {
+                    match analyzer.analyze(&mel, vocal_presence) {
+                        Ok(result) => {
+                            log::info!(
+                                "process_single_track: '{}' ML analysis complete — genre={:?}, arousal={:?}",
+                                base_name, result.top_genre, result.arousal
+                            );
+                            Some(result)
+                        }
+                        Err(e) => {
+                            log::warn!("process_single_track: '{}' ML inference failed: {}", base_name, e);
+                            // Fall back to vocal-only result
+                            Some(MlAnalysisData {
+                                vocal_presence,
+                                arousal: None,
+                                valence: None,
+                                top_genre: None,
+                                genre_scores: Vec::new(),
+                                mood_themes: None,
+                            })
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::error!("process_single_track: MlAnalyzer lock poisoned: {}", e);
+                    None
+                }
+            }
+        } else {
+            // No mel spectrogram but we have vocal presence
+            Some(MlAnalysisData {
+                vocal_presence,
+                arousal: None,
+                valence: None,
+                top_genre: None,
+                genre_scores: Vec::new(),
+                mood_themes: None,
+            })
+        }
+    } else {
+        None
+    };
+
     // Insert track into the shared database service using new Track API
     let mut track = Track::new(final_path.clone(), base_name.clone());
     track.artist = artist;
@@ -678,6 +771,23 @@ fn process_single_track(group: &StemGroup, config: &ImportConfig) -> TrackImport
                     );
                 }
             }
+
+            // Store ML analysis results and auto-tag
+            if let Some(ref ml) = ml_result {
+                if let Err(e) = config.db_service.store_ml_analysis(track_id, ml) {
+                    log::warn!(
+                        "process_single_track: Failed to store ML analysis for '{}': {}",
+                        base_name, e
+                    );
+                } else {
+                    log::info!(
+                        "process_single_track: '{}' ML analysis stored",
+                        base_name
+                    );
+                    // Auto-tag from ML results
+                    auto_tag_from_ml(track_id, ml, &config.db_service);
+                }
+            }
         }
         Err(e) => {
             log::warn!(
@@ -695,6 +805,39 @@ fn process_single_track(group: &StemGroup, config: &ImportConfig) -> TrackImport
     }
 }
 
+/// Auto-generate tags from ML analysis results
+///
+/// Creates colored tags for genre, mood, and vocal/instrumental classification.
+/// Tags are stored via the database tag system.
+fn auto_tag_from_ml(track_id: i64, ml: &MlAnalysisData, db: &DatabaseService) {
+    // Genre tags (blue) — top 3 genres above 0.15 confidence
+    for (label, score) in ml.genre_scores.iter().take(3) {
+        if *score >= 0.15 {
+            if let Err(e) = db.add_tag(track_id, label, Some("#3b82f6")) {
+                log::warn!("auto_tag_from_ml: Failed to add genre tag '{}': {}", label, e);
+            }
+        }
+    }
+
+    // Mood/theme tags (purple) — top 3 above 0.2 confidence (experimental only)
+    if let Some(ref moods) = ml.mood_themes {
+        for (label, score) in moods.iter().take(3) {
+            if *score >= 0.2 {
+                if let Err(e) = db.add_tag(track_id, label, Some("#8b5cf6")) {
+                    log::warn!("auto_tag_from_ml: Failed to add mood tag '{}': {}", label, e);
+                }
+            }
+        }
+    }
+
+    // Vocal/Instrumental tag (green/amber)
+    if ml.vocal_presence > 0.3 {
+        let _ = db.add_tag(track_id, "Vocal", Some("#2d8a4e"));
+    } else {
+        let _ = db.add_tag(track_id, "Instrumental", Some("#c49a2a"));
+    }
+}
+
 /// Process a mixed audio file: separate into stems, then import
 ///
 /// This function:
@@ -706,6 +849,7 @@ fn process_mixed_track(
     file: &MixedAudioFile,
     config: &ImportConfig,
     progress_tx: &Sender<ImportProgress>,
+    ml_analyzer: Option<&Arc<Mutex<MlAnalyzer>>>,
 ) -> TrackImportResult {
     let base_name = file.base_name.clone();
     log::info!("process_mixed_track: Separating '{}'", base_name);
@@ -806,7 +950,7 @@ fn process_mixed_track(
     // Process using existing pipeline
     // Note: We don't delete source files from group.all_paths() since they're temp files
     // that will be cleaned up by the guards
-    process_single_track(&group, config)
+    process_single_track(&group, config, ml_analyzer)
 }
 
 /// Run the batch import process
@@ -849,6 +993,34 @@ pub fn run_batch_import(
         return;
     }
 
+    // Initialize ML analyzer if models are available
+    let ml_analyzer: Option<Arc<Mutex<MlAnalyzer>>> = {
+        match ml_analysis::models::MlModelManager::new() {
+            Ok(mgr) => {
+                // Ensure models are downloaded before starting import
+                if let Err(e) = mgr.ensure_all_models(config.experimental_ml) {
+                    log::warn!("run_batch_import: Failed to download ML models: {}", e);
+                }
+                let model_dir = mgr.model_path(ml_analysis::MlModelType::EffNetEmbedding)
+                    .parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+                match MlAnalyzer::new(&model_dir, config.experimental_ml) {
+                    Ok(analyzer) => {
+                        log::info!("run_batch_import: ML analyzer initialized (experimental={})", config.experimental_ml);
+                        Some(Arc::new(Mutex::new(analyzer)))
+                    }
+                    Err(e) => {
+                        log::warn!("run_batch_import: ML models not available, skipping ML analysis: {}", e);
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("run_batch_import: Cannot determine model cache dir: {}", e);
+                None
+            }
+        }
+    };
+
     // Configure rayon thread pool with user-specified parallelism
     let num_workers = config.parallel_processes.clamp(1, 16) as usize;
     log::info!("run_batch_import: Using {} parallel workers", num_workers);
@@ -881,7 +1053,7 @@ pub fn run_batch_import(
                 });
 
                 // Process the track
-                let result = process_single_track(group, &config);
+                let result = process_single_track(group, &config, ml_analyzer.as_ref());
 
                 // Delete source files on success
                 if result.success {
@@ -977,6 +1149,33 @@ pub fn run_batch_import_mixed(
         return;
     }
 
+    // Initialize ML analyzer if models are available
+    let ml_analyzer: Option<Arc<Mutex<MlAnalyzer>>> = {
+        match ml_analysis::models::MlModelManager::new() {
+            Ok(mgr) => {
+                if let Err(e) = mgr.ensure_all_models(config.experimental_ml) {
+                    log::warn!("run_batch_import_mixed: Failed to download ML models: {}", e);
+                }
+                let model_dir = mgr.model_path(ml_analysis::MlModelType::EffNetEmbedding)
+                    .parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+                match MlAnalyzer::new(&model_dir, config.experimental_ml) {
+                    Ok(analyzer) => {
+                        log::info!("run_batch_import_mixed: ML analyzer initialized (experimental={})", config.experimental_ml);
+                        Some(Arc::new(Mutex::new(analyzer)))
+                    }
+                    Err(e) => {
+                        log::warn!("run_batch_import_mixed: ML models not available, skipping ML analysis: {}", e);
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("run_batch_import_mixed: Cannot determine model cache dir: {}", e);
+                None
+            }
+        }
+    };
+
     // Process files sequentially (separation is memory-intensive)
     // TODO: Consider parallel processing with memory limits
     let mut results = Vec::with_capacity(total);
@@ -1001,7 +1200,7 @@ pub fn run_batch_import_mixed(
         });
 
         // Process the track (separation + import)
-        let result = process_mixed_track(file, &config, &progress_tx);
+        let result = process_mixed_track(file, &config, &progress_tx, ml_analyzer.as_ref());
 
         // Delete source file on success
         if result.success {

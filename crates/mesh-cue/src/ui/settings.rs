@@ -463,6 +463,29 @@ fn view_track_name_format_section(state: &SettingsState) -> Element<'_, Message>
     let shifts_description = text(SeparationConfig::shifts_description(state.draft_separation_shifts))
         .size(12);
 
+    // ML Analysis subsection
+    let ml_title = text("ML Analysis").size(14);
+    let ml_hint = text("Genre detection is always enabled. Experimental mode adds arousal/valence and mood tagging (~20 MB model download).")
+        .size(12);
+
+    let ml_enabled_btn = button(text("Enabled").size(11))
+        .on_press(Message::UpdateSettingsExperimentalMl(true))
+        .style(if state.draft_experimental_ml {
+            iced::widget::button::primary
+        } else {
+            iced::widget::button::secondary
+        });
+    let ml_disabled_btn = button(text("Disabled").size(11))
+        .on_press(Message::UpdateSettingsExperimentalMl(false))
+        .style(if !state.draft_experimental_ml {
+            iced::widget::button::primary
+        } else {
+            iced::widget::button::secondary
+        });
+    let ml_row = row![ml_disabled_btn, ml_enabled_btn]
+        .spacing(5)
+        .align_y(Alignment::Center);
+
     container(
         column![
             section_title,
@@ -485,6 +508,10 @@ fn view_track_name_format_section(state: &SettingsState) -> Element<'_, Message>
             shifts_hint,
             shifts_row,
             shifts_description,
+            Space::new().height(10),
+            ml_title,
+            ml_hint,
+            ml_row,
         ]
         .spacing(10),
     )

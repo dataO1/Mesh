@@ -873,6 +873,97 @@ impl DatabaseService {
     }
 
     // ========================================================================
+    // ML Analysis Operations
+    // ========================================================================
+
+    /// Store ML analysis result for a track (upsert)
+    pub fn store_ml_analysis(&self, track_id: i64, data: &super::schema::MlAnalysisData) -> Result<(), DbError> {
+        let genre_scores_json = serde_json::to_string(&data.genre_scores)
+            .unwrap_or_else(|_| "[]".to_string());
+        let mood_scores_json = data.mood_themes.as_ref()
+            .map(|m| serde_json::to_string(m).unwrap_or_else(|_| "[]".to_string()));
+
+        let mut params = BTreeMap::new();
+        params.insert("tid".to_string(), DataValue::from(track_id));
+        params.insert("vocal_presence".to_string(), DataValue::from(data.vocal_presence as f64));
+        params.insert("arousal".to_string(), data.arousal.map(|v| DataValue::from(v as f64)).unwrap_or(DataValue::Null));
+        params.insert("valence".to_string(), data.valence.map(|v| DataValue::from(v as f64)).unwrap_or(DataValue::Null));
+        params.insert("top_genre".to_string(), data.top_genre.as_ref().map(|s| DataValue::Str(s.clone().into())).unwrap_or(DataValue::Null));
+        params.insert("genre_scores_json".to_string(), DataValue::Str(genre_scores_json.into()));
+        params.insert("mood_scores_json".to_string(), mood_scores_json.map(|s| DataValue::Str(s.into())).unwrap_or(DataValue::Null));
+
+        self.db.run_script(r#"
+            ?[track_id, vocal_presence, arousal, valence, top_genre, genre_scores_json, mood_scores_json] <- [[
+                $tid, $vocal_presence, $arousal, $valence, $top_genre, $genre_scores_json, $mood_scores_json
+            ]]
+            :put ml_analysis {track_id => vocal_presence, arousal, valence, top_genre, genre_scores_json, mood_scores_json}
+        "#, params)?;
+
+        Ok(())
+    }
+
+    /// Get ML analysis data for a track
+    pub fn get_ml_analysis(&self, track_id: i64) -> Result<Option<super::schema::MlAnalysisData>, DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("tid".to_string(), DataValue::from(track_id));
+
+        let result = self.db.run_query(r#"
+            ?[vocal_presence, arousal, valence, top_genre, genre_scores_json, mood_scores_json] :=
+                *ml_analysis{track_id: $tid, vocal_presence, arousal, valence, top_genre, genre_scores_json, mood_scores_json}
+        "#, params)?;
+
+        if let Some(row) = result.rows.first() {
+            let vocal_presence = row[0].get_float().unwrap_or(0.0) as f32;
+            let arousal = row[1].get_float().map(|f| f as f32);
+            let valence = row[2].get_float().map(|f| f as f32);
+            let top_genre = row[3].get_str().map(|s| s.to_string());
+            let genre_scores: Vec<(String, f32)> = row[4].get_str()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
+            let mood_themes: Option<Vec<(String, f32)>> = row[5].get_str()
+                .and_then(|s| serde_json::from_str(s).ok());
+
+            Ok(Some(super::schema::MlAnalysisData {
+                vocal_presence,
+                arousal,
+                valence,
+                top_genre,
+                genre_scores,
+                mood_themes,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Batch-fetch arousal values for multiple tracks (for suggestion scoring)
+    pub fn get_arousal_batch(&self, track_ids: &[i64]) -> Result<std::collections::HashMap<i64, f32>, DbError> {
+        use std::collections::HashMap;
+
+        if track_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let id_values: Vec<DataValue> = track_ids.iter().map(|&id| DataValue::from(id)).collect();
+        let mut params = BTreeMap::new();
+        params.insert("ids".to_string(), DataValue::List(id_values));
+
+        let result = self.db.run_query(r#"
+            ?[track_id, arousal] := *ml_analysis{track_id, arousal},
+                                    track_id in $ids,
+                                    is_not_null(arousal)
+        "#, params)?;
+
+        let mut map = HashMap::new();
+        for row in &result.rows {
+            if let (Some(tid), Some(arousal)) = (row[0].get_int(), row[1].get_float()) {
+                map.insert(tid, arousal as f32);
+            }
+        }
+        Ok(map)
+    }
+
+    // ========================================================================
     // Low-level Access (for advanced usage within mesh-core)
     // ========================================================================
 

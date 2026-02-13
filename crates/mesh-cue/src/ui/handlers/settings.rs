@@ -124,6 +124,12 @@ impl MeshCueApp {
         Task::none()
     }
 
+    /// Handle UpdateSettingsExperimentalMl message
+    pub fn handle_update_settings_experimental_ml(&mut self, enabled: bool) -> Task<Message> {
+        self.settings.draft_experimental_ml = enabled;
+        Task::none()
+    }
+
     /// Handle SaveSettings message
     pub fn handle_save_settings(&mut self) -> Task<Message> {
         // Parse and validate values
@@ -164,6 +170,9 @@ impl MeshCueApp {
             config.analysis.separation.backend = self.settings.draft_separation_backend;
             config.analysis.separation.model = self.settings.draft_separation_model;
             config.analysis.separation.shifts = self.settings.draft_separation_shifts;
+
+            // Update experimental ML
+            config.analysis.experimental_ml = self.settings.draft_experimental_ml;
 
             // Update drafts to show validated values
             self.settings.draft_min_tempo = config.analysis.bpm.min_tempo.to_string();
