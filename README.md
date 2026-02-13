@@ -53,6 +53,7 @@ Mesh also includes **built-in stem separation** — drop any MP3, FLAC, or WAV f
   - **Camelot** — Classic DJ wheel with hand-tuned transition scores
   - **Krumhansl** — Perceptual key distance based on music psychology research, better at rating cross-mode transitions (e.g., C major to C minor)
 - **Auto-gain** — Tracks are loudness-normalized so volumes are consistent
+- **Track tags** — Color-coded tag pills in the browser for genres, moods, or custom labels. Suggestion results include auto-generated reason tags (see below)
 
 ### Audio Quality
 
@@ -209,6 +210,69 @@ Mesh supports [CLAP](https://cleveraudio.org/) (CLever Audio Plugin) — the mod
 ```
 
 Install CLAP plugins from your distro's package manager or download from plugin developers. Plugins appear automatically in the effect picker under their categories.
+
+---
+
+## Smart Suggestions
+
+When you toggle suggestions on in the collection browser, Mesh analyzes the tracks loaded on your decks and recommends what to play next. Each suggestion gets colored **reason tags** that explain *why* it was recommended.
+
+### Reason Tags
+
+Each suggestion row shows small colored pills describing the musical relationship to your currently playing tracks:
+
+| Tag | Meaning |
+|-----|---------|
+| **Same Key ═** | Candidate is in the same key — maximum harmonic safety |
+| **Adjacent ↑** | One step clockwise on the Camelot wheel — lifts energy while staying harmonically safe |
+| **Adjacent ↓** | One step counter-clockwise — cools energy, still safe |
+| **Diagonal ↑** | Cross-mode step up (e.g., 8B→9A) — shifts mood while raising energy |
+| **Diagonal ↓** | Cross-mode step down (e.g., 8A→7B) — shifts mood while cooling |
+| **Boost ↑** | Two steps clockwise (+2) — noticeable energy increase, fewer shared notes |
+| **Cool ↓** | Two steps counter-clockwise (-2) — noticeable energy decrease |
+| **Mood Lift ↑** | Minor→major at the same Camelot position (e.g., 8A→8B = Am→C) — brightens mood |
+| **Darken ↓** | Major→minor at the same position (e.g., 8B→8A = C→Am) — darkens mood |
+| **Semitone ↑** | Classic pop key change (+7 on Camelot = one semitone up in pitch) — dramatic lift |
+| **Semitone ↓** | One semitone down (-7 on Camelot) — dramatic drop |
+| **Far ↑/↓** | 3-5 steps on the Camelot wheel — risky but available at extreme energy settings |
+| **Tritone ↓** | 6 steps (maximum dissonance) — only appears at extreme energy drop settings |
+
+### Arrow Symbols
+
+Each tag has its own directional arrow based on the **per-track relationship**, not a global setting:
+
+- **Key arrows** (↑/↓/═) — Derived from the Camelot transition direction. ↑ means the transition moves clockwise (raises musical tension), ↓ means counter-clockwise (releases tension), ═ means same key.
+- **BPM arrows** — ↑ if the candidate's BPM is higher than your current tracks, ↓ if lower, ═ if within ~1 BPM.
+- **Energy arrows** — ↑ if the candidate is louder (higher LUFS) than your current tracks, ↓ if quieter. Only shown when the energy direction fader is active.
+
+### Color Coding
+
+Tag pill colors use a traffic-light system based on compatibility:
+
+| Color | Meaning |
+|-------|---------|
+| **Green** | Excellent match (key score ≥ 0.7, BPM close, loudness aligned with energy intent) |
+| **Amber** | Acceptable match (moderate compatibility or BPM difference) |
+| **Red** | Risky match (low key compatibility — use with caution) |
+
+### Energy Direction Fader
+
+The energy direction fader (center of the suggestions panel) steers what kinds of tracks are recommended:
+
+- **Center** — Strict harmonic matching only (same key, adjacent, relative)
+- **Right** — Progressively unlocks energy-raising transitions (boost, mood lift, semitone up)
+- **Left** — Progressively unlocks energy-cooling transitions (cool, darken, tritone)
+
+At extreme fader positions, the harmonic filter relaxes to allow dramatic key changes that would normally be filtered out.
+
+### Key Scoring Models
+
+Two algorithms are available in **Settings → Display → Key Matching**:
+
+| Model | Description |
+|-------|-------------|
+| **Camelot** (default) | Classic DJ wheel — hand-tuned scores for each transition category. Well-understood, predictable. |
+| **Krumhansl** | Based on the Krumhansl-Kessler (1982) music psychology research. Uses a 24×24 perceptual key distance matrix computed from listener probe-tone ratings. Better at rating cross-mode transitions (e.g., C major to A minor) where the Camelot model uses coarse categories. |
 
 ---
 
