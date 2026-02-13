@@ -1,17 +1,17 @@
 //! ONNX-based ML inference for audio analysis
 //!
-//! Runs EffNet embedding + classification heads using ort (ONNX Runtime).
+//! Runs EffNet embedding + optional mood classification head using ort (ONNX Runtime).
 //! The `MlAnalyzer` holds pre-loaded sessions and can be wrapped in
 //! `Arc<Mutex<>>` for sharing across rayon workers (`run()` requires `&mut self`).
 //!
-//! # Model compatibility
+//! # Architecture
 //!
-//! All classification heads use **EffNet (discogs-effnet) embeddings** (1280-dim).
-//! Models trained on MusiCNN (200-dim) or VGGish (128-dim) are NOT compatible.
+//! The EffNet model produces BOTH genre predictions (400-class) AND 1280-dim
+//! embeddings in a single forward pass — no separate genre head is needed.
+//! The Essentia hub only has the genre head as TensorFlow `.pb`, not ONNX.
 //!
-//! No EffNet-compatible arousal/valence regression model exists (DEAM/emoMusic
-//! heads require MusiCNN). Arousal is derived from Jamendo mood predictions
-//! using a weighted sum of energy-related tags.
+//! Arousal/valence is derived from Jamendo mood predictions (no EffNet-compatible
+//! A/V regression model exists — DEAM/emoMusic heads require MusiCNN 200-dim).
 
 use std::path::Path;
 use ndarray::{Array2, Array3};
@@ -30,9 +30,11 @@ const PATCH_SIZE: usize = 128;
 const N_BANDS: usize = 96;
 
 /// ML analysis engine with pre-loaded ONNX sessions
+///
+/// EffNet produces genre predictions + embeddings in one pass (no separate genre head).
+/// Jamendo mood head is optional (experimental only), enables arousal derivation.
 pub struct MlAnalyzer {
     effnet: Session,
-    genre: Session,
     mood: Option<Session>,
     genre_labels: Vec<String>,
     mood_labels: Vec<String>,
@@ -50,24 +52,15 @@ impl MlAnalyzer {
     /// * `experimental` - If true, also load Jamendo mood model (enables arousal derivation)
     pub fn new(model_dir: &Path, experimental: bool) -> Result<Self, String> {
         let effnet_path = model_dir.join(MlModelType::EffNetEmbedding.filename());
-        let genre_path = model_dir.join(MlModelType::GenreDiscogs400.filename());
 
         if !effnet_path.exists() {
             return Err(format!("EffNet model not found: {:?}", effnet_path));
-        }
-        if !genre_path.exists() {
-            return Err(format!("Genre model not found: {:?}", genre_path));
         }
 
         let effnet = Session::builder()
             .and_then(|b| b.with_intra_threads(1))
             .and_then(|b| b.commit_from_file(&effnet_path))
             .map_err(|e| format!("Failed to load EffNet: {}", e))?;
-
-        let genre = Session::builder()
-            .and_then(|b| b.with_intra_threads(1))
-            .and_then(|b| b.commit_from_file(&genre_path))
-            .map_err(|e| format!("Failed to load genre model: {}", e))?;
 
         let mood = if experimental {
             let mood_path = model_dir.join(MlModelType::JamendoMood.filename());
@@ -88,7 +81,6 @@ impl MlAnalyzer {
 
         Ok(Self {
             effnet,
-            genre,
             mood,
             genre_labels: discogs400_labels(),
             mood_labels: jamendo_mood_labels(),
@@ -98,41 +90,45 @@ impl MlAnalyzer {
     /// Run full ML analysis pipeline on a mel spectrogram.
     ///
     /// 1. Extract patches from mel spectrogram (128 frames x 96 bands each)
-    /// 2. Run EffNet -> 1280-dim embeddings per patch
-    /// 3. Average embeddings across patches
-    /// 4. Run classification heads on averaged embedding
-    /// 5. Derive arousal/valence from mood predictions (if available)
+    /// 2. Run EffNet -> genre predictions + 1280-dim embeddings per patch
+    /// 3. Average genre predictions and embeddings across patches
+    /// 4. Decode genre labels from averaged predictions
+    /// 5. Run mood head on averaged embedding (if experimental)
+    /// 6. Derive arousal/valence from mood predictions (if available)
     pub fn analyze(
         &mut self,
         mel: &MelSpectrogramResult,
         vocal_presence: f32,
     ) -> Result<MlAnalysisData, String> {
-        // Step 1: Extract patches (PATCH_SIZE frames each, 96 bands)
         let patches = extract_patches(&mel.frames, PATCH_SIZE);
         if patches.is_empty() {
             return Err("Audio too short for ML analysis".to_string());
         }
 
-        // Step 2: Compute embeddings for each patch
-        let mut embeddings: Vec<Vec<f32>> = Vec::new();
+        // Run EffNet on each patch — get both genre predictions and embeddings
+        let mut all_genre_preds: Vec<Vec<f32>> = Vec::new();
+        let mut all_embeddings: Vec<Vec<f32>> = Vec::new();
         for patch in &patches {
-            let embedding = self.run_effnet(patch)?;
-            embeddings.push(embedding);
+            let (genre_preds, embedding) = self.run_effnet(patch)?;
+            all_genre_preds.push(genre_preds);
+            all_embeddings.push(embedding);
         }
 
-        // Step 3: Average embeddings across patches
-        let avg_embedding = average_embeddings(&embeddings);
+        // Average across patches
+        let avg_genre_preds = average_embeddings(&all_genre_preds);
+        let avg_embedding = average_embeddings(&all_embeddings);
 
-        // Step 4: Run classification heads
-        let (top_genre, genre_scores) = self.run_genre(&avg_embedding)?;
+        // Decode genre labels from EffNet's built-in genre output
+        let (top_genre, genre_scores) = self.decode_genre_predictions(&avg_genre_preds);
 
+        // Run mood classification head on averaged embedding
         let mood_themes = if self.mood.is_some() {
             Some(self.run_mood(&avg_embedding)?)
         } else {
             None
         };
 
-        // Step 5: Derive arousal/valence from mood predictions
+        // Derive arousal/valence from mood predictions
         let (arousal, valence) = if let Some(ref moods) = mood_themes {
             derive_arousal_valence_from_mood(moods)
         } else {
@@ -149,11 +145,11 @@ impl MlAnalyzer {
         })
     }
 
-    /// Run EffNet on a single patch -> 1280-dim embedding
+    /// Run EffNet on a single patch -> (genre_preds [400], embedding [1280])
     ///
     /// EffNet input: [batch=1, 128 frames, 96 bands] (3D tensor)
     /// EffNet outputs: [0] genre predictions [1,400], [1] embedding [1,1280]
-    fn run_effnet(&mut self, patch: &[Vec<f32>]) -> Result<Vec<f32>, String> {
+    fn run_effnet(&mut self, patch: &[Vec<f32>]) -> Result<(Vec<f32>, Vec<f32>), String> {
         let n_frames = patch.len();
         let n_bands = if n_frames > 0 { patch[0].len() } else { N_BANDS };
 
@@ -166,7 +162,6 @@ impl MlAnalyzer {
         let input = Array3::from_shape_vec((1, n_frames, n_bands), flat)
             .map_err(|e| format!("EffNet input shape error: {}", e))?;
 
-        // Input tensor name from model metadata (discogs-effnet-bsdynamic-1.json)
         let input_name = "serving_default_melspectrogram";
 
         let input_tensor = Tensor::from_array(input)
@@ -177,44 +172,32 @@ impl MlAnalyzer {
         ).map_err(|e| format!("EffNet inference error: {}", e))?;
 
         // EffNet has 2 outputs: [0]=genre_preds [n,400], [1]=embedding [n,1280]
-        // We want the embedding (second output). Fall back to first if only one.
         let mut output_iter = outputs.iter();
-        let first_output = output_iter.next();
-        let second_output = output_iter.next();
-
-        let (output_name, output_value) = second_output.or(first_output)
+        let (genre_name, genre_value) = output_iter.next()
             .ok_or("EffNet produced no output")?;
-        log::debug!("EffNet embedding output: {}", output_name);
+        log::debug!("EffNet genre output: {}", genre_name);
 
-        let (_shape, data) = output_value.try_extract_tensor::<f32>()
-            .map_err(|e| format!("EffNet output extraction error: {}", e))?;
+        let (_shape, genre_data) = genre_value.try_extract_tensor::<f32>()
+            .map_err(|e| format!("EffNet genre extraction error: {}", e))?;
+        let genre_preds = genre_data.to_vec();
 
-        Ok(data.to_vec())
+        // Second output is the embedding (fall back to genre if only one output)
+        let embedding = if let Some((emb_name, emb_value)) = output_iter.next() {
+            log::debug!("EffNet embedding output: {}", emb_name);
+            let (_shape, emb_data) = emb_value.try_extract_tensor::<f32>()
+                .map_err(|e| format!("EffNet embedding extraction error: {}", e))?;
+            emb_data.to_vec()
+        } else {
+            log::warn!("EffNet has only one output, using it as embedding");
+            genre_preds.clone()
+        };
+
+        Ok((genre_preds, embedding))
     }
 
-    /// Run genre classification head on embedding
-    fn run_genre(&mut self, embedding: &[f32]) -> Result<(Option<String>, Vec<(String, f32)>), String> {
-        let input = Array2::from_shape_vec((1, embedding.len()), embedding.to_vec())
-            .map_err(|e| format!("Genre input shape error: {}", e))?;
-
-        // Input tensor name from model metadata (genre_discogs400-discogs-effnet-1.json)
-        let input_name = "serving_default_model_Placeholder";
-
-        let input_tensor = Tensor::from_array(input)
-            .map_err(|e| format!("Genre tensor creation error: {}", e))?;
-
-        let outputs = self.genre.run(
-            ort::inputs![input_name => input_tensor]
-        ).map_err(|e| format!("Genre inference error: {}", e))?;
-
-        let (_, first_value) = outputs.iter().next()
-            .ok_or("Genre model produced no output")?;
-
-        let (_shape, probs_data) = first_value.try_extract_tensor::<f32>()
-            .map_err(|e| format!("Genre output extraction error: {}", e))?;
-
-        // Get top genres above threshold
-        let mut scored: Vec<(String, f32)> = probs_data
+    /// Decode genre labels from raw EffNet genre prediction probabilities
+    fn decode_genre_predictions(&self, probs: &[f32]) -> (Option<String>, Vec<(String, f32)>) {
+        let mut scored: Vec<(String, f32)> = probs
             .iter()
             .enumerate()
             .filter(|(_, &p)| p > 0.05)
@@ -229,8 +212,7 @@ impl MlAnalyzer {
         scored.truncate(10);
 
         let top_genre = scored.first().map(|(label, _)| label.clone());
-
-        Ok((top_genre, scored))
+        (top_genre, scored)
     }
 
     /// Run mood/theme classification on embedding

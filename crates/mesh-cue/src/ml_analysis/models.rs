@@ -11,18 +11,18 @@ use std::path::{Path, PathBuf};
 
 /// Types of ML models for audio analysis
 ///
-/// All models use the EffNet (discogs-effnet) embedding pipeline.
+/// The EffNet model produces both 1280-dim embeddings AND 400-class genre
+/// predictions in a single forward pass, so no separate genre head is needed.
+/// (The Essentia hub only has the genre head as TensorFlow `.pb`, not ONNX.)
+///
 /// Arousal/valence is derived from Jamendo mood predictions — no separate
 /// DEAM model is used because no EffNet-compatible A/V head exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MlModelType {
-    /// EffNet embedding model (~17 MB) — always required
-    /// Produces 1280-dim embeddings from mel spectrograms
+    /// EffNet model (~17 MB) — always required
+    /// Outputs: [0] genre predictions [n,400], [1] embeddings [n,1280]
     EffNetEmbedding,
-    /// Genre Discogs400 classification head (~2 MB) — always loaded
-    /// 400-class sigmoid output over Discogs genre taxonomy
-    GenreDiscogs400,
-    /// Jamendo mood/theme classification head (~500 KB) — experimental only
+    /// Jamendo mood/theme classification head (~2.7 MB) — experimental only
     /// 56-class sigmoid output over mood/theme tags
     JamendoMood,
 }
@@ -31,34 +31,31 @@ impl MlModelType {
     /// Filename for caching
     pub fn filename(&self) -> &'static str {
         match self {
-            // Note: bsdynamic = dynamic batch size ONNX variant (bs64 is TF-only)
+            // bsdynamic = dynamic batch size ONNX variant (bs64 is TF-only)
             MlModelType::EffNetEmbedding => "discogs-effnet-bsdynamic-1.onnx",
-            MlModelType::GenreDiscogs400 => "genre_discogs400-discogs-effnet-1.onnx",
             MlModelType::JamendoMood => "mtg_jamendo_moodtheme-discogs-effnet-1.onnx",
         }
     }
 
-    /// Download URL from Essentia's model hub
+    /// Download URL from GitHub releases (mirrored from Essentia's model hub)
     pub fn download_url(&self) -> &'static str {
         match self {
-            MlModelType::EffNetEmbedding => "https://essentia.upf.edu/models/feature-extractors/discogs-effnet/discogs-effnet-bsdynamic-1.onnx",
-            MlModelType::GenreDiscogs400 => "https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.onnx",
-            MlModelType::JamendoMood => "https://essentia.upf.edu/models/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.onnx",
+            MlModelType::EffNetEmbedding => "https://github.com/dataO1/Mesh/releases/download/models/discogs-effnet-bsdynamic-1.onnx",
+            MlModelType::JamendoMood => "https://github.com/dataO1/Mesh/releases/download/models/mtg_jamendo_moodtheme-discogs-effnet-1.onnx",
         }
     }
 
     /// Human-readable name
     pub fn display_name(&self) -> &'static str {
         match self {
-            MlModelType::EffNetEmbedding => "EffNet Embedding",
-            MlModelType::GenreDiscogs400 => "Genre Discogs400",
+            MlModelType::EffNetEmbedding => "EffNet (Genre + Embedding)",
             MlModelType::JamendoMood => "Jamendo Mood/Theme",
         }
     }
 
     /// Models always required (even without experimental flag)
     pub fn base_models() -> &'static [MlModelType] {
-        &[MlModelType::EffNetEmbedding, MlModelType::GenreDiscogs400]
+        &[MlModelType::EffNetEmbedding]
     }
 
     /// Models only loaded when experimental ML is enabled
@@ -229,12 +226,12 @@ mod tests {
     fn test_model_paths() {
         let mgr = MlModelManager::with_cache_dir("/tmp/test-ml".into());
         assert!(mgr.model_path(MlModelType::EffNetEmbedding).to_str().unwrap().contains("discogs-effnet"));
-        assert!(mgr.model_path(MlModelType::GenreDiscogs400).to_str().unwrap().contains("genre_discogs400"));
+        assert!(mgr.model_path(MlModelType::JamendoMood).to_str().unwrap().contains("mtg_jamendo"));
     }
 
     #[test]
     fn test_base_models_list() {
-        assert_eq!(MlModelType::base_models().len(), 2);
+        assert_eq!(MlModelType::base_models().len(), 1);
         assert_eq!(MlModelType::experimental_models().len(), 1);
     }
 }
