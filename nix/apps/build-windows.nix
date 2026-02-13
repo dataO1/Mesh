@@ -392,8 +392,14 @@ TOOLCHAIN
           # Without it, the DLL exports nothing and Rust linking fails.
           # ---------------------------------------------------------------
           echo "==> Building Essentia library..."
-          git clone --depth 1 https://github.com/MTG/essentia.git
-          cd essentia
+          # Pin to same commit as nix/common.nix — Essentia master now requires
+          # FFmpeg 5.1+ (ch_layout API) but we build against FFmpeg 4.4.x
+          ESSENTIA_REV="17484ff0256169f14a959d62aa89a1463fead13f"
+          mkdir essentia && cd essentia
+          git init -q
+          git remote add origin https://github.com/MTG/essentia.git
+          git fetch --depth 1 origin "$ESSENTIA_REV"
+          git checkout -q FETCH_HEAD
 
           # Restore cross-compilation environment
           export CC=x86_64-w64-mingw32-gcc
@@ -543,10 +549,18 @@ TOOLCHAIN
           export CPLUS_INCLUDE_PATH="$ESSENTIA_HOST/include:$CPLUS_INCLUDE_PATH"
 
           # Clone essentia (reuse if possible from Windows build cache)
+          # Pin to same commit as nix/common.nix — Essentia master now requires
+          # FFmpeg 5.1+ (ch_layout API) but we build against FFmpeg 4.4.x
+          ESSENTIA_REV="17484ff0256169f14a959d62aa89a1463fead13f"
           if [[ -d /project/target/essentia-src ]]; then
             cp -r /project/target/essentia-src essentia
           else
-            git clone --depth 1 https://github.com/MTG/essentia.git
+            mkdir essentia && cd essentia
+            git init -q
+            git remote add origin https://github.com/MTG/essentia.git
+            git fetch --depth 1 origin "$ESSENTIA_REV"
+            git checkout -q FETCH_HEAD
+            cd ..
             mkdir -p /project/target/essentia-src
             cp -r essentia/* /project/target/essentia-src/
           fi

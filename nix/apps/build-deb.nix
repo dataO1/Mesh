@@ -256,8 +256,14 @@ pkgs.writeShellApplication {
           export CPLUS_INCLUDE_PATH="$DEPS_PREFIX/include:$CPLUS_INCLUDE_PATH"
 
           echo "    Cloning Essentia repository..."
-          git clone --depth 1 https://github.com/MTG/essentia.git
-          cd essentia
+          # Pin to same commit as nix/common.nix — Essentia master now requires
+          # FFmpeg 5.1+ (ch_layout API) but we build against FFmpeg 4.4.x
+          ESSENTIA_REV="17484ff0256169f14a959d62aa89a1463fead13f"
+          mkdir essentia && cd essentia
+          git init -q
+          git remote add origin https://github.com/MTG/essentia.git
+          git fetch --depth 1 origin "$ESSENTIA_REV"
+          git checkout -q FETCH_HEAD
 
           echo "    Configuring..."
           # Include both our custom deps AND system paths for eigen3, fftw3, etc.

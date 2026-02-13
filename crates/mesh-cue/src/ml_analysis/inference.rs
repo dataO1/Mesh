@@ -162,7 +162,7 @@ impl MlAnalyzer {
         let input = Array3::from_shape_vec((1, n_frames, n_bands), flat)
             .map_err(|e| format!("EffNet input shape error: {}", e))?;
 
-        let input_name = "serving_default_melspectrogram";
+        let input_name = "melspectrogram";
 
         let input_tensor = Tensor::from_array(input)
             .map_err(|e| format!("EffNet tensor creation error: {}", e))?;
@@ -222,8 +222,8 @@ impl MlAnalyzer {
         let input = Array2::from_shape_vec((1, embedding.len()), embedding.to_vec())
             .map_err(|e| format!("Mood input shape error: {}", e))?;
 
-        // Input tensor name from model metadata (mtg_jamendo_moodtheme-discogs-effnet-1.json)
-        let input_name = "model/Placeholder";
+        // Input tensor name from ONNX model (converted from TF classification head)
+        let input_name = "embeddings";
 
         let input_tensor = Tensor::from_array(input)
             .map_err(|e| format!("Mood tensor creation error: {}", e))?;

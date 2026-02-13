@@ -78,11 +78,22 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 ### Fixed
 
-- **procspawn subprocess library resolution** — Added `libopenmpt` and `mpg123`
-  to the binary's RUNPATH via build.rs rpath flags, and to the Nix devshell
-  runtime inputs. FFmpeg's transitive dependencies were not resolvable by
-  the procspawn analysis subprocess, causing `mpg123_open_handle64` symbol
-  lookup failures on NixOS.
+- **procspawn subprocess library resolution** — Force-linked `libopenmpt` and
+  `libmpg123` as direct binary NEEDED dependencies via build.rs (with
+  `--no-as-needed` to prevent linker stripping), and added to the Nix devshell
+  runtime inputs. Without direct linkage, the deep transitive chain
+  (Essentia → FFmpeg → libopenmpt → mpg123) failed lazy PLT symbol resolution
+  in the procspawn subprocess on NixOS. Also uses `--disable-new-dtags` for
+  DT_RPATH instead of DT_RUNPATH.
+
+- **Essentia build pinning** — Pinned Essentia to commit `17484ff` (FFmpeg 4.x
+  compatible) in Debian and Windows build scripts. Essentia master now requires
+  FFmpeg 5.1+ `ch_layout` API, breaking builds against FFmpeg 4.4.x.
+
+- **ML model input tensor names** — Fixed EffNet input name from
+  `serving_default_melspectrogram` to `melspectrogram` and Jamendo mood input
+  from `model/Placeholder` to `embeddings`, matching the actual ONNX model
+  tensor names (TF SavedModel prefixes get stripped during ONNX conversion).
 
 ---
 
