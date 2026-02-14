@@ -42,7 +42,24 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   steers recommendations toward higher-energy tracks (right) or cooler tracks
   (left). At center, suggestions prioritize safe harmonic transitions. Moving
   the fader unlocks progressively bolder key changes — energy boosts, semitone
-  lifts, and even tritone drops become available at extreme positions.
+  lifts, and even tritone drops become available at extreme positions. Uses a
+  5-term scoring formula (HNSW distance, key compatibility, key emotional
+  direction, ML arousal alignment, BPM proximity) with dynamic weight
+  interpolation — HNSW weight fades from 0.40→0.15 at extremes while arousal
+  and key direction weights increase, letting the fader genuinely reshape results.
+
+- **Key transition emotional impact** — Each of the 14 key transition types
+  (SameKey, AdjacentUp/Down, EnergyBoost/Cool, MoodLift/Darken, etc.) has a
+  research-calibrated energy direction value based on DJ mixing theory and music
+  psychology. These values influence both the harmonic filter (which transitions
+  are allowed) and the scoring ranking (which direction is preferred). For
+  example, semitone-up transitions (+0.70) are strongly boosted when raising
+  energy, while energy-cool transitions (-0.50) are penalized.
+
+- **Similarity search documentation** — Comprehensive technical documentation at
+  `documents/similarity-search.md` covering the full suggestion pipeline: HNSW
+  vector search, transition classification, base scores, energy modifiers,
+  adaptive filter, dynamic weights, reason tags, and parameters reference.
 
 - **Krumhansl key scoring model** — Alternative harmonic matching algorithm
   based on the Krumhansl-Kessler probe-tone research (1982). Computes a 24×24
@@ -125,6 +142,35 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 - **Discogs genre tag splitting** — ML genre tags in the `SuperGenre---SubGenre`
   format (e.g., "Electronic---Breakcore") are now split into separate super-genre
   (dark blue) and sub-genre (light blue) tags, with super-genre deduplication.
+
+- **HNSW full collection search** — Similarity search now queries the entire
+  library (k=10,000 with dynamic beam width) instead of only the 30 nearest
+  neighbors. This gives the energy direction fader a genuinely diverse candidate
+  pool to work with — previously the top-30 were so similar that fader movement
+  had negligible effect on results.
+
+- **Energy fader responsiveness** — Reduced the energy direction debounce
+  threshold from 0.05 to 0.02 and removed the dead zone in the energy modifier
+  function, so small fader movements now produce visible changes in suggestions.
+
+- **Debian build hidapi** — Added `libudev-dev` to the container build packages.
+  The hidapi crate's `linux-static-hidraw` backend needs udev headers at compile
+  time, causing build failures in the Ubuntu 22.04 container.
+
+- **Windows cross-compilation hidapi** — Made the `hidapi` dependency
+  target-conditional in mesh-midi: Linux uses `linux-static-hidraw` (static
+  hidraw backend), Windows uses default features (native Windows HID API via
+  `hid.dll`). The previous unconditional `linux-static-hidraw` feature would
+  fail when cross-compiling to `x86_64-pc-windows-gnu`.
+
+- **Xone K3 LED color model** — Corrected to 3 discrete layer offsets (red=+0,
+  amber=+36, green=+72) instead of a continuous gradient. The K3 has only 3 LED
+  color states unlike the K2's gradient.
+
+- **MIDI learn loop control addressing** — Loop toggle, halve, and double
+  controls now use `deck_index` (direct addressing) in the generated MIDI config
+  instead of `physical_deck` (layer-resolved). This matches the stem mute
+  pattern and ensures loop controls always target the correct virtual deck.
 
 ---
 
