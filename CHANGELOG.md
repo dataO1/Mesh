@@ -114,6 +114,18 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 ### Fixed
 
+- **HID udev rules in .deb packages** — The mesh-player .deb now installs
+  `/lib/udev/rules.d/99-mesh-hid.rules` automatically, granting user access to
+  USB HID controllers (Kontrol F1). Previously the F1 silently failed on
+  Debian/Pop!_OS because `/dev/hidraw*` devices require explicit udev rules for
+  non-root access. Connection failures are now logged at warn level with a hint
+  to check udev rules, instead of being silently swallowed at debug level.
+
+- **MIDI learn 4-deck load buttons** — When using 4 physical decks without layer
+  toggle, the browser phase now includes 4 dedicated DeckLoad steps (one per
+  deck) after the browse encoder/select mapping. Previously only the global
+  BrowserSelect was available, which could only load to the focused deck.
+
 - **procspawn subprocess library resolution** — Force-linked `libopenmpt` and
   `libmpg123` as direct binary NEEDED dependencies via build.rs (with
   `--no-as-needed` to prevent linker stripping), and added to the Nix devshell
