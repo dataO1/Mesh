@@ -55,6 +55,21 @@ fn beat_pulse_result(
     }
 }
 
+/// Per-stem LED colors for mute button feedback.
+///
+/// Chosen to be visually distinct on note-offset LED controllers (red-amber-green gradient)
+/// while approximating the waveform stem colors:
+/// - Vocals (green in waveform) → green LED
+/// - Drums (blue in waveform) → lime LED (closest cool tone available)
+/// - Bass (bronze in waveform) → orange LED (warm tone)
+/// - Other (lavender in waveform) → amber LED (neutral)
+const STEM_LED_COLORS: [[u8; 3]; 4] = [
+    [0, 220, 0],     // Vocals — green (offset ≈72)
+    [80, 220, 0],    // Drums — lime (offset ≈53)
+    [220, 60, 0],    // Bass — orange (offset ≈15)
+    [200, 200, 0],   // Other — amber (offset ≈36)
+];
+
 /// Application state for LED feedback
 ///
 /// This struct is populated by the app and passed to the feedback evaluator.
@@ -235,6 +250,23 @@ pub fn evaluate_feedback(
                     };
                     return FeedbackResult { address, value, color };
                 }
+            }
+
+            // Stem mute: per-stem color from STEM_LED_COLORS
+            if mapping.state == "deck.stem_muted" {
+                let deck_idx = resolve_feedback_deck(mapping, deck_target);
+                let deck_state = &state.decks[deck_idx];
+                let stem = mapping.params.get("stem")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
+                let is_muted = (deck_state.stems_muted & (1 << stem)) != 0;
+                let (value, color) = if is_muted {
+                    let c = STEM_LED_COLORS.get(stem).copied().unwrap_or([200, 0, 0]);
+                    (mapping.on_value, Some(c))
+                } else {
+                    (mapping.off_value, mapping.off_color)
+                };
+                return FeedbackResult { address, value, color };
             }
 
             let active = evaluate_state(mapping, state, deck_target);

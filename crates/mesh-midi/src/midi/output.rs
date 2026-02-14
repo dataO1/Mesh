@@ -187,22 +187,25 @@ impl Drop for MidiOutputHandler {
     }
 }
 
-/// Map an RGB color to the closest note offset for note-offset LED controllers.
+/// Map an RGB color to a note offset for note-offset LED controllers.
 ///
-/// Uses dominant channel heuristic:
-/// - Green dominant → green offset (e.g., playing state)
-/// - Red dominant → red offset (e.g., loop active state)
-/// - Otherwise → amber offset (mixed/neutral)
+/// Uses continuous interpolation along the red→green gradient based on the
+/// ratio of green to red+green. This produces smooth intermediate colors
+/// on controllers with gradient LEDs (e.g., Xone K series: 0=red, 36=amber, 72=green).
+/// The blue channel is ignored since these LEDs lack a blue element.
 fn rgb_to_note_offset(color: Option<[u8; 3]>, offsets: &ColorNoteOffsets) -> u8 {
     match color {
-        Some([r, g, b]) => {
-            if g > r && g > b {
-                offsets.green
-            } else if r > g && r > b {
-                offsets.red
-            } else {
-                offsets.amber
+        Some([r, g, _b]) => {
+            let r = r as f32;
+            let g = g as f32;
+            let total = r + g;
+            if total < 1.0 {
+                return offsets.red;
             }
+            let green_ratio = g / total;
+            let offset = offsets.red as f32
+                + (offsets.green as f32 - offsets.red as f32) * green_ratio;
+            offset.round() as u8
         }
         None => offsets.red,
     }
