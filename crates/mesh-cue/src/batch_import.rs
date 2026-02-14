@@ -810,9 +810,26 @@ fn process_single_track(
 /// Creates colored tags for genre, mood, and vocal/instrumental classification.
 /// Tags are stored via the database tag system.
 fn auto_tag_from_ml(track_id: i64, ml: &MlAnalysisData, db: &DatabaseService) {
-    // Genre tags (blue) — top 3 genres above 0.15 confidence
+    // Genre tags — split Discogs "SuperGenre---SubGenre" into separate tags
+    // Super-genres (dark blue), sub-genres (blue) — deduplicate super-genres
+    let mut seen_super = std::collections::HashSet::new();
     for (label, score) in ml.genre_scores.iter().take(3) {
-        if *score >= 0.15 {
+        if *score < 0.15 {
+            continue;
+        }
+        if let Some((super_genre, sub_genre)) = label.split_once("---") {
+            // Add super-genre once (darker blue)
+            if seen_super.insert(super_genre.to_string()) {
+                if let Err(e) = db.add_tag(track_id, super_genre, Some("#2563eb")) {
+                    log::warn!("auto_tag_from_ml: Failed to add genre tag '{}': {}", super_genre, e);
+                }
+            }
+            // Add sub-genre (lighter blue)
+            if let Err(e) = db.add_tag(track_id, sub_genre, Some("#60a5fa")) {
+                log::warn!("auto_tag_from_ml: Failed to add genre tag '{}': {}", sub_genre, e);
+            }
+        } else {
+            // No separator — use as-is
             if let Err(e) = db.add_tag(track_id, label, Some("#3b82f6")) {
                 log::warn!("auto_tag_from_ml: Failed to add genre tag '{}': {}", label, e);
             }

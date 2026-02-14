@@ -210,7 +210,10 @@ impl MlAnalyzer {
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(10);
 
-        let top_genre = scored.first().map(|(label, _)| label.clone());
+        // Store clean sub-genre as top_genre (e.g., "Breakcore" not "Electronic---Breakcore")
+        let top_genre = scored.first().map(|(label, _)| {
+            label.split_once("---").map_or(label.clone(), |(_, sub)| sub.to_string())
+        });
         (top_genre, scored)
     }
 
