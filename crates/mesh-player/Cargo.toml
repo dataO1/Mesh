@@ -55,7 +55,7 @@ fontconfig = "*"
 
 [dependencies]
 rtrb.workspace = true
-mesh-core.workspace = true
+mesh-core = { workspace = true, default-features = false }
 mesh-widgets.workspace = true
 mesh-midi = { path = "../mesh-midi" }
 iced.workspace = true

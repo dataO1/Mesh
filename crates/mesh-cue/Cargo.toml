@@ -57,7 +57,7 @@ alsa-lib = "*"
 fontconfig = "*"
 
 [dependencies]
-mesh-core.workspace = true
+mesh-core = { workspace = true, features = ["pd-effects"] }
 mesh-widgets.workspace = true
 iced.workspace = true
 tokio.workspace = true
