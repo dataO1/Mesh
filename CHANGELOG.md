@@ -89,6 +89,12 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   active and playing, steady red when loop is active but stopped. Both behaviors
   are automatically configured during MIDI learn.
 
+- **Note-offset LED color mode** — Support for controllers that use MIDI note
+  number offsets for LED colors (e.g., Allen & Heath Xone K series: red=+0,
+  amber=+36, green=+72). The MIDI output handler tracks per-LED color state
+  to ensure clean color transitions. Known controllers are auto-detected from
+  a built-in device database during MIDI learn — no manual configuration needed.
+
 ### Fixed
 
 - **procspawn subprocess library resolution** — Force-linked `libopenmpt` and

@@ -157,8 +157,15 @@ mesh-player --midi-learn
 
 The wizard guides you through mapping transport controls, performance pads, mixer faders, and browser navigation. Mappings are saved to `~/.config/mesh-player/midi.yaml`.
 
-**Tested controllers:**
-- Pioneer DDJ-SB2 (profile included)
+**Supported devices:**
+
+| Device | Protocol | Features |
+|--------|----------|----------|
+| **Allen & Heath Xone K3** | MIDI | Rotary encoders, buttons, note-offset RGB LEDs (red/amber/green) with beat-synced pulsing |
+| **Native Instruments Traktor Kontrol F1 MK2** | HID | 4x4 RGB pad grid, encoders, faders, full-color LED feedback |
+| **Pioneer DDJ-SB2** | MIDI | Profile included |
+
+Any class-compliant MIDI controller works via the Learn wizard. HID devices require a driver (currently F1 only). Controllers with note-offset LEDs (Xone K series) are auto-detected for correct color handling.
 
 ---
 
@@ -288,7 +295,7 @@ Two algorithms are available in **Settings → Display → Key Matching**:
 - [x] Stem linking for mashups
 - [x] Built-in Demucs stem separation
 - [x] GPU acceleration (CUDA/DirectML)
-- [x] MIDI controller support with learn wizard
+- [x] MIDI and HID controller support with learn wizard
 - [x] USB export for portable performance
 - [x] Track similarity search (audio fingerprinting)
 - [x] Smart suggestions with energy direction control
