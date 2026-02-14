@@ -3,8 +3,13 @@
 //! Translates protocol-agnostic feedback results into MIDI messages.
 //! The evaluation logic lives in `crate::feedback`; this module only
 //! handles the MIDI-specific byte encoding and sending.
+//!
+//! Supports two LED color modes:
+//! - **Velocity mode** (default): LED brightness/color via note velocity (0-127)
+//! - **Note-offset mode** (`color_note_offsets`): LED color via note number offset,
+//!   binary on/off via velocity. Used by Allen & Heath Xone K1/K2/K3.
 
-use crate::config::{DeviceProfile, MidiControlConfig};
+use crate::config::{ColorNoteOffsets, DeviceProfile, MidiControlConfig};
 use crate::deck_target::DeckTargetState;
 use crate::feedback::{
     evaluate_feedback, FeedbackChangeTracker, FeedbackResult, FeedbackState,
@@ -23,6 +28,8 @@ pub struct MidiOutputHandler {
     feedback_mappings: Vec<crate::config::FeedbackMapping>,
     /// Change tracker (replaces old last_values HashMap)
     change_tracker: FeedbackChangeTracker,
+    /// Note-offset LED color mode (e.g., Xone K series)
+    color_note_offsets: Option<ColorNoteOffsets>,
 }
 
 impl MidiOutputHandler {
@@ -32,6 +39,7 @@ impl MidiOutputHandler {
             connection,
             feedback_mappings: profile.feedback.clone(),
             change_tracker: FeedbackChangeTracker::new(),
+            color_note_offsets: profile.color_note_offsets.clone(),
         }
     }
 
@@ -47,11 +55,52 @@ impl MidiOutputHandler {
     pub fn apply_feedback(&mut self, results: &[FeedbackResult]) {
         for result in results {
             // Only handle MIDI addresses
-            if let Some(midi_ctrl) = result.address.as_midi_control_config() {
+            let Some(midi_ctrl) = result.address.as_midi_control_config() else {
+                continue;
+            };
+
+            if let Some(ref offsets) = self.color_note_offsets {
+                // Note-offset mode: color via note offset, binary on/off
+                let is_on = result.value >= 64;
+                let offset = if is_on {
+                    rgb_to_note_offset(result.color, offsets)
+                } else {
+                    0
+                };
+                // Encode on/off + color offset into a single tracker value:
+                // 0 = off, offset+1 = on with that color
+                let state = if is_on { offset.wrapping_add(1) } else { 0 };
+                if let Some(_) = self.change_tracker.update(&result.address, state) {
+                    if is_on {
+                        self.send_midi_note_offset(&midi_ctrl, 127, offset);
+                    } else {
+                        self.send_midi(&midi_ctrl, 0);
+                    }
+                }
+            } else {
+                // Standard velocity mode
                 if let Some(value) = self.change_tracker.update(&result.address, result.value) {
                     self.send_midi(&midi_ctrl, value);
                 }
             }
+        }
+    }
+
+    /// Send a MIDI feedback message with a note offset added to the note number
+    fn send_midi_note_offset(&mut self, control: &MidiControlConfig, value: u8, note_offset: u8) {
+        if let MidiControlConfig::Note { channel, note } = control {
+            let offset_note = note.wrapping_add(note_offset);
+            log::debug!(
+                "[MIDI OUT] Note ch={} note={:#04x}+{} val={}",
+                channel, note, note_offset, value
+            );
+            let message = vec![0x90 | channel, offset_note, value];
+            if let Err(e) = self.connection.send(&message) {
+                log::warn!("MIDI output: Failed to send message: {}", e);
+            }
+        } else {
+            // CC controls don't support note offsets, fall back to standard
+            self.send_midi(control, value);
         }
     }
 
@@ -112,5 +161,26 @@ impl MidiOutputHandler {
 impl Drop for MidiOutputHandler {
     fn drop(&mut self) {
         self.clear_all();
+    }
+}
+
+/// Map an RGB color to the closest note offset for note-offset LED controllers.
+///
+/// Uses dominant channel heuristic:
+/// - Green dominant → green offset (e.g., playing state)
+/// - Red dominant → red offset (e.g., loop active state)
+/// - Otherwise → amber offset (mixed/neutral)
+fn rgb_to_note_offset(color: Option<[u8; 3]>, offsets: &ColorNoteOffsets) -> u8 {
+    match color {
+        Some([r, g, b]) => {
+            if g > r && g > b {
+                offsets.green
+            } else if r > g && r > b {
+                offsets.red
+            } else {
+                offsets.amber
+            }
+        }
+        None => offsets.red,
     }
 }

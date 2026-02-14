@@ -1454,6 +1454,7 @@ impl MidiLearnState {
             shift_buttons,
             mappings,
             feedback,
+            color_note_offsets: None,
         };
 
         MidiConfig {

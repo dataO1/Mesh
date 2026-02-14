@@ -1176,6 +1176,10 @@ devices:
     shift_action: deck.browse_back
     encoder_mode: null
     hardware_type: button
+  color_note_offsets:
+    red: 0
+    amber: 36
+    green: 72
   feedback:
   - state: deck.is_playing
     physical_deck: 0

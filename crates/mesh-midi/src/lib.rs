@@ -287,6 +287,7 @@ impl ControllerManager {
                 shift_buttons: vec![],
                 mappings: vec![],
                 feedback: vec![],
+                color_note_offsets: None,
             };
 
             // Create shared state (default - no layers, no shift)

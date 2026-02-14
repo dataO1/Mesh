@@ -9,13 +9,50 @@ use crate::deck_target::{DeckTargetState, LayerSelection};
 use crate::types::ControlAddress;
 use std::collections::HashMap;
 
-/// Compute a smooth pulse brightness (0.0-1.0) from beat phase
+/// Compute a smooth pulse brightness for HID RGB LEDs (0.15-1.0) from beat phase.
 ///
-/// `beat_phase` is 0.0-1.0 within a beat (from beatgrid-aligned playhead).
-/// Uses a cosine curve so brightness peaks at beat start and dips mid-beat.
+/// Never fully off — keeps a dim glow at the trough for a breathing effect.
 fn pulse_brightness(beat_phase: f32) -> f32 {
     let phase = (beat_phase * std::f32::consts::TAU).cos();
     0.575 + 0.425 * phase
+}
+
+/// Compute a pulse factor for MIDI velocity (0.0-1.0) from beat phase.
+///
+/// Reaches 0.0 at mid-beat so binary on/off LEDs visibly blink.
+fn pulse_value(beat_phase: f32) -> f32 {
+    let phase = (beat_phase * std::f32::consts::TAU).cos();
+    0.5 + 0.5 * phase
+}
+
+/// Interpolate a single color channel between `off` and `on` by factor `t`.
+fn lerp_u8(off: u8, on: u8, t: f32) -> u8 {
+    (off as f32 + (on as f32 - off as f32) * t) as u8
+}
+
+/// Compute a beat-pulsed FeedbackResult.
+///
+/// Uses two separate curves: `pulse_brightness` for the RGB color (smooth HID glow)
+/// and `pulse_value` for the MIDI velocity (reaches 0 so binary LEDs blink).
+fn beat_pulse_result(
+    address: ControlAddress,
+    beat_phase: f32,
+    on_color: [u8; 3],
+    off_color: [u8; 3],
+    on_value: u8,
+    off_value: u8,
+) -> FeedbackResult {
+    let tc = pulse_brightness(beat_phase);
+    let tv = pulse_value(beat_phase);
+    FeedbackResult {
+        address,
+        value: lerp_u8(off_value, on_value, tv),
+        color: Some([
+            lerp_u8(off_color[0], on_color[0], tc),
+            lerp_u8(off_color[1], on_color[1], tc),
+            lerp_u8(off_color[2], on_color[2], tc),
+        ]),
+    }
 }
 
 /// Application state for LED feedback
@@ -119,20 +156,14 @@ pub fn evaluate_feedback(
                 let deck_idx = resolve_feedback_deck(mapping, deck_target);
                 let deck_state = &state.decks[deck_idx];
                 if deck_state.is_playing {
-                    let t = pulse_brightness(state.beat_phase);
-                    let on = mapping.on_color.unwrap_or([127, 127, 127]);
-                    let off = mapping.off_color.unwrap_or([0, 0, 0]);
-                    let r = (off[0] as f32 + (on[0] as f32 - off[0] as f32) * t) as u8;
-                    let g = (off[1] as f32 + (on[1] as f32 - off[1] as f32) * t) as u8;
-                    let b = (off[2] as f32 + (on[2] as f32 - off[2] as f32) * t) as u8;
-                    let v = (mapping.off_value as f32
-                        + (mapping.on_value as f32 - mapping.off_value as f32) * t)
-                        as u8;
-                    return FeedbackResult {
+                    return beat_pulse_result(
                         address,
-                        value: v,
-                        color: Some([r, g, b]),
-                    };
+                        state.beat_phase,
+                        mapping.on_color.unwrap_or([127, 127, 127]),
+                        mapping.off_color.unwrap_or([0, 0, 0]),
+                        mapping.on_value,
+                        mapping.off_value,
+                    );
                 } else {
                     return FeedbackResult {
                         address,
@@ -150,44 +181,27 @@ pub fn evaluate_feedback(
             if mapping.state == "deck.loop_encoder" {
                 let deck_idx = resolve_feedback_deck(mapping, deck_target);
                 let deck_state = &state.decks[deck_idx];
+                let off_color = mapping.off_color.unwrap_or([0, 0, 0]);
 
-                let (value, color) = if deck_state.loop_active {
+                return if deck_state.loop_active {
                     let alt_color = mapping.alt_on_color.unwrap_or([127, 0, 0]);
                     let alt_val = mapping.alt_on_value.unwrap_or(mapping.on_value);
                     if deck_state.is_playing {
-                        let t = pulse_brightness(state.beat_phase);
-                        let off = mapping.off_color.unwrap_or([0, 0, 0]);
-                        let r =
-                            (off[0] as f32 + (alt_color[0] as f32 - off[0] as f32) * t) as u8;
-                        let g =
-                            (off[1] as f32 + (alt_color[1] as f32 - off[1] as f32) * t) as u8;
-                        let b =
-                            (off[2] as f32 + (alt_color[2] as f32 - off[2] as f32) * t) as u8;
-                        let v = (mapping.off_value as f32
-                            + (alt_val as f32 - mapping.off_value as f32) * t)
-                            as u8;
-                        (v, Some([r, g, b]))
+                        beat_pulse_result(
+                            address, state.beat_phase,
+                            alt_color, off_color, alt_val, mapping.off_value,
+                        )
                     } else {
-                        (alt_val, Some(alt_color))
+                        FeedbackResult { address, value: alt_val, color: Some(alt_color) }
                     }
                 } else if deck_state.is_playing {
-                    let t = pulse_brightness(state.beat_phase);
-                    let on = mapping.on_color.unwrap_or([0, 127, 0]);
-                    let off = mapping.off_color.unwrap_or([0, 0, 0]);
-                    let r = (off[0] as f32 + (on[0] as f32 - off[0] as f32) * t) as u8;
-                    let g = (off[1] as f32 + (on[1] as f32 - off[1] as f32) * t) as u8;
-                    let b = (off[2] as f32 + (on[2] as f32 - off[2] as f32) * t) as u8;
-                    let v = (mapping.off_value as f32
-                        + (mapping.on_value as f32 - mapping.off_value as f32) * t)
-                        as u8;
-                    (v, Some([r, g, b]))
+                    beat_pulse_result(
+                        address, state.beat_phase,
+                        mapping.on_color.unwrap_or([0, 127, 0]), off_color,
+                        mapping.on_value, mapping.off_value,
+                    )
                 } else {
-                    (mapping.off_value, mapping.off_color)
-                };
-                return FeedbackResult {
-                    address,
-                    value,
-                    color,
+                    FeedbackResult { address, value: mapping.off_value, color: mapping.off_color }
                 };
             }
 
@@ -205,14 +219,13 @@ pub fn evaluate_feedback(
 
                     let (value, color) = if is_active && is_assigned {
                         // Active preset: pulse between on and off colors, synced to beatgrid
-                        let t = pulse_brightness(state.beat_phase);
-                        let on = mapping.on_color.unwrap_or([0, 127, 0]);
-                        let off = mapping.off_color.unwrap_or([20, 20, 20]);
-                        let r = (off[0] as f32 + (on[0] as f32 - off[0] as f32) * t) as u8;
-                        let g = (off[1] as f32 + (on[1] as f32 - off[1] as f32) * t) as u8;
-                        let b = (off[2] as f32 + (on[2] as f32 - off[2] as f32) * t) as u8;
-                        let v = (mapping.off_value as f32 + (mapping.on_value as f32 - mapping.off_value as f32) * t) as u8;
-                        (v, Some([r, g, b]))
+                        let result = beat_pulse_result(
+                            address.clone(), state.beat_phase,
+                            mapping.on_color.unwrap_or([0, 127, 0]),
+                            mapping.off_color.unwrap_or([20, 20, 20]),
+                            mapping.on_value, mapping.off_value,
+                        );
+                        (result.value, result.color)
                     } else if is_assigned {
                         // Assigned but not active: steady on
                         (mapping.on_value, mapping.on_color)

@@ -65,6 +65,27 @@ pub struct DeviceProfile {
     /// LED feedback mappings
     #[serde(default)]
     pub feedback: Vec<FeedbackMapping>,
+
+    /// Note-offset LED color mode (e.g., Xone K series: red=+0, amber=+36, green=+72).
+    /// When set, the MIDI output handler adds color offsets to note numbers instead of
+    /// using velocity for brightness. LEDs become binary on/off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_note_offsets: Option<ColorNoteOffsets>,
+}
+
+/// Note-offset LED color configuration for controllers that use note number
+/// offsets to select LED colors (e.g., Allen & Heath Xone K1/K2/K3).
+///
+/// Each value is added to the feedback mapping's base note number to select
+/// the corresponding LED color. Velocity is treated as binary (on/off).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ColorNoteOffsets {
+    /// Note offset for red LEDs (typically 0)
+    pub red: u8,
+    /// Note offset for amber/orange LEDs (typically 36)
+    pub amber: u8,
+    /// Note offset for green LEDs (typically 72)
+    pub green: u8,
 }
 
 /// Deck targeting mode configuration
@@ -622,6 +643,7 @@ devices:
             shift_buttons: vec![],
             mappings: vec![],
             feedback: vec![],
+            color_note_offsets: None,
         };
 
         // Exact match with learned_port_name (different ALSA client IDs)
@@ -644,6 +666,7 @@ devices:
             shift_buttons: vec![],
             mappings: vec![],
             feedback: vec![],
+            color_note_offsets: None,
         };
         assert!(port_matches("DDJ-SB2 MIDI 1 [hw:3,0,0]", &profile_bracket_format));
         assert!(port_matches("DDJ-SB2 MIDI 1 [hw:1,0,0]", &profile_bracket_format));
@@ -660,6 +683,7 @@ devices:
             shift_buttons: vec![],
             mappings: vec![],
             feedback: vec![],
+            color_note_offsets: None,
         };
 
         // Fallback to substring match
