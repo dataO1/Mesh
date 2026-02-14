@@ -162,6 +162,23 @@ fn base_score(tt: TransitionType) -> f32 {
 ///
 /// The modifier scales linearly with `|energy_bias|` and is 0.0 at center.
 /// Positive modifier = bonus (raises score), negative = penalty (lowers score).
+///
+/// Based on research into the emotional impact of key transitions in DJ mixing:
+/// - **Semitone up** (+7 Camelot): Visceral pitch lift, strongest energy surge (+0.70)
+/// - **Energy boost** (+2): Dramatic whole-step lift, "hands in the air" (+0.50)
+/// - **Mood lift** (minor→major): Emotional brightening, "sun coming out" (+0.30)
+/// - **Adjacent up** (+1): Gentle forward momentum via dominant modulation (+0.20)
+/// - **Diagonal up**: Complex lift combining energy + mood shift (+0.15)
+/// - **Same key**: Perfectly neutral — maintains current energy level (0.00)
+/// - **Adjacent down** (-1): Gentle relaxation via subdominant ("plagal") (-0.20)
+/// - **Diagonal down**: Complex cooldown with mood shift (-0.15)
+/// - **Mood darken** (major→minor): Emotional darkening, introspective (-0.30)
+/// - **Energy cool** (-2): Strong energy drain, whole-step descent (-0.50)
+/// - **Semitone down** (-7): Dramatic settling/sinking sensation (-0.50)
+/// - **Tritone** (6 steps): Maximum dissonance, chaotic tension (-0.80)
+///
+/// At full fader, these modifiers are strong enough that energy-aligned transitions
+/// (e.g. semitone up at +1.0 bias) can compete with harmonically safer options.
 fn energy_modifier(tt: TransitionType, energy_bias: f32) -> f32 {
     if energy_bias.abs() < 0.05 {
         return 0.0;
@@ -169,46 +186,32 @@ fn energy_modifier(tt: TransitionType, energy_bias: f32) -> f32 {
 
     let abs_bias = energy_bias.abs();
 
-    let raw = if energy_bias > 0.0 {
-        // Raising energy (fader right of center)
-        match tt {
-            TransitionType::SemitoneUp => 0.35,
-            TransitionType::EnergyBoost => 0.30,
-            TransitionType::MoodLift => 0.20,
-            TransitionType::DiagonalUp => 0.15,
-            TransitionType::AdjacentUp => 0.10,
-            TransitionType::FarStep(s) if s > 0 => 0.05,
-            TransitionType::AdjacentDown => -0.15,
-            TransitionType::MoodDarken => -0.15,
-            TransitionType::EnergyCool => -0.20,
-            TransitionType::DiagonalDown => -0.10,
-            _ => 0.0,
-        }
-    } else {
-        // Dropping energy (fader left of center)
-        match tt {
-            TransitionType::EnergyCool => 0.25,
-            TransitionType::SemitoneDown => 0.20,
-            TransitionType::MoodDarken => 0.20,
-            TransitionType::Tritone => 0.15,
-            TransitionType::DiagonalDown => 0.15,
-            TransitionType::AdjacentDown => 0.10,
-            TransitionType::FarStep(s) => {
-                match s.unsigned_abs() {
-                    3 => 0.10,
-                    4 | 5 => 0.08,
-                    _ => 0.0,
-                }
-            }
-            TransitionType::AdjacentUp => -0.15,
-            TransitionType::MoodLift => -0.15,
-            TransitionType::EnergyBoost => -0.20,
-            TransitionType::DiagonalUp => -0.10,
-            _ => 0.0,
-        }
+    // Each transition has an inherent energy direction from -1.0 to +1.0.
+    // When the fader aligns with the transition direction, it gets a bonus.
+    // When they oppose, it gets a penalty.
+    let energy_direction = match tt {
+        TransitionType::SemitoneUp => 0.70,
+        TransitionType::EnergyBoost => 0.50,
+        TransitionType::MoodLift => 0.30,
+        TransitionType::AdjacentUp => 0.20,
+        TransitionType::DiagonalUp => 0.15,
+        TransitionType::SameKey => 0.0,
+        TransitionType::FarStep(s) => s.signum() as f32 * 0.10,
+        TransitionType::FarCross(s) => s.signum() as f32 * 0.05,
+        TransitionType::DiagonalDown => -0.15,
+        TransitionType::AdjacentDown => -0.20,
+        TransitionType::MoodDarken => -0.30,
+        TransitionType::EnergyCool => -0.50,
+        TransitionType::SemitoneDown => -0.50,
+        TransitionType::Tritone => -0.80,
     };
 
-    raw * abs_bias
+    // Alignment: positive when fader direction matches transition direction.
+    // At center (bias=0) this is always 0 → no modifier.
+    // At extremes, aligned transitions get up to +0.56 bonus,
+    // opposing transitions get up to -0.64 penalty.
+    let alignment = energy_direction * energy_bias.signum();
+    alignment * abs_bias * 0.80
 }
 
 // ─── Krumhansl-Kessler Perceptual Key Distance ──────────────────────
@@ -319,6 +322,40 @@ fn adaptive_filter_threshold(energy_bias: f32) -> f32 {
     } else {
         0.10 // Extreme: nearly everything except tritone
     }
+}
+
+/// Compute a key transition energy direction penalty (0.0 = perfect match, 1.0 = worst).
+///
+/// Separate from `energy_modifier` (which adjusts the key *compatibility* score),
+/// this provides an independent signal about whether the transition's emotional
+/// energy direction aligns with the fader. At center (bias=0), returns 0.5
+/// for all transitions (neutral — no direction preference).
+///
+/// This is used as its own term in the scoring formula (`w_key_dir`) so the
+/// fader can independently steer results toward energy-raising or energy-lowering
+/// key transitions.
+fn key_direction_penalty(tt: TransitionType, energy_bias: f32) -> f32 {
+    // Each transition has an inherent energy direction (same values as energy_modifier)
+    let energy_direction = match tt {
+        TransitionType::SemitoneUp => 0.70,
+        TransitionType::EnergyBoost => 0.50,
+        TransitionType::MoodLift => 0.30,
+        TransitionType::AdjacentUp => 0.20,
+        TransitionType::DiagonalUp => 0.15,
+        TransitionType::SameKey => 0.0,
+        TransitionType::FarStep(s) => s.signum() as f32 * 0.10,
+        TransitionType::FarCross(s) => s.signum() as f32 * 0.05,
+        TransitionType::DiagonalDown => -0.15,
+        TransitionType::AdjacentDown => -0.20,
+        TransitionType::MoodDarken => -0.30,
+        TransitionType::EnergyCool => -0.50,
+        TransitionType::SemitoneDown => -0.50,
+        TransitionType::Tritone => -0.80,
+    };
+    // Alignment with fader direction: positive = matching, negative = opposing
+    let alignment = energy_direction * energy_bias;
+    // Map to 0-1 penalty: good alignment → 0, opposing → 1, neutral → 0.5
+    0.5 - 0.5 * alignment.clamp(-1.0, 1.0)
 }
 
 /// Compute arousal-based energy direction penalty (0.0 = perfect match, 1.0 = worst mismatch).
@@ -499,17 +536,18 @@ pub fn query_suggestions(
 
     // Step 5: Unified scoring — single formula for all candidates
     //
-    // Weights are dynamic: at center the fader has no effect and HNSW similarity
-    // dominates. At extremes, HNSW weight drops and arousal/energy direction takes
-    // over, allowing contrasting tracks to surface.
+    // Dynamic weights: as the fader moves to extremes, HNSW similarity (which
+    // inherently finds similar tracks) yields to key direction and arousal,
+    // letting contrasting-but-energy-appropriate tracks surface.
     //
-    // Center (bias=0): 0.40 hnsw + 0.30 key + 0.15 arousal + 0.15 bpm
-    // Extreme (|bias|=1): 0.20 hnsw + 0.25 key + 0.40 arousal + 0.15 bpm
+    // Center (bias=0): 0.40 hnsw + 0.25 key + 0.10 key_dir + 0.15 arousal + 0.10 bpm = 1.00
+    // Extreme (|bias|=1): 0.15 hnsw + 0.25 key + 0.20 key_dir + 0.30 arousal + 0.10 bpm = 1.00
     let bias_abs = energy_bias.abs();
-    let w_hnsw = 0.40 - 0.20 * bias_abs;    // 0.40 → 0.20
-    let w_key = 0.30 - 0.05 * bias_abs;     // 0.30 → 0.25
-    let w_arousal = 0.15 + 0.25 * bias_abs;  // 0.15 → 0.40
-    let w_bpm = 0.15;                         // constant
+    let w_hnsw = 0.40 - 0.25 * bias_abs;      // 0.40 → 0.15
+    let w_key = 0.25;                           // constant — harmonic safety always matters
+    let w_arousal = 0.15 + 0.15 * bias_abs;    // 0.15 → 0.30
+    let w_bpm = 0.10;                           // constant
+    let w_key_dir = 0.10 + 0.10 * bias_abs;    // 0.10 → 0.20 (key energy direction)
 
     let mut suggestions: Vec<SuggestedTrack> = candidates
         .into_values()
@@ -540,6 +578,11 @@ pub fn query_suggestions(
 
             let key_penalty = 1.0 - best_key_score;
 
+            // Key energy direction penalty: does the transition's emotional
+            // energy direction match the fader? 0.0 = perfect alignment, 1.0 = opposing.
+            // At center (bias=0) all transitions get 0.5 (neutral).
+            let key_dir_penalty = key_direction_penalty(best_tt, energy_bias);
+
             // BPM penalty: normalized distance (10 BPM diff → 1.0 penalty)
             let bpm_penalty = track
                 .bpm
@@ -559,6 +602,7 @@ pub fn query_suggestions(
 
             let score = w_hnsw * hnsw_dist
                 + w_key * key_penalty
+                + w_key_dir * key_dir_penalty
                 + w_arousal * arousal_penalty
                 + w_bpm * bpm_penalty;
 
@@ -766,6 +810,62 @@ mod tests {
         let extreme = adaptive_filter_threshold(1.0);
         assert!(extreme < center, "Threshold should be lower at extremes");
         assert_eq!(extreme, 0.10);
+    }
+
+    // ─── Key Direction Penalty ──────────────────────────────────────
+
+    #[test]
+    fn test_key_dir_center_is_neutral() {
+        // At center, all transitions get 0.5 regardless of direction
+        assert_eq!(key_direction_penalty(TransitionType::SemitoneUp, 0.0), 0.5);
+        assert_eq!(key_direction_penalty(TransitionType::EnergyCool, 0.0), 0.5);
+        assert_eq!(key_direction_penalty(TransitionType::SameKey, 0.0), 0.5);
+    }
+
+    #[test]
+    fn test_key_dir_raise_prefers_energy_raising_transitions() {
+        let semitone_up = key_direction_penalty(TransitionType::SemitoneUp, 1.0);
+        let energy_boost = key_direction_penalty(TransitionType::EnergyBoost, 1.0);
+        let same_key = key_direction_penalty(TransitionType::SameKey, 1.0);
+        let energy_cool = key_direction_penalty(TransitionType::EnergyCool, 1.0);
+        let semitone_down = key_direction_penalty(TransitionType::SemitoneDown, 1.0);
+
+        // Energy-raising transitions should have low penalty when raising
+        assert!(semitone_up < 0.5, "Semitone up should be below neutral when raising: {}", semitone_up);
+        assert!(energy_boost < 0.5, "Energy boost should be below neutral when raising: {}", energy_boost);
+        // Same key is neutral
+        assert_eq!(same_key, 0.5);
+        // Energy-lowering transitions should have high penalty when raising
+        assert!(energy_cool > 0.5, "Energy cool should be above neutral when raising: {}", energy_cool);
+        assert!(semitone_down > 0.5, "Semitone down should be above neutral when raising: {}", semitone_down);
+        // Ordering: semitone up best, then energy boost
+        assert!(semitone_up < energy_boost, "Semitone up should be preferred over boost: {} vs {}", semitone_up, energy_boost);
+    }
+
+    #[test]
+    fn test_key_dir_drop_prefers_energy_lowering_transitions() {
+        let energy_cool = key_direction_penalty(TransitionType::EnergyCool, -1.0);
+        let mood_darken = key_direction_penalty(TransitionType::MoodDarken, -1.0);
+        let same_key = key_direction_penalty(TransitionType::SameKey, -1.0);
+        let mood_lift = key_direction_penalty(TransitionType::MoodLift, -1.0);
+        let energy_boost = key_direction_penalty(TransitionType::EnergyBoost, -1.0);
+
+        // Energy-lowering transitions should have low penalty when dropping
+        assert!(energy_cool < 0.5, "Energy cool should be below neutral when dropping: {}", energy_cool);
+        assert!(mood_darken < 0.5, "Mood darken should be below neutral when dropping: {}", mood_darken);
+        // Energy-raising transitions should have high penalty when dropping
+        assert!(mood_lift > 0.5, "Mood lift should be above neutral when dropping: {}", mood_lift);
+        assert!(energy_boost > 0.5, "Energy boost should be above neutral when dropping: {}", energy_boost);
+        assert_eq!(same_key, 0.5);
+    }
+
+    #[test]
+    fn test_key_dir_scales_with_fader() {
+        // At half fader, penalty should be between center (0.5) and extreme
+        let full = key_direction_penalty(TransitionType::SemitoneUp, 1.0);
+        let half = key_direction_penalty(TransitionType::SemitoneUp, 0.5);
+        assert!(half < 0.5, "Should still be below neutral at half fader");
+        assert!(half > full, "Effect should be stronger at full fader: half={} full={}", half, full);
     }
 
     // ─── Arousal Direction Penalty ────────────────────────────────────
