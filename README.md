@@ -223,53 +223,37 @@ Install CLAP plugins from your distro's package manager or download from plugin 
 
 ## Smart Suggestions
 
-When you toggle suggestions on in the collection browser, Mesh analyzes the tracks loaded on your decks and recommends what to play next. Each suggestion gets colored **reason tags** that explain *why* it was recommended.
+When you toggle suggestions on in the collection browser, Mesh analyzes the tracks loaded on your decks and recommends what to play next. The system combines five scoring factors:
 
-### Reason Tags
-
-Each suggestion row shows a colored pill describing the key relationship to your currently playing tracks. The arrow indicates the direction of movement on the Camelot wheel:
-
-| Tag | Meaning |
-|-----|---------|
-| **━ Same Key** | Same key — maximum harmonic safety |
-| **▲ Adjacent** | One step clockwise on the Camelot wheel — lifts energy while staying harmonically safe |
-| **▼ Adjacent** | One step counter-clockwise — cools energy, still safe |
-| **▲ Diagonal** | Cross-mode step up (e.g., 8B→9A) — shifts mood while raising energy |
-| **▼ Diagonal** | Cross-mode step down (e.g., 8A→7B) — shifts mood while cooling |
-| **▲ Boost** | Two steps clockwise (+2) — noticeable energy increase, fewer shared notes |
-| **▼ Cool** | Two steps counter-clockwise (-2) — noticeable energy decrease |
-| **▲ Mood Lift** | Minor→major at the same Camelot position (e.g., 8A→8B = Am→C) — brightens mood |
-| **▼ Darken** | Major→minor at the same position (e.g., 8B→8A = C→Am) — darkens mood |
-| **▲ Semitone** | Classic pop key change (+7 on Camelot = one semitone up in pitch) — dramatic lift |
-| **▼ Semitone** | One semitone down (-7 on Camelot) — dramatic drop |
-| **▲/▼ Far** | 3-5 steps on the Camelot wheel — risky but available at extreme energy settings |
-| **▼ Tritone** | 6 steps (maximum dissonance) — only appears at extreme energy drop settings |
-
-### Symbols
-
-- **▲** — Transition moves clockwise on the Camelot wheel (raises musical tension)
-- **▼** — Transition moves counter-clockwise (releases musical tension)
-- **━** — Same key (no movement)
-
-### Color Coding
-
-Tag pill colors use a traffic-light system based on harmonic compatibility:
-
-| Color | Meaning |
-|-------|---------|
-| **Green** | Excellent match (key score ≥ 0.7) — harmonically safe transition |
-| **Amber** | Acceptable match (key score ≥ 0.4) — use with care |
-| **Red** | Risky match (key score < 0.4) — clashing keys, dramatic effect only |
+| Factor | What It Measures |
+|--------|-----------------|
+| **Audio similarity** | HNSW vector search on 16-dim audio fingerprints (rhythm, harmony, energy, timbre) |
+| **Harmonic compatibility** | Key transition safety via Camelot wheel or Krumhansl perceptual model |
+| **Key energy direction** | Emotional impact of the key transition (semitone up = +0.70, tritone = -0.80) |
+| **Arousal alignment** | ML-derived perceived energy matching the fader direction |
+| **Tempo proximity** | BPM distance from currently playing tracks |
 
 ### Energy Direction Fader
 
-The energy direction fader (center of the suggestions panel) steers what kinds of tracks are recommended:
+The fader steers what kinds of tracks are recommended. At center, audio similarity dominates for safe harmonic matches. At extremes, key energy direction and arousal take over:
 
-- **Center** — Strict harmonic matching only (same key, adjacent, relative)
-- **Right** — Progressively unlocks energy-raising transitions (boost, mood lift, semitone up)
-- **Left** — Progressively unlocks energy-cooling transitions (cool, darken, tritone)
+| | Center | Extreme |
+|-|--------|---------|
+| Audio similarity | 40% | 15% |
+| Key compatibility | 25% | 25% |
+| Key energy direction | 10% | 20% |
+| Arousal alignment | 15% | 30% |
+| BPM proximity | 10% | 10% |
 
-At extreme fader positions, the harmonic filter relaxes to allow dramatic key changes that would normally be filtered out.
+Each key transition has a research-calibrated emotional energy direction. The fader both steers which transitions are preferred and relaxes the harmonic filter to allow dramatic key changes:
+
+- **Center** — Strict: same key, adjacent, relative, diagonal
+- **Right** — Progressively prefers energy-raising transitions (boost, mood lift, semitone up)
+- **Left** — Progressively prefers energy-cooling transitions (cool, darken, semitone down, tritone)
+
+### Reason Tags
+
+Each suggestion shows a colored tag pill (green/amber/red) with a directional arrow (▲ raise / ▼ cool / ━ same key) indicating the harmonic relationship.
 
 ### Key Scoring Models
 
@@ -278,7 +262,9 @@ Two algorithms are available in **Settings → Display → Key Matching**:
 | Model | Description |
 |-------|-------------|
 | **Camelot** (default) | Classic DJ wheel — hand-tuned scores for each transition category. Well-understood, predictable. |
-| **Krumhansl** | Based on the Krumhansl-Kessler (1982) music psychology research. Uses a 24×24 perceptual key distance matrix computed from listener probe-tone ratings. Better at rating cross-mode transitions (e.g., C major to A minor) where the Camelot model uses coarse categories. |
+| **Krumhansl** | Based on Krumhansl-Kessler (1982) music psychology research. 24×24 perceptual key distance matrix from listener probe-tone ratings. Better at cross-mode transitions. |
+
+See [documents/similarity-search.md](documents/similarity-search.md) for the full technical documentation including the scoring pipeline, all transition types with emotional impact descriptions, the adaptive filter thresholds, and parameter reference.
 
 ---
 
