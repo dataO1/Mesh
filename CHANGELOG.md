@@ -83,6 +83,12 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   current. Uses the ort-based pipeline (no subprocess), separate from the
   Essentia-based BPM/key/LUFS reanalysis.
 
+- **Beat-synced LED feedback** — Play button LEDs now pulse to the beat when a
+  deck is playing, using the master beatgrid phase. Loop button LEDs use a
+  compound state: green pulse when playing (no loop), red pulse when loop is
+  active and playing, steady red when loop is active but stopped. Both behaviors
+  are automatically configured during MIDI learn.
+
 ### Fixed
 
 - **procspawn subprocess library resolution** — Force-linked `libopenmpt` and

@@ -1132,7 +1132,7 @@ impl MidiLearnState {
                     ("deck.cue_press".to_string(), Some(d), None, ControlBehavior::Momentary, Some("deck.is_cueing"))
                 }
                 HighlightTarget::DeckLoop(d) => {
-                    ("deck.toggle_loop".to_string(), Some(d), None, ControlBehavior::Toggle, Some("deck.loop_active"))
+                    ("deck.toggle_loop".to_string(), Some(d), None, ControlBehavior::Toggle, Some("deck.loop_encoder"))
                 }
 
                 // Loop size encoder (negative delta = halve, positive = double)

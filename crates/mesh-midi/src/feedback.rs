@@ -114,6 +114,83 @@ pub fn evaluate_feedback(
                 return FeedbackResult { address, value, color };
             }
 
+            // Play button: pulse brightness to the beat when playing
+            if mapping.state == "deck.is_playing" {
+                let deck_idx = resolve_feedback_deck(mapping, deck_target);
+                let deck_state = &state.decks[deck_idx];
+                if deck_state.is_playing {
+                    let t = pulse_brightness(state.beat_phase);
+                    let on = mapping.on_color.unwrap_or([127, 127, 127]);
+                    let off = mapping.off_color.unwrap_or([0, 0, 0]);
+                    let r = (off[0] as f32 + (on[0] as f32 - off[0] as f32) * t) as u8;
+                    let g = (off[1] as f32 + (on[1] as f32 - off[1] as f32) * t) as u8;
+                    let b = (off[2] as f32 + (on[2] as f32 - off[2] as f32) * t) as u8;
+                    let v = (mapping.off_value as f32
+                        + (mapping.on_value as f32 - mapping.off_value as f32) * t)
+                        as u8;
+                    return FeedbackResult {
+                        address,
+                        value: v,
+                        color: Some([r, g, b]),
+                    };
+                } else {
+                    return FeedbackResult {
+                        address,
+                        value: mapping.off_value,
+                        color: mapping.off_color,
+                    };
+                }
+            }
+
+            // Loop encoder: compound state with beat-synced pulsing
+            // - Playing + no loop → pulse on_color (green) to beat
+            // - Loop active + playing → pulse alt_on_color (red) to beat
+            // - Loop active + stopped → steady alt_on_color (red)
+            // - Stopped + no loop → off
+            if mapping.state == "deck.loop_encoder" {
+                let deck_idx = resolve_feedback_deck(mapping, deck_target);
+                let deck_state = &state.decks[deck_idx];
+
+                let (value, color) = if deck_state.loop_active {
+                    let alt_color = mapping.alt_on_color.unwrap_or([127, 0, 0]);
+                    let alt_val = mapping.alt_on_value.unwrap_or(mapping.on_value);
+                    if deck_state.is_playing {
+                        let t = pulse_brightness(state.beat_phase);
+                        let off = mapping.off_color.unwrap_or([0, 0, 0]);
+                        let r =
+                            (off[0] as f32 + (alt_color[0] as f32 - off[0] as f32) * t) as u8;
+                        let g =
+                            (off[1] as f32 + (alt_color[1] as f32 - off[1] as f32) * t) as u8;
+                        let b =
+                            (off[2] as f32 + (alt_color[2] as f32 - off[2] as f32) * t) as u8;
+                        let v = (mapping.off_value as f32
+                            + (alt_val as f32 - mapping.off_value as f32) * t)
+                            as u8;
+                        (v, Some([r, g, b]))
+                    } else {
+                        (alt_val, Some(alt_color))
+                    }
+                } else if deck_state.is_playing {
+                    let t = pulse_brightness(state.beat_phase);
+                    let on = mapping.on_color.unwrap_or([0, 127, 0]);
+                    let off = mapping.off_color.unwrap_or([0, 0, 0]);
+                    let r = (off[0] as f32 + (on[0] as f32 - off[0] as f32) * t) as u8;
+                    let g = (off[1] as f32 + (on[1] as f32 - off[1] as f32) * t) as u8;
+                    let b = (off[2] as f32 + (on[2] as f32 - off[2] as f32) * t) as u8;
+                    let v = (mapping.off_value as f32
+                        + (mapping.on_value as f32 - mapping.off_value as f32) * t)
+                        as u8;
+                    (v, Some([r, g, b]))
+                } else {
+                    (mapping.off_value, mapping.off_color)
+                };
+                return FeedbackResult {
+                    address,
+                    value,
+                    color,
+                };
+            }
+
             // Slicer preset overlay: when deck is in slicer mode, hot_cue_set
             // pads show slicer preset state instead (assigned/active with pulsing)
             if mapping.state == "deck.hot_cue_set" {
