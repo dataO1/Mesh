@@ -41,6 +41,8 @@ pub enum AnalysisType {
     Bpm,
     /// Musical key detection
     Key,
+    /// ML similarity features: genre, mood, vocal presence, arousal/valence
+    Similarity,
     /// All analysis types
     All,
 }
@@ -52,6 +54,7 @@ impl AnalysisType {
             Self::Loudness => "Loudness",
             Self::Bpm => "BPM",
             Self::Key => "Key",
+            Self::Similarity => "Similarity",
             Self::All => "All",
         }
     }
@@ -62,6 +65,12 @@ impl AnalysisType {
     /// re-export the entire file rather than just updating the bext chunk.
     pub fn requires_waveform_regeneration(&self) -> bool {
         matches!(self, Self::Loudness | Self::All)
+    }
+
+    /// Returns whether this analysis type uses the ML pipeline (ort/EffNet)
+    /// rather than the Essentia subprocess pipeline.
+    pub fn is_ml_analysis(&self) -> bool {
+        matches!(self, Self::Similarity)
     }
 }
 
@@ -299,6 +308,11 @@ pub fn analyze_partial(
         }
         AnalysisType::Key => {
             result.key = Some(detect_key(samples)?);
+        }
+        AnalysisType::Similarity => {
+            // ML analysis uses a separate pipeline (ort/EffNet), not this subprocess.
+            // This path should not be reached — handled by run_batch_ml_reanalysis().
+            log::warn!("Similarity analysis requested in subprocess — use ML pipeline instead");
         }
         AnalysisType::All => {
             // Run all analysis

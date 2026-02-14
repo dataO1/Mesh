@@ -154,6 +154,13 @@ pub fn view(state: &ContextMenuState) -> Option<Element<'static, Message>> {
                         scope: scope.clone(),
                     },
                 ),
+                menu_item(
+                    &format!("Re-analyse Similarity{}", scope_label),
+                    Message::StartReanalysis {
+                        analysis_type: AnalysisType::Similarity,
+                        scope: scope.clone(),
+                    },
+                ),
                 menu_separator(),
                 menu_item(
                     &format!("Re-analyse All{}", scope_label),
@@ -199,6 +206,13 @@ pub fn view(state: &ContextMenuState) -> Option<Element<'static, Message>> {
                         scope: scope.clone(),
                     },
                 ),
+                menu_item(
+                    &format!("Re-analyse Similarity{}", scope_label),
+                    Message::StartReanalysis {
+                        analysis_type: AnalysisType::Similarity,
+                        scope: scope.clone(),
+                    },
+                ),
                 menu_separator(),
                 menu_item(
                     &format!("Re-analyse All{}", scope_label),
@@ -232,6 +246,13 @@ pub fn view(state: &ContextMenuState) -> Option<Element<'static, Message>> {
                     "Re-analyse Key (Playlist)",
                     Message::StartReanalysis {
                         analysis_type: AnalysisType::Key,
+                        scope: scope.clone(),
+                    },
+                ),
+                menu_item(
+                    "Re-analyse Similarity (Playlist)",
+                    Message::StartReanalysis {
+                        analysis_type: AnalysisType::Similarity,
                         scope: scope.clone(),
                     },
                 ),
@@ -272,6 +293,13 @@ pub fn view(state: &ContextMenuState) -> Option<Element<'static, Message>> {
                         scope: scope.clone(),
                     },
                 ),
+                menu_item(
+                    "Re-analyse Similarity (All)",
+                    Message::StartReanalysis {
+                        analysis_type: AnalysisType::Similarity,
+                        scope: scope.clone(),
+                    },
+                ),
                 menu_separator(),
                 menu_item(
                     "Re-analyse All (Collection)",
@@ -297,7 +325,7 @@ pub fn view(state: &ContextMenuState) -> Option<Element<'static, Message>> {
                 ..Default::default()
             }
         })
-        .width(Length::Fixed(180.0));
+        .width(Length::Fixed(230.0));
 
     Some(menu.into())
 }

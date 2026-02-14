@@ -1012,6 +1012,10 @@ impl MeshCueDomain {
     // ═══════════════════════════════════════════════════════════════════════
 
     /// Start reanalysis in background thread
+    ///
+    /// Routes to the appropriate pipeline based on analysis type:
+    /// - Similarity → ML pipeline (ort/EffNet, no subprocess)
+    /// - Loudness/BPM/Key/All → Essentia subprocess pipeline
     pub fn start_reanalysis(
         &mut self,
         tracks: Vec<PathBuf>,
@@ -1020,24 +1024,40 @@ impl MeshCueDomain {
         let (progress_tx, progress_rx) = std::sync::mpsc::channel();
         let cancel_flag = Arc::new(AtomicBool::new(false));
 
-        let bpm_config = self.config.analysis.bpm.clone();
-        let loudness_config = self.config.analysis.loudness.clone();
         let parallel = self.config.analysis.parallel_processes;
         let db = self.db_service.clone();
         let cancel = cancel_flag.clone();
 
-        std::thread::spawn(move || {
-            run_batch_reanalysis(
-                tracks,
-                analysis_type,
-                bpm_config,
-                loudness_config,
-                parallel,
-                progress_tx,
-                cancel,
-                Some(db),
-            );
-        });
+        if analysis_type.is_ml_analysis() {
+            // ML pipeline: ort-based EffNet + classification heads (no subprocess)
+            let experimental = self.config.analysis.experimental_ml;
+            std::thread::spawn(move || {
+                crate::reanalysis::run_batch_ml_reanalysis(
+                    tracks,
+                    experimental,
+                    parallel,
+                    progress_tx,
+                    cancel,
+                    db,
+                );
+            });
+        } else {
+            // Subprocess pipeline: Essentia C++ for BPM/key/LUFS
+            let bpm_config = self.config.analysis.bpm.clone();
+            let loudness_config = self.config.analysis.loudness.clone();
+            std::thread::spawn(move || {
+                run_batch_reanalysis(
+                    tracks,
+                    analysis_type,
+                    bpm_config,
+                    loudness_config,
+                    parallel,
+                    progress_tx,
+                    cancel,
+                    Some(db),
+                );
+            });
+        }
 
         self.reanalysis_progress_rx = Some(progress_rx);
         self.reanalysis_cancel_flag = Some(cancel_flag);

@@ -805,11 +805,41 @@ fn process_single_track(
     }
 }
 
+/// ML-generated tag colors (used for clearing before re-tagging)
+pub const ML_TAG_COLORS: &[&str] = &[
+    "#2563eb", // genre super (dark blue)
+    "#60a5fa", // genre sub (light blue)
+    "#3b82f6", // genre plain (blue)
+    "#8b5cf6", // mood (purple)
+    "#2d8a4e", // vocal (green)
+    "#c49a2a", // instrumental (amber)
+];
+
+/// Remove all ML-generated tags from a track before re-tagging.
+///
+/// Identifies ML tags by their color codes (genre, mood, vocal/instrumental).
+pub fn clear_ml_tags(track_id: i64, db: &DatabaseService) {
+    match db.get_tags(track_id) {
+        Ok(tags) => {
+            for (label, color) in tags {
+                if let Some(ref c) = color {
+                    if ML_TAG_COLORS.contains(&c.as_str()) {
+                        let _ = db.remove_tag(track_id, &label);
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            log::warn!("clear_ml_tags: Failed to get tags for track {}: {}", track_id, e);
+        }
+    }
+}
+
 /// Auto-generate tags from ML analysis results
 ///
 /// Creates colored tags for genre, mood, and vocal/instrumental classification.
 /// Tags are stored via the database tag system.
-fn auto_tag_from_ml(track_id: i64, ml: &MlAnalysisData, db: &DatabaseService) {
+pub fn auto_tag_from_ml(track_id: i64, ml: &MlAnalysisData, db: &DatabaseService) {
     // Genre tags — split Discogs "SuperGenre---SubGenre" into separate tags
     // Super-genres (dark blue), sub-genres (blue) — deduplicate super-genres
     let mut seen_super = std::collections::HashSet::new();

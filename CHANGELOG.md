@@ -76,6 +76,13 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   relationship to currently playing tracks (e.g., "▲ Adjacent", "━ Same Key")
   with traffic-light coloring (green/amber/red) based on harmonic compatibility.
 
+- **Re-analyse Similarity** — Context menu option to re-run ML analysis (genre,
+  mood, vocal presence, arousal/valence) on existing tracks without re-importing.
+  Works on single tracks, multi-selections, playlists, or the entire collection.
+  Clears old ML-generated tags before re-tagging, so genre and mood labels stay
+  current. Uses the ort-based pipeline (no subprocess), separate from the
+  Essentia-based BPM/key/LUFS reanalysis.
+
 ### Fixed
 
 - **procspawn subprocess library resolution** — Force-linked `libopenmpt` and
@@ -94,6 +101,18 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   `serving_default_melspectrogram` to `melspectrogram` and Jamendo mood input
   from `model/Placeholder` to `embeddings`, matching the actual ONNX model
   tensor names (TF SavedModel prefixes get stripped during ONNX conversion).
+
+- **JACK client name collision** — mesh-cue and mesh-player now register with
+  distinct JACK client names (`mesh-cue` / `mesh-player`) instead of both using
+  `mesh-player`, preventing connection failures when both apps run simultaneously.
+
+- **CPAL audio fallback** — When JACK server is unavailable, the audio system
+  now falls back to CPAL (ALSA/PulseAudio) instead of failing outright. Both
+  backends are always compiled; JACK is tried first, CPAL used as fallback.
+
+- **Discogs genre tag splitting** — ML genre tags in the `SuperGenre---SubGenre`
+  format (e.g., "Electronic---Breakcore") are now split into separate super-genre
+  (dark blue) and sub-genre (light blue) tags, with super-genre deduplication.
 
 ---
 
