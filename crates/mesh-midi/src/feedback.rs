@@ -57,17 +57,19 @@ fn beat_pulse_result(
 
 /// Per-stem LED colors for mute button feedback.
 ///
-/// Chosen to be visually distinct on note-offset LED controllers (red-amber-green gradient)
-/// while approximating the waveform stem colors:
-/// - Vocals (green in waveform) → green LED
-/// - Drums (blue in waveform) → lime LED (closest cool tone available)
-/// - Bass (bronze in waveform) → orange LED (warm tone)
-/// - Other (lavender in waveform) → amber LED (neutral)
+/// On HID devices (e.g. Kontrol F1), these RGB values are used directly.
+/// On note-offset MIDI devices (e.g. Xone K3), they map to one of 3 layers:
+/// - Green-dominant → green layer (user configures matching color in Xone Editor)
+/// - Red-dominant → red layer
+/// - Neutral/blue → amber layer
+///
+/// With 4 stems and 3 layers, Drums and Other share the amber layer on the Xone K.
+/// On HID devices all 4 get distinct RGB colors.
 const STEM_LED_COLORS: [[u8; 3]; 4] = [
-    [0, 220, 0],     // Vocals — green (offset ≈72)
-    [80, 220, 0],    // Drums — lime (offset ≈53)
-    [220, 60, 0],    // Bass — orange (offset ≈15)
-    [200, 200, 0],   // Other — amber (offset ≈36)
+    [100, 204, 140], // Vocals — sage green (→ green layer on Xone K)
+    [102, 153, 191], // Drums — steel blue (→ amber layer on Xone K)
+    [191, 140, 89],  // Bass — bronze (→ red layer on Xone K)
+    [179, 153, 217], // Other — lavender (→ amber layer on Xone K)
 ];
 
 /// Application state for LED feedback

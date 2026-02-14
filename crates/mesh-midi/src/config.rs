@@ -74,17 +74,24 @@ pub struct DeviceProfile {
 }
 
 /// Note-offset LED color configuration for controllers that use note number
-/// offsets to select LED colors (e.g., Allen & Heath Xone K1/K2/K3).
+/// offsets to select pre-configured LED colors.
 ///
-/// Each value is added to the feedback mapping's base note number to select
-/// the corresponding LED color. Velocity is treated as binary (on/off).
+/// On the Xone K series, each button has up to 3 layers (note offsets +0, +36, +72).
+/// Each layer's color is set in the Xone Controller Editor from a 16-color RGB palette.
+/// MIDI can only turn layers on/off — the actual displayed color depends on the
+/// editor configuration. The K2 has fixed red/amber/green LEDs; the K3 has full RGB
+/// LEDs where any palette color can be assigned per layer.
+///
+/// The offset values here correspond to the layer note numbers. Software chooses which
+/// layer to activate based on the desired state, and the user configures matching colors
+/// in the Xone Controller Editor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColorNoteOffsets {
-    /// Note offset for red LEDs (typically 0)
+    /// Note offset for layer 1 (default: red on K2, configurable on K3)
     pub red: u8,
-    /// Note offset for amber/orange LEDs (typically 36)
+    /// Note offset for layer 2 (default: amber on K2, configurable on K3)
     pub amber: u8,
-    /// Note offset for green LEDs (typically 72)
+    /// Note offset for layer 3 (default: green on K2, configurable on K3)
     pub green: u8,
 }
 
@@ -93,7 +100,7 @@ pub struct ColorNoteOffsets {
 /// Maps controller name substrings (lowercase) to their note-offset configurations.
 /// Checked in order; first match wins.
 const KNOWN_LED_COLOR_MODES: &[(&str, ColorNoteOffsets)] = &[
-    // Allen & Heath Xone K series — red/amber/green via note offsets
+    // Allen & Heath Xone K series — 3 layers via note offsets
     ("xone", ColorNoteOffsets { red: 0, amber: 36, green: 72 }),
 ];
 

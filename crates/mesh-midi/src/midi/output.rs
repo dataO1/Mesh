@@ -6,8 +6,10 @@
 //!
 //! Supports two LED color modes:
 //! - **Velocity mode** (default): LED brightness/color via note velocity (0-127)
-//! - **Note-offset mode** (`color_note_offsets`): LED color via note number offset,
-//!   binary on/off via velocity. Used by Allen & Heath Xone K1/K2/K3.
+//! - **Note-offset mode** (`color_note_offsets`): LED color layer via note number offset,
+//!   binary on/off via velocity. Used by Allen & Heath Xone K series. The K3 has full
+//!   RGB LEDs with a 16-color palette — actual colors are set in the Xone Controller
+//!   Editor; MIDI only selects which of 3 layers (and thus which configured color) to show.
 
 use crate::config::{ColorNoteOffsets, DeviceProfile, MidiControlConfig};
 use crate::deck_target::DeckTargetState;
@@ -187,25 +189,35 @@ impl Drop for MidiOutputHandler {
     }
 }
 
-/// Map an RGB color to a note offset for note-offset LED controllers.
+/// Map an RGB color to one of three note-offset layers for LED controllers.
 ///
-/// Uses continuous interpolation along the red→green gradient based on the
-/// ratio of green to red+green. This produces smooth intermediate colors
-/// on controllers with gradient LEDs (e.g., Xone K series: 0=red, 36=amber, 72=green).
-/// The blue channel is ignored since these LEDs lack a blue element.
+/// On the Xone K series, each button has 3 layers activated by note offsets.
+/// The actual displayed color depends on the Xone Controller Editor configuration.
+/// This function selects which layer to activate based on the RGB color's hue:
+///
+/// - Warm colors (red, orange, bronze) → layer 1 (red offset)
+/// - Neutral colors (amber, yellow, white, equal mix) → layer 2 (amber offset)
+/// - Cool colors (green, lime, cyan, blue, lavender) → layer 3 (green offset)
 fn rgb_to_note_offset(color: Option<[u8; 3]>, offsets: &ColorNoteOffsets) -> u8 {
     match color {
-        Some([r, g, _b]) => {
-            let r = r as f32;
-            let g = g as f32;
-            let total = r + g;
-            if total < 1.0 {
-                return offsets.red;
+        Some([r, g, b]) => {
+            // Find the dominant channel(s) to classify the hue
+            let max = r.max(g).max(b);
+            let min = r.min(g).min(b);
+            if max == 0 || (max - min) < 20 {
+                // Very dark or near-grey/white → amber (neutral layer)
+                return offsets.amber;
             }
-            let green_ratio = g / total;
-            let offset = offsets.red as f32
-                + (offsets.green as f32 - offsets.red as f32) * green_ratio;
-            offset.round() as u8
+            if g >= r && g >= b {
+                // Green dominant (green, lime, cyan-ish) → green layer
+                offsets.green
+            } else if r >= g && r >= b && r > b + 30 {
+                // Red dominant and clearly warmer than blue (red, orange, bronze) → red layer
+                offsets.red
+            } else {
+                // Blue dominant, purple, lavender, or mixed → amber layer
+                offsets.amber
+            }
         }
         None => offsets.red,
     }
