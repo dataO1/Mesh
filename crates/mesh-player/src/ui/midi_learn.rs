@@ -1454,7 +1454,7 @@ impl MidiLearnState {
             shift_buttons,
             mappings,
             feedback,
-            color_note_offsets: None,
+            color_note_offsets: mesh_midi::detect_color_note_offsets(&self.controller_name),
         };
 
         MidiConfig {

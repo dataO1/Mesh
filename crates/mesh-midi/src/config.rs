@@ -88,6 +88,27 @@ pub struct ColorNoteOffsets {
     pub green: u8,
 }
 
+/// Known controller LED color modes.
+///
+/// Maps controller name substrings (lowercase) to their note-offset configurations.
+/// Checked in order; first match wins.
+const KNOWN_LED_COLOR_MODES: &[(&str, ColorNoteOffsets)] = &[
+    // Allen & Heath Xone K series — red/amber/green via note offsets
+    ("xone", ColorNoteOffsets { red: 0, amber: 36, green: 72 }),
+];
+
+/// Auto-detect note-offset LED color mode from a controller/port name.
+///
+/// Checks against a built-in table of known controllers. Returns `None` for
+/// standard velocity-mode controllers.
+pub fn detect_color_note_offsets(name: &str) -> Option<ColorNoteOffsets> {
+    let lower = name.to_lowercase();
+    KNOWN_LED_COLOR_MODES
+        .iter()
+        .find(|(pattern, _)| lower.contains(pattern))
+        .map(|(_, offsets)| offsets.clone())
+}
+
 /// Deck targeting mode configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]

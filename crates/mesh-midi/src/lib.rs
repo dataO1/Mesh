@@ -33,10 +33,10 @@ pub mod types;
 
 // Re-export config types
 pub use config::{
-    default_midi_config_path, load_midi_config, normalize_port_name, port_matches,
-    save_midi_config, ControlBehavior, ControlMapping, DeckTargetConfig, DeviceProfile,
-    EncoderMode, FeedbackMapping, HardwareType, MidiConfig, MidiControlConfig, PadModeSource,
-    ShiftButtonConfig,
+    default_midi_config_path, detect_color_note_offsets, load_midi_config, normalize_port_name,
+    port_matches, save_midi_config, ColorNoteOffsets, ControlBehavior, ControlMapping,
+    DeckTargetConfig, DeviceProfile, EncoderMode, FeedbackMapping, HardwareType, MidiConfig,
+    MidiControlConfig, PadModeSource, ShiftButtonConfig,
 };
 
 // Re-export MIDI backend types
