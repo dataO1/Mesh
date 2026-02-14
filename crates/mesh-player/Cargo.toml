@@ -31,6 +31,8 @@ priority = "optional"
 assets = [
     ["target/release/mesh-player", "usr/bin/", "755"],
     ["../../packaging/mesh-player.desktop", "usr/share/applications/", "644"],
+    # udev rules for USB HID controllers (Kontrol F1 etc.) — grants user access to /dev/hidraw*
+    ["../../etc/udev/99-mesh-hid.rules", "lib/udev/rules.d/", "644"],
     # User should add icon: ["../../packaging/icons/mesh-player.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
 ]
 # $auto detects library dependencies, then we add explicit audio/graphics deps

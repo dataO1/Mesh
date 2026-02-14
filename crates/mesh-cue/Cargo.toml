@@ -22,6 +22,7 @@ priority = "optional"
 assets = [
     ["target/release/mesh-cue", "usr/bin/", "755"],
     ["../../packaging/mesh-cue.desktop", "usr/share/applications/", "644"],
+    # Note: udev HID rules (99-mesh-hid.rules) are shipped in mesh-player.deb to avoid dpkg conflicts
     # Bundled libraries in /usr/lib/mesh/ (not available in modern distro repos)
     ["target/release/bundled/libessentia.so", "usr/lib/mesh/", "644"],
     # FFmpeg 4.x libs (modern distros have FFmpeg 6.x which is ABI-incompatible)

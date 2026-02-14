@@ -534,7 +534,7 @@ impl ControllerManager {
                     );
                 }
                 Err(e) => {
-                    log::debug!("HID: Failed to connect to '{}': {}", info.product_name, e);
+                    log::warn!("HID: Failed to connect to '{}' at {}: {} (check udev rules — see etc/udev/99-mesh-hid.rules)", info.product_name, info.path, e);
                 }
             }
         }
@@ -576,7 +576,7 @@ impl ControllerManager {
                     );
                 }
                 Err(e) => {
-                    log::debug!("HID Learn: Failed to connect to '{}': {}", info.product_name, e);
+                    log::warn!("HID Learn: Failed to connect to '{}' at {}: {} (check udev rules — see etc/udev/99-mesh-hid.rules)", info.product_name, info.path, e);
                 }
             }
         }
