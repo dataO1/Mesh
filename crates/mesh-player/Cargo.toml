@@ -9,10 +9,12 @@ authors.workspace = true
 [features]
 # JACK backend is default for Linux; on Windows/macOS it's a no-op (uses CPAL)
 # Use --no-default-features for CPAL-only builds
-default = ["jack-backend"]
+default = ["jack-backend", "pd-effects"]
 # Use native JACK backend on Linux for pro-audio port routing
 # Enables port-level selection (e.g., Scarlett 18i20 outputs 1-2 vs 3-4)
 jack-backend = ["mesh-core/jack-backend"]
+# Pure Data effect hosting (requires libffi — disable for Windows cross-compilation)
+pd-effects = ["mesh-core/pd-effects"]
 # Show console window on Windows (for debugging - shows stdout/stderr)
 # Without this feature, Windows builds hide the console (GUI-only)
 console = []

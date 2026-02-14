@@ -6,15 +6,18 @@ edition.workspace = true
 [features]
 # JACK backend is default for Linux pro-audio; on other platforms it's a no-op
 # Use --no-default-features for CPAL-only builds (Windows/macOS cross-compile)
-default = ["jack-backend"]
+default = ["jack-backend", "pd-effects"]
 # Use native JACK backend on Linux for pro-audio port routing
 # When disabled, uses CPAL (which supports ALSA/PipeWire on Linux)
 jack-backend = ["dep:jack"]
+# Pure Data effect hosting via libpd-rs (requires libffi)
+# Disable for cross-compilation targets where libffi-sys doesn't build (e.g., Windows)
+pd-effects = ["dep:libpd-rs"]
 
 [dependencies]
 rtrb.workspace = true
 signalsmith-stretch.workspace = true
-libpd-rs.workspace = true
+libpd-rs = { workspace = true, optional = true }
 serde_json = "1.0"  # For PD effect metadata parsing
 serde.workspace = true
 serde_yaml.workspace = true
