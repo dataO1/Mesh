@@ -708,29 +708,51 @@ impl MidiLearnState {
         }
     }
 
+    /// Number of extra virtual decks that need dedicated loop controls.
+    /// In layer mode, loop controls are per-virtual-deck (like mixer channels),
+    /// not per-physical-deck, since mixers typically have one encoder per channel.
+    fn extra_loop_decks(&self) -> usize {
+        self.num_mixer_channels().saturating_sub(self.deck_count)
+    }
+
+    fn transport_step_count(&self) -> usize {
+        // 6 controls per physical deck (play, cue, loop, loop encoder, beat jump back/fwd)
+        // + 2 extra loop controls (toggle + size) per additional virtual deck in layer mode
+        self.deck_count * 6 + self.extra_loop_decks() * 2
+    }
+
     fn enter_transport_phase(&mut self) {
         self.last_capture_time = None;
         self.phase = LearnPhase::Transport;
         self.current_step = 0;
-        // 6 controls per deck:
-        // play, cue, loop, loop size encoder, beat jump back, beat jump forward
-        // (mode buttons moved to pads phase for better workflow)
-        self.total_steps = self.deck_count * 6;
+        self.total_steps = self.transport_step_count();
         self.update_transport_target();
     }
 
     fn update_transport_target(&mut self) {
-        let deck = self.current_step / 6;
-        let control = self.current_step % 6;
+        let base_steps = self.deck_count * 6;
 
-        self.highlight_target = Some(match control {
-            0 => HighlightTarget::DeckPlay(deck),
-            1 => HighlightTarget::DeckCue(deck),
-            2 => HighlightTarget::DeckLoop(deck),
-            3 => HighlightTarget::DeckLoopEncoder(deck),
-            4 => HighlightTarget::DeckBeatJumpBack(deck),
-            5 => HighlightTarget::DeckBeatJumpForward(deck),
-            _ => unreachable!(),
+        self.highlight_target = Some(if self.current_step < base_steps {
+            let deck = self.current_step / 6;
+            let control = self.current_step % 6;
+            match control {
+                0 => HighlightTarget::DeckPlay(deck),
+                1 => HighlightTarget::DeckCue(deck),
+                2 => HighlightTarget::DeckLoop(deck),
+                3 => HighlightTarget::DeckLoopEncoder(deck),
+                4 => HighlightTarget::DeckBeatJumpBack(deck),
+                5 => HighlightTarget::DeckBeatJumpForward(deck),
+                _ => unreachable!(),
+            }
+        } else {
+            // Extra loop controls for additional virtual decks (layer mode)
+            let extra_step = self.current_step - base_steps;
+            let deck = self.deck_count + extra_step / 2;
+            match extra_step % 2 {
+                0 => HighlightTarget::DeckLoop(deck),
+                1 => HighlightTarget::DeckLoopEncoder(deck),
+                _ => unreachable!(),
+            }
         });
 
         if let Some(ref target) = self.highlight_target {
@@ -1073,7 +1095,7 @@ impl MidiLearnState {
         // name, deck count, layer toggle, pad mode, shift left, shift right
         // + optionally toggle left, toggle right
         let setup_steps = if self.has_layer_toggle { 8 } else { 6 };
-        let transport_steps = self.deck_count * 6; // play, cue, loop, loop size encoder, beat jump
+        let transport_steps = self.transport_step_count();
         // Pads phase includes mode buttons + pads:
         // Controller mode: (hot cue mode + 8 pads + slicer mode + 8 pads) = 18 per deck
         // App mode: (hot cue mode + 8 pads + slicer mode) = 10 per deck
@@ -1132,12 +1154,12 @@ impl MidiLearnState {
                     ("deck.cue_press".to_string(), Some(d), None, ControlBehavior::Momentary, Some("deck.is_cueing"))
                 }
                 HighlightTarget::DeckLoop(d) => {
-                    ("deck.toggle_loop".to_string(), Some(d), None, ControlBehavior::Toggle, Some("deck.loop_encoder"))
+                    ("deck.toggle_loop".to_string(), None, Some(d), ControlBehavior::Toggle, Some("deck.loop_encoder"))
                 }
 
                 // Loop size encoder (negative delta = halve, positive = double)
                 HighlightTarget::DeckLoopEncoder(d) => {
-                    ("deck.loop_size".to_string(), Some(d), None, ControlBehavior::Continuous, None)
+                    ("deck.loop_size".to_string(), None, Some(d), ControlBehavior::Continuous, None)
                 }
 
                 // Beat jump

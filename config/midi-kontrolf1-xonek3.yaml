@@ -64,8 +64,8 @@ devices:
       channel: 14
       note: 53
     action: deck.toggle_loop
-    physical_deck: 0
-    deck_index: null
+    physical_deck: null
+    deck_index: 0
     params: {}
     behavior: toggle
     shift_action: null
@@ -77,8 +77,8 @@ devices:
       channel: 14
       cc: 1
     action: deck.loop_size
-    physical_deck: 0
-    deck_index: null
+    physical_deck: null
+    deck_index: 0
     params: {}
     behavior: continuous
     shift_action: null
@@ -138,8 +138,8 @@ devices:
       channel: 14
       note: 54
     action: deck.toggle_loop
-    physical_deck: 1
-    deck_index: null
+    physical_deck: null
+    deck_index: 1
     params: {}
     behavior: toggle
     shift_action: null
@@ -151,8 +151,60 @@ devices:
       channel: 14
       cc: 2
     action: deck.loop_size
-    physical_deck: 1
-    deck_index: null
+    physical_deck: null
+    deck_index: 1
+    params: {}
+    behavior: continuous
+    shift_action: null
+    encoder_mode: null
+    hardware_type: unknown
+  - control:
+      protocol: midi
+      type: note
+      channel: 14
+      note: 52
+    action: deck.toggle_loop
+    physical_deck: null
+    deck_index: 2
+    params: {}
+    behavior: toggle
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: midi
+      type: control_change
+      channel: 14
+      cc: 0
+    action: deck.loop_size
+    physical_deck: null
+    deck_index: 2
+    params: {}
+    behavior: continuous
+    shift_action: null
+    encoder_mode: null
+    hardware_type: unknown
+  - control:
+      protocol: midi
+      type: note
+      channel: 14
+      note: 55
+    action: deck.toggle_loop
+    physical_deck: null
+    deck_index: 3
+    params: {}
+    behavior: toggle
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: midi
+      type: control_change
+      channel: 14
+      cc: 3
+    action: deck.loop_size
+    physical_deck: null
+    deck_index: 3
     params: {}
     behavior: continuous
     shift_action: null
@@ -1097,7 +1149,7 @@ devices:
     deck_index: null
     params: {}
     behavior: momentary
-    shift_action: null
+    shift_action: deck.browse_back
     encoder_mode: null
     hardware_type: button
   - control:
@@ -1121,33 +1173,9 @@ devices:
     deck_index: null
     params: {}
     behavior: momentary
-    shift_action: null
+    shift_action: deck.browse_back
     encoder_mode: null
     hardware_type: button
-  - control:
-      protocol: hid
-      device_id: E82DF2FC
-      name: fader_1
-    action: deck.suggestion_energy
-    physical_deck: 0
-    deck_index: null
-    params: {}
-    behavior: continuous
-    shift_action: null
-    encoder_mode: null
-    hardware_type: fader
-  - control:
-      protocol: hid
-      device_id: B2220F4E
-      name: fader_1
-    action: deck.suggestion_energy
-    physical_deck: 1
-    deck_index: null
-    params: {}
-    behavior: continuous
-    shift_action: null
-    encoder_mode: null
-    hardware_type: fader
   feedback:
   - state: deck.is_playing
     physical_deck: 0
@@ -1185,9 +1213,9 @@ devices:
     - 20
     - 20
     - 20
-  - state: deck.loop_active
-    physical_deck: 0
-    deck_index: null
+  - state: deck.loop_encoder
+    physical_deck: null
+    deck_index: 0
     params: {}
     output:
       protocol: midi
@@ -1232,15 +1260,37 @@ devices:
     - 20
     - 20
     - 20
-  - state: deck.loop_active
-    physical_deck: 1
-    deck_index: null
+  - state: deck.loop_encoder
+    physical_deck: null
+    deck_index: 1
     params: {}
     output:
       protocol: midi
       type: note
       channel: 14
       note: 54
+    on_value: 127
+    off_value: 0
+  - state: deck.loop_encoder
+    physical_deck: null
+    deck_index: 2
+    params: {}
+    output:
+      protocol: midi
+      type: note
+      channel: 14
+      note: 52
+    on_value: 127
+    off_value: 0
+  - state: deck.loop_encoder
+    physical_deck: null
+    deck_index: 3
+    params: {}
+    output:
+      protocol: midi
+      type: note
+      channel: 14
+      note: 55
     on_value: 127
     off_value: 0
   - state: deck.hot_cue_mode
