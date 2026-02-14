@@ -16,6 +16,7 @@ use crate::feedback::{
 };
 use crate::types::ControlAddress;
 use midir::MidiOutputConnection;
+use std::collections::HashMap;
 
 // Re-export feedback types for backwards compatibility
 pub use crate::feedback::{ActionMode, DeckFeedbackState, MixerFeedbackState};
@@ -30,6 +31,8 @@ pub struct MidiOutputHandler {
     change_tracker: FeedbackChangeTracker,
     /// Note-offset LED color mode (e.g., Xone K series)
     color_note_offsets: Option<ColorNoteOffsets>,
+    /// Last note offset sent per address (for correct note-off in note-offset mode)
+    last_note_offsets: HashMap<ControlAddress, u8>,
 }
 
 impl MidiOutputHandler {
@@ -40,6 +43,7 @@ impl MidiOutputHandler {
             feedback_mappings: profile.feedback.clone(),
             change_tracker: FeedbackChangeTracker::new(),
             color_note_offsets: profile.color_note_offsets.clone(),
+            last_note_offsets: HashMap::new(),
         }
     }
 
@@ -60,21 +64,26 @@ impl MidiOutputHandler {
             };
 
             if let Some(ref offsets) = self.color_note_offsets {
-                // Note-offset mode: color via note offset, binary on/off
+                // Note-offset mode: color via note offset, binary on/off.
+                // Each color is a different MIDI note (base + offset), so we must
+                // turn off the OLD note before turning on a NEW one when colors change.
                 let is_on = result.value >= 64;
-                let offset = if is_on {
+                let new_offset = if is_on {
                     rgb_to_note_offset(result.color, offsets)
                 } else {
                     0
                 };
                 // Encode on/off + color offset into a single tracker value:
                 // 0 = off, offset+1 = on with that color
-                let state = if is_on { offset.wrapping_add(1) } else { 0 };
-                if let Some(_) = self.change_tracker.update(&result.address, state) {
+                let state = if is_on { new_offset.wrapping_add(1) } else { 0 };
+                if self.change_tracker.update(&result.address, state).is_some() {
+                    // Turn off the previous color note before changing state
+                    if let Some(old_offset) = self.last_note_offsets.remove(&result.address) {
+                        self.send_midi_note_offset(&midi_ctrl, 0, old_offset);
+                    }
                     if is_on {
-                        self.send_midi_note_offset(&midi_ctrl, 127, offset);
-                    } else {
-                        self.send_midi(&midi_ctrl, 0);
+                        self.send_midi_note_offset(&midi_ctrl, 127, new_offset);
+                        self.last_note_offsets.insert(result.address.clone(), new_offset);
                     }
                 }
             } else {
@@ -94,7 +103,11 @@ impl MidiOutputHandler {
                 "[MIDI OUT] Note ch={} note={:#04x}+{} val={}",
                 channel, note, note_offset, value
             );
-            let message = vec![0x90 | channel, offset_note, value];
+            let message = if value > 0 {
+                vec![0x90 | channel, offset_note, value]
+            } else {
+                vec![0x80 | channel, offset_note, 0]
+            };
             if let Err(e) = self.connection.send(&message) {
                 log::warn!("MIDI output: Failed to send message: {}", e);
             }
@@ -142,13 +155,23 @@ impl MidiOutputHandler {
 
     /// Clear all LEDs (send off value for all tracked controls)
     pub fn clear_all(&mut self) {
-        // Collect addresses to avoid borrow issues
+        // Turn off note-offset LEDs using their last-known offsets
+        let offset_entries: Vec<(ControlAddress, u8)> = self
+            .last_note_offsets
+            .drain()
+            .collect();
+        for (address, offset) in &offset_entries {
+            if let Some(control) = address.as_midi_control_config() {
+                self.send_midi_note_offset(&control, 0, *offset);
+            }
+        }
+
+        // Turn off remaining standard (non-offset) controls
         let addresses: Vec<ControlAddress> = self
             .change_tracker
             .tracked_addresses()
             .cloned()
             .collect();
-
         for address in &addresses {
             if let Some(control) = address.as_midi_control_config() {
                 self.send_midi(&control, 0);
