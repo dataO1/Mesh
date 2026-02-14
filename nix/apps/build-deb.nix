@@ -137,6 +137,7 @@ pkgs.writeShellApplication {
           libxrandr-dev \
           libxi-dev \
           libssl-dev \
+          libudev-dev \
           libjack-jackd2-dev \
           libfftw3-dev \
           libtag1-dev \
