@@ -595,14 +595,17 @@ impl SimilarityQuery {
     pub fn find_similar(db: &MeshDb, track_id: i64, limit: usize) -> Result<Vec<(TrackRow, f32)>, DbError> {
         let mut params = BTreeMap::new();
         params.insert("track_id".to_string(), DataValue::from(track_id));
-        params.insert("k".to_string(), DataValue::from((limit + 1) as i64)); // +1 to exclude self
+        let k = (limit + 1) as i64; // +1 to account for self-exclusion
+        params.insert("k".to_string(), DataValue::from(k));
+        // ef (search beam width) must be >= k for good recall
+        params.insert("ef".to_string(), DataValue::from(k.max(50)));
 
         // First get the embedding for the query track, then search using HNSW
         let result = db.run_query(r#"
             ?[track_id, path, folder_path, name, artist, bpm, original_bpm, key,
               duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path, dist] :=
                 *audio_features{track_id: $track_id, vec: query_vec},
-                ~audio_features:similarity_index{track_id | query: query_vec, k: $k, ef: 50, bind_distance: dist},
+                ~audio_features:similarity_index{track_id | query: query_vec, k: $k, ef: $ef, bind_distance: dist},
                 track_id != $track_id,
                 *tracks{id: track_id, path, folder_path, name, artist, bpm, original_bpm, key,
                         duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}

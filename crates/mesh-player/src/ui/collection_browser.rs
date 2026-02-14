@@ -904,10 +904,10 @@ impl CollectionBrowserState {
         self.energy_direction
     }
 
-    /// Set energy direction, returns true if changed significantly (>0.05 threshold for debounce)
+    /// Set energy direction, returns true if changed significantly (>0.02 threshold for debounce)
     pub fn set_energy_direction(&mut self, value: f32) -> bool {
         let clamped = value.clamp(0.0, 1.0);
-        let changed = (clamped - self.energy_direction).abs() > 0.05;
+        let changed = (clamped - self.energy_direction).abs() > 0.02;
         self.energy_direction = clamped;
         changed
     }

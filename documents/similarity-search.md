@@ -67,9 +67,13 @@ Each track is represented by a 16-dimensional feature vector stored in a CozoDB 
 - **Construction ef**: 200
 - **Database**: CozoDB (embedded)
 
+### Search Scope
+
+The HNSW query searches the **entire collection** (k=10,000, effectively unlimited for DJ libraries). The search beam width (`ef`) is set to match `k` for full recall. This ensures the scoring pipeline has maximum diversity in the candidate pool — the energy fader can steer results toward any track in the collection, not just the closest HNSW neighbors.
+
 ### Candidate Merging
 
-Each seed track queries for its nearest neighbors independently. When multiple seeds return the same candidate, the **minimum** (best) distance is kept. Seed tracks themselves are excluded from results.
+Each seed track queries the full collection independently. When multiple seeds return the same candidate, the **minimum** (best) distance is kept. Seed tracks themselves are excluded from results.
 
 ---
 
@@ -302,8 +306,8 @@ Traffic-light colors indicate harmonic compatibility:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `per_seed_limit` | 50 | Maximum HNSW results per seed track |
-| `total_limit` | 30 | Maximum suggestions returned |
+| `per_seed_limit` | 10,000 | HNSW candidates per seed (effectively entire collection) |
+| `total_limit` | 30 | Maximum suggestions returned after scoring |
 | `energy_direction` | 0.5 | Fader position: 0.0 (max drop) → 0.5 (center) → 1.0 (max raise) |
 | `key_scoring_model` | Camelot | Key scoring algorithm (Camelot or Krumhansl) |
 

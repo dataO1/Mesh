@@ -240,7 +240,7 @@ pub fn trigger_suggestion_query(app: &MeshApp) -> Task<Message> {
     let key_model = app.config.display.key_scoring_model;
 
     Task::perform(
-        async move { query_suggestions(&db, seed_paths, energy_direction, key_model, 30, 50) },
+        async move { query_suggestions(&db, seed_paths, energy_direction, key_model, 10_000, 30) },
         |result| Message::SuggestionsReady(Arc::new(result)),
     )
 }

@@ -180,10 +180,6 @@ fn base_score(tt: TransitionType) -> f32 {
 /// At full fader, these modifiers are strong enough that energy-aligned transitions
 /// (e.g. semitone up at +1.0 bias) can compete with harmonically safer options.
 fn energy_modifier(tt: TransitionType, energy_bias: f32) -> f32 {
-    if energy_bias.abs() < 0.05 {
-        return 0.0;
-    }
-
     let abs_bias = energy_bias.abs();
 
     // Each transition has an inherent energy direction from -1.0 to +1.0.
