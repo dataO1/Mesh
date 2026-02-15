@@ -185,13 +185,21 @@ impl HidOutputHandler {
     }
 
     /// Apply evaluated feedback results for HID controls
+    ///
+    /// After processing results, clears any previously-tracked addresses that have
+    /// no result in the current cycle (e.g., mode-gated pads after mode switch).
     pub fn apply_feedback(&mut self, results: &[crate::feedback::FeedbackResult]) {
+        // Collect addresses present in this cycle's results (for this device)
+        let mut current_addresses: std::collections::HashSet<crate::types::ControlAddress> =
+            std::collections::HashSet::new();
+
         for result in results {
             // Only handle HID addresses matching this device
             if let crate::types::ControlAddress::Hid { device_id, name } = &result.address {
                 if device_id != &self.device_id {
                     continue;
                 }
+                current_addresses.insert(result.address.clone());
                 if self.change_tracker.update(&result.address, result.value, result.color) {
                     // Use RGB color if available, otherwise fall back to brightness
                     let cmd = if let Some([r, g, b]) = result.color {
@@ -204,6 +212,34 @@ impl HidOutputHandler {
                             control: name.clone(),
                             brightness: result.value,
                         }
+                    };
+                    if self.feedback_tx.try_send(cmd).is_err() {
+                        log::warn!("HID: Feedback channel full");
+                    }
+                }
+            }
+        }
+
+        // Clear stale addresses: previously tracked but no result this cycle.
+        // This happens when mode-conditional feedback (e.g., hot_cue pads) stops
+        // matching after a mode switch — we need to turn those LEDs off.
+        let stale: Vec<crate::types::ControlAddress> = self.change_tracker.tracked_addresses()
+            .filter(|addr| {
+                if let crate::types::ControlAddress::Hid { device_id, .. } = addr {
+                    device_id == &self.device_id && !current_addresses.contains(addr)
+                } else {
+                    false
+                }
+            })
+            .cloned()
+            .collect();
+
+        for addr in &stale {
+            if let crate::types::ControlAddress::Hid { name, .. } = addr {
+                if self.change_tracker.update(addr, 0, Some([0, 0, 0])) {
+                    let cmd = FeedbackCommand::SetRgb {
+                        control: name.clone(),
+                        r: 0, g: 0, b: 0,
                     };
                     if self.feedback_tx.try_send(cmd).is_err() {
                         log::warn!("HID: Feedback channel full");

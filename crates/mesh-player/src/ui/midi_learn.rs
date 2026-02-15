@@ -161,7 +161,7 @@ impl HighlightTarget {
             }
             HighlightTarget::SideBrowseMode(side) => {
                 let side_name = if *side == 0 { "LEFT" } else { "RIGHT" };
-                format!("Press {} side BROWSE mode button (hold to browse)", side_name)
+                format!("Press {} side BROWSE mode button (toggle)", side_name)
             }
             HighlightTarget::DeckHotCue(d, s) => {
                 format!("Press HOT CUE pad {} on deck {}", s + 1, d + 1)
@@ -1488,7 +1488,7 @@ impl MidiLearnState {
                     ("deck.slicer_mode".to_string(), Some(primary_deck), None, behavior, Some("deck.slicer_mode"))
                 }
                 HighlightTarget::SideBrowseMode(side) => {
-                    ("side.browse_mode".to_string(), Some(side), None, ControlBehavior::Momentary, None)
+                    ("side.browse_mode".to_string(), Some(side), None, ControlBehavior::Toggle, None)
                 }
             };
 

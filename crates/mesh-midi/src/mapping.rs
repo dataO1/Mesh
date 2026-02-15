@@ -369,20 +369,36 @@ impl MappingEngine {
         }).collect()
     }
 
-    /// Handle browse mode button action (sets internal flag, no message to app)
+    /// Handle browse mode button action (toggle on press, ignore release)
+    ///
+    /// Browse mode is a toggle: press opens browse, press again closes it.
+    /// Auto-closes when a track is loaded (see clear_browse_mode).
     fn handle_browse_mode_action(
         &self,
         event: &ControlEvent,
         mapping: &ControlMapping,
     ) -> Vec<MidiMessage> {
-        let enabled = event.value.is_press();
+        if !event.value.is_press() {
+            return Vec::new(); // Ignore release
+        }
         let side = mapping.params.get("side")
             .and_then(|v| v.as_u64())
             .unwrap_or(mapping.physical_deck.unwrap_or(0) as u64) as usize;
         let mut browse = self.browse_held.lock().unwrap();
-        browse[side.min(1)] = enabled;
-        log::debug!("Browse mode: side {} = {}", side, enabled);
+        let side_idx = side.min(1);
+        browse[side_idx] = !browse[side_idx]; // Toggle
+        log::debug!("Browse mode toggle: side {} = {}", side, browse[side_idx]);
         Vec::new()
+    }
+
+    /// Clear browse mode for all sides (auto-close on track selection)
+    fn clear_browse_mode(&self) {
+        let mut browse = self.browse_held.lock().unwrap();
+        if browse[0] || browse[1] {
+            browse[0] = false;
+            browse[1] = false;
+            log::debug!("Browse mode: auto-closed on track selection");
+        }
     }
 
     /// Handle side loop size encoder (sends LoopSize to both decks on one side)
@@ -648,6 +664,8 @@ impl MappingEngine {
                         }
                         debounce.last_deck_load[deck] = Some(now);
                     }
+                    // Auto-close browse mode when loading a track
+                    self.clear_browse_mode();
                     Some(MidiMessage::Deck { deck, action: DeckAction::LoadSelected })
                 } else {
                     None
@@ -706,6 +724,8 @@ impl MappingEngine {
                         }
                     }
                     debounce.last_browser_select = Some(now);
+                    // Auto-close browse mode when selecting in browser
+                    self.clear_browse_mode();
                     Some(MidiMessage::Browser(BrowserAction::Select))
                 } else {
                     None
