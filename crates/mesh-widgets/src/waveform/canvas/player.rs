@@ -420,8 +420,8 @@ fn draw_deck_quadrant(
     use iced::widget::canvas::Text;
     use iced::alignment::{Horizontal, Vertical};
 
-    // Stem indicator width on left side
-    const STEM_INDICATOR_WIDTH: f32 = 6.0;
+    // Stem indicator width (positioned on inner edge, towards center gap)
+    const STEM_INDICATOR_WIDTH: f32 = 10.0;
     const STEM_INDICATOR_GAP: f32 = 2.0;
 
     // Compute Y positions based on mirrored layout
@@ -729,8 +729,14 @@ fn draw_deck_quadrant(
         linked_active,
     );
 
-    // Draw stem status indicators on left side of zoomed waveform only
+    // Draw stem status indicators on inner edge of zoomed waveform (towards center gap)
     let indicator_height = (zoomed_height - (STEM_INDICATOR_GAP * 3.0)) / 4.0;
+    // Left column decks (0, 2): indicators on right edge; right column (1, 3): on left edge
+    let indicator_x = if deck_idx % 2 == 0 {
+        x + width - STEM_INDICATOR_WIDTH - 2.0
+    } else {
+        x + 2.0
+    };
 
     for (visual_idx, &stem_idx) in STEM_INDICATOR_ORDER.iter().enumerate() {
         let indicator_y = zoomed_y + (visual_idx as f32) * (indicator_height + STEM_INDICATOR_GAP);
@@ -748,7 +754,7 @@ fn draw_deck_quadrant(
         };
 
         frame.fill_rectangle(
-            Point::new(x + 2.0, indicator_y),
+            Point::new(indicator_x, indicator_y),
             Size::new(STEM_INDICATOR_WIDTH, indicator_height),
             indicator_color,
         );
