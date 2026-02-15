@@ -72,6 +72,19 @@ const STEM_LED_COLORS: [[u8; 3]; 4] = [
     [180, 50, 255],  // Other — vivid purple (→ amber layer on Xone K)
 ];
 
+/// Hardcoded transport & mode LED colors (survive remapping).
+/// Each pair is (bright, dim) — dim is shown when the state is inactive.
+const PLAY_COLOR: [u8; 3] = [0, 200, 0];       // Green
+const PLAY_COLOR_DIM: [u8; 3] = [0, 30, 0];    // Dim green
+const CUE_COLOR: [u8; 3] = [220, 120, 0];      // Orange
+const CUE_COLOR_DIM: [u8; 3] = [35, 18, 0];    // Dim orange
+const LOOP_COLOR: [u8; 3] = [0, 200, 0];        // Green (active)
+const LOOP_COLOR_DIM: [u8; 3] = [0, 30, 0];     // Dim green (inactive)
+const HOT_CUE_COLOR: [u8; 3] = [200, 140, 0];   // Amber (cue set)
+const HOT_CUE_COLOR_DIM: [u8; 3] = [12, 12, 12]; // Near-off (no cue)
+const SLICER_COLOR: [u8; 3] = [0, 180, 200];     // Cyan (assigned preset)
+const SLICER_COLOR_DIM: [u8; 3] = [0, 12, 14];   // Dim cyan (empty slot)
+
 /// Application state for LED feedback
 ///
 /// This struct is populated by the app and passed to the feedback evaluator.
@@ -199,90 +212,82 @@ pub fn evaluate_feedback(
                 return Some(FeedbackResult { address, value, color });
             }
 
-            // Play button: pulse brightness to the beat when playing
+            // Play button: hardcoded green, dim when stopped, pulsing when playing
             if mapping.state == "deck.is_playing" {
                 let deck_idx = resolve_feedback_deck(mapping, deck_target);
                 let deck_state = &state.decks[deck_idx];
-                if deck_state.is_playing {
-                    return Some(beat_pulse_result(
-                        address,
-                        state.beat_phase,
-                        mapping.on_color.unwrap_or([127, 127, 127]),
-                        mapping.off_color.unwrap_or([0, 0, 0]),
-                        mapping.on_value,
-                        mapping.off_value,
-                    ));
-                } else {
-                    return Some(FeedbackResult {
-                        address,
-                        value: mapping.off_value,
-                        color: mapping.off_color,
-                    });
-                }
-            }
-
-            // Loop encoder: compound state with beat-synced pulsing
-            // - Playing + no loop → pulse on_color (green) to beat
-            // - Loop active + playing → pulse alt_on_color (red) to beat
-            // - Loop active + stopped → steady alt_on_color (red)
-            // - Stopped + no loop → off
-            if mapping.state == "deck.loop_encoder" {
-                let deck_idx = resolve_feedback_deck(mapping, deck_target);
-                let deck_state = &state.decks[deck_idx];
-                let off_color = mapping.off_color.unwrap_or([0, 0, 0]);
-
-                return Some(if deck_state.loop_active {
-                    let alt_color = mapping.alt_on_color.unwrap_or([127, 0, 0]);
-                    let alt_val = mapping.alt_on_value.unwrap_or(mapping.on_value);
-                    if deck_state.is_playing {
-                        beat_pulse_result(
-                            address, state.beat_phase,
-                            alt_color, off_color, alt_val, mapping.off_value,
-                        )
-                    } else {
-                        FeedbackResult { address, value: alt_val, color: Some(alt_color) }
-                    }
-                } else if deck_state.is_playing {
+                return Some(if deck_state.is_playing {
                     beat_pulse_result(
                         address, state.beat_phase,
-                        mapping.on_color.unwrap_or([0, 127, 0]), off_color,
+                        PLAY_COLOR, PLAY_COLOR_DIM,
                         mapping.on_value, mapping.off_value,
                     )
                 } else {
-                    FeedbackResult { address, value: mapping.off_value, color: mapping.off_color }
+                    FeedbackResult { address, value: mapping.off_value, color: Some(PLAY_COLOR_DIM) }
                 });
             }
 
-            // Slicer preset overlay: when deck is in slicer mode, hot_cue_set
-            // pads show slicer preset state instead (assigned/active with pulsing)
+            // Cue button: hardcoded orange, dim when inactive, bright when cueing
+            if mapping.state == "deck.is_cueing" {
+                let deck_idx = resolve_feedback_deck(mapping, deck_target);
+                let deck_state = &state.decks[deck_idx];
+                return Some(if deck_state.is_cueing {
+                    FeedbackResult { address, value: mapping.on_value, color: Some(CUE_COLOR) }
+                } else {
+                    FeedbackResult { address, value: mapping.off_value, color: Some(CUE_COLOR_DIM) }
+                });
+            }
+
+            // Loop button: hardcoded green, dim when inactive, steady bright when active (no pulsing)
+            if mapping.state == "deck.loop_encoder" {
+                let deck_idx = resolve_feedback_deck(mapping, deck_target);
+                let deck_state = &state.decks[deck_idx];
+                return Some(if deck_state.loop_active {
+                    FeedbackResult { address, value: mapping.on_value, color: Some(LOOP_COLOR) }
+                } else {
+                    FeedbackResult { address, value: mapping.off_value, color: Some(LOOP_COLOR_DIM) }
+                });
+            }
+
+            // Hot cue set: hardcoded amber, dim when no cue, bright when set
             if mapping.state == "deck.hot_cue_set" {
                 let deck_idx = resolve_feedback_deck(mapping, deck_target);
                 let deck_state = &state.decks[deck_idx];
-                if deck_state.action_mode == ActionMode::Slicer {
-                    let slot = mapping.params.get("slot")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0) as u8;
-                    let is_assigned = (deck_state.slicer_presets_assigned & (1 << slot)) != 0;
-                    let is_active = deck_state.slicer_selected_preset == slot;
+                let slot = mapping.params.get("slot")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u8;
+                let is_set = (deck_state.hot_cues_set & (1 << slot)) != 0;
+                return Some(if is_set {
+                    FeedbackResult { address, value: mapping.on_value, color: Some(HOT_CUE_COLOR) }
+                } else {
+                    FeedbackResult { address, value: mapping.off_value, color: Some(HOT_CUE_COLOR_DIM) }
+                });
+            }
 
-                    let (value, color) = if is_active && is_assigned {
-                        // Active preset: pulse between on and off colors, synced to beatgrid
-                        let result = beat_pulse_result(
-                            address.clone(), state.beat_phase,
-                            mapping.on_color.unwrap_or([0, 127, 0]),
-                            mapping.off_color.unwrap_or([20, 20, 20]),
-                            mapping.on_value, mapping.off_value,
-                        );
-                        (result.value, result.color)
-                    } else if is_assigned {
-                        // Assigned but not active: steady on
-                        (mapping.on_value, mapping.on_color)
-                    } else {
-                        // No preset: off
-                        (mapping.off_value, mapping.off_color)
-                    };
-                    return Some(FeedbackResult { address, value, color });
-                }
+            // Slicer preset: hardcoded cyan, dim when empty, bright when assigned, pulsing when active
+            if mapping.state == "deck.slicer_slice_active" {
+                let deck_idx = resolve_feedback_deck(mapping, deck_target);
+                let deck_state = &state.decks[deck_idx];
+                let pad = mapping.params.get("pad")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u8;
+                let is_assigned = (deck_state.slicer_presets_assigned & (1 << pad)) != 0;
+                let is_active = deck_state.slicer_selected_preset == pad;
+
+                return Some(if is_active && is_assigned {
+                    // Active preset: pulse between bright and dim cyan
+                    beat_pulse_result(
+                        address, state.beat_phase,
+                        SLICER_COLOR, SLICER_COLOR_DIM,
+                        mapping.on_value, mapping.off_value,
+                    )
+                } else if is_assigned {
+                    // Assigned but not active: steady bright
+                    FeedbackResult { address, value: mapping.on_value, color: Some(SLICER_COLOR) }
+                } else {
+                    // Empty slot: dim
+                    FeedbackResult { address, value: mapping.off_value, color: Some(SLICER_COLOR_DIM) }
+                });
             }
 
             // Stem mute: per-stem color from STEM_LED_COLORS
