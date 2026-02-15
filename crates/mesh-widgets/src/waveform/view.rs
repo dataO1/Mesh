@@ -21,7 +21,6 @@
 
 use super::canvas::{
     CombinedCanvas, OverviewCanvas, PlayerCanvas, ZoomedCanvas,
-    DECK_CELL_HEIGHT, DECK_GRID_GAP,
 };
 use super::state::{
     CombinedState, OverviewState, PlayerCanvasState, ZoomedState,
@@ -195,17 +194,12 @@ pub fn waveform_player<'a, Message>(
 where
     Message: Clone + 'a,
 {
-    // Calculate total height: 2 deck rows with gap between them
-    // Each deck cell = header (16) + zoomed (120) + internal gap (2) + overview (35) = 173px
-    // Total = 173 * 2 + 4 (grid gap) = 350px
-    let total_height = DECK_CELL_HEIGHT * 2.0 + DECK_GRID_GAP;
-
     Canvas::new(PlayerCanvas {
         state,
         on_seek,
         on_zoom,
     })
     .width(Length::Fill)
-    .height(Length::Fixed(total_height))
+    .height(Length::Fill)
     .into()
 }

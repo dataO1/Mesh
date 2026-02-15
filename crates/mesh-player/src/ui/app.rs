@@ -98,6 +98,10 @@ pub struct MeshApp {
     pub(crate) global_fx_hover_index: Option<usize>,
     /// Per-side browse mode active state (0=left, 1=right), synced from mapping engine
     pub(crate) browse_mode_active: [bool; 2],
+    /// Whether browser overlay is visible (performance mode only)
+    pub(crate) browser_visible: bool,
+    /// Ticks until browser auto-hide (0 = no timer; 300 = 5s at 60Hz)
+    pub(crate) browser_hide_countdown: u16,
     /// Tick counter for frequency division (feedback throttled to 30Hz)
     pub(crate) tick_count: u32,
     /// Actual JACK client name (for port reconnection)
@@ -263,6 +267,8 @@ impl MeshApp {
             available_deck_presets: Vec::new(),
             global_fx_hover_index: None,
             browse_mode_active: [false; 2],
+            browser_visible: false,
+            browser_hide_countdown: 0,
             tick_count: 0,
             audio_client_name,
         }
@@ -280,6 +286,20 @@ impl MeshApp {
         } else {
             None
         }
+    }
+
+    /// Show the browser overlay (performance mode only)
+    pub(crate) fn show_browser_overlay(&mut self) {
+        if self.app_mode == AppMode::Performance {
+            self.browser_visible = true;
+            self.browser_hide_countdown = 300; // 5 seconds at 60Hz
+        }
+    }
+
+    /// Hide the browser overlay and clear the countdown
+    pub(crate) fn hide_browser_overlay(&mut self) {
+        self.browser_visible = false;
+        self.browser_hide_countdown = 0;
     }
 
     /// Update application state
@@ -380,6 +400,11 @@ impl MeshApp {
 
             Message::SuggestionsReady(result) => {
                 super::handlers::browser::handle_suggestions_ready(self, result)
+            }
+
+            Message::HideBrowserOverlay => {
+                self.hide_browser_overlay();
+                Task::none()
             }
         }
     }
@@ -613,6 +638,7 @@ impl MeshApp {
                         // If a track is selected, load it to this deck
                         if let Some(track_path) = self.collection_browser.get_selected_track_path() {
                             let _ = self.update(Message::LoadTrack(deck, track_path.to_string_lossy().to_string()));
+                            self.hide_browser_overlay();
                         } else {
                             // No track selected — enter the selected folder/playlist
                             let _ = self.update(Message::CollectionBrowser(
@@ -652,6 +678,7 @@ impl MeshApp {
             }
 
             MidiMsg::Browser(action) => {
+                self.show_browser_overlay();
                 return match action {
                     MidiBrowserAction::Scroll { delta } => {
                         // Scroll browser and return Task for auto-scroll
@@ -673,6 +700,7 @@ impl MeshApp {
                         }
                     }
                     MidiBrowserAction::Back => {
+                        self.show_browser_overlay();
                         self.update(Message::CollectionBrowser(
                             CollectionBrowserMessage::Back,
                         ))
@@ -712,6 +740,12 @@ impl MeshApp {
                     MidiGlobalAction::BrowseModeChanged { side, active } => {
                         if side < 2 {
                             self.browse_mode_active[side] = active;
+                        }
+                        if active {
+                            self.show_browser_overlay();
+                        } else if !self.browse_mode_active[0] && !self.browse_mode_active[1] {
+                            // Both sides off — hide overlay
+                            self.hide_browser_overlay();
                         }
                     }
                 }
@@ -852,14 +886,11 @@ impl MeshApp {
         self.apply_overlays(base)
     }
 
-    /// Performance mode: simplified layout with canvas (~60%) + browser (~40%)
-    /// Waveform heights are fractional for clean display on Full HD and UHD screens
-    /// For live performance with MIDI controller - no load buttons
+    /// Performance mode: full-screen waveforms, browser shown as overlay on demand
+    /// Browser appears via MIDI browse mode or encoder interaction, auto-hides after 5s
     fn view_performance_mode(&self) -> Element<'_, Message> {
         let header = self.view_header();
         let canvas = view_player_canvas(&self.player_canvas_state);
-        // Use compact browser (no load buttons) for performance mode
-        let browser = self.collection_browser.view_compact().map(Message::CollectionBrowser);
         let status_bar = container(text(&self.status).size(12))
             .padding(5)
             .height(Length::Shrink);
@@ -868,10 +899,7 @@ impl MeshApp {
             header,
             container(canvas)
                 .width(Length::Fill)
-                .height(Length::FillPortion(11)),  // ~55% (11/20)
-            container(browser)
-                .width(Length::Fill)
-                .height(Length::FillPortion(9)),   // ~45% (9/20)
+                .height(Length::Fill),
             status_bar,
         ]
         .spacing(8)
@@ -974,6 +1002,41 @@ impl MeshApp {
             base
         };
 
+        // Browser overlay in performance mode (above content, below FX dropdown and modals)
+        let with_browser: Element<'a, Message> = if self.browser_visible && self.app_mode == AppMode::Performance {
+            let browser = self.collection_browser.view_compact().map(Message::CollectionBrowser);
+
+            // Semi-transparent backdrop — click to dismiss
+            let backdrop = mouse_area(
+                container(Space::new())
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .style(|_theme| container::Style {
+                        background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.4).into()),
+                        ..Default::default()
+                    }),
+            )
+            .on_press(Message::HideBrowserOverlay);
+
+            // Browser panel pinned to bottom ~45% of screen
+            let browser_panel = column![
+                Space::new().height(Length::FillPortion(11)),  // top spacer
+                container(browser)
+                    .width(Length::Fill)
+                    .height(Length::FillPortion(9))            // ~45%
+                    .style(|_theme| container::Style {
+                        background: Some(Color::from_rgba(0.05, 0.05, 0.08, 0.95).into()),
+                        ..Default::default()
+                    }),
+            ]
+            .width(Length::Fill)
+            .height(Length::Fill);
+
+            stack![with_drawer, backdrop, browser_panel].into()
+        } else {
+            with_drawer
+        };
+
         // Overlay FX dropdown list when open (above content, below modals)
         let with_fx_dropdown: Element<'a, Message> = if self.global_fx_picker_open {
             // Transparent backdrop to close dropdown on click-away
@@ -995,9 +1058,9 @@ impl MeshApp {
             .width(Length::Fill)
             .height(Length::Fill);
 
-            stack![with_drawer, backdrop, dropdown_list].into()
+            stack![with_browser, backdrop, dropdown_list].into()
         } else {
-            with_drawer
+            with_browser
         };
 
         // Overlay settings modal if open

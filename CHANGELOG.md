@@ -186,6 +186,30 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 ---
 
+## [0.8.1] - 2026-02-15
+
+### Added
+
+- **Browser overlay in performance mode** — The collection browser is now hidden
+  by default in performance mode, giving waveforms full-screen height. The browser
+  appears as a modal overlay when triggered by MIDI browse mode, encoder scroll, or
+  encoder select, and auto-hides after 5 seconds of inactivity or when a track is
+  loaded. Click the dark backdrop to dismiss manually. Mapping mode is unchanged.
+
+- **Dynamic waveform canvas height** — The 4-deck waveform canvas now fills all
+  available vertical space instead of using a fixed 350px height. Header and
+  overview waveforms keep their fixed sizes while the zoomed waveform absorbs all
+  extra space, giving significantly taller waveforms on larger displays.
+
+### Fixed
+
+- **HID display feedback channel spam** — The 7-segment display update now skips
+  sending when the text hasn't changed, preventing "Display feedback channel full"
+  log spam that occurred when identical loop-length or layer text was sent every
+  tick at 30Hz.
+
+---
+
 ## [0.8.0] - 2026-02-15
 
 ### Added

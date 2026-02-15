@@ -34,6 +34,15 @@ pub const DECK_INTERNAL_GAP: f32 = 2.0;
 pub const DECK_CELL_HEIGHT: f32 =
     DECK_HEADER_HEIGHT + ZOOMED_WAVEFORM_HEIGHT + DECK_INTERNAL_GAP + WAVEFORM_HEIGHT;
 
+/// Compute dynamic cell layout from available canvas height.
+/// Header, overview, and gaps stay fixed; extra space goes to zoomed waveform.
+fn cell_height_from_bounds(bounds_height: f32) -> (f32, f32) {
+    let cell_height = (bounds_height - DECK_GRID_GAP) / 2.0;
+    let zoomed_height = (cell_height - DECK_HEADER_HEIGHT - DECK_INTERNAL_GAP - WAVEFORM_HEIGHT)
+        .max(ZOOMED_WAVEFORM_HEIGHT); // never shrink below the original size
+    (cell_height, zoomed_height)
+}
+
 // =============================================================================
 // Player Canvas Interaction State
 // =============================================================================
@@ -107,7 +116,7 @@ where
     ) -> Option<canvas::Action<Message>> {
         let width = bounds.width;
         let cell_width = (width - DECK_GRID_GAP) / 2.0;
-        let cell_height = DECK_CELL_HEIGHT;
+        let (cell_height, zoomed_height) = cell_height_from_bounds(bounds.height);
 
         // Determine which deck quadrant the cursor is in (if any)
         if let Some(position) = cursor.position_in(bounds) {
@@ -123,7 +132,7 @@ where
 
             // Determine which region within the cell: header, zoomed, or overview
             let header_end = DECK_HEADER_HEIGHT;
-            let zoomed_end = header_end + ZOOMED_WAVEFORM_HEIGHT;
+            let zoomed_end = header_end + zoomed_height;
             let overview_start = zoomed_end + DECK_INTERNAL_GAP;
             let overview_end = overview_start + WAVEFORM_HEIGHT;
 
@@ -208,7 +217,7 @@ where
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
         if let Some(position) = cursor.position_in(bounds) {
-            let cell_height = DECK_CELL_HEIGHT;
+            let (cell_height, zoomed_height) = cell_height_from_bounds(bounds.height);
 
             // Determine which row we're in
             let row = if position.y < cell_height { 0 } else { 1 };
@@ -217,7 +226,7 @@ where
 
             // Regions within cell
             let header_end = DECK_HEADER_HEIGHT;
-            let zoomed_end = header_end + ZOOMED_WAVEFORM_HEIGHT;
+            let zoomed_end = header_end + zoomed_height;
             let overview_start = zoomed_end + DECK_INTERNAL_GAP;
             let overview_end = overview_start + WAVEFORM_HEIGHT;
 
@@ -250,7 +259,7 @@ where
         let mut frame = Frame::new(renderer, bounds.size());
         let width = bounds.width;
         let cell_width = (width - DECK_GRID_GAP) / 2.0;
-        let cell_height = DECK_CELL_HEIGHT;
+        let (cell_height, zoomed_height) = cell_height_from_bounds(bounds.height);
 
         // =====================================================================
         // DECK QUADRANTS (2x2 grid, each with header + zoomed + overview)
@@ -290,6 +299,7 @@ where
                 *x,
                 *y,
                 cell_width,
+                zoomed_height,
                 deck_idx,
                 track_name,
                 track_key,
@@ -338,6 +348,7 @@ fn draw_deck_quadrant(
     x: f32,
     y: f32,
     width: f32,
+    zoomed_height: f32,
     deck_idx: usize,
     track_name: &str,
     track_key: &str,
@@ -645,6 +656,7 @@ fn draw_deck_quadrant(
         x,
         zoomed_y,
         width,
+        zoomed_height,
         is_master,
         stem_colors,
         stem_active,
@@ -652,10 +664,10 @@ fn draw_deck_quadrant(
     );
 
     // Draw overview waveform below zoomed
-    let overview_y = zoomed_y + ZOOMED_WAVEFORM_HEIGHT + DECK_INTERNAL_GAP;
+    let overview_y = zoomed_y + zoomed_height + DECK_INTERNAL_GAP;
 
     // Draw stem status indicators on left side of zoomed waveform only
-    let indicator_height = (ZOOMED_WAVEFORM_HEIGHT - (STEM_INDICATOR_GAP * 3.0)) / 4.0;
+    let indicator_height = (zoomed_height - (STEM_INDICATOR_GAP * 3.0)) / 4.0;
 
     for (visual_idx, &stem_idx) in STEM_INDICATOR_ORDER.iter().enumerate() {
         let indicator_y = zoomed_y + (visual_idx as f32) * (indicator_height + STEM_INDICATOR_GAP);
@@ -696,7 +708,7 @@ fn draw_deck_quadrant(
     if volume < 0.99 {
         let dim_alpha = (1.0 - volume) * 0.4;
         let waveform_area_y = y + DECK_HEADER_HEIGHT;
-        let waveform_area_height = ZOOMED_WAVEFORM_HEIGHT + DECK_INTERNAL_GAP + WAVEFORM_HEIGHT;
+        let waveform_area_height = zoomed_height + DECK_INTERNAL_GAP + WAVEFORM_HEIGHT;
         frame.fill_rectangle(
             Point::new(x, waveform_area_y),
             Size::new(width, waveform_area_height),
@@ -722,12 +734,12 @@ fn draw_zoomed_at(
     x: f32,
     y: f32,
     width: f32,
+    height: f32,
     is_master: bool,
     stem_colors: &[Color; 4],
     stem_active: &[bool; 4],
     linked_active: &[bool; 4],
 ) {
-    let height = ZOOMED_WAVEFORM_HEIGHT;
     let center_y = y + height / 2.0;
 
     // Background

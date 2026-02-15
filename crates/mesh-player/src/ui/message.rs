@@ -105,4 +105,7 @@ pub enum Message {
 
     /// Smart suggestions query completed
     SuggestionsReady(Arc<Result<Vec<SuggestedTrack>, String>>),
+
+    /// Hide the browser overlay (click-away backdrop)
+    HideBrowserOverlay,
 }

@@ -162,6 +162,8 @@ pub struct HidOutputHandler {
     /// Number of results matching this device in the last cycle.
     /// When this changes, we check for stale addresses that need clearing.
     last_result_count: usize,
+    /// Last display text sent (for dedup — skip if unchanged)
+    last_display_text: String,
 }
 
 impl HidOutputHandler {
@@ -172,6 +174,7 @@ impl HidOutputHandler {
             device_id,
             change_tracker: crate::feedback::FeedbackChangeTracker::new(),
             last_result_count: 0,
+            last_display_text: String::new(),
         }
     }
 
@@ -186,7 +189,12 @@ impl HidOutputHandler {
     }
 
     /// Send a display text command directly (e.g., for layer indicator)
-    pub fn send_display(&self, text: &str) {
+    /// Skips sending if the text hasn't changed since last call.
+    pub fn send_display(&mut self, text: &str) {
+        if self.last_display_text == text {
+            return;
+        }
+        self.last_display_text = text.to_string();
         let cmd = FeedbackCommand::SetDisplay { text: text.to_string() };
         if self.feedback_tx.try_send(cmd).is_err() {
             log::warn!("HID: Display feedback channel full");

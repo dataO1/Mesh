@@ -423,6 +423,14 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
         }
     }
 
+    // Browser overlay auto-hide countdown (runs every tick at 60Hz)
+    if app.browser_hide_countdown > 0 {
+        app.browser_hide_countdown -= 1;
+        if app.browser_hide_countdown == 0 {
+            app.browser_visible = false;
+        }
+    }
+
     // LED feedback at 30Hz (every 2nd tick)
     // LED brightness changes are imperceptible above ~25Hz; 30Hz gives smooth
     // beat-synced pulsing (~10 cosine samples/beat at 174 BPM) while halving

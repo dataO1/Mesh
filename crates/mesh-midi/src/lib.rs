@@ -806,7 +806,7 @@ impl ControllerManager {
         }
 
         // 7-segment display updates stay on main thread (cheap, no evaluation)
-        for device in self.hid_devices.values() {
+        for device in self.hid_devices.values_mut() {
             if let Some(ref profile) = device.profile {
                 if let Some(ref shared_state) = device.shared_state {
                     let hid_device_id = device.output_handler.device_id();
