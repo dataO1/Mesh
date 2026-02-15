@@ -186,6 +186,44 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 ---
 
+## [0.8.0] - 2026-02-15
+
+### Added
+
+- **Momentary mode overlay for compact controllers** — MIDI Learn now offers a
+  choice between permanent and momentary mode buttons. With momentary mode, hold
+  a mode button (e.g., Hot Cue or Slicer) to temporarily overlay pad functions,
+  then release to return to the default performance mode (stem mutes, transport).
+  Ideal for compact controllers that share buttons between transport and
+  performance pads.
+
+- **Per-side mode buttons (4-deck)** — On 4-deck setups without layer toggle,
+  mode buttons work per side: the left mode button controls decks 1 and 3, the
+  right mode button controls decks 2 and 4. Each side can independently enter
+  Hot Cue or Slicer mode.
+
+- **Dual browse encoders (4-deck)** — 4-deck non-layered setups now support
+  two browse encoders (left and right) during MIDI Learn, one per physical side.
+
+- **State-aware HID LED feedback** — HID controllers with RGB pads (e.g.,
+  Kontrol F1) now show distinct colors per function: green for play (pulsing
+  when playing), orange for cue, green/red for loop (green when playing, red
+  when loop is active), amber for hot cues, cyan for slicer, blue/purple for
+  mode buttons, and per-stem colors for mute toggles. LEDs automatically switch
+  between performance, hot cue, and slicer color schemes when mode buttons are
+  pressed.
+
+- **Per-deck load buttons (4-deck)** — The browser phase now includes individual
+  load buttons for all 4 decks when using a non-layered 4-deck setup.
+
+### Fixed
+
+- **HID feedback channel overflow** — Increased HID feedback buffer and added
+  RGB-aware change detection to prevent "channel full" warnings and LED
+  flickering.
+
+---
+
 ## [0.6.16] - 2026-02-12
 
 ### Added

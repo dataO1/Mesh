@@ -167,6 +167,14 @@ The wizard guides you through mapping transport controls, performance pads, mixe
 
 Any class-compliant MIDI controller works via the Learn wizard. HID devices require a driver (currently F1 only). Controllers with note-offset LEDs (Xone K series) are auto-detected for correct color handling.
 
+### Compact 4-Deck Mapping
+
+For controllers with limited buttons (e.g., two Kontrol F1s), the MIDI Learn wizard supports:
+
+- **Momentary mode overlays** — Hold a mode button to temporarily switch pads to Hot Cue or Slicer mode. Release to return to the default performance mode (stem mutes, transport). Per-side mode buttons control two decks each (left side = decks 1+3, right side = decks 2+4).
+- **Dual browse encoders** — Map separate left/right browse encoders for independent deck browsing.
+- **State-aware RGB feedback** — HID pads show distinct colors per function (green=play, orange=cue, amber=hot cue, cyan=slicer, per-stem colors for mutes) and automatically switch color schemes when mode buttons are held.
+
 ---
 
 ## Stem Separation

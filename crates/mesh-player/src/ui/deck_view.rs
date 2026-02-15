@@ -26,8 +26,11 @@ pub const STEM_NAMES_SHORT: [&str; 4] = ["VOC", "DRM", "BAS", "OTH"];
 /// Action button mode - determines behavior of the 8 performance pads
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ActionButtonMode {
-    /// Hot cue mode - buttons trigger/set hot cues (default behavior)
+    /// Performance mode — pads do their primary action (default, no mode overlay active)
+    /// In practice, this falls through to HotCue behavior for the pad grid.
     #[default]
+    Performance,
+    /// Hot cue mode - buttons trigger/set hot cues
     HotCue,
     /// Slicer mode - buttons queue slices for playback
     Slicer,
@@ -1171,7 +1174,7 @@ impl DeckView {
     /// Action buttons grid - displays either hot cues or slicer based on mode
     fn view_action_buttons_grid(&self) -> Element<'_, DeckMessage> {
         match self.action_mode {
-            ActionButtonMode::HotCue => self.view_hot_cues_grid(),
+            ActionButtonMode::Performance | ActionButtonMode::HotCue => self.view_hot_cues_grid(),
             ActionButtonMode::Slicer => self.view_slicer_grid(),
         }
     }

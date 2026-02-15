@@ -65,6 +65,8 @@ pub enum SetupStep {
     DeckCount,
     LayerToggle,
     PadModeSource,
+    /// Mode button behavior: permanent toggle vs momentary overlay
+    ModeButtonBehavior,
     /// Left physical deck shift button
     ShiftButtonLeft,
     /// Right physical deck shift button
@@ -90,9 +92,13 @@ pub enum HighlightTarget {
     DeckBeatJumpBack(usize),
     DeckBeatJumpForward(usize),
 
-    // Mode buttons
+    // Mode buttons (per-deck)
     DeckHotCueMode(usize),
     DeckSlicerMode(usize),
+
+    // Per-side mode buttons (4-deck momentary: side 0=left, 1=right)
+    SideHotCueMode(usize),
+    SideSlicerMode(usize),
 
     // Performance pads (deck, slot)
     DeckHotCue(usize, usize),
@@ -144,6 +150,14 @@ impl HighlightTarget {
             HighlightTarget::DeckBeatJumpForward(d) => format!("Press BEAT JUMP FORWARD on deck {}", d + 1),
             HighlightTarget::DeckHotCueMode(d) => format!("Press HOT CUE mode button on deck {}", d + 1),
             HighlightTarget::DeckSlicerMode(d) => format!("Press SLICER mode button on deck {}", d + 1),
+            HighlightTarget::SideHotCueMode(side) => {
+                let side_name = if *side == 0 { "LEFT" } else { "RIGHT" };
+                format!("Press {} side HOT CUE mode button", side_name)
+            }
+            HighlightTarget::SideSlicerMode(side) => {
+                let side_name = if *side == 0 { "LEFT" } else { "RIGHT" };
+                format!("Press {} side SLICER mode button", side_name)
+            }
             HighlightTarget::DeckHotCue(d, s) => {
                 format!("Press HOT CUE pad {} on deck {}", s + 1, d + 1)
             }
@@ -167,7 +181,7 @@ impl HighlightTarget {
             HighlightTarget::BrowserSelect => "Press the BROWSE encoder (or select button)".to_string(),
             HighlightTarget::BrowserEncoderDeck(d) => {
                 let side = if *d == 0 { "LEFT" } else { "RIGHT" };
-                format!("Turn the {} deck BROWSE encoder", side)
+                format!("Turn the {} BROWSE encoder (or skip)", side)
             }
             HighlightTarget::BrowserSelectDeck(d) => {
                 let side = if *d == 0 { "LEFT" } else { "RIGHT" };
@@ -301,6 +315,8 @@ pub enum MidiLearnMessage {
     SetHasLayerToggle(bool),
     /// Set pad mode source (controller vs app driven)
     SetPadModeSource(mesh_midi::PadModeSource),
+    /// Set mode button behavior (true = momentary overlay, false = permanent toggle)
+    SetModeButtonBehavior(bool),
     /// Left shift button detected (or skipped)
     ShiftLeftDetected(Option<CapturedMidiEvent>),
     /// Right shift button detected (or skipped)
@@ -348,6 +364,8 @@ pub struct MidiLearnState {
     pub has_layer_toggle: bool,
     /// How pad button actions are determined (controller vs app driven)
     pub pad_mode_source: mesh_midi::PadModeSource,
+    /// Whether mode buttons use momentary behavior (hold-to-activate overlay)
+    pub momentary_mode_buttons: bool,
     /// Left shift button mapping (physical deck 0)
     pub shift_mapping_left: Option<CapturedMidiEvent>,
     /// Right shift button mapping (physical deck 1)
@@ -391,6 +409,7 @@ impl MidiLearnState {
             deck_count: 2,
             has_layer_toggle: false,
             pad_mode_source: Default::default(),
+            momentary_mode_buttons: false,
             shift_mapping_left: None,
             shift_mapping_right: None,
             toggle_mapping_left: None,
@@ -648,6 +667,10 @@ impl MidiLearnState {
                 self.status = "How does your controller handle pad modes?".to_string();
             }
             SetupStep::PadModeSource => {
+                self.setup_step = SetupStep::ModeButtonBehavior;
+                self.status = "How should mode buttons (Hot Cue / Slicer) behave?".to_string();
+            }
+            SetupStep::ModeButtonBehavior => {
                 self.setup_step = SetupStep::ShiftButtonLeft;
                 self.status = "Press LEFT deck SHIFT button (or skip)".to_string();
             }
@@ -692,9 +715,13 @@ impl MidiLearnState {
                 self.setup_step = SetupStep::LayerToggle;
                 self.status = "Does your controller have layer toggle buttons?".to_string();
             }
-            SetupStep::ShiftButtonLeft => {
+            SetupStep::ModeButtonBehavior => {
                 self.setup_step = SetupStep::PadModeSource;
                 self.status = "How does your controller handle pad modes?".to_string();
+            }
+            SetupStep::ShiftButtonLeft => {
+                self.setup_step = SetupStep::ModeButtonBehavior;
+                self.status = "How should mode buttons (Hot Cue / Slicer) behave?".to_string();
             }
             SetupStep::ShiftButtonRight => {
                 self.setup_step = SetupStep::ShiftButtonLeft;
@@ -795,7 +822,12 @@ impl MidiLearnState {
         }
     }
 
-    /// Calculate the number of steps per deck in the pads phase
+    /// Whether to use per-side mode buttons (4-deck momentary)
+    fn use_side_mode_buttons(&self) -> bool {
+        self.deck_count == 4 && self.momentary_mode_buttons
+    }
+
+    /// Steps per deck in the pads phase (for standard per-deck layout)
     fn pads_steps_per_deck(&self) -> usize {
         if self.pad_mode_source == mesh_midi::PadModeSource::Controller {
             // Controller mode: hot cue mode + 8 hot cue pads + slicer mode + 8 slicer pads = 18
@@ -806,15 +838,45 @@ impl MidiLearnState {
         }
     }
 
+    /// Steps for a secondary deck (no mode button) in 4-deck momentary
+    fn pads_steps_secondary_deck(&self) -> usize {
+        if self.pad_mode_source == mesh_midi::PadModeSource::Controller {
+            // 8 hot cue pads + 8 slicer pads = 16
+            16
+        } else {
+            // 8 pads only
+            8
+        }
+    }
+
+    /// Total steps in the pads phase
+    fn pads_total_steps(&self) -> usize {
+        if self.use_side_mode_buttons() {
+            // Decks 0,1 (primary): full steps. Decks 2,3 (secondary): no mode buttons.
+            2 * self.pads_steps_per_deck() + 2 * self.pads_steps_secondary_deck()
+        } else {
+            self.deck_count * self.pads_steps_per_deck()
+        }
+    }
+
     fn enter_pads_phase(&mut self) {
         self.last_capture_time = None;
         self.phase = LearnPhase::Pads;
         self.current_step = 0;
-        self.total_steps = self.deck_count * self.pads_steps_per_deck();
+        self.total_steps = self.pads_total_steps();
         self.update_pads_target();
     }
 
     fn update_pads_target(&mut self) {
+        if self.use_side_mode_buttons() {
+            self.update_pads_target_side_mode();
+        } else {
+            self.update_pads_target_per_deck();
+        }
+    }
+
+    /// Pads target for standard per-deck mode buttons
+    fn update_pads_target_per_deck(&mut self) {
         // Per-deck layout:
         // Controller mode (18 steps): hot cue mode, 8 hot cue pads, slicer mode, 8 slicer pads
         // App mode (10 steps): hot cue mode, 8 pads, slicer mode
@@ -840,6 +902,67 @@ impl MidiLearnState {
                 1..=8 => HighlightTarget::DeckHotCue(deck, step_within_deck - 1),
                 9 => HighlightTarget::DeckSlicerMode(deck),
                 _ => unreachable!(),
+            }
+        });
+
+        if let Some(ref target) = self.highlight_target {
+            self.status = target.description();
+        }
+    }
+
+    /// Pads target for 4-deck momentary (per-side mode buttons)
+    ///
+    /// Layout: Deck 0 (full) → Deck 1 (full) → Deck 2 (no mode btns) → Deck 3 (no mode btns)
+    /// Primary decks (0,1) use SideHotCueMode/SideSlicerMode; secondary decks (2,3) skip mode buttons.
+    fn update_pads_target_side_mode(&mut self) {
+        let primary_steps = self.pads_steps_per_deck();
+        let secondary_steps = self.pads_steps_secondary_deck();
+        let is_controller = self.pad_mode_source == mesh_midi::PadModeSource::Controller;
+
+        // Determine which deck and step-within-deck we're on
+        let (deck, step_within, has_mode_buttons) = if self.current_step < primary_steps {
+            // Deck 0 (primary, side 0)
+            (0, self.current_step, true)
+        } else if self.current_step < primary_steps * 2 {
+            // Deck 1 (primary, side 1)
+            (1, self.current_step - primary_steps, true)
+        } else if self.current_step < primary_steps * 2 + secondary_steps {
+            // Deck 2 (secondary, side 0)
+            (2, self.current_step - primary_steps * 2, false)
+        } else {
+            // Deck 3 (secondary, side 1)
+            (3, self.current_step - primary_steps * 2 - secondary_steps, false)
+        };
+
+        self.highlight_target = Some(if has_mode_buttons {
+            // Primary deck: side mode button + pads + side slicer mode [+ slicer pads]
+            let side = deck; // deck 0 → side 0, deck 1 → side 1
+            if is_controller {
+                match step_within {
+                    0 => HighlightTarget::SideHotCueMode(side),
+                    1..=8 => HighlightTarget::DeckHotCue(deck, step_within - 1),
+                    9 => HighlightTarget::SideSlicerMode(side),
+                    10..=17 => HighlightTarget::DeckSlicerPad(deck, step_within - 10),
+                    _ => unreachable!(),
+                }
+            } else {
+                match step_within {
+                    0 => HighlightTarget::SideHotCueMode(side),
+                    1..=8 => HighlightTarget::DeckHotCue(deck, step_within - 1),
+                    9 => HighlightTarget::SideSlicerMode(side),
+                    _ => unreachable!(),
+                }
+            }
+        } else {
+            // Secondary deck: pads only (no mode buttons)
+            if is_controller {
+                match step_within {
+                    0..=7 => HighlightTarget::DeckHotCue(deck, step_within),
+                    8..=15 => HighlightTarget::DeckSlicerPad(deck, step_within - 8),
+                    _ => unreachable!(),
+                }
+            } else {
+                HighlightTarget::DeckHotCue(deck, step_within)
             }
         });
 
@@ -915,10 +1038,10 @@ impl MidiLearnState {
             self.update_stems_target();
         } else {
             // Go back to pads
-            let steps_per_deck = self.pads_steps_per_deck();
+            let pads_total = self.pads_total_steps();
             self.phase = LearnPhase::Pads;
-            self.current_step = self.deck_count * steps_per_deck - 1;
-            self.total_steps = self.deck_count * steps_per_deck;
+            self.current_step = pads_total - 1;
+            self.total_steps = pads_total;
             self.update_pads_target();
         }
     }
@@ -1002,7 +1125,7 @@ impl MidiLearnState {
             // MasterVolume, CueVolume, CueMix
             9
         } else if self.deck_count == 4 {
-            // FxEncoder, FxSelect, BrowserEncoder, BrowserSelect,
+            // FxEncoder, FxSelect, BrowserEncoderDeck(0), BrowserEncoderDeck(1),
             // DeckLoad(0), DeckLoad(1), DeckLoad(2), DeckLoad(3),
             // MasterVolume, CueVolume, CueMix
             11
@@ -1041,15 +1164,15 @@ impl MidiLearnState {
                 _ => HighlightTarget::CueMix,
             }
         } else if self.deck_count == 4 {
-            // 4-deck non-layered: global browse + dedicated load per deck
-            // 0: FxEncoder, 1: FxSelect, 2: BrowserEncoder, 3: BrowserSelect,
+            // 4-deck non-layered: left/right browse encoders + dedicated load per deck
+            // 0: FxEncoder, 1: FxSelect, 2: BrowserEncoderDeck(0), 3: BrowserEncoderDeck(1),
             // 4-7: DeckLoad(0..3), 8: MasterVolume, 9: CueVolume, 10: CueMix
             // 11 steps total (0-10)
             match self.current_step {
                 0 => HighlightTarget::FxEncoder,
                 1 => HighlightTarget::FxSelect,
-                2 => HighlightTarget::BrowserEncoder,
-                3 => HighlightTarget::BrowserSelect,
+                2 => HighlightTarget::BrowserEncoderDeck(0),
+                3 => HighlightTarget::BrowserEncoderDeck(1),
                 4 => HighlightTarget::DeckLoad(0),
                 5 => HighlightTarget::DeckLoad(1),
                 6 => HighlightTarget::DeckLoad(2),
@@ -1119,14 +1242,11 @@ impl MidiLearnState {
 
     /// Get the overall progress as (current, total)
     pub fn overall_progress(&self) -> (usize, usize) {
-        // name, deck count, layer toggle, pad mode, shift left, shift right
+        // name, deck count, layer toggle, pad mode, mode behavior, shift left, shift right
         // + optionally toggle left, toggle right
-        let setup_steps = if self.has_layer_toggle { 8 } else { 6 };
+        let setup_steps = if self.has_layer_toggle { 9 } else { 7 };
         let transport_steps = self.transport_step_count();
-        // Pads phase includes mode buttons + pads:
-        // Controller mode: (hot cue mode + 8 pads + slicer mode + 8 pads) = 18 per deck
-        // App mode: (hot cue mode + 8 pads + slicer mode) = 10 per deck
-        let pads_steps = self.deck_count * self.pads_steps_per_deck();
+        let pads_steps = self.pads_total_steps();
         let mixer_channels = self.num_mixer_channels();
         let stems_steps = mixer_channels * 4; // 4 stem mute buttons per channel
         let mixer_steps = self.mixer_step_count(); // 6 channel controls per virtual deck + 4 FX macros per physical deck
@@ -1139,10 +1259,11 @@ impl MidiLearnState {
                 SetupStep::DeckCount => 1,
                 SetupStep::LayerToggle => 2,
                 SetupStep::PadModeSource => 3,
-                SetupStep::ShiftButtonLeft => 4,
-                SetupStep::ShiftButtonRight => 5,
-                SetupStep::ToggleButtonLeft => 6,
-                SetupStep::ToggleButtonRight => 7,
+                SetupStep::ModeButtonBehavior => 4,
+                SetupStep::ShiftButtonLeft => 5,
+                SetupStep::ShiftButtonRight => 6,
+                SetupStep::ToggleButtonLeft => 7,
+                SetupStep::ToggleButtonRight => 8,
             },
             LearnPhase::Transport => setup_steps + self.current_step,
             LearnPhase::Pads => setup_steps + transport_steps + self.current_step,
@@ -1164,6 +1285,33 @@ impl MidiLearnState {
     /// - LED feedback mappings (same-note assumption for buttons)
     /// - Deck target config based on deck_count and has_layer_toggle settings
     pub fn generate_config(&self) -> MidiConfig {
+        /// State-specific RGB colors for HID feedback mappings.
+        /// Returns (on_color, off_color, alt_on_color, alt_on_value).
+        fn hid_feedback_colors(state: &str) -> (Option<[u8; 3]>, Option<[u8; 3]>, Option<[u8; 3]>, Option<u8>) {
+            let dim = Some([8, 8, 8]);
+            match state {
+                // Play: light green on, dim off (evaluator handles pulsing)
+                "deck.is_playing" => (Some([0, 180, 0]), dim, None, None),
+                // Cue: orange when cueing, dim off
+                "deck.is_cueing" => (Some([200, 100, 0]), dim, None, None),
+                // Loop encoder: green on (playing), red when loop active (alt)
+                "deck.loop_encoder" => (Some([0, 180, 0]), dim, Some([180, 0, 0]), Some(127)),
+                // Hot cue set: amber when set, dim off (evaluator handles slicer overlay)
+                "deck.hot_cue_set" => (Some([200, 140, 0]), Some([12, 12, 12]), None, None),
+                // Slicer slice active: cyan when active, dim off
+                "deck.slicer_slice_active" => (Some([0, 160, 180]), dim, None, None),
+                // Mode buttons: blue when active, dim off
+                "deck.hot_cue_mode" => (Some([0, 100, 200]), dim, None, None),
+                "deck.slicer_mode" => (Some([160, 0, 180]), dim, None, None),
+                // Stem mute: evaluator overrides with per-stem color, but set off color
+                "deck.stem_muted" => (Some([0, 127, 0]), Some([6, 6, 6]), None, None),
+                // Mixer cue (PFL): yellow when enabled
+                "mixer.cue_enabled" => (Some([200, 180, 0]), dim, None, None),
+                // Default: green on, dim off
+                _ => (Some([0, 127, 0]), dim, None, None),
+            }
+        }
+
         let mut mappings = Vec::new();
         let mut feedback = Vec::new();
 
@@ -1199,10 +1347,12 @@ impl MidiLearnState {
 
                 // Mode buttons
                 HighlightTarget::DeckHotCueMode(d) => {
-                    ("deck.hot_cue_mode".to_string(), Some(d), None, ControlBehavior::Toggle, Some("deck.hot_cue_mode"))
+                    let behavior = if self.momentary_mode_buttons { ControlBehavior::Momentary } else { ControlBehavior::Toggle };
+                    ("deck.hot_cue_mode".to_string(), Some(d), None, behavior, Some("deck.hot_cue_mode"))
                 }
                 HighlightTarget::DeckSlicerMode(d) => {
-                    ("deck.slicer_mode".to_string(), Some(d), None, ControlBehavior::Toggle, Some("deck.slicer_mode"))
+                    let behavior = if self.momentary_mode_buttons { ControlBehavior::Momentary } else { ControlBehavior::Toggle };
+                    ("deck.slicer_mode".to_string(), Some(d), None, behavior, Some("deck.slicer_mode"))
                 }
 
                 // Hot cue pads - layer-resolved
@@ -1278,6 +1428,18 @@ impl MidiLearnState {
                 HighlightTarget::DeckLoad(d) => {
                     ("deck.load_selected".to_string(), None, Some(d), ControlBehavior::Momentary, None)
                 }
+
+                // Per-side mode buttons (4-deck momentary mode)
+                HighlightTarget::SideHotCueMode(side) => {
+                    let primary_deck = if side == 0 { 0 } else { 1 };
+                    let behavior = if self.momentary_mode_buttons { ControlBehavior::Momentary } else { ControlBehavior::Toggle };
+                    ("deck.hot_cue_mode".to_string(), Some(primary_deck), None, behavior, Some("deck.hot_cue_mode"))
+                }
+                HighlightTarget::SideSlicerMode(side) => {
+                    let primary_deck = if side == 0 { 0 } else { 1 };
+                    let behavior = if self.momentary_mode_buttons { ControlBehavior::Momentary } else { ControlBehavior::Toggle };
+                    ("deck.slicer_mode".to_string(), Some(primary_deck), None, behavior, Some("deck.slicer_mode"))
+                }
             };
 
             // Create control mapping
@@ -1294,6 +1456,15 @@ impl MidiLearnState {
                 }
                 HighlightTarget::DeckFxMacro(_, m) => {
                     params.insert("macro".to_string(), serde_yaml::Value::Number(m.into()));
+                }
+                HighlightTarget::SideHotCueMode(side) | HighlightTarget::SideSlicerMode(side) => {
+                    // Per-side mode buttons control two decks
+                    let decks: Vec<serde_yaml::Value> = if side == 0 {
+                        vec![serde_yaml::Value::Number(0.into()), serde_yaml::Value::Number(2.into())]
+                    } else {
+                        vec![serde_yaml::Value::Number(1.into()), serde_yaml::Value::Number(3.into())]
+                    };
+                    params.insert("decks".to_string(), serde_yaml::Value::Sequence(decks));
                 }
                 _ => {}
             }
@@ -1321,6 +1492,31 @@ impl MidiLearnState {
                 _ => None,
             };
 
+            // Determine mode condition for pad mappings under momentary mode
+            let mode = if self.momentary_mode_buttons {
+                match learned.target {
+                    HighlightTarget::DeckHotCue(_, _) => Some("hot_cue".to_string()),
+                    HighlightTarget::DeckSlicerPad(_, _) => Some("slicer".to_string()),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+
+            // Feedback mode: stem mute feedback gets "performance" mode so it only
+            // shows in performance mode (not in hot_cue/slicer overlay modes where
+            // the same pads show different state)
+            let feedback_mode = if self.momentary_mode_buttons {
+                match learned.target {
+                    HighlightTarget::DeckHotCue(_, _) => Some("hot_cue".to_string()),
+                    HighlightTarget::DeckSlicerPad(_, _) => Some("slicer".to_string()),
+                    HighlightTarget::DeckStemMute(_, _) => Some("performance".to_string()),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+
             mappings.push(ControlMapping {
                 control: control.clone(),
                 action,
@@ -1331,17 +1527,18 @@ impl MidiLearnState {
                 shift_action,
                 encoder_mode,
                 hardware_type: Some(learned.hardware_type),
+                mode: mode.clone(),
             });
 
             // Generate LED feedback for buttons with state (same-note/same-control assumption)
             if let Some(state_name) = state {
                 let is_hid = matches!(&control, ControlAddress::Hid { .. });
                 if is_note || is_hid {
-                    // HID buttons get RGB colors, MIDI buttons get value-based feedback
-                    let (on_color, off_color) = if is_hid {
-                        (Some([0, 127, 0]), Some([20, 20, 20]))  // Green on, dim off
+                    // HID buttons get state-specific RGB colors, MIDI gets value-based feedback
+                    let (on_color, off_color, alt_on_color, alt_on_value) = if is_hid {
+                        hid_feedback_colors(state_name)
                     } else {
-                        (None, None)
+                        (None, None, None, None)
                     };
                     feedback.push(FeedbackMapping {
                         state: state_name.to_string(),
@@ -1351,10 +1548,11 @@ impl MidiLearnState {
                         output: control,
                         on_value: 127,
                         off_value: 0,
-                        alt_on_value: None,
+                        alt_on_value,
                         on_color,
                         off_color,
-                        alt_on_color: None,
+                        alt_on_color,
+                        mode: feedback_mode,
                     });
                 }
             }
@@ -1425,6 +1623,7 @@ impl MidiLearnState {
                         on_color,
                         off_color: Some([20, 20, 20]),
                         alt_on_color,
+                        mode: None,
                     });
                 }
             }
@@ -1448,6 +1647,7 @@ impl MidiLearnState {
                         on_color,
                         off_color: Some([20, 20, 20]),
                         alt_on_color,
+                        mode: None,
                     });
                 }
             }
@@ -1485,6 +1685,7 @@ impl MidiLearnState {
             shift_buttons,
             mappings,
             feedback,
+            momentary_mode_buttons: self.momentary_mode_buttons,
             color_note_offsets: mesh_midi::detect_color_note_offsets(&self.controller_name),
         };
 
@@ -1711,6 +1912,46 @@ fn view_setup_phase(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
                     controller_btn,
                     Space::new().width(5),
                     app_btn,
+                    Space::new().width(20),
+                    next_btn
+                ].align_y(Alignment::Center),
+                explanation
+            ]
+            .spacing(5)
+            .into()
+        }
+        SetupStep::ModeButtonBehavior => {
+            let label = text("Mode button behavior:").size(14);
+            let explanation = text(
+                "Permanent: Mode buttons toggle between Hot Cue and Slicer mode. Pads always act according to the current mode.\n\
+                 Momentary: Hold to temporarily activate Hot Cue or Slicer mode. When released, pads return to their primary action. Best for compact controllers."
+            ).size(11);
+
+            let permanent_btn = button(text("Permanent").size(12))
+                .on_press(MidiLearnMessage::SetModeButtonBehavior(false))
+                .style(if !state.momentary_mode_buttons {
+                    button::primary
+                } else {
+                    button::secondary
+                });
+            let momentary_btn = button(text("Momentary").size(12))
+                .on_press(MidiLearnMessage::SetModeButtonBehavior(true))
+                .style(if state.momentary_mode_buttons {
+                    button::primary
+                } else {
+                    button::secondary
+                });
+            let next_btn = button(text("Next").size(12))
+                .on_press(MidiLearnMessage::Next)
+                .style(button::primary);
+
+            column![
+                row![
+                    label,
+                    Space::new().width(10),
+                    permanent_btn,
+                    Space::new().width(5),
+                    momentary_btn,
                     Space::new().width(20),
                     next_btn
                 ].align_y(Alignment::Center),

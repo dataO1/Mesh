@@ -306,14 +306,16 @@ impl MidiInputHandler {
 
         // Convert to protocol-agnostic ControlEvent, then map to action
         let control_event = crate::types::ControlEvent::from(&event);
-        if let Some(ref message) = callback_data.mapping_engine.map_event(&control_event) {
-            log::debug!("[MIDI IN] -> {:?}", message);
-            // Send to app (non-blocking)
-            if callback_data.message_tx.try_send(message.clone()).is_err() {
-                log::warn!("MIDI: Message channel full, dropping message");
-            }
-        } else {
+        let messages = callback_data.mapping_engine.map_event_multi(&control_event);
+        if messages.is_empty() {
             log::trace!("[MIDI IN] -> (no mapping)");
+        } else {
+            for message in &messages {
+                log::debug!("[MIDI IN] -> {:?}", message);
+                if callback_data.message_tx.try_send(message.clone()).is_err() {
+                    log::warn!("MIDI: Message channel full, dropping message");
+                }
+            }
         }
     }
 

@@ -532,7 +532,8 @@ impl MeshApp {
                         } else {
                             // App-driven: check current action mode
                             match self.deck_views[deck].action_mode() {
-                                super::deck_view::ActionButtonMode::HotCue => Some(DeckMessage::HotCuePressed(slot)),
+                                super::deck_view::ActionButtonMode::Performance
+                                | super::deck_view::ActionButtonMode::HotCue => Some(DeckMessage::HotCuePressed(slot)),
                                 super::deck_view::ActionButtonMode::Slicer => Some(DeckMessage::SlicerPresetSelect(slot)),
                             }
                         }
@@ -550,7 +551,8 @@ impl MeshApp {
                         } else {
                             // App-driven: only release for hot cue mode
                             match self.deck_views[deck].action_mode() {
-                                super::deck_view::ActionButtonMode::HotCue => Some(DeckMessage::HotCueReleased(slot)),
+                                super::deck_view::ActionButtonMode::Performance
+                                | super::deck_view::ActionButtonMode::HotCue => Some(DeckMessage::HotCueReleased(slot)),
                                 super::deck_view::ActionButtonMode::Slicer => None,
                             }
                         }
@@ -575,14 +577,14 @@ impl MeshApp {
                         if enabled {
                             Some(DeckMessage::SetActionMode(super::deck_view::ActionButtonMode::Slicer))
                         } else {
-                            Some(DeckMessage::SetActionMode(super::deck_view::ActionButtonMode::HotCue))
+                            Some(DeckMessage::SetActionMode(super::deck_view::ActionButtonMode::Performance))
                         }
                     }
                     MidiDeckAction::SetHotCueMode { enabled } => {
                         if enabled {
                             Some(DeckMessage::SetActionMode(super::deck_view::ActionButtonMode::HotCue))
                         } else {
-                            Some(DeckMessage::SetActionMode(super::deck_view::ActionButtonMode::Slicer))
+                            Some(DeckMessage::SetActionMode(super::deck_view::ActionButtonMode::Performance))
                         }
                     }
                     MidiDeckAction::SlicerReset => Some(DeckMessage::ResetSlicerPattern),

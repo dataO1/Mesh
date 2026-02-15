@@ -128,9 +128,14 @@ struct DebounceState {
 ///
 /// Accepts protocol-agnostic `ControlEvent`s and maps them to `MidiMessage`s
 /// based on the device configuration. Works for both MIDI and HID input.
+///
+/// Supports multiple mappings per control address for mode-conditional routing:
+/// when momentary mode buttons are used, a pad can have both a default action
+/// (mode: None) and overlay actions (mode: "hot_cue", "slicer") that activate
+/// only while the mode button is held.
 pub struct MappingEngine {
-    /// Unified address-to-mapping lookup
-    address_mappings: HashMap<ControlAddress, ControlMapping>,
+    /// Unified address-to-mappings lookup (multiple mappings per address for mode overlays)
+    address_mappings: HashMap<ControlAddress, Vec<ControlMapping>>,
     /// Shared state for shift/layer resolution (shared with input callback)
     shared_state: Arc<SharedState>,
     /// Action registry for value ranges
@@ -140,20 +145,28 @@ pub struct MappingEngine {
     /// Continuous-as-button state for edge detection
     /// Used when continuous hardware (knob/fader) is mapped to momentary action (button)
     button_edge_state: std::sync::Mutex<HashMap<ControlAddress, bool>>,
+    /// Per-deck overlay mode state (None = performance mode, Some("hot_cue"/"slicer") = overlay active)
+    mode_held: std::sync::Mutex<[Option<String>; 4]>,
+    /// Whether mode buttons use momentary behavior (hold-to-activate overlay)
+    momentary_mode_buttons: bool,
 }
 
 impl MappingEngine {
     /// Create a new mapping engine from device profile with shared state
     pub fn new(profile: &DeviceProfile, shared_state: Arc<SharedState>) -> Self {
-        let mut address_mappings = HashMap::new();
+        let mut address_mappings: HashMap<ControlAddress, Vec<ControlMapping>> = HashMap::new();
 
         for mapping in &profile.mappings {
-            address_mappings.insert(mapping.control.clone(), mapping.clone());
+            address_mappings
+                .entry(mapping.control.clone())
+                .or_default()
+                .push(mapping.clone());
         }
 
         log::info!(
-            "Mapping: Loaded {} control mappings",
-            address_mappings.len()
+            "Mapping: Loaded {} control addresses ({} total mappings)",
+            address_mappings.len(),
+            profile.mappings.len(),
         );
 
         Self {
@@ -165,21 +178,73 @@ impl MappingEngine {
                 last_deck_load: [None; 4],
             }),
             button_edge_state: std::sync::Mutex::new(HashMap::new()),
+            mode_held: std::sync::Mutex::new([None, None, None, None]),
+            momentary_mode_buttons: profile.momentary_mode_buttons,
         }
     }
 
-    /// Map a control event to an app message
+    /// Map a control event to one or more app messages
+    ///
+    /// Returns multiple messages when a per-side mode button targets multiple decks.
+    /// This is the preferred entry point for the drain loop.
+    pub fn map_event_multi(&self, event: &ControlEvent) -> Vec<MidiMessage> {
+        let mappings = match self.address_mappings.get(&event.address) {
+            Some(m) => m,
+            None => {
+                log::debug!("[Mapping] No mapping for {:?}", event.address);
+                return Vec::new();
+            }
+        };
+
+        // Select the best mapping based on current mode state
+        let mapping = self.select_mapping(mappings);
+
+        // Determine effective shift: per-deck if mapping has physical_deck, else global
+        let shift_held = if let Some(pd) = mapping.physical_deck {
+            self.shared_state.is_shift_held_for_deck(pd)
+        } else {
+            self.shared_state.is_shift_held_global()
+        };
+
+        // Check if this is continuous-as-button (continuous hardware mapped to momentary action)
+        if matches!(event.value, ControlValue::Absolute(_)) && self.needs_edge_detection(mapping) {
+            return self.handle_continuous_as_button(event, mapping, shift_held).into_iter().collect();
+        }
+
+        // Determine which action to use (shift or normal)
+        let action = if shift_held {
+            mapping.shift_action.as_ref().unwrap_or(&mapping.action)
+        } else {
+            &mapping.action
+        };
+
+        // Check for mode button actions that target multiple decks
+        if self.momentary_mode_buttons && (action == "deck.hot_cue_mode" || action == "deck.slicer_mode") {
+            return self.handle_mode_action_multi(action, event, mapping);
+        }
+
+        // Resolve deck index
+        let deck = self.resolve_deck(mapping);
+
+        // Convert to MidiMessage based on action
+        self.action_to_message(action, event, mapping, deck).into_iter().collect()
+    }
+
+    /// Map a control event to an app message (single-message convenience)
     ///
     /// This is the primary entry point for all protocols (MIDI, HID, etc.)
     /// Shift state is read from the shared state based on the mapping's physical_deck.
     pub fn map_event(&self, event: &ControlEvent) -> Option<MidiMessage> {
-        let mapping = match self.address_mappings.get(&event.address) {
+        let mappings = match self.address_mappings.get(&event.address) {
             Some(m) => m,
             None => {
                 log::debug!("[Mapping] No mapping for {:?}", event.address);
                 return None;
             }
         };
+
+        // Select the best mapping based on current mode state
+        let mapping = self.select_mapping(mappings);
 
         // Determine effective shift: per-deck if mapping has physical_deck, else global
         let shift_held = if let Some(pd) = mapping.physical_deck {
@@ -201,11 +266,99 @@ impl MappingEngine {
             &mapping.action
         };
 
+        // Handle momentary mode buttons
+        if self.momentary_mode_buttons && (action == "deck.hot_cue_mode" || action == "deck.slicer_mode") {
+            let msgs = self.handle_mode_action_multi(action, event, mapping);
+            return msgs.into_iter().next();
+        }
+
         // Resolve deck index
         let deck = self.resolve_deck(mapping);
 
         // Convert to MidiMessage based on action
         self.action_to_message(action, event, mapping, deck)
+    }
+
+    /// Select the best mapping from a list based on current mode state
+    ///
+    /// Priority: mode-conditional mapping matching current held mode > unconditional (mode: None)
+    fn select_mapping<'a>(&self, mappings: &'a [ControlMapping]) -> &'a ControlMapping {
+        if mappings.len() == 1 {
+            return &mappings[0];
+        }
+
+        // Determine deck for mode check (use first mapping's deck)
+        let deck = self.resolve_deck(&mappings[0]);
+        let current_mode = self.get_mode_held(deck);
+
+        // Find a mode-conditional mapping that matches current held mode
+        if let Some(ref mode) = current_mode {
+            if let Some(m) = mappings.iter().find(|m| m.mode.as_ref() == Some(mode)) {
+                return m;
+            }
+        }
+
+        // Fall back to unconditional mapping (mode: None)
+        mappings.iter().find(|m| m.mode.is_none()).unwrap_or(&mappings[0])
+    }
+
+    /// Handle a mode button action, potentially targeting multiple decks (per-side mode buttons)
+    fn handle_mode_action_multi(
+        &self,
+        action: &str,
+        event: &ControlEvent,
+        mapping: &ControlMapping,
+    ) -> Vec<MidiMessage> {
+        let enabled = event.value.is_press();
+        let mode_name = if action == "deck.hot_cue_mode" { "hot_cue" } else { "slicer" };
+
+        // Get target decks from params (per-side mode buttons) or single deck
+        let target_decks = self.get_deck_list_param(mapping);
+
+        // Update mode held state
+        let mode_val = if enabled { Some(mode_name) } else { None };
+        self.set_mode_held_multi(&target_decks, mode_val);
+
+        // Generate messages for each target deck
+        target_decks.iter().map(|&deck| {
+            let deck_action = if action == "deck.hot_cue_mode" {
+                DeckAction::SetHotCueMode { enabled }
+            } else {
+                DeckAction::SetSlicerMode { enabled }
+            };
+            MidiMessage::Deck { deck, action: deck_action }
+        }).collect()
+    }
+
+    /// Get target deck list from mapping params, or resolve single deck
+    fn get_deck_list_param(&self, mapping: &ControlMapping) -> Vec<usize> {
+        if let Some(decks_val) = mapping.params.get("decks") {
+            if let Some(seq) = decks_val.as_sequence() {
+                return seq.iter()
+                    .filter_map(|v| v.as_u64().map(|n| n as usize))
+                    .collect();
+            }
+        }
+        vec![self.resolve_deck(mapping)]
+    }
+
+    /// Set mode for multiple decks
+    fn set_mode_held_multi(&self, decks: &[usize], mode: Option<&str>) {
+        let mut state = self.mode_held.lock().unwrap();
+        for &d in decks {
+            if d < 4 {
+                state[d] = mode.map(|s| s.to_string());
+            }
+        }
+    }
+
+    /// Get current mode held for a deck
+    fn get_mode_held(&self, deck: usize) -> Option<String> {
+        if deck < 4 {
+            self.mode_held.lock().unwrap()[deck].clone()
+        } else {
+            None
+        }
     }
 
     /// Check if this mapping needs continuous-as-button edge detection

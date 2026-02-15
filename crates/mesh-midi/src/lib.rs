@@ -287,6 +287,7 @@ impl ControllerManager {
                 shift_buttons: vec![],
                 mappings: vec![],
                 feedback: vec![],
+                momentary_mode_buttons: false,
                 color_note_offsets: None,
             };
 
@@ -697,8 +698,9 @@ impl ControllerManager {
 
                         // Not a shift/toggle — route through mapping engine
                         if let Some(ref engine) = device.mapping_engine {
-                            if let Some(msg) = engine.map_event(&event) {
-                                messages.push(msg);
+                            let msgs = engine.map_event_multi(&event);
+                            if !msgs.is_empty() {
+                                messages.extend(msgs);
                                 continue 'event_loop;
                             }
                         }

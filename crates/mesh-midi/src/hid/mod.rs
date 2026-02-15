@@ -129,7 +129,7 @@ pub fn connect_device(
         .map_err(|e| format!("Failed to set non-blocking mode: {}", e))?;
 
     // Create feedback channel
-    let (feedback_tx, feedback_rx) = flume::bounded::<FeedbackCommand>(64);
+    let (feedback_tx, feedback_rx) = flume::bounded::<FeedbackCommand>(256);
 
     // Spawn I/O thread
     let io_thread = HidIoThread::spawn(
@@ -192,7 +192,7 @@ impl HidOutputHandler {
                 if device_id != &self.device_id {
                     continue;
                 }
-                if let Some(value) = self.change_tracker.update(&result.address, result.value) {
+                if self.change_tracker.update(&result.address, result.value, result.color) {
                     // Use RGB color if available, otherwise fall back to brightness
                     let cmd = if let Some([r, g, b]) = result.color {
                         FeedbackCommand::SetRgb {
@@ -202,7 +202,7 @@ impl HidOutputHandler {
                     } else {
                         FeedbackCommand::SetLed {
                             control: name.clone(),
-                            brightness: value,
+                            brightness: result.value,
                         }
                     };
                     if self.feedback_tx.try_send(cmd).is_err() {

@@ -66,6 +66,11 @@ pub struct DeviceProfile {
     #[serde(default)]
     pub feedback: Vec<FeedbackMapping>,
 
+    /// Whether mode buttons use momentary behavior (hold-to-activate overlay)
+    /// When false (default), mode buttons toggle permanently
+    #[serde(default)]
+    pub momentary_mode_buttons: bool,
+
     /// Note-offset LED color mode (e.g., Xone K series: red=+0, amber=+36, green=+72).
     /// When set, the MIDI output handler adds color offsets to note numbers instead of
     /// using velocity for brightness. LEDs become binary on/off.
@@ -233,6 +238,11 @@ pub struct ControlMapping {
     /// Auto-detected during MIDI learn, used for adapter behavior
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hardware_type: Option<HardwareType>,
+
+    /// Mode condition — if set, this mapping only activates when the specified mode is held
+    /// Values: "hot_cue", "slicer". None = always active (performance/default)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
 }
 
 /// Control behavior type
@@ -372,6 +382,11 @@ pub struct FeedbackMapping {
     /// RGB color for Layer B active state (alternative to on_color)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alt_on_color: Option<[u8; 3]>,
+
+    /// Mode condition — if set, this feedback only activates when the deck's action mode matches
+    /// Values: "hot_cue", "slicer". None = always active (unconditional)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
 }
 
 /// Get the default MIDI config file path
@@ -671,6 +686,7 @@ devices:
             shift_buttons: vec![],
             mappings: vec![],
             feedback: vec![],
+            momentary_mode_buttons: false,
             color_note_offsets: None,
         };
 
@@ -694,6 +710,7 @@ devices:
             shift_buttons: vec![],
             mappings: vec![],
             feedback: vec![],
+            momentary_mode_buttons: false,
             color_note_offsets: None,
         };
         assert!(port_matches("DDJ-SB2 MIDI 1 [hw:3,0,0]", &profile_bracket_format));
@@ -711,6 +728,7 @@ devices:
             shift_buttons: vec![],
             mappings: vec![],
             feedback: vec![],
+            momentary_mode_buttons: false,
             color_note_offsets: None,
         };
 

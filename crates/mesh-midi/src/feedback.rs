@@ -66,10 +66,10 @@ fn beat_pulse_result(
 /// With 4 stems and 3 layers, Drums and Other share the amber layer on the Xone K.
 /// On HID devices all 4 get distinct RGB colors.
 const STEM_LED_COLORS: [[u8; 3]; 4] = [
-    [100, 204, 140], // Vocals — sage green (→ green layer on Xone K)
-    [102, 153, 191], // Drums — steel blue (→ amber layer on Xone K)
-    [191, 140, 89],  // Bass — bronze (→ red layer on Xone K)
-    [179, 153, 217], // Other — lavender (→ amber layer on Xone K)
+    [20, 230, 60],   // Vocals — vivid green (→ green layer on Xone K)
+    [40, 110, 240],  // Drums — vivid blue (→ amber layer on Xone K)
+    [240, 120, 20],  // Bass — vivid orange (→ red layer on Xone K)
+    [180, 50, 255],  // Other — vivid purple (→ amber layer on Xone K)
 ];
 
 /// Application state for LED feedback
@@ -88,8 +88,12 @@ pub struct FeedbackState {
 /// Action button mode (what the pad grid currently controls)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ActionMode {
+    /// Performance mode — pads do their primary action (default, no mode button held)
     #[default]
+    Performance,
+    /// Hot cue mode — pads trigger/set hot cues
     HotCue,
+    /// Slicer mode — pads queue slices for playback
     Slicer,
 }
 
@@ -140,6 +144,26 @@ pub struct FeedbackResult {
     pub color: Option<[u8; 3]>,
 }
 
+/// Check if a feedback mapping's mode condition matches the deck's current action mode
+fn mode_matches(mapping: &FeedbackMapping, state: &FeedbackState, deck_target: &DeckTargetState) -> bool {
+    match mapping.mode.as_deref() {
+        None => true, // Unconditional — always active
+        Some("performance") => {
+            let deck_idx = resolve_feedback_deck(mapping, deck_target);
+            state.decks[deck_idx].action_mode == ActionMode::Performance
+        }
+        Some("hot_cue") => {
+            let deck_idx = resolve_feedback_deck(mapping, deck_target);
+            state.decks[deck_idx].action_mode == ActionMode::HotCue
+        }
+        Some("slicer") => {
+            let deck_idx = resolve_feedback_deck(mapping, deck_target);
+            state.decks[deck_idx].action_mode == ActionMode::Slicer
+        }
+        Some(_) => false, // Unknown mode — treat as inactive
+    }
+}
+
 /// Evaluate all feedback mappings against current state
 ///
 /// Returns a list of (address, value) pairs. The output handler filters
@@ -151,8 +175,15 @@ pub fn evaluate_feedback(
 ) -> Vec<FeedbackResult> {
     mappings
         .iter()
-        .map(|mapping| {
+        .filter_map(|mapping| {
             let address = mapping.output.clone();
+
+            // Mode-conditional feedback: skip mappings whose mode doesn't match
+            // the deck's current action mode. This prevents mode-gated off results
+            // from overwriting unconditional results for the same output address.
+            if !mode_matches(mapping, state, deck_target) {
+                return None;
+            }
 
             // Special handling for layer indicator LEDs with alt_on_value
             if mapping.state == "deck.layer_active" {
@@ -165,7 +196,7 @@ pub fn evaluate_feedback(
                         mapping.alt_on_color.or(mapping.on_color),
                     ),
                 };
-                return FeedbackResult { address, value, color };
+                return Some(FeedbackResult { address, value, color });
             }
 
             // Play button: pulse brightness to the beat when playing
@@ -173,20 +204,20 @@ pub fn evaluate_feedback(
                 let deck_idx = resolve_feedback_deck(mapping, deck_target);
                 let deck_state = &state.decks[deck_idx];
                 if deck_state.is_playing {
-                    return beat_pulse_result(
+                    return Some(beat_pulse_result(
                         address,
                         state.beat_phase,
                         mapping.on_color.unwrap_or([127, 127, 127]),
                         mapping.off_color.unwrap_or([0, 0, 0]),
                         mapping.on_value,
                         mapping.off_value,
-                    );
+                    ));
                 } else {
-                    return FeedbackResult {
+                    return Some(FeedbackResult {
                         address,
                         value: mapping.off_value,
                         color: mapping.off_color,
-                    };
+                    });
                 }
             }
 
@@ -200,7 +231,7 @@ pub fn evaluate_feedback(
                 let deck_state = &state.decks[deck_idx];
                 let off_color = mapping.off_color.unwrap_or([0, 0, 0]);
 
-                return if deck_state.loop_active {
+                return Some(if deck_state.loop_active {
                     let alt_color = mapping.alt_on_color.unwrap_or([127, 0, 0]);
                     let alt_val = mapping.alt_on_value.unwrap_or(mapping.on_value);
                     if deck_state.is_playing {
@@ -219,7 +250,7 @@ pub fn evaluate_feedback(
                     )
                 } else {
                     FeedbackResult { address, value: mapping.off_value, color: mapping.off_color }
-                };
+                });
             }
 
             // Slicer preset overlay: when deck is in slicer mode, hot_cue_set
@@ -250,11 +281,12 @@ pub fn evaluate_feedback(
                         // No preset: off
                         (mapping.off_value, mapping.off_color)
                     };
-                    return FeedbackResult { address, value, color };
+                    return Some(FeedbackResult { address, value, color });
                 }
             }
 
             // Stem mute: per-stem color from STEM_LED_COLORS
+            // Muted → full vivid stem color, Active → dim version of same color
             if mapping.state == "deck.stem_muted" {
                 let deck_idx = resolve_feedback_deck(mapping, deck_target);
                 let deck_state = &state.decks[deck_idx];
@@ -262,13 +294,15 @@ pub fn evaluate_feedback(
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0) as usize;
                 let is_muted = (deck_state.stems_muted & (1 << stem)) != 0;
+                let c = STEM_LED_COLORS.get(stem).copied().unwrap_or([200, 0, 0]);
                 let (value, color) = if is_muted {
-                    let c = STEM_LED_COLORS.get(stem).copied().unwrap_or([200, 0, 0]);
                     (mapping.on_value, Some(c))
                 } else {
-                    (mapping.off_value, mapping.off_color)
+                    // Dim version of stem color (÷8) so pad still shows which stem it is
+                    let dim = [c[0] / 8, c[1] / 8, c[2] / 8];
+                    (mapping.off_value, Some(dim))
                 };
-                return FeedbackResult { address, value, color };
+                return Some(FeedbackResult { address, value, color });
             }
 
             let active = evaluate_state(mapping, state, deck_target);
@@ -277,7 +311,7 @@ pub fn evaluate_feedback(
             } else {
                 (mapping.off_value, mapping.off_color)
             };
-            FeedbackResult { address, value, color }
+            Some(FeedbackResult { address, value, color })
         })
         .collect()
 }
@@ -358,10 +392,10 @@ fn evaluate_state(
 
 /// Change tracker for feedback output
 ///
-/// Remembers last-sent values per control address to avoid redundant sends.
+/// Remembers last-sent values and colors per control address to avoid redundant sends.
 /// Used by both MIDI and HID output handlers.
 pub struct FeedbackChangeTracker {
-    last_values: HashMap<ControlAddress, u8>,
+    last_values: HashMap<ControlAddress, (u8, Option<[u8; 3]>)>,
 }
 
 impl FeedbackChangeTracker {
@@ -371,15 +405,16 @@ impl FeedbackChangeTracker {
         }
     }
 
-    /// Check if value has changed and update tracker
+    /// Check if value or color has changed and update tracker
     ///
-    /// Returns `Some(value)` if the value changed (should send), `None` if unchanged.
-    pub fn update(&mut self, address: &ControlAddress, value: u8) -> Option<u8> {
-        if self.last_values.get(address) == Some(&value) {
-            None
+    /// Returns `true` if the state changed (should send), `false` if unchanged.
+    pub fn update(&mut self, address: &ControlAddress, value: u8, color: Option<[u8; 3]>) -> bool {
+        let new_state = (value, color);
+        if self.last_values.get(address) == Some(&new_state) {
+            false
         } else {
-            self.last_values.insert(address.clone(), value);
-            Some(value)
+            self.last_values.insert(address.clone(), new_state);
+            true
         }
     }
 
@@ -409,14 +444,20 @@ mod tests {
         let mut tracker = FeedbackChangeTracker::new();
         let addr = ControlAddress::Hid { device_id: "test".to_string(), name: "test".to_string() };
 
-        // First update should always return Some
-        assert_eq!(tracker.update(&addr, 127), Some(127));
+        // First update should always return true (changed)
+        assert!(tracker.update(&addr, 127, None));
 
-        // Same value should return None
-        assert_eq!(tracker.update(&addr, 127), None);
+        // Same value + color should return false (unchanged)
+        assert!(!tracker.update(&addr, 127, None));
 
-        // Different value should return Some
-        assert_eq!(tracker.update(&addr, 0), Some(0));
+        // Different value should return true
+        assert!(tracker.update(&addr, 0, None));
+
+        // Same value but different color should return true
+        assert!(tracker.update(&addr, 0, Some([127, 0, 0])));
+
+        // Same value + same color should return false
+        assert!(!tracker.update(&addr, 0, Some([127, 0, 0])));
     }
 
     #[test]
@@ -436,6 +477,7 @@ mod tests {
             on_color: None,
             off_color: None,
             alt_on_color: None,
+            mode: None,
         }];
 
         let mut state = FeedbackState::default();
@@ -465,6 +507,7 @@ mod tests {
             on_color: None,
             off_color: None,
             alt_on_color: None,
+            mode: None,
         }];
 
         let state = FeedbackState::default(); // is_playing defaults to false

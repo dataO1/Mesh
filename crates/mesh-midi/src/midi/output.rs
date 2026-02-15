@@ -78,7 +78,7 @@ impl MidiOutputHandler {
                 // Encode on/off + color offset into a single tracker value:
                 // 0 = off, offset+1 = on with that color
                 let state = if is_on { new_offset.wrapping_add(1) } else { 0 };
-                if self.change_tracker.update(&result.address, state).is_some() {
+                if self.change_tracker.update(&result.address, state, None) {
                     // Turn off the previous color note before changing state
                     if let Some(old_offset) = self.last_note_offsets.remove(&result.address) {
                         self.send_midi_note_offset(&midi_ctrl, 0, old_offset);
@@ -90,8 +90,8 @@ impl MidiOutputHandler {
                 }
             } else {
                 // Standard velocity mode
-                if let Some(value) = self.change_tracker.update(&result.address, result.value) {
-                    self.send_midi(&midi_ctrl, value);
+                if self.change_tracker.update(&result.address, result.value, None) {
+                    self.send_midi(&midi_ctrl, result.value);
                 }
             }
         }
@@ -152,7 +152,7 @@ impl MidiOutputHandler {
         self.send_midi(control, value);
         // Update tracker so subsequent update() won't re-send
         let address = ControlAddress::from(control);
-        self.change_tracker.update(&address, value);
+        self.change_tracker.update(&address, value, None);
     }
 
     /// Clear all LEDs (send off value for all tracked controls)

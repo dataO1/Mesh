@@ -475,6 +475,7 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
             // Set action mode for LED feedback
             use crate::ui::deck_view::ActionButtonMode;
             feedback.decks[deck_idx].action_mode = match app.deck_views[deck_idx].action_mode() {
+                ActionButtonMode::Performance => mesh_midi::ActionMode::Performance,
                 ActionButtonMode::HotCue => mesh_midi::ActionMode::HotCue,
                 ActionButtonMode::Slicer => mesh_midi::ActionMode::Slicer,
             };

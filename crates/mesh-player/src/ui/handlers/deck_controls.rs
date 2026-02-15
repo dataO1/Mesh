@@ -270,7 +270,7 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
                         }
                     }
                 }
-                ActionButtonMode::HotCue => {
+                ActionButtonMode::Performance | ActionButtonMode::HotCue => {
                     // Leaving slicer mode - disable processing but keep queue arrangement
                     for &stem in &stems {
                         app.domain.set_slicer_enabled(deck_idx, stem, false);
