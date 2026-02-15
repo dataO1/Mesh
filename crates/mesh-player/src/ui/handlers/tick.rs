@@ -234,9 +234,13 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
             app.player_canvas_state.set_key_match_enabled(i, key_match_enabled);
             app.player_canvas_state.set_transpose(i, current_transpose);
 
-            // Sync LUFS gain from engine for waveform scaling (single source of truth)
-            let lufs_gain = atomics[i].lufs_gain();
-            app.player_canvas_state.decks[i].zoomed.set_lufs_gain(lufs_gain);
+            // Visual LUFS gain: always scale waveforms to -6 LUFS for full vertical fill.
+            // Computed directly from track's measured LUFS, independent of audio target.
+            let visual_lufs_gain = match atomics[i].track_lufs() {
+                Some(track_lufs) => 10.0_f32.powf((-6.0 - track_lufs) / 20.0),
+                None => 1.0,
+            };
+            app.player_canvas_state.decks[i].zoomed.set_lufs_gain(visual_lufs_gain);
 
             // Read precomputed gain dB from atomics (computed once on track load, not per tick)
             app.player_canvas_state.set_lufs_gain_db(i, atomics[i].lufs_gain_db());
@@ -300,6 +304,18 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
                         .set_loop_region(None);
                 }
             }
+        }
+    }
+
+    // Sync global BPM to canvas for BPM-aligned overview waveforms
+    // When multiple decks play at different BPMs, this stretches overview rendering
+    // so beat grids align visually across all decks
+    let global_bpm = app.domain.global_bpm();
+    for i in 0..4 {
+        if global_bpm > 0.0 {
+            app.player_canvas_state.set_display_bpm(i, Some(global_bpm));
+        } else {
+            app.player_canvas_state.set_display_bpm(i, None);
         }
     }
 

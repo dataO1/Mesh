@@ -112,11 +112,29 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   to ensure clean color transitions. Known controllers are auto-detected from
   a built-in device database during MIDI learn — no manual configuration needed.
 
+- **BPM-aligned overview waveforms** — When multiple decks are loaded, overview
+  waveforms are stretched/compressed at render time so beat grids align visually
+  across all four decks. Each track's display width is scaled proportionally
+  (`D = track_display_dur / max_display_dur`), with shorter tracks padded with
+  silence. Beat markers, cue points, loop regions, and the playhead are all
+  transformed through the same coordinate mapping. Click-to-seek applies the
+  inverse transform so seeking remains accurate. No changes to stored peak data
+  or audio processing — purely a visual coordinate transform.
+
+- **Zoomed waveform -6 LUFS visual scaling** — Zoomed waveforms now always scale
+  visually to -6 LUFS regardless of the configured audio target. This fills the
+  full vertical space of the zoomed waveform area. The audio gain compensation
+  is unaffected — only the visual rendering uses the hardcoded -6 LUFS reference.
+  Track LUFS is now exposed on deck atomics for direct UI computation.
+
+- **Taller overview waveforms** — Overview waveform height increased from 54px to
+  81px (50% taller) for improved visibility of beat grid alignment and stem
+  detail in the overview strips.
+
 - **Mirrored deck layout** — Bottom-row decks (3, 4) now render with overview
   waveforms on top and zoomed waveforms below, mirroring the top-row layout.
   All four overview waveforms cluster in the center of the 2x2 grid, reducing
-  eye travel when comparing track positions. Grid gap reduced from 10px to 4px
-  to keep the overviews visually grouped. Click-to-seek and drag-to-zoom
+  eye travel when comparing track positions. Click-to-seek and drag-to-zoom
   hit-testing updated for the mirrored regions.
 
 - **HID device auto-reconnection** — When an HID controller disconnects (USB

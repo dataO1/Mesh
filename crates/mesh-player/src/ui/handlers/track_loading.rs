@@ -202,8 +202,11 @@ pub fn handle_linked_stem_loaded(app: &mut MeshApp, msg: LinkedStemLoadedMsg) ->
                     );
             }
 
-            // Calculate LUFS gain for linked stem waveform
-            let linked_gain = app.config.audio.loudness.calculate_gain_linear(linked_data.lufs);
+            // Visual LUFS gain for linked stem: always target -6 LUFS for full vertical fill
+            let linked_gain = match linked_data.lufs {
+                Some(lufs) => 10.0_f32.powf((-6.0 - lufs) / 20.0),
+                None => 1.0,
+            };
             app.player_canvas_state
                 .deck_mut(deck_idx)
                 .overview

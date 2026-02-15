@@ -134,6 +134,9 @@ pub struct DeckAtomics {
     /// LUFS gain in dB for UI display (f32 stored as bits, NaN = no gain / unity)
     /// Precomputed on set_lufs_gain() so the UI thread never calls log10
     lufs_gain_db: AtomicU32,
+    /// Track's measured LUFS (f32 stored as bits, NaN = unknown)
+    /// Used by UI to compute visual-only gain scaling independently of audio target
+    track_lufs: AtomicU32,
 }
 
 impl DeckAtomics {
@@ -153,6 +156,7 @@ impl DeckAtomics {
             keys_compatible: AtomicBool::new(true),
             lufs_gain: AtomicU32::new(1.0_f32.to_bits()), // Unity gain by default
             lufs_gain_db: AtomicU32::new(f32::NAN.to_bits()), // No gain display
+            track_lufs: AtomicU32::new(f32::NAN.to_bits()), // Unknown
         }
     }
 
@@ -253,6 +257,22 @@ impl DeckAtomics {
     pub fn lufs_gain_db(&self) -> Option<f32> {
         let db = f32::from_bits(self.lufs_gain_db.load(Ordering::Relaxed));
         if db.is_nan() { None } else { Some(db) }
+    }
+
+    /// Get the track's measured LUFS (lock-free)
+    ///
+    /// Returns None if no LUFS data is available (track not analyzed).
+    #[inline]
+    pub fn track_lufs(&self) -> Option<f32> {
+        let lufs = f32::from_bits(self.track_lufs.load(Ordering::Relaxed));
+        if lufs.is_nan() { None } else { Some(lufs) }
+    }
+
+    /// Store the track's measured LUFS for UI access
+    #[inline]
+    pub fn set_track_lufs(&self, lufs: Option<f32>) {
+        let bits = lufs.unwrap_or(f32::NAN).to_bits();
+        self.track_lufs.store(bits, Ordering::Relaxed);
     }
 }
 
@@ -965,6 +985,7 @@ impl Deck {
 
         // Update atomics for UI access
         self.atomics.set_lufs_gain(gain);
+        self.atomics.set_track_lufs(host_lufs);
 
         log::debug!("Deck {}: LUFS gain set to {:.3} ({:+.1} dB), host_lufs={:?}",
             self.id.0, gain, 20.0 * gain.log10(), host_lufs);

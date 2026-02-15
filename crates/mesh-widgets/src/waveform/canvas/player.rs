@@ -24,8 +24,7 @@ use mesh_core::types::SAMPLE_RATE;
 // =============================================================================
 
 /// Gap between deck cells in the 2x2 grid
-/// Kept tight (4px) so mirrored overview waveforms cluster in the middle.
-pub const DECK_GRID_GAP: f32 = 4.0;
+pub const DECK_GRID_GAP: f32 = 10.0;
 
 /// Gap between zoomed and overview within a deck cell
 pub const DECK_INTERNAL_GAP: f32 = 2.0;
@@ -87,6 +86,21 @@ where
     SeekFn: Fn(usize, f64) -> Message,
     ZoomFn: Fn(usize, u32) -> Message,
 {
+    /// Apply inverse BPM transform to a click position in the overview.
+    ///
+    /// When BPM alignment is active, display positions are scaled by `D`
+    /// (the overview scale factor). This converts a clicked display position
+    /// back to the actual source position for seeking.
+    fn inverse_bpm_seek(&self, deck_idx: usize, display_ratio: f64) -> f64 {
+        let scales = compute_overview_scales(self.state);
+        if let Some(d) = scales[deck_idx] {
+            // Inverse: source_pos = display_pos / D
+            (display_ratio / d).clamp(0.0, 1.0)
+        } else {
+            display_ratio
+        }
+    }
+
     /// Get deck index from zoomed grid position (row, col)
     /// Layout: 1=top-left, 2=top-right, 3=bottom-left, 4=bottom-right
     fn deck_from_grid(row: usize, col: usize) -> usize {
@@ -189,8 +203,9 @@ where
 
                         let overview = &self.state.decks[deck_idx].overview;
                         if overview.has_track && overview.duration_samples > 0 {
-                            // Calculate seek ratio relative to cell width
-                            let seek_ratio = (local_x / cell_width).clamp(0.0, 1.0) as f64;
+                            // Calculate seek ratio, applying inverse BPM transform if active
+                            let display_ratio = (local_x / cell_width).clamp(0.0, 1.0) as f64;
+                            let seek_ratio = self.inverse_bpm_seek(deck_idx, display_ratio);
                             return Some(canvas::Action::publish((self.on_seek)(deck_idx, seek_ratio)));
                         }
                     }
@@ -203,7 +218,8 @@ where
                             if let Some(active_deck) = interaction.active_deck {
                                 let overview = &self.state.decks[active_deck].overview;
                                 if overview.has_track && overview.duration_samples > 0 {
-                                    let seek_ratio = (local_x / cell_width).clamp(0.0, 1.0) as f64;
+                                    let display_ratio = (local_x / cell_width).clamp(0.0, 1.0) as f64;
+                                    let seek_ratio = self.inverse_bpm_seek(active_deck, display_ratio);
                                     return Some(canvas::Action::publish((self.on_seek)(active_deck, seek_ratio)));
                                 }
                             }
@@ -297,6 +313,11 @@ where
             (cell_width + DECK_GRID_GAP, cell_height + DECK_GRID_GAP), // Deck 4: bottom-right
         ];
 
+        // Pre-compute BPM-aligned overview scales for all decks.
+        // Each D = this_track_display_dur / max_display_dur, ensuring all decks
+        // share the same time-per-pixel rate so beat grids align visually.
+        let overview_scales = compute_overview_scales(self.state);
+
         for (deck_idx, (x, y)) in grid_positions.iter().enumerate() {
             // Use interpolated playhead for smooth animation
             let playhead = self.state.interpolated_playhead(deck_idx, SAMPLE_RATE);
@@ -339,6 +360,7 @@ where
                 linked_active,
                 lufs_gain_db,
                 track_bpm,
+                overview_scales[deck_idx],
                 loop_length_beats,
                 loop_active,
                 volume,
@@ -389,6 +411,7 @@ fn draw_deck_quadrant(
     linked_active: &[bool; 4],
     lufs_gain_db: Option<f32>,
     track_bpm: Option<f64>,
+    overview_scale: Option<f64>,
     loop_length_beats: Option<f32>,
     loop_active: bool,
     volume: f32,
@@ -740,6 +763,7 @@ fn draw_deck_quadrant(
         stem_active,
         linked_stems,
         linked_active,
+        overview_scale,
     );
 
     // Draw volume dimming overlay over the waveform area (not the header)
@@ -1200,11 +1224,111 @@ fn draw_zoomed_at(
     let _ = is_master;
 }
 
+/// Pre-stretch a peak buffer for BPM-aligned overview rendering.
+///
+/// `display_fraction`: fraction of the output width this track occupies (0.0-1.0).
+/// Source peaks fill [0, display_fraction] of the output; the rest is silence padding.
+/// For each output pixel, inverse-maps back to the source peak position
+/// and samples with linear interpolation.
+fn stretch_peaks(
+    peaks: &[(f32, f32)],
+    display_fraction: f64,
+    output_len: usize,
+) -> Vec<(f32, f32)> {
+    let peaks_len = peaks.len();
+    if peaks_len == 0 || output_len == 0 || display_fraction <= 0.0 {
+        return vec![(0.0, 0.0); output_len];
+    }
+
+    (0..output_len)
+        .map(|i| {
+            let display_pos = i as f64 / output_len as f64;
+            // Inverse: source_pos = display_pos / display_fraction
+            let source_pos = display_pos / display_fraction;
+
+            if source_pos < 0.0 || source_pos >= 1.0 {
+                return (0.0, 0.0); // Out of range → silence padding
+            }
+
+            // Map to peak index with linear interpolation
+            let source_idx_f = source_pos * peaks_len as f64;
+            let idx0 = source_idx_f.floor() as usize;
+            let idx1 = (idx0 + 1).min(peaks_len - 1);
+            let frac = (source_idx_f - idx0 as f64) as f32;
+
+            let (min0, max0) = peaks[idx0];
+            let (min1, max1) = peaks[idx1];
+
+            (
+                min0 + (min1 - min0) * frac,
+                max0 + (max1 - max0) * frac,
+            )
+        })
+        .collect()
+}
+
+/// Compute overview BPM-alignment scale for all 4 decks.
+///
+/// Returns `D` for each deck: the fraction of display width this track occupies
+/// when all decks share a common time axis at the global BPM. `None` if no
+/// transform is needed (single track, no BPM data, or D ≈ 1.0).
+///
+/// Formula: `D = (track_dur × track_bpm) / (display_bpm × max_display_dur)`
+/// where `max_display_dur = max(track_dur_i × track_bpm_i / display_bpm)` across all decks.
+fn compute_overview_scales(state: &PlayerCanvasState) -> [Option<f64>; 4] {
+    // All decks share the same display_bpm (global BPM)
+    let display_bpm = match state.display_bpm(0) {
+        Some(dbpm) if dbpm > 0.0 => dbpm,
+        _ => return [None; 4],
+    };
+
+    // Compute display duration for each deck and find the maximum
+    let mut display_durs = [0.0f64; 4];
+    let mut max_dur = 0.0f64;
+    let mut count = 0usize;
+
+    for i in 0..4 {
+        let overview = &state.decks[i].overview;
+        if overview.has_track && overview.duration_samples > 0 {
+            if let Some(tbpm) = state.track_bpm(i) {
+                if tbpm > 0.0 {
+                    let dur_secs = overview.duration_samples as f64 / SAMPLE_RATE as f64;
+                    let display_dur = dur_secs * tbpm / display_bpm;
+                    display_durs[i] = display_dur;
+                    max_dur = max_dur.max(display_dur);
+                    count += 1;
+                }
+            }
+        }
+    }
+
+    if count == 0 || max_dur <= 0.0 {
+        return [None; 4];
+    }
+
+    let mut scales = [None; 4];
+    for i in 0..4 {
+        if display_durs[i] > 0.0 {
+            let d = display_durs[i] / max_dur;
+            // Only apply transform if D differs meaningfully from 1.0
+            // (single track or same-length same-BPM tracks don't need it)
+            if count > 1 || (d - 1.0).abs() > 0.001 {
+                scales[i] = Some(d);
+            }
+        }
+    }
+    scales
+}
+
 /// Draw an overview waveform at a specific position
 ///
 /// When linked stems exist, renders as split-view:
 /// - Top half: Currently running stems (host or linked depending on toggle state)
 /// - Bottom half: Non-running alternative stems (with drop marker alignment)
+///
+/// `overview_scale`: When Some(D), stretches overview so this track fills fraction D
+/// of the display width, with silence padding for the rest. All decks share a common
+/// time axis so beat grids align visually.
 fn draw_overview_at(
     frame: &mut Frame,
     overview: &OverviewState,
@@ -1216,6 +1340,7 @@ fn draw_overview_at(
     stem_active: &[bool; 4],
     linked_stems: &[bool; 4],
     linked_active: &[bool; 4],
+    overview_scale: Option<f64>,
 ) {
     let height = WAVEFORM_HEIGHT;
 
@@ -1235,10 +1360,23 @@ fn draw_overview_at(
         return;
     }
 
+    // Helper: convert normalized source position to pixel X.
+    // When overview_scale is active, display_pos = source_pos * D (uniform scaling).
+    let pos_to_x = |pos: f64| -> f32 {
+        let display_pos = if let Some(d) = overview_scale { pos * d } else { pos };
+        x + (display_pos * width as f64) as f32
+    };
+
+    // Helper: check if a transformed position is within visible bounds
+    let pos_visible = |pos: f64| -> bool {
+        let display_pos = if let Some(d) = overview_scale { pos * d } else { pos };
+        display_pos >= -0.01 && display_pos <= 1.01
+    };
+
     // Draw loop region
     if let Some((loop_start, loop_end)) = overview.loop_region {
-        let start_x = x + (loop_start * width as f64) as f32;
-        let end_x = x + (loop_end * width as f64) as f32;
+        let start_x = pos_to_x(loop_start).max(x);
+        let end_x = pos_to_x(loop_end).min(x + width);
         let loop_width = end_x - start_x;
         if loop_width > 0.0 {
             frame.fill_rectangle(
@@ -1246,34 +1384,55 @@ fn draw_overview_at(
                 Size::new(loop_width, height),
                 Color::from_rgba(0.2, 0.8, 0.2, 0.25),
             );
-            frame.stroke(
-                &Path::line(Point::new(start_x, y), Point::new(start_x, y + height)),
-                Stroke::default()
-                    .with_color(Color::from_rgba(0.2, 0.9, 0.2, 0.8))
-                    .with_width(2.0),
-            );
-            frame.stroke(
-                &Path::line(Point::new(end_x, y), Point::new(end_x, y + height)),
-                Stroke::default()
-                    .with_color(Color::from_rgba(0.2, 0.9, 0.2, 0.8))
-                    .with_width(2.0),
-            );
+            if start_x >= x && start_x <= x + width {
+                frame.stroke(
+                    &Path::line(Point::new(start_x, y), Point::new(start_x, y + height)),
+                    Stroke::default()
+                        .with_color(Color::from_rgba(0.2, 0.9, 0.2, 0.8))
+                        .with_width(2.0),
+                );
+            }
+            if end_x >= x && end_x <= x + width {
+                frame.stroke(
+                    &Path::line(Point::new(end_x, y), Point::new(end_x, y + height)),
+                    Stroke::default()
+                        .with_color(Color::from_rgba(0.2, 0.9, 0.2, 0.8))
+                        .with_width(2.0),
+                );
+            }
         }
     }
 
     // Draw slicer region (semi-transparent orange overlay with slice divisions)
     if let Some((slicer_start, slicer_end)) = overview.slicer_region {
-        super::super::slicer_overlay::draw_slicer_overlay(
-            frame,
-            slicer_start,
-            slicer_end,
-            overview.slicer_current_slice,
-            x,
-            y,
-            width,
-            height,
-        );
+        if let Some(d) = overview_scale {
+            // Transform slicer bounds for BPM-aligned display
+            let ts_norm = (slicer_start * d).clamp(0.0, 1.0);
+            let te_norm = (slicer_end * d).clamp(0.0, 1.0);
+            super::super::slicer_overlay::draw_slicer_overlay(
+                frame, ts_norm, te_norm, overview.slicer_current_slice,
+                x, y, width, height,
+            );
+        } else {
+            super::super::slicer_overlay::draw_slicer_overlay(
+                frame, slicer_start, slicer_end, overview.slicer_current_slice,
+                x, y, width, height,
+            );
+        }
     }
+
+    // Pre-stretch peaks when overview scale is active (D < 1.0 compresses, D > 1.0 expands)
+    // Each output pixel maps back to source_pos = display_pos / D.
+    // Positions beyond the track (source_pos >= 1.0) produce silence padding.
+    let stretched_waveforms: Option<[Vec<(f32, f32)>; 4]> = overview_scale.map(|d| {
+        let out_len = overview.stem_waveforms[0].len().max(width as usize);
+        [
+            stretch_peaks(&overview.stem_waveforms[0], d, out_len),
+            stretch_peaks(&overview.stem_waveforms[1], d, out_len),
+            stretch_peaks(&overview.stem_waveforms[2], d, out_len),
+            stretch_peaks(&overview.stem_waveforms[3], d, out_len),
+        ]
+    });
 
     // Draw stem waveforms - split view when linked stems exist
     if any_linked {
@@ -1306,6 +1465,9 @@ fn draw_overview_at(
             let top_peaks = if is_linked_active && has_link {
                 // Linked is active: draw linked on top (with alignment)
                 overview.linked_stem_waveforms[stem_idx].as_ref()
+            } else if let Some(ref stretched) = stretched_waveforms {
+                // BPM-stretched host peaks
+                Some(&stretched[stem_idx])
             } else {
                 // Host is active: draw host on top
                 Some(&overview.stem_waveforms[stem_idx])
@@ -1340,11 +1502,15 @@ fn draw_overview_at(
             // --- BOTTOM HALF: Lower envelope of non-running alternative ---
             if has_link {
                 let bottom_peaks = if is_linked_active {
-                    // Linked is active: host goes to bottom
-                    Some(&overview.stem_waveforms[stem_idx])
+                    // Linked is active: host goes to bottom (use stretched if available)
+                    if let Some(ref stretched) = stretched_waveforms {
+                        Some(stretched[stem_idx].as_slice())
+                    } else {
+                        Some(overview.stem_waveforms[stem_idx].as_slice())
+                    }
                 } else {
                     // Host is active: linked goes to bottom (with alignment)
-                    overview.linked_stem_waveforms[stem_idx].as_ref()
+                    overview.linked_stem_waveforms[stem_idx].as_ref().map(|v| v.as_slice())
                 };
 
                 if let Some(peaks) = bottom_peaks {
@@ -1378,7 +1544,12 @@ fn draw_overview_at(
         // --- SINGLE PANE MODE (no linked stems) ---
         let height_scale = height / 2.0 * 0.85;
         for &stem_idx in STEM_RENDER_ORDER.iter() {
-            let stem_peaks = &overview.stem_waveforms[stem_idx];
+            // Use stretched peaks if BPM transform is active, otherwise original
+            let stem_peaks: &[(f32, f32)] = if let Some(ref stretched) = stretched_waveforms {
+                &stretched[stem_idx]
+            } else {
+                &overview.stem_waveforms[stem_idx]
+            };
             if stem_peaks.is_empty() {
                 continue;
             }
@@ -1401,7 +1572,10 @@ fn draw_overview_at(
         if i % step != 0 {
             continue;
         }
-        let beat_x = x + (beat_pos * width as f64) as f32;
+        if !pos_visible(beat_pos) {
+            continue;
+        }
+        let beat_x = pos_to_x(beat_pos).max(x).min(x + width);
         let color = if (i / step) % 4 == 0 {
             Color::from_rgba(1.0, 0.3, 0.3, 0.6)
         } else {
@@ -1415,7 +1589,10 @@ fn draw_overview_at(
 
     // Draw cue markers
     for marker in &overview.cue_markers {
-        let cue_x = x + (marker.position * width as f64) as f32;
+        if !pos_visible(marker.position) {
+            continue;
+        }
+        let cue_x = pos_to_x(marker.position).max(x).min(x + width);
         frame.fill_rectangle(
             Point::new(cue_x - 1.0, y),
             Size::new(2.0, height),
@@ -1432,25 +1609,27 @@ fn draw_overview_at(
 
     // Draw main cue point marker (orange)
     if let Some(cue_pos) = overview.cue_position {
-        let cue_x = x + (cue_pos * width as f64) as f32;
-        let cue_color = Color::from_rgb(0.6, 0.6, 0.6);
-        frame.stroke(
-            &Path::line(Point::new(cue_x, y), Point::new(cue_x, y + height)),
-            Stroke::default().with_color(cue_color).with_width(2.0),
-        );
-        let triangle = Path::new(|builder| {
-            builder.move_to(Point::new(cue_x, y));
-            builder.line_to(Point::new(cue_x - 4.0, y + 6.0));
-            builder.line_to(Point::new(cue_x + 4.0, y + 6.0));
-            builder.close();
-        });
-        frame.fill(&triangle, cue_color);
+        if pos_visible(cue_pos) {
+            let cue_x = pos_to_x(cue_pos).max(x).min(x + width);
+            let cue_color = Color::from_rgb(0.6, 0.6, 0.6);
+            frame.stroke(
+                &Path::line(Point::new(cue_x, y), Point::new(cue_x, y + height)),
+                Stroke::default().with_color(cue_color).with_width(2.0),
+            );
+            let triangle = Path::new(|builder| {
+                builder.move_to(Point::new(cue_x, y));
+                builder.line_to(Point::new(cue_x - 4.0, y + 6.0));
+                builder.line_to(Point::new(cue_x + 4.0, y + 6.0));
+                builder.close();
+            });
+            frame.fill(&triangle, cue_color);
+        }
     }
 
-    // Draw playhead
+    // Draw playhead — transformed like all other positions when BPM-aligned
     if overview.duration_samples > 0 {
         let playhead_ratio = playhead as f64 / overview.duration_samples as f64;
-        let playhead_x = x + (playhead_ratio * width as f64) as f32;
+        let playhead_x = pos_to_x(playhead_ratio).max(x).min(x + width);
         frame.stroke(
             &Path::line(Point::new(playhead_x, y), Point::new(playhead_x, y + height)),
             Stroke::default()

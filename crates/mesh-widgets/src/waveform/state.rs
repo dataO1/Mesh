@@ -21,8 +21,8 @@ use super::{generate_peaks, smooth_peaks_gaussian, DEFAULT_WIDTH, HIGHRES_WIDTH}
 // =============================================================================
 
 /// Overview waveform height in pixels (compact)
-/// 54px = 1080/20, scales to 108px on UHD (2160p)
-pub const WAVEFORM_HEIGHT: f32 = 54.0;
+/// 81px = 54 × 1.5, scales to 162px on UHD (2160p)
+pub const WAVEFORM_HEIGHT: f32 = 81.0;
 
 /// Zoomed waveform height in pixels (detailed, larger)
 /// 180px = 1080/6, scales to 360px on UHD (2160p)
@@ -1118,6 +1118,10 @@ pub struct PlayerCanvasState {
     loop_active: [bool; 4],
     /// Channel volume per deck (0.0-1.0, for waveform dimming)
     volume: [f32; 4],
+    /// Display BPM per deck (global BPM for BPM-aligned overview rendering)
+    /// When set, overview waveforms are stretched so beat grids align across decks.
+    /// None = no stretching (track has no BPM data or no global sync active)
+    display_bpm: [Option<f64>; 4],
 }
 
 impl PlayerCanvasState {
@@ -1159,6 +1163,7 @@ impl PlayerCanvasState {
             loop_length_beats: [None; 4],        // No loop length initially
             loop_active: [false; 4],             // No loop active initially
             volume: [1.0; 4],                    // Full volume by default
+            display_bpm: [None; 4],              // No BPM alignment initially
         }
     }
 
@@ -1377,6 +1382,22 @@ impl PlayerCanvasState {
             self.volume[idx]
         } else {
             1.0
+        }
+    }
+
+    /// Set display BPM for a deck (global BPM used for overview alignment)
+    pub fn set_display_bpm(&mut self, idx: usize, bpm: Option<f64>) {
+        if idx < 4 {
+            self.display_bpm[idx] = bpm;
+        }
+    }
+
+    /// Get display BPM for a deck
+    pub fn display_bpm(&self, idx: usize) -> Option<f64> {
+        if idx < 4 {
+            self.display_bpm[idx]
+        } else {
+            None
         }
     }
 
