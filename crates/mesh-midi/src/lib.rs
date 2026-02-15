@@ -65,6 +65,16 @@ use flume::{Receiver, Sender};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Format loop length in beats for a 2-digit 7-segment display
+fn format_loop_display(beats: f32) -> String {
+    let b = beats as u32;
+    if b <= 64 {
+        format!("{}", b)
+    } else {
+        "--".to_string()
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Connected device types
 // ═══════════════════════════════════════════════════════════════════════
@@ -768,26 +778,35 @@ impl ControllerManager {
                     device.output_handler.apply_feedback(&results);
                 }
 
-                // Send layer indicator to 7-segment display (if device has one)
+                // Send info to 7-segment display (if device has one)
                 // Find this device's physical deck by matching device_id in shift_buttons
                 if let Some(ref shared_state) = device.shared_state {
-                    if shared_state.is_layer_mode() {
-                        let hid_device_id = device.output_handler.device_id();
-                        let physical_deck = profile.shift_buttons.iter().find_map(|sb| {
-                            if let ControlAddress::Hid { device_id, .. } = &sb.control {
-                                if device_id == hid_device_id {
-                                    return Some(sb.physical_deck);
-                                }
+                    let hid_device_id = device.output_handler.device_id();
+                    let physical_deck = profile.shift_buttons.iter().find_map(|sb| {
+                        if let ControlAddress::Hid { device_id, .. } = &sb.control {
+                            if device_id == hid_device_id {
+                                return Some(sb.physical_deck);
                             }
-                            None
-                        });
-                        if let Some(pd) = physical_deck {
+                        }
+                        None
+                    });
+                    if let Some(pd) = physical_deck {
+                        if shared_state.is_layer_mode() {
+                            // Layer indicator
                             let layer = shared_state.get_layer(pd);
                             let text = match layer {
                                 LayerSelection::A => "A",
                                 LayerSelection::B => "b",
                             };
                             device.output_handler.send_display(text);
+                        } else {
+                            // Loop length display (primary deck for this side)
+                            let deck_idx = pd.min(3);
+                            let beats = state.decks[deck_idx].loop_length_beats;
+                            if beats > 0.0 {
+                                let text = format_loop_display(beats);
+                                device.output_handler.send_display(&text);
+                            }
                         }
                     }
                 }

@@ -99,6 +99,7 @@ pub enum HighlightTarget {
     // Per-side mode buttons (4-deck momentary: side 0=left, 1=right)
     SideHotCueMode(usize),
     SideSlicerMode(usize),
+    SideBrowseMode(usize),
 
     // Performance pads (deck, slot)
     DeckHotCue(usize, usize),
@@ -157,6 +158,10 @@ impl HighlightTarget {
             HighlightTarget::SideSlicerMode(side) => {
                 let side_name = if *side == 0 { "LEFT" } else { "RIGHT" };
                 format!("Press {} side SLICER mode button", side_name)
+            }
+            HighlightTarget::SideBrowseMode(side) => {
+                let side_name = if *side == 0 { "LEFT" } else { "RIGHT" };
+                format!("Press {} side BROWSE mode button (hold to browse)", side_name)
             }
             HighlightTarget::DeckHotCue(d, s) => {
                 format!("Press HOT CUE pad {} on deck {}", s + 1, d + 1)
@@ -1125,10 +1130,16 @@ impl MidiLearnState {
             // MasterVolume, CueVolume, CueMix
             9
         } else if self.deck_count == 4 {
-            // FxEncoder, FxSelect, BrowserEncoderDeck(0), BrowserEncoderDeck(1),
-            // DeckLoad(0), DeckLoad(1), DeckLoad(2), DeckLoad(3),
-            // MasterVolume, CueVolume, CueMix
-            11
+            if self.momentary_mode_buttons {
+                // FxEncoder, FxSelect, SideBrowseMode(0), SideBrowseMode(1),
+                // BrowserEncoderDeck(0), BrowserEncoderDeck(1),
+                // DeckLoad(0-3), MasterVolume, CueVolume, CueMix
+                13
+            } else {
+                // FxEncoder, FxSelect, BrowserEncoderDeck(0), BrowserEncoderDeck(1),
+                // DeckLoad(0-3), MasterVolume, CueVolume, CueMix
+                11
+            }
         } else {
             // FxEncoder, FxSelect, BrowserEncoder, BrowserSelect,
             // MasterVolume, CueVolume, CueMix
@@ -1161,6 +1172,28 @@ impl MidiLearnState {
                 5 => HighlightTarget::BrowserSelectDeck(1),
                 6 => HighlightTarget::MasterVolume,
                 7 => HighlightTarget::CueVolume,
+                _ => HighlightTarget::CueMix,
+            }
+        } else if self.deck_count == 4 && self.momentary_mode_buttons {
+            // 4-deck momentary: browse mode buttons + dual encoders (loop/browse)
+            // 0: FxEncoder, 1: FxSelect,
+            // 2: SideBrowseMode(0), 3: SideBrowseMode(1),
+            // 4: BrowserEncoderDeck(0), 5: BrowserEncoderDeck(1),
+            // 6-9: DeckLoad(0..3), 10: MasterVolume, 11: CueVolume, 12: CueMix
+            // 13 steps total (0-12)
+            match self.current_step {
+                0 => HighlightTarget::FxEncoder,
+                1 => HighlightTarget::FxSelect,
+                2 => HighlightTarget::SideBrowseMode(0),
+                3 => HighlightTarget::SideBrowseMode(1),
+                4 => HighlightTarget::BrowserEncoderDeck(0),
+                5 => HighlightTarget::BrowserEncoderDeck(1),
+                6 => HighlightTarget::DeckLoad(0),
+                7 => HighlightTarget::DeckLoad(1),
+                8 => HighlightTarget::DeckLoad(2),
+                9 => HighlightTarget::DeckLoad(3),
+                10 => HighlightTarget::MasterVolume,
+                11 => HighlightTarget::CueVolume,
                 _ => HighlightTarget::CueMix,
             }
         } else if self.deck_count == 4 {
@@ -1199,6 +1232,16 @@ impl MidiLearnState {
 
         if let Some(ref target) = self.highlight_target {
             self.status = target.description();
+            // Override description for dual-purpose encoders in momentary mode
+            if self.momentary_mode_buttons {
+                if let HighlightTarget::BrowserEncoderDeck(pd) = target {
+                    let side = if *pd == 0 { "LEFT" } else { "RIGHT" };
+                    self.status = format!(
+                        "Turn the {} ENCODER (loop size by default, hold Browse for browser)",
+                        side
+                    );
+                }
+            }
         }
     }
 
@@ -1417,9 +1460,13 @@ impl MidiLearnState {
                 HighlightTarget::DeckFxMacro(d, _m) => {
                     ("deck.fx_macro".to_string(), Some(d), None, ControlBehavior::Continuous, None)
                 }
-                // Per-physical-deck browser (layer mode)
+                // Per-physical-deck encoder (momentary: loop size default + browse on hold)
                 HighlightTarget::BrowserEncoderDeck(pd) => {
-                    ("browser.scroll".to_string(), Some(pd), None, ControlBehavior::Continuous, None)
+                    if self.momentary_mode_buttons {
+                        ("side.loop_size".to_string(), Some(pd), None, ControlBehavior::Continuous, None)
+                    } else {
+                        ("browser.scroll".to_string(), Some(pd), None, ControlBehavior::Continuous, None)
+                    }
                 }
                 HighlightTarget::BrowserSelectDeck(pd) => {
                     ("deck.load_selected".to_string(), Some(pd), None, ControlBehavior::Momentary, None)
@@ -1439,6 +1486,9 @@ impl MidiLearnState {
                     let primary_deck = if side == 0 { 0 } else { 1 };
                     let behavior = if self.momentary_mode_buttons { ControlBehavior::Momentary } else { ControlBehavior::Toggle };
                     ("deck.slicer_mode".to_string(), Some(primary_deck), None, behavior, Some("deck.slicer_mode"))
+                }
+                HighlightTarget::SideBrowseMode(side) => {
+                    ("side.browse_mode".to_string(), Some(side), None, ControlBehavior::Momentary, None)
                 }
             };
 
@@ -1460,6 +1510,18 @@ impl MidiLearnState {
                 HighlightTarget::SideHotCueMode(side) | HighlightTarget::SideSlicerMode(side) => {
                     // Per-side mode buttons control two decks
                     let decks: Vec<serde_yaml::Value> = if side == 0 {
+                        vec![serde_yaml::Value::Number(0.into()), serde_yaml::Value::Number(2.into())]
+                    } else {
+                        vec![serde_yaml::Value::Number(1.into()), serde_yaml::Value::Number(3.into())]
+                    };
+                    params.insert("decks".to_string(), serde_yaml::Value::Sequence(decks));
+                }
+                HighlightTarget::SideBrowseMode(side) => {
+                    params.insert("side".to_string(), serde_yaml::Value::Number(side.into()));
+                }
+                HighlightTarget::BrowserEncoderDeck(pd) if self.momentary_mode_buttons => {
+                    // side.loop_size needs target decks (same as mode buttons)
+                    let decks: Vec<serde_yaml::Value> = if pd == 0 {
                         vec![serde_yaml::Value::Number(0.into()), serde_yaml::Value::Number(2.into())]
                     } else {
                         vec![serde_yaml::Value::Number(1.into()), serde_yaml::Value::Number(3.into())]
@@ -1529,6 +1591,25 @@ impl MidiLearnState {
                 hardware_type: Some(learned.hardware_type),
                 mode: mode.clone(),
             });
+
+            // For dual-purpose encoders in momentary mode, add a second mapping
+            // with mode: "browse" for browser scrolling when browse button is held
+            if self.momentary_mode_buttons {
+                if let HighlightTarget::BrowserEncoderDeck(pd) = learned.target {
+                    mappings.push(ControlMapping {
+                        control: control.clone(),
+                        action: "browser.scroll".to_string(),
+                        physical_deck: Some(pd),
+                        deck_index: None,
+                        params: HashMap::new(),
+                        behavior: ControlBehavior::Continuous,
+                        shift_action: None,
+                        encoder_mode,
+                        hardware_type: Some(learned.hardware_type),
+                        mode: Some("browse".to_string()),
+                    });
+                }
+            }
 
             // Generate LED feedback for buttons with state (same-note/same-control assumption)
             if let Some(state_name) = state {

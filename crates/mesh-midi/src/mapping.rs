@@ -104,6 +104,10 @@ impl ActionRegistry {
         // FX macro knobs (per-deck)
         actions.insert("deck.fx_macro".to_string(), ActionInfo { deck_targetable: true, value_range: ControlRange::Unit });
 
+        // Side-specific actions (per physical deck / side)
+        actions.insert("side.browse_mode".to_string(), ActionInfo { deck_targetable: false, value_range: ControlRange::Unit });
+        actions.insert("side.loop_size".to_string(), ActionInfo { deck_targetable: false, value_range: ControlRange::Unit });
+
         // Suggestion energy direction (per-deck routed, controls global slider)
         actions.insert("deck.suggestion_energy".to_string(), ActionInfo { deck_targetable: true, value_range: ControlRange::Unit });
 
@@ -147,6 +151,8 @@ pub struct MappingEngine {
     button_edge_state: std::sync::Mutex<HashMap<ControlAddress, bool>>,
     /// Per-deck overlay mode state (None = performance mode, Some("hot_cue"/"slicer") = overlay active)
     mode_held: std::sync::Mutex<[Option<String>; 4]>,
+    /// Per-side browse mode state (held = encoder browses, released = encoder controls loop size)
+    browse_held: std::sync::Mutex<[bool; 2]>,
     /// Whether mode buttons use momentary behavior (hold-to-activate overlay)
     momentary_mode_buttons: bool,
 }
@@ -179,6 +185,7 @@ impl MappingEngine {
             }),
             button_edge_state: std::sync::Mutex::new(HashMap::new()),
             mode_held: std::sync::Mutex::new([None, None, None, None]),
+            browse_held: std::sync::Mutex::new([false, false]),
             momentary_mode_buttons: profile.momentary_mode_buttons,
         }
     }
@@ -221,6 +228,16 @@ impl MappingEngine {
         // Check for mode button actions that target multiple decks
         if self.momentary_mode_buttons && (action == "deck.hot_cue_mode" || action == "deck.slicer_mode") {
             return self.handle_mode_action_multi(action, event, mapping);
+        }
+
+        // Browse mode button: sets internal flag, no message to app
+        if action == "side.browse_mode" {
+            return self.handle_browse_mode_action(event, mapping);
+        }
+
+        // Side loop size: encoder controls loop length for both decks on one side
+        if action == "side.loop_size" {
+            return self.handle_side_loop_size(event, mapping);
         }
 
         // Resolve deck index
@@ -272,6 +289,18 @@ impl MappingEngine {
             return msgs.into_iter().next();
         }
 
+        // Browse mode button: sets internal flag, no message to app
+        if action == "side.browse_mode" {
+            let _ = self.handle_browse_mode_action(event, mapping);
+            return None;
+        }
+
+        // Side loop size: encoder controls loop length for both decks on one side
+        if action == "side.loop_size" {
+            let msgs = self.handle_side_loop_size(event, mapping);
+            return msgs.into_iter().next();
+        }
+
         // Resolve deck index
         let deck = self.resolve_deck(mapping);
 
@@ -281,13 +310,23 @@ impl MappingEngine {
 
     /// Select the best mapping from a list based on current mode state
     ///
-    /// Priority: mode-conditional mapping matching current held mode > unconditional (mode: None)
+    /// Priority: browse mode (per physical deck) > pad overlay mode (per virtual deck) > unconditional
     fn select_mapping<'a>(&self, mappings: &'a [ControlMapping]) -> &'a ControlMapping {
         if mappings.len() == 1 {
             return &mappings[0];
         }
 
-        // Determine deck for mode check (use first mapping's deck)
+        // Check browse mode first (per physical deck, separate from pad overlay modes)
+        if let Some(pd) = mappings[0].physical_deck {
+            let browse = self.browse_held.lock().unwrap()[pd.min(1)];
+            if browse {
+                if let Some(m) = mappings.iter().find(|m| m.mode.as_deref() == Some("browse")) {
+                    return m;
+                }
+            }
+        }
+
+        // Then check pad overlay mode (per virtual deck)
         let deck = self.resolve_deck(&mappings[0]);
         let current_mode = self.get_mode_held(deck);
 
@@ -327,6 +366,38 @@ impl MappingEngine {
                 DeckAction::SetSlicerMode { enabled }
             };
             MidiMessage::Deck { deck, action: deck_action }
+        }).collect()
+    }
+
+    /// Handle browse mode button action (sets internal flag, no message to app)
+    fn handle_browse_mode_action(
+        &self,
+        event: &ControlEvent,
+        mapping: &ControlMapping,
+    ) -> Vec<MidiMessage> {
+        let enabled = event.value.is_press();
+        let side = mapping.params.get("side")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(mapping.physical_deck.unwrap_or(0) as u64) as usize;
+        let mut browse = self.browse_held.lock().unwrap();
+        browse[side.min(1)] = enabled;
+        log::debug!("Browse mode: side {} = {}", side, enabled);
+        Vec::new()
+    }
+
+    /// Handle side loop size encoder (sends LoopSize to both decks on one side)
+    fn handle_side_loop_size(
+        &self,
+        event: &ControlEvent,
+        mapping: &ControlMapping,
+    ) -> Vec<MidiMessage> {
+        let delta = self.extract_encoder_delta(event, mapping);
+        if delta == 0 {
+            return Vec::new();
+        }
+        let target_decks = self.get_deck_list_param(mapping);
+        target_decks.iter().map(|&d| {
+            MidiMessage::Deck { deck: d, action: DeckAction::LoopSize(delta) }
         }).collect()
     }
 

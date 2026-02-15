@@ -489,6 +489,9 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
                 });
             feedback.decks[deck_idx].slicer_selected_preset = app.deck_views[deck_idx].slicer_selected_preset() as u8;
 
+            // Loop length for 7-segment display
+            feedback.decks[deck_idx].loop_length_beats = app.deck_views[deck_idx].loop_length_beats();
+
             // Get mixer cue (PFL) state
             feedback.mixer[deck_idx].cue_enabled = app.mixer_view.cue_enabled(deck_idx);
         }

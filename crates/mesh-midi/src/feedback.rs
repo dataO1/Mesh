@@ -137,6 +137,8 @@ pub struct DeckFeedbackState {
     pub stems_muted: u8,
     /// Current action button mode
     pub action_mode: ActionMode,
+    /// Current loop length in beats (for 7-segment display)
+    pub loop_length_beats: f32,
 }
 
 /// Per-channel mixer feedback state
