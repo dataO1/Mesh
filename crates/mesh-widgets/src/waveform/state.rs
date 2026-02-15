@@ -1061,8 +1061,7 @@ impl Default for CombinedState {
 // =============================================================================
 
 /// Height of deck header row showing deck number and track name
-/// 24px = 1080/45, scales to 48px on UHD (2160p)
-pub const DECK_HEADER_HEIGHT: f32 = 24.0;
+pub const DECK_HEADER_HEIGHT: f32 = 48.0;
 
 /// State for 4-deck player canvas (all waveforms in one)
 ///

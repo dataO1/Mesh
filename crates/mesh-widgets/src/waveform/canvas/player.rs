@@ -425,10 +425,10 @@ fn draw_deck_quadrant(
     );
 
     // Draw deck number badge background
-    let badge_width = 28.0;
-    let badge_margin = 4.0;
-    let badge_height = DECK_HEADER_HEIGHT - 6.0;
-    let badge_y = header_y + 3.0;
+    let badge_width = 48.0;
+    let badge_margin = 6.0;
+    let badge_height = DECK_HEADER_HEIGHT - 10.0;
+    let badge_y = header_y + 5.0;
 
     // Badge background color based on state (cue takes priority for fill)
     let badge_bg_color = if cue_enabled {
@@ -471,7 +471,7 @@ fn draw_deck_quadrant(
     frame.fill_text(Text {
         content: deck_num_text,
         position: Point::new(x + badge_margin + badge_width / 2.0, header_y + DECK_HEADER_HEIGHT / 2.0),
-        size: 14.0.into(),
+        size: 24.0.into(),
         color: text_color,
         align_x: Horizontal::Center.into(),
         align_y: Vertical::Center.into(),
@@ -479,10 +479,10 @@ fn draw_deck_quadrant(
     });
 
     // Calculate reserved space for right-side elements (Key, LUFS, Loop, BPM)
-    let key_space = if deck.overview.has_track && !track_key.is_empty() { 80.0 } else { 0.0 };
-    let lufs_space = if deck.overview.has_track && lufs_gain_db.is_some() { 50.0 } else { 0.0 };
-    let loop_space = if deck.overview.has_track && loop_length_beats.is_some() { 40.0 } else { 0.0 };
-    let bpm_space = if deck.overview.has_track && track_bpm.is_some() { 55.0 } else { 0.0 };
+    let key_space = if deck.overview.has_track && !track_key.is_empty() { 150.0 } else { 0.0 };
+    let lufs_space = if deck.overview.has_track && lufs_gain_db.is_some() { 90.0 } else { 0.0 };
+    let loop_space = if deck.overview.has_track && loop_length_beats.is_some() { 70.0 } else { 0.0 };
+    let bpm_space = if deck.overview.has_track && track_bpm.is_some() { 100.0 } else { 0.0 };
 
     // Draw BPM indicator (to the left of loop length)
     let bpm_display_width = if deck.overview.has_track {
@@ -490,11 +490,11 @@ fn draw_deck_quadrant(
             let bpm_text = format!("{:.1}", bpm);
 
             // Position to the left of loop (which is left of LUFS, which is left of key)
-            let bpm_x = x + width - key_space - lufs_space - loop_space - 8.0;
+            let bpm_x = x + width - key_space - lufs_space - loop_space - 12.0;
             frame.fill_text(Text {
                 content: bpm_text,
                 position: Point::new(bpm_x, header_y + DECK_HEADER_HEIGHT / 2.0),
-                size: 10.0.into(),
+                size: 18.0.into(),
                 color: Color::from_rgb(0.7, 0.7, 0.8), // Light blue-gray
                 align_x: Horizontal::Right.into(),
                 align_y: Vertical::Center.into(),
@@ -524,11 +524,11 @@ fn draw_deck_quadrant(
                 Color::from_rgb(0.5, 0.5, 0.5) // Gray when inactive
             };
 
-            let loop_x = x + width - key_space - lufs_space - 8.0;
+            let loop_x = x + width - key_space - lufs_space - 12.0;
             frame.fill_text(Text {
                 content: format!("\u{21BB}{}", loop_text),
                 position: Point::new(loop_x, header_y + DECK_HEADER_HEIGHT / 2.0),
-                size: 10.0.into(),
+                size: 18.0.into(),
                 color: loop_color,
                 align_x: Horizontal::Right.into(),
                 align_y: Vertical::Center.into(),
@@ -563,8 +563,8 @@ fn draw_deck_quadrant(
             // Position to the left of the key display
             frame.fill_text(Text {
                 content: gain_text,
-                position: Point::new(x + width - key_space - 8.0, header_y + DECK_HEADER_HEIGHT / 2.0),
-                size: 10.0.into(),
+                position: Point::new(x + width - key_space - 12.0, header_y + DECK_HEADER_HEIGHT / 2.0),
+                size: 18.0.into(),
                 color: gain_color,
                 align_x: Horizontal::Right.into(),
                 align_y: Vertical::Center.into(),
@@ -594,8 +594,8 @@ fn draw_deck_quadrant(
 
         frame.fill_text(Text {
             content: key_display,
-            position: Point::new(x + width - 8.0, header_y + DECK_HEADER_HEIGHT / 2.0),
-            size: 11.0.into(),
+            position: Point::new(x + width - 12.0, header_y + DECK_HEADER_HEIGHT / 2.0),
+            size: 20.0.into(),
             color: key_color,
             align_x: Horizontal::Right.into(),
             align_y: Vertical::Center.into(),
@@ -606,10 +606,10 @@ fn draw_deck_quadrant(
     // Draw linked stem indicators (small diamonds between deck badge and track name)
     let has_any_links = linked_stems.iter().any(|&has| has);
     if has_any_links {
-        let link_x_start = x + badge_margin + badge_width + 4.0;
+        let link_x_start = x + badge_margin + badge_width + 6.0;
         let link_y = header_y + DECK_HEADER_HEIGHT / 2.0;
-        let diamond_size = 4.0;
-        let diamond_gap = 2.0;
+        let diamond_size = 6.0;
+        let diamond_gap = 3.0;
 
         for (stem_idx, &has_link) in linked_stems.iter().enumerate() {
             if has_link {
@@ -650,13 +650,13 @@ fn draw_deck_quadrant(
     }
 
     // Draw track name text (if loaded)
-    let linked_indicator_space = if has_any_links { 48.0 } else { 0.0 };
-    let name_x = x + badge_margin + badge_width + 8.0 + linked_indicator_space;
-    let max_name_width = width - badge_width - badge_margin * 2.0 - 16.0 - key_space - linked_indicator_space - gain_display_width - bpm_display_width - loop_display_width;
+    let linked_indicator_space = if has_any_links { 68.0 } else { 0.0 };
+    let name_x = x + badge_margin + badge_width + 12.0 + linked_indicator_space;
+    let max_name_width = width - badge_width - badge_margin * 2.0 - 24.0 - key_space - linked_indicator_space - gain_display_width - bpm_display_width - loop_display_width;
 
     if deck.overview.has_track && !track_name.is_empty() {
         // Truncate track name if too long
-        let max_chars = (max_name_width / 7.0) as usize;
+        let max_chars = (max_name_width / 13.0) as usize;
         let display_name = if track_name.len() > max_chars && max_chars > 3 {
             format!("{}...", &track_name[..max_chars - 3])
         } else {
@@ -666,7 +666,7 @@ fn draw_deck_quadrant(
         frame.fill_text(Text {
             content: display_name,
             position: Point::new(name_x, header_y + DECK_HEADER_HEIGHT / 2.0),
-            size: 12.0.into(),
+            size: 22.0.into(),
             color: Color::from_rgb(0.75, 0.75, 0.75),
             align_x: Horizontal::Left.into(),
             align_y: Vertical::Center.into(),
@@ -677,7 +677,7 @@ fn draw_deck_quadrant(
         frame.fill_text(Text {
             content: "No track".to_string(),
             position: Point::new(name_x, header_y + DECK_HEADER_HEIGHT / 2.0),
-            size: 11.0.into(),
+            size: 20.0.into(),
             color: Color::from_rgb(0.4, 0.4, 0.4),
             align_x: Horizontal::Left.into(),
             align_y: Vertical::Center.into(),
