@@ -159,6 +159,9 @@ pub struct HidOutputHandler {
     feedback_tx: Sender<FeedbackCommand>,
     device_id: String,
     change_tracker: crate::feedback::FeedbackChangeTracker,
+    /// Number of results matching this device in the last cycle.
+    /// When this changes, we check for stale addresses that need clearing.
+    last_result_count: usize,
 }
 
 impl HidOutputHandler {
@@ -168,6 +171,7 @@ impl HidOutputHandler {
             feedback_tx,
             device_id,
             change_tracker: crate::feedback::FeedbackChangeTracker::new(),
+            last_result_count: 0,
         }
     }
 
@@ -186,12 +190,11 @@ impl HidOutputHandler {
 
     /// Apply evaluated feedback results for HID controls
     ///
-    /// After processing results, clears any previously-tracked addresses that have
-    /// no result in the current cycle (e.g., mode-gated pads after mode switch).
+    /// When the number of results for this device changes (e.g., mode switch),
+    /// checks for previously-tracked addresses with no result and turns them off.
     pub fn apply_feedback(&mut self, results: &[crate::feedback::FeedbackResult]) {
-        // Collect addresses present in this cycle's results (for this device)
-        let mut current_addresses: std::collections::HashSet<crate::types::ControlAddress> =
-            std::collections::HashSet::new();
+        // Count results for this device and apply changes
+        let mut device_result_count = 0usize;
 
         for result in results {
             // Only handle HID addresses matching this device
@@ -199,9 +202,8 @@ impl HidOutputHandler {
                 if device_id != &self.device_id {
                     continue;
                 }
-                current_addresses.insert(result.address.clone());
+                device_result_count += 1;
                 if self.change_tracker.update(&result.address, result.value, result.color) {
-                    // Use RGB color if available, otherwise fall back to brightness
                     let cmd = if let Some([r, g, b]) = result.color {
                         FeedbackCommand::SetRgb {
                             control: name.clone(),
@@ -220,22 +222,35 @@ impl HidOutputHandler {
             }
         }
 
-        // Clear stale addresses: previously tracked but no result this cycle.
-        // This happens when mode-conditional feedback (e.g., hot_cue pads) stops
-        // matching after a mode switch — we need to turn those LEDs off.
-        let stale: Vec<crate::types::ControlAddress> = self.change_tracker.tracked_addresses()
-            .filter(|addr| {
-                if let crate::types::ControlAddress::Hid { device_id, .. } = addr {
-                    device_id == &self.device_id && !current_addresses.contains(addr)
-                } else {
-                    false
-                }
-            })
-            .cloned()
-            .collect();
+        // Only check for stale addresses when result count changes (mode switch).
+        // This avoids the HashSet + Vec allocation on every tick (60Hz).
+        if device_result_count != self.last_result_count {
+            self.last_result_count = device_result_count;
 
-        for addr in &stale {
-            if let crate::types::ControlAddress::Hid { name, .. } = addr {
+            // Build a small set of current control names (just &str, no cloning)
+            let current_names: std::collections::HashSet<&str> = results.iter()
+                .filter_map(|r| {
+                    if let crate::types::ControlAddress::Hid { device_id, name } = &r.address {
+                        if device_id == &self.device_id { Some(name.as_str()) } else { None }
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // Find tracked addresses for this device that aren't in current results
+            let stale: Vec<(crate::types::ControlAddress, String)> = self.change_tracker.tracked_addresses()
+                .filter_map(|addr| {
+                    if let crate::types::ControlAddress::Hid { device_id, name } = addr {
+                        if device_id == &self.device_id && !current_names.contains(name.as_str()) {
+                            return Some((addr.clone(), name.clone()));
+                        }
+                    }
+                    None
+                })
+                .collect();
+
+            for (addr, name) in &stale {
                 if self.change_tracker.update(addr, 0, Some([0, 0, 0])) {
                     let cmd = FeedbackCommand::SetRgb {
                         control: name.clone(),

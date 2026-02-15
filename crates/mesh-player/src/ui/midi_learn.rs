@@ -1350,6 +1350,17 @@ impl MidiLearnState {
         let mut feedback = Vec::new();
 
         for learned in &self.pending_mappings {
+            // In momentary 4-deck mode, DeckLoopEncoder for decks 2,3 share the same
+            // physical encoder as decks 0,1. The side.loop_size mapping from d=0,1
+            // already covers both decks per side, so skip duplicates.
+            if self.momentary_mode_buttons && self.deck_count == 4 {
+                if let HighlightTarget::DeckLoopEncoder(d) = learned.target {
+                    if d >= 2 {
+                        continue;
+                    }
+                }
+            }
+
             let control = learned.address.clone();
             let is_note = learned.address_is_note();
 
@@ -1367,8 +1378,14 @@ impl MidiLearnState {
                 }
 
                 // Loop size encoder (negative delta = halve, positive = double)
+                // In momentary 4-deck mode, use side.loop_size to route to both
+                // decks on the same side (left encoder → decks 0,2; right → 1,3)
                 HighlightTarget::DeckLoopEncoder(d) => {
-                    ("deck.loop_size".to_string(), None, Some(d), ControlBehavior::Continuous, None)
+                    if self.momentary_mode_buttons && self.deck_count == 4 {
+                        ("side.loop_size".to_string(), Some(d), None, ControlBehavior::Continuous, None)
+                    } else {
+                        ("deck.loop_size".to_string(), None, Some(d), ControlBehavior::Continuous, None)
+                    }
                 }
 
                 // Beat jump
@@ -1507,8 +1524,15 @@ impl MidiLearnState {
                 HighlightTarget::SideBrowseMode(side) => {
                     params.insert("side".to_string(), serde_yaml::Value::Number(side.into()));
                 }
-                // Note: BrowserEncoderDeck no longer appears in momentary mode — browse.scroll
-                // is auto-generated from DeckLoopEncoder instead
+                HighlightTarget::DeckLoopEncoder(d) if self.momentary_mode_buttons && self.deck_count == 4 => {
+                    // side.loop_size needs target decks (both decks on same side)
+                    let decks: Vec<serde_yaml::Value> = if d % 2 == 0 {
+                        vec![serde_yaml::Value::Number(0.into()), serde_yaml::Value::Number(2.into())]
+                    } else {
+                        vec![serde_yaml::Value::Number(1.into()), serde_yaml::Value::Number(3.into())]
+                    };
+                    params.insert("decks".to_string(), serde_yaml::Value::Sequence(decks));
+                }
                 _ => {}
             }
 

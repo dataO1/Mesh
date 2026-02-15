@@ -195,14 +195,16 @@ pub fn evaluate_feedback(
     mappings
         .iter()
         .filter_map(|mapping| {
-            let address = mapping.output.clone();
-
             // Mode-conditional feedback: skip mappings whose mode doesn't match
             // the deck's current action mode. This prevents mode-gated off results
             // from overwriting unconditional results for the same output address.
             if !mode_matches(mapping, state, deck_target) {
                 return None;
             }
+
+            // Clone address only after mode filtering (avoids cloning ControlAddress
+            // strings for mode-gated mappings that won't produce results)
+            let address = mapping.output.clone();
 
             // Special handling for layer indicator LEDs with alt_on_value
             if mapping.state == "deck.layer_active" {

@@ -449,6 +449,14 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
             }
         }
 
+        // Compute slicer preset assignment bitmap once (doesn't vary per deck)
+        let slicer_presets_assigned: u8 = app.slice_editor.presets
+            .iter()
+            .enumerate()
+            .fold(0u8, |acc, (i, p)| {
+                if p.stems.iter().any(|s| s.is_some()) { acc | (1 << i) } else { acc }
+            });
+
         for deck_idx in 0..4 {
             // Get play state and loop active from atomics
             if let Some(ref atomics) = app.deck_atomics {
@@ -480,13 +488,8 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
                 ActionButtonMode::Slicer => mesh_midi::ActionMode::Slicer,
             };
 
-            // Slicer preset assignment bitmap and selected preset
-            feedback.decks[deck_idx].slicer_presets_assigned = app.slice_editor.presets
-                .iter()
-                .enumerate()
-                .fold(0u8, |acc, (i, p)| {
-                    if p.stems.iter().any(|s| s.is_some()) { acc | (1 << i) } else { acc }
-                });
+            // Slicer preset assignment bitmap (computed once above) and selected preset
+            feedback.decks[deck_idx].slicer_presets_assigned = slicer_presets_assigned;
             feedback.decks[deck_idx].slicer_selected_preset = app.deck_views[deck_idx].slicer_selected_preset() as u8;
 
             // Loop length for 7-segment display

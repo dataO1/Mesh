@@ -249,8 +249,9 @@ impl MappingEngine {
         // Convert to MidiMessage based on action
         let mut result: Vec<MidiMessage> = self.action_to_message(action, event, mapping, deck).into_iter().collect();
 
-        // Auto-close browse mode on track load/select
-        if (action == "deck.load_selected" || action == "browser.select") && event.value.is_press() {
+        // Auto-close browse mode only on track load (dedicated load buttons).
+        // browser.select (encoder push) stays in browse mode to allow continued browsing.
+        if action == "deck.load_selected" && event.value.is_press() {
             result.extend(self.clear_browse_mode());
         }
 
