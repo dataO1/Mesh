@@ -65,6 +65,7 @@ pub use feedback::{
 use flume::{Receiver, Sender};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// Format loop length in beats for a 2-digit 7-segment display
 fn format_loop_display(beats: f32) -> String {
@@ -114,6 +115,23 @@ struct ConnectedHidDevice {
 // Controller manager
 // ═══════════════════════════════════════════════════════════════════════
 
+/// Tracks an HID device awaiting reconnection
+struct PendingHidReconnect {
+    /// VID/PID to match during re-enumeration (path may change on reconnect)
+    vendor_id: u16,
+    product_id: u16,
+    /// USB serial or VID/PID fallback — stable across reconnects
+    device_id: String,
+    /// Preserved device profile (for re-creating mapping engine)
+    profile: Option<DeviceProfile>,
+    /// Preserved shared state (shift/layer persists across reconnect)
+    shared_state: Option<Arc<SharedState>>,
+    /// Preserved mapping engine (avoids rebuild)
+    mapping_engine: Option<Arc<MappingEngine>>,
+    /// Number of reconnection attempts so far
+    attempts: u32,
+}
+
 /// Unified controller manager for MIDI and HID devices
 ///
 /// Handles device connection, input processing, and LED feedback for
@@ -136,6 +154,10 @@ pub struct ControllerManager {
     hid_event_tx: Option<Sender<ControlEvent>>,
     /// Background thread for HID LED feedback evaluation
     feedback_worker: Option<feedback_worker::FeedbackWorker>,
+    /// HID devices pending reconnection after I/O thread exit
+    pending_hid_reconnect: Vec<PendingHidReconnect>,
+    /// Last time HID health was checked (throttled to every 2s)
+    last_hid_health_check: Instant,
 }
 
 /// Backwards-compatible type alias
@@ -222,6 +244,8 @@ impl ControllerManager {
             hid_event_rx: Some(hid_rx),
             hid_event_tx: Some(hid_tx),
             feedback_worker: None,
+            pending_hid_reconnect: Vec::new(),
+            last_hid_health_check: Instant::now(),
         };
 
         // Try to connect to all matching devices
@@ -252,6 +276,8 @@ impl ControllerManager {
             hid_event_rx: Some(hid_rx),
             hid_event_tx: Some(hid_tx),
             feedback_worker: None,
+            pending_hid_reconnect: Vec::new(),
+            last_hid_health_check: Instant::now(),
         };
 
         // Connect to ALL available MIDI ports
@@ -648,7 +674,14 @@ impl ControllerManager {
     ///
     /// MIDI messages arrive pre-processed from the input callback.
     /// HID events are processed here: shift/layer detection → mapping engine.
-    pub fn drain(&self) -> Vec<MidiMessage> {
+    /// Also checks HID device health every 2 seconds and attempts reconnection.
+    pub fn drain(&mut self) -> Vec<MidiMessage> {
+        // Throttled HID health check (every 2 seconds)
+        if self.last_hid_health_check.elapsed() >= std::time::Duration::from_secs(2) {
+            self.last_hid_health_check = Instant::now();
+            self.check_hid_health();
+        }
+
         let mut messages = Vec::new();
 
         // Drain MIDI messages (already processed by callback)
@@ -726,6 +759,137 @@ impl ControllerManager {
         }
 
         messages
+    }
+
+    /// Check HID device health and attempt reconnection for dead devices
+    ///
+    /// Detects when an HID I/O thread has exited (device disconnected) and
+    /// moves the device to the pending reconnect list. Then attempts to
+    /// reconnect pending devices by re-enumerating USB and matching VID/PID.
+    fn check_hid_health(&mut self) {
+        // Find dead HID connections
+        let dead_paths: Vec<String> = self.hid_devices.iter()
+            .filter(|(_, dev)| !dev._connection.is_alive())
+            .map(|(path, _)| path.clone())
+            .collect();
+
+        // Move dead devices to pending reconnect list
+        for path in dead_paths {
+            if let Some(dev) = self.hid_devices.remove(&path) {
+                log::warn!(
+                    "HID: Device '{}' at {} disconnected (I/O thread exited), will attempt reconnection",
+                    dev.info.product_name, path
+                );
+                self.pending_hid_reconnect.push(PendingHidReconnect {
+                    vendor_id: dev.info.vendor_id,
+                    product_id: dev.info.product_id,
+                    device_id: dev._connection.device_id.clone(),
+                    profile: dev.profile,
+                    shared_state: dev.shared_state,
+                    mapping_engine: dev.mapping_engine,
+                    attempts: 0,
+                });
+            }
+        }
+
+        // Try to reconnect pending devices
+        if self.pending_hid_reconnect.is_empty() {
+            return;
+        }
+
+        let available = hid::enumerate_devices();
+        let event_tx = match &self.hid_event_tx {
+            Some(tx) => tx.clone(),
+            None => return,
+        };
+
+        // Collect paths already in use (owned to avoid borrowing self.hid_devices)
+        let active_paths: std::collections::HashSet<String> = self.hid_devices.keys()
+            .cloned()
+            .collect();
+
+        // Collect reconnection results: (pending_idx, new_path, ConnectedHidDevice)
+        let mut reconnected: Vec<(usize, String, ConnectedHidDevice)> = Vec::new();
+        let mut gave_up = Vec::new();
+
+        for (idx, pending) in self.pending_hid_reconnect.iter_mut().enumerate() {
+            pending.attempts += 1;
+
+            // Give up after 30 attempts (~60 seconds at 2s interval)
+            if pending.attempts > 30 {
+                log::warn!(
+                    "HID: Giving up reconnection for device {} (VID={:#06x} PID={:#06x}) after {} attempts",
+                    pending.device_id, pending.vendor_id, pending.product_id, pending.attempts
+                );
+                gave_up.push(idx);
+                continue;
+            }
+
+            // Find matching device in current enumeration (may be at a different path)
+            let matched = available.iter().find(|info| {
+                info.vendor_id == pending.vendor_id
+                    && info.product_id == pending.product_id
+                    && !active_paths.contains(&info.path)
+                    // Prefer exact device_id match if serial is available
+                    && info.serial.as_ref()
+                        .filter(|s| !s.is_empty())
+                        .map_or(true, |s| *s == pending.device_id)
+            });
+
+            let info = match matched {
+                Some(info) => info,
+                None => continue, // Device not yet re-enumerated
+            };
+
+            match hid::connect_device(info, event_tx.clone()) {
+                Ok((connection, control_descriptors)) => {
+                    log::info!(
+                        "HID: Reconnected '{}' at {} (was disconnected, attempt {})",
+                        info.product_name, info.path, pending.attempts
+                    );
+                    let output_handler = hid::HidOutputHandler::new(
+                        connection.feedback_sender(),
+                        connection.device_id.clone(),
+                    );
+
+                    reconnected.push((idx, info.path.clone(), ConnectedHidDevice {
+                        info: info.clone(),
+                        _connection: connection,
+                        output_handler,
+                        control_descriptors,
+                        profile: pending.profile.take(),
+                        mapping_engine: pending.mapping_engine.take(),
+                        shared_state: pending.shared_state.take(),
+                    }));
+                }
+                Err(e) => {
+                    log::debug!(
+                        "HID: Reconnection attempt {} for {} failed: {}",
+                        pending.attempts, pending.device_id, e
+                    );
+                }
+            }
+        }
+
+        // Apply reconnected devices
+        let any_reconnected = !reconnected.is_empty();
+        let mut to_remove: Vec<usize> = gave_up;
+        for (idx, path, device) in reconnected {
+            self.hid_devices.insert(path, device);
+            to_remove.push(idx);
+        }
+
+        // Remove reconnected and gave-up entries (iterate in reverse to preserve indices)
+        to_remove.sort_unstable();
+        to_remove.dedup();
+        for idx in to_remove.into_iter().rev() {
+            self.pending_hid_reconnect.remove(idx);
+        }
+
+        // Restart feedback worker if any device reconnected and we had one before
+        if any_reconnected && self.feedback_worker.is_some() {
+            self.start_feedback_worker();
+        }
     }
 
     /// Get the shared state from the first device with one (MIDI or HID)

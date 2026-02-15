@@ -24,7 +24,8 @@ use mesh_core::types::SAMPLE_RATE;
 // =============================================================================
 
 /// Gap between deck cells in the 2x2 grid
-pub const DECK_GRID_GAP: f32 = 10.0;
+/// Kept tight (4px) so mirrored overview waveforms cluster in the middle.
+pub const DECK_GRID_GAP: f32 = 4.0;
 
 /// Gap between zoomed and overview within a deck cell
 pub const DECK_INTERNAL_GAP: f32 = 2.0;
@@ -131,13 +132,26 @@ where
             let local_y = position.y - cell_y;
 
             // Determine which region within the cell: header, zoomed, or overview
-            let header_end = DECK_HEADER_HEIGHT;
-            let zoomed_end = header_end + zoomed_height;
-            let overview_start = zoomed_end + DECK_INTERNAL_GAP;
-            let overview_end = overview_start + WAVEFORM_HEIGHT;
+            // Bottom row (row 1) is mirrored: overview → gap → zoomed → header
+            let mirrored = row == 1;
+            let (zoomed_start, zoomed_end, overview_start, overview_end) = if mirrored {
+                // overview → gap → zoomed → header
+                let overview_start = 0.0_f32;
+                let overview_end = WAVEFORM_HEIGHT;
+                let zoomed_start = WAVEFORM_HEIGHT + DECK_INTERNAL_GAP;
+                let zoomed_end = zoomed_start + zoomed_height;
+                (zoomed_start, zoomed_end, overview_start, overview_end)
+            } else {
+                // header → zoomed → gap → overview
+                let zoomed_start = DECK_HEADER_HEIGHT;
+                let zoomed_end = zoomed_start + zoomed_height;
+                let overview_start = zoomed_end + DECK_INTERNAL_GAP;
+                let overview_end = overview_start + WAVEFORM_HEIGHT;
+                (zoomed_start, zoomed_end, overview_start, overview_end)
+            };
 
             // Check if in zoomed region (drag to zoom)
-            if local_y >= header_end && local_y < zoomed_end {
+            if local_y >= zoomed_start && local_y < zoomed_end {
                 match event {
                     Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                         interaction.active_deck = Some(deck_idx);
@@ -224,13 +238,23 @@ where
             let cell_y = if row == 0 { 0.0 } else { cell_height + DECK_GRID_GAP };
             let local_y = position.y - cell_y;
 
-            // Regions within cell
-            let header_end = DECK_HEADER_HEIGHT;
-            let zoomed_end = header_end + zoomed_height;
-            let overview_start = zoomed_end + DECK_INTERNAL_GAP;
-            let overview_end = overview_start + WAVEFORM_HEIGHT;
+            // Regions within cell — mirrored for bottom row
+            let mirrored = row == 1;
+            let (zoomed_start, zoomed_end, overview_start, overview_end) = if mirrored {
+                let overview_start = 0.0_f32;
+                let overview_end = WAVEFORM_HEIGHT;
+                let zoomed_start = WAVEFORM_HEIGHT + DECK_INTERNAL_GAP;
+                let zoomed_end = zoomed_start + zoomed_height;
+                (zoomed_start, zoomed_end, overview_start, overview_end)
+            } else {
+                let zoomed_start = DECK_HEADER_HEIGHT;
+                let zoomed_end = zoomed_start + zoomed_height;
+                let overview_start = zoomed_end + DECK_INTERNAL_GAP;
+                let overview_end = overview_start + WAVEFORM_HEIGHT;
+                (zoomed_start, zoomed_end, overview_start, overview_end)
+            };
 
-            if local_y >= header_end && local_y < zoomed_end {
+            if local_y >= zoomed_start && local_y < zoomed_end {
                 // In zoomed region
                 if interaction.drag_start_y.is_some() {
                     mouse::Interaction::ResizingVertically
@@ -292,6 +316,8 @@ where
             let loop_active = self.state.loop_active(deck_idx);
             let volume = self.state.volume(deck_idx);
 
+            let mirrored = deck_idx >= 2; // Bottom row decks are mirrored
+
             draw_deck_quadrant(
                 &mut frame,
                 &self.state.decks[deck_idx],
@@ -316,6 +342,7 @@ where
                 loop_length_beats,
                 loop_active,
                 volume,
+                mirrored,
             );
         }
 
@@ -365,6 +392,7 @@ fn draw_deck_quadrant(
     loop_length_beats: Option<f32>,
     loop_active: bool,
     volume: f32,
+    mirrored: bool,
 ) {
     use iced::widget::canvas::Text;
     use iced::alignment::{Horizontal, Vertical};
@@ -373,10 +401,25 @@ fn draw_deck_quadrant(
     const STEM_INDICATOR_WIDTH: f32 = 6.0;
     const STEM_INDICATOR_GAP: f32 = 2.0;
 
+    // Compute Y positions based on mirrored layout
+    let (header_y, zoomed_y, overview_y) = if mirrored {
+        // Bottom decks: overview → gap → zoomed → header
+        let overview_y = y;
+        let zoomed_y = y + WAVEFORM_HEIGHT + DECK_INTERNAL_GAP;
+        let header_y = zoomed_y + zoomed_height;
+        (header_y, zoomed_y, overview_y)
+    } else {
+        // Top decks: header → zoomed → gap → overview
+        let header_y = y;
+        let zoomed_y = y + DECK_HEADER_HEIGHT;
+        let overview_y = zoomed_y + zoomed_height + DECK_INTERNAL_GAP;
+        (header_y, zoomed_y, overview_y)
+    };
+
     // Draw header background
     let header_bg_color = Color::from_rgb(0.10, 0.10, 0.12);
     frame.fill_rectangle(
-        Point::new(x, y),
+        Point::new(x, header_y),
         Size::new(width, DECK_HEADER_HEIGHT),
         header_bg_color,
     );
@@ -385,7 +428,7 @@ fn draw_deck_quadrant(
     let badge_width = 28.0;
     let badge_margin = 4.0;
     let badge_height = DECK_HEADER_HEIGHT - 6.0;
-    let badge_y = y + 3.0;
+    let badge_y = header_y + 3.0;
 
     // Badge background color based on state (cue takes priority for fill)
     let badge_bg_color = if cue_enabled {
@@ -427,7 +470,7 @@ fn draw_deck_quadrant(
 
     frame.fill_text(Text {
         content: deck_num_text,
-        position: Point::new(x + badge_margin + badge_width / 2.0, y + DECK_HEADER_HEIGHT / 2.0),
+        position: Point::new(x + badge_margin + badge_width / 2.0, header_y + DECK_HEADER_HEIGHT / 2.0),
         size: 14.0.into(),
         color: text_color,
         align_x: Horizontal::Center.into(),
@@ -450,7 +493,7 @@ fn draw_deck_quadrant(
             let bpm_x = x + width - key_space - lufs_space - loop_space - 8.0;
             frame.fill_text(Text {
                 content: bpm_text,
-                position: Point::new(bpm_x, y + DECK_HEADER_HEIGHT / 2.0),
+                position: Point::new(bpm_x, header_y + DECK_HEADER_HEIGHT / 2.0),
                 size: 10.0.into(),
                 color: Color::from_rgb(0.7, 0.7, 0.8), // Light blue-gray
                 align_x: Horizontal::Right.into(),
@@ -484,7 +527,7 @@ fn draw_deck_quadrant(
             let loop_x = x + width - key_space - lufs_space - 8.0;
             frame.fill_text(Text {
                 content: format!("\u{21BB}{}", loop_text),
-                position: Point::new(loop_x, y + DECK_HEADER_HEIGHT / 2.0),
+                position: Point::new(loop_x, header_y + DECK_HEADER_HEIGHT / 2.0),
                 size: 10.0.into(),
                 color: loop_color,
                 align_x: Horizontal::Right.into(),
@@ -520,7 +563,7 @@ fn draw_deck_quadrant(
             // Position to the left of the key display
             frame.fill_text(Text {
                 content: gain_text,
-                position: Point::new(x + width - key_space - 8.0, y + DECK_HEADER_HEIGHT / 2.0),
+                position: Point::new(x + width - key_space - 8.0, header_y + DECK_HEADER_HEIGHT / 2.0),
                 size: 10.0.into(),
                 color: gain_color,
                 align_x: Horizontal::Right.into(),
@@ -551,7 +594,7 @@ fn draw_deck_quadrant(
 
         frame.fill_text(Text {
             content: key_display,
-            position: Point::new(x + width - 8.0, y + DECK_HEADER_HEIGHT / 2.0),
+            position: Point::new(x + width - 8.0, header_y + DECK_HEADER_HEIGHT / 2.0),
             size: 11.0.into(),
             color: key_color,
             align_x: Horizontal::Right.into(),
@@ -564,7 +607,7 @@ fn draw_deck_quadrant(
     let has_any_links = linked_stems.iter().any(|&has| has);
     if has_any_links {
         let link_x_start = x + badge_margin + badge_width + 4.0;
-        let link_y = y + DECK_HEADER_HEIGHT / 2.0;
+        let link_y = header_y + DECK_HEADER_HEIGHT / 2.0;
         let diamond_size = 4.0;
         let diamond_gap = 2.0;
 
@@ -622,7 +665,7 @@ fn draw_deck_quadrant(
 
         frame.fill_text(Text {
             content: display_name,
-            position: Point::new(name_x, y + DECK_HEADER_HEIGHT / 2.0),
+            position: Point::new(name_x, header_y + DECK_HEADER_HEIGHT / 2.0),
             size: 12.0.into(),
             color: Color::from_rgb(0.75, 0.75, 0.75),
             align_x: Horizontal::Left.into(),
@@ -633,7 +676,7 @@ fn draw_deck_quadrant(
         // Show "No track" for empty decks
         frame.fill_text(Text {
             content: "No track".to_string(),
-            position: Point::new(name_x, y + DECK_HEADER_HEIGHT / 2.0),
+            position: Point::new(name_x, header_y + DECK_HEADER_HEIGHT / 2.0),
             size: 11.0.into(),
             color: Color::from_rgb(0.4, 0.4, 0.4),
             align_x: Horizontal::Left.into(),
@@ -642,8 +685,7 @@ fn draw_deck_quadrant(
         });
     }
 
-    // Draw zoomed waveform below header
-    let zoomed_y = y + DECK_HEADER_HEIGHT;
+    // Draw zoomed waveform
     draw_zoomed_at(
         frame,
         &deck.zoomed,
@@ -662,9 +704,6 @@ fn draw_deck_quadrant(
         stem_active,
         linked_active,
     );
-
-    // Draw overview waveform below zoomed
-    let overview_y = zoomed_y + zoomed_height + DECK_INTERNAL_GAP;
 
     // Draw stem status indicators on left side of zoomed waveform only
     let indicator_height = (zoomed_height - (STEM_INDICATOR_GAP * 3.0)) / 4.0;
@@ -707,7 +746,7 @@ fn draw_deck_quadrant(
     // At full volume (1.0) no dimming, at zero volume max dimming (0.4 alpha)
     if volume < 0.99 {
         let dim_alpha = (1.0 - volume) * 0.4;
-        let waveform_area_y = y + DECK_HEADER_HEIGHT;
+        let waveform_area_y = overview_y.min(zoomed_y);
         let waveform_area_height = zoomed_height + DECK_INTERNAL_GAP + WAVEFORM_HEIGHT;
         frame.fill_rectangle(
             Point::new(x, waveform_area_y),

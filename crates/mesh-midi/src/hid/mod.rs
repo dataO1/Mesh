@@ -30,7 +30,7 @@ pub struct HidDeviceInfo {
 /// A connected HID device with its I/O thread
 pub struct HidConnection {
     /// I/O thread handle (owns the thread lifetime)
-    _io_thread: HidIoThread,
+    io_thread: HidIoThread,
     /// Sender for feedback commands (written by output handler)
     feedback_tx: Sender<FeedbackCommand>,
     /// Device info
@@ -43,6 +43,11 @@ impl HidConnection {
     /// Get the feedback command sender (for the output handler)
     pub fn feedback_sender(&self) -> Sender<FeedbackCommand> {
         self.feedback_tx.clone()
+    }
+
+    /// Check if the I/O thread is still running
+    pub fn is_alive(&self) -> bool {
+        self.io_thread.is_alive()
     }
 }
 
@@ -143,7 +148,7 @@ pub fn connect_device(
     log::info!("HID: Connected to '{}' at {} ({} controls, device_id={})", info.product_name, info.path, descriptors.len(), device_id);
 
     Ok((HidConnection {
-        _io_thread: io_thread,
+        io_thread,
         feedback_tx,
         info: info.clone(),
         device_id,

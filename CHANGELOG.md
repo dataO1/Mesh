@@ -112,6 +112,20 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   to ensure clean color transitions. Known controllers are auto-detected from
   a built-in device database during MIDI learn — no manual configuration needed.
 
+- **Mirrored deck layout** — Bottom-row decks (3, 4) now render with overview
+  waveforms on top and zoomed waveforms below, mirroring the top-row layout.
+  All four overview waveforms cluster in the center of the 2x2 grid, reducing
+  eye travel when comparing track positions. Grid gap reduced from 10px to 4px
+  to keep the overviews visually grouped. Click-to-seek and drag-to-zoom
+  hit-testing updated for the mirrored regions.
+
+- **HID device auto-reconnection** — When an HID controller disconnects (USB
+  hub reset, cable issue, power management), the I/O thread exit is now detected
+  via a health check every 2 seconds. The device is re-enumerated by VID/PID
+  (not path, since `/dev/hidraw*` can change on reconnect) and automatically
+  reconnected with preserved MIDI profile, shift/layer state, and LED feedback.
+  Gives up after 30 failed attempts (~60 seconds).
+
 ### Fixed
 
 - **HID udev rules in .deb packages** — The mesh-player .deb now installs

@@ -23,6 +23,8 @@ pub struct HidIoThread {
     handle: Option<thread::JoinHandle<()>>,
     /// Device name (for logging)
     device_name: String,
+    /// Whether the I/O loop is still running (set to false on exit)
+    alive: Arc<AtomicBool>,
 }
 
 impl HidIoThread {
@@ -42,12 +44,15 @@ impl HidIoThread {
     ) -> Self {
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_clone = shutdown.clone();
+        let alive = Arc::new(AtomicBool::new(true));
+        let alive_clone = alive.clone();
         let name = device_name.clone();
 
         let handle = thread::Builder::new()
             .name(format!("hid-io-{}", device_name))
             .spawn(move || {
                 Self::io_loop(device, &mut *driver, event_tx, feedback_rx, shutdown_clone, &name);
+                alive_clone.store(false, Ordering::Relaxed);
             })
             .expect("Failed to spawn HID I/O thread");
 
@@ -55,7 +60,13 @@ impl HidIoThread {
             shutdown,
             handle: Some(handle),
             device_name,
+            alive,
         }
+    }
+
+    /// Check if the I/O loop is still running
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Relaxed)
     }
 
     /// Main I/O loop running on the dedicated thread

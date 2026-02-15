@@ -22,7 +22,7 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
     // Collect first to release borrow before calling handle_midi_message
     let midi_messages: Vec<_> = app
         .controller
-        .as_ref()
+        .as_mut()
         .map(|m| m.drain())
         .unwrap_or_default();
 
