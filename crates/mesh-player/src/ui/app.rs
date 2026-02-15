@@ -659,13 +659,13 @@ impl MeshApp {
                     MidiBrowserAction::Select => {
                         // Check if we're in stem link selection mode
                         if matches!(self.stem_link_state, StemLinkState::Selecting { .. }) {
-                            // Confirm linked stem selection instead of loading track
                             self.confirm_stem_link_selection();
                             Task::none()
                         } else {
-                            // Normal: select current item (activates track -> loads to deck 0)
+                            // Navigate into folders/playlists only — never load tracks.
+                            // Track loading is handled by deck.load_selected (dedicated load buttons).
                             self.update(Message::CollectionBrowser(
-                                CollectionBrowserMessage::SelectCurrent,
+                                CollectionBrowserMessage::NavigateInto,
                             ))
                         }
                     }

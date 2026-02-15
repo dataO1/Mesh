@@ -73,6 +73,8 @@ pub enum CollectionBrowserMessage {
     ScrollBy(i32),
     /// Select current item (enter folder or activate track)
     SelectCurrent,
+    /// Navigate into selected folder/playlist (never loads tracks)
+    NavigateInto,
     /// Navigate back (exit playlist to tree, or go up hierarchy in tree)
     Back,
     /// Toggle smart suggestions mode on/off
@@ -434,9 +436,17 @@ impl CollectionBrowserState {
                 }
                 // If no track selected but we have a selected folder in tree, enter it
                 if let Some(ref folder_id) = self.browser.tree_state.selected.clone() {
-                    // Set as current folder and load its tracks (handles both local and USB)
                     self.browser.current_folder = Some(folder_id.clone());
                     self.load_tracks_for_folder(&folder_id);
+                }
+                None
+            }
+            CollectionBrowserMessage::NavigateInto => {
+                // Navigate into folder/playlist only — never load tracks.
+                // Used by MIDI encoder press in browse mode.
+                if let Some(ref folder_id) = self.browser.tree_state.selected.clone() {
+                    self.browser.current_folder = Some(folder_id.clone());
+                    self.load_tracks_for_folder(folder_id);
                 }
                 None
             }

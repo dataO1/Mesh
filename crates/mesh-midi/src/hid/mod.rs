@@ -180,6 +180,11 @@ impl HidOutputHandler {
         &self.device_id
     }
 
+    /// Get a clone of the feedback sender (for background worker)
+    pub fn feedback_sender(&self) -> Sender<FeedbackCommand> {
+        self.feedback_tx.clone()
+    }
+
     /// Send a display text command directly (e.g., for layer indicator)
     pub fn send_display(&self, text: &str) {
         let cmd = FeedbackCommand::SetDisplay { text: text.to_string() };

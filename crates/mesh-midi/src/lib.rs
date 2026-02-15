@@ -27,6 +27,7 @@ pub mod hid;
 mod mapping;
 mod messages;
 pub mod midi;
+mod feedback_worker;
 mod normalize;
 mod shared_state;
 pub mod types;
@@ -133,6 +134,8 @@ pub struct ControllerManager {
     hid_event_rx: Option<Receiver<ControlEvent>>,
     /// Sender for HID control events (passed to I/O threads)
     hid_event_tx: Option<Sender<ControlEvent>>,
+    /// Background thread for HID LED feedback evaluation
+    feedback_worker: Option<feedback_worker::FeedbackWorker>,
 }
 
 /// Backwards-compatible type alias
@@ -218,11 +221,13 @@ impl ControllerManager {
             message_tx: message_tx.clone(),
             hid_event_rx: Some(hid_rx),
             hid_event_tx: Some(hid_tx),
+            feedback_worker: None,
         };
 
         // Try to connect to all matching devices
         controller.try_connect_all_midi(capture_raw)?;
         controller.try_connect_all_hid();
+        controller.start_feedback_worker();
 
         Ok(controller)
     }
@@ -246,6 +251,7 @@ impl ControllerManager {
             message_tx: message_tx.clone(),
             hid_event_rx: Some(hid_rx),
             hid_event_tx: Some(hid_tx),
+            feedback_worker: None,
         };
 
         // Connect to ALL available MIDI ports
@@ -756,9 +762,35 @@ impl ControllerManager {
             .unwrap_or(false)
     }
 
+    /// Start the background feedback worker thread for HID devices
+    ///
+    /// Collects feedback mappings, output channels, and shared state from all
+    /// connected HID devices and spawns a worker thread. Must be called after
+    /// HID devices are connected.
+    fn start_feedback_worker(&mut self) {
+        let mut registrations = Vec::new();
+        for device in self.hid_devices.values() {
+            if let Some(ref profile) = device.profile {
+                if !profile.feedback.is_empty() {
+                    if let Some(ref shared_state) = device.shared_state {
+                        registrations.push(feedback_worker::HidFeedbackRegistration {
+                            mappings: profile.feedback.clone(),
+                            output_tx: device.output_handler.feedback_sender(),
+                            shared_state: shared_state.clone(),
+                            device_id: device.output_handler.device_id().to_string(),
+                        });
+                    }
+                }
+            }
+        }
+        if !registrations.is_empty() {
+            self.feedback_worker = Some(feedback_worker::FeedbackWorker::new(registrations));
+        }
+    }
+
     /// Update LED feedback based on current application state
     pub fn update_feedback(&mut self, state: &FeedbackState) {
-        // Update MIDI devices
+        // Update MIDI devices (lightweight, stays on main thread)
         for device in self.midi_devices.values_mut() {
             if let Some(ref mut output) = device.output_handler {
                 if let Ok(deck_target) = device.shared_state.deck_target.read() {
@@ -767,19 +799,15 @@ impl ControllerManager {
             }
         }
 
-        // Update HID devices — evaluate feedback for each device with a profile
-        for device in self.hid_devices.values_mut() {
-            if let Some(ref profile) = device.profile {
-                if !profile.feedback.is_empty() {
-                    let deck_target = device.shared_state.as_ref()
-                        .and_then(|s| s.deck_target.read().ok().map(|dt| dt.clone()))
-                        .unwrap_or_default();
-                    let results = evaluate_feedback(&profile.feedback, state, &deck_target);
-                    device.output_handler.apply_feedback(&results);
-                }
+        // HID LED feedback is handled by the background worker thread.
+        // Just send state via channel (non-blocking, ~120 bytes).
+        if let Some(ref worker) = self.feedback_worker {
+            worker.send(state);
+        }
 
-                // Send info to 7-segment display (if device has one)
-                // Find this device's physical deck by matching device_id in shift_buttons
+        // 7-segment display updates stay on main thread (cheap, no evaluation)
+        for device in self.hid_devices.values() {
+            if let Some(ref profile) = device.profile {
                 if let Some(ref shared_state) = device.shared_state {
                     let hid_device_id = device.output_handler.device_id();
                     let physical_deck = profile.shift_buttons.iter().find_map(|sb| {
@@ -792,7 +820,6 @@ impl ControllerManager {
                     });
                     if let Some(pd) = physical_deck {
                         if shared_state.is_layer_mode() {
-                            // Layer indicator
                             let layer = shared_state.get_layer(pd);
                             let text = match layer {
                                 LayerSelection::A => "A",
@@ -800,7 +827,6 @@ impl ControllerManager {
                             };
                             device.output_handler.send_display(text);
                         } else {
-                            // Loop length display (primary deck for this side)
                             let deck_idx = pd.min(3);
                             let beats = state.decks[deck_idx].loop_length_beats;
                             if beats > 0.0 {
