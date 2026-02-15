@@ -283,8 +283,10 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
             // The engine handles enabling slicers and loading patterns
             let stems = [Stem::Vocals, Stem::Drums, Stem::Bass, Stem::Other];
 
-            // Update selected preset in slice editor state
+            // Update selected preset in slice editor state (global UI)
             app.slice_editor.selected_preset = preset_idx;
+            // Track per-deck for LED feedback
+            app.deck_views[deck_idx].set_slicer_selected_preset(preset_idx);
 
             // Send button action to engine for each stem (shift_held=false = load preset)
             let preset = &app.slice_editor.presets[preset_idx];
@@ -295,11 +297,16 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
             }
         }
         SlicerTrigger(button_idx) => {
-            // Shift+click triggers slice for live queue adjustment
+            // Without shift: select preset. With shift: trigger slice for live queue adjustment.
             let stems = [Stem::Vocals, Stem::Drums, Stem::Bass, Stem::Other];
             let shift_held = app.deck_views[deck_idx].shift_held();
-            let preset = &app.slice_editor.presets[app.slice_editor.selected_preset];
 
+            if !shift_held {
+                // Track per-deck selected preset for LED feedback
+                app.deck_views[deck_idx].set_slicer_selected_preset(button_idx);
+            }
+
+            let preset = &app.slice_editor.presets[app.slice_editor.selected_preset];
             for (idx, &stem) in stems.iter().enumerate() {
                 if preset.stems[idx].is_some() {
                     app.domain.slicer_button_action(deck_idx, stem, button_idx, shift_held);

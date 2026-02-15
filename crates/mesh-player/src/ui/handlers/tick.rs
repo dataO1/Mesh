@@ -487,7 +487,7 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
                 .fold(0u8, |acc, (i, p)| {
                     if p.stems.iter().any(|s| s.is_some()) { acc | (1 << i) } else { acc }
                 });
-            feedback.decks[deck_idx].slicer_selected_preset = app.slice_editor.selected_preset as u8;
+            feedback.decks[deck_idx].slicer_selected_preset = app.deck_views[deck_idx].slicer_selected_preset() as u8;
 
             // Get mixer cue (PFL) state
             feedback.mixer[deck_idx].cue_enabled = app.mixer_view.cue_enabled(deck_idx);

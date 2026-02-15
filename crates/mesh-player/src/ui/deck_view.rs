@@ -80,6 +80,8 @@ pub struct DeckView {
     slicer_queue: [u8; 16],
     /// Current slice being played (0-15)
     slicer_current_slice: u8,
+    /// Currently selected slicer preset (0-7) per deck
+    slicer_selected_preset: usize,
     /// Whether shift is currently held
     shift_held: bool,
     /// Current highlight target for MIDI learn mode (if any)
@@ -181,6 +183,7 @@ impl DeckView {
             slicer_active: false,
             slicer_queue: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
             slicer_current_slice: 0,
+            slicer_selected_preset: 0,
             shift_held: false,
             highlight_target: None,
             midi_active: false,
@@ -353,6 +356,16 @@ impl DeckView {
     /// Check if slicer is active
     pub fn slicer_active(&self) -> bool {
         self.slicer_active
+    }
+
+    /// Get per-deck selected slicer preset (0-7)
+    pub fn slicer_selected_preset(&self) -> usize {
+        self.slicer_selected_preset
+    }
+
+    /// Set per-deck selected slicer preset
+    pub fn set_slicer_selected_preset(&mut self, preset: usize) {
+        self.slicer_selected_preset = preset;
     }
 
     /// Sync slicer state from atomics

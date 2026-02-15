@@ -78,8 +78,8 @@ const PLAY_COLOR: [u8; 3] = [0, 200, 0];       // Green
 const PLAY_COLOR_DIM: [u8; 3] = [0, 30, 0];    // Dim green
 const CUE_COLOR: [u8; 3] = [220, 120, 0];      // Orange
 const CUE_COLOR_DIM: [u8; 3] = [35, 18, 0];    // Dim orange
-const LOOP_COLOR: [u8; 3] = [0, 200, 0];        // Green (active)
-const LOOP_COLOR_DIM: [u8; 3] = [0, 30, 0];     // Dim green (inactive)
+const LOOP_COLOR: [u8; 3] = [0, 180, 200];      // Cyan (active)
+const LOOP_COLOR_DIM: [u8; 3] = [0, 22, 25];    // Dim cyan (inactive)
 const HOT_CUE_COLOR: [u8; 3] = [200, 140, 0];   // Amber (cue set)
 const HOT_CUE_COLOR_DIM: [u8; 3] = [12, 12, 12]; // Near-off (no cue)
 const SLICER_COLOR: [u8; 3] = [0, 180, 200];     // Cyan (assigned preset)
@@ -238,7 +238,7 @@ pub fn evaluate_feedback(
                 });
             }
 
-            // Loop button: hardcoded green, dim when inactive, steady bright when active (no pulsing)
+            // Loop button: hardcoded cyan, dim when inactive, steady bright when active (no pulsing)
             if mapping.state == "deck.loop_encoder" {
                 let deck_idx = resolve_feedback_deck(mapping, deck_target);
                 let deck_state = &state.decks[deck_idx];
@@ -291,7 +291,7 @@ pub fn evaluate_feedback(
             }
 
             // Stem mute: per-stem color from STEM_LED_COLORS
-            // Muted → full vivid stem color, Active → dim version of same color
+            // Active (unmuted) → full vivid stem color, Muted → dim version
             if mapping.state == "deck.stem_muted" {
                 let deck_idx = resolve_feedback_deck(mapping, deck_target);
                 let deck_state = &state.decks[deck_idx];
@@ -301,11 +301,12 @@ pub fn evaluate_feedback(
                 let is_muted = (deck_state.stems_muted & (1 << stem)) != 0;
                 let c = STEM_LED_COLORS.get(stem).copied().unwrap_or([200, 0, 0]);
                 let (value, color) = if is_muted {
-                    (mapping.on_value, Some(c))
-                } else {
-                    // Dim version of stem color (÷8) so pad still shows which stem it is
+                    // Muted: dim version of stem color (÷8)
                     let dim = [c[0] / 8, c[1] / 8, c[2] / 8];
                     (mapping.off_value, Some(dim))
+                } else {
+                    // Active (unmuted): full vivid stem color
+                    (mapping.on_value, Some(c))
                 };
                 return Some(FeedbackResult { address, value, color });
             }
