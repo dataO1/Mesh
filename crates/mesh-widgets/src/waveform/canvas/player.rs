@@ -1771,6 +1771,7 @@ where
         bounds: Rectangle,
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
+        let inverted = self.state.is_vertical_inverted();
         let (center_x, center_width, zoomed_col_width, _side_width) = vert_geometry(bounds.width);
         let cols = vert_column_positions(center_x, center_width, zoomed_col_width);
 
@@ -1837,6 +1838,7 @@ where
                 stem_colors,
                 stem_active,
                 linked_active,
+                inverted,
             );
 
             // Volume dimming overlay
@@ -1879,6 +1881,7 @@ where
                 linked_stems,
                 linked_active,
                 overview_scales[deck_idx],
+                inverted,
             );
 
             // Volume dimming on overview too
@@ -1904,6 +1907,7 @@ where
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
+        let inverted = self.state.is_vertical_inverted();
         let (center_x, center_width, zoomed_col_width, _side_width) = vert_geometry(bounds.width);
         let cols = vert_column_positions(center_x, center_width, zoomed_col_width);
 
@@ -1921,7 +1925,8 @@ where
 
                             let overview = &self.state.decks[deck_idx].overview;
                             if overview.has_track && overview.duration_samples > 0 {
-                                let display_ratio = (position.y / bounds.height).clamp(0.0, 1.0) as f64;
+                                let raw_ratio = (position.y / bounds.height).clamp(0.0, 1.0) as f64;
+                                let display_ratio = if inverted { 1.0 - raw_ratio } else { raw_ratio };
                                 let seek_ratio = self.inverse_bpm_seek(deck_idx, display_ratio);
                                 return Some(canvas::Action::publish((self.on_seek)(deck_idx, seek_ratio)));
                             }
@@ -1935,7 +1940,8 @@ where
                                 if let Some(active_deck) = interaction.active_deck {
                                     let overview = &self.state.decks[active_deck].overview;
                                     if overview.has_track && overview.duration_samples > 0 {
-                                        let display_ratio = (position.y / bounds.height).clamp(0.0, 1.0) as f64;
+                                        let raw_ratio = (position.y / bounds.height).clamp(0.0, 1.0) as f64;
+                                        let display_ratio = if inverted { 1.0 - raw_ratio } else { raw_ratio };
                                         let seek_ratio = self.inverse_bpm_seek(active_deck, display_ratio);
                                         return Some(canvas::Action::publish((self.on_seek)(active_deck, seek_ratio)));
                                     }
@@ -2189,6 +2195,7 @@ fn draw_vertical_zoomed(
     stem_colors: &[Color; 4],
     stem_active: &[bool; 4],
     linked_active: &[bool; 4],
+    inverted: bool,
 ) {
     let center_x = x + width / 2.0;
 
@@ -2209,14 +2216,20 @@ fn draw_vertical_zoomed(
     }
 
     // Helper: sample position → Y coordinate (instead of X in horizontal mode)
+    // When inverted, time flows bottom-to-top: earlier samples at bottom, later at top
     let sample_to_y = |sample: u64| -> f32 {
-        if sample < window.start {
-            y + (window.left_padding as f64 / window.total_samples as f64 * height as f64) as f32
+        let frac = if sample < window.start {
+            window.left_padding as f64 / window.total_samples as f64
         } else if sample > window.end {
-            y + height
+            1.0
         } else {
             let offset = window.left_padding + (sample - window.start);
-            y + (offset as f64 / window.total_samples as f64 * height as f64) as f32
+            offset as f64 / window.total_samples as f64
+        };
+        if inverted {
+            y + height - (frac * height as f64) as f32
+        } else {
+            y + (frac * height as f64) as f32
         }
     };
 
@@ -2226,8 +2239,10 @@ fn draw_vertical_zoomed(
         let loop_end_sample = (loop_end_norm * zoomed.duration_samples as f64) as u64;
 
         if loop_end_sample > window.start && loop_start_sample < window.end {
-            let start_y = sample_to_y(loop_start_sample.max(window.start));
-            let end_y = sample_to_y(loop_end_sample.min(window.end));
+            let y1 = sample_to_y(loop_start_sample.max(window.start));
+            let y2 = sample_to_y(loop_end_sample.min(window.end));
+            let start_y = y1.min(y2);
+            let end_y = y1.max(y2);
             let loop_h = end_y - start_y;
             if loop_h > 0.0 {
                 frame.fill_rectangle(
@@ -2262,8 +2277,10 @@ fn draw_vertical_zoomed(
 
     if let Some((slicer_start, slicer_end)) = slicer_bounds {
         if slicer_end > window.start && slicer_start < window.end {
-            let sy = sample_to_y(slicer_start.max(window.start));
-            let ey = sample_to_y(slicer_end.min(window.end));
+            let sy_raw = sample_to_y(slicer_start.max(window.start));
+            let ey_raw = sample_to_y(slicer_end.min(window.end));
+            let sy = sy_raw.min(ey_raw);
+            let ey = sy_raw.max(ey_raw);
             let sh = ey - sy;
             if sh > 0.0 {
                 frame.fill_rectangle(
@@ -2293,9 +2310,11 @@ fn draw_vertical_zoomed(
                     if se > window.start && ss < window.end {
                         let ssy = sample_to_y(ss.max(window.start));
                         let sey = sample_to_y(se.min(window.end));
+                        let top = ssy.min(sey);
+                        let bot = ssy.max(sey);
                         frame.fill_rectangle(
-                            Point::new(x, ssy),
-                            Size::new(width, sey - ssy),
+                            Point::new(x, top),
+                            Size::new(width, bot - top),
                             Color::from_rgba(1.0, 0.6, 0.0, 0.2),
                         );
                     }
@@ -2381,6 +2400,8 @@ fn draw_vertical_zoomed(
                     let center_sample = window.start as f64 - window.left_padding as f64 + (window.total_samples as f64 / 2.0);
                     let center_peak_f64 = center_sample / samples_per_peak;
                     let center_py = y + height / 2.0;
+                    // When inverted, positive offset should go upward (negative Y direction)
+                    let y_dir: f32 = if inverted { -1.0 } else { 1.0 };
 
                     let half_height_in_peaks = (height as f64 / 2.0 / pixels_per_peak).ceil() as usize;
                     let margin_peaks = half_height_in_peaks / 4 + 20;
@@ -2398,7 +2419,7 @@ fn draw_vertical_zoomed(
                     let mut peak_idx = first_peak_aligned;
                     while peak_idx < last_peak {
                         let relative_pos = peak_idx as f64 - center_peak_f64;
-                        let py = center_py + (relative_pos * pixels_per_peak) as f32;
+                        let py = center_py + y_dir * (relative_pos * pixels_per_peak) as f32;
 
                         if py >= y - 5.0 && py <= y + height + 5.0 {
                             let (min, max) = sample_peak_smoothed(peaks, peak_idx, smooth_radius, stem_idx);
@@ -2461,8 +2482,13 @@ fn draw_vertical_zoomed(
                         let x_left = center_x + (min * width_scale);
                         let x_right = center_x + (max * width_scale);
 
-                        left_points.push((x_left.max(x).min(x + width), y + current_py as f32));
-                        right_points.push((x_right.max(x).min(x + width), y + current_py as f32));
+                        let pixel_y = if inverted {
+                            y + height - current_py as f32
+                        } else {
+                            y + current_py as f32
+                        };
+                        left_points.push((x_left.max(x).min(x + width), pixel_y));
+                        right_points.push((x_right.max(x).min(x + width), pixel_y));
                     }
                 }
 
@@ -2537,12 +2563,16 @@ fn draw_vertical_zoomed(
         ZoomedViewMode::Scrolling => y + height / 2.0,
         ZoomedViewMode::FixedBuffer => {
             if window.total_samples > 0 && playhead >= window.start && playhead <= window.end {
-                let offset = (playhead - window.start) as f64;
-                y + (offset / window.total_samples as f64 * height as f64) as f32
+                let frac = (playhead - window.start) as f64 / window.total_samples as f64;
+                if inverted {
+                    y + height - (frac * height as f64) as f32
+                } else {
+                    y + (frac * height as f64) as f32
+                }
             } else if playhead < window.start {
-                y
+                if inverted { y + height } else { y }
             } else {
-                y + height
+                if inverted { y } else { y + height }
             }
         }
     };
@@ -2577,6 +2607,7 @@ fn draw_vertical_overview(
     _linked_stems: &[bool; 4],
     _linked_active: &[bool; 4],
     overview_scale: Option<f64>,
+    inverted: bool,
 ) {
     let center_x = x + width / 2.0;
 
@@ -2592,9 +2623,14 @@ fn draw_vertical_overview(
     }
 
     // Helper: normalized source position → Y coordinate
+    // When inverted, position 0.0 maps to bottom, 1.0 to top
     let pos_to_y = |pos: f64| -> f32 {
         let display_pos = if let Some(d) = overview_scale { pos * d } else { pos };
-        y + (display_pos * height as f64) as f32
+        if inverted {
+            y + ((1.0 - display_pos) * height as f64) as f32
+        } else {
+            y + (display_pos * height as f64) as f32
+        }
     };
 
     let pos_visible = |pos: f64| -> bool {
@@ -2615,8 +2651,10 @@ fn draw_vertical_overview(
 
     // Draw loop region (horizontal band)
     if let Some((loop_start, loop_end)) = overview.loop_region {
-        let sy = pos_to_y(loop_start).max(y);
-        let ey = pos_to_y(loop_end).min(y + height);
+        let y1 = pos_to_y(loop_start);
+        let y2 = pos_to_y(loop_end);
+        let sy = y1.min(y2).max(y);
+        let ey = y1.max(y2).min(y + height);
         let lh = ey - sy;
         if lh > 0.0 {
             frame.fill_rectangle(
@@ -2662,7 +2700,12 @@ fn draw_vertical_overview(
             let mut i = 0;
             while i < peaks_len {
                 let (min, max) = stem_peaks[i];
-                let py = y + (i as f32 / peaks_len as f32) * height;
+                let frac = i as f32 / peaks_len as f32;
+                let py = if inverted {
+                    y + height - frac * height
+                } else {
+                    y + frac * height
+                };
 
                 let x_left = center_x + (min * width_scale);
                 let x_right = center_x + (max * width_scale);

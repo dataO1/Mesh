@@ -237,7 +237,8 @@ impl MeshApp {
             player_canvas_state: {
                 let mut state = PlayerCanvasState::new();
                 state.set_stem_colors(config.display.stem_color_palette.colors());
-                state.set_vertical_layout(config.display.waveform_layout == config::WaveformLayout::Vertical);
+                state.set_vertical_layout(config.display.waveform_layout.is_vertical());
+                state.set_vertical_inverted(config.display.waveform_layout.is_inverted());
                 state
             },
             deck_views,

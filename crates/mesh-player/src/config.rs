@@ -101,19 +101,33 @@ pub enum WaveformLayout {
     Horizontal,
     /// Vertical layout (time flows top-to-bottom, overviews centered)
     Vertical,
+    /// Vertical layout with inverted Y axis (time flows bottom-to-top)
+    VerticalInverted,
 }
 
 impl WaveformLayout {
-    pub const ALL: [WaveformLayout; 2] = [
+    pub const ALL: [WaveformLayout; 3] = [
         WaveformLayout::Horizontal,
         WaveformLayout::Vertical,
+        WaveformLayout::VerticalInverted,
     ];
 
     pub fn display_name(&self) -> &'static str {
         match self {
             WaveformLayout::Horizontal => "Horizontal",
             WaveformLayout::Vertical => "Vertical",
+            WaveformLayout::VerticalInverted => "Vert. Inverted",
         }
+    }
+
+    /// Whether this layout uses vertical orientation (either direction)
+    pub fn is_vertical(&self) -> bool {
+        matches!(self, WaveformLayout::Vertical | WaveformLayout::VerticalInverted)
+    }
+
+    /// Whether the Y axis is inverted (time flows bottom-to-top)
+    pub fn is_inverted(&self) -> bool {
+        matches!(self, WaveformLayout::VerticalInverted)
     }
 }
 

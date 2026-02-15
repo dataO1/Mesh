@@ -1124,6 +1124,8 @@ pub struct PlayerCanvasState {
     display_bpm: [Option<f64>; 4],
     /// Whether vertical waveform layout is active (time flows top-to-bottom)
     vertical_layout: bool,
+    /// Whether the vertical Y axis is inverted (time flows bottom-to-top)
+    vertical_inverted: bool,
 }
 
 impl PlayerCanvasState {
@@ -1167,6 +1169,7 @@ impl PlayerCanvasState {
             volume: [1.0; 4],                    // Full volume by default
             display_bpm: [None; 4],              // No BPM alignment initially
             vertical_layout: false,              // Horizontal layout by default
+            vertical_inverted: false,
         }
     }
 
@@ -1419,9 +1422,19 @@ impl PlayerCanvasState {
         self.vertical_layout = vertical;
     }
 
+    /// Set vertical Y axis inversion
+    pub fn set_vertical_inverted(&mut self, inverted: bool) {
+        self.vertical_inverted = inverted;
+    }
+
     /// Check if vertical waveform layout is active
     pub fn is_vertical_layout(&self) -> bool {
         self.vertical_layout
+    }
+
+    /// Check if the vertical Y axis is inverted (time flows bottom-to-top)
+    pub fn is_vertical_inverted(&self) -> bool {
+        self.vertical_inverted
     }
 
     /// Get a reference to a deck's state

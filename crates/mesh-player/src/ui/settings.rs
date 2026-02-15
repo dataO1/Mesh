@@ -304,7 +304,7 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
                 } else {
                     iced::widget::button::secondary
                 })
-                .width(Length::Fixed(85.0));
+                .width(Length::Fixed(100.0));
             btn.into()
         })
         .collect();

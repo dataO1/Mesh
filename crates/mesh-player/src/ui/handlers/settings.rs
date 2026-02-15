@@ -134,7 +134,10 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
 
             // Apply waveform layout immediately
             app.player_canvas_state.set_vertical_layout(
-                app.settings.draft_waveform_layout == WaveformLayout::Vertical
+                app.settings.draft_waveform_layout.is_vertical()
+            );
+            app.player_canvas_state.set_vertical_inverted(
+                app.settings.draft_waveform_layout.is_inverted()
             );
 
             // Apply local collection visibility change immediately
