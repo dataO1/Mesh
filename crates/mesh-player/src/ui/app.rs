@@ -98,6 +98,8 @@ pub struct MeshApp {
     pub(crate) global_fx_hover_index: Option<usize>,
     /// Per-side browse mode active state (0=left, 1=right), synced from mapping engine
     pub(crate) browse_mode_active: [bool; 2],
+    /// Tick counter for frequency division (feedback throttled to 30Hz)
+    pub(crate) tick_count: u32,
     /// Actual JACK client name (for port reconnection)
     pub(crate) audio_client_name: String,
 }
@@ -261,6 +263,7 @@ impl MeshApp {
             available_deck_presets: Vec::new(),
             global_fx_hover_index: None,
             browse_mode_active: [false; 2],
+            tick_count: 0,
             audio_client_name,
         }
     }

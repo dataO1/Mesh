@@ -1,11 +1,12 @@
 //! Tick message handler
 //!
 //! Handles the 60fps periodic tick for:
-//! - MIDI input polling and routing
-//! - MIDI Learn event capture
-//! - Atomic state synchronization (deck positions, slicer, linked stems)
-//! - Zoomed waveform peak recomputation requests
-//! - MIDI LED feedback updates
+//! - MIDI input polling and routing (60Hz — low-latency input)
+//! - MIDI Learn event capture (60Hz — responsive capture)
+//! - Atomic state synchronization: deck positions, slicer, linked stems (60Hz — smooth waveforms)
+//! - Zoomed waveform peak recomputation requests (60Hz check, async compute)
+//! - LED feedback: MIDI + HID evaluation, 7-segment display (30Hz — imperceptible at higher rates)
+//! - LUFS gain dB display (precomputed on track load via DeckAtomics, just read here)
 
 use iced::Task;
 
@@ -237,13 +238,8 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
             let lufs_gain = atomics[i].lufs_gain();
             app.player_canvas_state.decks[i].zoomed.set_lufs_gain(lufs_gain);
 
-            // Update gain display in deck header (dB)
-            let lufs_gain_db = if (lufs_gain - 1.0).abs() < 0.001 {
-                None // No gain compensation (unity or disabled)
-            } else {
-                Some(20.0 * lufs_gain.log10())
-            };
-            app.player_canvas_state.set_lufs_gain_db(i, lufs_gain_db);
+            // Read precomputed gain dB from atomics (computed once on track load, not per tick)
+            app.player_canvas_state.set_lufs_gain_db(i, atomics[i].lufs_gain_db());
 
             // Update deck view state from atomics
             app.deck_views[i].sync_play_state(atomics[i].play_state());
@@ -427,82 +423,87 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
         }
     }
 
-    // Update MIDI LED feedback (send state to controller LEDs)
-    // Only runs if controller has output connection and feedback mappings
-    if let Some(ref mut controller) = app.controller {
-        let mut feedback = mesh_midi::FeedbackState::default();
+    // LED feedback at 30Hz (every 2nd tick)
+    // LED brightness changes are imperceptible above ~25Hz; 30Hz gives smooth
+    // beat-synced pulsing (~10 cosine samples/beat at 174 BPM) while halving
+    // the feedback evaluation work on the UI thread.
+    app.tick_count = app.tick_count.wrapping_add(1);
+    if app.tick_count % 2 == 0 {
+        if let Some(ref mut controller) = app.controller {
+            let mut feedback = mesh_midi::FeedbackState::default();
 
-        // Compute beat phase from master deck's playhead + beatgrid
-        if let Some(ref atomics) = app.deck_atomics {
-            let global_bpm = app.domain.global_bpm();
-            if global_bpm > 0.0 {
-                // Find master deck, or fall back to deck 0
-                let master_idx = (0..4).find(|&i| atomics[i].is_master()).unwrap_or(0);
-                let position = atomics[master_idx].position() as f64;
-                let first_beat = app.deck_views[master_idx].first_beat_sample() as f64;
-                let samples_per_beat = 48000.0 * 60.0 / global_bpm;
-                // Beat phase: how far through the current beat (0.0-1.0)
-                // Halve the rate for fast tempos (>150 BPM) to keep the pulse comfortable
-                let effective_spb = if global_bpm > 150.0 { samples_per_beat * 2.0 } else { samples_per_beat };
-                let offset = (position - first_beat).rem_euclid(effective_spb);
-                feedback.beat_phase = (offset / effective_spb) as f32;
-            }
-        }
-
-        // Compute slicer preset assignment bitmap once (doesn't vary per deck)
-        let slicer_presets_assigned: u8 = app.slice_editor.presets
-            .iter()
-            .enumerate()
-            .fold(0u8, |acc, (i, p)| {
-                if p.stems.iter().any(|s| s.is_some()) { acc | (1 << i) } else { acc }
-            });
-
-        for deck_idx in 0..4 {
-            // Get play state and loop active from atomics
+            // Compute beat phase from master deck's playhead + beatgrid
             if let Some(ref atomics) = app.deck_atomics {
-                feedback.decks[deck_idx].is_playing = atomics[deck_idx].is_playing();
-                feedback.decks[deck_idx].is_cueing = atomics[deck_idx].is_cueing();
-                feedback.decks[deck_idx].loop_active = atomics[deck_idx].loop_active();
-                feedback.decks[deck_idx].key_match_enabled =
-                    atomics[deck_idx].key_match_enabled.load(std::sync::atomic::Ordering::Relaxed);
+                let global_bpm = app.domain.global_bpm();
+                if global_bpm > 0.0 {
+                    // Find master deck, or fall back to deck 0
+                    let master_idx = (0..4).find(|&i| atomics[i].is_master()).unwrap_or(0);
+                    let position = atomics[master_idx].position() as f64;
+                    let first_beat = app.deck_views[master_idx].first_beat_sample() as f64;
+                    let samples_per_beat = 48000.0 * 60.0 / global_bpm;
+                    // Beat phase: how far through the current beat (0.0-1.0)
+                    // Halve the rate for fast tempos (>150 BPM) to keep the pulse comfortable
+                    let effective_spb = if global_bpm > 150.0 { samples_per_beat * 2.0 } else { samples_per_beat };
+                    let offset = (position - first_beat).rem_euclid(effective_spb);
+                    feedback.beat_phase = (offset / effective_spb) as f32;
+                }
             }
 
-            // Get slicer state
-            if let Some(ref slicer_atomics) = app.slicer_atomics {
-                feedback.decks[deck_idx].slicer_active =
-                    slicer_atomics[deck_idx].active.load(std::sync::atomic::Ordering::Relaxed);
-                feedback.decks[deck_idx].slicer_current_slice =
-                    slicer_atomics[deck_idx].current_slice.load(std::sync::atomic::Ordering::Relaxed);
+            // Compute slicer preset assignment bitmap once (doesn't vary per deck)
+            let slicer_presets_assigned: u8 = app.slice_editor.presets
+                .iter()
+                .enumerate()
+                .fold(0u8, |acc, (i, p)| {
+                    if p.stems.iter().any(|s| s.is_some()) { acc | (1 << i) } else { acc }
+                });
+
+            for deck_idx in 0..4 {
+                // Get play state and loop active from atomics
+                if let Some(ref atomics) = app.deck_atomics {
+                    feedback.decks[deck_idx].is_playing = atomics[deck_idx].is_playing();
+                    feedback.decks[deck_idx].is_cueing = atomics[deck_idx].is_cueing();
+                    feedback.decks[deck_idx].loop_active = atomics[deck_idx].loop_active();
+                    feedback.decks[deck_idx].key_match_enabled =
+                        atomics[deck_idx].key_match_enabled.load(std::sync::atomic::Ordering::Relaxed);
+                }
+
+                // Get slicer state
+                if let Some(ref slicer_atomics) = app.slicer_atomics {
+                    feedback.decks[deck_idx].slicer_active =
+                        slicer_atomics[deck_idx].active.load(std::sync::atomic::Ordering::Relaxed);
+                    feedback.decks[deck_idx].slicer_current_slice =
+                        slicer_atomics[deck_idx].current_slice.load(std::sync::atomic::Ordering::Relaxed);
+                }
+
+                // Get deck view state (hot cues, slip, stem mutes, action mode)
+                feedback.decks[deck_idx].hot_cues_set = app.deck_views[deck_idx].hot_cues_bitmap();
+                feedback.decks[deck_idx].slip_active = app.deck_views[deck_idx].slip_enabled();
+                feedback.decks[deck_idx].stems_muted = app.deck_views[deck_idx].stems_muted_bitmap();
+
+                // Set action mode for LED feedback
+                use crate::ui::deck_view::ActionButtonMode;
+                feedback.decks[deck_idx].action_mode = match app.deck_views[deck_idx].action_mode() {
+                    ActionButtonMode::Performance => mesh_midi::ActionMode::Performance,
+                    ActionButtonMode::HotCue => mesh_midi::ActionMode::HotCue,
+                    ActionButtonMode::Slicer => mesh_midi::ActionMode::Slicer,
+                };
+
+                // Slicer preset assignment bitmap (computed once above) and selected preset
+                feedback.decks[deck_idx].slicer_presets_assigned = slicer_presets_assigned;
+                feedback.decks[deck_idx].slicer_selected_preset = app.deck_views[deck_idx].slicer_selected_preset() as u8;
+
+                // Loop length for 7-segment display
+                feedback.decks[deck_idx].loop_length_beats = app.deck_views[deck_idx].loop_length_beats();
+
+                // Get mixer cue (PFL) state
+                feedback.mixer[deck_idx].cue_enabled = app.mixer_view.cue_enabled(deck_idx);
             }
 
-            // Get deck view state (hot cues, slip, stem mutes, action mode)
-            feedback.decks[deck_idx].hot_cues_set = app.deck_views[deck_idx].hot_cues_bitmap();
-            feedback.decks[deck_idx].slip_active = app.deck_views[deck_idx].slip_enabled();
-            feedback.decks[deck_idx].stems_muted = app.deck_views[deck_idx].stems_muted_bitmap();
+            // Browse mode per-side
+            feedback.browse_active = app.browse_mode_active;
 
-            // Set action mode for LED feedback
-            use crate::ui::deck_view::ActionButtonMode;
-            feedback.decks[deck_idx].action_mode = match app.deck_views[deck_idx].action_mode() {
-                ActionButtonMode::Performance => mesh_midi::ActionMode::Performance,
-                ActionButtonMode::HotCue => mesh_midi::ActionMode::HotCue,
-                ActionButtonMode::Slicer => mesh_midi::ActionMode::Slicer,
-            };
-
-            // Slicer preset assignment bitmap (computed once above) and selected preset
-            feedback.decks[deck_idx].slicer_presets_assigned = slicer_presets_assigned;
-            feedback.decks[deck_idx].slicer_selected_preset = app.deck_views[deck_idx].slicer_selected_preset() as u8;
-
-            // Loop length for 7-segment display
-            feedback.decks[deck_idx].loop_length_beats = app.deck_views[deck_idx].loop_length_beats();
-
-            // Get mixer cue (PFL) state
-            feedback.mixer[deck_idx].cue_enabled = app.mixer_view.cue_enabled(deck_idx);
+            controller.update_feedback(&feedback);
         }
-
-        // Browse mode per-side
-        feedback.browse_active = app.browse_mode_active;
-
-        controller.update_feedback(&feedback);
     }
 
     // Return batched MIDI tasks (scroll operations need to be executed by iced runtime)

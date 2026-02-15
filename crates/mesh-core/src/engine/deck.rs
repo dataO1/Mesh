@@ -131,6 +131,9 @@ pub struct DeckAtomics {
     /// LUFS-based gain compensation (f32 stored as bits)
     /// 1.0 = unity gain, calculated from target_lufs - track_lufs
     pub lufs_gain: AtomicU32,
+    /// LUFS gain in dB for UI display (f32 stored as bits, NaN = no gain / unity)
+    /// Precomputed on set_lufs_gain() so the UI thread never calls log10
+    lufs_gain_db: AtomicU32,
 }
 
 impl DeckAtomics {
@@ -149,6 +152,7 @@ impl DeckAtomics {
             current_transpose: AtomicI8::new(0),
             keys_compatible: AtomicBool::new(true),
             lufs_gain: AtomicU32::new(1.0_f32.to_bits()), // Unity gain by default
+            lufs_gain_db: AtomicU32::new(f32::NAN.to_bits()), // No gain display
         }
     }
 
@@ -227,9 +231,28 @@ impl DeckAtomics {
     }
 
     /// Set LUFS-based gain compensation (called from audio thread)
+    ///
+    /// Also precomputes the dB value for UI display so the UI thread
+    /// never needs to call log10.
     #[inline]
     pub fn set_lufs_gain(&self, gain: f32) {
         self.lufs_gain.store(gain.to_bits(), Ordering::Relaxed);
+        let db = if (gain - 1.0).abs() < 0.001 {
+            f32::NAN // Unity — UI interprets NaN as "no gain display"
+        } else {
+            20.0 * gain.log10()
+        };
+        self.lufs_gain_db.store(db.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Get precomputed LUFS gain in dB for UI display (lock-free)
+    ///
+    /// Returns None if gain is unity (no compensation). The dB value is
+    /// computed once in set_lufs_gain() rather than on every UI tick.
+    #[inline]
+    pub fn lufs_gain_db(&self) -> Option<f32> {
+        let db = f32::from_bits(self.lufs_gain_db.load(Ordering::Relaxed));
+        if db.is_nan() { None } else { Some(db) }
     }
 }
 
