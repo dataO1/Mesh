@@ -145,21 +145,22 @@ where
             let local_x = position.x - cell_x;
             let local_y = position.y - cell_y;
 
-            // Determine which region within the cell: header, zoomed, or overview
-            // Bottom row (row 1) is mirrored: overview → gap → zoomed → header
+            // Determine which region within the cell: zoomed, header, or overview
+            // Top row: zoomed → header → gap → overview
+            // Bottom row (mirrored): overview → gap → header → zoomed
             let mirrored = row == 1;
             let (zoomed_start, zoomed_end, overview_start, overview_end) = if mirrored {
-                // overview → gap → zoomed → header
+                // overview → gap → header → zoomed
                 let overview_start = 0.0_f32;
                 let overview_end = WAVEFORM_HEIGHT;
-                let zoomed_start = WAVEFORM_HEIGHT + DECK_INTERNAL_GAP;
+                let zoomed_start = WAVEFORM_HEIGHT + DECK_INTERNAL_GAP + DECK_HEADER_HEIGHT;
                 let zoomed_end = zoomed_start + zoomed_height;
                 (zoomed_start, zoomed_end, overview_start, overview_end)
             } else {
-                // header → zoomed → gap → overview
-                let zoomed_start = DECK_HEADER_HEIGHT;
-                let zoomed_end = zoomed_start + zoomed_height;
-                let overview_start = zoomed_end + DECK_INTERNAL_GAP;
+                // zoomed → header → gap → overview
+                let zoomed_start = 0.0_f32;
+                let zoomed_end = zoomed_height;
+                let overview_start = zoomed_height + DECK_HEADER_HEIGHT + DECK_INTERNAL_GAP;
                 let overview_end = overview_start + WAVEFORM_HEIGHT;
                 (zoomed_start, zoomed_end, overview_start, overview_end)
             };
@@ -259,13 +260,13 @@ where
             let (zoomed_start, zoomed_end, overview_start, overview_end) = if mirrored {
                 let overview_start = 0.0_f32;
                 let overview_end = WAVEFORM_HEIGHT;
-                let zoomed_start = WAVEFORM_HEIGHT + DECK_INTERNAL_GAP;
+                let zoomed_start = WAVEFORM_HEIGHT + DECK_INTERNAL_GAP + DECK_HEADER_HEIGHT;
                 let zoomed_end = zoomed_start + zoomed_height;
                 (zoomed_start, zoomed_end, overview_start, overview_end)
             } else {
-                let zoomed_start = DECK_HEADER_HEIGHT;
-                let zoomed_end = zoomed_start + zoomed_height;
-                let overview_start = zoomed_end + DECK_INTERNAL_GAP;
+                let zoomed_start = 0.0_f32;
+                let zoomed_end = zoomed_height;
+                let overview_start = zoomed_height + DECK_HEADER_HEIGHT + DECK_INTERNAL_GAP;
                 let overview_end = overview_start + WAVEFORM_HEIGHT;
                 (zoomed_start, zoomed_end, overview_start, overview_end)
             };
@@ -376,20 +377,19 @@ where
 // Offset-Aware Drawing Helpers (for PlayerCanvas)
 // =============================================================================
 
-/// Draw a complete deck quadrant (header + zoomed + overview)
+/// Draw a complete deck quadrant (zoomed + header + overview)
 ///
-/// Layout:
+/// Layout (top row):
 /// ```text
 /// +-------------------------------------+
-/// | [N] Track Name Here         16px   | <- Header row
+/// |     Zoomed Waveform          180px |
 /// +-------------------------------------+
-/// |                                     |
-/// |     Zoomed Waveform          120px |
-/// |                                     |
+/// | [N] Track Name Here          48px  | <- Header row (between waveforms)
 /// +-------------------------------------+
-/// |     Overview Waveform         35px |
+/// |     Overview Waveform         81px |
 /// +-------------------------------------+
 /// ```
+/// Bottom row is mirrored: overview → header → zoomed
 fn draw_deck_quadrant(
     frame: &mut Frame,
     deck: &CombinedState,
@@ -425,17 +425,18 @@ fn draw_deck_quadrant(
     const STEM_INDICATOR_GAP: f32 = 2.0;
 
     // Compute Y positions based on mirrored layout
+    // Header sits between zoomed and overview so overviews cluster in the center
     let (header_y, zoomed_y, overview_y) = if mirrored {
-        // Bottom decks: overview → gap → zoomed → header
+        // Bottom decks: overview → gap → header → zoomed
         let overview_y = y;
-        let zoomed_y = y + WAVEFORM_HEIGHT + DECK_INTERNAL_GAP;
-        let header_y = zoomed_y + zoomed_height;
+        let header_y = y + WAVEFORM_HEIGHT + DECK_INTERNAL_GAP;
+        let zoomed_y = header_y + DECK_HEADER_HEIGHT;
         (header_y, zoomed_y, overview_y)
     } else {
-        // Top decks: header → zoomed → gap → overview
-        let header_y = y;
-        let zoomed_y = y + DECK_HEADER_HEIGHT;
-        let overview_y = zoomed_y + zoomed_height + DECK_INTERNAL_GAP;
+        // Top decks: zoomed → header → gap → overview
+        let zoomed_y = y;
+        let header_y = y + zoomed_height;
+        let overview_y = header_y + DECK_HEADER_HEIGHT + DECK_INTERNAL_GAP;
         (header_y, zoomed_y, overview_y)
     };
 
@@ -771,7 +772,7 @@ fn draw_deck_quadrant(
     if volume < 0.99 {
         let dim_alpha = (1.0 - volume) * 0.4;
         let waveform_area_y = overview_y.min(zoomed_y);
-        let waveform_area_height = zoomed_height + DECK_INTERNAL_GAP + WAVEFORM_HEIGHT;
+        let waveform_area_height = zoomed_height + DECK_HEADER_HEIGHT + DECK_INTERNAL_GAP + WAVEFORM_HEIGHT;
         frame.fill_rectangle(
             Point::new(x, waveform_area_y),
             Size::new(width, waveform_area_height),

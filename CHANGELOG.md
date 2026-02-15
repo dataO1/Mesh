@@ -121,11 +121,18 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   inverse transform so seeking remains accurate. No changes to stored peak data
   or audio processing — purely a visual coordinate transform.
 
-- **Zoomed waveform -6 LUFS visual scaling** — Zoomed waveforms now always scale
-  visually to -6 LUFS regardless of the configured audio target. This fills the
-  full vertical space of the zoomed waveform area. The audio gain compensation
-  is unaffected — only the visual rendering uses the hardcoded -6 LUFS reference.
-  Track LUFS is now exposed on deck atomics for direct UI computation.
+- **Zoomed waveform -9 LUFS visual scaling** — Zoomed waveforms now always scale
+  visually to -9 LUFS regardless of the configured audio target. This fills the
+  vertical space of the zoomed waveform area more consistently. The audio gain
+  compensation is unaffected — only the visual rendering uses the hardcoded -9
+  LUFS reference. Track LUFS is now exposed on deck atomics for direct UI
+  computation.
+
+- **Header between waveforms** — Deck headers (track name, key, BPM, LUFS)
+  moved from the outer edge to between the zoomed and overview waveforms. With
+  the mirrored layout, overview waveforms from all four decks now sit directly
+  adjacent in the center of the grid, with headers providing natural visual
+  separation from the zoomed detail views above and below.
 
 - **Taller overview waveforms** — Overview waveform height increased from 54px to
   81px (50% taller) for improved visibility of beat grid alignment and stem

@@ -234,10 +234,10 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
             app.player_canvas_state.set_key_match_enabled(i, key_match_enabled);
             app.player_canvas_state.set_transpose(i, current_transpose);
 
-            // Visual LUFS gain: always scale waveforms to -6 LUFS for full vertical fill.
+            // Visual LUFS gain: always scale waveforms to -9 LUFS for full vertical fill.
             // Computed directly from track's measured LUFS, independent of audio target.
             let visual_lufs_gain = match atomics[i].track_lufs() {
-                Some(track_lufs) => 10.0_f32.powf((-6.0 - track_lufs) / 20.0),
+                Some(track_lufs) => 10.0_f32.powf((-9.0 - track_lufs) / 20.0),
                 None => 1.0,
             };
             app.player_canvas_state.decks[i].zoomed.set_lufs_gain(visual_lufs_gain);

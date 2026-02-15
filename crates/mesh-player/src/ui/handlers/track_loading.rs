@@ -202,9 +202,9 @@ pub fn handle_linked_stem_loaded(app: &mut MeshApp, msg: LinkedStemLoadedMsg) ->
                     );
             }
 
-            // Visual LUFS gain for linked stem: always target -6 LUFS for full vertical fill
+            // Visual LUFS gain for linked stem: always target -9 LUFS for full vertical fill
             let linked_gain = match linked_data.lufs {
-                Some(lufs) => 10.0_f32.powf((-6.0 - lufs) / 20.0),
+                Some(lufs) => 10.0_f32.powf((-9.0 - lufs) / 20.0),
                 None => 1.0,
             };
             app.player_canvas_state
