@@ -8,6 +8,7 @@ use iced::Task;
 use crate::config;
 use crate::ui::app::MeshApp;
 use crate::ui::handlers::browser::trigger_suggestion_query;
+use crate::config::WaveformLayout;
 use crate::ui::message::{Message, SettingsMessage};
 use crate::ui::settings::SettingsState;
 
@@ -67,6 +68,10 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             app.settings.draft_key_scoring_model = model;
             Task::none()
         }
+        UpdateWaveformLayout(layout) => {
+            app.settings.draft_waveform_layout = layout;
+            Task::none()
+        }
         UpdateMasterPair(index) => {
             app.settings.draft_master_device = index;
             Task::none()
@@ -88,6 +93,7 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             new_config.display.stem_color_palette = app.settings.draft_stem_color_palette;
             new_config.display.show_local_collection = app.settings.draft_show_local_collection;
             new_config.display.key_scoring_model = app.settings.draft_key_scoring_model;
+            new_config.display.waveform_layout = app.settings.draft_waveform_layout;
             // Save global BPM from current state
             new_config.audio.global_bpm = app.domain.global_bpm();
             // Save phase sync setting
@@ -124,6 +130,11 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             // Apply stem color palette to waveform display immediately
             app.player_canvas_state.set_stem_colors(
                 app.settings.draft_stem_color_palette.colors()
+            );
+
+            // Apply waveform layout immediately
+            app.player_canvas_state.set_vertical_layout(
+                app.settings.draft_waveform_layout == WaveformLayout::Vertical
             );
 
             // Apply local collection visibility change immediately

@@ -32,6 +32,15 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 ### Added
 
+- **Vertical waveform layout** — New display mode in Settings → Display where time
+  flows top-to-bottom instead of left-to-right. Four overview columns cluster in the
+  center of the screen (order: deck 3, 1, 2, 4) with zoomed waveforms flanking them
+  on each side. Beat grids, cue markers, loop regions, and playheads are all rendered
+  as horizontal lines. Stem indicators display as a compact horizontal row of colored
+  blocks above each zoomed column. Click-to-seek on overviews maps Y position to
+  track position; drag-to-zoom on zoomed columns works vertically. Switches instantly
+  without restart via `PlayerCanvasState::set_vertical_layout()`.
+
 - **Smart track suggestions** — The collection browser now recommends tracks
   based on what's loaded across all 4 decks. Combines audio fingerprint
   similarity (HNSW index), harmonic key compatibility, BPM proximity, and

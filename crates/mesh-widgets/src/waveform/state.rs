@@ -1122,6 +1122,8 @@ pub struct PlayerCanvasState {
     /// When set, overview waveforms are stretched so beat grids align across decks.
     /// None = no stretching (track has no BPM data or no global sync active)
     display_bpm: [Option<f64>; 4],
+    /// Whether vertical waveform layout is active (time flows top-to-bottom)
+    vertical_layout: bool,
 }
 
 impl PlayerCanvasState {
@@ -1164,6 +1166,7 @@ impl PlayerCanvasState {
             loop_active: [false; 4],             // No loop active initially
             volume: [1.0; 4],                    // Full volume by default
             display_bpm: [None; 4],              // No BPM alignment initially
+            vertical_layout: false,              // Horizontal layout by default
         }
     }
 
@@ -1409,6 +1412,16 @@ impl PlayerCanvasState {
     /// Get stem colors for waveform rendering [Vocals, Drums, Bass, Other]
     pub fn stem_colors(&self) -> &[Color; 4] {
         &self.stem_colors
+    }
+
+    /// Set vertical waveform layout mode
+    pub fn set_vertical_layout(&mut self, vertical: bool) {
+        self.vertical_layout = vertical;
+    }
+
+    /// Check if vertical waveform layout is active
+    pub fn is_vertical_layout(&self) -> bool {
+        self.vertical_layout
     }
 
     /// Get a reference to a deck's state

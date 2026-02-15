@@ -53,6 +53,7 @@ Mesh also includes **built-in stem separation** — drop any MP3, FLAC, or WAV f
 - **Smart suggestions** — AI-powered track recommendations based on what's currently loaded. Finds harmonically compatible tracks using audio fingerprint similarity, key matching, BPM proximity, and perceptual arousal. An energy direction fader lets you steer suggestions toward higher-energy or cooler tracks. Choose between two key matching algorithms in Settings:
   - **Camelot** — Classic DJ wheel with hand-tuned transition scores
   - **Krumhansl** — Perceptual key distance based on music psychology research, better at rating cross-mode transitions (e.g., C major to C minor)
+- **Vertical waveform layout** — Alternative display mode where time flows top-to-bottom instead of left-to-right. Four overview columns cluster in the center with zoomed waveforms flanking them on each side, providing a chronological timeline view across all decks simultaneously. Switch between Horizontal and Vertical layouts in Settings → Display → Waveform Layout — takes effect instantly without restart
 - **Auto-gain** — Tracks are loudness-normalized so volumes are consistent
 - **Track tags** — Color-coded tag pills in the browser for genres, moods, or custom labels. Suggestion results include auto-generated reason tags (see below)
 
@@ -295,6 +296,7 @@ See [documents/similarity-search.md](documents/similarity-search.md) for the ful
 - [x] Smart suggestions with energy direction control
 - [x] ML genre classification and mood tagging (EffNet/Discogs400)
 - [x] Auto-gain loudness normalization
+- [x] Vertical waveform layout (top-to-bottom timeline view)
 - [x] Master bus limiter and clipper (PA protection)
 - [x] Effects: filter, delay, reverb
 - [x] Pure Data effect patches (custom DSP via PD)

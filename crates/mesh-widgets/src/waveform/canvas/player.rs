@@ -23,7 +23,7 @@ use mesh_core::types::SAMPLE_RATE;
 // Player Canvas Layout Constants
 // =============================================================================
 
-/// Gap between deck cells in the 2x2 grid
+/// Gap between deck cells in the 2x2 grid (horizontal mode)
 pub const DECK_GRID_GAP: f32 = 10.0;
 
 /// Gap between zoomed and overview within a deck cell
@@ -33,6 +33,27 @@ pub const DECK_INTERNAL_GAP: f32 = 2.0;
 /// 16 + 120 + 2 + 35 = 173px
 pub const DECK_CELL_HEIGHT: f32 =
     DECK_HEADER_HEIGHT + ZOOMED_WAVEFORM_HEIGHT + DECK_INTERNAL_GAP + WAVEFORM_HEIGHT;
+
+// =============================================================================
+// Vertical Layout Constants
+// =============================================================================
+
+/// Width of each overview column in vertical mode
+const VERT_OVERVIEW_COL_WIDTH: f32 = 60.0;
+/// Gap between overview columns within a pair (e.g. Ov3↔Ov1, Ov2↔Ov4)
+const VERT_OVERVIEW_GAP: f32 = 2.0;
+/// Gap between the two center overview columns (Ov1↔Ov2) — symmetry axis
+const VERT_OVERVIEW_CENTER_GAP: f32 = 10.0;
+/// Gap between sections (zoomed columns ↔ overview cluster)
+const VERT_SECTION_GAP: f32 = 20.0;
+/// Gap between two zoomed columns on the same side
+const VERT_PAIR_GAP: f32 = 8.0;
+/// Height of compact header above each zoomed column
+const VERT_HEADER_HEIGHT: f32 = 32.0;
+/// Height of stem indicator row (4 blocks side-by-side)
+const VERT_STEM_INDICATOR_HEIGHT: f32 = 8.0;
+/// Gap between stem indicator blocks
+const VERT_STEM_INDICATOR_GAP: f32 = 2.0;
 
 /// Compute dynamic cell layout from available canvas height.
 /// Header, overview, and gaps stay fixed; extra space goes to zoomed waveform.
@@ -129,6 +150,10 @@ where
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
+        if self.state.is_vertical_layout() {
+            return self.update_vertical(interaction, event, bounds, cursor);
+        }
+
         let width = bounds.width;
         let cell_width = (width - DECK_GRID_GAP) / 2.0;
         let (cell_height, zoomed_height) = cell_height_from_bounds(bounds.height);
@@ -247,6 +272,10 @@ where
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
+        if self.state.is_vertical_layout() {
+            return self.mouse_interaction_vertical(interaction, bounds, cursor);
+        }
+
         if let Some(position) = cursor.position_in(bounds) {
             let (cell_height, zoomed_height) = cell_height_from_bounds(bounds.height);
 
@@ -297,6 +326,10 @@ where
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
+        if self.state.is_vertical_layout() {
+            return self.draw_vertical(renderer, bounds);
+        }
+
         let mut frame = Frame::new(renderer, bounds.size());
         let width = bounds.width;
         let cell_width = (width - DECK_GRID_GAP) / 2.0;
@@ -1639,6 +1672,1079 @@ fn draw_overview_at(
         let playhead_x = pos_to_x(playhead_ratio).max(x).min(x + width);
         frame.stroke(
             &Path::line(Point::new(playhead_x, y), Point::new(playhead_x, y + height)),
+            Stroke::default()
+                .with_color(Color::from_rgb(1.0, 1.0, 1.0))
+                .with_width(2.0),
+        );
+    }
+}
+
+// =============================================================================
+// Vertical Layout: Geometry
+// =============================================================================
+
+/// Compute vertical layout geometry from canvas bounds.
+///
+/// Returns (center_x, center_width, zoomed_col_width, side_width) where:
+/// - center_x: X offset where overview cluster begins
+/// - center_width: total width of the 4 overview columns + gaps
+/// - zoomed_col_width: width of each zoomed waveform column
+/// - side_width: total width of each side (left or right pair)
+fn vert_geometry(bounds_width: f32) -> (f32, f32, f32, f32) {
+    // 4 overview columns: [Ov3 gap Ov1] CENTER_GAP [Ov2 gap Ov4]
+    let center_width = 4.0 * VERT_OVERVIEW_COL_WIDTH
+        + 2.0 * VERT_OVERVIEW_GAP        // Two within-pair gaps (Ov3↔Ov1, Ov2↔Ov4)
+        + VERT_OVERVIEW_CENTER_GAP;       // One center gap (Ov1↔Ov2)
+    let remaining = bounds_width - center_width - 2.0 * VERT_SECTION_GAP;
+    let side_width = remaining / 2.0;
+    let zoomed_col_width = (side_width - VERT_PAIR_GAP) / 2.0;
+    let center_x = side_width + VERT_SECTION_GAP;
+    (center_x, center_width, zoomed_col_width, side_width)
+}
+
+/// Compute X positions for each vertical column.
+///
+/// Returns array of 8 X positions:
+/// [Zoom3, Zoom1, Ov3, Ov1, Ov2, Ov4, Zoom2, Zoom4]
+fn vert_column_positions(center_x: f32, center_width: f32, zoomed_col_width: f32) -> [f32; 8] {
+    let right_start = center_x + center_width + VERT_SECTION_GAP;
+
+    // Left pair: Ov3, then gap, then Ov1
+    let ov3_x = center_x;
+    let ov1_x = ov3_x + VERT_OVERVIEW_COL_WIDTH + VERT_OVERVIEW_GAP;
+    // Center gap between Ov1 and Ov2
+    let ov2_x = ov1_x + VERT_OVERVIEW_COL_WIDTH + VERT_OVERVIEW_CENTER_GAP;
+    // Right pair: Ov2, then gap, then Ov4
+    let ov4_x = ov2_x + VERT_OVERVIEW_COL_WIDTH + VERT_OVERVIEW_GAP;
+
+    [
+        0.0,                                     // [0] Deck 3 zoomed (left outer)
+        zoomed_col_width + VERT_PAIR_GAP,       // [1] Deck 1 zoomed (left inner)
+        ov3_x,                                   // [2] Overview 3
+        ov1_x,                                   // [3] Overview 1
+        ov2_x,                                   // [4] Overview 2
+        ov4_x,                                   // [5] Overview 4
+        right_start,                             // [6] Deck 2 zoomed (right inner)
+        right_start + zoomed_col_width + VERT_PAIR_GAP, // [7] Deck 4 zoomed (right outer)
+    ]
+}
+
+/// Determine which deck (and whether zoomed or overview) from a cursor X position.
+///
+/// Returns (deck_idx, is_overview). None if in a gap area.
+fn vert_hit_test(
+    cursor_x: f32,
+    cols: &[f32; 8],
+    zoomed_col_width: f32,
+) -> Option<(usize, bool)> {
+    // Zoomed columns: [0]=deck3, [1]=deck1, [6]=deck2, [7]=deck4
+    let zoomed_decks = [(0, 2), (1, 0), (6, 1), (7, 3)];
+    for &(col_idx, deck_idx) in &zoomed_decks {
+        if cursor_x >= cols[col_idx] && cursor_x < cols[col_idx] + zoomed_col_width {
+            return Some((deck_idx, false));
+        }
+    }
+    // Overview columns: [2]=deck3, [3]=deck1, [4]=deck2, [5]=deck4
+    let overview_decks = [(2, 2), (3, 0), (4, 1), (5, 3)];
+    for &(col_idx, deck_idx) in &overview_decks {
+        if cursor_x >= cols[col_idx] && cursor_x < cols[col_idx] + VERT_OVERVIEW_COL_WIDTH {
+            return Some((deck_idx, true));
+        }
+    }
+    None
+}
+
+// =============================================================================
+// Vertical Layout: Methods on PlayerCanvas
+// =============================================================================
+
+impl<'a, Message, SeekFn, ZoomFn> PlayerCanvas<'a, Message, SeekFn, ZoomFn>
+where
+    Message: Clone,
+    SeekFn: Fn(usize, f64) -> Message,
+    ZoomFn: Fn(usize, u32) -> Message,
+{
+    /// Draw the vertical layout (time flows top-to-bottom).
+    fn draw_vertical(
+        &self,
+        renderer: &iced::Renderer,
+        bounds: Rectangle,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let (center_x, center_width, zoomed_col_width, _side_width) = vert_geometry(bounds.width);
+        let cols = vert_column_positions(center_x, center_width, zoomed_col_width);
+
+        let zoomed_y = VERT_HEADER_HEIGHT + VERT_STEM_INDICATOR_HEIGHT + VERT_STEM_INDICATOR_GAP;
+        let zoomed_height = bounds.height - zoomed_y;
+
+        let overview_scales = compute_overview_scales(self.state);
+
+        // Deck ordering: left side has decks 3,1; right side has decks 2,4
+        // Column indices: [0]=Zoom3, [1]=Zoom1, [6]=Zoom2, [7]=Zoom4
+        let zoomed_columns = [
+            (0, 2), // col[0] = deck 3
+            (1, 0), // col[1] = deck 1
+            (6, 1), // col[6] = deck 2
+            (7, 3), // col[7] = deck 4
+        ];
+
+        for &(col_idx, deck_idx) in &zoomed_columns {
+            let col_x = cols[col_idx];
+            let playhead = self.state.interpolated_playhead(deck_idx, SAMPLE_RATE);
+            let stem_active = self.state.stem_active(deck_idx);
+            let stem_colors = self.state.stem_colors();
+            let (_linked_stems, linked_active) = self.state.linked_stems(deck_idx);
+
+            // Draw compact header
+            draw_vertical_header(
+                &mut frame,
+                col_x,
+                0.0,
+                zoomed_col_width,
+                deck_idx,
+                self.state.track_name(deck_idx),
+                self.state.track_key(deck_idx),
+                self.state.track_bpm(deck_idx),
+                self.state.is_master(deck_idx),
+                self.state.cue_enabled(deck_idx),
+                self.state.decks[deck_idx].zoomed.has_track,
+            );
+
+            // Draw stem indicators (horizontal bars below header)
+            draw_vertical_stem_indicators(
+                &mut frame,
+                col_x,
+                VERT_HEADER_HEIGHT,
+                zoomed_col_width,
+                stem_active,
+                stem_colors,
+            );
+
+            // Draw vertical zoomed waveform
+            draw_vertical_zoomed(
+                &mut frame,
+                &self.state.decks[deck_idx].zoomed,
+                &self.state.decks[deck_idx].overview.highres_peaks,
+                &self.state.decks[deck_idx].overview.linked_highres_peaks,
+                self.state.decks[deck_idx].zoomed.lufs_gain,
+                &self.state.decks[deck_idx].overview.linked_lufs_gains,
+                self.state.decks[deck_idx].overview.duration_samples,
+                playhead,
+                col_x,
+                zoomed_y,
+                zoomed_col_width,
+                zoomed_height,
+                stem_colors,
+                stem_active,
+                linked_active,
+            );
+
+            // Volume dimming overlay
+            let volume = self.state.volume(deck_idx);
+            if volume < 0.99 {
+                let dim_alpha = (1.0 - volume) * 0.4;
+                frame.fill_rectangle(
+                    Point::new(col_x, 0.0),
+                    Size::new(zoomed_col_width, bounds.height),
+                    Color::from_rgba(0.0, 0.0, 0.0, dim_alpha),
+                );
+            }
+        }
+
+        // Overview columns: [2]=deck3, [3]=deck1, [4]=deck2, [5]=deck4
+        let overview_columns = [
+            (2, 2), // col[2] = deck 3
+            (3, 0), // col[3] = deck 1
+            (4, 1), // col[4] = deck 2
+            (5, 3), // col[5] = deck 4
+        ];
+
+        for &(col_idx, deck_idx) in &overview_columns {
+            let col_x = cols[col_idx];
+            let playhead = self.state.interpolated_playhead(deck_idx, SAMPLE_RATE);
+            let stem_active = self.state.stem_active(deck_idx);
+            let stem_colors = self.state.stem_colors();
+            let (linked_stems, linked_active) = self.state.linked_stems(deck_idx);
+
+            draw_vertical_overview(
+                &mut frame,
+                &self.state.decks[deck_idx].overview,
+                playhead,
+                col_x,
+                0.0,
+                VERT_OVERVIEW_COL_WIDTH,
+                bounds.height,
+                stem_colors,
+                stem_active,
+                linked_stems,
+                linked_active,
+                overview_scales[deck_idx],
+            );
+
+            // Volume dimming on overview too
+            let volume = self.state.volume(deck_idx);
+            if volume < 0.99 {
+                let dim_alpha = (1.0 - volume) * 0.4;
+                frame.fill_rectangle(
+                    Point::new(col_x, 0.0),
+                    Size::new(VERT_OVERVIEW_COL_WIDTH, bounds.height),
+                    Color::from_rgba(0.0, 0.0, 0.0, dim_alpha),
+                );
+            }
+        }
+
+        vec![frame.into_geometry()]
+    }
+
+    /// Handle mouse interaction in vertical layout.
+    fn update_vertical(
+        &self,
+        interaction: &mut PlayerInteraction,
+        event: &Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<Message>> {
+        let (center_x, center_width, zoomed_col_width, _side_width) = vert_geometry(bounds.width);
+        let cols = vert_column_positions(center_x, center_width, zoomed_col_width);
+
+        let zoomed_y = VERT_HEADER_HEIGHT + VERT_STEM_INDICATOR_HEIGHT + VERT_STEM_INDICATOR_GAP;
+
+        if let Some(position) = cursor.position_in(bounds) {
+            if let Some((deck_idx, is_overview)) = vert_hit_test(position.x, &cols, zoomed_col_width) {
+                if is_overview {
+                    // Overview column: click/drag to seek (Y = track position)
+                    match event {
+                        Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                            interaction.active_deck = Some(deck_idx);
+                            interaction.is_seeking = true;
+                            interaction.drag_start_y = None;
+
+                            let overview = &self.state.decks[deck_idx].overview;
+                            if overview.has_track && overview.duration_samples > 0 {
+                                let display_ratio = (position.y / bounds.height).clamp(0.0, 1.0) as f64;
+                                let seek_ratio = self.inverse_bpm_seek(deck_idx, display_ratio);
+                                return Some(canvas::Action::publish((self.on_seek)(deck_idx, seek_ratio)));
+                            }
+                        }
+                        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                            interaction.is_seeking = false;
+                            interaction.active_deck = None;
+                        }
+                        Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                            if interaction.is_seeking {
+                                if let Some(active_deck) = interaction.active_deck {
+                                    let overview = &self.state.decks[active_deck].overview;
+                                    if overview.has_track && overview.duration_samples > 0 {
+                                        let display_ratio = (position.y / bounds.height).clamp(0.0, 1.0) as f64;
+                                        let seek_ratio = self.inverse_bpm_seek(active_deck, display_ratio);
+                                        return Some(canvas::Action::publish((self.on_seek)(active_deck, seek_ratio)));
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                } else if position.y >= zoomed_y {
+                    // Zoomed column: drag vertically to zoom
+                    match event {
+                        Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                            interaction.active_deck = Some(deck_idx);
+                            interaction.drag_start_y = Some(position.y);
+                            interaction.drag_start_zoom = self.state.decks[deck_idx].zoomed.zoom_bars;
+                            interaction.is_seeking = false;
+                        }
+                        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                            interaction.drag_start_y = None;
+                            interaction.active_deck = None;
+                        }
+                        Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                            if let (Some(start_y), Some(active_deck)) = (interaction.drag_start_y, interaction.active_deck) {
+                                // Horizontal drag to zoom (drag right = zoom in, left = zoom out)
+                                let delta = position.x - start_y; // Reusing drag_start_y for simplicity
+                                let _ = delta;
+                                // Use vertical drag for consistency with horizontal mode
+                                let delta_v = start_y - position.y;
+                                let zoom_change = (delta_v / ZOOM_PIXELS_PER_LEVEL) as i32;
+                                let new_zoom = (interaction.drag_start_zoom as i32 - zoom_change)
+                                    .clamp(MIN_ZOOM_BARS as i32, MAX_ZOOM_BARS as i32)
+                                    as u32;
+
+                                if new_zoom != self.state.decks[active_deck].zoomed.zoom_bars {
+                                    return Some(canvas::Action::publish((self.on_zoom)(active_deck, new_zoom)));
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Handle button release outside bounds
+        if matches!(event, Event::Mouse(mouse::Event::ButtonReleased(_))) {
+            interaction.drag_start_y = None;
+            interaction.active_deck = None;
+            interaction.is_seeking = false;
+        }
+
+        None
+    }
+
+    /// Mouse cursor icon in vertical layout.
+    fn mouse_interaction_vertical(
+        &self,
+        interaction: &PlayerInteraction,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        let (center_x, center_width, zoomed_col_width, _side_width) = vert_geometry(bounds.width);
+        let cols = vert_column_positions(center_x, center_width, zoomed_col_width);
+
+        let zoomed_y = VERT_HEADER_HEIGHT + VERT_STEM_INDICATOR_HEIGHT + VERT_STEM_INDICATOR_GAP;
+
+        if let Some(position) = cursor.position_in(bounds) {
+            if let Some((_deck_idx, is_overview)) = vert_hit_test(position.x, &cols, zoomed_col_width) {
+                if is_overview {
+                    return mouse::Interaction::Pointer;
+                } else if position.y >= zoomed_y {
+                    if interaction.drag_start_y.is_some() {
+                        return mouse::Interaction::ResizingVertically;
+                    }
+                    return mouse::Interaction::Grab;
+                }
+            }
+        }
+        mouse::Interaction::default()
+    }
+}
+
+// =============================================================================
+// Vertical Layout: Drawing Functions
+// =============================================================================
+
+/// Draw a compact header above a vertical zoomed column.
+fn draw_vertical_header(
+    frame: &mut Frame,
+    x: f32,
+    y: f32,
+    width: f32,
+    deck_idx: usize,
+    track_name: &str,
+    track_key: &str,
+    track_bpm: Option<f64>,
+    is_master: bool,
+    cue_enabled: bool,
+    has_track: bool,
+) {
+    use iced::widget::canvas::Text;
+    use iced::alignment::{Horizontal, Vertical};
+
+    // Background
+    frame.fill_rectangle(
+        Point::new(x, y),
+        Size::new(width, VERT_HEADER_HEIGHT),
+        Color::from_rgb(0.10, 0.10, 0.12),
+    );
+
+    // Deck number badge (compact)
+    let badge_size = VERT_HEADER_HEIGHT - 8.0;
+    let badge_x = x + 4.0;
+    let badge_y = y + 4.0;
+
+    let badge_bg = if cue_enabled {
+        Color::from_rgb(0.35, 0.30, 0.10)
+    } else if has_track {
+        Color::from_rgb(0.15, 0.15, 0.25)
+    } else {
+        Color::from_rgb(0.15, 0.15, 0.15)
+    };
+
+    frame.fill_rectangle(
+        Point::new(badge_x, badge_y),
+        Size::new(badge_size, badge_size),
+        badge_bg,
+    );
+
+    if is_master {
+        let stroke = Stroke::default()
+            .with_width(2.0)
+            .with_color(Color::from_rgb(0.45, 0.8, 0.55));
+        frame.stroke(
+            &Path::rectangle(Point::new(badge_x, badge_y), Size::new(badge_size, badge_size)),
+            stroke,
+        );
+    }
+
+    let text_color = if cue_enabled {
+        Color::from_rgb(1.0, 0.85, 0.3)
+    } else if has_track {
+        Color::from_rgb(0.7, 0.7, 0.9)
+    } else {
+        Color::from_rgb(0.5, 0.5, 0.5)
+    };
+
+    frame.fill_text(Text {
+        content: format!("{}", deck_idx + 1),
+        position: Point::new(badge_x + badge_size / 2.0, y + VERT_HEADER_HEIGHT / 2.0),
+        size: 16.0.into(),
+        color: text_color,
+        align_x: Horizontal::Center.into(),
+        align_y: Vertical::Center.into(),
+        ..Text::default()
+    });
+
+    // Track name (truncated to fit)
+    let name_x = badge_x + badge_size + 4.0;
+    let available = width - badge_size - 12.0;
+
+    if has_track && !track_name.is_empty() {
+        let max_chars = (available / 8.0) as usize;
+        let display = if track_name.len() > max_chars && max_chars > 3 {
+            format!("{}...", &track_name[..max_chars.min(track_name.len()) - 3])
+        } else {
+            track_name.to_string()
+        };
+
+        frame.fill_text(Text {
+            content: display,
+            position: Point::new(name_x, y + VERT_HEADER_HEIGHT / 2.0 - 4.0),
+            size: 11.0.into(),
+            color: Color::from_rgb(0.75, 0.75, 0.75),
+            align_x: Horizontal::Left.into(),
+            align_y: Vertical::Center.into(),
+            ..Text::default()
+        });
+
+        // Key + BPM on second line
+        let mut info_parts = Vec::new();
+        if !track_key.is_empty() {
+            info_parts.push(track_key.to_string());
+        }
+        if let Some(bpm) = track_bpm {
+            info_parts.push(format!("{:.0}", bpm));
+        }
+        if !info_parts.is_empty() {
+            frame.fill_text(Text {
+                content: info_parts.join(" | "),
+                position: Point::new(name_x, y + VERT_HEADER_HEIGHT / 2.0 + 7.0),
+                size: 9.0.into(),
+                color: Color::from_rgb(0.55, 0.55, 0.65),
+                align_x: Horizontal::Left.into(),
+                align_y: Vertical::Center.into(),
+                ..Text::default()
+            });
+        }
+    }
+}
+
+/// Draw stem indicator blocks in a horizontal row below header (above zoomed waveform).
+///
+/// Rotated 90° from horizontal mode: 4 small blocks side-by-side instead of stacked.
+fn draw_vertical_stem_indicators(
+    frame: &mut Frame,
+    x: f32,
+    y: f32,
+    width: f32,
+    stem_active: &[bool; 4],
+    stem_colors: &[Color; 4],
+) {
+    let total_gaps = 3.0 * VERT_STEM_INDICATOR_GAP;
+    let block_width = (width - total_gaps) / 4.0;
+
+    for (visual_idx, &stem_idx) in STEM_INDICATOR_ORDER.iter().enumerate() {
+        let block_x = x + (visual_idx as f32) * (block_width + VERT_STEM_INDICATOR_GAP);
+        let color = stem_colors[stem_idx];
+
+        let indicator_color = if stem_active[stem_idx] {
+            Color::from_rgb(color.r * 0.5, color.g * 0.5, color.b * 0.5)
+        } else {
+            Color::from_rgb(0.12, 0.12, 0.12)
+        };
+
+        frame.fill_rectangle(
+            Point::new(block_x, y),
+            Size::new(block_width, VERT_STEM_INDICATOR_HEIGHT),
+            indicator_color,
+        );
+    }
+}
+
+/// Draw a vertical zoomed waveform (time flows top-to-bottom).
+///
+/// The center line runs vertically at `x + width/2`. Peaks extend left and right.
+/// The playhead is a horizontal line. Beat markers are horizontal lines.
+fn draw_vertical_zoomed(
+    frame: &mut Frame,
+    zoomed: &ZoomedState,
+    highres_peaks: &[Vec<(f32, f32)>; 4],
+    linked_highres_peaks: &[Option<Vec<(f32, f32)>>; 4],
+    host_lufs_gain: f32,
+    linked_lufs_gains: &[f32; 4],
+    duration_samples: u64,
+    playhead: u64,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    stem_colors: &[Color; 4],
+    stem_active: &[bool; 4],
+    linked_active: &[bool; 4],
+) {
+    let center_x = x + width / 2.0;
+
+    // Background
+    frame.fill_rectangle(
+        Point::new(x, y),
+        Size::new(width, height),
+        Color::from_rgb(0.08, 0.08, 0.1),
+    );
+
+    if !zoomed.has_track || zoomed.duration_samples == 0 {
+        return;
+    }
+
+    let window = zoomed.visible_window(playhead);
+    if window.total_samples == 0 {
+        return;
+    }
+
+    // Helper: sample position → Y coordinate (instead of X in horizontal mode)
+    let sample_to_y = |sample: u64| -> f32 {
+        if sample < window.start {
+            y + (window.left_padding as f64 / window.total_samples as f64 * height as f64) as f32
+        } else if sample > window.end {
+            y + height
+        } else {
+            let offset = window.left_padding + (sample - window.start);
+            y + (offset as f64 / window.total_samples as f64 * height as f64) as f32
+        }
+    };
+
+    // Draw loop region (horizontal band)
+    if let Some((loop_start_norm, loop_end_norm)) = zoomed.loop_region {
+        let loop_start_sample = (loop_start_norm * zoomed.duration_samples as f64) as u64;
+        let loop_end_sample = (loop_end_norm * zoomed.duration_samples as f64) as u64;
+
+        if loop_end_sample > window.start && loop_start_sample < window.end {
+            let start_y = sample_to_y(loop_start_sample.max(window.start));
+            let end_y = sample_to_y(loop_end_sample.min(window.end));
+            let loop_h = end_y - start_y;
+            if loop_h > 0.0 {
+                frame.fill_rectangle(
+                    Point::new(x, start_y),
+                    Size::new(width, loop_h),
+                    Color::from_rgba(0.2, 0.8, 0.2, 0.25),
+                );
+                if loop_start_sample >= window.start && loop_start_sample <= window.end {
+                    let ly = sample_to_y(loop_start_sample);
+                    frame.stroke(
+                        &Path::line(Point::new(x, ly), Point::new(x + width, ly)),
+                        Stroke::default().with_color(Color::from_rgba(0.2, 0.9, 0.2, 0.8)).with_width(2.0),
+                    );
+                }
+                if loop_end_sample >= window.start && loop_end_sample <= window.end {
+                    let ly = sample_to_y(loop_end_sample);
+                    frame.stroke(
+                        &Path::line(Point::new(x, ly), Point::new(x + width, ly)),
+                        Stroke::default().with_color(Color::from_rgba(0.2, 0.9, 0.2, 0.8)).with_width(2.0),
+                    );
+                }
+            }
+        }
+    }
+
+    // Draw slicer region (horizontal band)
+    let slicer_bounds: Option<(u64, u64)> = zoomed.fixed_buffer_bounds.or_else(|| {
+        zoomed.slicer_region.map(|(s, e)| {
+            ((s * zoomed.duration_samples as f64) as u64, (e * zoomed.duration_samples as f64) as u64)
+        })
+    });
+
+    if let Some((slicer_start, slicer_end)) = slicer_bounds {
+        if slicer_end > window.start && slicer_start < window.end {
+            let sy = sample_to_y(slicer_start.max(window.start));
+            let ey = sample_to_y(slicer_end.min(window.end));
+            let sh = ey - sy;
+            if sh > 0.0 {
+                frame.fill_rectangle(
+                    Point::new(x, sy),
+                    Size::new(width, sh),
+                    Color::from_rgba(1.0, 0.5, 0.0, 0.12),
+                );
+
+                let samples_per_slice = (slicer_end - slicer_start) / SLICER_NUM_SLICES as u64;
+                for i in 0..=SLICER_NUM_SLICES {
+                    let slice_sample = slicer_start + samples_per_slice * i as u64;
+                    if slice_sample >= window.start && slice_sample <= window.end {
+                        let slice_y = sample_to_y(slice_sample);
+                        let is_boundary = i == 0 || i == SLICER_NUM_SLICES;
+                        let lw = if is_boundary { 2.0 } else { 1.0 };
+                        let alpha = if is_boundary { 0.8 } else { 0.5 };
+                        frame.stroke(
+                            &Path::line(Point::new(x, slice_y), Point::new(x + width, slice_y)),
+                            Stroke::default().with_color(Color::from_rgba(1.0, 0.6, 0.1, alpha)).with_width(lw),
+                        );
+                    }
+                }
+
+                if let Some(current) = zoomed.slicer_current_slice {
+                    let ss = slicer_start + samples_per_slice * current as u64;
+                    let se = ss + samples_per_slice;
+                    if se > window.start && ss < window.end {
+                        let ssy = sample_to_y(ss.max(window.start));
+                        let sey = sample_to_y(se.min(window.end));
+                        frame.fill_rectangle(
+                            Point::new(x, ssy),
+                            Size::new(width, sey - ssy),
+                            Color::from_rgba(1.0, 0.6, 0.0, 0.2),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Draw beat markers (horizontal lines)
+    for (i, &beat_sample) in zoomed.beat_grid.iter().enumerate() {
+        if beat_sample >= window.start && beat_sample <= window.end {
+            let beat_y = sample_to_y(beat_sample);
+            let (color, w) = if i % 4 == 0 {
+                (Color::from_rgba(1.0, 0.3, 0.3, 0.6), 2.0)
+            } else {
+                (Color::from_rgba(0.5, 0.5, 0.5, 0.4), 1.0)
+            };
+            frame.stroke(
+                &Path::line(Point::new(x, beat_y), Point::new(x + width, beat_y)),
+                Stroke::default().with_color(color).with_width(w),
+            );
+        }
+    }
+
+    // Draw peaks (axis-swapped: center line vertical, peaks extend left/right)
+    let use_highres = !highres_peaks[0].is_empty() && duration_samples > 0;
+    let use_cached = !use_highres
+        && !zoomed.cached_peaks[0].is_empty()
+        && (zoomed.cache_end > zoomed.cache_start || zoomed.cache_left_padding > 0);
+
+    if use_highres || use_cached {
+        let width_scale = width / 2.0 * 0.85;
+
+        let cache_virtual_total = if use_cached {
+            (zoomed.cache_end - zoomed.cache_start + zoomed.cache_left_padding) as usize
+        } else {
+            0
+        };
+
+        for &stem_idx in STEM_RENDER_ORDER.iter() {
+            let peaks: &[(f32, f32)] = if linked_active[stem_idx] {
+                if use_highres {
+                    linked_highres_peaks[stem_idx]
+                        .as_ref()
+                        .map(|v| v.as_slice())
+                        .unwrap_or(&highres_peaks[stem_idx])
+                } else {
+                    zoomed.linked_cached_peaks[stem_idx]
+                        .as_ref()
+                        .map(|v| v.as_slice())
+                        .unwrap_or(&zoomed.cached_peaks[stem_idx])
+                }
+            } else if use_highres {
+                &highres_peaks[stem_idx]
+            } else {
+                &zoomed.cached_peaks[stem_idx]
+            };
+
+            if peaks.is_empty() {
+                continue;
+            }
+            let peaks_len = peaks.len();
+
+            let waveform_color = if stem_active[stem_idx] {
+                let base = stem_colors[stem_idx];
+                Color::from_rgba(base.r, base.g, base.b, ZOOMED_WAVEFORM_ALPHA)
+            } else {
+                let gray = INACTIVE_STEM_GRAYS[stem_idx];
+                Color::from_rgba(gray.r, gray.g, gray.b, 0.5)
+            };
+
+            // Build filled path: left envelope top→bottom, right envelope bottom→top
+            let path = Path::new(|builder| {
+                let mut first_point = true;
+                let mut left_points: Vec<(f32, f32)> = Vec::with_capacity(512);
+                let mut right_points: Vec<(f32, f32)> = Vec::with_capacity(512);
+
+                if use_highres {
+                    let samples_per_peak = (duration_samples / peaks_len as u64) as f64;
+                    let pixels_per_sample = height as f64 / window.total_samples as f64;
+                    let pixels_per_peak = samples_per_peak * pixels_per_sample;
+
+                    let center_sample = window.start as f64 - window.left_padding as f64 + (window.total_samples as f64 / 2.0);
+                    let center_peak_f64 = center_sample / samples_per_peak;
+                    let center_py = y + height / 2.0;
+
+                    let half_height_in_peaks = (height as f64 / 2.0 / pixels_per_peak).ceil() as usize;
+                    let margin_peaks = half_height_in_peaks / 4 + 20;
+                    let half_visible_peaks = half_height_in_peaks + margin_peaks;
+
+                    let center_peak = center_peak_f64 as usize;
+                    let first_peak = center_peak.saturating_sub(half_visible_peaks);
+                    let last_peak = (center_peak + half_visible_peaks).min(peaks_len);
+
+                    let target_pixels_per_point = highres_target_pixels(stem_idx);
+                    let step = ((target_pixels_per_point / pixels_per_peak).round() as usize).max(1);
+                    let smooth_radius = smooth_radius_for_stem(stem_idx, step);
+
+                    let first_peak_aligned = ((first_peak + step / 2) / step) * step;
+                    let mut peak_idx = first_peak_aligned;
+                    while peak_idx < last_peak {
+                        let relative_pos = peak_idx as f64 - center_peak_f64;
+                        let py = center_py + (relative_pos * pixels_per_peak) as f32;
+
+                        if py >= y - 5.0 && py <= y + height + 5.0 {
+                            let (min, max) = sample_peak_smoothed(peaks, peak_idx, smooth_radius, stem_idx);
+
+                            let gain = if linked_active[stem_idx] {
+                                linked_lufs_gains[stem_idx]
+                            } else {
+                                host_lufs_gain
+                            };
+                            let (min, max) = (min * gain, max * gain);
+
+                            // Axis swap: amplitude maps to X, position maps to Y
+                            let x_left = center_x + (min * width_scale);   // min is negative
+                            let x_right = center_x + (max * width_scale);  // max is positive
+
+                            let clamped_py = py.max(y).min(y + height);
+                            left_points.push((x_left.max(x).min(x + width), clamped_py));
+                            right_points.push((x_right.max(x).min(x + width), clamped_py));
+                        }
+
+                        peak_idx += step;
+                    }
+                } else {
+                    // Cached peaks fallback
+                    let height_usize = height as usize;
+                    let total_samples = window.total_samples as usize;
+                    let step = zoomed_step(stem_idx, height_usize);
+                    let smooth_radius = smooth_radius_for_stem(stem_idx, step);
+
+                    let mut py = 0;
+                    while py < height_usize {
+                        let window_offset = py * total_samples / height_usize;
+                        let actual_sample = window.start as i64 - window.left_padding as i64 + window_offset as i64;
+
+                        let current_py = py;
+                        py += step;
+
+                        if actual_sample < 0 || actual_sample >= duration_samples as i64 {
+                            continue;
+                        }
+
+                        let cache_virtual_offset = actual_sample - zoomed.cache_start as i64 + zoomed.cache_left_padding as i64;
+                        if cache_virtual_offset < 0 || cache_virtual_offset as usize >= cache_virtual_total {
+                            continue;
+                        }
+                        let peak_idx = (cache_virtual_offset as usize * peaks_len) / cache_virtual_total;
+                        if peak_idx >= peaks_len {
+                            continue;
+                        }
+
+                        let (min, max) = sample_peak_smoothed(peaks, peak_idx, smooth_radius, stem_idx);
+
+                        let gain = if linked_active[stem_idx] {
+                            linked_lufs_gains[stem_idx]
+                        } else {
+                            host_lufs_gain
+                        };
+                        let (min, max) = (min * gain, max * gain);
+
+                        let x_left = center_x + (min * width_scale);
+                        let x_right = center_x + (max * width_scale);
+
+                        left_points.push((x_left.max(x).min(x + width), y + current_py as f32));
+                        right_points.push((x_right.max(x).min(x + width), y + current_py as f32));
+                    }
+                }
+
+                if left_points.is_empty() {
+                    return;
+                }
+
+                // Left envelope top→bottom
+                for &(px, py) in left_points.iter() {
+                    if first_point {
+                        builder.move_to(Point::new(px, py));
+                        first_point = false;
+                    } else {
+                        builder.line_to(Point::new(px, py));
+                    }
+                }
+
+                // Right envelope bottom→top (closing the path)
+                for &(px, py) in right_points.iter().rev() {
+                    builder.line_to(Point::new(px, py));
+                }
+
+                builder.close();
+            });
+
+            frame.fill(&path, waveform_color);
+        }
+    }
+
+    // Draw cue markers (horizontal lines with left-pointing triangle)
+    for marker in &zoomed.cue_markers {
+        let marker_sample = (marker.position * zoomed.duration_samples as f64) as u64;
+        if marker_sample >= window.start && marker_sample <= window.end {
+            let cue_y = sample_to_y(marker_sample);
+            frame.fill_rectangle(
+                Point::new(x, cue_y - 1.0),
+                Size::new(width, 2.0),
+                marker.color,
+            );
+            let triangle = Path::new(|builder| {
+                builder.move_to(Point::new(x, cue_y));
+                builder.line_to(Point::new(x + 8.0, cue_y - 4.0));
+                builder.line_to(Point::new(x + 8.0, cue_y + 4.0));
+                builder.close();
+            });
+            frame.fill(&triangle, marker.color);
+        }
+    }
+
+    // Draw drop marker
+    if let Some(drop_sample) = zoomed.drop_marker {
+        if drop_sample >= window.start && drop_sample <= window.end {
+            let drop_y = sample_to_y(drop_sample);
+            frame.fill_rectangle(
+                Point::new(x, drop_y - 1.0),
+                Size::new(width, 2.0),
+                DROP_MARKER_COLOR,
+            );
+            let diamond = Path::new(|builder| {
+                builder.move_to(Point::new(x, drop_y));
+                builder.line_to(Point::new(x + 8.0, drop_y - 6.0));
+                builder.line_to(Point::new(x + 16.0, drop_y));
+                builder.line_to(Point::new(x + 8.0, drop_y + 6.0));
+                builder.close();
+            });
+            frame.fill(&diamond, DROP_MARKER_COLOR);
+        }
+    }
+
+    // Playhead: horizontal white line
+    let playhead_y = match zoomed.view_mode() {
+        ZoomedViewMode::Scrolling => y + height / 2.0,
+        ZoomedViewMode::FixedBuffer => {
+            if window.total_samples > 0 && playhead >= window.start && playhead <= window.end {
+                let offset = (playhead - window.start) as f64;
+                y + (offset / window.total_samples as f64 * height as f64) as f32
+            } else if playhead < window.start {
+                y
+            } else {
+                y + height
+            }
+        }
+    };
+    frame.stroke(
+        &Path::line(Point::new(x, playhead_y), Point::new(x + width, playhead_y)),
+        Stroke::default()
+            .with_color(Color::from_rgb(1.0, 1.0, 1.0))
+            .with_width(2.0),
+    );
+
+    // Zoom indicator (horizontal bar at bottom edge)
+    let indicator_width = (zoomed.zoom_bars as f32 / MAX_ZOOM_BARS as f32) * width;
+    let indicator_height = 4.0;
+    frame.fill_rectangle(
+        Point::new(x + width - indicator_width, y + height - indicator_height),
+        Size::new(indicator_width, indicator_height),
+        Color::from_rgba(1.0, 1.0, 1.0, 0.5),
+    );
+}
+
+/// Draw a vertical overview waveform (time flows top-to-bottom, peaks extend left/right).
+fn draw_vertical_overview(
+    frame: &mut Frame,
+    overview: &OverviewState,
+    playhead: u64,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    stem_colors: &[Color; 4],
+    stem_active: &[bool; 4],
+    _linked_stems: &[bool; 4],
+    _linked_active: &[bool; 4],
+    overview_scale: Option<f64>,
+) {
+    let center_x = x + width / 2.0;
+
+    // Background
+    frame.fill_rectangle(
+        Point::new(x, y),
+        Size::new(width, height),
+        Color::from_rgb(0.05, 0.05, 0.08),
+    );
+
+    if !overview.has_track || overview.duration_samples == 0 {
+        return;
+    }
+
+    // Helper: normalized source position → Y coordinate
+    let pos_to_y = |pos: f64| -> f32 {
+        let display_pos = if let Some(d) = overview_scale { pos * d } else { pos };
+        y + (display_pos * height as f64) as f32
+    };
+
+    let pos_visible = |pos: f64| -> bool {
+        let display_pos = if let Some(d) = overview_scale { pos * d } else { pos };
+        display_pos >= -0.01 && display_pos <= 1.01
+    };
+
+    // Pre-stretch peaks if BPM scaling active
+    let stretched_waveforms: Option<[Vec<(f32, f32)>; 4]> = overview_scale.map(|d| {
+        let out_len = overview.stem_waveforms[0].len().max(height as usize);
+        [
+            stretch_peaks(&overview.stem_waveforms[0], d, out_len),
+            stretch_peaks(&overview.stem_waveforms[1], d, out_len),
+            stretch_peaks(&overview.stem_waveforms[2], d, out_len),
+            stretch_peaks(&overview.stem_waveforms[3], d, out_len),
+        ]
+    });
+
+    // Draw loop region (horizontal band)
+    if let Some((loop_start, loop_end)) = overview.loop_region {
+        let sy = pos_to_y(loop_start).max(y);
+        let ey = pos_to_y(loop_end).min(y + height);
+        let lh = ey - sy;
+        if lh > 0.0 {
+            frame.fill_rectangle(
+                Point::new(x, sy),
+                Size::new(width, lh),
+                Color::from_rgba(0.2, 0.8, 0.2, 0.25),
+            );
+        }
+    }
+
+    // Draw stem waveforms (single pane — no split view in overview for simplicity)
+    let width_scale = width / 2.0 * 0.85;
+    for &stem_idx in STEM_RENDER_ORDER.iter() {
+        let stem_peaks: &[(f32, f32)] = if let Some(ref stretched) = stretched_waveforms {
+            &stretched[stem_idx]
+        } else {
+            &overview.stem_waveforms[stem_idx]
+        };
+        if stem_peaks.is_empty() {
+            continue;
+        }
+
+        let waveform_color = if stem_active[stem_idx] {
+            let base = stem_colors[stem_idx];
+            Color::from_rgba(base.r, base.g, base.b, OVERVIEW_WAVEFORM_ALPHA)
+        } else {
+            let gray = INACTIVE_STEM_GRAYS[stem_idx];
+            Color::from_rgba(gray.r, gray.g, gray.b, 0.4)
+        };
+
+        // Build vertical filled path
+        let path = Path::new(|builder| {
+            let peaks_len = stem_peaks.len();
+            if peaks_len == 0 {
+                return;
+            }
+
+            let mut left_points: Vec<(f32, f32)> = Vec::with_capacity(peaks_len);
+            let mut right_points: Vec<(f32, f32)> = Vec::with_capacity(peaks_len);
+
+            // Map each peak to a Y position, amplitude to X
+            let step = (peaks_len / (height as usize)).max(1);
+            let mut i = 0;
+            while i < peaks_len {
+                let (min, max) = stem_peaks[i];
+                let py = y + (i as f32 / peaks_len as f32) * height;
+
+                let x_left = center_x + (min * width_scale);
+                let x_right = center_x + (max * width_scale);
+
+                left_points.push((x_left.max(x).min(x + width), py));
+                right_points.push((x_right.max(x).min(x + width), py));
+
+                i += step;
+            }
+
+            if left_points.is_empty() {
+                return;
+            }
+
+            // Left envelope top→bottom
+            builder.move_to(Point::new(left_points[0].0, left_points[0].1));
+            for &(px, py) in left_points.iter().skip(1) {
+                builder.line_to(Point::new(px, py));
+            }
+
+            // Right envelope bottom→top
+            for &(px, py) in right_points.iter().rev() {
+                builder.line_to(Point::new(px, py));
+            }
+
+            builder.close();
+        });
+
+        frame.fill(&path, waveform_color);
+    }
+
+    // Beat markers (horizontal lines)
+    let step = (overview.grid_bars * 4) as usize;
+    for (i, &beat_pos) in overview.beat_markers.iter().enumerate() {
+        if i % step != 0 {
+            continue;
+        }
+        if !pos_visible(beat_pos) {
+            continue;
+        }
+        let beat_y = pos_to_y(beat_pos).max(y).min(y + height);
+        let color = if (i / step) % 4 == 0 {
+            Color::from_rgba(1.0, 0.3, 0.3, 0.6)
+        } else {
+            Color::from_rgba(0.5, 0.5, 0.5, 0.4)
+        };
+        frame.stroke(
+            &Path::line(Point::new(x, beat_y), Point::new(x + width, beat_y)),
+            Stroke::default().with_color(color).with_width(1.0),
+        );
+    }
+
+    // Cue markers (horizontal lines)
+    for marker in &overview.cue_markers {
+        if !pos_visible(marker.position) {
+            continue;
+        }
+        let cue_y = pos_to_y(marker.position).max(y).min(y + height);
+        frame.fill_rectangle(
+            Point::new(x, cue_y - 1.0),
+            Size::new(width, 2.0),
+            marker.color,
+        );
+    }
+
+    // Main cue point
+    if let Some(cue_pos) = overview.cue_position {
+        if pos_visible(cue_pos) {
+            let cue_y = pos_to_y(cue_pos).max(y).min(y + height);
+            frame.stroke(
+                &Path::line(Point::new(x, cue_y), Point::new(x + width, cue_y)),
+                Stroke::default().with_color(Color::from_rgb(0.6, 0.6, 0.6)).with_width(2.0),
+            );
+        }
+    }
+
+    // Playhead (horizontal white line)
+    if overview.duration_samples > 0 {
+        let playhead_ratio = playhead as f64 / overview.duration_samples as f64;
+        let playhead_y = pos_to_y(playhead_ratio).max(y).min(y + height);
+        frame.stroke(
+            &Path::line(Point::new(x, playhead_y), Point::new(x + width, playhead_y)),
             Stroke::default()
                 .with_color(Color::from_rgb(1.0, 1.0, 1.0))
                 .with_width(2.0),

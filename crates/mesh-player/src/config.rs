@@ -92,6 +92,31 @@ impl KeyScoringModel {
     }
 }
 
+/// Waveform layout orientation
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaveformLayout {
+    /// Traditional horizontal layout (time flows left-to-right, 2x2 grid)
+    #[default]
+    Horizontal,
+    /// Vertical layout (time flows top-to-bottom, overviews centered)
+    Vertical,
+}
+
+impl WaveformLayout {
+    pub const ALL: [WaveformLayout; 2] = [
+        WaveformLayout::Horizontal,
+        WaveformLayout::Vertical,
+    ];
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            WaveformLayout::Horizontal => "Horizontal",
+            WaveformLayout::Vertical => "Vertical",
+        }
+    }
+}
+
 /// Root configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -189,6 +214,8 @@ pub struct DisplayConfig {
     pub show_local_collection: bool,
     /// Key scoring model for harmonic compatibility in smart suggestions
     pub key_scoring_model: KeyScoringModel,
+    /// Waveform layout orientation (horizontal or vertical)
+    pub waveform_layout: WaveformLayout,
 }
 
 /// Loop length options in beats (matches mesh-core/deck.rs LOOP_LENGTHS)
@@ -204,6 +231,7 @@ impl Default for DisplayConfig {
             stem_color_palette: StemColorPalette::default(), // Natural palette
             show_local_collection: false, // USB-only mode by default
             key_scoring_model: KeyScoringModel::default(), // Camelot wheel
+            waveform_layout: WaveformLayout::default(),  // Horizontal
         }
     }
 }

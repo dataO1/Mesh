@@ -5,7 +5,7 @@
 use super::message::{Message, SettingsMessage};
 use super::midi_learn::MidiLearnMessage;
 use crate::audio::{get_available_stereo_pairs, StereoPair};
-use crate::config::{LOOP_LENGTH_OPTIONS, StemColorPalette, KeyScoringModel};
+use crate::config::{LOOP_LENGTH_OPTIONS, StemColorPalette, KeyScoringModel, WaveformLayout};
 use iced::widget::{button, column, container, pick_list, row, scrollable, text, toggler, Space};
 use iced::{Alignment, Element, Length};
 
@@ -56,6 +56,8 @@ pub struct SettingsState {
     pub draft_show_local_collection: bool,
     /// Draft key scoring model for harmonic compatibility
     pub draft_key_scoring_model: KeyScoringModel,
+    /// Draft waveform layout orientation
+    pub draft_waveform_layout: WaveformLayout,
     /// Draft master device index (for audio routing)
     pub draft_master_device: usize,
     /// Draft cue device index (for audio routing)
@@ -85,6 +87,7 @@ impl SettingsState {
             draft_target_lufs_index: lufs_to_index(config.audio.loudness.target_lufs),
             draft_show_local_collection: config.display.show_local_collection,
             draft_key_scoring_model: config.display.key_scoring_model,
+            draft_waveform_layout: config.display.waveform_layout,
             draft_master_device: config.audio.outputs.master_device.unwrap_or(0),
             draft_cue_device: config.audio.outputs.cue_device.unwrap_or_else(|| {
                 if num_devices >= 2 { 1 } else { 0 }
@@ -111,6 +114,7 @@ impl SettingsState {
             draft_target_lufs_index: 1, // -9 LUFS (balanced)
             draft_show_local_collection: false, // USB-only by default
             draft_key_scoring_model: KeyScoringModel::default(),
+            draft_waveform_layout: WaveformLayout::default(),
             draft_master_device: 0, // First device
             draft_cue_device: if num_devices >= 2 { 1 } else { 0 }, // Second device or fallback
             available_devices,
@@ -284,6 +288,29 @@ fn view_loop_section(state: &SettingsState) -> Element<'_, Message> {
 fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
     let section_title = text("Display").size(18);
 
+    // Waveform layout section
+    let layout_subsection = text("Waveform Layout").size(14);
+    let layout_hint = text("Orientation of waveform display")
+        .size(12);
+
+    let layout_buttons: Vec<Element<Message>> = WaveformLayout::ALL
+        .iter()
+        .map(|&layout| {
+            let is_selected = state.draft_waveform_layout == layout;
+            let btn = button(text(layout.display_name()).size(11))
+                .on_press(Message::Settings(SettingsMessage::UpdateWaveformLayout(layout)))
+                .style(if is_selected {
+                    iced::widget::button::primary
+                } else {
+                    iced::widget::button::secondary
+                })
+                .width(Length::Fixed(85.0));
+            btn.into()
+        })
+        .collect();
+
+    let layout_row = row(layout_buttons).spacing(4).align_y(Alignment::Center);
+
     // Zoom level section
     let zoom_subsection = text("Default Zoomed Waveform Level").size(14);
     let zoom_hint = text("Number of bars visible in zoomed waveform view")
@@ -408,6 +435,10 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
     container(
         column![
             section_title,
+            layout_subsection,
+            layout_hint,
+            layout_row,
+            Space::new().height(10),
             zoom_subsection,
             zoom_hint,
             zoom_row,

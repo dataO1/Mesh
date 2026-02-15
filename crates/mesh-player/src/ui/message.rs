@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use mesh_widgets::{MultibandEditorMessage, PeaksComputeResult};
 
-use crate::config::{StemColorPalette, KeyScoringModel};
+use crate::config::{StemColorPalette, KeyScoringModel, WaveformLayout};
 use crate::suggestions::SuggestedTrack;
 use super::collection_browser::CollectionBrowserMessage;
 use super::deck_view::DeckMessage;
@@ -41,6 +41,8 @@ pub enum SettingsMessage {
     UpdateShowLocalCollection(bool),
     /// Update draft key scoring model
     UpdateKeyScoringModel(KeyScoringModel),
+    /// Update draft waveform layout orientation
+    UpdateWaveformLayout(WaveformLayout),
     /// Update master device index
     UpdateMasterPair(usize),
     /// Update cue device index
