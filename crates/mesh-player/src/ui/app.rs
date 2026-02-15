@@ -96,6 +96,8 @@ pub struct MeshApp {
     pub(crate) available_deck_presets: Vec<String>,
     /// Currently hovered preset index for MIDI scroll highlighting
     pub(crate) global_fx_hover_index: Option<usize>,
+    /// Per-side browse mode active state (0=left, 1=right), synced from mapping engine
+    pub(crate) browse_mode_active: [bool; 2],
     /// Actual JACK client name (for port reconnection)
     pub(crate) audio_client_name: String,
 }
@@ -258,6 +260,7 @@ impl MeshApp {
             global_fx_picker_open: false,
             available_deck_presets: Vec::new(),
             global_fx_hover_index: None,
+            browse_mode_active: [false; 2],
             audio_client_name,
         }
     }
@@ -702,6 +705,11 @@ impl MeshApp {
                                 else { self.available_deck_presets.get(i - 1).cloned() }
                             });
                         return self.update(Message::SelectGlobalFxPreset(preset_name));
+                    }
+                    MidiGlobalAction::BrowseModeChanged { side, active } => {
+                        if side < 2 {
+                            self.browse_mode_active[side] = active;
+                        }
                     }
                 }
             }

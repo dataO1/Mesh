@@ -84,6 +84,8 @@ const HOT_CUE_COLOR: [u8; 3] = [200, 140, 0];   // Amber (cue set)
 const HOT_CUE_COLOR_DIM: [u8; 3] = [12, 12, 12]; // Near-off (no cue)
 const SLICER_COLOR: [u8; 3] = [0, 180, 200];     // Cyan (assigned preset)
 const SLICER_COLOR_DIM: [u8; 3] = [0, 12, 14];   // Dim cyan (empty slot)
+const BROWSE_COLOR: [u8; 3] = [200, 200, 200];    // White (browse mode active)
+const BROWSE_COLOR_DIM: [u8; 3] = [20, 20, 20];   // Dim white (browse mode inactive)
 
 /// Application state for LED feedback
 ///
@@ -96,6 +98,8 @@ pub struct FeedbackState {
     pub mixer: [MixerFeedbackState; 4],
     /// Beat phase from master deck (0.0-1.0, beatgrid-aligned, for tempo-synced animations)
     pub beat_phase: f32,
+    /// Per-side browse mode active state (0 = left, 1 = right)
+    pub browse_active: [bool; 2],
 }
 
 /// Action button mode (what the pad grid currently controls)
@@ -289,6 +293,17 @@ pub fn evaluate_feedback(
                 } else {
                     // Empty slot: dim
                     FeedbackResult { address, value: mapping.off_value, color: Some(SLICER_COLOR_DIM) }
+                });
+            }
+
+            // Browse mode: per-side state, white when active, dim when inactive
+            if mapping.state == "side.browse_mode" {
+                let side = mapping.physical_deck.unwrap_or(0).min(1);
+                let active = state.browse_active[side];
+                return Some(if active {
+                    FeedbackResult { address, value: mapping.on_value, color: Some(BROWSE_COLOR) }
+                } else {
+                    FeedbackResult { address, value: mapping.off_value, color: Some(BROWSE_COLOR_DIM) }
                 });
             }
 

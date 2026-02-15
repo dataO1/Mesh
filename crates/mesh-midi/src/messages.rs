@@ -225,6 +225,13 @@ pub enum GlobalAction {
     FxScroll(i32),
     /// Select/confirm current FX preset
     FxSelect,
+    /// Browse mode toggled on a physical deck side
+    BrowseModeChanged {
+        /// Physical deck side (0 = left, 1 = right)
+        side: usize,
+        /// Whether browse mode is now active
+        active: bool,
+    },
 }
 
 impl MidiMessage {

@@ -496,6 +496,9 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
             feedback.mixer[deck_idx].cue_enabled = app.mixer_view.cue_enabled(deck_idx);
         }
 
+        // Browse mode per-side
+        feedback.browse_active = app.browse_mode_active;
+
         controller.update_feedback(&feedback);
     }
 

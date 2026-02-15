@@ -1132,9 +1132,10 @@ impl MidiLearnState {
         } else if self.deck_count == 4 {
             if self.momentary_mode_buttons {
                 // FxEncoder, FxSelect, SideBrowseMode(0), SideBrowseMode(1),
-                // BrowserEncoderDeck(0), BrowserEncoderDeck(1),
                 // DeckLoad(0-3), MasterVolume, CueVolume, CueMix
-                13
+                // (No BrowserEncoderDeck — same physical encoder as DeckLoopEncoder,
+                //  browser.scroll auto-generated from transport mapping with mode:browse)
+                11
             } else {
                 // FxEncoder, FxSelect, BrowserEncoderDeck(0), BrowserEncoderDeck(1),
                 // DeckLoad(0-3), MasterVolume, CueVolume, CueMix
@@ -1175,25 +1176,23 @@ impl MidiLearnState {
                 _ => HighlightTarget::CueMix,
             }
         } else if self.deck_count == 4 && self.momentary_mode_buttons {
-            // 4-deck momentary: browse mode buttons + dual encoders (loop/browse)
+            // 4-deck momentary: browse mode buttons (no separate encoder — same as loop encoder)
             // 0: FxEncoder, 1: FxSelect,
             // 2: SideBrowseMode(0), 3: SideBrowseMode(1),
-            // 4: BrowserEncoderDeck(0), 5: BrowserEncoderDeck(1),
-            // 6-9: DeckLoad(0..3), 10: MasterVolume, 11: CueVolume, 12: CueMix
-            // 13 steps total (0-12)
+            // 4-7: DeckLoad(0..3), 8: MasterVolume, 9: CueVolume, 10: CueMix
+            // 11 steps total (0-10)
+            // (browser.scroll auto-generated from DeckLoopEncoder with mode:browse)
             match self.current_step {
                 0 => HighlightTarget::FxEncoder,
                 1 => HighlightTarget::FxSelect,
                 2 => HighlightTarget::SideBrowseMode(0),
                 3 => HighlightTarget::SideBrowseMode(1),
-                4 => HighlightTarget::BrowserEncoderDeck(0),
-                5 => HighlightTarget::BrowserEncoderDeck(1),
-                6 => HighlightTarget::DeckLoad(0),
-                7 => HighlightTarget::DeckLoad(1),
-                8 => HighlightTarget::DeckLoad(2),
-                9 => HighlightTarget::DeckLoad(3),
-                10 => HighlightTarget::MasterVolume,
-                11 => HighlightTarget::CueVolume,
+                4 => HighlightTarget::DeckLoad(0),
+                5 => HighlightTarget::DeckLoad(1),
+                6 => HighlightTarget::DeckLoad(2),
+                7 => HighlightTarget::DeckLoad(3),
+                8 => HighlightTarget::MasterVolume,
+                9 => HighlightTarget::CueVolume,
                 _ => HighlightTarget::CueMix,
             }
         } else if self.deck_count == 4 {
@@ -1232,16 +1231,6 @@ impl MidiLearnState {
 
         if let Some(ref target) = self.highlight_target {
             self.status = target.description();
-            // Override description for dual-purpose encoders in momentary mode
-            if self.momentary_mode_buttons {
-                if let HighlightTarget::BrowserEncoderDeck(pd) = target {
-                    let side = if *pd == 0 { "LEFT" } else { "RIGHT" };
-                    self.status = format!(
-                        "Turn the {} ENCODER (loop size by default, hold Browse for browser)",
-                        side
-                    );
-                }
-            }
         }
     }
 
@@ -1350,6 +1339,8 @@ impl MidiLearnState {
                 "deck.stem_muted" => (Some([0, 127, 0]), Some([6, 6, 6]), None, None),
                 // Mixer cue (PFL): yellow when enabled
                 "mixer.cue_enabled" => (Some([200, 180, 0]), dim, None, None),
+                // Browse mode: white when active, dim off
+                "side.browse_mode" => (Some([200, 200, 200]), Some([20, 20, 20]), None, None),
                 // Default: green on, dim off
                 _ => (Some([0, 127, 0]), dim, None, None),
             }
@@ -1460,13 +1451,10 @@ impl MidiLearnState {
                 HighlightTarget::DeckFxMacro(d, _m) => {
                     ("deck.fx_macro".to_string(), Some(d), None, ControlBehavior::Continuous, None)
                 }
-                // Per-physical-deck encoder (momentary: loop size default + browse on hold)
+                // Per-physical-deck browser encoder (non-momentary only;
+                // in momentary mode, browse.scroll is auto-generated from DeckLoopEncoder)
                 HighlightTarget::BrowserEncoderDeck(pd) => {
-                    if self.momentary_mode_buttons {
-                        ("side.loop_size".to_string(), Some(pd), None, ControlBehavior::Continuous, None)
-                    } else {
-                        ("browser.scroll".to_string(), Some(pd), None, ControlBehavior::Continuous, None)
-                    }
+                    ("browser.scroll".to_string(), Some(pd), None, ControlBehavior::Continuous, None)
                 }
                 HighlightTarget::BrowserSelectDeck(pd) => {
                     ("deck.load_selected".to_string(), Some(pd), None, ControlBehavior::Momentary, None)
@@ -1488,7 +1476,7 @@ impl MidiLearnState {
                     ("deck.slicer_mode".to_string(), Some(primary_deck), None, behavior, Some("deck.slicer_mode"))
                 }
                 HighlightTarget::SideBrowseMode(side) => {
-                    ("side.browse_mode".to_string(), Some(side), None, ControlBehavior::Toggle, None)
+                    ("side.browse_mode".to_string(), Some(side), None, ControlBehavior::Toggle, Some("side.browse_mode"))
                 }
             };
 
@@ -1519,15 +1507,8 @@ impl MidiLearnState {
                 HighlightTarget::SideBrowseMode(side) => {
                     params.insert("side".to_string(), serde_yaml::Value::Number(side.into()));
                 }
-                HighlightTarget::BrowserEncoderDeck(pd) if self.momentary_mode_buttons => {
-                    // side.loop_size needs target decks (same as mode buttons)
-                    let decks: Vec<serde_yaml::Value> = if pd == 0 {
-                        vec![serde_yaml::Value::Number(0.into()), serde_yaml::Value::Number(2.into())]
-                    } else {
-                        vec![serde_yaml::Value::Number(1.into()), serde_yaml::Value::Number(3.into())]
-                    };
-                    params.insert("decks".to_string(), serde_yaml::Value::Sequence(decks));
-                }
+                // Note: BrowserEncoderDeck no longer appears in momentary mode — browse.scroll
+                // is auto-generated from DeckLoopEncoder instead
                 _ => {}
             }
 
@@ -1592,22 +1573,26 @@ impl MidiLearnState {
                 mode: mode.clone(),
             });
 
-            // For dual-purpose encoders in momentary mode, add a second mapping
-            // with mode: "browse" for browser scrolling when browse button is held
+            // For dual-purpose encoders in momentary mode, auto-generate a
+            // browser.scroll mapping from the loop encoder (same physical control).
+            // Only for the first 2 decks (0,1) to avoid duplicates from decks 2,3
+            // which share the same physical encoder on each side.
             if self.momentary_mode_buttons {
-                if let HighlightTarget::BrowserEncoderDeck(pd) = learned.target {
-                    mappings.push(ControlMapping {
-                        control: control.clone(),
-                        action: "browser.scroll".to_string(),
-                        physical_deck: Some(pd),
-                        deck_index: None,
-                        params: HashMap::new(),
-                        behavior: ControlBehavior::Continuous,
-                        shift_action: None,
-                        encoder_mode,
-                        hardware_type: Some(learned.hardware_type),
-                        mode: Some("browse".to_string()),
-                    });
+                if let HighlightTarget::DeckLoopEncoder(d) = learned.target {
+                    if d < 2 {
+                        mappings.push(ControlMapping {
+                            control: control.clone(),
+                            action: "browser.scroll".to_string(),
+                            physical_deck: Some(d),
+                            deck_index: None,
+                            params: HashMap::new(),
+                            behavior: ControlBehavior::Continuous,
+                            shift_action: None,
+                            encoder_mode,
+                            hardware_type: Some(learned.hardware_type),
+                            mode: Some("browse".to_string()),
+                        });
+                    }
                 }
             }
 

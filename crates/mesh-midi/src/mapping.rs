@@ -204,7 +204,10 @@ impl MappingEngine {
         };
 
         // Select the best mapping based on current mode state
-        let mapping = self.select_mapping(mappings);
+        let mapping = match self.select_mapping(mappings) {
+            Some(m) => m,
+            None => return Vec::new(), // No mode matches — ignore event
+        };
 
         // Determine effective shift: per-deck if mapping has physical_deck, else global
         let shift_held = if let Some(pd) = mapping.physical_deck {
@@ -230,7 +233,7 @@ impl MappingEngine {
             return self.handle_mode_action_multi(action, event, mapping);
         }
 
-        // Browse mode button: sets internal flag, no message to app
+        // Browse mode button: toggle + notify app
         if action == "side.browse_mode" {
             return self.handle_browse_mode_action(event, mapping);
         }
@@ -244,7 +247,14 @@ impl MappingEngine {
         let deck = self.resolve_deck(mapping);
 
         // Convert to MidiMessage based on action
-        self.action_to_message(action, event, mapping, deck).into_iter().collect()
+        let mut result: Vec<MidiMessage> = self.action_to_message(action, event, mapping, deck).into_iter().collect();
+
+        // Auto-close browse mode on track load/select
+        if (action == "deck.load_selected" || action == "browser.select") && event.value.is_press() {
+            result.extend(self.clear_browse_mode());
+        }
+
+        result
     }
 
     /// Map a control event to an app message (single-message convenience)
@@ -261,7 +271,10 @@ impl MappingEngine {
         };
 
         // Select the best mapping based on current mode state
-        let mapping = self.select_mapping(mappings);
+        let mapping = match self.select_mapping(mappings) {
+            Some(m) => m,
+            None => return None, // No mode matches — ignore event
+        };
 
         // Determine effective shift: per-deck if mapping has physical_deck, else global
         let shift_held = if let Some(pd) = mapping.physical_deck {
@@ -289,10 +302,9 @@ impl MappingEngine {
             return msgs.into_iter().next();
         }
 
-        // Browse mode button: sets internal flag, no message to app
+        // Browse mode button: toggle + notify app
         if action == "side.browse_mode" {
-            let _ = self.handle_browse_mode_action(event, mapping);
-            return None;
+            return self.handle_browse_mode_action(event, mapping).into_iter().next();
         }
 
         // Side loop size: encoder controls loop length for both decks on one side
@@ -311,34 +323,54 @@ impl MappingEngine {
     /// Select the best mapping from a list based on current mode state
     ///
     /// Priority: browse mode (per physical deck) > pad overlay mode (per virtual deck) > unconditional
-    fn select_mapping<'a>(&self, mappings: &'a [ControlMapping]) -> &'a ControlMapping {
+    /// Returns None if all mappings are mode-conditional and no mode matches.
+    fn select_mapping<'a>(&self, mappings: &'a [ControlMapping]) -> Option<&'a ControlMapping> {
         if mappings.len() == 1 {
-            return &mappings[0];
+            let m = &mappings[0];
+            // Single mapping: check if its mode matches
+            return if self.mode_matches_current(m) { Some(m) } else { None };
         }
 
-        // Check browse mode first (per physical deck, separate from pad overlay modes)
-        if let Some(pd) = mappings[0].physical_deck {
+        // Check browse mode first: find the browse mapping and check its side
+        if let Some(browse_mapping) = mappings.iter().find(|m| m.mode.as_deref() == Some("browse")) {
+            let pd = browse_mapping.physical_deck
+                .or_else(|| mappings.iter().find_map(|m| m.physical_deck))
+                .unwrap_or(0);
             let browse = self.browse_held.lock().unwrap()[pd.min(1)];
             if browse {
-                if let Some(m) = mappings.iter().find(|m| m.mode.as_deref() == Some("browse")) {
-                    return m;
-                }
+                return Some(browse_mapping);
             }
         }
 
         // Then check pad overlay mode (per virtual deck)
-        let deck = self.resolve_deck(&mappings[0]);
+        let deck = mappings.iter().find_map(|m| m.deck_index)
+            .unwrap_or_else(|| self.resolve_deck(&mappings[0]));
         let current_mode = self.get_mode_held(deck);
 
         // Find a mode-conditional mapping that matches current held mode
         if let Some(ref mode) = current_mode {
             if let Some(m) = mappings.iter().find(|m| m.mode.as_ref() == Some(mode)) {
-                return m;
+                return Some(m);
             }
         }
 
         // Fall back to unconditional mapping (mode: None)
-        mappings.iter().find(|m| m.mode.is_none()).unwrap_or(&mappings[0])
+        mappings.iter().find(|m| m.mode.is_none())
+    }
+
+    /// Check if a mapping's mode condition matches the current engine state
+    fn mode_matches_current(&self, mapping: &ControlMapping) -> bool {
+        match mapping.mode.as_deref() {
+            None => true, // Unconditional always matches
+            Some("browse") => {
+                let pd = mapping.physical_deck.unwrap_or(0);
+                self.browse_held.lock().unwrap()[pd.min(1)]
+            }
+            Some(mode) => {
+                let deck = self.resolve_deck(mapping);
+                self.get_mode_held(deck).as_deref() == Some(mode)
+            }
+        }
     }
 
     /// Handle a mode button action, potentially targeting multiple decks (per-side mode buttons)
@@ -387,18 +419,26 @@ impl MappingEngine {
         let mut browse = self.browse_held.lock().unwrap();
         let side_idx = side.min(1);
         browse[side_idx] = !browse[side_idx]; // Toggle
-        log::debug!("Browse mode toggle: side {} = {}", side, browse[side_idx]);
-        Vec::new()
+        let active = browse[side_idx];
+        log::debug!("Browse mode toggle: side {} = {}", side, active);
+        vec![MidiMessage::Global(GlobalAction::BrowseModeChanged { side: side_idx, active })]
     }
 
     /// Clear browse mode for all sides (auto-close on track selection)
-    fn clear_browse_mode(&self) {
+    /// Returns messages for any sides that were active so the app can update LED state.
+    fn clear_browse_mode(&self) -> Vec<MidiMessage> {
         let mut browse = self.browse_held.lock().unwrap();
-        if browse[0] || browse[1] {
-            browse[0] = false;
-            browse[1] = false;
+        let mut messages = Vec::new();
+        for side in 0..2 {
+            if browse[side] {
+                browse[side] = false;
+                messages.push(MidiMessage::Global(GlobalAction::BrowseModeChanged { side, active: false }));
+            }
+        }
+        if !messages.is_empty() {
             log::debug!("Browse mode: auto-closed on track selection");
         }
+        messages
     }
 
     /// Handle side loop size encoder (sends LoopSize to both decks on one side)
@@ -664,8 +704,6 @@ impl MappingEngine {
                         }
                         debounce.last_deck_load[deck] = Some(now);
                     }
-                    // Auto-close browse mode when loading a track
-                    self.clear_browse_mode();
                     Some(MidiMessage::Deck { deck, action: DeckAction::LoadSelected })
                 } else {
                     None
@@ -724,8 +762,6 @@ impl MappingEngine {
                         }
                     }
                     debounce.last_browser_select = Some(now);
-                    // Auto-close browse mode when selecting in browser
-                    self.clear_browse_mode();
                     Some(MidiMessage::Browser(BrowserAction::Select))
                 } else {
                     None
