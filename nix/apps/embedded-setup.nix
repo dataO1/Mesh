@@ -35,9 +35,20 @@ pkgs.writeShellApplication {
     echo "╚═══════════════════════════════════════════════════════════╝"
     echo ""
 
-    # Check gh auth (supports both stored credentials and GITHUB_TOKEN env var)
-    if ! gh auth status &>/dev/null && [ -z "''${GITHUB_TOKEN:-}" ]; then
-      fail "Not authenticated with GitHub CLI. Run: gh auth login (or set GITHUB_TOKEN)"
+    # Ensure gh has full OAuth credentials (not just a limited GITHUB_TOKEN).
+    # The secrets API requires 'repo' scope, which env tokens often lack.
+    if [ -n "''${GITHUB_TOKEN:-}" ]; then
+      echo "Note: Clearing GITHUB_TOKEN so gh uses OAuth credentials instead."
+      echo "      (env tokens often lack the 'repo' scope needed for secrets)"
+      echo ""
+      unset GITHUB_TOKEN
+    fi
+
+    if ! gh auth status &>/dev/null; then
+      echo "GitHub CLI not authenticated. Starting login..."
+      echo ""
+      gh auth login
+      echo ""
     fi
 
     # Check we're in the repo root
