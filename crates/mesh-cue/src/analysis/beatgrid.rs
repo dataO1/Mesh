@@ -5,16 +5,23 @@
 //!
 //! ## Phase Anchor Algorithm
 //!
-//! Instead of naively using the first detected beat as the grid anchor
-//! (which is unreliable for tracks with ambient intros), we:
+//! The phase anchor determines where the grid starts (the "downbeat offset").
+//! We use a two-stage approach:
 //!
+//! ### Stage 1: Energy-gated circular median (from detected beats)
 //! 1. **Energy gate**: Filter out beats in low-energy regions (intros, breakdowns)
-//! 2. **Circular median**: Compute the consensus phase offset across all
-//!    remaining beats using circular statistics (atan2 of mean sin/cos)
+//! 2. **Circular median**: Compute consensus phase offset using atan2 of mean sin/cos
 //!
-//! This gives a statistically robust phase anchor that represents where
-//! beats actually land across the entire track, not just the first detected event.
+//! ### Stage 2: Onset-weighted phase search (if ODF available)
+//! 1. For each candidate phase offset within one beat period at ODF resolution
+//! 2. Place a hypothetical grid across the entire track
+//! 3. Sum onset detection function values at each grid position
+//! 4. The phase with the highest total onset energy wins
+//!
+//! Stage 2 refines stage 1 by searching within ±half a frame of the circular
+//! median result, using direct rhythmic salience measurement.
 
+use crate::analysis::bpm::OnsetFunctionResult;
 use mesh_core::types::SAMPLE_RATE;
 
 /// Essentia always operates at 44100 Hz — beat ticks are relative to this rate
@@ -33,17 +40,16 @@ const MIN_TICKS_FOR_MEDIAN: usize = 4;
 
 /// Generate a fixed-interval beat grid from detected beat positions
 ///
-/// Uses a circular median phase anchor computed from energy-filtered beat ticks.
-/// This is preferred over using the first detected beat because:
-/// 1. It uses statistical consensus across ALL detected beats
-/// 2. It filters out phantom beats in silent intros/breakdowns
-/// 3. It produces more accurate phase alignment for DJ synchronization
+/// Uses a two-stage phase anchor algorithm:
+/// 1. Energy-gated circular median for initial phase estimate
+/// 2. Onset-weighted phase search for sub-frame refinement (if ODF provided)
 ///
 /// # Arguments
 /// * `bpm` - Detected BPM value
 /// * `beat_ticks` - Raw beat positions in seconds from Essentia
 /// * `samples` - Audio samples at Essentia's rate (44100 Hz) for energy gating
 /// * `duration_samples` - Total track duration in samples (at source rate)
+/// * `onset_function` - Optional onset detection function for phase refinement
 ///
 /// # Returns
 /// Vector of beat positions as sample indices at the system sample rate (48kHz)
@@ -52,12 +58,14 @@ pub fn generate_beat_grid(
     beat_ticks: &[f64],
     samples: &[f32],
     duration_samples: u64,
+    onset_function: Option<&OnsetFunctionResult>,
 ) -> Vec<u64> {
     log::info!(
-        "generate_beat_grid: bpm={:.1}, beat_ticks={}, duration_samples={}",
+        "generate_beat_grid: bpm={:.1}, beat_ticks={}, duration_samples={}, has_odf={}",
         bpm,
         beat_ticks.len(),
-        duration_samples
+        duration_samples,
+        onset_function.is_some()
     );
 
     if beat_ticks.is_empty() || duration_samples == 0 {
@@ -71,7 +79,7 @@ pub fn generate_beat_grid(
 
     // Compute the phase anchor using energy-filtered circular median
     let first_beat_sample = if beat_ticks.len() >= MIN_TICKS_FOR_MEDIAN && !samples.is_empty() {
-        compute_phase_anchor(bpm, beat_ticks, samples)
+        compute_phase_anchor(bpm, beat_ticks, samples, onset_function)
     } else {
         // Fallback: use first tick directly (old behavior)
         let first_beat = beat_ticks[0];
@@ -97,17 +105,28 @@ pub fn generate_beat_grid(
         .collect()
 }
 
-/// Compute the phase anchor using energy-filtered circular median
+/// Compute the phase anchor using energy-filtered circular median + onset refinement
 ///
-/// 1. Compute RMS energy around each tick to filter out silent-region ghosts
-/// 2. Compute each tick's phase offset modulo one beat period
-/// 3. Use circular statistics (atan2) to find the consensus phase
-/// 4. Find the earliest grid-aligned beat position using that phase
-fn compute_phase_anchor(bpm: f64, beat_ticks: &[f64], samples: &[f32]) -> u64 {
+/// Two-stage algorithm:
+/// 1. Energy-gated circular median of beat tick phases (robust initial estimate)
+/// 2. Onset-weighted phase search around that estimate (precise refinement)
+///
+/// Stage 2 searches candidate phases within one beat period at ODF frame resolution.
+/// For each candidate, it places a hypothetical grid across the full track and sums
+/// the ODF values at grid positions. The candidate with the highest cumulative onset
+/// energy becomes the final phase anchor.
+fn compute_phase_anchor(
+    bpm: f64,
+    beat_ticks: &[f64],
+    samples: &[f32],
+    onset_function: Option<&OnsetFunctionResult>,
+) -> u64 {
     let samples_per_beat_output = SAMPLE_RATE as f64 * 60.0 / bpm;
     let num_samples = samples.len();
 
-    // Step 1: Compute RMS energy around each tick
+    // ── Stage 1: Energy-gated circular median ──────────────────────────
+
+    // Step 1a: Compute RMS energy around each tick
     let tick_energies: Vec<(f64, f64)> = beat_ticks
         .iter()
         .map(|&tick_secs| {
@@ -128,7 +147,7 @@ fn compute_phase_anchor(bpm: f64, beat_ticks: &[f64], samples: &[f32]) -> u64 {
         })
         .collect();
 
-    // Step 2: Filter by energy threshold
+    // Step 1b: Filter by energy threshold
     let peak_rms = tick_energies
         .iter()
         .map(|&(_, rms)| rms)
@@ -151,19 +170,15 @@ fn compute_phase_anchor(bpm: f64, beat_ticks: &[f64], samples: &[f32]) -> u64 {
         );
         &active_ticks
     } else {
-        // Not enough active ticks — use all ticks
         log::info!(
             "compute_phase_anchor: only {} ticks pass energy gate, using all {} ticks",
             active_ticks.len(),
             beat_ticks.len()
         );
-        // Can't use active_ticks as a reference to a local, so we need a different approach
-        // We'll handle this by collecting beat_ticks into a vec
         beat_ticks
     };
 
-    // Step 3: Circular median of phase offsets
-    // Each tick's phase = (tick_seconds mod beat_period) / beat_period * 2π
+    // Step 1c: Circular median of phase offsets
     let beat_period_secs = 60.0 / bpm;
 
     let (sin_sum, cos_sum) = ticks_to_use
@@ -176,29 +191,131 @@ fn compute_phase_anchor(bpm: f64, beat_ticks: &[f64], samples: &[f32]) -> u64 {
         .fold((0.0, 0.0), |(s, c), (si, ci)| (s + si, c + ci));
 
     let mean_angle = sin_sum.atan2(cos_sum);
-    // Normalize to [0, 2π)
     let mean_angle = if mean_angle < 0.0 {
         mean_angle + std::f64::consts::TAU
     } else {
         mean_angle
     };
-    let phase_frac = mean_angle / std::f64::consts::TAU;
-    let phase_samples = phase_frac * samples_per_beat_output;
-
-    // Step 4: Find the earliest grid-aligned beat position
-    // The phase tells us the offset within one beat period. We need to find
-    // the first beat position in the track that has this phase.
-    // Start from the phase offset itself (the first beat at or near the start)
-    let first_beat_sample = phase_samples as u64;
+    let circular_phase_frac = mean_angle / std::f64::consts::TAU;
+    let circular_phase_samples = circular_phase_frac * samples_per_beat_output;
 
     log::info!(
-        "compute_phase_anchor: circular mean phase={:.1}° ({:.1}ms), first_beat_sample={}",
-        phase_frac * 360.0,
-        phase_samples / SAMPLE_RATE as f64 * 1000.0,
+        "compute_phase_anchor: Stage 1 circular mean phase={:.1}° ({:.1}ms)",
+        circular_phase_frac * 360.0,
+        circular_phase_samples / SAMPLE_RATE as f64 * 1000.0,
+    );
+
+    // ── Stage 2: Onset-weighted phase search ───────────────────────────
+
+    let first_beat_sample = match onset_function {
+        Some(odf) if !odf.values.is_empty() => {
+            onset_weighted_phase_search(
+                bpm,
+                &odf.values,
+                odf.frame_rate,
+                circular_phase_frac,
+            )
+        }
+        _ => {
+            // No ODF available — use circular median result directly
+            circular_phase_samples as u64
+        }
+    };
+
+    log::info!(
+        "compute_phase_anchor: final first_beat_sample={}",
         first_beat_sample
     );
 
     first_beat_sample
+}
+
+/// Refine the phase offset using onset detection function values
+///
+/// Searches within ±25% of one beat period around the circular median
+/// estimate from Stage 1. For each candidate offset, places a grid across
+/// the track and sums interpolated ODF values at grid positions.
+/// The candidate with the highest cumulative onset energy is chosen.
+///
+/// This is a REFINEMENT — it trusts the circular median as approximately
+/// correct and only fine-tunes within a narrow window.
+fn onset_weighted_phase_search(
+    bpm: f64,
+    odf_values: &[f32],
+    odf_frame_rate: f64,
+    circular_phase_frac: f64,
+) -> u64 {
+    let beat_period_secs = 60.0 / bpm;
+    let frames_per_beat = beat_period_secs * odf_frame_rate;
+    let total_frames = odf_values.len();
+
+    if frames_per_beat <= 0.0 || total_frames == 0 {
+        return 0;
+    }
+
+    // Center of search = circular median phase (in ODF frames)
+    let center_frame = circular_phase_frac * frames_per_beat;
+
+    // Search window: ±25% of one beat period (wrapping around)
+    let search_radius = (frames_per_beat * 0.25).ceil() as i64;
+    let num_frames_per_beat = frames_per_beat.ceil() as i64;
+
+    let mut best_phase_frame: f64 = center_frame;
+    let mut best_score: f64 = f64::NEG_INFINITY;
+    let mut candidates_searched = 0;
+
+    for offset in -search_radius..=search_radius {
+        // Wrap the candidate phase into [0, frames_per_beat)
+        let raw = (center_frame.round() as i64) + offset;
+        let wrapped = ((raw % num_frames_per_beat) + num_frames_per_beat) % num_frames_per_beat;
+        let phase_frame = wrapped as f64;
+
+        // Sum ODF values at all grid positions for this phase
+        let mut score: f64 = 0.0;
+        let mut grid_pos = phase_frame;
+
+        while grid_pos < total_frames as f64 {
+            let frame_lo = grid_pos.floor() as usize;
+            let frame_hi = frame_lo + 1;
+            let frac = grid_pos - frame_lo as f64;
+
+            let val = if frame_hi < total_frames {
+                let lo = odf_values[frame_lo] as f64;
+                let hi = odf_values[frame_hi] as f64;
+                lo + frac * (hi - lo)
+            } else if frame_lo < total_frames {
+                odf_values[frame_lo] as f64
+            } else {
+                0.0
+            };
+
+            score += val;
+            grid_pos += frames_per_beat;
+        }
+
+        if score > best_score {
+            best_score = score;
+            best_phase_frame = phase_frame;
+        }
+        candidates_searched += 1;
+    }
+
+    // Convert best phase from ODF frames to output samples (48kHz)
+    let best_phase_secs = best_phase_frame / odf_frame_rate;
+    let best_phase_samples = best_phase_secs * SAMPLE_RATE as f64;
+
+    log::info!(
+        "onset_weighted_phase_search: center={:.1} frames, best={:.1} frames ({:.1}ms), \
+         score={:.2}, searched {} candidates over {} ODF frames",
+        center_frame,
+        best_phase_frame,
+        best_phase_secs * 1000.0,
+        best_score,
+        candidates_searched,
+        total_frames
+    );
+
+    best_phase_samples as u64
 }
 
 /// Adjust beat grid start position (nudge first beat)
@@ -251,7 +368,7 @@ mod tests {
             }
         }
 
-        let grid = generate_beat_grid(bpm, &beat_ticks, &samples, duration_samples);
+        let grid = generate_beat_grid(bpm, &beat_ticks, &samples, duration_samples, None);
 
         let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
 
@@ -266,7 +383,7 @@ mod tests {
 
     #[test]
     fn test_beat_grid_empty_input() {
-        let grid = generate_beat_grid(120.0, &[], &[], 0);
+        let grid = generate_beat_grid(120.0, &[], &[], 0, None);
         assert!(grid.is_empty());
     }
 
@@ -278,7 +395,7 @@ mod tests {
         let duration_samples = SAMPLE_RATE as u64 * 10;
         let samples = vec![0.5f32; (10.0 * ESSENTIA_SAMPLE_RATE) as usize];
 
-        let grid = generate_beat_grid(bpm, &beat_ticks, &samples, duration_samples);
+        let grid = generate_beat_grid(bpm, &beat_ticks, &samples, duration_samples, None);
 
         // First beat should be at tick[0] converted to 48kHz
         let expected_first = (1.0 * SAMPLE_RATE as f64) as u64;
@@ -313,7 +430,7 @@ mod tests {
         }
 
         let duration_samples = SAMPLE_RATE as u64 * 16;
-        let grid = generate_beat_grid(bpm, &beat_ticks, &samples, duration_samples);
+        let grid = generate_beat_grid(bpm, &beat_ticks, &samples, duration_samples, None);
 
         // The first beat should NOT be at 0 (phantom), it should be near the
         // phase of the real beats (0.1s offset)
@@ -376,7 +493,7 @@ mod tests {
         }
 
         let duration_samples = SAMPLE_RATE as u64 * 12;
-        let grid = generate_beat_grid(bpm, &beat_ticks, &samples, duration_samples);
+        let grid = generate_beat_grid(bpm, &beat_ticks, &samples, duration_samples, None);
 
         // Phase should be near 0 (within ~10ms)
         let first_beat_secs = grid[0] as f64 / SAMPLE_RATE as f64;
@@ -388,6 +505,111 @@ mod tests {
             "Phase should be near 0, got {:.3}s (distance {:.3}s)",
             phase_in_beat,
             phase_distance
+        );
+    }
+
+    #[test]
+    fn test_onset_weighted_phase_refinement() {
+        // Test that the ODF-based phase search refines the circular median
+        // within the ±25% search window.
+        let bpm = 120.0;
+        let beat_period = 0.5; // seconds
+        let odf_frame_rate = 44100.0 / 512.0; // ~86.13 fps
+        let frames_per_beat = beat_period * odf_frame_rate; // ~43.07 frames
+
+        // Create a synthetic ODF with strong peaks at a phase offset of 0.05s
+        // (10% of beat period — well within the ±25% search window around 0.0)
+        let target_phase_secs = 0.05;
+        let target_phase_frame = target_phase_secs * odf_frame_rate; // ~4.3 frames
+
+        let total_frames = (10.0 * odf_frame_rate) as usize; // 10 seconds
+        let mut odf_values = vec![0.0f32; total_frames];
+
+        // Place strong impulses at the target phase positions
+        let mut pos = target_phase_frame;
+        while (pos as usize) < total_frames {
+            let idx = pos as usize;
+            if idx < total_frames {
+                odf_values[idx] = 1.0;
+                if idx > 0 {
+                    odf_values[idx - 1] = 0.3;
+                }
+                if idx + 1 < total_frames {
+                    odf_values[idx + 1] = 0.3;
+                }
+            }
+            pos += frames_per_beat;
+        }
+
+        let odf = OnsetFunctionResult {
+            values: odf_values,
+            frame_rate: odf_frame_rate,
+        };
+
+        // Create beat ticks at phase 0.0s — circular median will be ~0.0
+        // The ODF should refine this to ~0.05s
+        let beat_ticks: Vec<f64> = (0..20)
+            .map(|i| i as f64 * beat_period)
+            .collect();
+
+        // Audio with energy everywhere (so energy gating doesn't filter anything)
+        let audio_len = (10.0 * ESSENTIA_SAMPLE_RATE) as usize;
+        let samples = vec![0.5f32; audio_len];
+        let duration_samples = SAMPLE_RATE as u64 * 10;
+
+        let grid = generate_beat_grid(
+            bpm,
+            &beat_ticks,
+            &samples,
+            duration_samples,
+            Some(&odf),
+        );
+
+        assert!(!grid.is_empty());
+
+        // The grid phase should be near 0.05s (from ODF refinement)
+        let first_beat_secs = grid[0] as f64 / SAMPLE_RATE as f64;
+        let phase_in_beat = first_beat_secs % beat_period;
+        assert!(
+            (phase_in_beat - target_phase_secs).abs() < 0.015,
+            "ODF should refine circular median: expected phase ~{:.3}s, got {:.3}s",
+            target_phase_secs,
+            phase_in_beat
+        );
+    }
+
+    #[test]
+    fn test_onset_search_none_odf_matches_circular_median() {
+        // When no ODF is provided, result should match pure circular median
+        let bpm = 174.0;
+        let beat_period = 60.0 / bpm;
+
+        // Create beats at a specific phase offset (0.05s)
+        let beat_ticks: Vec<f64> = (0..40)
+            .map(|i| 0.05 + i as f64 * beat_period)
+            .collect();
+
+        let audio_len = (16.0 * ESSENTIA_SAMPLE_RATE) as usize;
+        let samples = vec![0.5f32; audio_len]; // uniform energy
+        let duration_samples = SAMPLE_RATE as u64 * 16;
+
+        let grid_no_odf = generate_beat_grid(
+            bpm,
+            &beat_ticks,
+            &samples,
+            duration_samples,
+            None,
+        );
+
+        assert!(!grid_no_odf.is_empty());
+
+        // Phase should be ~0.05s (from the ticks)
+        let first_beat_secs = grid_no_odf[0] as f64 / SAMPLE_RATE as f64;
+        let phase_in_beat = first_beat_secs % beat_period;
+        assert!(
+            (phase_in_beat - 0.05).abs() < 0.01,
+            "Without ODF, should use circular median: expected ~0.050s, got {:.3}s",
+            phase_in_beat
         );
     }
 }

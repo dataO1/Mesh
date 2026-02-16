@@ -15,6 +15,7 @@
 //! 4. Extract real confidence from the multifeature tracker [0, 5.32] → [0, 1]
 
 use anyhow::{Context, Result};
+use essentia::algorithm::rhythm::onset_detection_global::OnsetDetectionGlobal;
 use essentia::algorithm::rhythm::rhythm_extractor_2013::RhythmExtractor2013;
 use essentia::data::GetFromDataContainer;
 use essentia::essentia::Essentia;
@@ -23,6 +24,12 @@ use crate::config::BpmConfig;
 
 /// Maximum confidence value from Essentia's TempoTapMaxAgreement
 const MAX_ESSENTIA_CONFIDENCE: f32 = 5.32;
+
+/// Default hop size for onset detection (matches Essentia's optimization for beat_emphasis)
+const ONSET_HOP_SIZE: i32 = 512;
+
+/// Default frame size for onset detection with beat_emphasis method
+const ONSET_FRAME_SIZE: i32 = 1024;
 
 /// Result of BPM detection
 #[derive(Debug, Clone)]
@@ -33,6 +40,15 @@ pub struct BpmResult {
     pub beat_ticks: Vec<f64>,
     /// Normalized confidence [0.0, 1.0] from Essentia's multifeature tracker
     pub confidence: f32,
+}
+
+/// Onset detection function result
+#[derive(Debug, Clone)]
+pub struct OnsetFunctionResult {
+    /// Frame-wise onset detection function values
+    pub values: Vec<f32>,
+    /// Frame rate of the ODF (sample_rate / hop_size)
+    pub frame_rate: f64,
 }
 
 /// Fit BPM into target range using musical multipliers
@@ -148,6 +164,59 @@ pub fn detect_bpm(samples: &[f32], config: &BpmConfig) -> Result<BpmResult> {
         beat_ticks,
         confidence,
     })
+}
+
+/// Compute onset detection function using Essentia's OnsetDetectionGlobal
+///
+/// Returns a frame-wise onset strength curve that measures how likely each
+/// audio frame contains a rhythmic event. The `beat_emphasis` method weights
+/// by beat strength, making it ideal for finding the phase of drum patterns.
+///
+/// # Arguments
+/// * `samples` - Mono audio samples at 44.1kHz
+///
+/// # Returns
+/// `OnsetFunctionResult` with frame-wise ODF values and the frame rate
+pub fn detect_onset_function(samples: &[f32]) -> Result<OnsetFunctionResult> {
+    log::info!(
+        "Computing onset detection function on {} samples",
+        samples.len()
+    );
+
+    let essentia = Essentia::new();
+
+    let mut onset = essentia
+        .create::<OnsetDetectionGlobal>()
+        .method("beat_emphasis")
+        .context("Failed to set onset method")?
+        .frame_size(ONSET_FRAME_SIZE)
+        .context("Failed to set onset frame_size")?
+        .hop_size(ONSET_HOP_SIZE)
+        .context("Failed to set onset hop_size")?
+        .sample_rate(44100.0_f32)
+        .context("Failed to set onset sample_rate")?
+        .configure()
+        .context("Failed to configure OnsetDetectionGlobal")?;
+
+    let result = onset
+        .compute(samples)
+        .context("OnsetDetectionGlobal computation failed")?;
+
+    let values: Vec<f32> = result
+        .onset_detections()
+        .context("Failed to get onset_detections output")?
+        .get();
+
+    let frame_rate = 44100.0 / ONSET_HOP_SIZE as f64;
+
+    log::info!(
+        "Onset detection complete: {} frames at {:.1} fps (peak={:.4})",
+        values.len(),
+        frame_rate,
+        values.iter().cloned().fold(0.0_f32, f32::max)
+    );
+
+    Ok(OnsetFunctionResult { values, frame_rate })
 }
 
 #[cfg(test)]

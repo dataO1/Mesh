@@ -44,10 +44,29 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   phase anchor. Ticks with RMS energy below 10% of the peak tick energy are
   discarded, preventing phantom beats from pulling the grid off-phase.
 
+- **Onset-weighted phase refinement** — After the circular median provides an
+  initial phase estimate, a second stage searches ±25% of one beat period using
+  the onset detection function (ODF). Each candidate phase is scored by summing
+  interpolated ODF values at all grid positions across the full track. The
+  highest-scoring phase wins, giving sub-frame precision aligned to actual
+  rhythmic events.
+
 - **Real beat detection confidence** — Beat detection now reports actual
   confidence from Essentia's multifeature tracker (TempoTapMaxAgreement,
   normalized from [0, 5.32] to [0, 1]) instead of a hardcoded 0.8 value.
   Low-confidence tracks can be identified for manual review.
+
+### Fixed
+
+- **BPM re-analysis sample rate mismatch** — Re-analysis (Analyze > BPM) was
+  reading collection files at 48 kHz (playback rate) and feeding them to Essentia
+  which expects 44.1 kHz, causing BPM to read ~8 % too slow (e.g. 172 → ~158).
+  Now reads stems at 44.1 kHz via the existing rubato resampler. Import path also
+  gained a defensive resample for non-44.1 kHz source files.
+
+- **LUFS measurement sample rate** — LUFS K-weighting filter was incorrectly
+  using 48 kHz regardless of actual input rate. Now correctly uses 44.1 kHz to
+  match the analysis audio.
 
 ### Added
 

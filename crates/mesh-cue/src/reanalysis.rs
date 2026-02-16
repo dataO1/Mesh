@@ -55,17 +55,25 @@ pub fn reanalyze_track(
     let mut reader = AudioFileReader::open(path)
         .with_context(|| format!("Failed to open file: {:?}", path))?;
 
+    let file_sample_rate = reader.format().sample_rate;
+
+    // Read stems at 44100 Hz for Essentia analysis (Essentia expects 44100 Hz input).
+    // Collection files are typically at 48000 Hz — reading at 44100 triggers rubato
+    // resampling via read_all_stems_to(), giving Essentia correctly-rated audio.
+    const ESSENTIA_RATE: u32 = 44100;
     let stems = reader
-        .read_all_stems()
+        .read_all_stems_to(ESSENTIA_RATE)
         .with_context(|| format!("Failed to read stems from: {:?}", path))?;
 
     // Create mono mix for analysis (sum all stems)
     let mono_samples = create_mono_mix(&stems);
 
     log::info!(
-        "reanalyze_track: Created mono mix with {} samples ({:.1}s)",
+        "reanalyze_track: Created mono mix with {} samples ({:.1}s at {} Hz, file was {} Hz)",
         mono_samples.len(),
-        mono_samples.len() as f64 / SAMPLE_RATE as f64
+        mono_samples.len() as f64 / ESSENTIA_RATE as f64,
+        ESSENTIA_RATE,
+        file_sample_rate,
     );
 
     // Run analysis in subprocess

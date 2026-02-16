@@ -9,7 +9,7 @@ pub mod key;
 pub mod loudness;
 
 pub use beatgrid::generate_beat_grid;
-pub use bpm::{detect_bpm, BpmResult};
+pub use bpm::{detect_bpm, detect_onset_function, BpmResult, OnsetFunctionResult};
 pub use key::detect_key;
 pub use loudness::{
     calculate_gain_compensation, calculate_gain_compensation_clamped, db_to_linear, linear_to_db,
@@ -192,7 +192,8 @@ impl Default for AnalysisResult {
 /// Run full analysis on audio samples
 ///
 /// # Arguments
-/// * `samples` - Mono audio samples at the system sample rate (48kHz)
+/// * `samples` - Mono audio samples at 44100 Hz (Essentia's expected rate).
+///   Callers must resample to 44100 Hz before calling this function.
 /// * `bpm_config` - BPM detection configuration (min/max tempo range)
 ///
 /// # Returns
@@ -201,11 +202,13 @@ pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<
     use crate::features::extract_audio_features;
     use mesh_core::types::SAMPLE_RATE;
 
+    /// Essentia algorithms expect 44100 Hz input
+    const ESSENTIA_RATE: f64 = 44100.0;
+
     log::info!(
-        "analyze_audio: received {} samples ({:.1}s at {}Hz)",
+        "analyze_audio: received {} samples ({:.1}s at 44100 Hz)",
         samples.len(),
-        samples.len() as f64 / SAMPLE_RATE as f64,
-        SAMPLE_RATE
+        samples.len() as f64 / ESSENTIA_RATE,
     );
 
     // Detect BPM, beat positions, and confidence using configured tempo range
@@ -219,11 +222,28 @@ pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<
         bpm_result.confidence
     );
 
+    // Compute onset detection function for phase-optimal grid alignment
+    let onset_function = match detect_onset_function(samples) {
+        Ok(odf) => {
+            log::info!(
+                "analyze_audio: ODF computed ({} frames at {:.1} fps)",
+                odf.values.len(),
+                odf.frame_rate
+            );
+            Some(odf)
+        }
+        Err(e) => {
+            log::warn!("Onset detection failed, grid will use circular median only: {}", e);
+            None
+        }
+    };
+
     // Detect musical key
     let key = detect_key(samples)?;
 
     // Measure integrated LUFS loudness (for automatic gain staging)
-    let lufs = match measure_lufs(samples, SAMPLE_RATE as f32) {
+    // Samples are at 44100 Hz — pass correct rate for K-weighting filter
+    let lufs = match measure_lufs(samples, ESSENTIA_RATE as f32) {
         Ok(value) => Some(value),
         Err(e) => {
             log::warn!("LUFS measurement failed, skipping: {}", e);
@@ -244,12 +264,17 @@ pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<
     };
 
     // Generate fixed beat grid from detected beats, using actual track duration
-    // Audio samples are passed for energy-gated phase anchor computation
+    // Audio samples + ODF are passed for onset-weighted phase anchor computation
+    // Grid positions are at SAMPLE_RATE (48kHz), so duration must also be in 48kHz
+    // Input samples are at Essentia's rate (44100 Hz) — scale up for consistent units
+    let duration_at_system_rate =
+        (samples.len() as f64 * SAMPLE_RATE as f64 / ESSENTIA_RATE) as u64;
     let beat_grid = generate_beat_grid(
         bpm_result.bpm,
         &bpm_result.beat_ticks,
         samples,
-        samples.len() as u64,
+        duration_at_system_rate,
+        onset_function.as_ref(),
     );
 
     log::info!(
@@ -281,7 +306,8 @@ pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<
 /// This is more efficient than full analysis when only updating specific metadata.
 ///
 /// # Arguments
-/// * `samples` - Mono audio samples at the system sample rate (48kHz)
+/// * `samples` - Mono audio samples at 44100 Hz (Essentia's expected rate).
+///   Callers must resample to 44100 Hz before calling this function.
 /// * `analysis_type` - Which analysis to perform
 /// * `bpm_config` - BPM detection configuration (only used if type is Bpm or All)
 ///
@@ -294,26 +320,33 @@ pub fn analyze_partial(
 ) -> anyhow::Result<PartialAnalysisResult> {
     use mesh_core::types::SAMPLE_RATE;
 
+    /// Essentia algorithms expect 44100 Hz input
+    const ESSENTIA_RATE: f64 = 44100.0;
+
     log::info!(
-        "analyze_partial: {} analysis on {} samples ({:.1}s)",
+        "analyze_partial: {} analysis on {} samples ({:.1}s at 44100 Hz)",
         analysis_type.display_name(),
         samples.len(),
-        samples.len() as f64 / SAMPLE_RATE as f64
+        samples.len() as f64 / ESSENTIA_RATE
     );
 
     let mut result = PartialAnalysisResult::default();
 
     match analysis_type {
         AnalysisType::Loudness => {
-            result.lufs = Some(measure_lufs(samples, SAMPLE_RATE as f32)?);
+            result.lufs = Some(measure_lufs(samples, ESSENTIA_RATE as f32)?);
         }
         AnalysisType::Bpm => {
             let bpm_result = detect_bpm(samples, bpm_config)?;
+            let onset_function = detect_onset_function(samples).ok();
+            let duration_at_system_rate =
+                (samples.len() as f64 * SAMPLE_RATE as f64 / ESSENTIA_RATE) as u64;
             let beat_grid = generate_beat_grid(
                 bpm_result.bpm,
                 &bpm_result.beat_ticks,
                 samples,
-                samples.len() as u64,
+                duration_at_system_rate,
+                onset_function.as_ref(),
             );
             result.bpm = Some(bpm_result.bpm);
             result.beat_grid = Some(beat_grid);
@@ -329,16 +362,20 @@ pub fn analyze_partial(
         AnalysisType::All => {
             // Run all analysis
             let bpm_result = detect_bpm(samples, bpm_config)?;
+            let onset_function = detect_onset_function(samples).ok();
+            let duration_at_system_rate =
+                (samples.len() as f64 * SAMPLE_RATE as f64 / ESSENTIA_RATE) as u64;
             let beat_grid = generate_beat_grid(
                 bpm_result.bpm,
                 &bpm_result.beat_ticks,
                 samples,
-                samples.len() as u64,
+                duration_at_system_rate,
+                onset_function.as_ref(),
             );
             result.bpm = Some(bpm_result.bpm);
             result.beat_grid = Some(beat_grid);
             result.key = Some(detect_key(samples)?);
-            result.lufs = match measure_lufs(samples, SAMPLE_RATE as f32) {
+            result.lufs = match measure_lufs(samples, ESSENTIA_RATE as f32) {
                 Ok(v) => Some(v),
                 Err(e) => {
                     log::warn!("LUFS measurement failed: {}", e);

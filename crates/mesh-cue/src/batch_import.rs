@@ -561,6 +561,35 @@ fn process_single_track(
         }
     };
 
+    // Resample mono audio to 44100 Hz if source is at a different rate.
+    // Essentia's algorithms (BPM, key, onset) internally assume 44100 Hz input.
+    let mono_samples = if source_sample_rate != 44100 {
+        log::info!(
+            "process_single_track: Resampling mono analysis audio {} Hz → 44100 Hz ({} samples)",
+            source_sample_rate,
+            mono_samples.len()
+        );
+        match mesh_core::audio_file::resample_mono_audio(&mono_samples, source_sample_rate, 44100) {
+            Ok(resampled) => {
+                log::info!(
+                    "process_single_track: Resampled to {} samples at 44100 Hz",
+                    resampled.len()
+                );
+                resampled
+            }
+            Err(e) => {
+                return TrackImportResult {
+                    base_name,
+                    success: false,
+                    error: Some(format!("Failed to resample for analysis: {}", e)),
+                    output_path: None,
+                };
+            }
+        }
+    } else {
+        mono_samples
+    };
+
     // Analyze audio in isolated subprocess (Essentia is not thread-safe)
     let analysis = match analyze_in_subprocess(mono_samples, config.bpm_config.clone()) {
         Ok(a) => a,
@@ -595,13 +624,14 @@ fn process_single_track(
     let source_duration_samples = buffers.len() as u64;
     let duration_samples = (source_duration_samples as f64 * resample_ratio) as u64;
 
-    // Get first beat position from analysis and scale to target sample rate
-    let source_first_beat = analysis.beat_grid.first().copied().unwrap_or(0);
-    let first_beat = (source_first_beat as f64 * resample_ratio) as u64;
+    // Get first beat position from analysis — already at system sample rate (48kHz)
+    // because generate_beat_grid() outputs positions at SAMPLE_RATE, and we now pass
+    // correctly scaled duration to it. No resample_ratio needed here.
+    let first_beat = analysis.beat_grid.first().copied().unwrap_or(0);
 
     log::info!(
-        "process_single_track: Resampling {} Hz → {} Hz (ratio: {:.4}), duration: {} → {} samples, first_beat: {} → {}",
-        source_sample_rate, SAMPLE_RATE, resample_ratio, source_duration_samples, duration_samples, source_first_beat, first_beat
+        "process_single_track: Resampling {} Hz → {} Hz (ratio: {:.4}), duration: {} → {} samples, first_beat: {}",
+        source_sample_rate, SAMPLE_RATE, resample_ratio, source_duration_samples, duration_samples, first_beat
     );
 
     // Export to temp file first (export handles resampling from source_sample_rate to SAMPLE_RATE)

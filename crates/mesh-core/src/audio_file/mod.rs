@@ -1112,6 +1112,72 @@ fn resample_stereo_buffer(
     Ok(())
 }
 
+/// Resample mono audio using high-quality FFT-based resampling via rubato.
+///
+/// This is the mono equivalent of `resample_stereo_buffer`, used for
+/// resampling analysis audio to Essentia's expected 44100 Hz rate.
+///
+/// Returns `Ok(input.to_vec())` if source_rate == target_rate (no-op).
+pub fn resample_mono_audio(
+    input: &[f32],
+    source_rate: u32,
+    target_rate: u32,
+) -> Result<Vec<f32>, AudioFileError> {
+    if source_rate == target_rate {
+        return Ok(input.to_vec());
+    }
+
+    let input_len = input.len();
+    if input_len == 0 {
+        return Ok(Vec::new());
+    }
+
+    const CHANNELS: usize = 1;
+
+    let mut resampler = FftFixedInOut::<f32>::new(
+        source_rate as usize,
+        target_rate as usize,
+        1024,
+        CHANNELS,
+    )
+    .map_err(|e| AudioFileError::IoError(format!("Mono resampler init failed: {}", e)))?;
+
+    let chunk_size = resampler.input_frames_max();
+    let output_chunk_size = resampler.output_frames_max();
+
+    let ratio = target_rate as f64 / source_rate as f64;
+    let expected_output_len = (input_len as f64 * ratio).ceil() as usize;
+    let mut output = Vec::with_capacity(expected_output_len);
+
+    let mut pos = 0;
+    while pos < input_len {
+        let end = (pos + chunk_size).min(input_len);
+        let frames_in = end - pos;
+
+        // Prepare input chunk (pad with zeros if needed for last chunk)
+        let mut chunk_in = vec![vec![0.0f32; chunk_size]; CHANNELS];
+        chunk_in[0][..frames_in].copy_from_slice(&input[pos..end]);
+
+        let chunk_out = resampler
+            .process(&chunk_in, None)
+            .map_err(|e| AudioFileError::IoError(format!("Mono resampling failed: {}", e)))?;
+
+        let frames_out = if frames_in == chunk_size {
+            output_chunk_size
+        } else {
+            ((frames_in as f64 / chunk_size as f64) * output_chunk_size as f64).ceil() as usize
+        };
+
+        output.extend_from_slice(&chunk_out[0][..frames_out.min(chunk_out[0].len())]);
+        pos += chunk_size;
+    }
+
+    // Trim to expected length (rubato may produce slightly more)
+    output.truncate(expected_output_len);
+
+    Ok(output)
+}
+
 /// WAV/RF64 file reader
 pub struct AudioFileReader {
     reader: BufReader<File>,
