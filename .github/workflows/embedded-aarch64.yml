@@ -11,7 +11,7 @@ name: Embedded aarch64 Build + Cache
 on:
   push:
     tags:
-      - 'v*'
+      - '*'
   workflow_dispatch:
     inputs:
       version:
