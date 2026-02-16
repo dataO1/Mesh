@@ -21,10 +21,10 @@ pkgs.writeShellApplication {
     echo "╚═══════════════════════════════════════════════════════════╝"
     echo ""
 
-    # Check gh auth
-    if ! gh auth status &>/dev/null; then
+    # Check gh auth (supports both stored credentials and GITHUB_TOKEN env var)
+    if ! gh auth status &>/dev/null && [ -z "''${GITHUB_TOKEN:-}" ]; then
       echo "Error: not authenticated with GitHub CLI."
-      echo "Run: gh auth login"
+      echo "Run: gh auth login (or set GITHUB_TOKEN)"
       exit 1
     fi
 
