@@ -29,7 +29,7 @@ let
 
 in pkgs.rustPlatform.buildRustPackage {
   pname = "mesh-player";
-  version = "0.1.0";
+  version = "0.8.3";
   src = rustSrc;
 
   cargoHash = "sha256-kzbsyTReuXC3FMswdhjmkKQ9wM3Spltn0U+O6Q54Ccc=";

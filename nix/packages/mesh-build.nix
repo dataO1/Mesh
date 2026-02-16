@@ -30,7 +30,7 @@ let
 
 in pkgs.rustPlatform.buildRustPackage {
   pname = "mesh";
-  version = "0.1.0";
+  version = "0.8.3";
   src = rustSrc;
 
   # Cargo.lock hash - update this when deps change
