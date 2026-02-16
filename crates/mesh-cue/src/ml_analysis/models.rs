@@ -25,6 +25,10 @@ pub enum MlModelType {
     /// Jamendo mood/theme classification head (~2.7 MB) — experimental only
     /// 56-class sigmoid output over mood/theme tags
     JamendoMood,
+    /// Beat This! small model (~10 MB) — SOTA beat + downbeat tracking
+    /// Input: mel spectrogram [batch, n_frames, 128] at 22050 Hz
+    /// Outputs: beat_activation + downbeat_activation logits per frame (50 fps)
+    BeatThis,
 }
 
 impl MlModelType {
@@ -34,6 +38,7 @@ impl MlModelType {
             // bsdynamic = dynamic batch size ONNX variant (bs64 is TF-only)
             MlModelType::EffNetEmbedding => "discogs-effnet-bsdynamic-1.onnx",
             MlModelType::JamendoMood => "mtg_jamendo_moodtheme-discogs-effnet-1.onnx",
+            MlModelType::BeatThis => "beat_this_small.onnx",
         }
     }
 
@@ -42,6 +47,7 @@ impl MlModelType {
         match self {
             MlModelType::EffNetEmbedding => "https://github.com/dataO1/Mesh/releases/download/models/discogs-effnet-bsdynamic-1.onnx",
             MlModelType::JamendoMood => "https://github.com/dataO1/Mesh/releases/download/models/mtg_jamendo_moodtheme-discogs-effnet-1.onnx",
+            MlModelType::BeatThis => "https://github.com/dataO1/Mesh/releases/download/models/beat_this_small.onnx",
         }
     }
 
@@ -50,6 +56,7 @@ impl MlModelType {
         match self {
             MlModelType::EffNetEmbedding => "EffNet (Genre + Embedding)",
             MlModelType::JamendoMood => "Jamendo Mood/Theme",
+            MlModelType::BeatThis => "Beat This! (Beat Tracking)",
         }
     }
 
@@ -61,6 +68,11 @@ impl MlModelType {
     /// Models only loaded when experimental ML is enabled
     pub fn experimental_models() -> &'static [MlModelType] {
         &[MlModelType::JamendoMood]
+    }
+
+    /// Models needed for advanced beat detection
+    pub fn beat_detection_models() -> &'static [MlModelType] {
+        &[MlModelType::BeatThis]
     }
 }
 
@@ -139,6 +151,14 @@ impl MlModelManager {
             }
         }
 
+        Ok(())
+    }
+
+    /// Ensure Beat This! model is available (for advanced beat detection)
+    pub fn ensure_beat_detection_models(&self) -> Result<(), String> {
+        for &model in MlModelType::beat_detection_models() {
+            self.ensure_model(model, None)?;
+        }
         Ok(())
     }
 

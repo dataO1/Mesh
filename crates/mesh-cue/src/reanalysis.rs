@@ -7,7 +7,8 @@
 use crate::analysis::{
     analyze_partial_in_subprocess, AnalysisType, PartialAnalysisResult, ReanalysisProgress,
 };
-use crate::config::{BpmConfig, LoudnessConfig};
+use crate::config::{BeatDetectionBackend, BpmConfig, LoudnessConfig};
+use crate::ml_analysis::BeatThisAnalyzer;
 use anyhow::{Context, Result};
 use mesh_core::audio_file::AudioFileReader;
 use mesh_core::db::DatabaseService;
@@ -44,6 +45,7 @@ pub fn reanalyze_track(
     bpm_config: &BpmConfig,
     loudness_config: &LoudnessConfig,
     db: Option<&Arc<DatabaseService>>,
+    beat_this: Option<&Arc<Mutex<BeatThisAnalyzer>>>,
 ) -> Result<PartialAnalysisResult> {
     log::info!(
         "reanalyze_track: {} analysis on {:?}",
@@ -76,9 +78,79 @@ pub fn reanalyze_track(
         file_sample_rate,
     );
 
-    // Run analysis in subprocess
-    let result = analyze_partial_in_subprocess(mono_samples, analysis_type, bpm_config.clone())
+    // Run Beat This! BEFORE subprocess when using Advanced backend
+    // (ort is thread-safe; mel spectrogram borrows samples before subprocess takes them)
+    let uses_bpm = matches!(analysis_type, AnalysisType::Bpm | AnalysisType::All);
+    let beat_this_result = if uses_bpm {
+        if let Some(bt_arc) = beat_this {
+            log::info!("reanalyze_track: Running Beat This! for {:?}", path);
+            match crate::ml_analysis::preprocessing::compute_mel_spectrogram_beat_this(
+                &mono_samples,
+                ESSENTIA_RATE as f32,
+            ) {
+                Ok(mel) => match bt_arc.lock() {
+                    Ok(mut analyzer) => match analyzer.detect_beats(&mel) {
+                        Ok(result) => {
+                            log::info!(
+                                "reanalyze_track: Beat This! => {:.1} BPM, {} beats",
+                                result.bpm,
+                                result.beat_times.len()
+                            );
+                            Some(result)
+                        }
+                        Err(e) => {
+                            log::warn!("reanalyze_track: Beat This! inference failed: {}", e);
+                            None
+                        }
+                    },
+                    Err(e) => {
+                        log::error!("reanalyze_track: BeatThisAnalyzer lock poisoned: {}", e);
+                        None
+                    }
+                },
+                Err(e) => {
+                    log::warn!("reanalyze_track: Beat This! mel spectrogram failed: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Capture length before mono_samples is moved into the subprocess
+    let mono_len = mono_samples.len();
+
+    // Run analysis in subprocess (Essentia for key/LUFS, and BPM if not using Beat This!)
+    let mut result = analyze_partial_in_subprocess(mono_samples, analysis_type, bpm_config.clone())
         .with_context(|| format!("Analysis failed for: {:?}", path))?;
+
+    // Override BPM/beat_grid with Beat This! results when available
+    if let Some(ref bt_result) = beat_this_result {
+        result.bpm = Some(bt_result.bpm);
+        // Duration in system samples: last beat time + 2s padding, at 48kHz
+        let duration_from_source = if !bt_result.beat_times.is_empty() {
+            let last_beat = bt_result.beat_times.last().unwrap_or(&0.0);
+            ((last_beat + 2.0) * SAMPLE_RATE as f64) as u64
+        } else {
+            (mono_len as f64 / ESSENTIA_RATE as f64 * SAMPLE_RATE as f64) as u64
+        };
+        let beat_grid = crate::analysis::beatgrid::generate_beat_grid(
+            bt_result.bpm,
+            &bt_result.beat_times,
+            &[], // No raw audio needed — we have direct beat positions from Beat This!
+            duration_from_source,
+            None, // No ODF — Beat This! provides better phase than onset search
+        );
+        result.beat_grid = Some(beat_grid);
+        log::info!(
+            "reanalyze_track: Using Beat This! BPM={:.1}, {} grid beats (overriding Essentia)",
+            bt_result.bpm,
+            result.beat_grid.as_ref().map_or(0, |g| g.len())
+        );
+    }
 
     // Update the database with analysis results
     // WAV files are now audio-only containers - all metadata lives in the database
@@ -222,6 +294,42 @@ pub fn run_batch_reanalysis(
         return;
     }
 
+    // Initialize Beat This! analyzer when using Advanced backend and analysis includes BPM
+    let uses_bpm = matches!(analysis_type, AnalysisType::Bpm | AnalysisType::All);
+    let beat_this_analyzer: Option<Arc<Mutex<BeatThisAnalyzer>>> =
+        if uses_bpm && bpm_config.backend == BeatDetectionBackend::Advanced {
+            match crate::ml_analysis::MlModelManager::new() {
+                Ok(mgr) => {
+                    if let Err(e) = mgr.ensure_beat_detection_models() {
+                        log::warn!("run_batch_reanalysis: Failed to download Beat This! model: {}", e);
+                        None
+                    } else {
+                        let model_dir = mgr
+                            .model_path(crate::ml_analysis::MlModelType::BeatThis)
+                            .parent()
+                            .unwrap_or(Path::new("."))
+                            .to_path_buf();
+                        match BeatThisAnalyzer::new(&model_dir) {
+                            Ok(analyzer) => {
+                                log::info!("run_batch_reanalysis: Beat This! analyzer initialized");
+                                Some(Arc::new(Mutex::new(analyzer)))
+                            }
+                            Err(e) => {
+                                log::warn!("run_batch_reanalysis: Beat This! model not available, falling back to Essentia: {}", e);
+                                None
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("run_batch_reanalysis: Cannot determine model cache dir: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
     // Configure rayon thread pool with user-specified parallelism (same as batch_import)
     let num_workers = parallel_processes.clamp(1, 16) as usize;
     log::info!("run_batch_reanalysis: Using {} parallel workers", num_workers);
@@ -255,7 +363,7 @@ pub fn run_batch_reanalysis(
                 });
 
                 // Re-analyze the track
-                let success = match reanalyze_track(path, analysis_type, &bpm_config, &loudness_config, db.as_ref()) {
+                let success = match reanalyze_track(path, analysis_type, &bpm_config, &loudness_config, db.as_ref(), beat_this_analyzer.as_ref()) {
                     Ok(_) => {
                         let _ = progress_tx.send(ReanalysisProgress::TrackCompleted {
                             track_name,

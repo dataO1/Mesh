@@ -12,7 +12,11 @@ use iced::widget::{button, column, container, progress_bar, row, scrollable, tex
 use iced::{Alignment, Element, Length};
 
 /// Render the import modal content
-pub fn view(state: &ImportState) -> Element<'_, Message> {
+///
+/// `use_advanced_beats`: whether the Beat This! (Advanced) backend is active.
+/// When true, a warning banner is shown during processing so the user knows
+/// they can switch to Simple mode in Settings if analysis is too slow.
+pub fn view(state: &ImportState, use_advanced_beats: bool) -> Element<'_, Message> {
     let title_text = match state.import_mode {
         ImportMode::Stems => "Import Stems",
         ImportMode::MixedAudio => "Import Audio (Auto-Separate)",
@@ -58,7 +62,7 @@ pub fn view(state: &ImportState) -> Element<'_, Message> {
         None => view_scan_results(state),
         Some(ImportPhase::Scanning) => view_scanning(),
         Some(ImportPhase::Processing { current_track, completed, total, start_time }) => {
-            view_processing(current_track, *completed, *total, start_time)
+            view_processing(current_track, *completed, *total, start_time, use_advanced_beats)
         }
         Some(ImportPhase::Complete { duration }) => view_complete(duration, &state.results),
     };
@@ -316,6 +320,7 @@ fn view_processing<'a>(
     completed: usize,
     total: usize,
     start_time: &'a std::time::Instant,
+    use_advanced_beats: bool,
 ) -> Element<'a, Message> {
     let progress = if total > 0 {
         completed as f32 / total as f32
@@ -350,14 +355,28 @@ fn view_processing<'a>(
         .on_press(Message::CancelImport)
         .style(button::danger);
 
-    column![
+    let mut col = column![
         status,
         container(progress_bar(0.0..=1.0, progress)).width(Length::Fill),
         row![eta, Space::new().width(Length::Fill), cancel_btn]
             .align_y(Alignment::Center),
     ]
-    .spacing(10)
-    .into()
+    .spacing(10);
+
+    // Warning banner for Advanced (Beat This!) beat detection
+    if use_advanced_beats {
+        let banner = container(
+            text("Using ML beat detection (Advanced). If analysis is too slow, switch to Simple in Settings.")
+                .size(12)
+        )
+        .padding([6, 10])
+        .width(Length::Fill)
+        .style(container::rounded_box);
+
+        col = col.push(banner);
+    }
+
+    col.into()
 }
 
 /// View when import is complete

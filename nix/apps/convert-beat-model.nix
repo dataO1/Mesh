@@ -65,10 +65,10 @@ let
 
     echo "[1/3] Installing dependencies (PyTorch + beat_this)..."
     ${pythonEnv}/bin/pip install --target "$TEMP_DIR/site-packages" --no-warn-script-location \
-      torch --index-url https://download.pytorch.org/whl/cpu 2>&1 | tail -3
+      torch torchaudio --index-url https://download.pytorch.org/whl/cpu 2>&1 | tail -3
 
     ${pythonEnv}/bin/pip install --target "$TEMP_DIR/site-packages" --no-warn-script-location \
-      "beat_this @ git+https://github.com/CPJKU/beat_this.git" onnx 2>&1 | tail -5
+      "beat_this @ git+https://github.com/CPJKU/beat_this.git" onnx onnxscript 2>&1 | tail -5
 
     export PYTHONPATH="$TEMP_DIR/site-packages:''${PYTHONPATH:-}"
 
@@ -78,52 +78,64 @@ let
 import sys
 import os
 import torch
+import torch.nn as nn
 
 variant = sys.argv[1] if len(sys.argv) > 1 else "small"
 output_path = sys.argv[2] if len(sys.argv) > 2 else f"beat_this_{variant}.onnx"
 
-print(f"Loading Beat This! variant: {variant}")
+# Checkpoint shortname: "small0" for small variant, "final0" for final variant
+checkpoint_name = f"{variant}0"
+print(f"Loading Beat This! variant: {variant} (checkpoint: {checkpoint_name})")
 
-from beat_this.model import BeatThis
+from beat_this.inference import load_model
 
-# Load pretrained model — "small" or "final" (full)
-model = BeatThis.from_pretrained(variant)
+# load_model() handles checkpoint download, hyperparameter extraction, and weight loading
+model = load_model(checkpoint_name, device="cpu")
 model.eval()
 
-# Disable flash attention for ONNX compatibility if the model uses it
-# Beat This! checks for flash_attn availability at runtime
-for module in model.modules():
-    if hasattr(module, 'use_flash_attn'):
-        module.use_flash_attn = False
-    # Also handle any scaled_dot_product_attention flags
-    if hasattr(module, 'flash'):
-        module.flash = False
+# The model returns a dict {"beat": ..., "downbeat": ...}
+# ONNX export requires tuple outputs, so we wrap it
+class BeatThisWrapper(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
 
-# Dummy input: [batch=1, channel=1, n_frames=1500, n_mels=128]
-# 1500 frames = 30 seconds at 50 fps
-dummy_input = torch.randn(1, 1, 1500, 128)
+    def forward(self, x):
+        out = self.model(x)
+        return out["beat"], out["downbeat"]
+
+wrapper = BeatThisWrapper(model)
+wrapper.eval()
+
+# Model input: [batch, time, 128] — 3D tensor
+# The stem layer internally rearranges (b t f -> b f t) and adds the channel dim
+# 1500 frames = 30 seconds at 50 fps (hop=441, sr=22050)
+dummy_input = torch.randn(1, 1500, 128)
 
 print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 print(f"Exporting to: {output_path}")
 
 with torch.no_grad():
     # Verify forward pass works
-    beat_act, downbeat_act = model(dummy_input)
+    beat_act, downbeat_act = wrapper(dummy_input)
     print(f"Forward pass OK — beat: {beat_act.shape}, downbeat: {downbeat_act.shape}")
 
+    # Use dynamo=False for TorchScript-based exporter that produces
+    # a self-contained ONNX file with inline weights (no external .data file)
     torch.onnx.export(
-        model,
+        wrapper,
         dummy_input,
         output_path,
         input_names=["mel_spectrogram"],
         output_names=["beat_activation", "downbeat_activation"],
         dynamic_axes={
-            "mel_spectrogram": {0: "batch", 2: "time"},
+            "mel_spectrogram": {0: "batch", 1: "time"},
             "beat_activation": {0: "batch", 1: "time"},
             "downbeat_activation": {0: "batch", 1: "time"},
         },
         opset_version=17,
         do_constant_folding=True,
+        dynamo=False,
     )
 
 if os.path.exists(output_path):

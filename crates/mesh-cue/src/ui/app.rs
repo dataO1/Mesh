@@ -367,6 +367,7 @@ impl MeshCueApp {
             Message::UpdateSettingsTrackNameFormat(value) => return self.handle_update_settings_track_name_format(value),
             Message::UpdateSettingsGridBars(value) => return self.handle_update_settings_grid_bars(value),
             Message::UpdateSettingsBpmSource(source) => return self.handle_update_settings_bpm_source(source),
+            Message::UpdateSettingsBeatDetection(backend) => return self.handle_update_settings_beat_detection(backend),
             Message::UpdateSettingsSlicerBufferBars(bars) => return self.handle_update_settings_slicer_buffer_bars(bars),
             Message::UpdateSettingsOutputPair(idx) => return self.handle_update_settings_output_pair(idx),
             Message::UpdateSettingsScratchInterpolation(method) => return self.handle_update_settings_scratch_interpolation(method),
@@ -602,7 +603,10 @@ impl MeshCueApp {
         } else if self.import_state.is_open {
             with_modal_overlay(
                 base,
-                super::import_modal::view(&self.import_state),
+                super::import_modal::view(
+                    &self.import_state,
+                    self.domain.config().analysis.bpm.backend == crate::config::BeatDetectionBackend::Advanced,
+                ),
                 Message::CloseImport,
             )
         } else if self.delete_state.is_open {

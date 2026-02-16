@@ -15,8 +15,10 @@ pub mod voice;
 pub mod preprocessing;
 pub mod models;
 pub mod inference;
+pub mod beat_inference;
 
 // Re-export key types
 pub use voice::compute_vocal_presence;
 pub use inference::MlAnalyzer;
+pub use beat_inference::BeatThisAnalyzer;
 pub use models::{MlModelManager, MlModelType};

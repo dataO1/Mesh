@@ -330,7 +330,7 @@ mod tests {
                 bpm: BpmConfig {
                     min_tempo: 160,
                     max_tempo: 190,
-                    source: BpmSource::Drums,
+                    ..Default::default()
                 },
                 loudness: LoudnessConfig::default(),
                 parallel_processes: 4,
