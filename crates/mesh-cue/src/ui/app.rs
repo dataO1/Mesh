@@ -848,12 +848,35 @@ impl MeshCueApp {
             self.reanalysis_state.total_tracks
         );
 
-        Some(super::import_modal::build_status_bar(
+        let bar = super::import_modal::build_status_bar(
             label,
             progress_text,
             progress,
             Message::CancelReanalysis,
-        ))
+        );
+
+        // Show a subtle hint when ML beat detection is active for BPM analysis
+        let uses_bpm = matches!(
+            self.reanalysis_state.analysis_type,
+            Some(crate::analysis::AnalysisType::Bpm) | Some(crate::analysis::AnalysisType::All)
+        );
+        let uses_advanced = self.domain.config().analysis.bpm.backend
+            == crate::config::BeatDetectionBackend::Advanced;
+
+        if uses_bpm && uses_advanced {
+            Some(
+                column![
+                    bar,
+                    text("ML beat detection active — switch to Simple in Settings if too slow")
+                        .size(11)
+                        .color(iced::Color::from_rgb(0.5, 0.5, 0.5)),
+                ]
+                .spacing(2)
+                .into(),
+            )
+        } else {
+            Some(bar)
+        }
     }
 
     /// View header with app title and settings
