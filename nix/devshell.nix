@@ -49,6 +49,9 @@ pkgs.mkShell {
     # Package testing (requires podman on host, see shellHook)
     distrobox
 
+    # GitHub CLI (embedded setup automation, release management)
+    gh
+
     # Python for ONNX model conversion
     pythonEnv
   ]);
@@ -176,33 +179,23 @@ pkgs.mkShell {
     echo "║  See: examples/pd-effects/README.md for full documentation            ║"
     echo "╠═══════════════════════════════════════════════════════════════════════╣"
     echo "║  Embedded (Orange Pi 5 Pro, aarch64):                                ║"
-    echo "║    CI builds SD image + binary cache on tag push (v*)               ║"
-    echo "║    SD image → GitHub Releases (hash-deduplicated)                   ║"
-    echo "║    Binary cache → https://datao1.github.io/Mesh/                    ║"
+    echo "║    nix run .#embedded-flash          # download + flash SD image   ║"
+    echo "║    nix run .#embedded-flash /dev/sdX # flash to specific device    ║"
     echo "║                                                                       ║"
-    echo "║  Flash SD image:                                                     ║"
-    echo "║    gh release list | grep sdimage                                    ║"
-    echo "║    gh release download sdimage-<hash> --dir /tmp                    ║"
-    echo "║    zstdcat /tmp/*.img.zst | sudo dd of=/dev/sdX bs=4M              ║"
-    echo "║                                                                       ║"
-    echo "║  Update device:                                                      ║"
+    echo "║  Update device (from device or via SSH):                             ║"
     echo "║    sudo nixos-rebuild switch \\                                       ║"
     echo "║      --flake github:dataO1/Mesh/v0.9.0#mesh-embedded \\             ║"
     echo "║      --no-write-lock-file                                            ║"
     echo "║                                                                       ║"
-    echo "║  First-time setup (run once before first CI release):                ║"
-    echo "║    1. Generate signing keypair:                                       ║"
-    echo "║       nix-store --generate-binary-cache-key \\                         ║"
-    echo "║         mesh-embedded cache-priv-key.pem cache-pub-key.pem           ║"
-    echo "║    2. Add private key to GitHub Secrets:                              ║"
-    echo "║       gh secret set NIX_CACHE_PRIV_KEY < cache-priv-key.pem          ║"
-    echo "║    3. Add public key to nix/embedded/configuration.nix:              ║"
-    echo "║       Replace REPLACE_WITH_PUBLIC_KEY with: cat cache-pub-key.pem    ║"
-    echo "║    4. Enable GitHub Pages (Settings > Pages > gh-pages branch)       ║"
-    echo "║    5. Push a tag to trigger CI:                                      ║"
-    echo "║       git tag v0.9.0 && git push origin v0.9.0                      ║"
+    echo "║  First-time CI setup (once per repo):                                ║"
+    echo "║    1. nix-store --generate-binary-cache-key \\                        ║"
+    echo "║         mesh-embedded cache-priv-key.pem cache-pub-key.pem          ║"
+    echo "║    2. gh secret set NIX_CACHE_PRIV_KEY < cache-priv-key.pem         ║"
+    echo "║    3. Add public key to nix/embedded/configuration.nix              ║"
+    echo "║    4. Enable GitHub Pages (Settings > Pages > gh-pages branch)      ║"
+    echo "║    5. git tag v0.9.0 && git push origin v0.9.0                     ║"
     echo "║                                                                       ║"
-    echo "║  See: documents/embedded-setup.md for full guide                     ║"
+    echo "║  See: documents/embedded-setup.md                                    ║"
     echo "╚═══════════════════════════════════════════════════════════════════════╝"
     echo ""
   '';

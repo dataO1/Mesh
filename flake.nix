@@ -157,6 +157,11 @@
           nn-tilde = nnTilde;
         };
 
+        # Download and flash NixOS SD image for Orange Pi 5 Pro
+        embeddedFlashApp = import ./nix/apps/embedded-flash.nix {
+          inherit pkgs;
+        };
+
         # =======================================================================
         # Development Shell
         # =======================================================================
@@ -212,6 +217,10 @@
           build-nn-tilde = {
             type = "app";
             program = "${buildNnTildeApp}/bin/build-nn-tilde";
+          };
+          embedded-flash = {
+            type = "app";
+            program = "${embeddedFlashApp}/bin/embedded-flash";
           };
         };
       }
