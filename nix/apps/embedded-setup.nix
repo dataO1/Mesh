@@ -49,8 +49,15 @@ pkgs.writeShellApplication {
     if ! gh auth status &>/dev/null; then
       echo "GitHub CLI not authenticated. Starting browser login..."
       echo ""
-      gh auth login --hostname github.com --git-protocol https --web
+      # --git-protocol https avoids SSH key prompts. The git config write
+      # may fail on read-only filesystems (NixOS/home-manager) — that's fine,
+      # we only need the OAuth token for API calls.
+      gh auth login --hostname github.com --git-protocol https --web || true
       echo ""
+      # Verify auth actually succeeded
+      if ! gh auth status &>/dev/null; then
+        fail "GitHub authentication failed"
+      fi
     fi
 
     # Check we're in the repo root
