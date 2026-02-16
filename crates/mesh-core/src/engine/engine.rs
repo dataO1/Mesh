@@ -216,17 +216,23 @@ impl AudioEngine {
     // Inter-deck phase synchronization
     // ─────────────────────────────────────────────────────────────
 
-    /// Find the master deck (longest playing)
+    /// Find the master deck (longest playing with audible volume)
     ///
-    /// The master is the deck that has been playing the longest (lowest start frame).
-    /// Other decks synchronize their phase to the master when starting or jumping.
+    /// The master is the deck that has been playing the longest (lowest start frame)
+    /// AND has its mixer volume above zero. A faded-out deck should not drive
+    /// phase sync — the audience can't hear it, so syncing to it is wrong.
     ///
-    /// Returns None if no deck is currently playing.
+    /// Returns None if no deck is currently playing at audible volume.
     fn master_deck_id(&self) -> Option<usize> {
         self.deck_play_start
             .iter()
             .enumerate()
             .filter_map(|(id, start)| start.map(|s| (id, s)))
+            .filter(|(id, _)| {
+                self.mixer.channel(*id)
+                    .map(|ch| ch.volume > 0.0)
+                    .unwrap_or(false)
+            })
             .min_by_key(|(_, start)| *start)
             .map(|(id, _)| id)
     }
@@ -1261,6 +1267,11 @@ impl AudioEngine {
                     if let Some(ch) = self.mixer.channel_mut(deck) {
                         ch.volume = volume;
                     }
+                    // Volume change can affect master selection (faded-out decks
+                    // are excluded). Re-evaluate so master switches immediately
+                    // when the current master's fader hits zero, or switches back
+                    // when a faded-out deck is brought back up.
+                    self.sync_master_atomics();
                 }
                 EngineCommand::SetCrossfader { position: _ } => {
                     // TODO: Crossfader not yet implemented in mixer
