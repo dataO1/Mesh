@@ -106,8 +106,14 @@
         # Packages
         # =======================================================================
 
-        # Native Rust build (Linux/NixOS)
+        # Native Rust build (Linux/NixOS) — full (mesh-player + mesh-cue)
         meshBuild = import ./nix/packages/mesh-build.nix {
+          inherit pkgs common;
+          src = ./.;
+        };
+
+        # mesh-player only (for embedded deployment, no mesh-cue/ONNX deps)
+        meshPlayer = import ./nix/packages/mesh-player.nix {
           inherit pkgs common;
           src = ./.;
         };
@@ -185,6 +191,7 @@
         # Export packages
         packages = {
           mesh-build = meshBuild;
+          mesh-player = meshPlayer;
           nn-tilde = nnTilde;
           default = meshBuild;
         };
