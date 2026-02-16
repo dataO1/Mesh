@@ -9,7 +9,7 @@ pub mod key;
 pub mod loudness;
 
 pub use beatgrid::generate_beat_grid;
-pub use bpm::detect_bpm;
+pub use bpm::{detect_bpm, BpmResult};
 pub use key::detect_key;
 pub use loudness::{
     calculate_gain_compensation, calculate_gain_compensation_clamped, db_to_linear, linear_to_db,
@@ -208,14 +208,15 @@ pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<
         SAMPLE_RATE
     );
 
-    // Detect BPM and beat positions using configured tempo range
-    let (bpm, beat_ticks) = detect_bpm(samples, bpm_config)?;
+    // Detect BPM, beat positions, and confidence using configured tempo range
+    let bpm_result = detect_bpm(samples, bpm_config)?;
 
     log::info!(
-        "analyze_audio: Essentia returned {} beat ticks (first: {:.3}s, last: {:.3}s)",
-        beat_ticks.len(),
-        beat_ticks.first().unwrap_or(&0.0),
-        beat_ticks.last().unwrap_or(&0.0)
+        "analyze_audio: Essentia returned {} beat ticks (first: {:.3}s, last: {:.3}s), confidence={:.2}",
+        bpm_result.beat_ticks.len(),
+        bpm_result.beat_ticks.first().unwrap_or(&0.0),
+        bpm_result.beat_ticks.last().unwrap_or(&0.0),
+        bpm_result.confidence
     );
 
     // Detect musical key
@@ -243,7 +244,13 @@ pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<
     };
 
     // Generate fixed beat grid from detected beats, using actual track duration
-    let beat_grid = generate_beat_grid(bpm, &beat_ticks, samples.len() as u64);
+    // Audio samples are passed for energy-gated phase anchor computation
+    let beat_grid = generate_beat_grid(
+        bpm_result.bpm,
+        &bpm_result.beat_ticks,
+        samples,
+        samples.len() as u64,
+    );
 
     log::info!(
         "analyze_audio: Generated {} beats in grid (first: {}, last: {})",
@@ -253,11 +260,11 @@ pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<
     );
 
     Ok(AnalysisResult {
-        bpm,
-        original_bpm: bpm,
+        bpm: bpm_result.bpm,
+        original_bpm: bpm_result.bpm,
         key,
         beat_grid,
-        confidence: 0.8, // TODO: Get from essentia
+        confidence: bpm_result.confidence,
         lufs,
         audio_features,
         mel_spectrogram: None, // Computed in worker thread, not subprocess
@@ -301,9 +308,14 @@ pub fn analyze_partial(
             result.lufs = Some(measure_lufs(samples, SAMPLE_RATE as f32)?);
         }
         AnalysisType::Bpm => {
-            let (bpm, beat_ticks) = detect_bpm(samples, bpm_config)?;
-            let beat_grid = generate_beat_grid(bpm, &beat_ticks, samples.len() as u64);
-            result.bpm = Some(bpm);
+            let bpm_result = detect_bpm(samples, bpm_config)?;
+            let beat_grid = generate_beat_grid(
+                bpm_result.bpm,
+                &bpm_result.beat_ticks,
+                samples,
+                samples.len() as u64,
+            );
+            result.bpm = Some(bpm_result.bpm);
             result.beat_grid = Some(beat_grid);
         }
         AnalysisType::Key => {
@@ -316,9 +328,14 @@ pub fn analyze_partial(
         }
         AnalysisType::All => {
             // Run all analysis
-            let (bpm, beat_ticks) = detect_bpm(samples, bpm_config)?;
-            let beat_grid = generate_beat_grid(bpm, &beat_ticks, samples.len() as u64);
-            result.bpm = Some(bpm);
+            let bpm_result = detect_bpm(samples, bpm_config)?;
+            let beat_grid = generate_beat_grid(
+                bpm_result.bpm,
+                &bpm_result.beat_ticks,
+                samples,
+                samples.len() as u64,
+            );
+            result.bpm = Some(bpm_result.bpm);
             result.beat_grid = Some(beat_grid);
             result.key = Some(detect_key(samples)?);
             result.lufs = match measure_lufs(samples, SAMPLE_RATE as f32) {

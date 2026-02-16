@@ -12,6 +12,7 @@
 //! 1. Run Essentia without tempo constraints (use defaults 40-208)
 //! 2. Use Essentia's direct BPM output (accurate without constraints)
 //! 3. Apply octave/triplet fitting to match user's desired tempo range
+//! 4. Extract real confidence from the multifeature tracker [0, 5.32] → [0, 1]
 
 use anyhow::{Context, Result};
 use essentia::algorithm::rhythm::rhythm_extractor_2013::RhythmExtractor2013;
@@ -19,6 +20,20 @@ use essentia::data::GetFromDataContainer;
 use essentia::essentia::Essentia;
 
 use crate::config::BpmConfig;
+
+/// Maximum confidence value from Essentia's TempoTapMaxAgreement
+const MAX_ESSENTIA_CONFIDENCE: f32 = 5.32;
+
+/// Result of BPM detection
+#[derive(Debug, Clone)]
+pub struct BpmResult {
+    /// BPM fitted to the configured tempo range
+    pub bpm: f64,
+    /// Beat tick positions in seconds (from Essentia)
+    pub beat_ticks: Vec<f64>,
+    /// Normalized confidence [0.0, 1.0] from Essentia's multifeature tracker
+    pub confidence: f32,
+}
 
 /// Fit BPM into target range using musical multipliers
 ///
@@ -53,18 +68,19 @@ pub fn fit_bpm_to_range(detected_bpm: f64, min_tempo: i32, max_tempo: i32) -> f6
     detected_bpm.round()
 }
 
-/// Detect BPM and beat positions from audio samples
+/// Detect BPM, beat positions, and confidence from audio samples
 ///
 /// Uses Essentia's RhythmExtractor2013 algorithm which is optimized
-/// for electronic/dance music and provides both BPM and beat tick positions.
+/// for electronic/dance music and provides BPM, beat tick positions,
+/// and a confidence score from the multifeature beat tracker.
 ///
 /// # Arguments
 /// * `samples` - Mono audio samples at 44.1kHz
 /// * `config` - BPM detection configuration (min/max tempo range for fitting)
 ///
 /// # Returns
-/// Tuple of (BPM value fitted to range, beat positions in seconds)
-pub fn detect_bpm(samples: &[f32], config: &BpmConfig) -> Result<(f64, Vec<f64>)> {
+/// `BpmResult` with fitted BPM, beat ticks in seconds, and normalized confidence
+pub fn detect_bpm(samples: &[f32], config: &BpmConfig) -> Result<BpmResult> {
     log::info!(
         "Starting BPM detection on {} samples (will fit to {}-{} BPM)",
         samples.len(),
@@ -97,7 +113,7 @@ pub fn detect_bpm(samples: &[f32], config: &BpmConfig) -> Result<(f64, Vec<f64>)
         .get();
 
     // Convert to f64 for downstream compatibility
-    let beats: Vec<f64> = ticks.iter().map(|&t| t as f64).collect();
+    let beat_ticks: Vec<f64> = ticks.iter().map(|&t| t as f64).collect();
 
     // Get Essentia's direct BPM output (accurate when run without min/max constraints)
     let raw_bpm: f32 = result
@@ -105,19 +121,33 @@ pub fn detect_bpm(samples: &[f32], config: &BpmConfig) -> Result<(f64, Vec<f64>)
         .context("Failed to get bpm output")?
         .get();
 
+    // Extract real confidence from the multifeature tracker
+    // Range is [0, 5.32] from TempoTapMaxAgreement; normalize to [0, 1]
+    let raw_confidence: f32 = result
+        .confidence()
+        .context("Failed to get confidence output")?
+        .get();
+    let confidence = (raw_confidence / MAX_ESSENTIA_CONFIDENCE).clamp(0.0, 1.0);
+
     // Apply octave/triplet fitting to match user's desired tempo range
     let fitted_bpm = fit_bpm_to_range(raw_bpm as f64, config.min_tempo, config.max_tempo);
 
     log::info!(
-        "BPM detection complete: raw={:.1} -> fitted={} BPM (range {}-{}), {} beats detected",
+        "BPM detection complete: raw={:.1} -> fitted={} BPM (range {}-{}), {} beats, confidence={:.2} (raw={:.2})",
         raw_bpm,
         fitted_bpm as u32,
         config.min_tempo,
         config.max_tempo,
-        beats.len()
+        beat_ticks.len(),
+        confidence,
+        raw_confidence
     );
 
-    Ok((fitted_bpm, beats))
+    Ok(BpmResult {
+        bpm: fitted_bpm,
+        beat_ticks,
+        confidence,
+    })
 }
 
 #[cfg(test)]

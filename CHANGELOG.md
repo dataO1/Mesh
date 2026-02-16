@@ -28,6 +28,35 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 ---
 
+## [0.8.3] - 2026-02-16
+
+### Improved
+
+- **Beat grid phase detection** — Beat grid phase is now computed using circular
+  statistics (atan2 of mean sin/cos) across ALL detected beats, replacing the
+  naive first-tick anchor that was highly sensitive to misdetected beats in
+  intros. This gives a statistically robust consensus phase aligned to where
+  beats actually land across the entire track.
+
+- **Energy-gated intro skip** — Beats detected in silent or low-energy regions
+  (ambient intros, breakdowns) are automatically filtered before computing the
+  phase anchor. Ticks with RMS energy below 10% of the peak tick energy are
+  discarded, preventing phantom beats from pulling the grid off-phase.
+
+- **Real beat detection confidence** — Beat detection now reports actual
+  confidence from Essentia's multifeature tracker (TempoTapMaxAgreement,
+  normalized from [0, 5.32] to [0, 1]) instead of a hardcoded 0.8 value.
+  Low-confidence tracks can be identified for manual review.
+
+### Added
+
+- **Beat This! research document** (`documents/beat-this-research.md`) —
+  Comprehensive integration plan for Beat This! (ISMIR 2024, CPJKU) as a future
+  Phase 3 upgrade. Documents the small variant (~2M params, ~8 MB ONNX, Beat
+  F1=88.8) suitable for CPU-only inference via the existing `ort` pipeline.
+
+---
+
 ## [0.8.2] - 2026-02-16
 
 ### Added
