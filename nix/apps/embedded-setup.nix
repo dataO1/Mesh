@@ -37,6 +37,8 @@ pkgs.writeShellApplication {
 
     # Ensure gh has full OAuth credentials (not just a limited GITHUB_TOKEN).
     # The secrets API requires 'repo' scope, which env tokens often lack.
+    # Note: gh auth login always requests repo + read:org + gist as minimum
+    # scopes (hardcoded in the CLI OAuth app). This cannot be reduced.
     if [ -n "''${GITHUB_TOKEN:-}" ]; then
       echo "Note: Clearing GITHUB_TOKEN so gh uses OAuth credentials instead."
       echo "      (env tokens often lack the 'repo' scope needed for secrets)"
@@ -47,7 +49,7 @@ pkgs.writeShellApplication {
     if ! gh auth status &>/dev/null; then
       echo "GitHub CLI not authenticated. Starting browser login..."
       echo ""
-      gh auth login --hostname github.com --git-protocol https --web --scopes repo,workflow
+      gh auth login --hostname github.com --git-protocol https --web
       echo ""
     fi
 
