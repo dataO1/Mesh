@@ -151,6 +151,11 @@
           inherit pkgs;
         };
 
+        # Beat This! model conversion (PyTorch → ONNX)
+        convertBeatModelApp = import ./nix/apps/convert-beat-model.nix {
+          inherit pkgs;
+        };
+
         # Build nn~ Pure Data external for neural audio effects
         buildNnTildeApp = import ./nix/apps/build-nn-tilde.nix {
           inherit pkgs;
@@ -218,6 +223,10 @@
           convert-ml-model = {
             type = "app";
             program = "${convertMlModelApp}/bin/convert-ml-model";
+          };
+          convert-beat-model = {
+            type = "app";
+            program = "${convertBeatModelApp}/bin/convert-beat-model";
           };
           build-nn-tilde = {
             type = "app";

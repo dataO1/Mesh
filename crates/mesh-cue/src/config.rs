@@ -158,6 +158,31 @@ impl AnalysisConfig {
 /// Note: Use `calculate_gain_db_direct(lufs)` for non-optional gain calculation.
 pub type LoudnessConfig = CoreLoudnessConfig;
 
+/// Beat detection backend
+///
+/// Controls which algorithm is used for BPM detection and beat grid generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BeatDetectionBackend {
+    /// Essentia RhythmExtractor2013 + onset-weighted phase refinement
+    /// Fast, no model download required, but susceptible to half-tempo on DnB
+    Simple,
+    /// Beat This! ONNX model (CPJKU, ISMIR 2024)
+    /// SOTA accuracy, built-in downbeat detection, no DBN octave errors
+    /// Downloads ~8 MB model on first use
+    #[default]
+    Advanced,
+}
+
+impl std::fmt::Display for BeatDetectionBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BeatDetectionBackend::Simple => write!(f, "Simple"),
+            BeatDetectionBackend::Advanced => write!(f, "Advanced"),
+        }
+    }
+}
+
 /// Source audio for BPM detection
 ///
 /// Determines which audio is used for tempo analysis.
@@ -196,6 +221,8 @@ pub struct BpmConfig {
     pub max_tempo: i32,
     /// Which audio source to use for BPM detection
     pub source: BpmSource,
+    /// Which beat detection algorithm to use
+    pub backend: BeatDetectionBackend,
 }
 
 impl Default for BpmConfig {
@@ -204,6 +231,7 @@ impl Default for BpmConfig {
             min_tempo: 40,
             max_tempo: 208,
             source: BpmSource::default(),
+            backend: BeatDetectionBackend::default(),
         }
     }
 }
@@ -226,7 +254,7 @@ impl BpmConfig {
         let mut config = Self {
             min_tempo: min,
             max_tempo: max,
-            source: BpmSource::default(),
+            ..Default::default()
         };
         config.validate();
         config
@@ -277,7 +305,7 @@ mod tests {
         let mut bpm = BpmConfig {
             min_tempo: 30, // Below minimum
             max_tempo: 300, // Above maximum
-            source: BpmSource::default(),
+            ..Default::default()
         };
         bpm.validate();
         assert_eq!(bpm.min_tempo, 40);
@@ -289,7 +317,7 @@ mod tests {
         let mut bpm = BpmConfig {
             min_tempo: 180,
             max_tempo: 100, // Less than min
-            source: BpmSource::default(),
+            ..Default::default()
         };
         bpm.validate();
         assert!(bpm.max_tempo > bpm.min_tempo);
