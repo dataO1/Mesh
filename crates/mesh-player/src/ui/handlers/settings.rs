@@ -140,6 +140,12 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
                 app.settings.draft_waveform_layout.is_inverted()
             );
 
+            // Apply grid density and zoom level to all loaded decks
+            for deck in &mut app.player_canvas_state.decks {
+                deck.overview.set_grid_bars(app.settings.draft_grid_bars);
+                deck.zoomed.set_zoom(app.settings.draft_zoom_bars);
+            }
+
             // Apply local collection visibility change immediately
             app.collection_browser.set_show_local_collection(
                 app.settings.draft_show_local_collection

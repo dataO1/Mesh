@@ -53,6 +53,14 @@ pub fn handle_track_loaded(app: &mut MeshApp, msg: TrackLoadedMsg) -> Task<Messa
             app.player_canvas_state.decks[deck_idx].overview = result.overview_state;
             app.player_canvas_state.decks[deck_idx].zoomed = result.zoomed_state;
 
+            // Apply user's display config (loader has no access to config)
+            app.player_canvas_state.decks[deck_idx]
+                .overview
+                .set_grid_bars(app.config.display.grid_bars);
+            app.player_canvas_state.decks[deck_idx]
+                .zoomed
+                .set_zoom(app.config.display.default_zoom_bars);
+
             // Set track info on player canvas state (for header display)
             app.player_canvas_state.set_track_name(deck_idx, filename.clone());
             app.player_canvas_state.set_track_key(
