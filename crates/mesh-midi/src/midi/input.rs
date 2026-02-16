@@ -4,8 +4,9 @@
 //! and sends processed messages to the iced app via flume channel.
 
 use crate::config::MidiControlConfig;
+use crate::direct_dispatch::DirectDispatch;
 use crate::mapping::MappingEngine;
-use crate::messages::MidiMessage;
+use crate::messages::{MidiEvent, MidiMessage};
 use crate::shared_state::SharedState;
 use crate::types::{ControlAddress, MidiAddress};
 use super::connection::MidiConnectionError;
@@ -152,7 +153,7 @@ fn midi_event_to_address(event: &MidiInputEvent) -> ControlAddress {
 
 /// Callback data passed to midir
 struct CallbackData {
-    message_tx: Sender<MidiMessage>,
+    message_tx: Sender<MidiEvent>,
     /// Optional raw event sender for learn mode
     raw_event_tx: Option<Sender<MidiInputEvent>>,
     mapping_engine: Arc<MappingEngine>,
@@ -162,6 +163,8 @@ struct CallbackData {
     toggle_controls: Vec<(ControlAddress, usize)>,
     /// Shared state for shift/layer (shared with mapping engine and app)
     shared_state: Arc<SharedState>,
+    /// Optional direct dispatch to audio engine (bypasses UI tick for timing-critical actions)
+    direct_dispatch: Option<Arc<dyn DirectDispatch>>,
 }
 
 /// MIDI input handler
@@ -182,7 +185,7 @@ impl MidiInputHandler {
     /// This is the preferred way to create a MidiInputHandler.
     pub fn connect(
         port_match: &str,
-        message_tx: Sender<MidiMessage>,
+        message_tx: Sender<MidiEvent>,
         mapping_engine: Arc<MappingEngine>,
         shared_state: Arc<SharedState>,
         shift_buttons: Vec<(ControlAddress, usize)>,
@@ -190,7 +193,7 @@ impl MidiInputHandler {
     ) -> Result<Self, MidiConnectionError> {
         Self::connect_with_raw_events(
             port_match, message_tx, mapping_engine, shared_state,
-            shift_buttons, toggle_controls, false,
+            shift_buttons, toggle_controls, false, None,
         )
     }
 
@@ -200,12 +203,13 @@ impl MidiInputHandler {
     /// that can be read via `drain_raw_events()`. This is used for MIDI learn mode.
     pub fn connect_with_raw_events(
         port_match: &str,
-        message_tx: Sender<MidiMessage>,
+        message_tx: Sender<MidiEvent>,
         mapping_engine: Arc<MappingEngine>,
         shared_state: Arc<SharedState>,
         shift_buttons: Vec<(ControlAddress, usize)>,
         toggle_controls: Vec<(ControlAddress, usize)>,
         capture_raw: bool,
+        direct_dispatch: Option<Arc<dyn DirectDispatch>>,
     ) -> Result<Self, MidiConnectionError> {
         let (midi_in, port) = super::connection::MidiConnection::find_input_port(port_match)?;
 
@@ -224,6 +228,7 @@ impl MidiInputHandler {
             shift_buttons,
             toggle_controls,
             shared_state: shared_state.clone(),
+            direct_dispatch,
         };
 
         let connection = midi_in
@@ -278,9 +283,12 @@ impl MidiInputHandler {
                 );
 
                 // Send per-deck shift state change to app
-                let _ = callback_data.message_tx.try_send(MidiMessage::ShiftChanged {
-                    held,
-                    physical_deck: *physical_deck,
+                let _ = callback_data.message_tx.try_send(MidiEvent {
+                    message: MidiMessage::ShiftChanged {
+                        held,
+                        physical_deck: *physical_deck,
+                    },
+                    engine_dispatched: false,
                 });
                 return;
             }
@@ -296,8 +304,11 @@ impl MidiInputHandler {
                         physical_deck
                     );
 
-                    let _ = callback_data.message_tx.try_send(MidiMessage::LayerToggle {
-                        physical_deck: *physical_deck,
+                    let _ = callback_data.message_tx.try_send(MidiEvent {
+                        message: MidiMessage::LayerToggle {
+                            physical_deck: *physical_deck,
+                        },
+                        engine_dispatched: false,
                     });
                 }
                 return;
@@ -312,7 +323,19 @@ impl MidiInputHandler {
         } else {
             for message in &messages {
                 log::debug!("[MIDI IN] -> {:?}", message);
-                if callback_data.message_tx.try_send(message.clone()).is_err() {
+
+                // Try to dispatch timing-critical deck actions directly to the engine
+                let dispatched = callback_data.direct_dispatch.as_ref()
+                    .and_then(|d| match message {
+                        MidiMessage::Deck { deck, action } => Some(d.dispatch(*deck, action)),
+                        _ => None,
+                    })
+                    .unwrap_or(false);
+
+                if callback_data.message_tx.try_send(MidiEvent {
+                    message: message.clone(),
+                    engine_dispatched: dispatched,
+                }).is_err() {
                     log::warn!("MIDI: Message channel full, dropping message");
                 }
             }

@@ -3,6 +3,20 @@
 //! These types are sent from the MIDI input handler to the iced app
 //! via the flume channel and subscription.
 
+/// Wrapper that carries a MIDI message plus whether it was already dispatched
+/// to the audio engine directly (bypassing the iced tick loop).
+///
+/// When `engine_dispatched` is true, the UI handler should still update visual
+/// state (button indicators, etc.) but must NOT send the duplicate engine command.
+#[derive(Debug, Clone)]
+pub struct MidiEvent {
+    /// The actual message
+    pub message: MidiMessage,
+    /// Whether a timing-critical command was already sent to the engine
+    /// via the direct dispatch path
+    pub engine_dispatched: bool,
+}
+
 /// Top-level MIDI message for iced app
 #[derive(Debug, Clone)]
 pub enum MidiMessage {

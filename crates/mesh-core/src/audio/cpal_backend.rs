@@ -45,6 +45,7 @@
 //! ```
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{BufferSize as CpalBufferSize, SampleFormat, Stream, StreamConfig};
@@ -154,16 +155,24 @@ fn start_master_only(
     let linked_stem_atomics = engine.linked_stem_atomics();
     let linked_stem_receiver = engine.linked_stem_result_receiver();
     let clip_indicator = engine.clip_indicator();
+    let output_latency_samples = engine.output_latency_samples();
+    let internal_latency_samples = engine.internal_latency_samples();
 
     // Create command channel
     let (command_tx, command_rx) = command_channel();
 
+    // Create direct command channel for timing-critical MIDI commands
+    let (direct_tx, direct_rx) = rtrb::RingBuffer::<EngineCommand>::new(64);
+
     // Create the audio callback state (lock-free triple buffer approach)
-    let callback_state = AudioCallbackState::new(engine, command_rx, OutputMode::MasterOnly);
+    let callback_state = AudioCallbackState::new(engine, command_rx, direct_rx, OutputMode::MasterOnly);
     let callback_state = Arc::new(std::sync::Mutex::new(callback_state));
 
-    // Build the stream
-    let stream = build_output_stream(&device, &stream_config, callback_state)?;
+    // Build the stream (pass output latency atomic for real-time measurement)
+    let stream = build_output_stream(
+        &device, &stream_config, callback_state,
+        output_latency_samples.clone(), sample_rate,
+    )?;
     stream
         .play()
         .map_err(|e| AudioError::StreamPlayError(e.to_string()))?;
@@ -189,6 +198,9 @@ fn start_master_only(
         sample_rate,
         buffer_size,
         latency_ms,
+        output_latency_samples,
+        internal_latency_samples,
+        direct_command_producer: direct_tx,
     })
 }
 
@@ -272,9 +284,14 @@ fn start_master_and_cue(
     let linked_stem_atomics = engine.linked_stem_atomics();
     let linked_stem_receiver = engine.linked_stem_result_receiver();
     let clip_indicator = engine.clip_indicator();
+    let output_latency_samples = engine.output_latency_samples();
+    let internal_latency_samples = engine.internal_latency_samples();
 
     // Create command channel
     let (command_tx, command_rx) = command_channel();
+
+    // Create direct command channel for timing-critical MIDI commands
+    let (direct_tx, direct_rx) = rtrb::RingBuffer::<EngineCommand>::new(64);
 
     // Create lock-free ring buffer for cue samples
     // Capacity: 4x buffer size to handle timing jitter between streams
@@ -287,15 +304,17 @@ fn start_master_and_cue(
     );
 
     // Create callback state for master stream (owns the engine)
-    let callback_state = AudioCallbackState::new(engine, command_rx, OutputMode::MasterAndCue);
+    let callback_state = AudioCallbackState::new(engine, command_rx, direct_rx, OutputMode::MasterAndCue);
     let callback_state = Arc::new(std::sync::Mutex::new(callback_state));
 
-    // Build master stream with cue producer
+    // Build master stream with cue producer (pass output latency atomic for measurement)
     let master_stream = build_master_stream_dual(
         &master_device,
         &master_stream_config,
         callback_state,
         cue_producer,
+        output_latency_samples.clone(),
+        sample_rate,
     )?;
 
     // Build cue stream with cue consumer (lock-free, no shared state)
@@ -330,6 +349,9 @@ fn start_master_and_cue(
         sample_rate,
         buffer_size,
         latency_ms,
+        output_latency_samples,
+        internal_latency_samples,
+        direct_command_producer: direct_tx,
     })
 }
 
@@ -342,6 +364,8 @@ struct AudioCallbackState {
     engine: AudioEngine,
     /// Command receiver from UI
     command_rx: rtrb::Consumer<EngineCommand>,
+    /// Direct command receiver for timing-critical MIDI commands
+    direct_command_rx: rtrb::Consumer<EngineCommand>,
     /// Pre-allocated master buffer
     master_buffer: StereoBuffer,
     /// Pre-allocated cue buffer
@@ -352,11 +376,13 @@ impl AudioCallbackState {
     fn new(
         engine: AudioEngine,
         command_rx: rtrb::Consumer<EngineCommand>,
+        direct_command_rx: rtrb::Consumer<EngineCommand>,
         _output_mode: OutputMode,
     ) -> Self {
         Self {
             engine,
             command_rx,
+            direct_command_rx,
             master_buffer: StereoBuffer::silence(MAX_BUFFER_SIZE),
             cue_buffer: StereoBuffer::silence(MAX_BUFFER_SIZE),
         }
@@ -370,6 +396,8 @@ impl AudioCallbackState {
 
         // Process commands from UI (lock-free)
         self.engine.process_commands(&mut self.command_rx);
+        // Process direct MIDI commands (timing-critical, bypasses iced tick)
+        self.engine.process_commands(&mut self.direct_command_rx);
 
         // Process audio through the engine
         self.engine
@@ -489,13 +517,22 @@ fn build_output_stream(
     device: &cpal::Device,
     config: &StreamConfig,
     state: Arc<std::sync::Mutex<AudioCallbackState>>,
+    output_latency_arc: Arc<AtomicU64>,
+    stream_sample_rate: u32,
 ) -> AudioResult<Stream> {
     let channels = config.channels as usize;
 
     let stream = device
         .build_output_stream(
             config,
-            move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
+            move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
+                // Measure real output pipeline latency from CPAL timestamps
+                let ts = info.timestamp();
+                if let Some(d) = ts.playback.duration_since(&ts.callback) {
+                    let samples = (d.as_secs_f64() * stream_sample_rate as f64) as u64;
+                    output_latency_arc.store(samples, Ordering::Relaxed);
+                }
+
                 let mut state = state.lock().unwrap();
                 let n_frames = data.len() / channels;
 
@@ -590,13 +627,22 @@ fn build_master_stream_dual(
     config: &StreamConfig,
     state: Arc<std::sync::Mutex<AudioCallbackState>>,
     mut cue_producer: rtrb::Producer<StereoSample>,
+    output_latency_arc: Arc<AtomicU64>,
+    stream_sample_rate: u32,
 ) -> AudioResult<Stream> {
     let channels = config.channels as usize;
 
     let stream = device
         .build_output_stream(
             config,
-            move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
+            move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
+                // Measure real output pipeline latency from CPAL timestamps
+                let ts = info.timestamp();
+                if let Some(d) = ts.playback.duration_since(&ts.callback) {
+                    let samples = (d.as_secs_f64() * stream_sample_rate as f64) as u64;
+                    output_latency_arc.store(samples, Ordering::Relaxed);
+                }
+
                 let mut state = state.lock().unwrap();
                 let n_frames = data.len() / channels;
 

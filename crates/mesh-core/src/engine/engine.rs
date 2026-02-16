@@ -1,6 +1,7 @@
 //! Main audio engine - ties together decks, mixer, and time-stretching
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use crate::config::LoudnessConfig;
 use crate::effect::Effect;
 use crate::db::DatabaseService;
@@ -75,6 +76,16 @@ pub struct AudioEngine {
     // ─────────────────────────────────────────────────────────────
     /// Background loader for linked stems (auto-loads from track metadata)
     linked_stem_loader: LinkedStemLoader,
+
+    // ─────────────────────────────────────────────────────────────
+    // Output latency measurement (shared with UI via Arc)
+    // ─────────────────────────────────────────────────────────────
+    /// Real output pipeline latency in samples, measured from CPAL/JACK timestamps.
+    /// Updated by the audio callback; read by UI for display and phase sync.
+    output_latency_samples: Arc<AtomicU64>,
+    /// Internal effect chain latency in samples (global max across all stems/decks).
+    /// Updated when effect chains change; read by UI for display.
+    internal_latency_samples: Arc<AtomicU32>,
 }
 
 impl AudioEngine {
@@ -117,6 +128,9 @@ impl AudioEngine {
             loudness_config: LoudnessConfig::default(),
             // Linked stem loader (auto-loads stems from track metadata)
             linked_stem_loader: LinkedStemLoader::new(output_sample_rate, db_service),
+            // Output latency measurement (shared with UI)
+            output_latency_samples: Arc::new(AtomicU64::new(0)),
+            internal_latency_samples: Arc::new(AtomicU32::new(0)),
         }
     }
 
@@ -261,8 +275,14 @@ impl AudioEngine {
             return target_position;
         }
 
-        // Calculate master's phase offset from its beat grid
-        let master_pos = master.position() as usize;
+        // Calculate master's phase offset from its beat grid.
+        // Compensate for output pipeline latency: the user hears the master at
+        // (position - output_latency), not at the engine's internal position.
+        // Without this, the slave lands one beat late because it syncs to the
+        // engine position which is ahead of what the listener hears.
+        let raw_master_pos = master.position() as usize;
+        let output_latency = self.output_latency_samples.load(Ordering::Relaxed) as usize;
+        let master_pos = raw_master_pos.saturating_sub(output_latency);
         let master_nearest_beat = master.snap_to_beat(master_pos);
         let phase_offset = master_pos as i64 - master_nearest_beat as i64;
 
@@ -483,6 +503,16 @@ impl AudioEngine {
         self.latency_compensator.global_latency()
     }
 
+    /// Get the shared output latency atomic (for passing to audio callbacks and UI)
+    pub fn output_latency_samples(&self) -> Arc<AtomicU64> {
+        self.output_latency_samples.clone()
+    }
+
+    /// Get the shared internal latency atomic (for UI display)
+    pub fn internal_latency_samples(&self) -> Arc<AtomicU32> {
+        self.internal_latency_samples.clone()
+    }
+
     /// Set whether phase sync is enabled
     ///
     /// When enabled, starting playback or hitting hot cues will automatically
@@ -547,6 +577,12 @@ impl AudioEngine {
 
                 self.latency_compensator.set_stem_latency(deck, stem_idx, total_latency);
             }
+
+            // Update the shared internal latency atomic with the global max
+            self.internal_latency_samples.store(
+                self.latency_compensator.global_latency(),
+                Ordering::Relaxed,
+            );
         }
     }
 

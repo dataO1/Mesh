@@ -22,6 +22,7 @@
 mod config;
 mod deck_target;
 mod detection;
+mod direct_dispatch;
 pub mod feedback;
 pub mod hid;
 mod mapping;
@@ -49,7 +50,8 @@ pub use midi::output::MidiOutputHandler;
 pub use detection::{MidiSample, MidiSampleBuffer};
 pub use deck_target::{DeckTargetMode, DeckTargetState, LayerSelection};
 pub use mapping::{ActionRegistry, MappingEngine};
-pub use messages::{DeckAction, GlobalAction, MidiMessage, MixerAction, BrowserAction};
+pub use direct_dispatch::DirectDispatch;
+pub use messages::{DeckAction, GlobalAction, MidiMessage, MidiEvent, MixerAction, BrowserAction};
 pub use normalize::{normalize_cc_value, ControlRange};
 pub use shared_state::{SharedState, SharedMidiState};
 
@@ -66,6 +68,7 @@ use flume::{Receiver, Sender};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
+
 
 /// Format loop length in beats for a 2-digit 7-segment display
 fn format_loop_display(beats: f32) -> String {
@@ -145,9 +148,9 @@ pub struct ControllerManager {
     /// Connected HID devices keyed by device path
     hid_devices: HashMap<String, ConnectedHidDevice>,
     /// Receiver for parsed messages (shared by all MIDI devices)
-    message_rx: Receiver<MidiMessage>,
+    message_rx: Receiver<MidiEvent>,
     /// Sender for messages (passed to all MIDI handlers)
-    message_tx: Sender<MidiMessage>,
+    message_tx: Sender<MidiEvent>,
     /// Receiver for raw HID control events (for learn mode)
     hid_event_rx: Option<Receiver<ControlEvent>>,
     /// Sender for HID control events (passed to I/O threads)
@@ -158,6 +161,8 @@ pub struct ControllerManager {
     pending_hid_reconnect: Vec<PendingHidReconnect>,
     /// Last time HID health was checked (throttled to every 2s)
     last_hid_health_check: Instant,
+    /// Optional direct dispatch to audio engine (shared with MIDI callbacks)
+    direct_dispatch: Option<Arc<dyn DirectDispatch>>,
 }
 
 /// Backwards-compatible type alias
@@ -246,6 +251,7 @@ impl ControllerManager {
             feedback_worker: None,
             pending_hid_reconnect: Vec::new(),
             last_hid_health_check: Instant::now(),
+            direct_dispatch: None,
         };
 
         // Try to connect to all matching devices
@@ -278,6 +284,7 @@ impl ControllerManager {
             feedback_worker: None,
             pending_hid_reconnect: Vec::new(),
             last_hid_health_check: Instant::now(),
+            direct_dispatch: None,
         };
 
         // Connect to ALL available MIDI ports
@@ -347,6 +354,7 @@ impl ControllerManager {
                 vec![], // No shift buttons in learn mode
                 vec![], // No toggle controls in learn mode
                 true,   // Always capture raw in learn mode
+                None,   // No direct dispatch in learn mode
             ) {
                 Ok(input_handler) => {
                     log::info!("MIDI Learn: Connected to '{}'", port_name);
@@ -449,6 +457,7 @@ impl ControllerManager {
                     shift_buttons,
                     toggle_controls,
                     capture_raw,
+                    self.direct_dispatch.clone(),
                 ) {
                     Ok(input_handler) => {
                         log::info!("MIDI: Connected '{}' to port '{}'", profile.name, port_name);
@@ -661,13 +670,22 @@ impl ControllerManager {
     }
 
     /// Get the message receiver for manual polling
-    pub fn message_receiver(&self) -> Receiver<MidiMessage> {
+    pub fn message_receiver(&self) -> Receiver<MidiEvent> {
         self.message_rx.clone()
     }
 
     /// Try to receive a pending message (non-blocking)
-    pub fn try_recv(&self) -> Option<MidiMessage> {
+    pub fn try_recv(&self) -> Option<MidiEvent> {
         self.message_rx.try_recv().ok()
+    }
+
+    /// Set the direct dispatch handler for timing-critical MIDI commands
+    ///
+    /// When set, timing-critical deck actions (hot cue, play, beat jump) will be
+    /// dispatched directly to the audio engine from the MIDI callback thread,
+    /// bypassing the ~16ms iced tick loop.
+    pub fn set_direct_dispatch(&mut self, dispatch: Arc<dyn DirectDispatch>) {
+        self.direct_dispatch = Some(dispatch);
     }
 
     /// Drain all pending messages (MIDI + HID mapped events)
@@ -675,7 +693,7 @@ impl ControllerManager {
     /// MIDI messages arrive pre-processed from the input callback.
     /// HID events are processed here: shift/layer detection → mapping engine.
     /// Also checks HID device health every 2 seconds and attempts reconnection.
-    pub fn drain(&mut self) -> Vec<MidiMessage> {
+    pub fn drain(&mut self) -> Vec<MidiEvent> {
         // Throttled HID health check (every 2 seconds)
         if self.last_hid_health_check.elapsed() >= std::time::Duration::from_secs(2) {
             self.last_hid_health_check = Instant::now();
@@ -719,9 +737,12 @@ impl ControllerManager {
                                     if held { "pressed" } else { "released" },
                                     sb.physical_deck
                                 );
-                                messages.push(MidiMessage::ShiftChanged {
-                                    held,
-                                    physical_deck: sb.physical_deck,
+                                messages.push(MidiEvent {
+                                    message: MidiMessage::ShiftChanged {
+                                        held,
+                                        physical_deck: sb.physical_deck,
+                                    },
+                                    engine_dispatched: false,
                                 });
                                 continue 'event_loop;
                             }
@@ -737,8 +758,11 @@ impl ControllerManager {
                                         "[HID] -> Layer toggle (physical deck {})",
                                         physical_deck
                                     );
-                                    messages.push(MidiMessage::LayerToggle {
-                                        physical_deck: *physical_deck,
+                                    messages.push(MidiEvent {
+                                        message: MidiMessage::LayerToggle {
+                                            physical_deck: *physical_deck,
+                                        },
+                                        engine_dispatched: false,
                                     });
                                 }
                                 continue 'event_loop;
@@ -749,7 +773,19 @@ impl ControllerManager {
                         if let Some(ref engine) = device.mapping_engine {
                             let msgs = engine.map_event_multi(&event);
                             if !msgs.is_empty() {
-                                messages.extend(msgs);
+                                for msg in &msgs {
+                                    // Try direct dispatch for timing-critical HID actions
+                                    let dispatched = self.direct_dispatch.as_ref()
+                                        .and_then(|d| match msg {
+                                            MidiMessage::Deck { deck, action } => Some(d.dispatch(*deck, action)),
+                                            _ => None,
+                                        })
+                                        .unwrap_or(false);
+                                    messages.push(MidiEvent {
+                                        message: msg.clone(),
+                                        engine_dispatched: dispatched,
+                                    });
+                                }
                                 continue 'event_loop;
                             }
                         }

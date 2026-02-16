@@ -13,7 +13,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
 
 use mesh_core::db::DatabaseService;
 use iced::widget::{button, center, column, container, mouse_area, opaque, row, slider, stack, text, Space};
@@ -26,7 +26,7 @@ use crate::config::{self, PlayerConfig};
 use crate::domain::MeshDomain;
 use crate::plugin_gui::PluginGuiManager;
 
-use mesh_midi::{ControllerManager, MidiMessage as MidiMsg, MidiInputEvent, DeckAction as MidiDeckAction, MixerAction as MidiMixerAction, BrowserAction as MidiBrowserAction};
+use mesh_midi::{ControllerManager, MidiMessage as MidiMsg, MidiEvent, MidiInputEvent, DeckAction as MidiDeckAction, MixerAction as MidiMixerAction, BrowserAction as MidiBrowserAction};
 use mesh_core::engine::{DeckAtomics, LinkedStemAtomics, SlicerAtomics};
 use mesh_core::types::NUM_DECKS;
 use mesh_widgets::{mpsc_subscription, multiband_editor, MultibandEditorState, SliceEditorState};
@@ -106,6 +106,12 @@ pub struct MeshApp {
     pub(crate) tick_count: u32,
     /// Actual JACK client name (for port reconnection)
     pub(crate) audio_client_name: String,
+    /// Real output pipeline latency in samples (from CPAL/JACK timestamps)
+    pub(crate) output_latency_samples: Option<Arc<AtomicU64>>,
+    /// Internal effect chain latency in samples (global max)
+    pub(crate) internal_latency_samples: Option<Arc<AtomicU32>>,
+    /// Audio sample rate for latency calculations
+    pub(crate) audio_sample_rate: u32,
 }
 
 // Message enum moved to message.rs
@@ -134,6 +140,8 @@ impl MeshApp {
         sample_rate: u32,
         audio_client_name: String,
         mapping_mode: bool,
+        output_latency_samples: Option<Arc<AtomicU64>>,
+        internal_latency_samples: Option<Arc<AtomicU32>>,
     ) -> Self {
         // Load configuration
         let config_path = config::default_config_path();
@@ -273,6 +281,9 @@ impl MeshApp {
             browser_hide_countdown: 0,
             tick_count: 0,
             audio_client_name,
+            output_latency_samples,
+            internal_latency_samples,
+            audio_sample_rate: sample_rate,
         }
     }
 
@@ -541,10 +552,22 @@ impl MeshApp {
         }
     }
 
-    /// Handle a MIDI message by dispatching to existing message handlers
+    /// Handle a MIDI event by dispatching to existing message handlers
     /// Returns a Task that should be processed by the iced runtime (e.g., for scroll operations)
-    pub(crate) fn handle_midi_message(&mut self, msg: MidiMsg) -> Task<Message> {
+    ///
+    /// If `engine_dispatched` is true, the timing-critical engine command was already
+    /// sent directly from the MIDI callback — skip the UI→engine path to avoid
+    /// double-execution (e.g. double play-toggle would cancel out).
+    pub(crate) fn handle_midi_message(&mut self, event: MidiEvent) -> Task<Message> {
+        let engine_dispatched = event.engine_dispatched;
+        let msg = event.message;
         match msg {
+            MidiMsg::Deck { deck, action } if engine_dispatched => {
+                // Engine already processed this — skip UI dispatch to avoid double-execution.
+                // UI state (playhead, play indicator) will update from atomics on next tick.
+                log::trace!("MIDI: Deck {} action {:?} already dispatched to engine", deck, action);
+                return Task::none();
+            }
             MidiMsg::Deck { deck, action } => {
                 // Map MIDI deck actions to existing DeckMessages
                 let deck_msg = match action {
@@ -1131,6 +1154,27 @@ impl MeshApp {
             .on_press(Message::Settings(SettingsMessage::Open))
             .style(button::secondary);
 
+        // Latency readout: output + internal pipeline latency
+        let latency_label: Element<'_, Message> = if let Some(ref output_lat) = self.output_latency_samples {
+            let output_samples = output_lat.load(std::sync::atomic::Ordering::Relaxed);
+            let internal_samples = self.internal_latency_samples
+                .as_ref()
+                .map(|a| a.load(std::sync::atomic::Ordering::Relaxed))
+                .unwrap_or(0);
+            let sr = self.audio_sample_rate as f64;
+            let total_ms = if sr > 0.0 {
+                ((output_samples as f64 + internal_samples as f64) / sr) * 1000.0
+            } else {
+                0.0
+            };
+            text(format!("{:.1}ms", total_ms))
+                .size(11)
+                .color(Color::from_rgb(0.5, 0.5, 0.5))
+                .into()
+        } else {
+            text("").into()
+        };
+
         row![
             title,
             Space::new().width(Fill),
@@ -1140,6 +1184,7 @@ impl MeshApp {
             fx_element,
             Space::new().width(Fill),
             connection_status,
+            latency_label,
             settings_btn,
         ]
         .spacing(20)

@@ -27,6 +27,7 @@
 //! ```
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use jack::{AudioOut, Client, ClientOptions, Control, Port, ProcessScope};
 
@@ -89,14 +90,29 @@ struct JackProcessor {
     engine: AudioEngine,
     /// Command receiver (consumer side of lock-free queue)
     command_rx: rtrb::Consumer<EngineCommand>,
+    /// Direct command receiver for timing-critical MIDI commands
+    direct_command_rx: rtrb::Consumer<EngineCommand>,
     /// Pre-allocated buffers for processing
     master_buffer: StereoBuffer,
     cue_buffer: StereoBuffer,
+    /// Shared output latency atomic (measured from JACK port latency range)
+    output_latency_samples: Arc<AtomicU64>,
+    /// Whether latency has been measured (only need to do it once; JACK latency is stable)
+    latency_measured: bool,
 }
 
 impl jack::ProcessHandler for JackProcessor {
     fn process(&mut self, _client: &Client, ps: &ProcessScope) -> Control {
         let n_frames = ps.n_frames() as usize;
+
+        // Measure output latency once (JACK latency is stable during a session)
+        if !self.latency_measured {
+            let range = self.master_left.get_latency_range(jack::LatencyType::Playback);
+            let latency = if range.1 > 0 { range.1 } else { n_frames as u32 };
+            self.output_latency_samples.store(latency as u64, Ordering::Relaxed);
+            self.latency_measured = true;
+            log::info!("[JACK] Output latency measured: {} samples", latency);
+        }
 
         // Set working buffer length (RT-safe: no allocation)
         self.master_buffer.set_len_from_capacity(n_frames);
@@ -104,6 +120,8 @@ impl jack::ProcessHandler for JackProcessor {
 
         // Process commands from UI (lock-free, ~50ns per command)
         self.engine.process_commands(&mut self.command_rx);
+        // Process direct MIDI commands (timing-critical, bypasses iced tick)
+        self.engine.process_commands(&mut self.direct_command_rx);
 
         // Process audio through the engine
         self.engine
@@ -192,9 +210,14 @@ pub fn start_audio_system(
     let linked_stem_atomics = engine.linked_stem_atomics();
     let linked_stem_receiver = engine.linked_stem_result_receiver();
     let clip_indicator = engine.clip_indicator();
+    let output_latency_samples = engine.output_latency_samples();
+    let internal_latency_samples = engine.internal_latency_samples();
 
     // Create lock-free command channel
     let (command_tx, command_rx) = command_channel();
+
+    // Create direct command channel for timing-critical MIDI commands
+    let (direct_tx, direct_rx) = rtrb::RingBuffer::<EngineCommand>::new(64);
 
     // Create processor with pre-allocated buffers
     let processor = JackProcessor {
@@ -204,8 +227,11 @@ pub fn start_audio_system(
         cue_right,
         engine,
         command_rx,
+        direct_command_rx: direct_rx,
         master_buffer: StereoBuffer::silence(MAX_BUFFER_SIZE),
         cue_buffer: StereoBuffer::silence(MAX_BUFFER_SIZE),
+        output_latency_samples: output_latency_samples.clone(),
+        latency_measured: false,
     };
 
     // Activate the client
@@ -252,6 +278,9 @@ pub fn start_audio_system(
         sample_rate,
         buffer_size,
         latency_ms,
+        output_latency_samples,
+        internal_latency_samples,
+        direct_command_producer: direct_tx,
     })
 }
 

@@ -11,7 +11,7 @@
 //! - Audio Thread: Owns the AudioEngine exclusively
 //! - Atomics: UI reads playback state without locks
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
 use std::sync::Arc;
 
 use mesh_core::audio::{self, AudioConfig, AudioHandle, AudioResult, DeviceId};
@@ -33,9 +33,12 @@ pub type AudioSystemResult = (
     [Arc<SlicerAtomics>; NUM_DECKS],
     [Arc<LinkedStemAtomics>; NUM_DECKS],
     LinkedStemResultReceiver,
-    Arc<AtomicBool>, // clip_indicator
-    u32,             // sample_rate
-    String,          // actual JACK client name
+    Arc<AtomicBool>,  // clip_indicator
+    u32,              // sample_rate
+    String,           // actual JACK client name
+    Arc<AtomicU64>,   // output_latency_samples
+    Arc<AtomicU32>,   // internal_latency_samples
+    rtrb::Producer<mesh_core::engine::EngineCommand>,  // direct_command_producer
 );
 
 /// Start the audio system for mesh-player (master + cue outputs)
@@ -68,6 +71,9 @@ pub fn start_audio_system(
         result.clip_indicator,
         result.sample_rate,
         result.client_name,
+        result.output_latency_samples,
+        result.internal_latency_samples,
+        result.direct_command_producer,
     ))
 }
 
@@ -96,6 +102,9 @@ pub fn start_audio_system_with_devices(
         result.clip_indicator,
         result.sample_rate,
         result.client_name,
+        result.output_latency_samples,
+        result.internal_latency_samples,
+        result.direct_command_producer,
     ))
 }
 

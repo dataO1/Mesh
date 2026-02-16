@@ -9,7 +9,7 @@
 //! - Audio thread owns the AudioEngine exclusively
 //! - Atomics for lock-free state reads
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
 use std::sync::Arc;
 
 use crate::db::DatabaseService;
@@ -68,6 +68,13 @@ pub struct AudioSystemResult {
     pub buffer_size: u32,
     /// Audio latency in milliseconds (one-way, output only)
     pub latency_ms: f32,
+    /// Real output pipeline latency in samples (measured from CPAL/JACK timestamps)
+    pub output_latency_samples: Arc<AtomicU64>,
+    /// Internal effect chain latency in samples (global max)
+    pub internal_latency_samples: Arc<AtomicU32>,
+    /// Direct command producer for timing-critical MIDI commands
+    /// (bypasses iced tick loop, goes straight to audio thread)
+    pub direct_command_producer: rtrb::Producer<crate::engine::EngineCommand>,
 }
 
 /// Handle to the active audio system

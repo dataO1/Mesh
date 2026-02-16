@@ -19,6 +19,7 @@
 
 mod audio;
 mod config;
+mod direct_dispatch;
 mod domain;
 mod loader;
 mod plugin_gui;
@@ -78,11 +79,11 @@ fn main() -> iced::Result {
     // Try to start audio system
     // Returns AudioHandle, CommandSender (lock-free queue), DeckAtomics, SlicerAtomics,
     // LinkedStemAtomics, LinkedStemResultReceiver, and sample rate
-    let (audio_handle, command_sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, audio_sample_rate, audio_client_name) =
+    let (audio_handle, command_sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, audio_sample_rate, audio_client_name, output_latency_samples, internal_latency_samples, direct_command_producer) =
         match start_audio_system(CLIENT_NAME, db_service.clone()) {
-            Ok((handle, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, sample_rate, client_name)) => {
+            Ok((handle, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, sample_rate, client_name, output_lat, internal_lat, direct_producer)) => {
                 println!("Audio system started successfully ({} Hz, client: {})", sample_rate, client_name);
-                (Some(handle), Some(sender), Some(deck_atomics), Some(slicer_atomics), Some(linked_stem_atomics), Some(linked_stem_receiver), Some(clip_indicator), sample_rate, client_name)
+                (Some(handle), Some(sender), Some(deck_atomics), Some(slicer_atomics), Some(linked_stem_atomics), Some(linked_stem_receiver), Some(clip_indicator), sample_rate, client_name, Some(output_lat), Some(internal_lat), Some(direct_producer))
             }
             Err(e) => {
                 eprintln!("Warning: Could not start audio system: {}", e);
@@ -90,7 +91,7 @@ fn main() -> iced::Result {
                 eprintln!();
                 eprintln!("Check that audio devices are available and not in use by other applications.");
                 // Default to 44100 Hz when audio is not available
-                (None, None, None, None, None, None, None, 44100, "mesh-player".to_string())
+                (None, None, None, None, None, None, None, 44100, "mesh-player".to_string(), None, None, None)
             }
         };
 
@@ -109,6 +110,9 @@ fn main() -> iced::Result {
     let linked_stem_atomics_cell = std::cell::RefCell::new(linked_stem_atomics);
     let linked_stem_receiver_cell = std::cell::RefCell::new(linked_stem_receiver);
     let clip_indicator_cell = std::cell::RefCell::new(clip_indicator);
+    let output_latency_cell = std::cell::RefCell::new(output_latency_samples);
+    let internal_latency_cell = std::cell::RefCell::new(internal_latency_samples);
+    let direct_producer_cell = std::cell::RefCell::new(direct_command_producer);
 
     // Run the iced application using the functional API
     let result = iced::application(
@@ -122,8 +126,24 @@ fn main() -> iced::Result {
             let linked_stem_atomics = linked_stem_atomics_cell.borrow_mut().take();
             let linked_stem_receiver = linked_stem_receiver_cell.borrow_mut().take();
             let clip_indicator = clip_indicator_cell.borrow_mut().take();
+            let output_latency = output_latency_cell.borrow_mut().take();
+            let internal_latency = internal_latency_cell.borrow_mut().take();
+            let direct_producer = direct_producer_cell.borrow_mut().take();
+
+            // Create direct dispatch for timing-critical MIDI→engine path
+            let direct_dispatch = direct_producer.map(|producer| {
+                std::sync::Arc::new(direct_dispatch::EngineDirectDispatch::new(producer))
+                    as std::sync::Arc<dyn mesh_midi::DirectDispatch>
+            });
+
             // mapping_mode = true shows full UI with controls, false = performance mode
-            let app = MeshApp::new(db_service, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, audio_sample_rate, audio_client_name.clone(), start_midi_learn);
+            let mut app = MeshApp::new(db_service, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, audio_sample_rate, audio_client_name.clone(), start_midi_learn, output_latency, internal_latency);
+
+            // Wire direct dispatch to controller for bypassing iced tick on timing-critical commands
+            if let (Some(ref mut controller), Some(dispatch)) = (&mut app.controller, direct_dispatch) {
+                controller.set_direct_dispatch(dispatch);
+                log::info!("Direct MIDI→engine dispatch enabled");
+            }
 
             // If --midi-learn flag was passed, start MIDI learn mode (opens the drawer)
             let startup_task = if start_midi_learn {
