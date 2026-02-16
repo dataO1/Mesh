@@ -33,7 +33,7 @@ let
   libpdSysSrc = pkgs.fetchurl {
     url = "https://crates.io/api/v1/crates/libpd-sys/0.3.4/download";
     name = "libpd-sys-0.3.4.tar.gz";
-    hash = "sha256-TRzL2qaGOSo8Rx73VmCjc/FrYVr10ycqfrDAq//rYL8=";
+    hash = "sha256-bK5NpFB2HQsIWiRqte7px7mEBsQ/lNFtDXGqGfbUrxI=";
   };
 
 in pkgs.rustPlatform.buildRustPackage {
