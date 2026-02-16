@@ -53,6 +53,26 @@ in pkgs.rustPlatform.buildRustPackage {
   USE_TENSORFLOW = "0";
   CPLUS_INCLUDE_PATH = "${pkgs.eigen}/include/eigen3";
 
+  # The workspace Cargo.toml patches libpd-sys to use 32-bit floats
+  # (required for PD external compatibility). The patched source lives
+  # in patches/libpd-sys locally (gitignored, created by devshell hook).
+  # Recreate it from the vendored crate during the Nix build.
+  preBuild = ''
+    if [ ! -d "patches/libpd-sys" ]; then
+      echo "Creating patched libpd-sys (32-bit floats)..."
+      vendor_dir=$(echo /build/*-vendor*)
+      if [ -d "$vendor_dir/libpd-sys" ]; then
+        mkdir -p patches
+        cp -r "$vendor_dir/libpd-sys" patches/libpd-sys
+        chmod -R u+w patches/libpd-sys
+        sed -i 's/const PD_FLOATSIZE: &str = "64"/const PD_FLOATSIZE: \&str = "32"/' patches/libpd-sys/build.rs
+        echo "  done"
+      else
+        echo "WARNING: libpd-sys not found in vendor dir ($vendor_dir)"
+      fi
+    fi
+  '';
+
   # Only build mesh-player (no mesh-cue)
   cargoBuildFlags = [ "-p" "mesh-player" ];
 
