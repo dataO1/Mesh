@@ -86,7 +86,7 @@ jobs:
           echo "narinfo count: $(ls ./${{ env.CACHE_NAME }}/*.narinfo 2>/dev/null | wc -l)"
 
       # Deploy the binary cache to GitHub Pages
-      # The device fetches from: https://<user>.github.io/<repo>/
+      # The device fetches from: https://datao1.github.io/Mesh/
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:

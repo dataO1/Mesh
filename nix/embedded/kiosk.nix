@@ -68,7 +68,7 @@ in
           fi
           echo "Updating to $VERSION..."
           ${config.system.build.nixos-rebuild}/bin/nixos-rebuild switch \
-            --flake "github:user/mesh/$VERSION#mesh-embedded" \
+            --flake "github:dataO1/Mesh/$VERSION#mesh-embedded" \
             --no-write-lock-file
           rm -f /var/lib/mesh/update-target
         '';

@@ -28,13 +28,13 @@
     # The mesh cache hosts pre-built aarch64 packages (mesh-player, essentia, etc.)
     # Standard NixOS packages come from cache.nixos.org
     substituters = [
-      # TODO: replace with actual GitHub Pages URL after first CI run
-      # "https://username.github.io/mesh-cache/"
+      "https://datao1.github.io/Mesh/"
       "https://cache.nixos.org/"
     ];
     trusted-public-keys = [
-      # TODO: replace with actual public key after generating keypair
-      # "mesh-embedded:<public-key>"
+      # Replace with output of: cat cache-pub-key.pem
+      # Generated via: nix-store --generate-binary-cache-key mesh-embedded cache-priv-key.pem cache-pub-key.pem
+      "mesh-embedded:REPLACE_WITH_PUBLIC_KEY"
       "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
     ];
   };

@@ -172,7 +172,7 @@ GitHub Actions (ubuntu-24.04-arm)         ← free native aarch64 runner
   └── Deploy cache to GitHub Pages
           │
           ▼
-GitHub Pages (https://<user>.github.io/<repo>/)    ← free static hosting
+GitHub Pages (https://datao1.github.io/Mesh/)    ← free static hosting
   ├── nix-cache-info
   ├── <hash>.narinfo
   └── nar/<hash>.nar.xz
@@ -307,7 +307,7 @@ GitHub Actions builds mesh-player on a native ARM runner and publishes the binar
 ```bash
 # SSH into the device and run:
 sudo nixos-rebuild switch \
-  --flake github:user/mesh/v0.9.0#mesh-embedded \
+  --flake github:dataO1/Mesh/v0.9.0#mesh-embedded \
   --no-write-lock-file
 ```
 
