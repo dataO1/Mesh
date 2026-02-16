@@ -115,62 +115,15 @@ For production, replace jumper wires with soldered connections. The GY-PCM5102 b
 
 ### Device Tree Overlay
 
-Linux needs a Device Tree Overlay to enable the I2S3 controller and register the DAC as a sound card.
+Linux needs a Device Tree Overlay to enable the I2S3 controller and register the DAC as a sound card. The overlay source lives at `nix/embedded/pcm5102a-i2s3.dts` and is loaded automatically by NixOS via `hardware.deviceTree.overlays`.
 
-Save as `pcm5102a-i2s3.dts`:
-
-```dts
-/dts-v1/;
-/plugin/;
-
-/ {
-    compatible = "xunlong,orangepi-5-plus", "rockchip,rk3588";
-
-    fragment@0 {
-        target = <&i2s3_2ch>;
-        __overlay__ {
-            status = "okay";
-            #sound-dai-cells = <0>;
-            pinctrl-names = "default";
-            pinctrl-0 = <&i2s3m0_sclk &i2s3m0_lrck &i2s3m0_sdo>;
-            rockchip,playback-channels = <2>;
-        };
-    };
-
-    fragment@1 {
-        target-path = "/";
-        __overlay__ {
-            pcm5102a_codec: pcm5102a {
-                compatible = "ti,pcm5102a";
-                #sound-dai-cells = <0>;
-            };
-
-            pcm5102a_sound: pcm5102a-sound {
-                compatible = "simple-audio-card";
-                simple-audio-card,name = "PCM5102A";
-                simple-audio-card,format = "i2s";
-
-                simple-audio-card,cpu {
-                    sound-dai = <&i2s3_2ch>;
-                };
-                simple-audio-card,codec {
-                    sound-dai = <&pcm5102a_codec>;
-                };
-            };
-        };
-    };
-};
-```
-
-Compile and install (non-NixOS):
+For non-NixOS systems (Armbian, etc.), compile and install manually:
 
 ```bash
-dtc -I dts -O dtb -o pcm5102a-i2s3.dtbo pcm5102a-i2s3.dts
+dtc -I dts -O dtb -o pcm5102a-i2s3.dtbo nix/embedded/pcm5102a-i2s3.dts
 sudo cp pcm5102a-i2s3.dtbo /boot/dtb/rockchip/overlay/
 sudo orangepi-config  # System → Hardware → enable overlay
 ```
-
-On NixOS, the overlay is loaded automatically via `hardware.deviceTree.overlays` (see below).
 
 After reboot, `aplay -l` shows two sound cards:
 
@@ -194,52 +147,99 @@ Cue output    → ALSA device "hw:0,0" (ES8388)       → Headphones
 
 cpal enumerates all ALSA devices — mesh-player picks the right one by matching the card name substring (`"PCM5102A"` for master, `"es8388"` for cue). Card numbering can change between boots — always match by name, never by number.
 
-```rust
-// Device selection pseudocode
-let host = cpal::default_host();
-let devices = host.output_devices()?;
-
-let master_device = devices.clone()
-    .find(|d| d.name().unwrap_or_default().contains("PCM5102A"))?;
-let cue_device = devices
-    .find(|d| d.name().unwrap_or_default().contains("es8388"))?;
-
-let master_stream = master_device.build_output_stream(&config, master_callback, err_fn, None)?;
-let cue_stream = cue_device.build_output_stream(&config, cue_callback, err_fn, None)?;
-```
-
-Named ALSA aliases provide stable device names regardless of card numbering:
+Named ALSA aliases provide stable device names regardless of card numbering (configured in `nix/embedded/audio.nix`):
 
 ```
-# /etc/alsa/conf.d/99-mesh.conf
-pcm.mesh_master {
-  type hw
-  card "PCM5102A"
-  device 0
-}
-pcm.mesh_cue {
-  type hw
-  card "rockchipes8388"
-  device 0
-}
+pcm.mesh_master { type hw; card "PCM5102A"; device 0; }
+pcm.mesh_cue    { type hw; card "rockchipes8388"; device 0; }
 ```
 
 ### Option B: PipeWire routing (for development/debugging)
 
 PipeWire exposes both cards as sinks with runtime re-routing via `pavucontrol` or `pw-link`. Adds ~2-5ms latency.
 
-## NixOS Setup
+## Build and Deploy Architecture
 
-### Prerequisites
+The embedded setup uses a zero-cost CI pipeline. No host system changes, no emulation, no paid services.
 
-On your x86 NixOS workstation, enable aarch64 emulation:
-
-```nix
-# In your workstation's configuration.nix:
-boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
+```
+Developer pushes tag v0.9.0
+          │
+          ▼
+GitHub Actions (ubuntu-24.04-arm)         ← free native aarch64 runner
+  ├── nix build mesh-player (native ARM, no cross-compile)
+  ├── nix copy --to file://cache (signed binary cache)
+  └── Deploy cache to GitHub Pages
+          │
+          ▼
+GitHub Pages (https://<user>.github.io/<repo>/)    ← free static hosting
+  ├── nix-cache-info
+  ├── <hash>.narinfo
+  └── nar/<hash>.nar.xz
+          │
+          ▼
+Orange Pi 5 Pro (NixOS)
+  ├── Standard packages → cache.nixos.org (already cached for aarch64)
+  ├── mesh-player + essentia → GitHub Pages (pre-built by CI)
+  └── nixos-rebuild switch → download NARs, zero compilation
 ```
 
-Then `sudo nixos-rebuild switch` and reboot. This lets your x86 machine build aarch64 packages using QEMU — 95% of packages come pre-built from `cache.nixos.org`, only mesh-player needs actual compilation.
+**Total cost: $0.** GitHub Actions ARM runners are free for public repos. GitHub Pages is free. cache.nixos.org is free.
+
+### How Nix Binary Caches Work
+
+A Nix binary cache is just static files served over HTTP:
+
+| File | Content |
+|------|---------|
+| `nix-cache-info` | 3-line metadata (store dir, priority) |
+| `<hash>.narinfo` | Per-package metadata: store path, dependencies, signature |
+| `nar/<hash>.nar.xz` | Compressed binary archive (NAR = Nix ARchive) |
+
+The device checks each package hash against the cache. If found, it downloads the pre-built NAR. If not, it would compile from source — but with CI publishing every release, the device never compiles.
+
+### Cache Signing
+
+Nix binary caches use Ed25519 signatures. Generate a keypair once:
+
+```bash
+nix-store --generate-binary-cache-key mesh-embedded cache-priv-key.pem cache-pub-key.pem
+```
+
+- `cache-priv-key.pem` → store in GitHub Secrets as `NIX_CACHE_PRIV_KEY`
+- `cache-pub-key.pem` → configure on the device in `nix.settings.trusted-public-keys`
+
+## NixOS Setup
+
+### Flake Structure
+
+All NixOS modules live in the mesh repository:
+
+```
+mesh/
+├── flake.nix                        # nixosConfigurations.mesh-embedded
+├── .github/workflows/
+│   └── embedded-aarch64.yml         # CI: build + publish binary cache
+└── nix/
+    ├── common.nix                   # Shared build deps (essentia, etc.)
+    ├── packages/
+    │   ├── mesh-build.nix           # Full build (player + cue)
+    │   └── mesh-player.nix          # Player only (embedded)
+    └── embedded/
+        ├── configuration.nix        # Base system config + binary cache
+        ├── hardware.nix             # RK3588S: DT overlay, GPU, fast boot
+        ├── audio.nix                # PipeWire + ALSA dual-card config
+        ├── kiosk.nix                # cage compositor + update service
+        └── pcm5102a-i2s3.dts        # I2S DAC device tree overlay
+```
+
+The flake defines `nixosConfigurations.mesh-embedded` with cross-compilation support:
+
+```nix
+# Build on x86_64, produce aarch64 output (no binfmt needed)
+nixpkgs.buildPlatform.system = "x86_64-linux";
+nixpkgs.hostPlatform.system = "aarch64-linux";
+```
 
 ### Step 1: Flash U-Boot (One-Time)
 
@@ -259,245 +259,100 @@ sudo armbian-install
 # Power off, remove the Armbian SD card
 ```
 
-### Step 2: Build NixOS Image
+### Step 2: Build NixOS SD Image
+
+From your x86 workstation (no binfmt or system changes needed):
 
 ```bash
 cd ~/Projects/mesh
-nix build .#nixosConfigurations.mesh-embedded.config.system.build.sdImage
+nix build .#sdImage
 
 # Flash to microSD
 dd if=result/sd-image/*.img of=/dev/sdX bs=1M status=progress
 ```
 
+The first build cross-compiles everything and takes several hours. Subsequent builds are incremental.
+
 ### Step 3: First Boot
 
-Insert microSD, connect HDMI + USB keyboard, power on. NixOS boots to login. SSH is enabled. All future updates happen remotely.
+Insert microSD, connect HDMI + USB keyboard, power on. NixOS boots into cage kiosk with mesh-player fullscreen. SSH is enabled.
 
 ```bash
 ssh mesh@<board-ip>
+# Default password: mesh
 ```
 
-### Flake Structure
+### Step 4: Configure WiFi
 
-```
-mesh/
-├── flake.nix                    # mesh-embedded NixOS config
-├── nix/
-│   ├── common.nix               # Existing build deps
-│   └── embedded/
-│       ├── configuration.nix    # NixOS system config
-│       ├── hardware.nix         # OPi 5 Pro hardware (kernel, DT, GPU)
-│       ├── audio.nix            # PipeWire + I2S DAC overlay + ALSA config
-│       ├── kiosk.nix            # cage compositor + auto-login
-│       └── pcm5102a-i2s3.dts   # Device tree overlay source
+```bash
+ssh mesh@<board-ip>
+sudo nmcli device wifi connect "SSID" password "password"
 ```
 
-### NixOS Modules
-
-**flake.nix:**
-
-```nix
-{
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    nixos-rk3588.url = "github:gnull/nixos-rk3588";
-  };
-
-  outputs = { self, nixpkgs, nixos-rk3588, ... }: {
-    nixosConfigurations.mesh-embedded = nixpkgs.lib.nixosSystem {
-      system = "aarch64-linux";
-      modules = [
-        nixos-rk3588.nixosModules.orangepi5
-        ./nix/embedded/configuration.nix
-        ./nix/embedded/hardware.nix
-        ./nix/embedded/audio.nix
-        ./nix/embedded/kiosk.nix
-      ];
-    };
-  };
-}
-```
-
-**hardware.nix:**
-
-```nix
-{ pkgs, ... }: {
-  hardware.graphics.enable = true;
-
-  hardware.deviceTree.overlays = [
-    { name = "pcm5102a-i2s3"; dtsFile = ./pcm5102a-i2s3.dts; }
-  ];
-
-  powerManagement.cpuFreqGovernor = "performance";
-
-  boot.loader.timeout = 0;
-  boot.plymouth.enable = false;
-  boot.initrd.systemd.enable = true;
-  systemd.services.systemd-udev-settle.enable = false;
-  systemd.services.NetworkManager-wait-online.enable = false;
-
-  services.udisks2.enable = true;  # USB stick automounting
-}
-```
-
-**audio.nix:**
-
-```nix
-{ pkgs, ... }: {
-  security.rtkit.enable = true;
-  services.pipewire = {
-    enable = true;
-    alsa.enable = true;
-    alsa.support32Bit = false;
-    jack.enable = true;
-  };
-
-  hardware.alsa.enablePersistence = true;
-
-  environment.etc."alsa/conf.d/99-mesh.conf".text = ''
-    pcm.mesh_master {
-      type hw
-      card "PCM5102A"
-      device 0
-    }
-    pcm.mesh_cue {
-      type hw
-      card "rockchipes8388"
-      device 0
-    }
-  '';
-
-  services.pipewire.wireplumber.extraConfig."99-mesh-audio" = {
-    "monitor.alsa.rules" = [
-      {
-        matches = [
-          { "node.name" = "~alsa_output.*es8388*"; }
-          { "node.name" = "~alsa_output.*PCM5102A*"; }
-        ];
-        actions = {
-          update-props = {
-            "session.suspend-timeout-seconds" = 0;
-            "api.alsa.period-size" = 256;
-            "api.alsa.headroom" = 256;
-          };
-        };
-      }
-    ];
-  };
-
-  systemd.services.mesh-audio-init = {
-    description = "Initialize audio card volumes";
-    after = [ "sound.target" ];
-    wantedBy = [ "multi-user.target" ];
-    serviceConfig = {
-      Type = "oneshot";
-      ExecStart = "${pkgs.alsa-utils}/bin/amixer -c rockchipes8388 set Headphone 80%";
-    };
-  };
-}
-```
-
-**kiosk.nix:**
-
-```nix
-{ pkgs, ... }:
-let
-  meshPlayer = pkgs.callPackage ../../default.nix {};
-in {
-  users.users.mesh = {
-    isNormalUser = true;
-    extraGroups = [ "audio" "video" "input" "plugdev" ];
-    initialPassword = "mesh";
-  };
-
-  services.cage = {
-    enable = true;
-    user = "mesh";
-    program = "${meshPlayer}/bin/mesh-player";
-    extraArguments = [ "-d" ];
-    environment = {
-      WGPU_BACKEND = "gl";
-      MESA_GL_VERSION_OVERRIDE = "3.1";
-      WLR_NO_HARDWARE_CURSORS = "1";
-    };
-  };
-
-  systemd.services."cage-tty1" = {
-    serviceConfig = {
-      Restart = "always";
-      RestartSec = 2;
-      CPUAffinity = "4-7";  # pin to A76 big cores
-    };
-  };
-
-  services.openssh = {
-    enable = true;
-    settings.PasswordAuthentication = true;
-  };
-
-  networking.firewall.allowedTCPPorts = [ 22 ];
-}
-```
-
-**configuration.nix:**
-
-```nix
-{ pkgs, ... }: {
-  system.stateVersion = "24.11";
-  networking.hostName = "mesh-embedded";
-  time.timeZone = "Europe/Berlin";
-  networking.networkmanager.enable = true;
-
-  environment.systemPackages = with pkgs; [
-    vim htop alsa-utils usbutils pciutils dtc wlr-randr evtest
-  ];
-
-  nix.settings = {
-    experimental-features = [ "nix-command" "flakes" ];
-    trusted-users = [ "mesh" ];
-  };
-}
-```
+The device now has internet access for pulling updates from GitHub Pages and cache.nixos.org.
 
 ## Deploying Updates
 
-### From Your Workstation (SSH)
+### Via CI (Production)
+
+Push a version tag to trigger the CI build:
 
 ```bash
-nixos-rebuild switch \
+git tag v0.9.0
+git push origin v0.9.0
+```
+
+GitHub Actions builds mesh-player on a native ARM runner and publishes the binary cache to GitHub Pages. The device can then update:
+
+```bash
+# SSH into the device and run:
+sudo nixos-rebuild switch \
+  --flake github:user/mesh/v0.9.0#mesh-embedded \
+  --no-write-lock-file
+```
+
+Pre-built packages download from GitHub Pages. Standard NixOS packages download from cache.nixos.org. Zero compilation on the device.
+
+### Via SSH (Development)
+
+For development iteration, deploy directly from your workstation:
+
+```bash
+nixos-rebuild switch --fast \
   --flake .#mesh-embedded \
-  --target-host mesh@192.168.1.100 \
+  --target-host mesh@<board-ip> \
   --use-remote-sudo
 ```
 
-This builds the system closure locally (QEMU emulation + binary cache), copies changed store paths to the board via SSH, and activates the new configuration. mesh-player restarts automatically.
+The `--fast` flag is required for cross-platform deployment (prevents nixos-rebuild from trying to execute aarch64 binaries on x86).
 
 ### Rollback
 
 ```bash
-# If something breaks:
-nixos-rebuild switch --rollback \
-  --target-host mesh@192.168.1.100 \
+# On the device:
+sudo nixos-rebuild switch --rollback
+
+# Or remotely:
+nixos-rebuild switch --fast --rollback \
+  --target-host mesh@<board-ip> \
   --use-remote-sudo
 ```
 
 NixOS atomic updates mean old generations are preserved, no partial updates occur, and the board is never in a broken state — even power loss during update is safe.
 
-### OTA Over WiFi
+### Future: Update Button in mesh-player
 
-```bash
-nixos-rebuild switch --flake .#mesh-embedded --target-host mesh@mesh-embedded.local --use-remote-sudo
-```
+The kiosk module includes a `mesh-update` systemd service with polkit rules allowing the `mesh` user to trigger it. The future update flow:
 
-For remote boards on different networks, add Tailscale:
-
-```nix
-services.tailscale.enable = true;
-```
+1. mesh-player checks GitHub API for latest release tag
+2. UI shows "Update available: v0.9.0"
+3. User clicks "Update"
+4. mesh-player writes target version to `/var/lib/mesh/update-target`
+5. Triggers `mesh-update.service` via D-Bus
+6. `nixos-rebuild switch` runs, downloads pre-built packages, activates
+7. cage restarts with the new mesh-player
 
 ## Development Workflow
-
-### Remote Deploy (standard)
 
 ```
   x86 workstation                          OPi 5 Pro
@@ -506,34 +361,28 @@ services.tailscale.enable = true;
   │ in mesh repo  │                         │ cage → mesh-player   │
   │               │                         │                      │
   │ nixos-rebuild │──── SSH ───────────────▶│ switch-to-config     │
-  │ --target-host │     (copy store paths)  │ restart cage service │
-  │               │                         │ mesh-player starts   │
+  │ --fast        │     (copy store paths)  │ restart cage service │
+  │ --target-host │                         │ mesh-player starts   │
   │               │◀─── SSH ────────────────│ journalctl -f output │
   │ See logs      │     (debug)             │                      │
   └──────────────┘                         └──────────────────────┘
 ```
 
 1. Edit Rust code on x86 workstation
-2. `nixos-rebuild switch --target-host mesh@<ip> --use-remote-sudo`
-3. Build via QEMU (~2-5 min incremental)
-4. New binary copied to board, cage restarts
-5. Debug: `journalctl -u cage-tty1 -f`
+2. `nixos-rebuild switch --fast --flake .#mesh-embedded --target-host mesh@<ip> --use-remote-sudo`
+3. Cross-compiled closure copied to board, NixOS switches configuration
+4. cage restarts with new mesh-player
+5. Debug: `ssh mesh@<ip> journalctl -u cage-tty1 -f`
 
 ### Native Build on Board (faster iteration)
 
 ```bash
-ssh mesh@192.168.1.100
-cd mesh
-cargo build --release -p mesh-player  # ~30-60s incremental
+ssh mesh@<board-ip>
+cd /tmp/mesh  # clone or scp source
+cargo build --release -p mesh-player  # ~30-60s incremental on RK3588S
 
 sudo systemctl stop cage-tty1
 WGPU_BACKEND=gl ./target/release/mesh-player
-```
-
-### Cachix (optional CI/CD)
-
-```bash
-cachix push mesh-embedded $(nix build .#mesh-player-aarch64 --print-out-paths)
 ```
 
 ## Debugging Reference

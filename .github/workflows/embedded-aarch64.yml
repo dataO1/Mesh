@@ -1,0 +1,113 @@
+name: Embedded aarch64 Build + Cache
+
+# Build mesh-player for aarch64-linux (Orange Pi 5 Pro) on a native ARM runner,
+# then publish a Nix binary cache to GitHub Pages. The embedded NixOS device
+# pulls pre-built packages from this cache, so it never compiles anything.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v0.8.3)'
+        required: true
+        type: string
+
+# GitHub Pages deployment requires write access
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CACHE_NAME: mesh-cache
+
+jobs:
+  build-aarch64:
+    name: Build aarch64 + Publish Cache
+    runs-on: ubuntu-24.04-arm  # Native aarch64 runner (free for public repos)
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            # Accept the nixos-rk3588 flake
+            extra-trusted-substituters = https://cache.nixos.org/
+
+      - name: Get version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up signing key
+        run: |
+          echo "${{ secrets.NIX_CACHE_PRIV_KEY }}" > /tmp/cache-priv-key.pem
+
+      # Build mesh-player natively on ARM (no cross-compilation)
+      - name: Build mesh-player
+        run: |
+          echo "Building mesh-player for aarch64-linux..."
+          nix build -L .#packages.aarch64-linux.mesh-player
+
+      # Create a proper Nix binary cache directory
+      # This is the same format as cache.nixos.org — just static files
+      - name: Create binary cache
+        run: |
+          mkdir -p ./${{ env.CACHE_NAME }}
+          echo "Exporting store paths to binary cache..."
+
+          # Copy the mesh-player closure (and all its dependencies) to the cache
+          nix copy --to "file://$(pwd)/${{ env.CACHE_NAME }}" \
+            --secret-key-files /tmp/cache-priv-key.pem \
+            ./result
+
+          # Show cache contents
+          echo ""
+          echo "Cache contents:"
+          ls -lh ./${{ env.CACHE_NAME }}/
+          echo ""
+          echo "NAR files:"
+          ls -lh ./${{ env.CACHE_NAME }}/nar/ | head -20
+          echo ""
+          du -sh ./${{ env.CACHE_NAME }}
+          echo ""
+          echo "narinfo count: $(ls ./${{ env.CACHE_NAME }}/*.narinfo 2>/dev/null | wc -l)"
+
+      # Deploy the binary cache to GitHub Pages
+      # The device fetches from: https://<user>.github.io/<repo>/
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./${{ env.CACHE_NAME }}
+          # Keep files from previous releases so old versions remain available
+          keep_files: true
+          commit_message: "cache: ${{ steps.version.outputs.version }} aarch64-linux"
+
+      - name: Clean up signing key
+        if: always()
+        run: rm -f /tmp/cache-priv-key.pem
+
+      - name: Summary
+        run: |
+          echo "## Embedded aarch64 Build Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Binary cache:** https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Update an embedded device" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "nixos-rebuild switch --flake github:${{ github.repository }}/${{ steps.version.outputs.version }}#mesh-embedded --no-write-lock-file" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

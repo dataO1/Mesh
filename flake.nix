@@ -16,9 +16,74 @@
       url = "github:sevagh/demucs.onnx";
       flake = false;
     };
+
+    # Orange Pi 5 / RK3588 board support for embedded NixOS
+    nixos-rk3588 = {
+      url = "github:gnull/nixos-rk3588";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-overlay, nn-tilde, demucs-onnx }:
+  outputs = { self, nixpkgs, flake-utils, rust-overlay, nn-tilde, demucs-onnx, nixos-rk3588 }:
+    let
+      # =====================================================================
+      # Embedded NixOS configuration (Orange Pi 5 Pro)
+      # =====================================================================
+      # Cross-compiled from x86_64: no binfmt, no host system changes.
+      # Standard NixOS packages come from cache.nixos.org (aarch64-linux).
+      # Custom packages (mesh-player, essentia) are built by CI and hosted
+      # on GitHub Pages as a binary cache.
+      #
+      # Build SD image:  nix build .#sdImage
+      # Deploy updates:  nixos-rebuild switch --fast --flake .#mesh-embedded \
+      #                    --target-host mesh@orangepi --use-remote-sudo
+
+      embeddedPkgs = import nixpkgs {
+        localSystem.system = "x86_64-linux";
+        crossSystem.system = "aarch64-linux";
+        overlays = [ (import rust-overlay) ];
+      };
+
+      embeddedCommon = import ./nix/common.nix { pkgs = embeddedPkgs; };
+
+      embeddedMeshPlayer = import ./nix/packages/mesh-player.nix {
+        pkgs = embeddedPkgs;
+        common = embeddedCommon;
+        src = ./.;
+      };
+
+      embeddedOutputs = {
+        # NixOS system configuration for the Orange Pi 5 Pro
+        nixosConfigurations.mesh-embedded = nixpkgs.lib.nixosSystem {
+          modules = [
+            # Board support (kernel, bootloader, device tree)
+            nixos-rk3588.nixosModules.orangepi5
+
+            # Cross-compilation: build on x86_64, target aarch64
+            {
+              nixpkgs.buildPlatform.system = "x86_64-linux";
+              nixpkgs.hostPlatform.system = "aarch64-linux";
+              nixpkgs.overlays = [ (import rust-overlay) ];
+            }
+
+            # Mesh embedded configuration
+            ./nix/embedded/configuration.nix
+
+            # Inject the mesh-player package
+            {
+              services.mesh-embedded.package = embeddedMeshPlayer;
+            }
+          ];
+        };
+
+        # Convenience: build the SD card image from x86_64
+        # Usage: nix build .#sdImage
+        packages.x86_64-linux.sdImage =
+          self.nixosConfigurations.mesh-embedded.config.system.build.sdImage;
+      };
+    in
+    # Merge per-system outputs (packages, devShells, apps) with
+    # top-level outputs (nixosConfigurations, sdImage)
     flake-utils.lib.eachDefaultSystem (system:
       let
         overlays = [ (import rust-overlay) ];
@@ -145,5 +210,5 @@
           };
         };
       }
-    );
+    ) // embeddedOutputs;
 }
