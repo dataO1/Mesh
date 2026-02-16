@@ -32,7 +32,7 @@ in pkgs.rustPlatform.buildRustPackage {
   version = "0.1.0";
   src = rustSrc;
 
-  cargoHash = "sha256-Gy2ECMhZdbwHJk/Jh7nXwPMUDmfLP1Rbt+I9125UfP0=";
+  cargoHash = "sha256-kzbsyTReuXC3FMswdhjmkKQ9wM3Spltn0U+O6Q54Ccc=";
 
   # strictDeps: nativeBuildInputs run on build machine, buildInputs link for target
   strictDeps = true;
