@@ -62,7 +62,7 @@ Mesh also includes **built-in stem separation** — drop any MP3, FLAC, or WAV f
 - **Zero-dropout loading** — Load new tracks while playing without audio glitches
 - **High-quality time stretching** — Tempo changes without pitch artifacts
 - **Master bus protection** — Built-in limiter and clipper prevent distortion and protect your speakers, even when mixing hot
-- **Low-latency audio** — JACK on Linux, WASAPI on Windows
+- **Low-latency audio** — JACK on Linux, WASAPI on Windows. Real output pipeline latency is measured from CPAL/JACK timestamps and used to compensate beat-snap decisions, so hot cues and synced starts land on the beat the user actually heard. Timing-critical MIDI commands (play, cue, hot cue, beat jump) bypass the UI tick loop and go directly to the audio engine via a dedicated lock-free ringbuffer
 - **Professional routing** — Separate master and cue outputs for headphone monitoring
 
 ---

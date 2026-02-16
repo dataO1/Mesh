@@ -28,6 +28,47 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 ---
 
+## [0.8.2] - 2026-02-16
+
+### Added
+
+- **Output latency compensation** — Real audio pipeline latency is now measured
+  from CPAL timestamps (ALSA `snd_pcm_status_get_delay`) and JACK port latency
+  ranges, exposed as a shared atomic updated every audio callback. Phase sync
+  uses a two-step approach: the latency-compensated "heard" position selects
+  which beat to snap to (so the user lands on the beat they actually heard),
+  while the raw internal position computes the sub-beat phase offset (since both
+  decks share the same output pipeline). Total system latency (output + internal
+  effect chain) is displayed as a small gray label in the header bar.
+
+- **Direct MIDI-to-engine dispatch** — Timing-critical MIDI commands (play, cue,
+  hot cue, beat jump) now bypass the ~16ms iced UI tick loop entirely. A second
+  lock-free SPSC ringbuffer (`rtrb`) carries commands directly from the MIDI/HID
+  callback thread to the audio engine. The `DirectDispatch` trait in mesh-midi
+  provides the abstraction; `MidiEvent` wraps each message with an
+  `engine_dispatched` flag so the UI handler skips re-sending already-dispatched
+  commands while still performing UI-only updates (button state, display).
+
+### Fixed
+
+- **Beat jump phase drift** — Beat jumping no longer snaps the playhead to an
+  exact beat grid point, which destroyed the sub-beat phase offset and caused
+  audible flamming between synced decks. Jumps now compute the grid distance
+  between the nearest beat and the target beat, then add that distance to the
+  current position, preserving the sub-beat phase relationship. Works correctly
+  with variable-tempo beat grids.
+
+- **Beat jump off-by-one** — `nearest_beat_index()` now uses binary search
+  (`partition_point`) to find the closest beat in either direction, replacing a
+  `>=` scan that consistently overshot by one beat during forward playback.
+
+- **Master deck ignores faded-out tracks** — `master_deck_id()` now filters
+  decks with volume at 0, so phase sync stops tracking a deck the user has fully
+  faded out. The `SetVolume` command handler also re-evaluates the master
+  immediately when a fader changes, ensuring smooth handoff.
+
+---
+
 ## [Unreleased]
 
 ### Added

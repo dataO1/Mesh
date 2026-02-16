@@ -1046,24 +1046,32 @@ impl Deck {
         self.slicer_states[stem as usize].set_buffer_bars(bars);
     }
 
-    /// Beat jump forward by beat_jump_size beats (equals loop length)
+    /// Beat jump forward by beat_jump_size beats.
+    ///
+    /// Computes the grid distance between the nearest beat and the target beat,
+    /// then adds that distance to the current position. This preserves the
+    /// sub-beat phase offset so synced decks stay aligned.
     pub fn beat_jump_forward(&mut self) {
         if let Some(track) = &self.track {
             let beats = &track.metadata.beat_grid.beats;
             let jump_size = self.beat_jump_size() as usize;
             let current_idx = Self::nearest_beat_index(beats, self.position);
             let target_idx = (current_idx + jump_size).min(beats.len().saturating_sub(1));
-            if let Some(&target_pos) = beats.get(target_idx) {
+            if let (Some(&current_beat), Some(&target_beat)) = (beats.get(current_idx), beats.get(target_idx)) {
+                let grid_distance = (target_beat as usize).saturating_sub(current_beat as usize);
                 let old_position = self.position;
-                self.position = target_pos as usize;
+                self.position = self.position.saturating_add(grid_distance);
+                // Clamp to track length
+                if let Some(dur) = track.duration_samples.checked_sub(1) {
+                    self.position = self.position.min(dur);
+                }
                 self.sync_position_atomic();
 
-                // If loop is active, move the loop by the same distance and snap to grid
+                // If loop is active, move the loop by the same grid distance
                 if self.loop_state.active {
                     let jump_distance = self.position.saturating_sub(old_position);
                     let new_start = self.loop_state.start.saturating_add(jump_distance);
                     let new_end = self.loop_state.end.saturating_add(jump_distance);
-                    // Snap loop boundaries to beat grid
                     self.loop_state.start = self.snap_to_beat(new_start);
                     self.loop_state.end = self.snap_to_beat(new_end);
                     self.sync_loop_atomic();
@@ -1072,24 +1080,27 @@ impl Deck {
         }
     }
 
-    /// Beat jump backward by beat_jump_size beats (equals loop length)
+    /// Beat jump backward by beat_jump_size beats.
+    ///
+    /// Same offset-preserving approach as forward: computes grid distance
+    /// and subtracts it from the current position.
     pub fn beat_jump_backward(&mut self) {
         if let Some(track) = &self.track {
             let beats = &track.metadata.beat_grid.beats;
             let jump_size = self.beat_jump_size() as usize;
             let current_idx = Self::nearest_beat_index(beats, self.position);
             let target_idx = current_idx.saturating_sub(jump_size);
-            if let Some(&target_pos) = beats.get(target_idx) {
+            if let (Some(&current_beat), Some(&target_beat)) = (beats.get(current_idx), beats.get(target_idx)) {
+                let grid_distance = (current_beat as usize).saturating_sub(target_beat as usize);
                 let old_position = self.position;
-                self.position = target_pos as usize;
+                self.position = self.position.saturating_sub(grid_distance);
                 self.sync_position_atomic();
 
-                // If loop is active, move the loop by the same distance (backward) and snap to grid
+                // If loop is active, move the loop by the same grid distance (backward)
                 if self.loop_state.active {
                     let jump_distance = old_position.saturating_sub(self.position);
                     let new_start = self.loop_state.start.saturating_sub(jump_distance);
                     let new_end = self.loop_state.end.saturating_sub(jump_distance);
-                    // Snap loop boundaries to beat grid
                     self.loop_state.start = self.snap_to_beat(new_start);
                     self.loop_state.end = self.snap_to_beat(new_end);
                     self.sync_loop_atomic();
