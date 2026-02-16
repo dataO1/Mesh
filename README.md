@@ -33,7 +33,7 @@ Mesh also includes **built-in stem separation** — drop any MP3, FLAC, or WAV f
 ### Track Preparation (mesh-cue)
 
 - **Automatic stem separation** — Import regular audio files; AI separates into Vocals, Drums, Bass, and Other
-- **BPM and key detection** — Automatic analysis with configurable tempo ranges for genre-specific accuracy
+- **BPM and key detection** — Automatic analysis with configurable tempo ranges. Advanced mode uses the Beat This! neural network (ISMIR 2024) for SOTA beat tracking that eliminates half-tempo errors common with DnB and fast tempos. Simple mode uses Essentia's classic algorithm
 - **Beat grid editing** — Fine-tune beat markers, set downbeats, adjust BPM with visual feedback
 - **8 hot cues per track** — Set, edit, and color-code cue points
 - **Stem linking** — Prepare mashups by linking stems from different tracks (e.g., vocals from track A over instrumentals from track B)
@@ -295,6 +295,7 @@ See [documents/similarity-search.md](documents/similarity-search.md) for the ful
 - [x] Track similarity search (audio fingerprinting)
 - [x] Smart suggestions with energy direction control
 - [x] ML genre classification and mood tagging (EffNet/Discogs400)
+- [x] ML beat detection (Beat This! ONNX model — no half-tempo errors)
 - [x] Auto-gain loudness normalization
 - [x] Vertical waveform layout (top-to-bottom timeline view)
 - [x] Master bus limiter and clipper (PA protection)
@@ -307,7 +308,6 @@ See [documents/similarity-search.md](documents/similarity-search.md) for the ful
 ### Coming Soon
 
 - [ ] Session history and set reconstruction
-- [ ] Beat grid analysis improvements (EDM-specific detection)
 - [ ] On-the-fly stem linking during performance
 - [ ] Slicer morph knob for preset banks
 - [ ] Real-time LUFS normalization per stem
@@ -338,6 +338,7 @@ Click the **gear icon** in mesh-cue to configure:
 | Setting | Description |
 |---------|-------------|
 | **BPM Range** | Set min/max tempo for genre-specific detection (e.g., DnB: 160-190) |
+| **Beat Detection** | Simple (Essentia) or Advanced (Beat This! ML model) |
 | **Separation Model** | Standard or Fine-tuned Demucs |
 | **Separation Shifts** | Quality vs. speed tradeoff (1-5) |
 | **Target Loudness** | LUFS target for auto-gain (-14 LUFS default) |
@@ -462,7 +463,8 @@ Uses [Essentia](https://essentia.upf.edu/) (AGPL-3.0) and [Demucs](https://githu
 
 - [Demucs](https://github.com/facebookresearch/demucs) — Neural stem separation
 - [signalsmith-stretch](https://signalsmith-audio.co.uk/code/stretch/) — Time stretching
-- [Essentia](https://essentia.upf.edu/) — Audio analysis (BPM, key, beats)
+- [Essentia](https://essentia.upf.edu/) — Audio analysis (key, LUFS, BPM fallback)
+- [Beat This!](https://github.com/CPJKU/beat_this) — ML beat and downbeat tracking (ISMIR 2024)
 - [iced](https://iced.rs/) — GUI framework
 - [JACK](https://jackaudio.org/) — Professional audio routing
 

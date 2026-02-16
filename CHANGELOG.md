@@ -70,10 +70,25 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 ### Added
 
+- **Beat This! ML beat detection** — SOTA beat and downbeat tracking via the
+  Beat This! ONNX model (CPJKU, ISMIR 2024). The small variant (~2M params,
+  ~10 MB) achieves Beat F1=88.8 and eliminates the half-tempo errors common
+  with DnB and fast tempos. Select "Advanced" in Settings → BPM → Beat
+  Detection to enable (default). Falls back to Essentia ("Simple") if the model
+  is unavailable.
+  - Pure Rust Slaney mel spectrogram preprocessing (n_fft=1024, hop=441,
+    f_min=30 Hz, f_max=11000 Hz) matching the original PyTorch `LogMelSpect`
+  - Chunked ONNX inference with cosine overlap blending for tracks of any length
+  - Sigmoid activation + peak picking (no Dynamic Bayesian Network)
+  - Integrated into both import and re-analysis paths
+  - Model auto-downloaded on first use (~10 MB, cached in
+    `~/.cache/mesh-cue/ml-models/`)
+  - Nix conversion script: `nix run .#convert-beat-model` to export from
+    PyTorch weights
+
 - **Beat This! research document** (`documents/beat-this-research.md`) —
-  Comprehensive integration plan for Beat This! (ISMIR 2024, CPJKU) as a future
-  Phase 3 upgrade. Documents the small variant (~2M params, ~8 MB ONNX, Beat
-  F1=88.8) suitable for CPU-only inference via the existing `ort` pipeline.
+  Comprehensive integration plan for Beat This! (ISMIR 2024, CPJKU).
+  Documents the model architecture and preprocessing requirements.
 
 ---
 
