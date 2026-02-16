@@ -47,7 +47,7 @@ pkgs.writeShellApplication {
     if ! gh auth status &>/dev/null; then
       echo "GitHub CLI not authenticated. Starting browser login..."
       echo ""
-      gh auth login --hostname github.com --git-protocol https --web
+      gh auth login --hostname github.com --git-protocol https --web --scopes repo,workflow
       echo ""
     fi
 
