@@ -34,7 +34,7 @@
     trusted-public-keys = [
       # Replace with output of: cat cache-pub-key.pem
       # Generated via: nix-store --generate-binary-cache-key mesh-embedded cache-priv-key.pem cache-pub-key.pem
-      "mesh-embedded:REPLACE_WITH_PUBLIC_KEY"
+      "mesh-embedded:TVnMdLIfPt4q20ulKuieSc2Rv2fcwnph/TdLh2dZuKA="
       "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
     ];
   };
