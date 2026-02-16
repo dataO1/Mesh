@@ -1051,10 +1051,7 @@ impl Deck {
         if let Some(track) = &self.track {
             let beats = &track.metadata.beat_grid.beats;
             let jump_size = self.beat_jump_size() as usize;
-            let current_idx = beats
-                .iter()
-                .position(|&b| b as usize >= self.position)
-                .unwrap_or(0);
+            let current_idx = Self::nearest_beat_index(beats, self.position);
             let target_idx = (current_idx + jump_size).min(beats.len().saturating_sub(1));
             if let Some(&target_pos) = beats.get(target_idx) {
                 let old_position = self.position;
@@ -1080,10 +1077,7 @@ impl Deck {
         if let Some(track) = &self.track {
             let beats = &track.metadata.beat_grid.beats;
             let jump_size = self.beat_jump_size() as usize;
-            let current_idx = beats
-                .iter()
-                .position(|&b| b as usize >= self.position)
-                .unwrap_or(0);
+            let current_idx = Self::nearest_beat_index(beats, self.position);
             let target_idx = current_idx.saturating_sub(jump_size);
             if let Some(&target_pos) = beats.get(target_idx) {
                 let old_position = self.position;
@@ -1101,6 +1095,34 @@ impl Deck {
                     self.sync_loop_atomic();
                 }
             }
+        }
+    }
+
+    /// Find the index of the nearest beat to a given sample position (binary search).
+    ///
+    /// Beat grids are sorted ascending, so we use `partition_point` (O(log n))
+    /// rather than a linear scan. Returns the index of whichever beat (left or right
+    /// of the insertion point) is closest in absolute distance.
+    fn nearest_beat_index(beats: &[u64], position: usize) -> usize {
+        if beats.is_empty() {
+            return 0;
+        }
+        let pos = position as u64;
+        // partition_point returns the first index where beats[i] >= pos
+        let right = beats.partition_point(|&b| b < pos);
+        if right == 0 {
+            return 0;
+        }
+        if right >= beats.len() {
+            return beats.len() - 1;
+        }
+        // Compare distance to beat on the left vs beat on the right
+        let dist_left = pos - beats[right - 1];
+        let dist_right = beats[right] - pos;
+        if dist_left <= dist_right {
+            right - 1
+        } else {
+            right
         }
     }
 

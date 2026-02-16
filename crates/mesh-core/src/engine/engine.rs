@@ -834,29 +834,22 @@ impl AudioEngine {
                     }
                 }
 
-                // Beat Jump (with inter-deck phase sync)
+                // Beat Jump (grid-aligned, no phase sync needed)
+                //
+                // Beat jumps move by exact beat grid intervals, so if the deck
+                // was in phase before the jump it will remain in phase after.
+                // Applying phase sync correction here would introduce drift
+                // (the snap_to_beat + phase_offset math can shift by a few
+                // samples, and the off-by-one from the old >= search compounded
+                // the problem).
                 EngineCommand::BeatJumpForward { deck } => {
                     if deck < NUM_DECKS {
-                        let pre_jump_pos = self.decks[deck].position() as usize;
-                        // Execute beat jump (handles position + loop movement)
                         self.decks[deck].beat_jump_forward();
-
-                        // Apply phase sync correction if playing
-                        if let Some(synced_pos) = self.apply_post_jump_phase_sync(deck, pre_jump_pos) {
-                            self.decks[deck].seek(synced_pos);
-                        }
                     }
                 }
                 EngineCommand::BeatJumpBackward { deck } => {
                     if deck < NUM_DECKS {
-                        let pre_jump_pos = self.decks[deck].position() as usize;
-                        // Execute beat jump (handles position + loop movement)
                         self.decks[deck].beat_jump_backward();
-
-                        // Apply phase sync correction if playing
-                        if let Some(synced_pos) = self.apply_post_jump_phase_sync(deck, pre_jump_pos) {
-                            self.decks[deck].seek(synced_pos);
-                        }
                     }
                 }
                 EngineCommand::SetBeatGrid { deck, beats } => {
