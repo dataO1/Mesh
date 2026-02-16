@@ -967,27 +967,36 @@ impl MeshApp {
         .width(Length::FillPortion(1));
 
         // Main content area: controls | canvas | controls
-        let main_row = row![
-            left_controls,
-            center_column,
-            right_controls,
-        ]
-        .spacing(10);
+        // Gets the majority of vertical space so waveforms aren't cramped
+        let main_row = container(
+            row![
+                left_controls,
+                center_column,
+                right_controls,
+            ]
+            .spacing(10)
+        )
+        .height(Length::FillPortion(7));
 
         // Bottom row: Collection browser (left) | Mixer (right)
+        // Compact area — browser scrolls within its allocated space
         let collection_browser = self.collection_browser.view().map(Message::CollectionBrowser);
         let mixer = self.mixer_view.view().map(Message::Mixer);
-        let bottom_row = row![
-            container(collection_browser).width(Length::FillPortion(3)),
-            container(mixer).width(Length::FillPortion(2)),
-        ]
-        .spacing(10);
+        let bottom_row = container(
+            row![
+                container(collection_browser).width(Length::FillPortion(3)),
+                container(mixer).width(Length::FillPortion(2)),
+            ]
+            .spacing(10)
+        )
+        .height(Length::FillPortion(3));
 
         // Status bar
         let status_bar = container(
             text(&self.status).size(12)
         )
-        .padding(5);
+        .padding(5)
+        .height(Length::Shrink);
 
         column![
             header,
@@ -997,6 +1006,7 @@ impl MeshApp {
         ]
         .spacing(10)
         .padding(10)
+        .height(Length::Fill)
         .into()
     }
 
