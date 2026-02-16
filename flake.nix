@@ -157,7 +157,12 @@
           nn-tilde = nnTilde;
         };
 
-        # Download and flash NixOS SD image for Orange Pi 5 Pro
+        # Embedded: one-time CI setup (keypair, secrets, Pages)
+        embeddedSetupApp = import ./nix/apps/embedded-setup.nix {
+          inherit pkgs;
+        };
+
+        # Embedded: download and flash NixOS SD image for Orange Pi 5 Pro
         embeddedFlashApp = import ./nix/apps/embedded-flash.nix {
           inherit pkgs;
         };
@@ -217,6 +222,10 @@
           build-nn-tilde = {
             type = "app";
             program = "${buildNnTildeApp}/bin/build-nn-tilde";
+          };
+          embedded-setup = {
+            type = "app";
+            program = "${embeddedSetupApp}/bin/embedded-setup";
           };
           embedded-flash = {
             type = "app";
