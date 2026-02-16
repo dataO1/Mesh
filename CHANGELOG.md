@@ -11,6 +11,7 @@ All notable changes to Mesh are documented in this file.
 | `mesh-cue_win.zip` | Windows 10/11 | Full DJ application with DirectML GPU acceleration |
 | `mesh-player_amd64.deb` | Linux (Debian/Ubuntu) | Lightweight stem player |
 | `mesh-player_win.zip` | Windows 10/11 | Lightweight stem player |
+| `sdimage-*.img.zst` | Orange Pi 5 Pro (aarch64) | NixOS SD card image for embedded standalone unit |
 
 ### Installation
 
@@ -590,6 +591,17 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   - **Clip indicator** — The "Audio Connected" dot in the header flashes red when
     the clipper engages (~150 ms hold), providing real-time visual feedback of
     master output clipping via a lock-free `AtomicBool` from the audio thread.
+
+- **Embedded standalone unit (Orange Pi 5 Pro)** — Run mesh-player as a
+  standalone DJ unit on an ARM64 single-board computer with no laptop required.
+  Complete NixOS configuration with cage Wayland kiosk, dual audio output
+  (PCM5102A I2S DAC for master, ES8388 onboard codec for cue), and automatic
+  fullscreen boot. CI builds natively on a free GitHub Actions ARM runner and
+  publishes a signed Nix binary cache to GitHub Pages. SD card images are
+  uploaded to GitHub Releases with hash-based deduplication — only rebuilt when
+  the NixOS configuration changes. The device pulls pre-built packages and
+  never compiles. A `mesh-update` systemd service with polkit rules enables
+  future UI-triggered OTA updates. Total hardware cost ~$112.
 
 ### Fixed
 

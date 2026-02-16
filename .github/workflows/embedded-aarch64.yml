@@ -3,6 +3,10 @@ name: Embedded aarch64 Build + Cache
 # Build mesh-player for aarch64-linux (Orange Pi 5 Pro) on a native ARM runner,
 # then publish a Nix binary cache to GitHub Pages. The embedded NixOS device
 # pulls pre-built packages from this cache, so it never compiles anything.
+#
+# The SD image job uses hash-based deduplication: the Nix derivation hash
+# captures ALL inputs (source, deps, config). If nothing changed, the build
+# is skipped entirely.
 
 on:
   push:
@@ -14,8 +18,13 @@ on:
         description: 'Version tag (e.g., v0.8.3)'
         required: true
         type: string
+      force_sd_image:
+        description: 'Force SD image rebuild (ignore cache)'
+        required: false
+        type: boolean
+        default: false
 
-# GitHub Pages deployment requires write access
+# GitHub Pages + Releases require write access
 permissions:
   contents: write
   pages: write
@@ -26,9 +35,14 @@ env:
   CACHE_NAME: mesh-cache
 
 jobs:
+  # ===========================================================================
+  # Job 1: Build mesh-player and publish binary cache to GitHub Pages
+  # ===========================================================================
   build-aarch64:
     name: Build aarch64 + Publish Cache
     runs-on: ubuntu-24.04-arm  # Native aarch64 runner (free for public repos)
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - name: Checkout repository
@@ -39,7 +53,6 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
-            # Accept the nixos-rk3588 flake
             extra-trusted-substituters = https://cache.nixos.org/
 
       - name: Get version
@@ -62,7 +75,7 @@ jobs:
           nix build -L .#packages.aarch64-linux.mesh-player
 
       # Create a proper Nix binary cache directory
-      # This is the same format as cache.nixos.org — just static files
+      # Same format as cache.nixos.org — just static files (.narinfo + .nar.xz)
       - name: Create binary cache
         run: |
           mkdir -p ./${{ env.CACHE_NAME }}
@@ -73,13 +86,9 @@ jobs:
             --secret-key-files /tmp/cache-priv-key.pem \
             ./result
 
-          # Show cache contents
           echo ""
           echo "Cache contents:"
           ls -lh ./${{ env.CACHE_NAME }}/
-          echo ""
-          echo "NAR files:"
-          ls -lh ./${{ env.CACHE_NAME }}/nar/ | head -20
           echo ""
           du -sh ./${{ env.CACHE_NAME }}
           echo ""
@@ -111,3 +120,113 @@ jobs:
           echo '```bash' >> $GITHUB_STEP_SUMMARY
           echo "nixos-rebuild switch --flake github:${{ github.repository }}/${{ steps.version.outputs.version }}#mesh-embedded --no-write-lock-file" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # Job 2: Build SD card image and upload to GitHub Releases
+  # ===========================================================================
+  # Uses Nix derivation hash for deduplication: the drvPath encodes ALL inputs
+  # (source code, nixpkgs pin, embedded config, dependencies). If nothing that
+  # affects the image has changed, the hash is identical and the build is skipped.
+  sd-image:
+    name: Build SD Image
+    needs: build-aarch64
+    runs-on: ubuntu-24.04-arm
+    if: always() && needs.build-aarch64.result == 'success'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-trusted-substituters = https://cache.nixos.org/
+
+      # Compute the Nix derivation hash — this captures ALL inputs to the image.
+      # The hash changes if and only if something affecting the image changed
+      # (source code, nixpkgs pin, embedded config, kernel config, etc.)
+      - name: Compute derivation hash
+        id: hash
+        run: |
+          echo "Evaluating SD image derivation (no build yet)..."
+          drv=$(nix eval --raw .#packages.aarch64-linux.sdImage.drvPath)
+          # Extract the 32-char hash from /nix/store/<hash>-name.drv
+          hash=$(basename "$drv" | cut -c1-32)
+          echo "hash=$hash" >> $GITHUB_OUTPUT
+          echo "Derivation: $drv"
+          echo "Hash: $hash"
+
+      # Check if we already uploaded an image with this exact hash
+      - name: Check for existing release
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="sdimage-${{ steps.hash.outputs.hash }}"
+          force="${{ github.event.inputs.force_sd_image }}"
+
+          if [ "$force" = "true" ]; then
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Force rebuild requested, skipping cache check."
+          elif gh release view "$tag" &>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "SD image already exists for this configuration (tag: $tag), skipping build."
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "No existing release found (tag: $tag), building SD image..."
+          fi
+
+      # Build the full NixOS SD card image (kernel + system + mesh-player)
+      # System packages come from cache.nixos.org, only custom packages are built
+      - name: Build SD image
+        if: steps.check.outputs.exists != 'true'
+        run: |
+          echo "Building NixOS SD image for Orange Pi 5 Pro..."
+          nix build -L .#packages.aarch64-linux.sdImage
+          echo ""
+          echo "Image output:"
+          ls -lh result/sd-image/
+
+      # Upload the compressed image to a GitHub Release
+      - name: Upload to GitHub Release
+        if: steps.check.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${{ needs.build-aarch64.outputs.version }}"
+          tag="sdimage-${{ steps.hash.outputs.hash }}"
+          image=$(ls result/sd-image/*.img* | head -1)
+          filename=$(basename "$image")
+
+          gh release create "$tag" \
+            --title "SD Image — ${version}" \
+            --notes "$(cat <<EOF
+          NixOS SD card image for Orange Pi 5 Pro (aarch64).
+
+          **Version:** ${version}
+          **Derivation hash:** \`${{ steps.hash.outputs.hash }}\`
+
+          ### Flash to SD card
+          \`\`\`bash
+          # Decompress and flash (replace /dev/sdX with your device)
+          zstdcat ${filename} | sudo dd of=/dev/sdX bs=4M status=progress
+          \`\`\`
+
+          ### After first boot
+          The device auto-starts mesh-player in kiosk mode.
+          Update via: \`nixos-rebuild switch --flake github:${{ github.repository }}/${version}#mesh-embedded\`
+          EOF
+          )" \
+            "$image"
+
+      - name: Summary
+        run: |
+          echo "## SD Image" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.check.outputs.exists }}" = "true" ]; then
+            echo "Skipped — image already exists for derivation hash \`${{ steps.hash.outputs.hash }}\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Built and uploaded as release \`sdimage-${{ steps.hash.outputs.hash }}\`" >> $GITHUB_STEP_SUMMARY
+          fi

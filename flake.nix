@@ -29,39 +29,37 @@
       # =====================================================================
       # Embedded NixOS configuration (Orange Pi 5 Pro)
       # =====================================================================
-      # Cross-compiled from x86_64: no binfmt, no host system changes.
+      # Built natively on aarch64 by GitHub Actions ARM runner.
       # Standard NixOS packages come from cache.nixos.org (aarch64-linux).
       # Custom packages (mesh-player, essentia) are built by CI and hosted
-      # on GitHub Pages as a binary cache.
-      #
-      # Build SD image:  nix build .#sdImage
-      # Deploy updates:  nixos-rebuild switch --fast --flake .#mesh-embedded \
-      #                    --target-host mesh@orangepi --use-remote-sudo
+      # on GitHub Pages as a binary cache. The SD image is uploaded to
+      # GitHub Releases with hash-based deduplication.
 
-      embeddedPkgs = import nixpkgs {
-        localSystem.system = "x86_64-linux";
-        crossSystem.system = "aarch64-linux";
-        overlays = [ (import rust-overlay) ];
-      };
-
-      embeddedCommon = import ./nix/common.nix { pkgs = embeddedPkgs; };
-
-      embeddedMeshPlayer = import ./nix/packages/mesh-player.nix {
-        pkgs = embeddedPkgs;
-        common = embeddedCommon;
-        src = ./.;
+      # Native aarch64 pkgs for the vendor kernel (used by nixos-rk3588 board module)
+      embeddedKernelPkgs = import nixpkgs {
+        system = "aarch64-linux";
       };
 
       embeddedOutputs = {
         # NixOS system configuration for the Orange Pi 5 Pro
+        # No buildPlatform override — defaults to the evaluating machine's arch:
+        #   aarch64 CI runner → native build
+        #   x86_64 dev machine → needs binfmt or --builders (not recommended, use CI)
         nixosConfigurations.mesh-embedded = nixpkgs.lib.nixosSystem {
+          # The rk3588 board modules require these specialArgs:
+          #   pkgsKernel — nixpkgs instance for building the vendor kernel
+          #   nixpkgs    — path to nixpkgs source (for sd-image module import)
+          specialArgs.rk3588 = {
+            pkgsKernel = embeddedKernelPkgs;
+            inherit nixpkgs;
+          };
           modules = [
-            # Board support (kernel, bootloader, device tree)
-            nixos-rk3588.nixosModules.orangepi5
+            # Board support: kernel, bootloader, device tree (split into core + sd-image)
+            nixos-rk3588.nixosModules.boards.orangepi5.core
+            nixos-rk3588.nixosModules.boards.orangepi5.sd-image
 
-            # Cross-compilation: build on x86_64, target aarch64
+            # Target platform (buildPlatform defaults to host — native build)
             {
-              nixpkgs.buildPlatform.system = "x86_64-linux";
               nixpkgs.hostPlatform.system = "aarch64-linux";
               nixpkgs.overlays = [ (import rust-overlay) ];
             }
@@ -69,22 +67,29 @@
             # Mesh embedded configuration
             ./nix/embedded/configuration.nix
 
-            # Inject the mesh-player package
-            {
-              services.mesh-embedded.package = embeddedMeshPlayer;
-            }
+            # Build mesh-player from the NixOS module system's own pkgs
+            # (native aarch64 on CI, no separate cross-compilation pkgs needed)
+            ({ pkgs, ... }:
+              let common = import ./nix/common.nix { inherit pkgs; };
+              in {
+                services.mesh-embedded.package = import ./nix/packages/mesh-player.nix {
+                  inherit pkgs common;
+                  src = self;
+                };
+              })
           ];
         };
 
-        # Convenience: build the SD card image from x86_64
-        # Usage: nix build .#sdImage
-        packages.x86_64-linux.sdImage =
+        # SD card image — built natively on aarch64 CI runner
+        # Usage (CI): nix build .#packages.aarch64-linux.sdImage
+        packages.aarch64-linux.sdImage =
           self.nixosConfigurations.mesh-embedded.config.system.build.sdImage;
       };
     in
-    # Merge per-system outputs (packages, devShells, apps) with
-    # top-level outputs (nixosConfigurations, sdImage)
-    flake-utils.lib.eachDefaultSystem (system:
+    # Deep merge per-system outputs (packages, devShells, apps) with
+    # top-level outputs (nixosConfigurations, sdImage).
+    # recursiveUpdate needed because both sides produce packages.aarch64-linux.*
+    nixpkgs.lib.recursiveUpdate (flake-utils.lib.eachDefaultSystem (system:
       let
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
@@ -210,5 +215,5 @@
           };
         };
       }
-    ) // embeddedOutputs;
+    )) embeddedOutputs;
 }

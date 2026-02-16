@@ -421,6 +421,18 @@ The embedded setup runs NixOS with mesh-player in a Wayland kiosk (cage composit
 | ES8388 onboard codec | Cue/headphone output (3.5mm TRRS) |
 | cage + mesh-player | Wayland kiosk, fullscreen on boot |
 
+### Quick Start
+
+1. **Download the SD image** from [GitHub Releases](https://github.com/dataO1/Mesh/releases) (look for `sdimage-*` tags)
+2. **Flash to microSD**: `zstdcat nixos-sd-image-*.img.zst | sudo dd of=/dev/sdX bs=4M status=progress`
+3. **Boot** — NixOS starts mesh-player in kiosk mode automatically
+4. **Update** — the device pulls pre-built packages from the [binary cache](https://datao1.github.io/Mesh/), never compiles:
+   ```bash
+   sudo nixos-rebuild switch --flake github:dataO1/Mesh/v0.9.0#mesh-embedded --no-write-lock-file
+   ```
+
+CI builds mesh-player natively on a free GitHub Actions ARM runner and publishes the binary cache to GitHub Pages. SD images are uploaded to Releases with hash-based deduplication (only rebuilt when the NixOS configuration changes).
+
 See **[documents/embedded-setup.md](documents/embedded-setup.md)** for the full guide covering hardware wiring, device tree overlays, NixOS configuration, audio routing, deployment workflow, and debugging.
 
 ---

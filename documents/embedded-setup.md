@@ -167,15 +167,21 @@ Developer pushes tag v0.9.0
           │
           ▼
 GitHub Actions (ubuntu-24.04-arm)         ← free native aarch64 runner
-  ├── nix build mesh-player (native ARM, no cross-compile)
-  ├── nix copy --to file://cache (signed binary cache)
-  └── Deploy cache to GitHub Pages
+  ├── Job 1: Build mesh-player (native ARM, no cross-compile)
+  │   ├── nix copy --to file://cache (signed binary cache)
+  │   └── Deploy cache to GitHub Pages
+  ├── Job 2: Build SD card image (hash-deduplicated)
+  │   ├── nix eval .#sdImage.drvPath → derivation hash
+  │   ├── Skip if release with that hash exists
+  │   └── Upload .img.zst to GitHub Releases
           │
           ▼
-GitHub Pages (https://datao1.github.io/Mesh/)    ← free static hosting
+GitHub Pages (https://datao1.github.io/Mesh/)    ← binary cache (free)
   ├── nix-cache-info
   ├── <hash>.narinfo
   └── nar/<hash>.nar.xz
+GitHub Releases                                   ← SD images (free)
+  └── sdimage-<hash> → nixos-sd-image-*.img.zst
           │
           ▼
 Orange Pi 5 Pro (NixOS)
@@ -233,12 +239,12 @@ mesh/
         └── pcm5102a-i2s3.dts        # I2S DAC device tree overlay
 ```
 
-The flake defines `nixosConfigurations.mesh-embedded` with cross-compilation support:
+The flake defines `nixosConfigurations.mesh-embedded` with native aarch64 builds (no cross-compilation):
 
 ```nix
-# Build on x86_64, produce aarch64 output (no binfmt needed)
-nixpkgs.buildPlatform.system = "x86_64-linux";
+# Target platform — built natively on aarch64 CI runner
 nixpkgs.hostPlatform.system = "aarch64-linux";
+# buildPlatform defaults to evaluating machine's arch (aarch64 on CI)
 ```
 
 ### Step 1: Flash U-Boot (One-Time)
@@ -259,19 +265,20 @@ sudo armbian-install
 # Power off, remove the Armbian SD card
 ```
 
-### Step 2: Build NixOS SD Image
+### Step 2: Get NixOS SD Image
 
-From your x86 workstation (no binfmt or system changes needed):
+The SD image is built by CI and uploaded to GitHub Releases. Download the latest:
 
 ```bash
-cd ~/Projects/mesh
-nix build .#sdImage
+# Download from GitHub Releases (look for "SD Image" releases)
+gh release list --repo dataO1/Mesh | grep sdimage
+gh release download sdimage-<hash> --repo dataO1/Mesh --dir /tmp
 
-# Flash to microSD
-dd if=result/sd-image/*.img of=/dev/sdX bs=1M status=progress
+# Flash to microSD (replace /dev/sdX with your device)
+zstdcat /tmp/nixos-sd-image-*.img.zst | sudo dd of=/dev/sdX bs=4M status=progress
 ```
 
-The first build cross-compiles everything and takes several hours. Subsequent builds are incremental.
+The image is only rebuilt by CI when the NixOS configuration changes (hash-based deduplication). Rust-only changes update through the binary cache, not the SD image.
 
 ### Step 3: First Boot
 
