@@ -60,15 +60,17 @@ in pkgs.rustPlatform.buildRustPackage {
     if [ ! -d "patches/libpd-sys" ]; then
       echo "Creating patched libpd-sys (32-bit floats)..."
       vendor_dir=$(find /build -maxdepth 1 -name '*-vendor*' -type d 2>/dev/null | head -1)
-      if [ -n "$vendor_dir" ] && [ -d "$vendor_dir/libpd-sys" ]; then
+      # Vendored crates include version: libpd-sys-0.3.4, not libpd-sys
+      libpd_src=$(find "$vendor_dir" -maxdepth 1 -name 'libpd-sys-*' -type d 2>/dev/null | head -1)
+      if [ -n "$libpd_src" ]; then
         mkdir -p patches
-        cp -r "$vendor_dir/libpd-sys" patches/libpd-sys
+        cp -r "$libpd_src" patches/libpd-sys
         chmod -R u+w patches/libpd-sys
         sed -i 's/const PD_FLOATSIZE: &str = "64"/const PD_FLOATSIZE: \&str = "32"/' patches/libpd-sys/build.rs
-        echo "  done (from $vendor_dir)"
+        echo "  done (from $libpd_src)"
       else
-        echo "WARNING: libpd-sys not found (vendor_dir=$vendor_dir)"
-        echo "  /build contents: $(ls /build/)"
+        echo "WARNING: libpd-sys not found in vendor ($vendor_dir)"
+        echo "  vendor contents: $(ls "$vendor_dir/" | grep libpd || echo '(none)')"
       fi
     fi
   '';
