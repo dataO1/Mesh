@@ -53,7 +53,8 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
-            extra-trusted-substituters = https://cache.nixos.org/
+            extra-substituters = https://datao1.github.io/Mesh/
+            extra-trusted-public-keys = mesh-embedded:TVnMdLIfPt4q20ulKuieSc2Rv2fcwnph/TdLh2dZuKA=
 
       - name: Get version
         id: version
@@ -142,7 +143,8 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
-            extra-trusted-substituters = https://cache.nixos.org/
+            extra-substituters = https://datao1.github.io/Mesh/
+            extra-trusted-public-keys = mesh-embedded:TVnMdLIfPt4q20ulKuieSc2Rv2fcwnph/TdLh2dZuKA=
 
       # Compute the Nix derivation hash — this captures ALL inputs to the image.
       # The hash changes if and only if something affecting the image changed
