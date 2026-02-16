@@ -41,20 +41,24 @@ All viable candidates use the **RK3588** SoC — no other ARM chip has comparabl
 | Khadas VIM4 (A311D2) | $220 | Max 8GB, old A73 cores, blob GPU |
 | ASUS Tinker Board 3N | varies | RK3568 — only A55 cores, max 8GB |
 
-### Recommendation: Orange Pi 5 Max (Primary) — Updated Feb 2026
+### Recommendation: Orange Pi 5 Pro 8GB (Primary) — Updated Feb 2026
 
-**Orange Pi 5 Max** is the primary pick for embedded mesh:
-- **89×57mm credit-card form factor** — fits behind a 7" display in a sandwich mount
-- **Built-in WiFi 6E + BT 5.3** — no separate M.2 E-Key module needed (one fewer failure point)
-- **PCIe 3.0 x4 NVMe** — 4 GB/s for fast stem streaming across 4 decks
-- **LPDDR5** — lower power consumption than LPDDR4x (same performance for audio workloads)
-- **ES8388 onboard codec + I2S3 on GPIO** — identical audio architecture to OPi 5 Plus, confirmed on Armbian forums
-- **~$145 at 16GB** — slightly more than OPi 5 Plus but includes WiFi (saves ~$15 module cost)
-- 16GB cap is not a limitation (see RAM analysis below — worst case is ~5.6 GB)
+**Orange Pi 5 Pro 8GB** is the primary pick for embedded mesh:
+- **$80** — cheapest viable RK3588S board with all required features
+- **89×56mm credit-card form factor** — fits behind a 7" display in a sandwich mount
+- **Built-in WiFi 5 + BT 5.0** — no separate module needed
+- **LPDDR5** — lower power consumption (RK3588S is 15-20% more efficient than full RK3588)
+- **ES8388 onboard codec + I2S3 on GPIO** — identical audio architecture to OPi 5 Plus/Max
+- **8 GB RAM is sufficient** — worst case 3.7 GB used (4 decks × 4 stems × 7-min tracks + heavy FX), leaving 4.3 GB free
+- **No NVMe required** — DJs play from USB 3.0 sticks (CDJ workflow). M.2 slot available as optional upgrade for built-in library.
+- RK3588S vs RK3588: same CPU/GPU/NPU/I2S, fewer PCIe lanes (irrelevant without NVMe) and one fewer HDMI 2.1 (irrelevant for single 7" display)
 
-**Orange Pi 5 Plus** remains a solid alternative:
-- $10-15 cheaper at 16GB, 32GB option available (unnecessary for mesh)
-- Larger 100×70mm form factor, dual 2.5GbE
+**Orange Pi 5 Max 16GB** is the upgrade pick (~$145):
+- WiFi 6E + BT 5.3, PCIe 3.0 x4 NVMe, same 89×57mm form factor
+- Best choice if adding built-in NVMe library or needing faster WiFi for track transfer
+
+**Orange Pi 5 Plus 16GB** remains a solid alternative (~$142+$15 WiFi):
+- Larger 100×70mm form factor, dual 2.5GbE, 2x USB 3.0
 - Largest RK3588 community (Armbian, ubuntu-rockchip)
 - WiFi requires separate M.2 E-Key module
 
@@ -444,6 +448,681 @@ iced 0.14 uses winit 0.30.x which auto-selects Wayland when `WAYLAND_DISPLAY` is
 - Auto-start mesh-player on boot (kiosk mode)
 - Optional: NPU integration for faster analysis
 
+## Software Implementation Guide
+
+This section documents everything needed to build, deploy, and debug the embedded NixOS mesh-player system on the Orange Pi 5 Pro (or any RK3588/RK3588S board with ES8388 + I2S3 GPIO).
+
+### How the I2S DAC Works (Physical Layer)
+
+The PCM5102A DAC is connected to the Orange Pi's 40-pin GPIO header via **6 ordinary female-to-female Dupont jumper wires**. No soldering required for prototyping — the GY-PCM5102 breakout board has pin headers that accept standard jumper wires.
+
+```
+Orange Pi 5 Pro                    GY-PCM5102 Breakout
+40-pin GPIO Header                 (PCM5102A DAC)
+┌──────────────┐                   ┌──────────────┐
+│ Pin 1  (3.3V)│───── red ────────▶│ VIN          │
+│ Pin 6  (GND) │───── black ──────▶│ GND          │
+│              │                   │ SCK ◀── GND  │  (tie SCK to GND pad on board)
+│ Pin 35 (SCLK)│───── yellow ─────▶│ BCK          │
+│ Pin 38 (LRCK)│───── green ──────▶│ LRCK         │
+│ Pin 40 (SDO) │───── blue ───────▶│ DIN          │
+└──────────────┘                   └──────┬───────┘
+                                          │ 3.5mm jack
+                                          ▼
+                                    PA System / Mixer
+                                    (MASTER output)
+```
+
+**How it works electrically:**
+
+1. The RK3588S's I2S3 controller generates three signals: a bit clock (BCK/SCLK), a word select clock (LRCK, alternates L/R channel), and serial data (SDO/DIN — the actual audio samples)
+2. These are 3.3V CMOS logic signals, clocked at BCK = sample_rate × bits × 2 channels (e.g., 44.1kHz × 32 × 2 = 2.822 MHz)
+3. The PCM5102A's internal PLL regenerates a master clock from BCK — that's why SCK is tied to GND (tells the chip to use internal PLL mode)
+4. The DAC converts the digital I2S stream to analog audio on its 3.5mm output jack
+5. No I2C control bus is needed — the PCM5102A is a "dumb" DAC that just converts whatever I2S data it receives. All configuration (sample rate, bit depth) is implicit in the I2S clock signals
+
+**For production:** Replace jumper wires with soldered connections or a small adapter PCB. The GY-PCM5102 board (30×20mm) mounts inside the enclosure with double-sided tape or M2 standoffs.
+
+### How the Kernel Sees the DAC (Device Tree Overlay)
+
+Linux doesn't automatically know there's a DAC connected to the I2S3 pins. A **Device Tree Overlay (DTBO)** tells the kernel:
+
+1. Enable the `i2s3_2ch` controller (disabled by default on most OPi images)
+2. Configure the pinmux so GPIO3_C2/C0/B7 become I2S3 signals instead of general GPIO
+3. Register a `simple-audio-card` that pairs the I2S3 controller with a `ti,pcm5102a` codec driver
+4. The PCM5102A codec driver is built into mainline Linux — it's essentially a no-op driver that tells ALSA "this is a stereo DAC, no control registers"
+
+The overlay source lives in the I2S DAC section below. Compilation:
+
+```bash
+# Compile the overlay
+dtc -I dts -O dtb -o pcm5102a-i2s3.dtbo pcm5102a-i2s3.dts
+
+# On Armbian/ubuntu-rockchip: copy and enable
+sudo cp pcm5102a-i2s3.dtbo /boot/dtb/rockchip/overlay/
+sudo orangepi-config  # → System → Hardware → enable overlay
+
+# On NixOS: loaded via hardware.deviceTree.overlays (see NixOS section below)
+```
+
+After loading the overlay and rebooting, `aplay -l` shows two sound cards:
+
+```
+card 0: rockchipes8388 [rockchip-es8388]    ← onboard codec (3.5mm jack, CUE)
+card 1: PCM5102A [PCM5102A]                 ← I2S DAC on GPIO (MASTER)
+```
+
+### Audio Routing: How mesh-player Talks to Two Sound Cards
+
+mesh-player uses **cpal** (cross-platform audio library) for audio output, which on Linux talks to ALSA. With PipeWire running, there are two paths:
+
+#### Option A: Direct ALSA (lowest latency, recommended for production)
+
+mesh-player opens two separate ALSA devices directly:
+
+```
+Master output → ALSA device "hw:1,0" (PCM5102A)    → PA system
+Cue output    → ALSA device "hw:0,0" (ES8388)       → Headphones
+```
+
+In mesh-player's audio configuration, this means selecting the output device by ALSA card name. cpal enumerates all available ALSA devices — mesh-player picks the right one by matching the card name substring (`"PCM5102A"` for master, `"es8388"` for cue).
+
+**Implementation in mesh-player:**
+
+```rust
+// Pseudocode for device selection
+let host = cpal::default_host();
+let devices = host.output_devices()?;
+
+let master_device = devices.clone()
+    .find(|d| d.name().unwrap_or_default().contains("PCM5102A"))?;
+let cue_device = devices
+    .find(|d| d.name().unwrap_or_default().contains("es8388"))?;
+
+// Open separate output streams on each device
+let master_stream = master_device.build_output_stream(&config, master_callback, err_fn, None)?;
+let cue_stream = cue_device.build_output_stream(&config, cue_callback, err_fn, None)?;
+```
+
+Card numbering (`hw:0` vs `hw:1`) can change between boots. **Always match by name, never by number.**
+
+#### Option B: PipeWire routing (more flexible, slightly more latency)
+
+PipeWire exposes both cards as sinks. mesh-player outputs to PipeWire's default sink, and WirePlumber rules route streams to the correct physical device based on stream properties.
+
+```
+mesh-player master stream → PipeWire → alsa_output.platform-pcm5102a-sound → PA
+mesh-player cue stream    → PipeWire → alsa_output.platform-rockchip-es8388 → HP
+```
+
+This requires mesh-player to set `media.role` or `node.name` properties on each stream so WirePlumber can distinguish them. More complex to set up, but allows runtime re-routing via `pavucontrol` or `pw-link`.
+
+**Recommendation:** Use Option A (direct ALSA) for production. PipeWire adds ~2-5ms latency and an extra failure point. For development/debugging, PipeWire is more convenient.
+
+#### ALSA Configuration for Direct Access
+
+When using direct ALSA (bypassing PipeWire), ensure PipeWire doesn't grab the devices exclusively. In NixOS:
+
+```nix
+# Allow direct ALSA access alongside PipeWire
+environment.etc."alsa/conf.d/99-mesh.conf".text = ''
+  # Named device aliases for mesh-player
+  pcm.mesh_master {
+    type hw
+    card "PCM5102A"
+    device 0
+  }
+  pcm.mesh_cue {
+    type hw
+    card "rockchipes8388"
+    device 0
+  }
+'';
+```
+
+mesh-player can then open `"mesh_master"` and `"mesh_cue"` as stable ALSA device names regardless of card numbering.
+
+### NixOS Deployment: Full Workflow
+
+#### 1. Initial OS Installation (One-Time)
+
+**Step 1: Flash U-Boot to SPI NOR flash**
+
+The OPi 5 Pro has SPI NOR flash for the bootloader. Flash it once using an Armbian SD card:
+
+```bash
+# On your x86 workstation:
+# Download Armbian for Orange Pi 5 (RK3588S images work for OPi 5 Pro)
+wget https://dl.armbian.com/orangepi5/Bookworm_current
+
+# Flash to microSD
+dd if=Armbian_*.img of=/dev/sdX bs=1M status=progress
+
+# Boot the OPi 5 Pro from the microSD, then:
+sudo armbian-install
+# Select: "Install/Update the bootloader on SPI Flash"
+# This writes U-Boot to the SPI NOR — board now boots from any media
+
+# Power off, remove the Armbian SD card
+```
+
+**Step 2: Build the NixOS SD image**
+
+On your x86 NixOS workstation:
+
+```bash
+# Enable aarch64 emulation (add to your workstation's configuration.nix)
+# boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
+# then: sudo nixos-rebuild switch
+
+# Clone the mesh embedded flake (see flake structure below)
+cd ~/Projects/mesh
+nix build .#nixosConfigurations.mesh-embedded.config.system.build.sdImage
+
+# Flash to microSD
+dd if=result/sd-image/*.img of=/dev/sdX bs=1M status=progress
+```
+
+**Step 3: First boot**
+
+Insert the microSD into the OPi 5 Pro, connect HDMI + USB keyboard, power on. NixOS boots to a login prompt. SSH is enabled by default.
+
+```bash
+# From your workstation, verify SSH access
+ssh mesh@<board-ip>
+
+# Done — all future updates happen remotely via nixos-rebuild
+```
+
+#### 2. Flake Structure
+
+Add an embedded target to the existing mesh project flake:
+
+```
+mesh/
+├── flake.nix                    # Add mesh-embedded NixOS config
+├── nix/
+│   ├── common.nix               # Existing build deps
+│   └── embedded/
+│       ├── configuration.nix    # NixOS system config
+│       ├── hardware.nix         # OPi 5 Pro hardware (kernel, DT, GPU)
+│       ├── audio.nix            # PipeWire + I2S DAC overlay + ALSA config
+│       ├── kiosk.nix            # cage compositor + auto-login
+│       └── pcm5102a-i2s3.dts   # Device tree overlay source
+```
+
+**flake.nix additions:**
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixos-rk3588.url = "github:gnull/nixos-rk3588";
+    # OR for OPi 5 Pro specifically:
+    # nixos-opi5pro.url = "github:tlan16/nixos-orange-5-pro";
+  };
+
+  outputs = { self, nixpkgs, nixos-rk3588, ... }: {
+    nixosConfigurations.mesh-embedded = nixpkgs.lib.nixosSystem {
+      system = "aarch64-linux";
+      modules = [
+        nixos-rk3588.nixosModules.orangepi5  # board support (RK3588S)
+        ./nix/embedded/configuration.nix
+        ./nix/embedded/hardware.nix
+        ./nix/embedded/audio.nix
+        ./nix/embedded/kiosk.nix
+      ];
+    };
+  };
+}
+```
+
+#### 3. NixOS Configuration Modules
+
+**hardware.nix** — Board-specific kernel, GPU, device tree:
+
+```nix
+{ pkgs, ... }: {
+  # Kernel: Armbian-patched 6.1 LTS with PREEMPT_RT
+  # (provided by gnull/nixos-rk3588 board module)
+
+  # GPU: Use GLES via Panfrost (not Vulkan — known Wayland bug)
+  hardware.graphics.enable = true;
+
+  # Device tree overlay for PCM5102A DAC
+  hardware.deviceTree.overlays = [
+    {
+      name = "pcm5102a-i2s3";
+      dtsFile = ./pcm5102a-i2s3.dts;
+    }
+  ];
+
+  # CPU governor: lock to performance (no frequency scaling latency)
+  powerManagement.cpuFreqGovernor = "performance";
+
+  # Pin audio threads to A76 big cores (cores 4-7 on RK3588S)
+  # Done via systemd CPUAffinity on the mesh-player service (see kiosk.nix)
+
+  # Boot speed optimizations
+  boot.loader.timeout = 0;
+  boot.plymouth.enable = false;
+  boot.initrd.systemd.enable = true;
+  systemd.services.systemd-udev-settle.enable = false;
+  systemd.services.NetworkManager-wait-online.enable = false;
+
+  # USB stick automounting (DJ plugs in their USB stick)
+  services.udisks2.enable = true;
+}
+```
+
+**audio.nix** — PipeWire + ALSA + I2S DAC:
+
+```nix
+{ pkgs, ... }: {
+  # PipeWire as audio server
+  security.rtkit.enable = true;
+  services.pipewire = {
+    enable = true;
+    alsa.enable = true;
+    alsa.support32Bit = false;  # aarch64 only
+    jack.enable = true;         # JACK compatibility for pro-audio tools
+  };
+
+  # Persist ALSA card state across reboots
+  hardware.alsa.enablePersistence = true;
+
+  # Named ALSA device aliases for mesh-player
+  environment.etc."alsa/conf.d/99-mesh.conf".text = ''
+    pcm.mesh_master {
+      type hw
+      card "PCM5102A"
+      device 0
+    }
+    pcm.mesh_cue {
+      type hw
+      card "rockchipes8388"
+      device 0
+    }
+  '';
+
+  # WirePlumber: disable suspend on audio devices (prevents pops/clicks)
+  services.pipewire.wireplumber.extraConfig."99-mesh-audio" = {
+    "monitor.alsa.rules" = [
+      {
+        matches = [
+          { "node.name" = "~alsa_output.*es8388*"; }
+          { "node.name" = "~alsa_output.*PCM5102A*"; }
+        ];
+        actions = {
+          update-props = {
+            "session.suspend-timeout-seconds" = 0;   # never suspend
+            "api.alsa.period-size" = 256;             # ~5.8ms at 44.1kHz
+            "api.alsa.headroom" = 256;
+          };
+        };
+      }
+    ];
+  };
+
+  # ES8388 headphone volume: set a safe default at boot
+  # (ES8388 has software-controllable gain via I2C, amixer sets it)
+  systemd.services.mesh-audio-init = {
+    description = "Initialize audio card volumes";
+    after = [ "sound.target" ];
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${pkgs.alsa-utils}/bin/amixer -c rockchipes8388 set Headphone 80%";
+    };
+  };
+}
+```
+
+**kiosk.nix** — Cage compositor + auto-start mesh-player:
+
+```nix
+{ pkgs, ... }:
+let
+  meshPlayer = pkgs.callPackage ../../default.nix {};  # mesh-player package
+in {
+  # Auto-login user
+  users.users.mesh = {
+    isNormalUser = true;
+    extraGroups = [ "audio" "video" "input" "plugdev" ];
+    initialPassword = "mesh";  # Change on first login
+  };
+
+  # Cage kiosk compositor — single fullscreen app, no desktop
+  services.cage = {
+    enable = true;
+    user = "mesh";
+    program = "${meshPlayer}/bin/mesh-player";
+    extraArguments = [ "-d" ];  # disable client-side decorations
+    environment = {
+      WGPU_BACKEND = "gl";              # GLES via Panfrost (stable)
+      # WGPU_BACKEND = "vulkan";        # PanVK (experimental, known bugs)
+      MESA_GL_VERSION_OVERRIDE = "3.1"; # ensure GLES 3.1 exposure
+      WLR_NO_HARDWARE_CURSORS = "1";    # software cursor (avoids KMS cursor issues)
+    };
+  };
+
+  # Restart mesh-player on crash (watchdog)
+  systemd.services."cage-tty1" = {
+    serviceConfig = {
+      Restart = "always";
+      RestartSec = 2;
+      CPUAffinity = "4-7";  # pin to A76 big cores
+    };
+  };
+
+  # SSH for remote management (always available even if UI crashes)
+  services.openssh = {
+    enable = true;
+    settings.PasswordAuthentication = true;
+  };
+
+  # Firewall: allow SSH
+  networking.firewall.allowedTCPPorts = [ 22 ];
+}
+```
+
+**configuration.nix** — Top-level system config:
+
+```nix
+{ pkgs, ... }: {
+  system.stateVersion = "24.11";
+  networking.hostName = "mesh-embedded";
+
+  # Timezone
+  time.timeZone = "Europe/Berlin";  # adjust to your locale
+
+  # Networking
+  networking.networkmanager.enable = true;
+
+  # Basic packages for debugging/maintenance
+  environment.systemPackages = with pkgs; [
+    vim
+    htop
+    alsa-utils      # aplay, arecord, amixer, aplay -l
+    pipewire        # pw-cli, pw-link, pw-dump
+    usbutils        # lsusb
+    pciutils        # lspci
+    dtc             # device tree compiler (for overlay debugging)
+    wlr-randr       # display configuration under Wayland
+    evtest          # input device testing (touch, MIDI)
+  ];
+
+  # Nix settings for remote builds
+  nix.settings = {
+    experimental-features = [ "nix-command" "flakes" ];
+    trusted-users = [ "mesh" ];
+  };
+}
+```
+
+#### 4. Building and Deploying
+
+**Build approach: QEMU emulation on x86 workstation (recommended)**
+
+```bash
+# One-time: enable aarch64 emulation on your NixOS workstation
+# In your workstation's configuration.nix:
+#   boot.binfmt.emulatedSystems = [ "aarch64-linux" ];
+# Then: sudo nixos-rebuild switch
+
+# Build the full NixOS system closure for the embedded target
+# Most packages come from cache.nixos.org (pre-built aarch64 binaries)
+# Only mesh-player itself needs to be compiled (via QEMU, ~5-10 min)
+nix build .#nixosConfigurations.mesh-embedded.config.system.build.toplevel
+```
+
+**Why QEMU emulation over cross-compilation:**
+- Cross-compiled derivations have **different store paths** → can't use the official binary cache
+- QEMU emulation uses **native aarch64 store paths** → 95% of packages come pre-built from `cache.nixos.org`
+- Only mesh-player + its Rust deps + Essentia need actual compilation
+- QEMU is slow for compilation (~3-5x slower) but you only compile what's not cached
+
+**Deploy to the board over SSH:**
+
+```bash
+# From your workstation (x86), deploy to the running board:
+nixos-rebuild switch \
+  --flake .#mesh-embedded \
+  --target-host mesh@192.168.1.100 \
+  --use-remote-sudo
+
+# This:
+# 1. Builds the system closure (using QEMU emulation + binary cache)
+# 2. Copies new/changed store paths to the board via SSH
+# 3. Runs `switch-to-configuration switch` on the board
+# 4. Board restarts affected services (including cage → mesh-player)
+```
+
+**Alternative: deploy-rs (for multi-board fleets)**
+
+```bash
+# If managing multiple mesh-embedded boards:
+nix run github:serokell/deploy-rs -- .#mesh-embedded
+```
+
+#### 5. Development Workflow
+
+**Daily development cycle:**
+
+```
+  x86 workstation                          OPi 5 Pro (192.168.1.100)
+  ┌──────────────┐                         ┌──────────────────────┐
+  │ Edit Rust code│                         │ NixOS running        │
+  │ in mesh repo  │                         │ cage → mesh-player   │
+  │               │                         │                      │
+  │ nixos-rebuild │──── SSH ───────────────▶│ switch-to-config     │
+  │ --target-host │     (copy store paths)  │ restart cage service │
+  │               │                         │ mesh-player starts   │
+  │               │◀─── SSH ────────────────│ journalctl -f output │
+  │ See logs      │     (debug)             │                      │
+  └──────────────┘                         └──────────────────────┘
+```
+
+1. Edit mesh-player Rust code on your x86 workstation
+2. Run `nixos-rebuild switch --target-host mesh@<ip> --use-remote-sudo`
+3. Build runs locally via QEMU (~2-5 min for incremental Rust builds)
+4. New binary is copied to the board, cage restarts, mesh-player launches
+5. Debug via SSH: `journalctl -u cage-tty1 -f` for live logs
+
+**Faster iteration: native build on the board**
+
+For quick compile-test cycles, you can also build directly on the board:
+
+```bash
+# SSH into the board
+ssh mesh@192.168.1.100
+
+# Clone mesh repo (or mount via NFS/sshfs)
+git clone https://github.com/your/mesh.git
+cd mesh
+
+# Build mesh-player natively on the RK3588S (4x A76 cores)
+cargo build --release -p mesh-player
+# ~3-5 min for full build, ~30-60s for incremental
+
+# Stop the kiosk, run manually for testing
+sudo systemctl stop cage-tty1
+WGPU_BACKEND=gl ./target/release/mesh-player
+```
+
+**Optional: Cachix for faster CI/CD**
+
+```bash
+# Push aarch64 builds to a private Cachix cache
+# In CI or after a successful local build:
+cachix push mesh-embedded $(nix build .#mesh-player-aarch64 --print-out-paths)
+
+# Board pulls from cache instead of building:
+# Add to configuration.nix:
+#   nix.settings.substituters = [ "https://mesh-embedded.cachix.org" ];
+#   nix.settings.trusted-public-keys = [ "mesh-embedded.cachix.org-1:XXXX" ];
+```
+
+#### 6. Debugging & Troubleshooting
+
+**Audio debugging:**
+
+```bash
+# List all sound cards — verify both appear
+aplay -l
+# Expected:
+# card 0: rockchipes8388 [rockchip-es8388], device 0: ...
+# card 1: PCM5102A [PCM5102A], device 0: ...
+
+# Test master output (PCM5102A DAC)
+speaker-test -D hw:1,0 -c 2 -t wav
+# You should hear "Front Left", "Front Right" from the PA output
+
+# Test cue output (ES8388 headphone)
+speaker-test -D hw:0,0 -c 2 -t wav
+# You should hear audio in headphones
+
+# Test using named ALSA aliases
+speaker-test -D mesh_master -c 2 -t wav
+speaker-test -D mesh_cue -c 2 -t wav
+
+# Check PipeWire sees both sinks
+pw-cli list-objects | grep -A2 "alsa_output"
+
+# Check WirePlumber routing
+wpctl status
+
+# Monitor ALSA in real-time (shows xruns/underruns)
+cat /proc/asound/card1/pcm0p/sub0/status
+
+# Adjust ES8388 headphone volume
+amixer -c rockchipes8388 set Headphone 90%
+amixer -c rockchipes8388 contents  # show all controls
+```
+
+**Display debugging:**
+
+```bash
+# Check connected displays
+wlr-randr
+# Shows resolution, refresh rate, and position of each output
+
+# Check GPU driver
+cat /sys/kernel/debug/dri/0/name    # should show "panfrost" or "panthor"
+glxinfo | grep "OpenGL renderer"     # under X11
+# Under Wayland: run `eglinfo` or check weston-info
+
+# If display is black: check cage service
+systemctl status cage-tty1
+journalctl -u cage-tty1 --no-pager -n 50
+```
+
+**Device tree debugging:**
+
+```bash
+# Verify overlay loaded
+ls /proc/device-tree/ | grep pcm5102a
+# Should show: pcm5102a, pcm5102a-sound
+
+# Check I2S3 status
+cat /proc/device-tree/i2s@fe4a0000/status    # should say "okay"
+
+# Decompile the live device tree (useful for debugging)
+dtc -I fs -O dts /proc/device-tree/ 2>/dev/null | grep -A10 "i2s3"
+
+# If overlay didn't load, check kernel log
+dmesg | grep -i "i2s\|pcm5102\|simple-audio"
+```
+
+**General system debugging:**
+
+```bash
+# System logs (all services)
+journalctl -b --no-pager | tail -100
+
+# mesh-player specific logs
+journalctl -u cage-tty1 -f              # live follow
+journalctl -u cage-tty1 --since "5 min ago"
+
+# CPU/memory usage
+htop
+
+# USB devices (verify USB stick, MIDI controller)
+lsusb
+
+# GPIO state (verify I2S pins are in correct mode)
+cat /sys/kernel/debug/pinctrl/pinctrl-rockchip-pinctrl/pinmux-pins | grep -i i2s3
+
+# Temperature monitoring
+cat /sys/class/thermal/thermal_zone0/temp  # divide by 1000 for °C
+
+# Network
+ip addr              # verify WiFi connected
+nmcli device wifi    # scan for networks
+```
+
+**Emergency recovery:**
+
+```bash
+# If the board won't boot / cage is broken:
+# 1. Connect a USB keyboard + HDMI monitor
+# 2. At the boot menu, select a previous NixOS generation
+#    (NixOS keeps old generations, you can roll back)
+
+# Or: hold the board's MASKROM button during power-on to enter recovery mode
+# Then re-flash the microSD with a known-good image
+
+# SSH backdoor: even if cage crashes, SSH stays up
+# (cage-tty1 is a separate service from sshd)
+ssh mesh@<board-ip>
+sudo systemctl restart cage-tty1
+
+# Roll back to previous generation remotely
+sudo nixos-rebuild switch --rollback
+```
+
+#### 7. Update Workflow (Ongoing)
+
+```bash
+# On your x86 workstation, after updating mesh-player code:
+
+# 1. Commit changes to mesh repo
+git add -A && git commit -m "fix: whatever"
+
+# 2. Deploy to the board
+nixos-rebuild switch \
+  --flake .#mesh-embedded \
+  --target-host mesh@192.168.1.100 \
+  --use-remote-sudo
+
+# 3. If something breaks, roll back instantly:
+nixos-rebuild switch --rollback \
+  --target-host mesh@192.168.1.100 \
+  --use-remote-sudo
+
+# NixOS atomic updates mean:
+# - Old generation is preserved (instant rollback)
+# - No partial updates (either the whole system switches or nothing does)
+# - The board is never in a broken state during update
+# - Even power loss during update is safe (old generation still works)
+```
+
+**OTA updates over WiFi:**
+
+The board connects to WiFi automatically (configured in NixOS). From anywhere on the same network:
+
+```bash
+nixos-rebuild switch --flake .#mesh-embedded --target-host mesh@mesh-embedded.local --use-remote-sudo
+```
+
+For remote boards (different network), use a VPN (WireGuard or Tailscale — both trivial to add in NixOS):
+
+```nix
+# In configuration.nix:
+services.tailscale.enable = true;
+# Then: nixos-rebuild switch --target-host mesh@100.x.x.x --use-remote-sudo
+```
+
 ## I2S DAC & Onboard Audio Research
 
 ### Goal
@@ -729,32 +1408,55 @@ With PipeWire, both sinks appear independently and can be assigned to different 
 
 **Use the combined approach** (onboard codec for cue + PCM5102A on I2S3 for master):
 
-- **Orange Pi 5 Max** is the primary pick (updated Feb 2026) — same ES8388 + I2S3 as OPi 5 Plus, but smaller (89×57mm), built-in WiFi 6E, PCIe 3.0 x4 NVMe, LPDDR5
-- **Orange Pi 5 Plus** remains a solid alternative — confirmed I2S3 on GPIO, confirmed ES8388 on 3.5mm jack, community-verified PCM5102A overlay, larger community
+- **Orange Pi 5 Pro 8GB** is the primary pick (updated Feb 2026) — cheapest board with ES8388 + I2S3 GPIO, built-in WiFi 5 + BT 5.0, 89×56mm credit-card size, LPDDR5, $80
+- **Orange Pi 5 Max 16GB** is the upgrade pick — WiFi 6E, PCIe 3.0 x4 NVMe, same form factor, $145
+- **Orange Pi 5 Plus 16GB** remains a solid alternative — confirmed I2S3 on GPIO, confirmed ES8388, community-verified PCM5102A overlay, largest community, $142+$15 WiFi
 - **Rock 5T/5B+** can work but GPIO I2S routing is less documented; the ES8316 on these boards is slightly lower quality than the OPi's ES8388
 - Total audio cost: **~5 EUR** (one PCM5102A board + wires) vs. 65 EUR for the cheapest viable USB interface
 - Master output quality: **better** than the USB approach (112 dB PCM5102A vs. ~100 dB UMC204HD)
 - Zero external audio hardware — the entire audio path fits inside the SBC enclosure
 - I2S is fundamentally lower-latency than USB audio — no 1ms USB frame interval, direct synchronous serial bus
 
-### Primary BOM: Orange Pi 5 Max + I2S DAC (Updated Feb 2026)
+#### OPi 5 Pro vs OPi 5 Plus vs OPi 5 Max for Mesh
+
+| Spec | OPi 5 Pro (primary) | OPi 5 Plus | OPi 5 Max |
+|---|---|---|---|
+| **SoC** | RK3588S | RK3588 (full) | RK3588 (full) |
+| **RAM** | Up to 16GB LPDDR5 | Up to 32GB LPDDR4x | Up to 16GB LPDDR5 |
+| **NVMe** | PCIe 2.1 (~800 MB/s) | PCIe 3.0 x4 (~3500 MB/s) | PCIe 3.0 x4 (~3500 MB/s) |
+| **HDMI out** | 1x 2.1 + 1x 2.0 | 2x 2.1 | 2x 2.1 |
+| **Ethernet** | 1x GbE | 2x 2.5GbE | 1x 2.5GbE |
+| **WiFi/BT** | Built-in WiFi 5 + BT 5.0 | M.2 E-Key (add ~$15) | Built-in WiFi 6E + BT 5.3 |
+| **USB** | 1x USB 3.1 + 3x USB 2.0 | 2x USB 3.0 + 2x USB 2.0 | 2x USB 3.0 + 2x USB 2.0 |
+| **Audio codec** | ES8388, 3.5mm TRRS | ES8388, 3.5mm TRRS | ES8388, 3.5mm TRRS |
+| **I2S3 on GPIO** | Same pins (12/35/38/40) | Same pins | Same pins |
+| **Board size** | 89×56mm | 100×70mm | 89×57mm |
+| **Power** | ~6-12W | ~8-15W | ~8-15W |
+| **Price (8GB)** | **~$80** | ~$100 | ~$105 |
+| **Price (16GB)** | ~$109 | ~$142 | ~$145 |
+
+8 GB RAM is sufficient for mesh-player. Worst-case analysis (4 decks × 4 stems, 7-min tracks, heavy FX): ~3.7 GB used, leaving 4.3 GB free. NVMe is optional — DJs play from USB 3.0 sticks (100-150 MB/s, ~4% utilization at 5.5 MB/s sustained read for 4 decks × 4 stems). PCIe 2.1 vs 3.0 is irrelevant when NVMe is not the primary storage path.
+
+### Primary BOM: Orange Pi 5 Pro 8GB + I2S DAC (Updated Feb 2026)
 
 #### Audio Architecture
 
 ```
-RK3588 SoC (Orange Pi 5 Max)
+RK3588S SoC (Orange Pi 5 Pro)
 │
-├── I2S0 → ES8388 codec → 3.5mm TRRS jack → HEADPHONES (CUE, ch 3-4)
+├── I2S0 → ES8388 codec → 3.5mm TRRS jack → HEADPHONES (CUE)
 │          (onboard, free)    96 dB SNR         ALSA: "es8388-sound"
 │
-└── I2S3 → PCM5102A DAC  → 3.5mm/RCA out  → PA SYSTEM (MASTER, ch 1-2)
+└── I2S3 → PCM5102A DAC  → 3.5mm/RCA out  → PA SYSTEM (MASTER)
            (GPIO header)     112 dB SNR         ALSA: "pcm5102a-sound"
            ~$5               better than any USB interface under $200
 ```
 
-#### GPIO Wiring (6 wires)
+DJ workflow: tracks loaded from USB 3.0 stick (brought by DJ), same as CDJ workflow.
 
-| PCM5102A Pin | OPi 5 Max 40-Pin | GPIO | Signal |
+#### GPIO Wiring (6 wires, identical across all OPi 5 boards)
+
+| PCM5102A Pin | 40-Pin Header | GPIO | Signal |
 |---|---|---|---|
 | BCK | Pin 35 | GPIO3_C2 | I2S3_SCLK |
 | LRCK | Pin 38 | GPIO3_C0 | I2S3_LRCK_TX |
@@ -763,64 +1465,50 @@ RK3588 SoC (Orange Pi 5 Max)
 | VIN | Pin 1 | — | 3.3V power |
 | GND | Pin 6 | — | Ground |
 
-#### Full Bill of Materials
+#### Core Bill of Materials (required)
 
-**1. Compute**
+| # | Component | Spec | Price |
+|---|---|---|---|
+| 1 | **Orange Pi 5 Pro 8GB** | RK3588S, LPDDR5, WiFi 5, BT 5.0, 89×56mm | **$80** |
+| 2 | **microSD card** | 32GB A2 U3 (OS boot only) | **$8** |
+| 3 | **GY-PCM5102 I2S DAC** | PCM5102A, 112 dB SNR, 32-bit/384kHz | **$5** |
+| 4 | **Dupont jumper wires** | Female-to-female, 6 pcs, 10-15cm | **$1** |
+| 5 | **USB-C PSU** | 5V/5A Type-C | **$12** |
+| 6 | **Micro-HDMI cable** | 15-30cm, board → display | **$6** |
+| | | **Core total** | **$112** |
 
-| Component | Spec | Price |
-|-----------|------|-------|
-| Orange Pi 5 Max 16GB | RK3588, LPDDR5, WiFi 6E, BT 5.3 | ~$145 |
-| NVMe SSD | 1TB M.2 2280 PCIe 3.0 (Samsung 980 / WD SN770) | ~$55 |
-| microSD | 32GB A2 U3 (boot media) | ~$8 |
+Onboard ES8388 cue headphone output via 3.5mm TRRS = $0 (included on board).
 
-**2. Audio**
+#### Enclosure & Thermal
 
-| Component | Spec | Price |
-|-----------|------|-------|
-| GY-PCM5102 I2S DAC | PCM5102A, 112 dB SNR, 32-bit/384kHz | ~$5 |
-| Dupont jumper wires | Female-to-female, 6 pcs, 10-15cm | ~$1 |
-| Panel-mount 3.5mm jack | For master out (solder to PCM5102A output) | ~$2 |
-| Onboard ES8388 | Cue headphone output via 3.5mm TRRS | $0 (included) |
+| # | Component | Spec | Price |
+|---|---|---|---|
+| 7 | **Aluminum project box** | ~150×120×50mm | **$25** |
+| 8 | **M2.5 standoff kit** | Brass, board mount | **$5** |
+| 9 | **40mm Noctua fan** | 5V PWM | **$12** |
+| 10 | **Thermal pad** | SoC heatsink contact | **$3** |
+| 11 | **Panel-mount 3.5mm** (x2) | Master out + cue out | **$4** |
+| 12 | **Panel-mount USB-A** | Pass-through for MIDI controller / USB stick | **$4** |
+| | | **Enclosure total** | **$53** |
 
-**3. Display**
+#### Optional Upgrades
 
-| Component | Spec | Price |
-|-----------|------|-------|
-| 7" IPS Touchscreen | 1024x600, HDMI + USB capacitive touch | ~$40 |
-| Micro-HDMI cable | 15-30cm short | ~$6 |
-| USB-A to micro-USB | Short, for touch input | ~$3 |
-
-**4. Power**
-
-| Component | Spec | Price |
-|-----------|------|-------|
-| USB-C PD PSU | 5V/4A (20W min), Type-C | ~$12 |
-
-**5. Enclosure & Thermal**
-
-| Component | Spec | Price |
-|-----------|------|-------|
-| Aluminum project box | ~150x120x50mm | ~$25 |
-| M2.5 standoff kit | Brass, board + display mount | ~$5 |
-| 40mm Noctua fan | 5V PWM, silent | ~$12 |
-| Thermal pad | SoC heatsink contact | ~$3 |
-| Panel-mount USB-A | Pass-through for MIDI controller | ~$4 |
-| Panel-mount 3.5mm (x2) | Master out + cue out on enclosure | ~$4 |
-
-**6. Optional**
-
-| Component | Spec | Price |
-|-----------|------|-------|
-| Powered USB 3.0 hub | 4-port (MIDI + USB stick) | ~$15 |
-| RTC battery | CR2032 + holder | ~$2 |
+| # | Component | Spec | Price |
+|---|---|---|---|
+| 13 | NVMe SSD | M.2 2280, 500GB–1TB (built-in library) | ~$40-55 |
+| 14 | 7" IPS touchscreen | 1024×600, HDMI + USB capacitive touch | ~$40 |
+| 15 | Powered USB 3.0 hub | 4-port (multiple USB devices) | ~$15 |
+| 16 | RTC battery | CR2032 + holder | ~$2 |
+| 17 | OPi 5 Max 16GB (upgrade) | WiFi 6E, PCIe 3.0 x4, +$65 over Pro 8GB | ~$145 |
 
 #### Cost Summary
 
 | Build Tier | Includes | Total |
 |---|---|---|
-| Bare minimum | Board + SSD + SD + DAC + wires + display + PSU + cables | **~$277** |
-| Full enclosed | + case, fan, standoffs, thermal, panel mounts | **~$330** |
-| Everything | + USB hub, RTC | **~$347** |
+| **Board + audio only** | OPi 5 Pro 8GB + SD + DAC + wires + PSU + HDMI cable | **~$112** |
+| **Full enclosed unit** | + case, fan, thermal, panel mounts | **~$165** |
+| **With NVMe** | + 1TB SSD (optional built-in library) | **~$220** |
+| **With display** | + 7" touchscreen (if needed) | **~$205 / $260** |
 
 #### Legacy Options (preserved for reference)
 
@@ -1777,6 +2465,6 @@ Reasons:
 
 ## Verdict: GO
 
-The mesh-player codebase is remarkably portable to ARM64. Zero architectural changes needed -- only build infrastructure fixes. The RK3588 provides sufficient CPU, GPU, and I/O for real-time DJ performance with dual displays and low-latency audio.
+The mesh-player codebase is remarkably portable to ARM64. Zero architectural changes needed -- only build infrastructure fixes. The RK3588/RK3588S provides sufficient CPU, GPU, and I/O for real-time DJ performance with displays and low-latency audio.
 
-**Primary target board (Feb 2026):** Orange Pi 5 Max 16GB + PCM5102A I2S DAC. Total BOM: ~$277-347. No external audio interface needed — master out via I2S GPIO, cue/headphones via onboard ES8388 codec.
+**Primary target board (Feb 2026):** Orange Pi 5 Pro 8GB + PCM5102A I2S DAC. Core BOM: **~$112**. Full enclosed unit: **~$165**. No external audio interface needed — master out via I2S GPIO, cue/headphones via onboard ES8388 codec. No NVMe required — DJ plays from USB 3.0 stick. Upgrade path: OPi 5 Max 16GB ($145) for WiFi 6E + built-in NVMe library.

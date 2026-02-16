@@ -408,6 +408,23 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for technical details on the audio engine
 
 ---
 
+## Embedded Setup (Orange Pi)
+
+Mesh can run standalone on an ARM64 single-board computer — no laptop required. The target hardware is an **Orange Pi 5 Pro** (RK3588S, 8 GB RAM, ~$80) with a **PCM5102A I2S DAC** on the GPIO header for master audio output and the onboard ES8388 codec for headphone cue. Total core BOM is around $112.
+
+The embedded setup runs NixOS with mesh-player in a Wayland kiosk (cage compositor), booting directly into fullscreen performance mode. Tracks are loaded from a USB 3.0 stick — the same workflow as CDJs.
+
+| Component | Role |
+|-----------|------|
+| Orange Pi 5 Pro 8GB | RK3588S SoC, WiFi 5, USB 3.0 |
+| PCM5102A I2S DAC | Master output via GPIO (112 dB SNR) |
+| ES8388 onboard codec | Cue/headphone output (3.5mm TRRS) |
+| cage + mesh-player | Wayland kiosk, fullscreen on boot |
+
+See **[documents/embedded-setup.md](documents/embedded-setup.md)** for the full guide covering hardware wiring, device tree overlays, NixOS configuration, audio routing, deployment workflow, and debugging.
+
+---
+
 ## Contributing
 
 Contributions welcome! Areas where help is appreciated:
