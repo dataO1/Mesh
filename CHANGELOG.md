@@ -71,6 +71,17 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 ## [Unreleased]
 
+### Improved
+
+- **Mixer DJ filter** — Replaced the 6 dB/oct one-pole mixer channel strip
+  filter with a 24 dB/oct cascaded state-variable filter (two Cytomic/Simper
+  SVF stages). Adds adaptive resonance that rises with sweep depth (Q 0.5 →
+  3.0 on a concave power curve), exponential frequency sweep matching
+  professional DJ mixers, and extended HP range up to 12 kHz. Sweep range is
+  capped at 65% of internal travel to keep the extremes musical. A shared
+  `SvfFilter` building block is extracted into `effect/native/svf.rs` for
+  reuse across the codebase.
+
 ### Added
 
 - **Vertical waveform layout** — New display mode in Settings → Display where time
@@ -532,10 +543,11 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   displays the current loop length (e.g., "↻4", "↻1/2") next to the BPM
   indicator. The text turns green when the loop is active, gray when inactive.
 
-- **Volume-based waveform dimming** — Waveforms now visually dim based on the
-  channel volume fader position. At full volume no dimming is applied; as
-  the fader lowers, a semi-transparent overlay gradually darkens the waveform
-  area, providing instant visual feedback of relative deck volumes.
+- **Volume-based waveform dimming** — The zoomed waveform now visually dims
+  based on the channel volume fader position. At full volume no dimming is
+  applied; as the fader lowers, a semi-transparent overlay gradually darkens
+  the zoomed waveform, providing instant visual feedback of relative deck
+  volumes. The overview waveform stays fully visible for track navigation.
 
 - **Two-stage master bus protection** — Prevents digital overs and protects PA
   systems with a clipper → limiter chain on the master output:

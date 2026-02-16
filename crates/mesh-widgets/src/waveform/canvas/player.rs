@@ -806,15 +806,13 @@ fn draw_deck_quadrant(
         overview_scale,
     );
 
-    // Draw volume dimming overlay over the waveform area (not the header)
+    // Draw volume dimming overlay over the zoomed waveform only
     // At full volume (1.0) no dimming, at zero volume max dimming (0.4 alpha)
     if volume < 0.99 {
         let dim_alpha = (1.0 - volume) * 0.4;
-        let waveform_area_y = overview_y.min(zoomed_y);
-        let waveform_area_height = zoomed_height + DECK_HEADER_HEIGHT + DECK_INTERNAL_GAP + WAVEFORM_HEIGHT;
         frame.fill_rectangle(
-            Point::new(x, waveform_area_y),
-            Size::new(width, waveform_area_height),
+            Point::new(x, zoomed_y),
+            Size::new(width, zoomed_height),
             Color::from_rgba(0.0, 0.0, 0.0, dim_alpha),
         );
     }
@@ -1884,16 +1882,6 @@ where
                 inverted,
             );
 
-            // Volume dimming on overview too
-            let volume = self.state.volume(deck_idx);
-            if volume < 0.99 {
-                let dim_alpha = (1.0 - volume) * 0.4;
-                frame.fill_rectangle(
-                    Point::new(col_x, 0.0),
-                    Size::new(VERT_OVERVIEW_COL_WIDTH, bounds.height),
-                    Color::from_rgba(0.0, 0.0, 0.0, dim_alpha),
-                );
-            }
         }
 
         vec![frame.into_geometry()]

@@ -41,25 +41,34 @@ All viable candidates use the **RK3588** SoC — no other ARM chip has comparabl
 | Khadas VIM4 (A311D2) | $220 | Max 8GB, old A73 cores, blob GPU |
 | ASUS Tinker Board 3N | varies | RK3568 — only A55 cores, max 8GB |
 
-### Recommendation: Orange Pi 5 Plus or Rock 5T
+### Recommendation: Orange Pi 5 Max (Primary) — Updated Feb 2026
 
-**Orange Pi 5 Plus** wins on value:
-- $10-15 cheaper at 16GB, 32GB option available
-- Full PCIe 3.0 x4 NVMe (double per-slot bandwidth vs Rock 5T's x2)
+**Orange Pi 5 Max** is the primary pick for embedded mesh:
+- **89×57mm credit-card form factor** — fits behind a 7" display in a sandwich mount
+- **Built-in WiFi 6E + BT 5.3** — no separate M.2 E-Key module needed (one fewer failure point)
+- **PCIe 3.0 x4 NVMe** — 4 GB/s for fast stem streaming across 4 decks
+- **LPDDR5** — lower power consumption than LPDDR4x (same performance for audio workloads)
+- **ES8388 onboard codec + I2S3 on GPIO** — identical audio architecture to OPi 5 Plus, confirmed on Armbian forums
+- **~$145 at 16GB** — slightly more than OPi 5 Plus but includes WiFi (saves ~$15 module cost)
+- 16GB cap is not a limitation (see RAM analysis below — worst case is ~5.6 GB)
+
+**Orange Pi 5 Plus** remains a solid alternative:
+- $10-15 cheaper at 16GB, 32GB option available (unnecessary for mesh)
+- Larger 100×70mm form factor, dual 2.5GbE
 - Largest RK3588 community (Armbian, ubuntu-rockchip)
-- 4 USB-A without pin headers
-- Compact 100×70mm
+- WiFi requires separate M.2 E-Key module
 
 **Rock 5T** wins on robustness:
 - **12V barrel jack** — no USB-C PD negotiation failures in dark DJ booths
 - Dual 2.5GbE for venue network + NAS
 - 2x M.2 slots for NVMe + spare
 - Industrial RK3588J variant (-40 to +85°C) for hot festival booths
-- LPDDR5 (but see analysis below — no real advantage for audio workloads)
-
-**Orange Pi 5 Max** is the tiny option (89×57mm, credit card sized) if enclosure size is critical, but capped at 16GB.
+- GPIO I2S routing less documented than Orange Pi boards
 
 **Rock 5B+ vs Rock 5T**: The 5B+ is $5 cheaper and slightly smaller but uses USB-C PD for power instead of the 5T's robust barrel jack. For a live performance box, the barrel jack is worth the $5 premium. Otherwise, specs are nearly identical.
+
+**Orange Pi 6 Plus (CIX CD8180) — evaluated and rejected (Feb 2026):**
+The OPi 6 Plus is a 12-core ARMv9.2 board that significantly outperforms RK3588 in raw CPU throughput, but Linux kernel support is immature — mainline is missing GPU, VPU, display, and ACPI as of Feb 2026. PREEMPT_RT patches are unvalidated on CIX SoCs. Audio works on the vendor 6.1 kernel but real-time audio latency is undocumented. Not recommended until kernel maturity improves (reassess late 2026).
 
 ### LPDDR5 vs LPDDR4x: No Real Difference for This Workload
 
@@ -270,7 +279,9 @@ The 6 TOPS NPU could provide 5-12x speedup but requires:
 
 ## Recommended Hardware Setup
 
-### Option A: Best Value (~$290-340)
+> **See "Primary BOM: Orange Pi 5 Max + I2S DAC" in the I2S DAC section below for the current recommended build (~$277-347).** The options below are preserved for historical reference but are superseded by the I2S DAC approach.
+
+### Legacy Option A: OPi 5 Plus + USB Audio (~$350-380) — SUPERSEDED
 
 | Component | Recommendation | Est. Cost |
 |-----------|---------------|-----------|
@@ -282,7 +293,7 @@ The 6 TOPS NPU could provide 5-12x speedup but requires:
 | Enclosure | Custom 3D printed or aluminum case | ~$20-50 |
 | **Total** | | **~$350-380** |
 
-### Option B: Most Robust (~$330-380)
+### Legacy Option B: Rock 5T + USB Audio (~$390-430) — SUPERSEDED
 
 | Component | Recommendation | Est. Cost |
 |-----------|---------------|-----------|
@@ -294,7 +305,7 @@ The 6 TOPS NPU could provide 5-12x speedup but requires:
 | Enclosure | Custom 3D printed or aluminum case | ~$20-50 |
 | **Total** | | **~$390-430** |
 
-### Option C: Most Compact (~$350-400)
+### Legacy Option C: OPi 5 Max + USB Audio (~$440-470) — SUPERSEDED
 
 | Component | Recommendation | Est. Cost |
 |-----------|---------------|-----------|
@@ -475,6 +486,25 @@ Sources: [RK3588 TRM Part 1](https://github.com/FanX-Tek/rk3588-TRM-and-Datashee
 The I2S3 pins on the GPIO header have been community-verified working with a PCM5102A DAC via device tree overlay on ubuntu-rockchip builds. The overlay targets `i2s3_2c` and uses the `simple-audio-card` framework.
 
 Sources: [GitHub ubuntu-rockchip Discussion #1116](https://github.com/Joshua-Riek/ubuntu-rockchip/discussions/1116), [Armbian Forum](https://forum.armbian.com/topic/32178-i2s-spi-and-i2c-on-orangepi-5-plus/), [OPi 5 Plus Wiki](http://www.orangepi.org/orangepiwiki/index.php/Orange_Pi_5_Plus)
+
+#### Orange Pi 5 Max
+
+| Feature | Detail |
+|---------|--------|
+| **Onboard codec** | Everest ES8388 (24-bit, 96 kHz) — same as OPi 5 Plus |
+| **Codec I2S bus** | **I2S0** (`i2s0_8ch`), controlled via I2C |
+| **3.5mm jack** | Yes — TRRS (stereo headphone + mono mic) |
+| **Onboard mic** | Yes |
+| **HDMI audio** | HDMI 2.1 eARC on both outputs |
+| **GPIO I2S** | **I2S3** (`i2s3_2c`) on pins 12, 35, 38, 40 — same as OPi 5 Plus |
+| **WiFi/BT** | **Built-in** WiFi 6E + BT 5.3 (no M.2 E-Key module needed) |
+| **Board size** | **89×57mm** (credit-card, fits behind 7" display) |
+| **NVMe** | M.2 PCIe 3.0 x4 |
+| **ALSA devices** | `es8388-sound` (headphone) + `dp0-sound`/`dp1-sound` (HDMI) |
+
+Confirmed: the OPi 5 Max uses the same RK3588 SoC and the same ES8388 codec as the OPi 5 Plus. The 40-pin GPIO header exposes I2S3 on the same pins. The PCM5102A device tree overlay from the OPi 5 Plus works without modification.
+
+Sources: [Orange Pi 5 Max Product Page](http://www.orangepi.org/html/hardWare/computerAndMicrocontrollers/details/Orange-Pi-5-Max.html), [CNX Software Review](https://www.cnx-software.com/2024/08/01/rockchip-rk3588-powered-orange-pi-5-max-sbc-features-up-to-16gb-lpddr5-2-5gbe-onboard-wifi-6e-and-bluetooth-5-3/), [Armbian Forum — OPi 5 Max I2S](https://forum.armbian.com/topic/51422-orange-pi-5-max-enabling-i2s-for-pcm/)
 
 #### Radxa Rock 5B / 5B+
 
@@ -699,13 +729,102 @@ With PipeWire, both sinks appear independently and can be assigned to different 
 
 **Use the combined approach** (onboard codec for cue + PCM5102A on I2S3 for master):
 
-- **Orange Pi 5 Plus** is the best candidate — confirmed I2S3 on GPIO, confirmed ES8388 on 3.5mm jack, community-verified PCM5102A overlay
+- **Orange Pi 5 Max** is the primary pick (updated Feb 2026) — same ES8388 + I2S3 as OPi 5 Plus, but smaller (89×57mm), built-in WiFi 6E, PCIe 3.0 x4 NVMe, LPDDR5
+- **Orange Pi 5 Plus** remains a solid alternative — confirmed I2S3 on GPIO, confirmed ES8388 on 3.5mm jack, community-verified PCM5102A overlay, larger community
 - **Rock 5T/5B+** can work but GPIO I2S routing is less documented; the ES8316 on these boards is slightly lower quality than the OPi's ES8388
 - Total audio cost: **~5 EUR** (one PCM5102A board + wires) vs. 65 EUR for the cheapest viable USB interface
 - Master output quality: **better** than the USB approach (112 dB PCM5102A vs. ~100 dB UMC204HD)
 - Zero external audio hardware — the entire audio path fits inside the SBC enclosure
+- I2S is fundamentally lower-latency than USB audio — no 1ms USB frame interval, direct synchronous serial bus
 
-### Updated Option A: Best Value (~$230-280, down from $350-380)
+### Primary BOM: Orange Pi 5 Max + I2S DAC (Updated Feb 2026)
+
+#### Audio Architecture
+
+```
+RK3588 SoC (Orange Pi 5 Max)
+│
+├── I2S0 → ES8388 codec → 3.5mm TRRS jack → HEADPHONES (CUE, ch 3-4)
+│          (onboard, free)    96 dB SNR         ALSA: "es8388-sound"
+│
+└── I2S3 → PCM5102A DAC  → 3.5mm/RCA out  → PA SYSTEM (MASTER, ch 1-2)
+           (GPIO header)     112 dB SNR         ALSA: "pcm5102a-sound"
+           ~$5               better than any USB interface under $200
+```
+
+#### GPIO Wiring (6 wires)
+
+| PCM5102A Pin | OPi 5 Max 40-Pin | GPIO | Signal |
+|---|---|---|---|
+| BCK | Pin 35 | GPIO3_C2 | I2S3_SCLK |
+| LRCK | Pin 38 | GPIO3_C0 | I2S3_LRCK_TX |
+| DIN | Pin 40 | GPIO3_B7 | I2S3_SDO |
+| SCK | Tie to GND | — | Internal PLL |
+| VIN | Pin 1 | — | 3.3V power |
+| GND | Pin 6 | — | Ground |
+
+#### Full Bill of Materials
+
+**1. Compute**
+
+| Component | Spec | Price |
+|-----------|------|-------|
+| Orange Pi 5 Max 16GB | RK3588, LPDDR5, WiFi 6E, BT 5.3 | ~$145 |
+| NVMe SSD | 1TB M.2 2280 PCIe 3.0 (Samsung 980 / WD SN770) | ~$55 |
+| microSD | 32GB A2 U3 (boot media) | ~$8 |
+
+**2. Audio**
+
+| Component | Spec | Price |
+|-----------|------|-------|
+| GY-PCM5102 I2S DAC | PCM5102A, 112 dB SNR, 32-bit/384kHz | ~$5 |
+| Dupont jumper wires | Female-to-female, 6 pcs, 10-15cm | ~$1 |
+| Panel-mount 3.5mm jack | For master out (solder to PCM5102A output) | ~$2 |
+| Onboard ES8388 | Cue headphone output via 3.5mm TRRS | $0 (included) |
+
+**3. Display**
+
+| Component | Spec | Price |
+|-----------|------|-------|
+| 7" IPS Touchscreen | 1024x600, HDMI + USB capacitive touch | ~$40 |
+| Micro-HDMI cable | 15-30cm short | ~$6 |
+| USB-A to micro-USB | Short, for touch input | ~$3 |
+
+**4. Power**
+
+| Component | Spec | Price |
+|-----------|------|-------|
+| USB-C PD PSU | 5V/4A (20W min), Type-C | ~$12 |
+
+**5. Enclosure & Thermal**
+
+| Component | Spec | Price |
+|-----------|------|-------|
+| Aluminum project box | ~150x120x50mm | ~$25 |
+| M2.5 standoff kit | Brass, board + display mount | ~$5 |
+| 40mm Noctua fan | 5V PWM, silent | ~$12 |
+| Thermal pad | SoC heatsink contact | ~$3 |
+| Panel-mount USB-A | Pass-through for MIDI controller | ~$4 |
+| Panel-mount 3.5mm (x2) | Master out + cue out on enclosure | ~$4 |
+
+**6. Optional**
+
+| Component | Spec | Price |
+|-----------|------|-------|
+| Powered USB 3.0 hub | 4-port (MIDI + USB stick) | ~$15 |
+| RTC battery | CR2032 + holder | ~$2 |
+
+#### Cost Summary
+
+| Build Tier | Includes | Total |
+|---|---|---|
+| Bare minimum | Board + SSD + SD + DAC + wires + display + PSU + cables | **~$277** |
+| Full enclosed | + case, fan, standoffs, thermal, panel mounts | **~$330** |
+| Everything | + USB hub, RTC | **~$347** |
+
+#### Legacy Options (preserved for reference)
+
+##### Option A (original): OPi 5 Plus + USB Audio (~$350-380)
 
 | Component | Recommendation | Est. Cost |
 |-----------|---------------|-----------|
@@ -713,12 +832,9 @@ With PipeWire, both sinks appear independently and can be assigned to different 
 | Cooling | Active heatsink + fan | ~$15 |
 | Storage | M.2 NVMe SSD 500GB (track library) | ~$40 |
 | Display | 2x 7" HDMI IPS touchscreen (1024×600) | ~$80 |
-| Audio (master) | PCM5102A I2S DAC on GPIO I2S3 | ~$5 |
-| Audio (cue) | Onboard ES8388 3.5mm jack | $0 (included) |
+| Audio | Behringer UMC204HD (4ch, USB-B) | ~$65 |
 | Enclosure | Custom 3D printed or aluminum case | ~$20-50 |
-| **Total** | | **~$290-320** |
-
-This saves **~$60** over the original Option A while delivering better master output quality.
+| **Total** | | **~$350-380** |
 
 ## Small HDMI Display Research
 
@@ -1662,3 +1778,5 @@ Reasons:
 ## Verdict: GO
 
 The mesh-player codebase is remarkably portable to ARM64. Zero architectural changes needed -- only build infrastructure fixes. The RK3588 provides sufficient CPU, GPU, and I/O for real-time DJ performance with dual displays and low-latency audio.
+
+**Primary target board (Feb 2026):** Orange Pi 5 Max 16GB + PCM5102A I2S DAC. Total BOM: ~$277-347. No external audio interface needed — master out via I2S GPIO, cue/headphones via onboard ES8388 codec.

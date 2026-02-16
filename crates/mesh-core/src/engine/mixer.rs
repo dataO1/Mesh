@@ -11,6 +11,7 @@ use rayon::prelude::*;
 
 use super::master_clipper::MasterClipper;
 use super::master_limiter::MasterLimiter;
+use crate::effect::native::svf::SvfFilter;
 use crate::types::{StereoBuffer, StereoSample, NUM_DECKS, SAMPLE_RATE};
 
 /// Biquad filter state for EQ bands
@@ -121,6 +122,112 @@ const EQ_MID_FREQ: f32 = 1000.0; // Mid peak at 1 kHz
 const EQ_HI_FREQ: f32 = 10000.0; // High shelf at 10 kHz
 const EQ_MID_Q: f32 = 0.7;       // Q for mid band
 
+// ── DJ Filter (24 dB/oct cascaded SVF with adaptive Q) ──────────────
+
+/// Dead zone half-width around center position (bypass when |pos| < this)
+const DJ_FILTER_DEAD_ZONE: f32 = 0.02;
+/// Minimum Q (transparent, near-Butterworth)
+const DJ_FILTER_Q_MIN: f32 = 0.5;
+/// Maximum Q (dramatic resonant peak)
+const DJ_FILTER_Q_MAX: f32 = 3.0;
+/// Q curve exponent (concave: slow rise at first, fast at extremes)
+const DJ_FILTER_Q_POWER: f32 = 1.5;
+/// LP sweep lower bound (Hz)
+const DJ_FILTER_LP_MIN: f32 = 60.0;
+/// LP sweep upper bound (Hz)
+const DJ_FILTER_LP_MAX: f32 = 20000.0;
+/// HP sweep lower bound (Hz)
+const DJ_FILTER_HP_MIN: f32 = 20.0;
+/// HP sweep upper bound (Hz)
+const DJ_FILTER_HP_MAX: f32 = 12000.0;
+/// Effective sweep range: knob ±1.0 maps to ±this value internally.
+/// 0.65 keeps the extremes musical without over-cutting.
+const DJ_FILTER_SWEEP_RANGE: f32 = 0.65;
+
+/// Two-stage (24 dB/oct) DJ mixer filter with adaptive resonance.
+///
+/// Cascades two 12 dB/oct SVF stages for the steep slope expected from
+/// professional DJ mixers (Pioneer DJM, Allen & Heath Xone:92). Q rises
+/// with sweep depth so the filter stays transparent near center but
+/// develops a singing resonant peak at the extremes.
+#[derive(Debug, Clone)]
+struct DjFilter {
+    /// First 12 dB/oct SVF stage
+    stage1: SvfFilter,
+    /// Second 12 dB/oct SVF stage (cascade → 24 dB/oct)
+    stage2: SvfFilter,
+    /// Cached position to skip recalculation when knob is stationary
+    last_position: f32,
+}
+
+impl DjFilter {
+    fn new() -> Self {
+        Self {
+            stage1: SvfFilter::new(),
+            stage2: SvfFilter::new(),
+            last_position: f32::NAN, // force first update
+        }
+    }
+
+    /// Recalculate cutoff & Q from the knob position (-1..+1).
+    /// The raw knob range is scaled by SWEEP_RANGE so the extremes stay
+    /// musical instead of cutting too aggressively.
+    fn update_params(&mut self, position: f32) {
+        if self.last_position == position {
+            return;
+        }
+        self.last_position = position;
+
+        // Scale into effective range: full knob travel → ±SWEEP_RANGE
+        let position = position * DJ_FILTER_SWEEP_RANGE;
+        let depth = position.abs();
+        // Adaptive Q: rises with sweep depth on a concave power curve
+        let q = DJ_FILTER_Q_MIN
+            + (DJ_FILTER_Q_MAX - DJ_FILTER_Q_MIN) * depth.powf(DJ_FILTER_Q_POWER);
+
+        let cutoff = if position < 0.0 {
+            // LP mode: exponential sweep from 20 kHz down to 60 Hz
+            // position -1 → cutoff 60 Hz, position 0 → cutoff 20 kHz
+            let ratio = DJ_FILTER_LP_MAX / DJ_FILTER_LP_MIN; // 333.3
+            DJ_FILTER_LP_MIN * ratio.powf(1.0 + position) // (1+pos) goes 0→1
+        } else {
+            // HP mode: exponential sweep from 20 Hz up to 12 kHz
+            // position 0 → cutoff 20 Hz, position 1 → cutoff 12 kHz
+            let ratio = DJ_FILTER_HP_MAX / DJ_FILTER_HP_MIN; // 600
+            DJ_FILTER_HP_MIN * ratio.powf(position)
+        };
+
+        self.stage1.set_params(cutoff, q);
+        self.stage2.set_params(cutoff, q);
+    }
+
+    /// Process one stereo sample through the 24 dB/oct cascade.
+    /// Call `update_params` once per buffer before entering the sample loop.
+    #[inline]
+    fn process(&mut self, left: f32, right: f32, is_lp: bool) -> (f32, f32) {
+        let out1 = self.stage1.process(left, right);
+        if is_lp {
+            let out2 = self.stage2.process(out1.low_l, out1.low_r);
+            (out2.low_l, out2.low_r)
+        } else {
+            let out2 = self.stage2.process(out1.high_l, out1.high_r);
+            (out2.high_l, out2.high_r)
+        }
+    }
+
+    fn reset(&mut self) {
+        self.stage1.reset();
+        self.stage2.reset();
+        self.last_position = f32::NAN;
+    }
+}
+
+impl Default for DjFilter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Channel strip state for a single deck
 #[derive(Debug, Clone)]
 pub struct ChannelStrip {
@@ -150,11 +257,8 @@ pub struct ChannelStrip {
     eq_hi_coeffs: BiquadCoeffs,
     eq_dirty: bool,
 
-    // Filter state (simple one-pole for now)
-    lp_state_l: f32,
-    lp_state_r: f32,
-    hp_state_l: f32,
-    hp_state_r: f32,
+    // DJ filter (24 dB/oct cascaded SVF)
+    dj_filter: DjFilter,
 }
 
 impl Default for ChannelStrip {
@@ -174,10 +278,7 @@ impl Default for ChannelStrip {
             eq_mid_coeffs: BiquadCoeffs::passthrough(),
             eq_hi_coeffs: BiquadCoeffs::passthrough(),
             eq_dirty: true,
-            lp_state_l: 0.0,
-            lp_state_r: 0.0,
-            hp_state_l: 0.0,
-            hp_state_r: 0.0,
+            dj_filter: DjFilter::default(),
         }
     }
 }
@@ -265,32 +366,20 @@ impl ChannelStrip {
         self.eq_dirty = false;
     }
 
-    /// Process audio through the channel strip (trim + EQ + filter)
+    /// Process audio through the channel strip (trim + EQ + DJ filter)
     pub fn process(&mut self, buffer: &mut StereoBuffer) {
         // Update EQ coefficients if needed
         self.update_eq_coeffs();
 
-        // Filter coefficient based on position
         let filter_pos = self.filter.clamp(-1.0, 1.0);
+        let filter_active = filter_pos.abs() > DJ_FILTER_DEAD_ZONE;
 
-        // Cutoff frequencies (in Hz)
-        let lp_cutoff = if filter_pos < 0.0 {
-            // LP active: sweep from 20kHz down to 100Hz
-            20000.0 * (1.0 + filter_pos).max(0.005)
-        } else {
-            20000.0 // LP disabled
-        };
+        // Update SVF coefficients once per buffer (skips if position unchanged)
+        if filter_active {
+            self.dj_filter.update_params(filter_pos);
+        }
 
-        let hp_cutoff = if filter_pos > 0.0 {
-            // HP active: sweep from 20Hz up to 5kHz
-            20.0 + filter_pos * 4980.0
-        } else {
-            20.0 // HP disabled
-        };
-
-        // Convert to filter coefficients (simple one-pole)
-        let lp_coeff = Self::cutoff_to_coeff(lp_cutoff);
-        let hp_coeff = Self::cutoff_to_coeff(hp_cutoff);
+        let is_lp = filter_pos < 0.0;
 
         for sample in buffer.iter_mut() {
             // Apply trim
@@ -302,27 +391,13 @@ impl ChannelStrip {
             (left, right) = self.eq_mid_state.process(left, right, &self.eq_mid_coeffs);
             (left, right) = self.eq_hi_state.process(left, right, &self.eq_hi_coeffs);
 
-            // Apply LP filter
-            self.lp_state_l += lp_coeff * (left - self.lp_state_l);
-            self.lp_state_r += lp_coeff * (right - self.lp_state_r);
-            left = self.lp_state_l;
-            right = self.lp_state_r;
-
-            // Apply HP filter (subtract LP from original)
-            self.hp_state_l += hp_coeff * (left - self.hp_state_l);
-            self.hp_state_r += hp_coeff * (right - self.hp_state_r);
-            left = left - self.hp_state_l;
-            right = right - self.hp_state_r;
+            // Apply 24 dB/oct DJ filter (bypassed in dead zone)
+            if filter_active {
+                (left, right) = self.dj_filter.process(left, right, is_lp);
+            }
 
             *sample = StereoSample::new(left, right);
         }
-    }
-
-    /// Convert cutoff frequency to one-pole filter coefficient
-    fn cutoff_to_coeff(cutoff: f32) -> f32 {
-        let rc = 1.0 / (2.0 * std::f32::consts::PI * cutoff);
-        let dt = 1.0 / SAMPLE_RATE as f32;
-        dt / (rc + dt)
     }
 
     /// Reset all filter states
@@ -330,10 +405,7 @@ impl ChannelStrip {
         self.eq_lo_state.reset();
         self.eq_mid_state.reset();
         self.eq_hi_state.reset();
-        self.lp_state_l = 0.0;
-        self.lp_state_r = 0.0;
-        self.hp_state_l = 0.0;
-        self.hp_state_r = 0.0;
+        self.dj_filter.reset();
     }
 }
 
@@ -527,5 +599,111 @@ mod tests {
         assert_eq!(mixer.master_volume(), 1.0);
         assert_eq!(mixer.cue_mix(), 0.0);
         assert_eq!(mixer.cue_volume(), 0.8);
+    }
+
+    #[test]
+    fn test_dj_filter_bypass_at_center() {
+        let mut strip = ChannelStrip::new();
+        strip.filter = 0.0; // center = dead zone
+
+        let mut buffer = StereoBuffer::silence(64);
+        for i in 0..buffer.len() {
+            buffer.as_mut_slice()[i] = StereoSample::new(1.0, 1.0);
+        }
+
+        strip.process(&mut buffer);
+
+        // With flat EQ and centered filter, output ≈ input
+        assert!(
+            (buffer[63].left - 1.0).abs() < 0.01,
+            "Center filter should pass through: {}",
+            buffer[63].left
+        );
+    }
+
+    #[test]
+    fn test_dj_filter_lowpass_attenuates_nyquist() {
+        let mut strip = ChannelStrip::new();
+        strip.filter = -1.0; // full LP
+
+        // Nyquist signal (alternating +1/-1)
+        let mut buffer = StereoBuffer::silence(256);
+        for i in 0..buffer.len() {
+            let val = if i % 2 == 0 { 1.0 } else { -1.0 };
+            buffer.as_mut_slice()[i] = StereoSample::new(val, val);
+        }
+
+        strip.process(&mut buffer);
+
+        let avg: f32 = buffer.iter().skip(128).map(|s| s.left.abs()).sum::<f32>() / 128.0;
+        assert!(
+            avg < 0.1,
+            "Full LP should strongly attenuate Nyquist, avg={}",
+            avg
+        );
+    }
+
+    #[test]
+    fn test_dj_filter_highpass_passes_nyquist() {
+        let mut strip = ChannelStrip::new();
+        strip.filter = 1.0; // full HP
+
+        // Nyquist signal
+        let mut buffer = StereoBuffer::silence(256);
+        for i in 0..buffer.len() {
+            let val = if i % 2 == 0 { 1.0 } else { -1.0 };
+            buffer.as_mut_slice()[i] = StereoSample::new(val, val);
+        }
+
+        strip.process(&mut buffer);
+
+        let avg: f32 = buffer.iter().skip(128).map(|s| s.left.abs()).sum::<f32>() / 128.0;
+        assert!(
+            avg > 0.3,
+            "Full HP should pass high frequencies, avg={}",
+            avg
+        );
+    }
+
+    #[test]
+    fn test_dj_filter_highpass_rejects_dc() {
+        let mut strip = ChannelStrip::new();
+        strip.filter = 1.0; // full HP
+
+        // DC signal
+        let mut buffer = StereoBuffer::silence(2048);
+        for i in 0..buffer.len() {
+            buffer.as_mut_slice()[i] = StereoSample::new(1.0, 1.0);
+        }
+
+        strip.process(&mut buffer);
+
+        // After settling, DC should be almost completely removed
+        let tail_avg: f32 =
+            buffer.iter().skip(1024).map(|s| s.left.abs()).sum::<f32>() / 1024.0;
+        assert!(
+            tail_avg < 0.05,
+            "Full HP should reject DC, avg={}",
+            tail_avg
+        );
+    }
+
+    #[test]
+    fn test_dj_filter_adaptive_q() {
+        // Verify Q increases with sweep depth
+        let mut filter = DjFilter::new();
+
+        // Small sweep
+        filter.update_params(-0.1);
+        let q_small = DJ_FILTER_Q_MIN
+            + (DJ_FILTER_Q_MAX - DJ_FILTER_Q_MIN) * 0.1_f32.powf(DJ_FILTER_Q_POWER);
+
+        // Full sweep
+        filter.update_params(-1.0);
+        let q_full = DJ_FILTER_Q_MIN
+            + (DJ_FILTER_Q_MAX - DJ_FILTER_Q_MIN) * 1.0_f32.powf(DJ_FILTER_Q_POWER);
+
+        assert!(q_small < q_full, "Q should increase with depth: {} < {}", q_small, q_full);
+        assert!((q_full - DJ_FILTER_Q_MAX).abs() < 0.001, "Full depth should reach max Q");
     }
 }
