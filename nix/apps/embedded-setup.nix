@@ -97,17 +97,25 @@ pkgs.writeShellApplication {
 
     # ── Step 4: Enable GitHub Pages ──────────────────────────────────
     echo "[4/4] GitHub Pages"
-    PAGES_STATUS=$(gh api "repos/$REPO/pages" --jq '.source.branch' 2>/dev/null || echo "none")
+    # Check separately: gh api returns 404 JSON on stdout when Pages isn't enabled
+    if gh api "repos/$REPO/pages" >/dev/null 2>&1; then
+      PAGES_STATUS=$(gh api "repos/$REPO/pages" --jq '.source.branch' 2>/dev/null)
+    else
+      PAGES_STATUS="none"
+    fi
     if [ "$PAGES_STATUS" = "gh-pages" ]; then
       skip "GitHub Pages already enabled on gh-pages branch"
     elif [ "$PAGES_STATUS" = "none" ]; then
       # Create gh-pages branch if it doesn't exist (Pages requires it)
-      if ! git ls-remote --heads origin gh-pages | grep -q gh-pages; then
+      # Detect remote name (could be 'origin' or 'github' etc.)
+      GIT_REMOTE=$(git remote | head -1)
+      if ! git ls-remote --heads "$GIT_REMOTE" gh-pages | grep -q gh-pages; then
         echo "  Creating empty gh-pages branch..."
+        CURRENT_BRANCH=$(git branch --show-current)
         git switch --orphan gh-pages
         git commit --allow-empty -m "chore: initialize GitHub Pages branch"
-        git push origin gh-pages
-        git switch -
+        git push "$GIT_REMOTE" gh-pages
+        git switch "$CURRENT_BRANCH"
       fi
       # Enable Pages via API (source must be nested JSON object)
       if gh api --method POST "repos/$REPO/pages" \
