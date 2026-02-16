@@ -60,14 +60,16 @@ in pkgs.rustPlatform.buildRustPackage {
   preBuild = ''
     if [ ! -d "patches/libpd-sys" ]; then
       echo "Creating patched libpd-sys (32-bit floats)..."
-      if [ -d "$cargoDepsCopy/libpd-sys" ]; then
+      vendor_dir=$(find /build -maxdepth 1 -name '*-vendor*' -type d 2>/dev/null | head -1)
+      if [ -n "$vendor_dir" ] && [ -d "$vendor_dir/libpd-sys" ]; then
         mkdir -p patches
-        cp -r "$cargoDepsCopy/libpd-sys" patches/libpd-sys
+        cp -r "$vendor_dir/libpd-sys" patches/libpd-sys
         chmod -R u+w patches/libpd-sys
         sed -i 's/const PD_FLOATSIZE: &str = "64"/const PD_FLOATSIZE: \&str = "32"/' patches/libpd-sys/build.rs
-        echo "  done (from $cargoDepsCopy)"
+        echo "  done (from $vendor_dir)"
       else
-        echo "WARNING: libpd-sys not found in cargoDepsCopy ($cargoDepsCopy)"
+        echo "WARNING: libpd-sys not found (vendor_dir=$vendor_dir)"
+        echo "  /build contents: $(ls /build/)"
       fi
     fi
   '';
