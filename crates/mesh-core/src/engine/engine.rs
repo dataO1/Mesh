@@ -275,11 +275,20 @@ impl AudioEngine {
             return target_position;
         }
 
-        // Calculate master's phase offset from its beat grid.
-        // Both decks share the same output pipeline, so output latency
-        // delays all audio equally — no compensation needed here.
+        // Two-step phase calculation:
+        //
+        // 1. BEAT SELECTION — use latency-compensated position.
+        //    The user pressed the button when they *heard* the master at
+        //    (position - output_latency). Use that to pick which beat to
+        //    snap to, so we choose the beat the user intended.
+        //
+        // 2. PHASE OFFSET — use raw internal position.
+        //    Both decks share the same output pipeline, so the sub-beat
+        //    audio alignment must use internal engine timing (no compensation).
         let master_pos = master.position() as usize;
-        let master_nearest_beat = master.snap_to_beat(master_pos);
+        let output_latency = self.output_latency_samples.load(Ordering::Relaxed) as usize;
+        let heard_pos = master_pos.saturating_sub(output_latency);
+        let master_nearest_beat = master.snap_to_beat(heard_pos);
         let phase_offset = master_pos as i64 - master_nearest_beat as i64;
 
         // Find nearest beat to slave's target position
