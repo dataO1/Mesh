@@ -27,6 +27,15 @@ let
     common.essentia
   ] ++ common.essentiaDeps;
 
+  # libpd-sys crate source (patched for 32-bit floats in preBuild)
+  # The workspace Cargo.toml uses [patch.crates-io] to override libpd-sys
+  # with a local path, so it's NOT included in the cargo vendor.
+  libpdSysSrc = pkgs.fetchurl {
+    url = "https://crates.io/api/v1/crates/libpd-sys/0.3.4/download";
+    name = "libpd-sys-0.3.4.tar.gz";
+    hash = "sha256-TRzL2qaGOSo8Rx73VmCjc/FrYVr10ycqfrDAq//rYL8=";
+  };
+
 in pkgs.rustPlatform.buildRustPackage {
   pname = "mesh-player";
   version = "0.8.3";
@@ -53,26 +62,18 @@ in pkgs.rustPlatform.buildRustPackage {
   USE_TENSORFLOW = "0";
   CPLUS_INCLUDE_PATH = "${pkgs.eigen}/include/eigen3";
 
-  # The workspace Cargo.toml patches libpd-sys to use 32-bit floats
-  # (required for PD external compatibility). The patched source lives
-  # in patches/libpd-sys locally (gitignored, created by devshell hook).
-  # Recreate it from the vendored crate during the Nix build.
+  # Recreate patched libpd-sys from crates.io source.
+  # The [patch.crates-io] in Cargo.toml redirects libpd-sys to patches/libpd-sys,
+  # so the crate is never vendored. We fetch it separately and apply the float patch.
   preBuild = ''
     if [ ! -d "patches/libpd-sys" ]; then
       echo "Creating patched libpd-sys (32-bit floats)..."
-      vendor_dir=$(find /build -maxdepth 1 -name '*-vendor*' -type d 2>/dev/null | head -1)
-      # Vendored crates include version: libpd-sys-0.3.4, not libpd-sys
-      libpd_src=$(find "$vendor_dir" -maxdepth 1 -name 'libpd-sys-*' -type d 2>/dev/null | head -1)
-      if [ -n "$libpd_src" ]; then
-        mkdir -p patches
-        cp -r "$libpd_src" patches/libpd-sys
-        chmod -R u+w patches/libpd-sys
-        sed -i 's/const PD_FLOATSIZE: &str = "64"/const PD_FLOATSIZE: \&str = "32"/' patches/libpd-sys/build.rs
-        echo "  done (from $libpd_src)"
-      else
-        echo "WARNING: libpd-sys not found in vendor ($vendor_dir)"
-        echo "  vendor contents: $(ls "$vendor_dir/" | grep libpd || echo '(none)')"
-      fi
+      mkdir -p patches
+      tar xzf ${libpdSysSrc} -C patches
+      mv patches/libpd-sys-* patches/libpd-sys
+      chmod -R u+w patches/libpd-sys
+      sed -i 's/const PD_FLOATSIZE: &str = "64"/const PD_FLOATSIZE: \&str = "32"/' patches/libpd-sys/build.rs
+      echo "  done"
     fi
   '';
 
