@@ -16,7 +16,7 @@
 
 pkgs.writeShellApplication {
   name = "embedded-setup";
-  runtimeInputs = with pkgs; [ gh coreutils gnused gnugrep nix ];
+  runtimeInputs = with pkgs; [ gh git coreutils gnused gnugrep nix ];
   text = ''
     set -euo pipefail
 
@@ -101,11 +101,21 @@ pkgs.writeShellApplication {
     if [ "$PAGES_STATUS" = "gh-pages" ]; then
       skip "GitHub Pages already enabled on gh-pages branch"
     elif [ "$PAGES_STATUS" = "none" ]; then
-      gh api --method POST "repos/$REPO/pages" \
-        -f source='{"branch":"gh-pages","path":"/"}' \
-        --silent 2>/dev/null \
-        && ok "Enabled GitHub Pages on gh-pages branch" \
-        || echo "  — Could not enable Pages via API (enable manually: Settings > Pages > gh-pages)"
+      # Create gh-pages branch if it doesn't exist (Pages requires it)
+      if ! git ls-remote --heads origin gh-pages | grep -q gh-pages; then
+        echo "  Creating empty gh-pages branch..."
+        git switch --orphan gh-pages
+        git commit --allow-empty -m "chore: initialize GitHub Pages branch"
+        git push origin gh-pages
+        git switch -
+      fi
+      # Enable Pages via API (source must be nested JSON object)
+      if gh api --method POST "repos/$REPO/pages" \
+        --input - <<< '{"source":{"branch":"gh-pages","path":"/"}}' 2>&1; then
+        ok "Enabled GitHub Pages on gh-pages branch"
+      else
+        echo "  — Could not enable Pages via API (enable manually: Settings > Pages > gh-pages)"
+      fi
     else
       skip "GitHub Pages enabled on branch: $PAGES_STATUS"
     fi
