@@ -486,10 +486,13 @@ jobs:
               embedded deployment (Orange Pi 5 Pro).</p>
           HEADER
 
+          REPO="${{ github.repository }}"
+          RELEASE_URL="https://github.com/${REPO}/releases/tag/${VERSION}"
+
           cat >> index.html << EOF
             <div class="stats">
+              <div class="stat"><div class="stat-value"><a href="${RELEASE_URL}" style="color: #0ea5e9; text-decoration: none;">${VERSION}</a></div><div class="stat-label">current version</div></div>
               <div class="stat"><div class="stat-value">${NARINFO_COUNT}</div><div class="stat-label">packages</div></div>
-              <div class="stat"><div class="stat-value">${NAR_COUNT}</div><div class="stat-label">nar archives</div></div>
               <div class="stat"><div class="stat-value">${CACHE_SIZE}</div><div class="stat-label">total size</div></div>
             </div>
 
@@ -514,7 +517,7 @@ jobs:
 
           cat >> index.html << EOF
             </table>
-            <p class="footer">Last updated: $(date -u '+%Y-%m-%d %H:%M UTC') · Version: ${VERSION}</p>
+            <p class="footer">Last updated: $(date -u '+%Y-%m-%d %H:%M UTC') · <a href="${RELEASE_URL}">${VERSION}</a></p>
           </body>
           </html>
           EOF
