@@ -35,6 +35,23 @@ use cozo::DataValue;
 use std::collections::BTreeMap;
 
 // ============================================================================
+// ML Scores - Lightweight Struct for Suggestion Scoring
+// ============================================================================
+
+/// Lightweight ML scores for suggestion scoring (subset of MlAnalysisData)
+#[derive(Debug, Clone, Default)]
+pub struct MlScores {
+    /// Danceability probability (0.0 = not danceable, 1.0 = very danceable)
+    pub danceability: Option<f32>,
+    /// Music approachability regression score (0.0–1.0)
+    pub approachability: Option<f32>,
+    /// Timbre brightness probability (0.0 = dark, 1.0 = bright)
+    pub timbre: Option<f32>,
+    /// Tonality probability (0.0 = atonal, 1.0 = tonal)
+    pub tonal: Option<f32>,
+}
+
+// ============================================================================
 // Track - The Public API Type
 // ============================================================================
 
@@ -1002,6 +1019,38 @@ impl DatabaseService {
         for row in &result.rows {
             if let (Some(tid), Some(arousal)) = (row[0].get_int(), row[1].get_float()) {
                 map.insert(tid, arousal as f32);
+            }
+        }
+        Ok(map)
+    }
+
+    /// Batch-fetch ML scores for suggestion scoring (danceability, approachability, timbre, tonal)
+    pub fn get_ml_scores_batch(&self, track_ids: &[i64]) -> Result<std::collections::HashMap<i64, MlScores>, DbError> {
+        use std::collections::HashMap;
+
+        if track_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let id_values: Vec<DataValue> = track_ids.iter().map(|&id| DataValue::from(id)).collect();
+        let mut params = BTreeMap::new();
+        params.insert("ids".to_string(), DataValue::List(id_values));
+
+        let result = self.db.run_query(r#"
+            ?[track_id, danceability, approachability, timbre, tonal] :=
+                *ml_analysis{track_id, danceability, approachability, timbre, tonal},
+                track_id in $ids
+        "#, params)?;
+
+        let mut map = HashMap::new();
+        for row in &result.rows {
+            if let Some(tid) = row[0].get_int() {
+                map.insert(tid, MlScores {
+                    danceability: row[1].get_float().map(|f| f as f32),
+                    approachability: row[2].get_float().map(|f| f as f32),
+                    timbre: row[3].get_float().map(|f| f as f32),
+                    tonal: row[4].get_float().map(|f| f as f32),
+                });
             }
         }
         Ok(map)

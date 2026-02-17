@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
-use mesh_core::db::{DatabaseService, Track};
+use mesh_core::db::{DatabaseService, MlScores, Track};
 use mesh_core::music::MusicalKey;
 use crate::config::KeyScoringModel;
 
@@ -354,6 +354,38 @@ fn key_direction_penalty(tt: TransitionType, energy_bias: f32) -> f32 {
     0.5 - 0.5 * alignment.clamp(-1.0, 1.0)
 }
 
+// ─── ML Score Penalty Functions ──────────────────────────────────
+
+/// Compute a directional energy penalty for a candidate value vs seed average.
+///
+/// Used for danceability and approachability. When raising energy (positive bias),
+/// candidates with higher values than the seed average get lower penalties.
+/// When dropping energy (negative bias), lower values are preferred.
+///
+/// Returns 0.0 (best alignment) to 1.0 (worst). At center (bias=0), returns 0.5.
+/// Tracks without ML data should pass 0.5 as `cand_val` for neutral scoring.
+fn direction_penalty(cand_val: f32, seed_avg: f32, energy_bias: f32) -> f32 {
+    (0.5 - (cand_val - seed_avg) * energy_bias).clamp(0.0, 1.0)
+}
+
+/// Compute a tonal/timbre contrast penalty.
+///
+/// At energy extremes, DJs often want contrasting characteristics (e.g., follow
+/// a dark/atonal track with a bright/tonal one for maximum impact). This penalty
+/// rewards candidates whose timbre and tonal scores differ from the seed averages.
+///
+/// Returns 0.0 (maximum contrast, best) to 1.0 (identical characteristics, worst).
+fn contrast_penalty(
+    cand_timbre: f32,
+    cand_tonal: f32,
+    seed_timbre: f32,
+    seed_tonal: f32,
+) -> f32 {
+    let timbre_contrast = (seed_timbre - cand_timbre).abs();
+    let tonal_contrast = (seed_tonal - cand_tonal).abs();
+    1.0 - (timbre_contrast + tonal_contrast) / 2.0
+}
+
 /// Human-readable label for a transition type
 fn transition_type_label(tt: TransitionType) -> &'static str {
     match tt {
@@ -500,19 +532,45 @@ pub fn query_suggestions(
     let energy_bias = (energy_direction - 0.5) * 2.0;
     let filter_threshold = adaptive_filter_threshold(energy_bias);
 
+    // Step 4b: Batch-fetch ML scores for all candidates + seeds
+    let candidate_ids: Vec<i64> = candidates.keys().copied().collect();
+    let mut all_ids = candidate_ids.clone();
+    all_ids.extend_from_slice(&seed_ids);
+
+    let ml_scores = db.get_ml_scores_batch(&all_ids).unwrap_or_default();
+
+    // Compute seed ML averages (fallback 0.5 when no data)
+    let (avg_seed_dance, avg_seed_approach, avg_seed_timbre, avg_seed_tonal) = {
+        let seed_ml: Vec<&MlScores> = seed_ids.iter().filter_map(|id| ml_scores.get(id)).collect();
+        let avg = |f: fn(&MlScores) -> Option<f32>| -> f32 {
+            let vals: Vec<f32> = seed_ml.iter().filter_map(|s| f(s)).collect();
+            if vals.is_empty() { 0.5 } else { vals.iter().sum::<f32>() / vals.len() as f32 }
+        };
+        (
+            avg(|s| s.danceability),
+            avg(|s| s.approachability),
+            avg(|s| s.timbre),
+            avg(|s| s.tonal),
+        )
+    };
+
     // Step 5: Unified scoring — single formula for all candidates
     //
-    // Dynamic weights: as the fader moves to extremes, HNSW similarity (which
-    // inherently finds similar tracks) yields to key direction,
-    // letting energy-appropriate key transitions surface.
+    // Dynamic weights: at center, scoring is identical to the original 4-factor
+    // formula. As the fader moves to extremes, HNSW drops to zero (the user wants
+    // energy-directed tracks, not just similar ones) and ML signals emerge.
     //
     // Center (bias=0): 0.45 hnsw + 0.25 key + 0.15 key_dir + 0.15 bpm = 1.00
-    // Extreme (|bias|=1): 0.20 hnsw + 0.25 key + 0.40 key_dir + 0.15 bpm = 1.00
+    // Extreme (|bias|=1): 0.00 hnsw + 0.25 key + 0.25 key_dir + 0.10 bpm
+    //                    + 0.15 dance + 0.13 approach + 0.12 contrast = 1.00
     let bias_abs = energy_bias.abs();
-    let w_hnsw = 0.45 - 0.25 * bias_abs;      // 0.45 → 0.20
+    let w_hnsw = 0.45 - 0.45 * bias_abs;      // 0.45 → 0.00
     let w_key = 0.25;                           // constant — harmonic safety always matters
-    let w_bpm = 0.15;                           // constant
-    let w_key_dir = 0.15 + 0.25 * bias_abs;    // 0.15 → 0.40 (key energy direction)
+    let w_key_dir = 0.15 + 0.10 * bias_abs;    // 0.15 → 0.25 (key energy direction)
+    let w_bpm = 0.15 - 0.05 * bias_abs;        // 0.15 → 0.10
+    let w_dance = 0.15 * bias_abs;             // 0.00 → 0.15
+    let w_approach = 0.13 * bias_abs;           // 0.00 → 0.13
+    let w_contrast = 0.12 * bias_abs;           // 0.00 → 0.12
 
     let mut suggestions: Vec<SuggestedTrack> = candidates
         .into_values()
@@ -557,10 +615,24 @@ pub fn query_suggestions(
                 })
                 .unwrap_or(0.5);
 
+            // ML score penalties (fallback 0.5 = neutral when no data)
+            let cand_ml = track.id.and_then(|id| ml_scores.get(&id));
+            let cand_dance = cand_ml.and_then(|s| s.danceability).unwrap_or(0.5);
+            let cand_approach = cand_ml.and_then(|s| s.approachability).unwrap_or(0.5);
+            let cand_timbre = cand_ml.and_then(|s| s.timbre).unwrap_or(0.5);
+            let cand_tonal = cand_ml.and_then(|s| s.tonal).unwrap_or(0.5);
+
+            let dance_penalty = direction_penalty(cand_dance, avg_seed_dance, energy_bias);
+            let approach_penalty = direction_penalty(cand_approach, avg_seed_approach, energy_bias);
+            let contrast_pen = contrast_penalty(cand_timbre, cand_tonal, avg_seed_timbre, avg_seed_tonal);
+
             let score = w_hnsw * hnsw_dist
                 + w_key * key_penalty
                 + w_key_dir * key_dir_penalty
-                + w_bpm * bpm_penalty;
+                + w_bpm * bpm_penalty
+                + w_dance * dance_penalty
+                + w_approach * approach_penalty
+                + w_contrast * contrast_pen;
 
             let reason_tags = generate_reason_tags(best_tt, best_key_score);
 
@@ -878,5 +950,86 @@ mod tests {
         // Both should rate Am→C highly, but values will differ
         assert!(camelot > 0.5, "Camelot Am→C should be high: {camelot}");
         assert!(krumhansl > 0.5, "Krumhansl Am→C should be high: {krumhansl}");
+    }
+
+    // ─── Direction Penalty ─────────────────────────────────────────
+
+    #[test]
+    fn test_direction_penalty_center_is_neutral() {
+        // At center (bias=0), penalty is always 0.5 regardless of values
+        assert_eq!(direction_penalty(0.8, 0.5, 0.0), 0.5);
+        assert_eq!(direction_penalty(0.2, 0.5, 0.0), 0.5);
+        assert_eq!(direction_penalty(0.5, 0.5, 0.0), 0.5);
+    }
+
+    #[test]
+    fn test_direction_penalty_raise_prefers_higher() {
+        // When raising energy (bias=1.0), higher candidate → lower penalty
+        let high = direction_penalty(0.8, 0.5, 1.0);
+        let same = direction_penalty(0.5, 0.5, 1.0);
+        let low = direction_penalty(0.2, 0.5, 1.0);
+        assert!(high < same, "Higher value should have lower penalty when raising: {} vs {}", high, same);
+        assert!(same < low, "Same value should beat lower when raising: {} vs {}", same, low);
+    }
+
+    #[test]
+    fn test_direction_penalty_drop_prefers_lower() {
+        // When dropping energy (bias=-1.0), lower candidate → lower penalty
+        let high = direction_penalty(0.8, 0.5, -1.0);
+        let same = direction_penalty(0.5, 0.5, -1.0);
+        let low = direction_penalty(0.2, 0.5, -1.0);
+        assert!(low < same, "Lower value should have lower penalty when dropping: {} vs {}", low, same);
+        assert!(same < high, "Same value should beat higher when dropping: {} vs {}", same, high);
+    }
+
+    #[test]
+    fn test_direction_penalty_clamped() {
+        // Extreme differences should clamp to 0.0 and 1.0
+        let best = direction_penalty(1.0, 0.0, 1.0);
+        let worst = direction_penalty(0.0, 1.0, 1.0);
+        assert!(best <= 0.01, "Maximum alignment should be near 0: {}", best);
+        assert!(worst >= 0.99, "Maximum opposition should be near 1: {}", worst);
+    }
+
+    #[test]
+    fn test_direction_penalty_scales_with_bias() {
+        // At half bias, penalty should be between center (0.5) and extreme
+        let full = direction_penalty(0.8, 0.5, 1.0);
+        let half = direction_penalty(0.8, 0.5, 0.5);
+        let center = direction_penalty(0.8, 0.5, 0.0);
+        assert!(full < half, "Full bias should give stronger signal: {} vs {}", full, half);
+        assert!(half < center, "Half bias should be between center and full: {} vs {}", half, center);
+    }
+
+    // ─── Contrast Penalty ──────────────────────────────────────────
+
+    #[test]
+    fn test_contrast_penalty_identical_is_worst() {
+        // Identical characteristics → 1.0 (worst, no contrast)
+        assert_eq!(contrast_penalty(0.8, 0.7, 0.8, 0.7), 1.0);
+    }
+
+    #[test]
+    fn test_contrast_penalty_opposite_is_best() {
+        // Maximum contrast: dark+atonal seed vs bright+tonal candidate
+        let p = contrast_penalty(1.0, 1.0, 0.0, 0.0);
+        assert!(p < 0.01, "Maximum contrast should be near 0: {}", p);
+    }
+
+    #[test]
+    fn test_contrast_penalty_partial() {
+        // Only timbre differs, tonal same → partial contrast
+        let p = contrast_penalty(1.0, 0.5, 0.0, 0.5);
+        assert!(p > 0.0 && p < 1.0, "Partial contrast should be between 0 and 1: {}", p);
+        // timbre contrast = 1.0, tonal contrast = 0.0, avg = 0.5 → penalty = 0.5
+        assert!((p - 0.5).abs() < 0.01, "Should be 0.5: {}", p);
+    }
+
+    #[test]
+    fn test_contrast_penalty_symmetric() {
+        // Swapping candidate and seed should give same result
+        let a = contrast_penalty(0.8, 0.3, 0.2, 0.7);
+        let b = contrast_penalty(0.2, 0.7, 0.8, 0.3);
+        assert!((a - b).abs() < 0.001, "Should be symmetric: {} vs {}", a, b);
     }
 }

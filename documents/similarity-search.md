@@ -6,7 +6,7 @@ Technical documentation for Mesh's track recommendation system. This system powe
 
 ## Overview
 
-When suggestions are enabled, Mesh analyzes the tracks loaded on your decks and recommends what to play next. The system combines **audio fingerprint similarity** (HNSW vector search), **harmonic compatibility** (Camelot/Krumhansl key analysis), **perceived energy** (ML arousal), and **tempo proximity** into a single score per candidate track. An energy direction fader lets you steer results toward higher-energy or cooler tracks.
+When suggestions are enabled, Mesh analyzes the tracks loaded on your decks and recommends what to play next. The system combines **audio fingerprint similarity** (HNSW vector search), **harmonic compatibility** (Camelot/Krumhansl key analysis), **ML-derived musical characteristics** (danceability, approachability, tonal/timbre contrast), and **tempo proximity** into a single score per candidate track. An energy direction fader lets you steer results toward higher-energy or cooler tracks.
 
 ### Pipeline
 
@@ -23,17 +23,19 @@ Loaded decks (seed tracks)
 3. Merge candidates (keep minimum distance per track)
     │
     ▼
-4. Compute seed averages (BPM, arousal)
+4. Compute seed averages (BPM, danceability, approachability, timbre, tonal)
     │
     ▼
 5. Score each candidate:
-   ┌─────────────────────────────────────────────────────┐
-   │ score = w_hnsw    × hnsw_distance                   │
-   │       + w_key     × key_penalty                      │
-   │       + w_key_dir × key_direction_penalty             │
-   │       + w_arousal × arousal_direction_penalty         │
-   │       + w_bpm     × bpm_penalty                       │
-   └─────────────────────────────────────────────────────┘
+   ┌──────────────────────────────────────────────────────────┐
+   │ score = w_hnsw     × hnsw_distance                       │
+   │       + w_key      × key_penalty                          │
+   │       + w_key_dir  × key_direction_penalty                │
+   │       + w_bpm      × bpm_penalty                          │
+   │       + w_dance    × danceability_direction_penalty        │
+   │       + w_approach × approachability_direction_penalty     │
+   │       + w_contrast × tonal_timbre_contrast_penalty         │
+   └──────────────────────────────────────────────────────────┘
     │
     ▼
 6. Filter by adaptive harmonic threshold
@@ -172,23 +174,50 @@ Candidates whose best key score falls below a threshold are filtered out entirel
 
 ---
 
-## Stage 3: Arousal Direction Penalty
+## Stage 3: ML Score Penalties
 
-When ML analysis data is available (from EffNet + Jamendo mood model), each track has an **arousal** value (0.0–1.0) representing perceived energy/excitement level.
+When ML analysis data is available (from EffNet classification heads), each track has **danceability**, **approachability**, **timbre** (brightness), and **tonal** (tonality) scores — all 0.0–1.0 floats. These feed three penalty terms that activate proportionally with fader movement.
 
-The arousal direction penalty measures how well a candidate's energy aligns with the fader direction:
+### ML Scores (from EffNet)
+
+| Score | Range | Meaning |
+|-------|-------|---------|
+| **Danceability** | 0.0–1.0 | How danceable the track is |
+| **Approachability** | 0.0–1.0 | How accessible/approachable the music is |
+| **Timbre** | 0.0–1.0 | Brightness: 0.0 = dark, 1.0 = bright |
+| **Tonal** | 0.0–1.0 | Tonality: 0.0 = atonal, 1.0 = tonal |
+
+These are batch-fetched via `get_ml_scores_batch()` for all candidate + seed track IDs.
+
+### Seed Averages
+
+For each ML score, the **average across seed tracks** is computed (with 0.5 fallback when no data exists). This provides the baseline against which candidates are compared.
+
+### Direction Penalty (Danceability & Approachability)
+
+Both danceability and approachability use the same **direction penalty** formula. When raising energy (positive bias), candidates with higher values than the seed average get lower penalties; when dropping energy, lower values are preferred:
 
 ```
-diff = candidate_arousal - avg_seed_arousal
-alignment = diff × energy_bias
-penalty = 0.5 - 0.5 × clamp(alignment, -1.0, 1.0)
+direction_penalty(cand_val, seed_avg, energy_bias) =
+    clamp(0.5 - (cand_val - seed_avg) × energy_bias, 0.0, 1.0)
 ```
 
 - **Fader center (bias=0)**: All tracks get 0.5 (no differentiation)
-- **Fader right (bias=+1.0)**: Tracks with higher arousal than seeds → low penalty (good); lower arousal → high penalty
-- **Fader left (bias=-1.0)**: Tracks with lower arousal than seeds → low penalty (good); higher arousal → high penalty
+- **Fader right (bias=+1.0)**: Tracks with higher values → low penalty (good)
+- **Fader left (bias=-1.0)**: Tracks with lower values → low penalty (good)
 
-Tracks without arousal data receive a neutral 0.5 penalty — neither boosted nor penalized.
+Tracks without ML data use 0.5 as `cand_val`, producing a neutral 0.5 penalty.
+
+### Contrast Penalty (Timbre & Tonal)
+
+At energy extremes, DJs often want **contrasting** characteristics — follow a dark, atonal track with a bright, tonal one for maximum impact. The contrast penalty rewards candidates whose timbre and tonal scores differ from the seed averages:
+
+```
+contrast_penalty(cand_timbre, cand_tonal, seed_timbre, seed_tonal) =
+    1.0 - (|seed_timbre - cand_timbre| + |seed_tonal - cand_tonal|) / 2.0
+```
+
+Returns 0.0 (maximum contrast = best) to 1.0 (identical = worst). The weight itself (`w_contrast = 0.12 × |bias|`) is zero at center, so this term only matters when the fader is off-center.
 
 ---
 
@@ -212,14 +241,16 @@ This gives the scoring formula an independent signal about whether the key trans
 
 ## Stage 5: Unified Scoring Formula
 
-All five terms are combined with dynamic weights that shift as the fader moves:
+All seven terms are combined with dynamic weights that shift as the fader moves:
 
 ```
-score = w_hnsw    × hnsw_distance
-      + w_key     × (1.0 - key_score)
-      + w_key_dir × key_direction_penalty
-      + w_arousal × arousal_direction_penalty
-      + w_bpm     × bpm_penalty
+score = w_hnsw     × hnsw_distance
+      + w_key      × (1.0 - key_score)
+      + w_key_dir  × key_direction_penalty
+      + w_bpm      × bpm_penalty
+      + w_dance    × danceability_direction_penalty
+      + w_approach × approachability_direction_penalty
+      + w_contrast × tonal_timbre_contrast_penalty
 ```
 
 Lower score = better match.
@@ -228,11 +259,13 @@ Lower score = better match.
 
 | Term | Center (bias=0) | Extreme (\|bias\|=1) | Purpose |
 |------|----------------|---------------------|---------|
-| **HNSW distance** | 0.40 | 0.15 | Audio fingerprint similarity (genre, style, timbre) |
+| **HNSW distance** | 0.45 | 0.00 | Audio fingerprint similarity — drops to zero at extremes |
 | **Key penalty** | 0.25 | 0.25 | Harmonic compatibility — constant because safety always matters |
-| **Key direction** | 0.10 | 0.20 | Emotional energy direction of the key change |
-| **Arousal** | 0.15 | 0.30 | Perceived energy alignment (from ML analysis) |
-| **BPM penalty** | 0.10 | 0.10 | Tempo proximity (10 BPM difference = max penalty) |
+| **Key direction** | 0.15 | 0.25 | Emotional energy direction of the key change |
+| **BPM penalty** | 0.15 | 0.10 | Tempo proximity (10 BPM difference = max penalty) |
+| **Danceability** | 0.00 | 0.15 | Danceability alignment with fader direction |
+| **Approachability** | 0.00 | 0.13 | Music approachability alignment with fader direction |
+| **Tonal/timbre contrast** | 0.00 | 0.12 | Rewards opposite tonal + timbre characteristics |
 | **Total** | **1.00** | **1.00** | |
 
 ### Weight Interpolation
@@ -240,16 +273,20 @@ Lower score = better match.
 Weights interpolate linearly with `|energy_bias|`:
 
 ```
-w_hnsw    = 0.40 - 0.25 × |bias|
-w_key     = 0.25                   (constant)
-w_key_dir = 0.10 + 0.10 × |bias|
-w_arousal = 0.15 + 0.15 × |bias|
-w_bpm     = 0.10                   (constant)
+w_hnsw     = 0.45 - 0.45 × |bias|     // 0.45 → 0.00
+w_key      = 0.25                       // constant
+w_key_dir  = 0.15 + 0.10 × |bias|     // 0.15 → 0.25
+w_bpm      = 0.15 - 0.05 × |bias|     // 0.15 → 0.10
+w_dance    = 0.15 × |bias|             // 0.00 → 0.15
+w_approach = 0.13 × |bias|             // 0.00 → 0.13
+w_contrast = 0.12 × |bias|             // 0.00 → 0.12
 ```
+
+At center (bias=0): all three new weights are zero, producing identical behavior to the original 4-factor formula.
 
 ### Design Rationale
 
-**Why does HNSW weight decrease at extremes?** HNSW similarity inherently finds tracks that "sound like" the seeds — similar genre, energy, timbre. This is ideal at center (find harmonically compatible, similar tracks) but counterproductive at extremes where the DJ wants *contrasting* energy levels. Reducing HNSW weight lets dissimilar-but-energetically-appropriate tracks surface.
+**Why does HNSW weight drop to zero at extremes?** HNSW similarity inherently finds tracks that "sound like" the seeds — similar genre, energy, timbre. This is ideal at center (find harmonically compatible, similar tracks) but counterproductive at extremes where the DJ wants *contrasting* energy levels. At full fader, the user is explicitly asking for energy-directed tracks, not just similar-sounding ones. The freed weight budget flows into the new ML signals that better capture the user's intent.
 
 **Why is key weight constant?** Harmonic safety matters regardless of energy direction. A semitone-up transition is always risky during a melodic blend, even when it's the desired energy direction. The energy modifier already adjusts which transitions are *allowed* through the filter; the constant key weight maintains sorting by harmonic safety within each tier.
 
@@ -258,6 +295,8 @@ w_bpm     = 0.10                   (constant)
 - `w_key_dir × key_direction_penalty` — **ranking**: among compatible transitions, which direction does the DJ want? (emotional energy)
 
 A transition can be harmonically safe (low key_penalty) but in the wrong energy direction (high key_dir_penalty), or vice versa.
+
+**Why contrast instead of direction for timbre/tonal?** Unlike danceability (where "more = higher energy" is intuitive), timbre and tonality don't have a linear energy axis. Instead, the DJ value at extremes is *variety* — following a dark, atonal breakdown with a bright, tonal peak. The contrast penalty rewards this without imposing a fixed "bright = more energy" assumption.
 
 ---
 
@@ -317,9 +356,10 @@ Traffic-light colors indicate harmonic compatibility:
 |----------|-------|-------------|
 | Energy bias | `(energy_direction - 0.5) × 2` | Maps fader [0,1] to bias [-1,+1] |
 | BPM penalty scale | 10 BPM | BPM difference that produces maximum penalty |
-| Default seed arousal | 0.5 | Fallback when no ML arousal data exists |
+| Default seed ML scores | 0.5 | Fallback when no ML data exists (danceability, approachability, timbre, tonal) |
 | Default seed BPM | 128.0 | Fallback when seed tracks have no BPM |
 | Neutral key score | 0.3 | Score for tracks with no key metadata |
+| Neutral candidate ML | 0.5 | Fallback `cand_val` when candidate has no ML data |
 
 ---
 
@@ -330,6 +370,6 @@ Traffic-light colors indicate harmonic compatibility:
 | `crates/mesh-player/src/suggestions.rs` | Scoring engine, transition classification, key models |
 | `crates/mesh-core/src/db/schema.rs` | AudioFeatures struct, HNSW index definition |
 | `crates/mesh-core/src/db/queries.rs` | SimilarityQuery (HNSW search) |
-| `crates/mesh-core/src/db/service.rs` | `find_similar_tracks()`, `get_arousal_batch()` |
+| `crates/mesh-core/src/db/service.rs` | `find_similar_tracks()`, `get_ml_scores_batch()`, `MlScores` |
 | `crates/mesh-core/src/music.rs` | `MusicalKey`, Camelot wheel encoding |
 | `crates/mesh-cue/src/ml_analysis/` | ML pipeline (EffNet, arousal/genre classification) |

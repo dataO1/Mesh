@@ -32,7 +32,7 @@ pub(crate) use queries::{TrackQuery, PlaylistQuery, SimilarityQuery, CuePointQue
 // Internal batch module (used directly by service.rs for efficient bulk inserts)
 
 // Public service API - the only interface for domain code
-pub use service::{DatabaseService, Track};
+pub use service::{DatabaseService, Track, MlScores};
 
 use cozo::{DbInstance, DataValue, NamedRows};
 use std::collections::BTreeMap;

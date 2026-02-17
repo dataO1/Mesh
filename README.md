@@ -232,27 +232,31 @@ Install CLAP plugins from your distro's package manager or download from plugin 
 
 ## Smart Suggestions
 
-When you toggle suggestions on in the collection browser, Mesh analyzes the tracks loaded on your decks and recommends what to play next. The system combines five scoring factors:
+When you toggle suggestions on in the collection browser, Mesh analyzes the tracks loaded on your decks and recommends what to play next. The system combines seven scoring factors:
 
 | Factor | What It Measures |
 |--------|-----------------|
 | **Audio similarity** | HNSW vector search on 16-dim audio fingerprints (rhythm, harmony, energy, timbre) |
 | **Harmonic compatibility** | Key transition safety via Camelot wheel or Krumhansl perceptual model |
 | **Key energy direction** | Emotional impact of the key transition (semitone up = +0.70, tritone = -0.80) |
-| **Arousal alignment** | ML-derived perceived energy matching the fader direction |
+| **Danceability** | ML-derived danceability alignment with the energy fader direction |
+| **Approachability** | ML-derived music approachability alignment with the energy fader direction |
+| **Tonal/timbre contrast** | At extremes, rewards opposite tonal and timbre characteristics to the seed |
 | **Tempo proximity** | BPM distance from currently playing tracks |
 
 ### Energy Direction Fader
 
-The fader steers what kinds of tracks are recommended. At center, audio similarity dominates for safe harmonic matches. At extremes, key energy direction and arousal take over:
+The fader steers what kinds of tracks are recommended. At center, audio similarity dominates for safe harmonic matches. At extremes, audio similarity drops to zero and ML-derived signals (danceability, approachability, contrast) take over:
 
 | | Center | Extreme |
 |-|--------|---------|
-| Audio similarity | 40% | 15% |
+| Audio similarity | 45% | 0% |
 | Key compatibility | 25% | 25% |
-| Key energy direction | 10% | 20% |
-| Arousal alignment | 15% | 30% |
-| BPM proximity | 10% | 10% |
+| Key energy direction | 15% | 25% |
+| Danceability | 0% | 15% |
+| Approachability | 0% | 13% |
+| Tonal/timbre contrast | 0% | 12% |
+| BPM proximity | 15% | 10% |
 
 Each key transition has a research-calibrated emotional energy direction. The fader both steers which transitions are preferred and relaxes the harmonic filter to allow dramatic key changes:
 

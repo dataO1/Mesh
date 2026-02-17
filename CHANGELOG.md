@@ -46,6 +46,22 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   generated (at >= 0.5 probability threshold). Removed `voice.rs` module and
   `get_vocals_mono()` import helper.
 
+- **ML-enhanced suggestion scoring** — The energy direction fader now
+  incorporates danceability, approachability, and tonal/timbre contrast from
+  ML analysis into the suggestion scoring formula. Three new penalty terms
+  activate proportionally as the fader moves away from center:
+  - **Danceability** (0→15%) — Higher danceability = higher energy alignment
+  - **Approachability** (0→13%) — More approachable = higher energy appeal
+  - **Tonal/timbre contrast** (0→12%) — At extremes, prefer opposite
+    characteristics to the seed tracks (e.g., dark+atonal seed → bright+tonal)
+
+  At center the formula is identical to the previous version (zero regression).
+  At extremes, HNSW audio similarity drops to 0% (from 20%) as the freed weight
+  budget flows into the new ML signals, giving the fader genuine control over
+  track selection based on musical characteristics rather than just audio
+  fingerprint distance. See `documents/similarity-search.md` for the full
+  7-term scoring formula.
+
 - **Audio characteristic analysis** — 6 new Essentia EffNet classification
   heads run during import and ML reanalysis:
   - **Timbre** — tags "Bright" or "Dark" (teal, mutually exclusive)
