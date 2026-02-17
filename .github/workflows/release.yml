@@ -16,6 +16,12 @@ permissions:
   pages: write
   id-token: write
 
+# Only one release workflow per tag at a time — re-pushing a tag cancels the
+# previous run so stale builds don't race with the new one.
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   CACHE_NAME: mesh-cache
