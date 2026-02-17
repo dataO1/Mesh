@@ -46,9 +46,12 @@ in pkgs.rustPlatform.buildRustPackage {
   inherit version;
   src = rustSrc;
 
-  # Cargo.lock hash - update this when deps change
-  # Run: nix build .#mesh-build 2>&1 | grep "got:" to get new hash
-  cargoHash = "sha256-iRi9WmJt7olZcJ/cn/yl9Mk5eUIxKy/vUjZIHohIzKg=";
+  # Use lockfile directly — no manual hash updates needed on dep changes.
+  # allowBuiltinFetchGit handles git deps (clack, baseview, graph).
+  cargoLock = {
+    lockFile = ./../../Cargo.lock;
+    allowBuiltinFetchGit = true;
+  };
 
   nativeBuildInputs = with pkgs; [
     pkg-config
