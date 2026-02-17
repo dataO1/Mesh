@@ -3,7 +3,7 @@
 #
 # Default features include jack-backend for Linux (JACK audio with port routing)
 # The jack dependency is Linux-only, so this works correctly on all platforms
-{ pkgs, common, src }:
+{ pkgs, common, version, src }:
 
 let
   # Filtered source - only includes files needed for Rust compilation
@@ -43,7 +43,7 @@ let
 
 in pkgs.rustPlatform.buildRustPackage {
   pname = "mesh";
-  version = "0.8.3";
+  inherit version;
   src = rustSrc;
 
   # Cargo.lock hash - update this when deps change

@@ -1,0 +1,21 @@
+# cargo-release configuration
+# Usage: cargo release patch|minor|major [--dry-run]
+#
+# Version is centralized in [workspace.package] version in Cargo.toml.
+# Nix packages read it via builtins.fromTOML — no other files need updating.
+# CI builds and publishes all artifacts when the v* tag is pushed.
+
+allow-branch = ["main"]
+# All workspace crates share one version, release together
+shared-version = true
+consolidate-commits = true
+# Don't publish to crates.io (private application)
+publish = false
+# Push the tag to trigger CI release workflow
+push = true
+tag = true
+# Tag format: v0.8.4 (matches CI tag filter)
+tag-prefix = "v"
+tag-name = "v{{version}}"
+# Commit message format
+pre-release-commit-message = "release: v{{version}}"

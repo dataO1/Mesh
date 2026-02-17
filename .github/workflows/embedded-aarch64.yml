@@ -11,7 +11,7 @@ name: Embedded aarch64 Build + Cache
 on:
   push:
     tags:
-      - '*'
+      - 'v*'
   workflow_dispatch:
     inputs:
       version:
@@ -43,6 +43,7 @@ jobs:
     runs-on: ubuntu-24.04-arm  # Native aarch64 runner (free for public repos)
     outputs:
       version: ${{ steps.version.outputs.version }}
+      is_minor_release: ${{ steps.version.outputs.is_minor_release }}
 
     steps:
       - name: Checkout repository
@@ -56,9 +57,6 @@ jobs:
             extra-substituters = https://datao1.github.io/Mesh/
             extra-trusted-public-keys = mesh-embedded:TVnMdLIfPt4q20ulKuieSc2Rv2fcwnph/TdLh2dZuKA=
 
-      # Cache the Nix store between CI runs. This caches ALL built derivations
-      # (essentia, system deps, cargo vendor, etc.) using GitHub Actions cache.
-      # On cache hit, only changed derivations are rebuilt.
       # Cache the Nix store between CI runs using GitHub Actions cache only
       # (FlakeHub disabled — no external service registration needed)
       - name: Nix store cache
@@ -70,9 +68,23 @@ jobs:
         id: version
         run: |
           if [ -n "${{ github.event.inputs.version }}" ]; then
-            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+            VERSION="${{ github.event.inputs.version }}"
           else
-            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          # Detect minor/major version bumps (patch == 0, e.g. v0.9.0, v1.0.0)
+          # Strip v prefix and any pre-release suffix, then check patch number
+          SEMVER="${VERSION#v}"
+          SEMVER="${SEMVER%%-*}"
+          PATCH=$(echo "$SEMVER" | cut -d. -f3)
+          if [ "$PATCH" = "0" ]; then
+            echo "is_minor_release=true" >> $GITHUB_OUTPUT
+            echo "Minor/major release detected (patch=0), SD image will build."
+          else
+            echo "is_minor_release=false" >> $GITHUB_OUTPUT
+            echo "Patch release (patch=$PATCH), SD image will be skipped."
           fi
 
       - name: Set up signing key
@@ -208,6 +220,10 @@ jobs:
   # ===========================================================================
   # Job 2: Build SD card image and upload to GitHub Releases
   # ===========================================================================
+  # Only runs on minor/major version bumps (patch == 0, e.g. v0.9.0, v1.0.0)
+  # or when force_sd_image is set via workflow_dispatch. Patch releases update
+  # the device via nixos-rebuild (pulling from the binary cache above).
+  #
   # Uses Nix derivation hash for deduplication: the drvPath encodes ALL inputs
   # (source code, nixpkgs pin, embedded config, dependencies). If nothing that
   # affects the image has changed, the hash is identical and the build is skipped.
@@ -215,7 +231,10 @@ jobs:
     name: Build SD Image
     needs: build-aarch64
     runs-on: ubuntu-24.04-arm
-    if: always() && needs.build-aarch64.result == 'success'
+    if: >-
+      always() && needs.build-aarch64.result == 'success' &&
+      (needs.build-aarch64.outputs.is_minor_release == 'true' ||
+       github.event.inputs.force_sd_image == 'true')
 
     steps:
       - name: Checkout repository

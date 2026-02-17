@@ -4,49 +4,28 @@ on:
   push:
     tags:
       - 'v*'
-  # Allow manual trigger with pre-built AppImages
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag (e.g., v0.1.0)'
+        description: 'Version tag (e.g., v0.8.4)'
         required: true
         type: string
+
+permissions:
+  contents: write
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Option 1: Full build on GitHub (for public repos with unlimited minutes)
-  # Uncomment this job if you want CI to build the AppImages
-  # build-appimage:
-  #   name: Build AppImages
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #       with:
-  #         submodules: recursive
-  #     - uses: cachix/install-nix-action@v27
-  #       with:
-  #         nix_path: nixpkgs=channel:nixos-unstable
-  #         extra_nix_config: |
-  #           experimental-features = nix-command flakes
-  #     - name: Build and bundle AppImages
-  #       run: |
-  #         nix build .#mesh-player .#mesh-cue --print-build-logs
-  #         nix bundle --bundler .#default .#mesh-player -o mesh-player-x86_64.AppImage
-  #         nix bundle --bundler .#default .#mesh-cue -o mesh-cue-x86_64.AppImage
-  #         chmod +x *.AppImage
-  #     - uses: softprops/action-gh-release@v2
-  #       with:
-  #         files: |
-  #           mesh-player-x86_64.AppImage
-  #           mesh-cue-x86_64.AppImage
-
-  # Option 2: Create release placeholder for manual uploads
-  # Build locally and upload with: gh release upload <tag> <files>
+  # ===========================================================================
+  # Job 1: Create draft release and validate version
+  # ===========================================================================
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - name: Checkout repository
@@ -61,37 +40,427 @@ jobs:
             echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
 
+      - name: Validate version against Cargo.toml
+        run: |
+          TAG_VERSION="${{ steps.version.outputs.version }}"
+          # Strip 'v' prefix for comparison (v0.8.4 -> 0.8.4)
+          TAG_SEMVER="${TAG_VERSION#v}"
+          # Also strip any pre-release suffix for base version check (0.8.4-rc1 -> 0.8.4)
+          TAG_BASE="${TAG_SEMVER%%-*}"
+
+          CARGO_VERSION=$(grep -A2 '^\[workspace\.package\]' Cargo.toml | grep '^version' | sed 's/.*"\(.*\)".*/\1/')
+          echo "Tag version:   $TAG_SEMVER (base: $TAG_BASE)"
+          echo "Cargo version: $CARGO_VERSION"
+
+          if [ "$TAG_BASE" != "$CARGO_VERSION" ]; then
+            echo "::error::Version mismatch! Tag base '$TAG_BASE' does not match Cargo.toml version '$CARGO_VERSION'"
+            echo "Update [workspace.package] version in Cargo.toml before tagging."
+            exit 1
+          fi
+          echo "Version check passed."
+
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SEMVER="${VERSION#v}"
+
+          # Extract the section between ## [this version] and the next ## [
+          # Uses awk: start printing at the matching header, stop at the next ## [
+          NOTES=$(awk -v ver="$SEMVER" '
+            /^## \[/ {
+              if (found) exit
+              if (index($0, "[" ver "]")) found=1
+            }
+            found { print }
+          ' CHANGELOG.md)
+
+          if [ -z "$NOTES" ]; then
+            echo "No changelog entry found for $SEMVER"
+            NOTES="*No changelog entry for this version.*"
+          fi
+
+          # Write to file (multiline strings in GITHUB_OUTPUT need delimiters)
+          echo "$NOTES" > /tmp/changelog-notes.md
+
+      - name: Build release body
+        run: |
+          cat > /tmp/release-body.md << 'INSTALL_EOF'
+          ## Installation
+
+          ### Linux (.deb)
+
+          Download the `.deb` package for your system:
+          - **mesh-player** — Performance mode (4-deck stem player)
+          - **mesh-cue** — Editing mode (waveform editor, analysis, stem separation)
+          - **mesh-cue-cuda** — Editing mode with NVIDIA GPU acceleration
+
+          ```bash
+          sudo dpkg -i mesh-player_*.deb mesh-cue_*.deb
+          # Install dependencies if needed:
+          sudo apt-get install -f
+          ```
+
+          **Requirements:** PipeWire (Ubuntu 22.04+, Fedora 34+) or JACK2, glibc 2.35+
+
+          ### Windows (.zip)
+
+          Extract the zip and run the `.exe` directly. No installation required.
+          GPU acceleration via DirectML (any DirectX 12 GPU).
+
+          ### NixOS
+
+          ```bash
+          INSTALL_EOF
+
+          # Append repo-specific nix commands (can't use ${{ }} inside HEREDOC)
+          echo "          nix run github:${{ github.repository }}#mesh-player" >> /tmp/release-body.md
+          echo "          nix run github:${{ github.repository }}#mesh-cue" >> /tmp/release-body.md
+          echo '          ```' >> /tmp/release-body.md
+          echo "" >> /tmp/release-body.md
+          echo "          ML models are downloaded automatically on first use." >> /tmp/release-body.md
+          echo "" >> /tmp/release-body.md
+          echo "          ---" >> /tmp/release-body.md
+          echo "" >> /tmp/release-body.md
+
+          # Append changelog notes
+          cat /tmp/changelog-notes.md >> /tmp/release-body.md
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           name: Mesh ${{ steps.version.outputs.version }}
           tag_name: ${{ steps.version.outputs.version }}
-          draft: true  # Draft so you can upload files before publishing
+          draft: true
           prerelease: ${{ contains(steps.version.outputs.version, '-rc') || contains(steps.version.outputs.version, '-beta') || contains(steps.version.outputs.version, '-alpha') }}
-          generate_release_notes: true
-          body: |
-            ## Installation
-
-            ### AppImage (Linux)
-
-            1. Download the AppImage for your application
-            2. Make it executable: `chmod +x mesh-player-x86_64.AppImage`
-            3. Run: `./mesh-player-x86_64.AppImage`
-
-            The AppImage automatically detects PipeWire or JACK and configures audio accordingly.
-
-            **Requirements:**
-            - PipeWire (Ubuntu 22.04+, Fedora 34+) OR JACK2 audio server
-            - GPU drivers for Vulkan (optional, falls back to software rendering)
-
-            ### NixOS
-
-            ```bash
-            nix run github:${{ github.repository }}#mesh-player
-            nix run github:${{ github.repository }}#mesh-cue
-            ```
-
-            ---
-            *Upload AppImages using: `gh release upload ${{ steps.version.outputs.version }} mesh-player-x86_64.AppImage mesh-cue-x86_64.AppImage`*
+          body_path: /tmp/release-body.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ===========================================================================
+  # Job 2: Build Linux .deb packages (CPU)
+  # ===========================================================================
+  build-deb:
+    name: Build .deb (CPU)
+    needs: create-release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Free disk space
+        run: |
+          echo "Before cleanup:"
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
+          sudo rm -rf /usr/local/graalvm /usr/local/share/chromium /usr/local/.ghcup
+          echo "After cleanup:"
+          df -h /
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Nix store cache
+        uses: DeterminateSystems/magic-nix-cache-action@v8
+        with:
+          use-flakehub: false
+
+      - name: Restore build cache
+        uses: actions/cache@v4
+        with:
+          path: target/deb-build/
+          key: deb-build-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            deb-build-
+
+      - name: Build .deb packages
+        run: nix run .#build-deb
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-cpu
+          path: dist/deb/*.deb
+          if-no-files-found: error
+          retention-days: 5
+
+  # ===========================================================================
+  # Job 3: Build Linux .deb packages (CUDA)
+  # ===========================================================================
+  build-deb-cuda:
+    name: Build .deb (CUDA)
+    needs: create-release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Free disk space
+        run: |
+          echo "Before cleanup:"
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
+          sudo rm -rf /usr/local/graalvm /usr/local/share/chromium /usr/local/.ghcup
+          echo "After cleanup:"
+          df -h /
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Nix store cache
+        uses: DeterminateSystems/magic-nix-cache-action@v8
+        with:
+          use-flakehub: false
+
+      - name: Restore build cache
+        uses: actions/cache@v4
+        with:
+          path: target/deb-build/
+          key: deb-cuda-build-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            deb-cuda-build-
+
+      - name: Build CUDA .deb packages
+        run: nix run .#build-deb-cuda
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-cuda
+          path: dist/deb/*.deb
+          if-no-files-found: error
+          retention-days: 5
+
+  # ===========================================================================
+  # Job 4: Build Windows packages
+  # ===========================================================================
+  build-windows:
+    name: Build Windows
+    needs: create-release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Free disk space
+        run: |
+          echo "Before cleanup:"
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
+          sudo rm -rf /usr/local/graalvm /usr/local/share/chromium /usr/local/.ghcup
+          echo "After cleanup:"
+          df -h /
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Nix store cache
+        uses: DeterminateSystems/magic-nix-cache-action@v8
+        with:
+          use-flakehub: false
+
+      - name: Restore build cache
+        uses: actions/cache@v4
+        with:
+          path: target/windows/
+          key: windows-build-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            windows-build-
+
+      - name: Build Windows packages
+        run: nix run .#build-windows
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/windows/*.zip
+          if-no-files-found: error
+          retention-days: 5
+
+  # ===========================================================================
+  # Job 5: Build and sync ML models to permanent 'models' release
+  # ===========================================================================
+  build-models:
+    name: Sync Models
+    needs: create-release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Nix store cache
+        uses: DeterminateSystems/magic-nix-cache-action@v8
+        with:
+          use-flakehub: false
+
+      - name: Restore model cache
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: models/
+          key: models-${{ hashFiles('nix/apps/convert-beat-model.nix', 'nix/apps/convert-ml-model.nix', 'nix/apps/convert-model.nix') }}
+
+      - name: Convert Beat This! model
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p models
+          # Remove existing to force reconversion
+          rm -f models/beat_this_small.onnx
+          nix run .#convert-beat-model
+
+      - name: Convert genre classification head
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: |
+          rm -f models/genre_discogs400-discogs-effnet-1.onnx
+          nix run .#convert-ml-model
+
+      - name: Convert Demucs models
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: |
+          rm -f models/htdemucs.onnx models/htdemucs.onnx.data
+          nix run .#convert-model -- htdemucs ./models
+          rm -f models/htdemucs_ft.onnx models/htdemucs_ft.onnx.data
+          nix run .#convert-model -- htdemucs_ft ./models
+
+      - name: Download pre-built Essentia models
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: |
+          # EffNet embedding model (ONNX published directly by Essentia)
+          curl --fail --location --progress-bar \
+            -o models/discogs-effnet-bsdynamic-1.onnx \
+            "https://essentia.upf.edu/models/music-style-classification/discogs-effnet/discogs-effnet-bsdynamic-1.onnx"
+
+          # Jamendo mood/theme classification head (ONNX published directly by Essentia)
+          curl --fail --location --progress-bar \
+            -o models/mtg_jamendo_moodtheme-discogs-effnet-1.onnx \
+            "https://essentia.upf.edu/models/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.onnx"
+
+      - name: Upload models to permanent release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Models to upload:"
+          ls -lh models/*.onnx* 2>/dev/null || true
+
+          # Ensure the 'models' release exists
+          if ! gh release view models &>/dev/null; then
+            gh release create models \
+              --title "ML Models" \
+              --notes "Pre-built ONNX models for stem separation, beat detection, and audio classification. Downloaded automatically by mesh-cue on first use."
+          fi
+
+          # Upload all model files (--clobber overwrites existing)
+          gh release upload models models/*.onnx* --clobber
+
+          echo "Models synced to 'models' release."
+
+  # ===========================================================================
+  # Job 6: Collect artifacts and publish release
+  # ===========================================================================
+  publish-release:
+    name: Publish Release
+    needs: [create-release, build-deb, build-deb-cuda, build-windows, build-models]
+    runs-on: ubuntu-latest
+    if: always() && needs.create-release.result == 'success'
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: List artifacts
+        run: |
+          echo "Downloaded artifacts:"
+          find artifacts/ -type f 2>/dev/null | sort || echo "No artifacts found"
+
+      - name: Upload artifacts to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+          echo "Uploading to release: $VERSION"
+
+          # Upload all .deb and .zip files found
+          shopt -s nullglob
+          FILES=(artifacts/*.deb artifacts/*.zip)
+          if [ ${#FILES[@]} -gt 0 ]; then
+            gh release upload "$VERSION" "${FILES[@]}" --clobber --repo "${{ github.repository }}"
+            echo "Uploaded ${#FILES[@]} file(s)"
+          else
+            echo "::warning::No artifacts to upload"
+          fi
+
+      - name: Publish release if all builds succeeded
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+
+          DEB_OK="${{ needs.build-deb.result }}"
+          CUDA_OK="${{ needs.build-deb-cuda.result }}"
+          WIN_OK="${{ needs.build-windows.result }}"
+          MODELS_OK="${{ needs.build-models.result }}"
+
+          if [ "$DEB_OK" = "success" ] && [ "$CUDA_OK" = "success" ] && [ "$WIN_OK" = "success" ]; then
+            echo "All app builds succeeded — publishing release"
+            gh release edit "$VERSION" --draft=false --repo "${{ github.repository }}"
+          else
+            echo "::warning::Some builds failed — leaving release as draft"
+            echo "  build-deb:      $DEB_OK"
+            echo "  build-deb-cuda: $CUDA_OK"
+            echo "  build-windows:  $WIN_OK"
+            echo "  build-models:   $MODELS_OK"
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+          echo "## Release $VERSION" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Create Release | ${{ needs.create-release.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build .deb (CPU) | ${{ needs.build-deb.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build .deb (CUDA) | ${{ needs.build-deb-cuda.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build Windows | ${{ needs.build-windows.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Sync Models | ${{ needs.build-models.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          DEB_OK="${{ needs.build-deb.result }}"
+          CUDA_OK="${{ needs.build-deb-cuda.result }}"
+          WIN_OK="${{ needs.build-windows.result }}"
+
+          if [ "$DEB_OK" = "success" ] && [ "$CUDA_OK" = "success" ] && [ "$WIN_OK" = "success" ]; then
+            echo "**Release published.**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Release left as draft** — some builds failed." >> $GITHUB_STEP_SUMMARY
+          fi

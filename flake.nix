@@ -35,6 +35,9 @@
       # on GitHub Pages as a binary cache. The SD image is uploaded to
       # GitHub Releases with hash-based deduplication.
 
+      # Centralized version — read once, used by both per-system and embedded outputs
+      meshVersion = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
+
       # Native aarch64 pkgs for the vendor kernel (used by nixos-rk3588 board module)
       embeddedKernelPkgs = import nixpkgs {
         system = "aarch64-linux";
@@ -74,6 +77,7 @@
               in {
                 services.mesh-embedded.package = import ./nix/packages/mesh-player.nix {
                   inherit pkgs common;
+                  version = meshVersion;
                   src = self;
                 };
               })
@@ -94,6 +98,9 @@
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
 
+        # meshVersion is defined in the outer let block (line 39) and visible here.
+        # All Nix packages inherit it; no manual sync needed on version bumps.
+
         # Rust toolchain
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
           extensions = [ "rust-src" "rust-analyzer" ];
@@ -109,12 +116,14 @@
         # Native Rust build (Linux/NixOS) — full (mesh-player + mesh-cue)
         meshBuild = import ./nix/packages/mesh-build.nix {
           inherit pkgs common;
+          version = meshVersion;
           src = ./.;
         };
 
         # mesh-player only (for embedded deployment, no mesh-cue/ONNX deps)
         meshPlayer = import ./nix/packages/mesh-player.nix {
           inherit pkgs common;
+          version = meshVersion;
           src = ./.;
         };
 
@@ -214,44 +223,83 @@
           '';
         };
 
-        # Runnable apps
+        # =================================================================
+        # Runnable apps — `nix run .#<name>`
+        #
+        # Release workflow (version is read from Cargo.toml automatically):
+        #   1. Edit [workspace.package] version in Cargo.toml
+        #   2. Update CHANGELOG.md
+        #   3. Commit, tag, push:
+        #        git add -A && git commit -m "release: vX.Y.Z"
+        #        git tag vX.Y.Z && git push && git push --tags
+        #   4. CI builds all artifacts and publishes the release
+        #
+        # Manual builds (CI does these automatically on tag push):
+        #   nix run .#build-deb          → dist/deb/mesh-{player,cue}_amd64.deb
+        #   nix run .#build-deb-cuda     → dist/deb/mesh-cue-cuda_amd64.deb
+        #   nix run .#build-windows      → dist/windows/mesh-{player,cue}_win.zip
+        #
+        # Model conversion (CI syncs to 'models' release on tag push):
+        #   nix run .#convert-model      → models/htdemucs.onnx (Demucs stem separation)
+        #   nix run .#convert-model -- htdemucs_ft ./models  (fine-tuned variant)
+        #   nix run .#convert-ml-model   → models/genre_discogs400-*.onnx (genre head)
+        #   nix run .#convert-beat-model → models/beat_this_small.onnx (beat detection)
+        #
+        # Embedded (Orange Pi 5 Pro):
+        #   nix run .#embedded-setup     — one-time CI keypair + secrets setup
+        #   nix run .#embedded-flash     — download + flash SD image to card
+        #
+        # Utilities:
+        #   nix run .#build-nn-tilde     — build nn~ PureData external
+        #   nix run .#bpm-report         — BPM accuracy report vs Beatport
+        # =================================================================
         apps = {
-          build-windows = {
-            type = "app";
-            program = "${buildWindowsApp}/bin/build-windows";
-          };
+          # Container build: Ubuntu 22.04, glibc 2.35, CPU-only
           build-deb = {
             type = "app";
             program = "${buildDebApp}/bin/build-deb";
           };
+          # Container build: Ubuntu 22.04, glibc 2.35, NVIDIA CUDA 12
           build-deb-cuda = {
             type = "app";
             program = "${buildDebCudaApp}/bin/build-deb-cuda";
           };
+          # Container build: MinGW-w64 cross-compilation, DirectML GPU
+          build-windows = {
+            type = "app";
+            program = "${buildWindowsApp}/bin/build-windows";
+          };
+          # Demucs PyTorch → ONNX (htdemucs, htdemucs_ft, htdemucs_6s)
           convert-model = {
             type = "app";
             program = "${convertModelApp}/bin/convert-model";
           };
+          # Essentia TF classification head → ONNX (genre_discogs400)
           convert-ml-model = {
             type = "app";
             program = "${convertMlModelApp}/bin/convert-ml-model";
           };
+          # Beat This! PyTorch → ONNX (small or final checkpoint)
           convert-beat-model = {
             type = "app";
             program = "${convertBeatModelApp}/bin/convert-beat-model";
           };
+          # nn~ PureData external (neural audio effects)
           build-nn-tilde = {
             type = "app";
             program = "${buildNnTildeApp}/bin/build-nn-tilde";
           };
+          # One-time: generate cache signing keypair + configure GitHub secrets
           embedded-setup = {
             type = "app";
             program = "${embeddedSetupApp}/bin/embedded-setup";
           };
+          # Download SD image from GitHub Releases + flash to SD card
           embedded-flash = {
             type = "app";
             program = "${embeddedFlashApp}/bin/embedded-flash";
           };
+          # Export DB, scrape Beatport, generate BPM comparison report
           bpm-report = {
             type = "app";
             program = "${bpmReportApp}/bin/bpm-report";

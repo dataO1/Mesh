@@ -8,7 +8,7 @@
 # Cross-compilation: When buildPlatform != hostPlatform (e.g. building
 # aarch64 from x86_64), Nix automatically configures a cross-compiler.
 # nativeBuildInputs run on the build machine, buildInputs are for the target.
-{ pkgs, common, src }:
+{ pkgs, common, version, src }:
 
 let
   rustSrc = pkgs.lib.cleanSourceWith {
@@ -42,7 +42,7 @@ let
 
 in pkgs.rustPlatform.buildRustPackage {
   pname = "mesh-player";
-  version = "0.8.3";
+  inherit version;
   src = rustSrc;
 
   # Update after Cargo.lock changes: nix build .#mesh-player 2>&1 | grep "got:"
