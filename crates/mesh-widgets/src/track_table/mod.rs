@@ -42,6 +42,23 @@ impl TrackTag {
     }
 }
 
+/// Map a tag's color code to a display priority for category-based sorting.
+///
+/// Priority order: genre super (0) → genre sub (1) → genre plain (2)
+/// → vocal (3) → audio characteristics (4) → binary mood (5) → user-defined (6) → Jamendo mood (7)
+pub fn tag_sort_priority(color: Option<&str>) -> u8 {
+    match color {
+        Some("#2563eb") => 0, // genre super-category (dark blue)
+        Some("#60a5fa") => 1, // genre sub-category (light blue)
+        Some("#3b82f6") => 2, // genre plain (blue)
+        Some("#2d8a4e") => 3, // vocal (green)
+        Some("#0d9488") => 4, // audio characteristics (teal)
+        Some("#ec4899") => 5, // binary mood (pink)
+        Some("#8b5cf6") => 7, // Jamendo mood (purple)
+        _ => 6,              // user-defined / unknown
+    }
+}
+
 /// Parse a "#RRGGBB" hex string into an iced Color.
 /// Returns None on invalid input.
 pub fn parse_hex_color(hex: &str) -> Option<Color> {
