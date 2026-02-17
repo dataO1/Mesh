@@ -98,18 +98,32 @@ pkgs.mkShell {
     # JACK settings
     export JACK_NO_AUDIO_RESERVATION=1
 
-    # Setup libpd-sys patch for 32-bit floats (required for nn~ external compatibility)
-    # This patches one line: PD_FLOATSIZE from "64" to "32"
+    # Setup patched crates (referenced by [patch.crates-io] in Cargo.toml)
+    mkdir -p patches
+
+    # libpd-sys: 32-bit floats (required for nn~ external compatibility)
     if [ ! -d "patches/libpd-sys" ]; then
       echo "Setting up libpd-sys patch for 32-bit float compatibility..."
       LIBPD_SYS_SRC=$(find ~/.cargo/registry/src -name "libpd-sys-*" -type d 2>/dev/null | head -1)
       if [ -n "$LIBPD_SYS_SRC" ]; then
-        mkdir -p patches
         cp -r "$LIBPD_SYS_SRC" patches/libpd-sys
         sed -i 's/const PD_FLOATSIZE: &str = "64"/const PD_FLOATSIZE: \&str = "32"/' patches/libpd-sys/build.rs
         echo "  ✓ Patched libpd-sys for 32-bit floats"
       else
         echo "  ⚠ libpd-sys not found in cargo registry. Run 'cargo fetch' first."
+      fi
+    fi
+
+    # libpd-rs: c_char portability (i8 on x86_64, u8 on aarch64)
+    if [ ! -d "patches/libpd-rs" ]; then
+      echo "Setting up libpd-rs patch for c_char portability..."
+      LIBPD_RS_SRC=$(find ~/.cargo/registry/src -name "libpd-rs-*" -type d 2>/dev/null | head -1)
+      if [ -n "$LIBPD_RS_SRC" ]; then
+        cp -r "$LIBPD_RS_SRC" patches/libpd-rs
+        sed -i 's/\*const i8/\*const os::raw::c_char/g' patches/libpd-rs/src/functions/receive.rs
+        echo "  ✓ Patched libpd-rs for c_char portability"
+      else
+        echo "  ⚠ libpd-rs not found in cargo registry. Run 'cargo fetch' first."
       fi
     fi
 

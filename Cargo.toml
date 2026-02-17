@@ -62,3 +62,5 @@ graph_builder = { git = "https://github.com/thief-sty/graph", branch = "main" }
 # Use 32-bit floats for libpd to be compatible with standard PD externals (like nn~)
 # libpd-sys defaults to 64-bit floats which breaks most externals
 libpd-sys = { path = "patches/libpd-sys" }
+# Fix c_char signedness on aarch64: libpd-rs hardcodes *const i8 but c_char is u8 on ARM
+libpd-rs = { path = "patches/libpd-rs" }
