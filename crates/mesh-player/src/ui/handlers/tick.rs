@@ -1,6 +1,21 @@
-//! Tick message handler
+//! Tick message handler — 60fps hot path
 //!
-//! Handles the 60fps periodic tick for:
+//! **PERFORMANCE CRITICAL**: This handler runs every ~16ms. All work here must be:
+//! - Lock-free (atomic reads only — never acquire mutexes or RwLocks)
+//! - O(1) or bounded O(n) where n is small and fixed (4 decks, 4 stems)
+//! - Free of allocations (no Vec::new, String::format, etc.)
+//!
+//! **DO NOT** add any of the following to this handler:
+//! - Database queries, file I/O, or network calls
+//! - Suggestion recomputation or collection queries
+//! - Heavy string formatting or logging (use log::debug! sparingly, log::info! never)
+//! - Anything that can be triggered by a discrete event instead (use message passing)
+//!
+//! If you need periodic-but-infrequent work (e.g. every ~1s), use a debounced
+//! `Task::perform(tokio::time::sleep(...))` pattern instead. See `ScheduleSuggestionRefresh`
+//! in `browser.rs` for the canonical example.
+//!
+//! Current tick responsibilities:
 //! - MIDI input polling and routing (60Hz — low-latency input)
 //! - MIDI Learn event capture (60Hz — responsive capture)
 //! - Atomic state synchronization: deck positions, slicer, linked stems (60Hz — smooth waveforms)
@@ -15,7 +30,10 @@ use crate::ui::app::{MeshApp, convert_midi_event_to_captured, convert_hid_event_
 use crate::ui::message::Message;
 use crate::ui::midi_learn::{LearnPhase, SetupStep};
 
-/// Handle the tick message (called ~60fps)
+/// Handle the tick message (called ~60fps).
+///
+/// **WARNING**: This is a hot path. Read the module-level docs before adding code here.
+/// Prefer event-driven message passing for anything that doesn't need per-frame updates.
 pub fn handle(app: &mut MeshApp) -> Task<Message> {
     // Poll MIDI input (non-blocking)
     // MIDI messages are processed at 60fps, providing ~16ms latency
@@ -188,13 +206,15 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
         }
     }
 
-    // Update highlight targets for MIDI learn mode
-    // Each deck/mixer view needs to know if one of its elements should be highlighted
-    let highlight = app.midi_learn.highlight_target;
-    for i in 0..4 {
-        app.deck_views[i].set_highlight(highlight);
+    // Update highlight targets for MIDI learn mode (only when learn is active)
+    // Avoids writing None to 5 views every frame when learn is inactive
+    if app.midi_learn.is_active {
+        let highlight = app.midi_learn.highlight_target;
+        for i in 0..4 {
+            app.deck_views[i].set_highlight(highlight);
+        }
+        app.mixer_view.set_highlight(highlight);
     }
-    app.mixer_view.set_highlight(highlight);
 
     // Read master clipper clip indicator (LOCK-FREE)
     // Swap to false so we know if any new clipping happens next tick
@@ -457,8 +477,8 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
             let mut feedback = mesh_midi::FeedbackState::default();
 
             // Compute beat phase from master deck's playhead + beatgrid
+            // Reuse global_bpm cached above (simple field access, but avoid redundant calls)
             if let Some(ref atomics) = app.deck_atomics {
-                let global_bpm = app.domain.global_bpm();
                 if global_bpm > 0.0 {
                     // Find master deck, or fall back to deck 0
                     let master_idx = (0..4).find(|&i| atomics[i].is_master()).unwrap_or(0);

@@ -9,6 +9,14 @@ use crate::ui::app::MeshApp;
 use crate::ui::message::Message;
 use crate::ui::midi_learn::MidiLearnMessage;
 
+/// Clear MIDI learn highlight from all views (called when learn mode exits)
+fn clear_highlights(app: &mut MeshApp) {
+    for i in 0..4 {
+        app.deck_views[i].set_highlight(None);
+    }
+    app.mixer_view.set_highlight(None);
+}
+
 /// Handle MIDI learn messages
 pub fn handle(app: &mut MeshApp, learn_msg: MidiLearnMessage) -> Task<Message> {
     use MidiLearnMessage::*;
@@ -22,6 +30,7 @@ pub fn handle(app: &mut MeshApp, learn_msg: MidiLearnMessage) -> Task<Message> {
         }
         Cancel => {
             app.midi_learn.cancel();
+            clear_highlights(app);
             app.status = "MIDI Learn cancelled".to_string();
         }
         Next => {
@@ -57,6 +66,7 @@ pub fn handle(app: &mut MeshApp, learn_msg: MidiLearnMessage) -> Task<Message> {
             match result {
                 Ok(()) => {
                     app.midi_learn.cancel(); // Reset state
+                    clear_highlights(app);
                     app.status = "MIDI config saved! Reloading...".to_string();
 
                     // Reload MIDI controller with new config

@@ -98,6 +98,17 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   pause, volume threshold crossing, track load) with a 1-second debounced
   `tokio::time::sleep` timer — zero overhead on the 60Hz tick handler.
 
+### Improved
+
+- **Tick handler performance hardening** — The 60fps tick handler now guards MIDI
+  learn highlight sync behind an `is_active` check (avoids writing `None` to 5
+  views every frame when learn mode is inactive), caches `global_bpm()` to
+  eliminate a redundant call in the LED feedback block, and includes prominent
+  module-level documentation warning against adding non-realtime-critical code.
+  The canonical alternative pattern (`ScheduleSuggestionRefresh` with debounced
+  `tokio::time::sleep`) is referenced as the recommended approach for periodic
+  but infrequent work.
+
 ### Fixed
 
 - **Tag category sorting** — ML-generated tags in the collection browser Tags
