@@ -476,6 +476,12 @@ jobs:
               th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #2a2a4a; }
               th { color: #94a3b8; font-weight: normal; font-size: 0.85rem; }
               td a { text-decoration: none; }
+              .version-banner { margin: 1.5rem 0; padding: 1.25rem; background: linear-gradient(135deg, #16213e 0%, #1a1a3e 100%); border: 1px solid #0ea5e9; border-radius: 10px; display: flex; align-items: center; justify-content: space-between; }
+              .version-banner .ver { font-size: 2rem; font-weight: bold; color: #fff; }
+              .version-banner .ver a { color: #fff; text-decoration: none; }
+              .version-banner .ver a:hover { color: #0ea5e9; }
+              .version-banner .release-link { background: #0ea5e9; color: #1a1a2e; padding: 0.5rem 1.25rem; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 0.9rem; }
+              .version-banner .release-link:hover { background: #38bdf8; }
               .footer { margin-top: 2rem; color: #64748b; font-size: 0.85rem; }
             </style>
           </head>
@@ -490,8 +496,12 @@ jobs:
           RELEASE_URL="https://github.com/${REPO}/releases/tag/${VERSION}"
 
           cat >> index.html << EOF
+            <div class="version-banner">
+              <div class="ver"><a href="${RELEASE_URL}">${VERSION}</a></div>
+              <a class="release-link" href="${RELEASE_URL}">View Release &rarr;</a>
+            </div>
+
             <div class="stats">
-              <div class="stat"><div class="stat-value"><a href="${RELEASE_URL}" style="color: #0ea5e9; text-decoration: none;">${VERSION}</a></div><div class="stat-label">current version</div></div>
               <div class="stat"><div class="stat-value">${NARINFO_COUNT}</div><div class="stat-label">packages</div></div>
               <div class="stat"><div class="stat-value">${CACHE_SIZE}</div><div class="stat-label">total size</div></div>
             </div>
