@@ -1005,9 +1005,16 @@ pub fn auto_tag_from_ml(track_id: i64, ml: &MlAnalysisData, db: &DatabaseService
                     log::warn!("auto_tag_from_ml: Failed to add genre tag '{}': {}", super_genre, e);
                 }
             }
+            // Consolidate DnB-family sub-genres into a single "DnB" tag,
+            // and skip "Instrumental" (redundant with ML voice detection)
+            let sub_tag = match sub_genre {
+                "Drum n Bass" | "Breakcore" | "Jungle" => "DnB",
+                "Instrumental" => continue,
+                other => other,
+            };
             // Add sub-genre (lighter blue)
-            if let Err(e) = db.add_tag(track_id, sub_genre, Some("#60a5fa")) {
-                log::warn!("auto_tag_from_ml: Failed to add genre tag '{}': {}", sub_genre, e);
+            if let Err(e) = db.add_tag(track_id, sub_tag, Some("#60a5fa")) {
+                log::warn!("auto_tag_from_ml: Failed to add genre tag '{}': {}", sub_tag, e);
             }
         } else {
             // No separator — use as-is
