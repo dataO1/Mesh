@@ -7,6 +7,10 @@
 
 {
   # PCM5102A I2S DAC on GPIO header — registers as ALSA card "PCM5102A"
+  # Filter restricts overlay application to just the Orange Pi 5 DTB
+  # (without this, NixOS applies overlays to ALL kernel DTBs and fails on
+  # boards that don't have the i2s3_2ch node)
+  hardware.deviceTree.filter = "rockchip/rk3588s-orangepi-5*.dtb";
   hardware.deviceTree.overlays = [
     { name = "pcm5102a-i2s3"; dtsFile = ./pcm5102a-i2s3.dts; }
   ];
