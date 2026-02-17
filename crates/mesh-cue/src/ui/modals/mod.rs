@@ -5,4 +5,4 @@
 
 mod overlay;
 
-pub use overlay::with_modal_overlay;
+pub use overlay::{build_backdrop, with_modal_overlay};

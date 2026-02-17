@@ -8,7 +8,7 @@ use crate::audio::{AudioHandle, AudioState};
 use crate::config;
 use crate::domain::MeshCueDomain;
 use crate::keybindings::{self, KeybindingsConfig};
-use iced::widget::{button, column, container, mouse_area, row, stack, text, Space};
+use iced::widget::{button, column, container, mouse_area, opaque, row, stack, text, Space};
 use iced::{Color, Element, Length, Task, Theme};
 use super::modals::with_modal_overlay;
 use mesh_core::playlist::NodeId;
@@ -667,15 +667,27 @@ impl MeshCueApp {
                 base
             }
         } else if self.slicer_editor.is_open {
-            // Slicer editor modal
-            if let Some(slicer_view) = super::slicer_editor::slicer_editor_view(
+            // Slicer editor modal — 60% width, 50% height via FillPortion
+            let backdrop = super::modals::build_backdrop(Message::CloseSlicerEditor);
+            let slicer_content = super::slicer_editor::slicer_editor_view(
                 &self.slicer_editor,
                 self.collection.loaded_track.as_ref(),
-            ) {
-                with_modal_overlay(base, slicer_view, Message::CloseSlicerEditor)
-            } else {
-                base
-            }
+            );
+            let sized = column![
+                Space::new().height(Length::FillPortion(1)),
+                row![
+                    Space::new().width(Length::FillPortion(1)),
+                    container(opaque(slicer_content))
+                        .width(Length::FillPortion(3))
+                        .height(Length::Fill),
+                    Space::new().width(Length::FillPortion(1)),
+                ]
+                .height(Length::FillPortion(2)),
+                Space::new().height(Length::FillPortion(1)),
+            ]
+            .width(Length::Fill)
+            .height(Length::Fill);
+            stack![base, backdrop, sized].into()
         } else if self.context_menu_state.is_open {
             // Context menu uses transparent backdrop and positioned content
             let backdrop: Element<Message> = mouse_area(
