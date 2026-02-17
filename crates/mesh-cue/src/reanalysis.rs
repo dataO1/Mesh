@@ -440,26 +440,15 @@ pub fn run_batch_reanalysis(
 // ML / Similarity Reanalysis
 // ============================================================================
 
-/// Extract vocal mono from stem buffers (for vocal presence detection)
-fn create_vocals_mono(stems: &mesh_core::audio_file::StemBuffers) -> Vec<f32> {
-    let len = stems.len();
-    let mut mono = Vec::with_capacity(len);
-    for i in 0..len {
-        mono.push((stems.vocals[i].left + stems.vocals[i].right) * 0.5);
-    }
-    mono
-}
-
 /// Re-analyze a single track's ML/similarity features
 ///
 /// This function:
 /// 1. Loads the audio from the existing WAV file
-/// 2. Extracts vocal mono for vocal presence detection (RMS energy)
-/// 3. Creates a full mono mix for mel spectrogram computation
-/// 4. Computes mel spectrogram (pure Rust DSP, 96-band, 16kHz)
-/// 5. Runs EffNet → genre predictions + embedding → mood head → arousal/valence
-/// 6. Clears old ML-generated tags, then auto-tags with new results
-/// 7. Stores ML analysis data in the database
+/// 2. Creates a full mono mix for mel spectrogram computation
+/// 3. Computes mel spectrogram (pure Rust DSP, 96-band, 16kHz)
+/// 4. Runs EffNet → genre predictions + embedding → mood head → voice classifier → arousal/valence
+/// 5. Clears old ML-generated tags, then auto-tags with new results
+/// 6. Stores ML analysis data in the database
 ///
 /// Unlike BPM/key/LUFS reanalysis, this does NOT use a subprocess — ort is thread-safe.
 fn reanalyze_ml_track(
@@ -494,17 +483,7 @@ fn reanalyze_ml_track(
         }
     };
 
-    // Step 1: Vocal presence (pure Rust RMS on vocal stem)
-    let vocals_mono = create_vocals_mono(&stems);
-    let vocal_presence = crate::ml_analysis::compute_vocal_presence(&vocals_mono, SAMPLE_RATE);
-    log::info!(
-        "reanalyze_ml_track: vocal_presence={:.2} for {:?}",
-        vocal_presence,
-        path
-    );
-
-    // Step 2: Full mix → mel spectrogram (pure Rust DSP, input to EffNet)
-    // Genre/mood classification always needs all audio content
+    // Full mix → mel spectrogram (pure Rust DSP, input to EffNet)
     let mono_mix = create_mono_mix(&stems);
     let mel = crate::ml_analysis::preprocessing::compute_mel_spectrogram(
         &mono_mix,
@@ -518,21 +497,22 @@ fn reanalyze_ml_track(
         mel.n_bands
     );
 
-    // Step 3: Run EffNet + classification heads (genre, mood, arousal/valence)
+    // Run EffNet + classification heads (genre, mood, voice/instrumental, arousal/valence)
     let ml_result = {
         let mut analyzer = ml_analyzer
             .lock()
             .map_err(|e| anyhow::anyhow!("MlAnalyzer lock poisoned: {}", e))?;
         analyzer
-            .analyze(&mel, vocal_presence)
+            .analyze(&mel)
             .map_err(|e| anyhow::anyhow!("ML inference failed: {}", e))?
     };
 
     log::info!(
-        "reanalyze_ml_track: genre={:?}, arousal={:?}, valence={:?}",
+        "reanalyze_ml_track: genre={:?}, arousal={:?}, valence={:?}, vocal={:.3}",
         ml_result.top_genre,
         ml_result.arousal,
-        ml_result.valence
+        ml_result.valence,
+        ml_result.vocal_presence
     );
 
     // Step 4: Store ML analysis data in database
@@ -550,20 +530,18 @@ fn reanalyze_ml_track(
 
 /// Run batch ML/similarity reanalysis on multiple tracks
 ///
-/// Initializes the MlAnalyzer (EffNet + optional mood head), then processes
+/// Initializes the MlAnalyzer (EffNet + mood heads), then processes
 /// tracks in parallel using rayon. Each track gets: vocal presence detection,
 /// mel spectrogram computation, EffNet inference, and auto-tagging.
 ///
 /// # Arguments
 /// * `tracks` - List of track file paths to re-analyze
-/// * `experimental` - If true, also run Jamendo mood model (enables arousal/valence)
 /// * `parallel_processes` - Number of parallel workers (1-16)
 /// * `progress_tx` - Channel to send progress updates
 /// * `cancel_flag` - Atomic flag to check for cancellation
 /// * `db` - Database service for storing results
 pub fn run_batch_ml_reanalysis(
     tracks: Vec<PathBuf>,
-    experimental: bool,
     parallel_processes: u8,
     progress_tx: Sender<ReanalysisProgress>,
     cancel_flag: Arc<AtomicBool>,
@@ -576,9 +554,8 @@ pub fn run_batch_ml_reanalysis(
     let total = tracks.len();
 
     log::info!(
-        "run_batch_ml_reanalysis: Starting similarity analysis for {} tracks (experimental={})",
-        total,
-        experimental
+        "run_batch_ml_reanalysis: Starting similarity analysis for {} tracks",
+        total
     );
 
     // Send start notification
@@ -613,7 +590,7 @@ pub fn run_batch_ml_reanalysis(
             }
         };
 
-        if let Err(e) = mgr.ensure_all_models(experimental) {
+        if let Err(e) = mgr.ensure_all_models() {
             log::warn!("run_batch_ml_reanalysis: Failed to download ML models: {}", e);
         }
 
@@ -623,12 +600,9 @@ pub fn run_batch_ml_reanalysis(
             .unwrap_or(std::path::Path::new("."))
             .to_path_buf();
 
-        match ml_analysis::MlAnalyzer::new(&model_dir, experimental) {
+        match ml_analysis::MlAnalyzer::new(&model_dir) {
             Ok(analyzer) => {
-                log::info!(
-                    "run_batch_ml_reanalysis: ML analyzer initialized (experimental={})",
-                    experimental
-                );
+                log::info!("run_batch_ml_reanalysis: ML analyzer initialized");
                 Arc::new(Mutex::new(analyzer))
             }
             Err(e) => {

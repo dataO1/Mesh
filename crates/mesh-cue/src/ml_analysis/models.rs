@@ -15,20 +15,55 @@ use std::path::{Path, PathBuf};
 /// predictions in a single forward pass, so no separate genre head is needed.
 /// (The Essentia hub only has the genre head as TensorFlow `.pb`, not ONNX.)
 ///
-/// Arousal/valence is derived from Jamendo mood predictions — no separate
-/// DEAM model is used because no EffNet-compatible A/V head exists.
+/// Binary mood classifiers consume EffNet's 1280-dim embeddings and output
+/// 2-class softmax probabilities. The positive class index varies per model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MlModelType {
     /// EffNet model (~17 MB) — always required
     /// Outputs: [0] genre predictions [n,400], [1] embeddings [n,1280]
     EffNetEmbedding,
-    /// Jamendo mood/theme classification head (~2.7 MB) — experimental only
+    /// Jamendo mood/theme classification head (~2.7 MB)
     /// 56-class sigmoid output over mood/theme tags
     JamendoMood,
     /// Beat This! small model (~10 MB) — SOTA beat + downbeat tracking
     /// Input: mel spectrogram [batch, n_frames, 128] at 22050 Hz
     /// Outputs: beat_activation + downbeat_activation logits per frame (50 fps)
     BeatThis,
+    /// Binary mood: Happy (~502 KB) — positive class at index 0
+    MoodHappy,
+    /// Binary mood: Aggressive (~502 KB) — positive class at index 0
+    MoodAggressive,
+    /// Binary mood: Relaxed (~502 KB) — positive class at index 1
+    MoodRelaxed,
+    /// Binary mood: Sad (~502 KB) — positive class at index 1
+    MoodSad,
+    /// Binary mood: Party (~502 KB) — positive class at index 1
+    MoodParty,
+    /// Voice/Instrumental classifier (~502 KB) — positive class ("voice") at index 1
+    /// Classes: [instrumental, voice] — 2-class softmax on EffNet embeddings
+    VoiceInstrumental,
+    /// Timbre brightness (~501 KB) — classes: [bright, dark]
+    /// Bright probability at index 0
+    Timbre,
+    /// Tonal/Atonal (~502 KB) — classes: [atonal, tonal]
+    /// Tonal probability at index 1
+    TonalAtonal,
+    /// Mood: Acoustic (~502 KB) — classes: [acoustic, non_acoustic]
+    /// Acoustic probability at index 0
+    MoodAcoustic,
+    /// Mood: Electronic (~502 KB) — classes: [electronic, non_electronic]
+    /// Electronic probability at index 0
+    MoodElectronic,
+    /// Danceability (~502 KB) — classes: [danceable, not_danceable]
+    /// Danceable probability at index 0
+    Danceability,
+    /// Approachability regression (~502 KB) — continuous output [0,1]
+    /// Single float regression, NOT softmax
+    ApproachabilityRegression,
+    /// NSynth Reverb (~502 KB) — classes: [wet, dry]
+    /// Wet (reverberant) probability at index 0
+    /// NOTE: Requires .pb→.onnx conversion via `nix run .#convert-reverb-model`
+    NsynthReverb,
 }
 
 impl MlModelType {
@@ -39,6 +74,19 @@ impl MlModelType {
             MlModelType::EffNetEmbedding => "discogs-effnet-bsdynamic-1.onnx",
             MlModelType::JamendoMood => "mtg_jamendo_moodtheme-discogs-effnet-1.onnx",
             MlModelType::BeatThis => "beat_this_small.onnx",
+            MlModelType::MoodHappy => "mood_happy-discogs-effnet-1.onnx",
+            MlModelType::MoodAggressive => "mood_aggressive-discogs-effnet-1.onnx",
+            MlModelType::MoodRelaxed => "mood_relaxed-discogs-effnet-1.onnx",
+            MlModelType::MoodSad => "mood_sad-discogs-effnet-1.onnx",
+            MlModelType::MoodParty => "mood_party-discogs-effnet-1.onnx",
+            MlModelType::VoiceInstrumental => "voice_instrumental-discogs-effnet-1.onnx",
+            MlModelType::Timbre => "timbre-discogs-effnet-1.onnx",
+            MlModelType::TonalAtonal => "tonal_atonal-discogs-effnet-1.onnx",
+            MlModelType::MoodAcoustic => "mood_acoustic-discogs-effnet-1.onnx",
+            MlModelType::MoodElectronic => "mood_electronic-discogs-effnet-1.onnx",
+            MlModelType::Danceability => "danceability-discogs-effnet-1.onnx",
+            MlModelType::ApproachabilityRegression => "approachability_regression-discogs-effnet-1.onnx",
+            MlModelType::NsynthReverb => "nsynth_reverb-discogs-effnet-1.onnx",
         }
     }
 
@@ -48,6 +96,20 @@ impl MlModelType {
             MlModelType::EffNetEmbedding => "https://github.com/dataO1/Mesh/releases/download/models/discogs-effnet-bsdynamic-1.onnx",
             MlModelType::JamendoMood => "https://github.com/dataO1/Mesh/releases/download/models/mtg_jamendo_moodtheme-discogs-effnet-1.onnx",
             MlModelType::BeatThis => "https://github.com/dataO1/Mesh/releases/download/models/beat_this_small.onnx",
+            MlModelType::MoodHappy => "https://essentia.upf.edu/models/classification-heads/mood_happy/mood_happy-discogs-effnet-1.onnx",
+            MlModelType::MoodAggressive => "https://essentia.upf.edu/models/classification-heads/mood_aggressive/mood_aggressive-discogs-effnet-1.onnx",
+            MlModelType::MoodRelaxed => "https://essentia.upf.edu/models/classification-heads/mood_relaxed/mood_relaxed-discogs-effnet-1.onnx",
+            MlModelType::MoodSad => "https://essentia.upf.edu/models/classification-heads/mood_sad/mood_sad-discogs-effnet-1.onnx",
+            MlModelType::MoodParty => "https://essentia.upf.edu/models/classification-heads/mood_party/mood_party-discogs-effnet-1.onnx",
+            MlModelType::VoiceInstrumental => "https://essentia.upf.edu/models/classification-heads/voice_instrumental/voice_instrumental-discogs-effnet-1.onnx",
+            MlModelType::Timbre => "https://essentia.upf.edu/models/classification-heads/timbre/timbre-discogs-effnet-1.onnx",
+            MlModelType::TonalAtonal => "https://essentia.upf.edu/models/classification-heads/tonal_atonal/tonal_atonal-discogs-effnet-1.onnx",
+            MlModelType::MoodAcoustic => "https://essentia.upf.edu/models/classification-heads/mood_acoustic/mood_acoustic-discogs-effnet-1.onnx",
+            MlModelType::MoodElectronic => "https://essentia.upf.edu/models/classification-heads/mood_electronic/mood_electronic-discogs-effnet-1.onnx",
+            MlModelType::Danceability => "https://essentia.upf.edu/models/classification-heads/danceability/danceability-discogs-effnet-1.onnx",
+            MlModelType::ApproachabilityRegression => "https://essentia.upf.edu/models/classification-heads/approachability/approachability_regression-discogs-effnet-1.onnx",
+            // NSynth Reverb needs .pb→.onnx conversion; hosted on our GitHub releases
+            MlModelType::NsynthReverb => "https://github.com/dataO1/Mesh/releases/download/models/nsynth_reverb-discogs-effnet-1.onnx",
         }
     }
 
@@ -57,17 +119,82 @@ impl MlModelType {
             MlModelType::EffNetEmbedding => "EffNet (Genre + Embedding)",
             MlModelType::JamendoMood => "Jamendo Mood/Theme",
             MlModelType::BeatThis => "Beat This! (Beat Tracking)",
+            MlModelType::MoodHappy => "Mood: Happy",
+            MlModelType::MoodAggressive => "Mood: Aggressive",
+            MlModelType::MoodRelaxed => "Mood: Relaxed",
+            MlModelType::MoodSad => "Mood: Sad",
+            MlModelType::MoodParty => "Mood: Party",
+            MlModelType::VoiceInstrumental => "Voice/Instrumental",
+            MlModelType::Timbre => "Timbre (Bright/Dark)",
+            MlModelType::TonalAtonal => "Tonal/Atonal",
+            MlModelType::MoodAcoustic => "Acoustic/Non-Acoustic",
+            MlModelType::MoodElectronic => "Electronic/Non-Electronic",
+            MlModelType::Danceability => "Danceability",
+            MlModelType::ApproachabilityRegression => "Approachability",
+            MlModelType::NsynthReverb => "Reverb (Wet/Dry)",
         }
     }
 
-    /// Models always required (even without experimental flag)
-    pub fn base_models() -> &'static [MlModelType] {
-        &[MlModelType::EffNetEmbedding]
+    /// Positive class index in the 2-class softmax output.
+    ///
+    /// Returns `None` for models that aren't binary classifiers.
+    /// The index varies per model due to different training class orderings.
+    pub fn positive_class_index(&self) -> Option<usize> {
+        match self {
+            MlModelType::MoodHappy => Some(0),
+            MlModelType::MoodAggressive => Some(0),
+            MlModelType::MoodRelaxed => Some(1),
+            MlModelType::MoodSad => Some(1),
+            MlModelType::MoodParty => Some(1),
+            MlModelType::VoiceInstrumental => Some(1),
+            _ => None,
+        }
     }
 
-    /// Models only loaded when experimental ML is enabled
-    pub fn experimental_models() -> &'static [MlModelType] {
-        &[MlModelType::JamendoMood]
+    /// Human-readable mood label for tag generation.
+    ///
+    /// Returns `None` for non-mood models.
+    pub fn mood_label(&self) -> Option<&'static str> {
+        match self {
+            MlModelType::MoodHappy => Some("Happy"),
+            MlModelType::MoodAggressive => Some("Aggressive"),
+            MlModelType::MoodRelaxed => Some("Relaxed"),
+            MlModelType::MoodSad => Some("Sad"),
+            MlModelType::MoodParty => Some("Party"),
+            _ => None,
+        }
+    }
+
+    /// All binary mood classifier model types
+    pub fn binary_mood_models() -> &'static [MlModelType] {
+        &[
+            MlModelType::MoodHappy,
+            MlModelType::MoodAggressive,
+            MlModelType::MoodRelaxed,
+            MlModelType::MoodSad,
+            MlModelType::MoodParty,
+        ]
+    }
+
+    /// Models required for ML analysis (genre + mood + voice + audio characteristics)
+    pub fn base_models() -> &'static [MlModelType] {
+        &[
+            MlModelType::EffNetEmbedding,
+            MlModelType::JamendoMood,
+            MlModelType::MoodHappy,
+            MlModelType::MoodAggressive,
+            MlModelType::MoodRelaxed,
+            MlModelType::MoodSad,
+            MlModelType::MoodParty,
+            MlModelType::VoiceInstrumental,
+            MlModelType::Timbre,
+            MlModelType::TonalAtonal,
+            MlModelType::MoodAcoustic,
+            MlModelType::MoodElectronic,
+            MlModelType::Danceability,
+            MlModelType::ApproachabilityRegression,
+            MlModelType::NsynthReverb,
+        ]
     }
 
     /// Models needed for advanced beat detection
@@ -136,21 +263,11 @@ impl MlModelManager {
         Ok(model_path)
     }
 
-    /// Ensure all models needed for the given configuration
-    pub fn ensure_all_models(
-        &self,
-        experimental: bool,
-    ) -> Result<(), String> {
+    /// Ensure all models needed for ML analysis are available
+    pub fn ensure_all_models(&self) -> Result<(), String> {
         for &model in MlModelType::base_models() {
             self.ensure_model(model, None)?;
         }
-
-        if experimental {
-            for &model in MlModelType::experimental_models() {
-                self.ensure_model(model, None)?;
-            }
-        }
-
         Ok(())
     }
 
@@ -251,7 +368,7 @@ mod tests {
 
     #[test]
     fn test_base_models_list() {
-        assert_eq!(MlModelType::base_models().len(), 1);
-        assert_eq!(MlModelType::experimental_models().len(), 1);
+        assert_eq!(MlModelType::base_models().len(), 15);
+        assert_eq!(MlModelType::binary_mood_models().len(), 5);
     }
 }

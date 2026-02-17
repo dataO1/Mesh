@@ -291,24 +291,43 @@ impl AudioFeatures {
 // ML Analysis Data
 // ============================================================================
 
-/// ML analysis results for a track (voice detection, genre, arousal/valence, mood)
+/// ML analysis results for a track (voice detection, genre, mood, audio characteristics)
 ///
 /// This struct is used across crates (mesh-core, mesh-cue, mesh-player) to pass
 /// ML analysis results. It has no iced dependencies.
+///
+/// All probability/score fields are `Option<f32>` in 0.0–1.0 range.
+/// Tags are derived from these at display time with appropriate thresholds.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MlAnalysisData {
-    /// Vocal presence ratio (0.0 = instrumental, 1.0 = vocal throughout)
+    /// Vocal presence probability (0.0 = instrumental, 1.0 = definitely vocal)
     pub vocal_presence: f32,
-    /// Perceived energy level from EffNet arousal model (experimental)
+    /// Legacy arousal field (no longer written, kept for DB compat)
     pub arousal: Option<f32>,
-    /// Perceived mood valence from EffNet model (experimental)
+    /// Legacy valence field (no longer written, kept for DB compat)
     pub valence: Option<f32>,
     /// Primary genre label (highest confidence)
     pub top_genre: Option<String>,
     /// Top genre scores above threshold: Vec<(label, confidence)> serialized as JSON
     pub genre_scores: Vec<(String, f32)>,
-    /// Jamendo mood/theme tags (experimental): Vec<(label, confidence)>
+    /// Jamendo mood/theme tags: Vec<(label, confidence)>
     pub mood_themes: Option<Vec<(String, f32)>>,
+    /// Binary mood classifier probabilities: Vec<(label, probability)>
+    pub binary_moods: Option<Vec<(String, f32)>>,
+    /// Danceability probability (0.0 = not danceable, 1.0 = very danceable)
+    pub danceability: Option<f32>,
+    /// Music approachability regression score (0.0–1.0)
+    pub approachability: Option<f32>,
+    /// Reverb "wetness" probability (0.0 = dry, 1.0 = wet/reverberant)
+    pub reverb: Option<f32>,
+    /// Timbre brightness probability (0.0 = dark, 1.0 = bright)
+    pub timbre: Option<f32>,
+    /// Tonality probability (0.0 = atonal, 1.0 = tonal)
+    pub tonal: Option<f32>,
+    /// Acoustic sound probability (0.0 = non-acoustic, 1.0 = acoustic)
+    pub mood_acoustic: Option<f32>,
+    /// Electronic sound probability (0.0 = non-electronic, 1.0 = electronic)
+    pub mood_electronic: Option<f32>,
 }
 
 // ============================================================================
@@ -391,6 +410,8 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
     if !existing.contains("ml_analysis") {
         log::debug!("Creating 'ml_analysis' relation");
         create_ml_analysis_relation(db)?;
+    } else {
+        migrate_ml_analysis_if_needed(db)?;
     }
 
     // Vector index (HNSW) - check for audio_features relation
@@ -538,9 +559,43 @@ fn create_ml_analysis_relation(db: &DbInstance) -> Result<(), DbError> {
             valence: Float?,
             top_genre: String?,
             genre_scores_json: String?,
-            mood_scores_json: String?
+            mood_scores_json: String?,
+            binary_moods_json: String?,
+            danceability: Float?,
+            approachability: Float?,
+            reverb: Float?,
+            timbre: Float?,
+            tonal: Float?,
+            mood_acoustic: Float?,
+            mood_electronic: Float?
         }}
     "#)
+}
+
+/// Check if ml_analysis needs schema migration (e.g., missing columns).
+/// If so, drop and recreate. ML data is regenerated via Similarity reanalysis.
+fn migrate_ml_analysis_if_needed(db: &DbInstance) -> Result<(), DbError> {
+    let result = db
+        .run_script("::columns ml_analysis", Default::default(), cozo::ScriptMutability::Immutable)
+        .map_err(|e| DbError::Schema(e.to_string()))?;
+
+    let has_column = |name: &str| -> bool {
+        result.rows.iter().any(|row| {
+            row.first().and_then(|v| v.get_str()) == Some(name)
+        })
+    };
+
+    // Check for latest schema additions — if any are missing, drop and recreate
+    let needs_migration = !has_column("binary_moods_json") || !has_column("danceability");
+
+    if needs_migration {
+        log::info!("Migrating 'ml_analysis' schema: adding new audio characteristic columns");
+        db.run_script("::remove ml_analysis", Default::default(), cozo::ScriptMutability::Mutable)
+            .map_err(|e| DbError::Schema(e.to_string()))?;
+        create_ml_analysis_relation(db)?;
+    }
+
+    Ok(())
 }
 
 fn create_audio_features_relation(db: &DbInstance) -> Result<(), DbError> {

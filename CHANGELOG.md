@@ -39,14 +39,32 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   header bar opens the modal (disabled when no track is loaded). This frees
   vertical space in the track editor view previously occupied by the grid.
 
+- **ML vocal detection** — Replaced the unreliable RMS-based vocal stem energy
+  heuristic with Essentia's `voice_instrumental-discogs-effnet-1.onnx`
+  classifier (96% accuracy). Runs on EffNet embeddings from the full mix — no
+  vocal stem needed. The "Instrumental" tag has been removed; only "Vocal" is
+  generated (at >= 0.5 probability threshold). Removed `voice.rs` module and
+  `get_vocals_mono()` import helper.
+
+- **Audio characteristic analysis** — 6 new Essentia EffNet classification
+  heads run during import and ML reanalysis:
+  - **Timbre** — tags "Bright" or "Dark" (teal, mutually exclusive)
+  - **Tonal/Atonal** — tags "Tonal" or "Atonal" (teal, mutually exclusive)
+  - **Mood Acoustic** — tags "Acoustic" when >= 0.5 (teal, positive only)
+  - **Mood Electronic** — tags "Electronic" when >= 0.5 (teal, positive only)
+  - **Danceability** — score stored in DB (0.0–1.0), no tag
+  - **Approachability** — regression score stored in DB (0.0–1.0), no tag
+
+  NSynth Reverb model is wired but deferred (requires TF-to-ONNX conversion;
+  see `documents/nsynth-reverb-conversion.md`).
+
 ### Fixed
 
 - **Tag category sorting** — ML-generated tags in the collection browser Tags
   column are now sorted by semantic category instead of alphabetically. Display
   order: genre super-category (dark blue), genre sub-category (light blue),
-  genre plain (blue), vocal/instrumental (green/amber), user-defined tags,
-  mood/experimental (purple). Uses a color-code-to-priority mapping applied at
-  the display boundary in `get_tracks_for_folder()`.
+  genre plain (blue), vocal/instrumental (green), audio characteristics (teal),
+  binary mood (pink), user-defined tags, Jamendo mood (purple).
 
 ---
 

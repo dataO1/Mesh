@@ -1,6 +1,6 @@
 //! ONNX-based ML inference for audio analysis
 //!
-//! Runs EffNet embedding + optional mood classification head using ort (ONNX Runtime).
+//! Runs EffNet embedding + mood classification heads using ort (ONNX Runtime).
 //! The `MlAnalyzer` holds pre-loaded sessions and can be wrapped in
 //! `Arc<Mutex<>>` for sharing across rayon workers (`run()` requires `&mut self`).
 //!
@@ -10,8 +10,9 @@
 //! embeddings in a single forward pass — no separate genre head is needed.
 //! The Essentia hub only has the genre head as TensorFlow `.pb`, not ONNX.
 //!
-//! Arousal/valence is derived from Jamendo mood predictions (no EffNet-compatible
-//! A/V regression model exists — DEAM/emoMusic heads require MusiCNN 200-dim).
+//! In addition to the 56-class Jamendo mood/theme model, five binary mood
+//! classifiers (happy, aggressive, relaxed, sad, party) provide high-accuracy
+//! per-mood probabilities using 2-class softmax outputs.
 
 use std::path::Path;
 use ndarray::{Array2, Array3};
@@ -32,10 +33,23 @@ const N_BANDS: usize = 96;
 /// ML analysis engine with pre-loaded ONNX sessions
 ///
 /// EffNet produces genre predictions + embeddings in one pass (no separate genre head).
-/// Jamendo mood head is optional (experimental only), enables arousal derivation.
+/// Jamendo mood head provides 56-class mood/theme tags.
+/// Binary mood classifiers provide high-accuracy per-mood probabilities.
 pub struct MlAnalyzer {
     effnet: Session,
-    mood: Option<Session>,
+    mood: Session,
+    /// 5 binary mood classifiers: (model_type, session)
+    binary_moods: Vec<(MlModelType, Session)>,
+    /// Voice/Instrumental classifier (2-class softmax on EffNet embeddings)
+    voice: Option<Session>,
+    /// Audio characteristic classifiers (optional, skip gracefully)
+    timbre: Option<Session>,
+    tonal_atonal: Option<Session>,
+    mood_acoustic: Option<Session>,
+    mood_electronic: Option<Session>,
+    danceability: Option<Session>,
+    approachability: Option<Session>,
+    reverb: Option<Session>,
     genre_labels: Vec<String>,
     mood_labels: Vec<String>,
 }
@@ -44,13 +58,71 @@ pub struct MlAnalyzer {
 unsafe impl Send for MlAnalyzer {}
 unsafe impl Sync for MlAnalyzer {}
 
+/// Load an optional classification head session, returning None if missing or broken.
+fn load_optional_session(model_dir: &Path, model_type: MlModelType) -> Option<Session> {
+    let path = model_dir.join(model_type.filename());
+    if !path.exists() {
+        log::warn!("{} model not found, skipping: {:?}", model_type.display_name(), path);
+        return None;
+    }
+    match Session::builder()
+        .and_then(|b| b.with_intra_threads(1))
+        .and_then(|b| b.commit_from_file(&path))
+    {
+        Ok(session) => {
+            log::info!("Loaded {} model", model_type.display_name());
+            Some(session)
+        }
+        Err(e) => {
+            log::warn!("Failed to load {} model: {}", model_type.display_name(), e);
+            None
+        }
+    }
+}
+
+/// Run a 2-class softmax classification head on an embedding, returning the
+/// probability at `class_index`. Returns None if the session is None.
+fn run_binary_head(
+    session: &mut Option<Session>,
+    embedding: &[f32],
+    class_index: usize,
+    label: &str,
+) -> Option<f32> {
+    let session = session.as_mut()?;
+    let input = Array2::from_shape_vec((1, embedding.len()), embedding.to_vec()).ok()?;
+    let input_tensor = Tensor::from_array(input).ok()?;
+    let outputs = session.run(ort::inputs!["embeddings" => input_tensor]).ok()?;
+    let (_, first_value) = outputs.iter().next()?;
+    let (_shape, probs) = first_value.try_extract_tensor::<f32>().ok()?;
+    let prob = probs.iter().nth(class_index).copied().unwrap_or(0.0);
+    log::debug!("{}: {:.3}", label, prob);
+    Some(prob)
+}
+
+/// Run a regression head on an embedding, returning the single float output.
+/// Returns None if the session is None.
+fn run_regression_head(
+    session: &mut Option<Session>,
+    embedding: &[f32],
+    label: &str,
+) -> Option<f32> {
+    let session = session.as_mut()?;
+    let input = Array2::from_shape_vec((1, embedding.len()), embedding.to_vec()).ok()?;
+    let input_tensor = Tensor::from_array(input).ok()?;
+    let outputs = session.run(ort::inputs!["embeddings" => input_tensor]).ok()?;
+    let (_, first_value) = outputs.iter().next()?;
+    let (_shape, data) = first_value.try_extract_tensor::<f32>().ok()?;
+    let score = data.iter().next().copied().unwrap_or(0.0);
+    log::debug!("{}: {:.3}", label, score);
+    Some(score)
+}
+
 impl MlAnalyzer {
     /// Create a new analyzer with pre-loaded ONNX models.
     ///
     /// # Arguments
     /// * `model_dir` - Directory containing the ONNX model files
-    /// * `experimental` - If true, also load Jamendo mood model (enables arousal derivation)
-    pub fn new(model_dir: &Path, experimental: bool) -> Result<Self, String> {
+    pub fn new(model_dir: &Path) -> Result<Self, String> {
         let effnet_path = model_dir.join(MlModelType::EffNetEmbedding.filename());
 
         if !effnet_path.exists() {
@@ -62,26 +134,58 @@ impl MlAnalyzer {
             .and_then(|b| b.commit_from_file(&effnet_path))
             .map_err(|e| format!("Failed to load EffNet: {}", e))?;
 
-        let mood = if experimental {
-            let mood_path = model_dir.join(MlModelType::JamendoMood.filename());
-            if mood_path.exists() {
-                Some(
-                    Session::builder()
-                        .and_then(|b| b.with_intra_threads(1))
-                        .and_then(|b| b.commit_from_file(&mood_path))
-                        .map_err(|e| format!("Failed to load mood model: {}", e))?
-                )
+        let mood_path = model_dir.join(MlModelType::JamendoMood.filename());
+        let mood = Session::builder()
+            .and_then(|b| b.with_intra_threads(1))
+            .and_then(|b| b.commit_from_file(&mood_path))
+            .map_err(|e| format!("Failed to load mood model: {}", e))?;
+
+        // Load binary mood classifiers (skip missing with warning)
+        let mut binary_moods = Vec::new();
+        for &model_type in MlModelType::binary_mood_models() {
+            let path = model_dir.join(model_type.filename());
+            if path.exists() {
+                match Session::builder()
+                    .and_then(|b| b.with_intra_threads(1))
+                    .and_then(|b| b.commit_from_file(&path))
+                {
+                    Ok(session) => {
+                        log::info!("Loaded binary mood model: {}", model_type.display_name());
+                        binary_moods.push((model_type, session));
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to load {}: {}", model_type.display_name(), e);
+                    }
+                }
             } else {
-                log::warn!("Mood model not found, skipping");
-                None
+                log::warn!("Binary mood model not found, skipping: {}", model_type.display_name());
             }
-        } else {
-            None
-        };
+        }
+
+        // Load voice/instrumental classifier (skip with warning if missing)
+        let voice = load_optional_session(model_dir, MlModelType::VoiceInstrumental);
+
+        // Load audio characteristic classifiers (all optional)
+        let timbre = load_optional_session(model_dir, MlModelType::Timbre);
+        let tonal_atonal = load_optional_session(model_dir, MlModelType::TonalAtonal);
+        let mood_acoustic = load_optional_session(model_dir, MlModelType::MoodAcoustic);
+        let mood_electronic = load_optional_session(model_dir, MlModelType::MoodElectronic);
+        let danceability = load_optional_session(model_dir, MlModelType::Danceability);
+        let approachability = load_optional_session(model_dir, MlModelType::ApproachabilityRegression);
+        let reverb = load_optional_session(model_dir, MlModelType::NsynthReverb);
 
         Ok(Self {
             effnet,
             mood,
+            binary_moods,
+            voice,
+            timbre,
+            tonal_atonal,
+            mood_acoustic,
+            mood_electronic,
+            danceability,
+            approachability,
+            reverb,
             genre_labels: discogs400_labels(),
             mood_labels: jamendo_mood_labels(),
         })
@@ -93,12 +197,12 @@ impl MlAnalyzer {
     /// 2. Run EffNet -> genre predictions + 1280-dim embeddings per patch
     /// 3. Average genre predictions and embeddings across patches
     /// 4. Decode genre labels from averaged predictions
-    /// 5. Run mood head on averaged embedding (if experimental)
-    /// 6. Derive arousal/valence from mood predictions (if available)
+    /// 5. Run Jamendo mood head on averaged embedding
+    /// 6. Run binary mood classifiers on averaged embedding
+    /// 7. Run voice/instrumental classifier on averaged embedding
     pub fn analyze(
         &mut self,
         mel: &MelSpectrogramResult,
-        vocal_presence: f32,
     ) -> Result<MlAnalysisData, String> {
         let patches = extract_patches(&mel.frames, PATCH_SIZE);
         if patches.is_empty() {
@@ -122,27 +226,48 @@ impl MlAnalyzer {
         // Decode genre labels from EffNet's built-in genre output
         let (top_genre, genre_scores) = self.decode_genre_predictions(&avg_genre_preds);
 
-        // Run mood classification head on averaged embedding
-        let mood_themes = if self.mood.is_some() {
-            Some(self.run_mood(&avg_embedding)?)
-        } else {
-            None
+        // Run Jamendo mood classification head on averaged embedding
+        let mood_themes = Some(self.run_mood(&avg_embedding)?);
+
+        // Run binary mood classifiers on averaged embedding
+        let binary_moods = match self.run_binary_moods(&avg_embedding) {
+            Ok(moods) => Some(moods),
+            Err(e) => {
+                log::warn!("Binary mood inference failed: {}", e);
+                None
+            }
         };
 
-        // Derive arousal/valence from mood predictions
-        let (arousal, valence) = if let Some(ref moods) = mood_themes {
-            derive_arousal_valence_from_mood(moods)
-        } else {
-            (None, None)
-        };
+        // Voice detection from EffNet embedding (replaces RMS-based detection)
+        let vocal_presence = run_binary_head(&mut self.voice, &avg_embedding, 1, "Voice")
+            .unwrap_or(0.0);
+
+        // Audio characteristic classifiers
+        let timbre = run_binary_head(&mut self.timbre, &avg_embedding, 0, "Timbre (bright)");
+        let tonal = run_binary_head(&mut self.tonal_atonal, &avg_embedding, 1, "Tonal");
+        let mood_acoustic = run_binary_head(&mut self.mood_acoustic, &avg_embedding, 0, "Acoustic");
+        let mood_electronic = run_binary_head(&mut self.mood_electronic, &avg_embedding, 0, "Electronic");
+        let danceability = run_binary_head(&mut self.danceability, &avg_embedding, 0, "Danceability");
+        let reverb = run_binary_head(&mut self.reverb, &avg_embedding, 0, "Reverb (wet)");
+
+        // Approachability is a regression model (single float, not softmax)
+        let approachability = run_regression_head(&mut self.approachability, &avg_embedding, "Approachability");
 
         Ok(MlAnalysisData {
             vocal_presence,
-            arousal,
-            valence,
+            arousal: None,
+            valence: None,
             top_genre,
             genre_scores,
             mood_themes,
+            binary_moods,
+            danceability,
+            approachability,
+            reverb,
+            timbre,
+            tonal,
+            mood_acoustic,
+            mood_electronic,
         })
     }
 
@@ -219,8 +344,6 @@ impl MlAnalyzer {
 
     /// Run mood/theme classification on embedding
     fn run_mood(&mut self, embedding: &[f32]) -> Result<Vec<(String, f32)>, String> {
-        let session = self.mood.as_mut().ok_or("No mood model")?;
-
         let input = Array2::from_shape_vec((1, embedding.len()), embedding.to_vec())
             .map_err(|e| format!("Mood input shape error: {}", e))?;
 
@@ -230,7 +353,7 @@ impl MlAnalyzer {
         let input_tensor = Tensor::from_array(input)
             .map_err(|e| format!("Mood tensor creation error: {}", e))?;
 
-        let outputs = session.run(
+        let outputs = self.mood.run(
             ort::inputs![input_name => input_tensor]
         ).map_err(|e| format!("Mood inference error: {}", e))?;
 
@@ -256,84 +379,45 @@ impl MlAnalyzer {
 
         Ok(scored)
     }
-}
 
-// ============================================================================
-// Arousal/Valence Derivation from Mood Tags
-// ============================================================================
+    /// Run binary mood classifiers on embedding.
+    ///
+    /// Each classifier outputs a 2-class softmax. We extract the probability
+    /// of the positive class (index varies per model) and return all 5
+    /// probabilities. Thresholding is applied at tag generation time.
+    fn run_binary_moods(&mut self, embedding: &[f32]) -> Result<Vec<(String, f32)>, String> {
+        let mut results = Vec::new();
 
-/// Derive arousal and valence from Jamendo mood/theme predictions.
-///
-/// No EffNet-compatible arousal/valence regression model exists (DEAM/emoMusic
-/// heads use MusiCNN 200-dim embeddings, not EffNet 1280-dim). Instead, we
-/// approximate arousal and valence from the 56 Jamendo mood tags using
-/// psychoacoustic mappings.
-///
-/// Arousal (energy/activation): high = energetic/fast/powerful, low = calm/slow/soft
-/// Valence (positive/negative): high = happy/upbeat/fun, low = sad/dark/melancholic
-fn derive_arousal_valence_from_mood(moods: &[(String, f32)]) -> (Option<f32>, Option<f32>) {
-    if moods.is_empty() {
-        return (None, None);
-    }
+        for (model_type, session) in &mut self.binary_moods {
+            let input = Array2::from_shape_vec((1, embedding.len()), embedding.to_vec())
+                .map_err(|e| format!("Binary mood input shape error: {}", e))?;
 
-    // Arousal weights: positive = high energy, negative = low energy
-    const AROUSAL_WEIGHTS: &[(&str, f32)] = &[
-        // High arousal
-        ("energetic", 1.0), ("fast", 0.9), ("heavy", 0.8), ("powerful", 0.9),
-        ("party", 0.8), ("action", 0.9), ("epic", 0.7), ("sport", 0.7),
-        ("dramatic", 0.6), ("upbeat", 0.7), ("fun", 0.5), ("groovy", 0.4),
-        // Low arousal
-        ("calm", -1.0), ("relaxing", -0.9), ("meditative", -0.9), ("slow", -0.8),
-        ("soft", -0.8), ("nature", -0.6), ("dream", -0.5), ("background", -0.5),
-        ("soundscape", -0.4),
-    ];
+            let input_tensor = Tensor::from_array(input)
+                .map_err(|e| format!("Binary mood tensor error: {}", e))?;
 
-    // Valence weights: positive = happy/pleasant, negative = sad/dark
-    const VALENCE_WEIGHTS: &[(&str, f32)] = &[
-        // Positive valence
-        ("happy", 1.0), ("upbeat", 0.8), ("uplifting", 0.9), ("fun", 0.8),
-        ("positive", 0.9), ("hopeful", 0.7), ("inspiring", 0.7), ("summer", 0.6),
-        ("romantic", 0.5), ("love", 0.5), ("cool", 0.3), ("funny", 0.6),
-        // Negative valence
-        ("sad", -1.0), ("dark", -0.8), ("melancholic", -0.9), ("dramatic", -0.4),
-        ("heavy", -0.3), ("deep", -0.2), ("emotional", -0.3),
-    ];
+            let outputs = session.run(
+                ort::inputs!["embeddings" => input_tensor]
+            ).map_err(|e| format!("{} inference error: {}", model_type.display_name(), e))?;
 
-    let mut arousal_sum = 0.0_f32;
-    let mut arousal_weight_sum = 0.0_f32;
-    let mut valence_sum = 0.0_f32;
-    let mut valence_weight_sum = 0.0_f32;
+            let (_, first_value) = outputs.iter().next()
+                .ok_or_else(|| format!("{} produced no output", model_type.display_name()))?;
 
-    for (label, prob) in moods {
-        let label_lower = label.to_lowercase();
-        for &(tag, weight) in AROUSAL_WEIGHTS {
-            if label_lower == tag {
-                arousal_sum += weight * prob;
-                arousal_weight_sum += prob;
+            let (_shape, probs_data) = first_value.try_extract_tensor::<f32>()
+                .map_err(|e| format!("{} output extraction error: {}", model_type.display_name(), e))?;
+
+            let probs: Vec<f32> = probs_data.iter().copied().collect();
+
+            if let Some(pos_idx) = model_type.positive_class_index() {
+                let positive_prob = probs.get(pos_idx).copied().unwrap_or(0.0);
+                if let Some(label) = model_type.mood_label() {
+                    log::debug!("Binary mood {}: {:.3}", label, positive_prob);
+                    results.push((label.to_string(), positive_prob));
+                }
             }
         }
-        for &(tag, weight) in VALENCE_WEIGHTS {
-            if label_lower == tag {
-                valence_sum += weight * prob;
-                valence_weight_sum += prob;
-            }
-        }
+
+        Ok(results)
     }
-
-    // Normalize: weighted sum is in [-1, +1], map to [0, 1]
-    let arousal = if arousal_weight_sum > 0.01 {
-        Some(((arousal_sum / arousal_weight_sum) * 0.5 + 0.5).clamp(0.0, 1.0))
-    } else {
-        None
-    };
-
-    let valence = if valence_weight_sum > 0.01 {
-        Some(((valence_sum / valence_weight_sum) * 0.5 + 0.5).clamp(0.0, 1.0))
-    } else {
-        None
-    };
-
-    (arousal, valence)
 }
 
 // ============================================================================
@@ -625,57 +709,6 @@ mod tests {
     #[test]
     fn test_jamendo_mood_label_count() {
         assert_eq!(jamendo_mood_labels().len(), 56);
-    }
-
-    #[test]
-    fn test_derive_arousal_energetic() {
-        let moods = vec![
-            ("energetic".to_string(), 0.9),
-            ("fast".to_string(), 0.7),
-            ("party".to_string(), 0.6),
-        ];
-        let (arousal, _) = derive_arousal_valence_from_mood(&moods);
-        assert!(arousal.unwrap() > 0.7, "Energetic tracks should have high arousal");
-    }
-
-    #[test]
-    fn test_derive_arousal_calm() {
-        let moods = vec![
-            ("calm".to_string(), 0.9),
-            ("relaxing".to_string(), 0.8),
-            ("soft".to_string(), 0.6),
-        ];
-        let (arousal, _) = derive_arousal_valence_from_mood(&moods);
-        assert!(arousal.unwrap() < 0.3, "Calm tracks should have low arousal");
-    }
-
-    #[test]
-    fn test_derive_valence_happy() {
-        let moods = vec![
-            ("happy".to_string(), 0.9),
-            ("uplifting".to_string(), 0.7),
-            ("fun".to_string(), 0.6),
-        ];
-        let (_, valence) = derive_arousal_valence_from_mood(&moods);
-        assert!(valence.unwrap() > 0.7, "Happy tracks should have high valence");
-    }
-
-    #[test]
-    fn test_derive_valence_sad() {
-        let moods = vec![
-            ("sad".to_string(), 0.8),
-            ("melancholic".to_string(), 0.7),
-            ("dark".to_string(), 0.5),
-        ];
-        let (_, valence) = derive_arousal_valence_from_mood(&moods);
-        assert!(valence.unwrap() < 0.3, "Sad tracks should have low valence");
-    }
-
-    #[test]
-    fn test_derive_empty_moods() {
-        let (arousal, valence) = derive_arousal_valence_from_mood(&[]);
-        assert!(arousal.is_none());
-        assert!(valence.is_none());
     }
 
     #[test]

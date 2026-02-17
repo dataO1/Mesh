@@ -323,9 +323,6 @@ pub struct ImportConfig {
     pub parallel_processes: u8,
     /// Stem separation configuration (for mixed audio files)
     pub separation_config: Option<SeparationConfig>,
-    /// Enable experimental ML analysis (arousal/valence, mood/theme)
-    /// Genre detection runs regardless; this flag controls the extra models
-    pub experimental_ml: bool,
 }
 
 /// A mixed audio file to be separated into stems
@@ -807,21 +804,8 @@ fn process_single_track(
         final_path
     );
 
-    // ── ML Analysis (vocal presence + mel spectrogram → genre/arousal/mood) ──
+    // ── ML Analysis (mel spectrogram → genre/arousal/mood/voice) ──
     let ml_result: Option<MlAnalysisData> = if ml_analyzer.is_some() {
-        // Compute vocal presence from separated vocals (pure Rust, no model)
-        let vocal_presence = match importer.get_vocals_mono() {
-            Ok(vocals) => {
-                let vp = ml_analysis::compute_vocal_presence(&vocals, SAMPLE_RATE);
-                log::info!("process_single_track: '{}' vocal_presence={:.2}", base_name, vp);
-                vp
-            }
-            Err(e) => {
-                log::warn!("process_single_track: '{}' failed to get vocals mono: {}", base_name, e);
-                0.0
-            }
-        };
-
         // Compute mel spectrogram from full mix mono (pure Rust DSP)
         let mono_for_mel = match importer.get_mono_sum() {
             Ok(m) => m,
@@ -845,28 +829,35 @@ fn process_single_track(
             None
         };
 
-        // Run EffNet + classification heads
+        // Run EffNet + classification heads (genre, mood, voice/instrumental)
         if let (Some(analyzer_arc), Some(mel)) = (ml_analyzer, mel) {
             match analyzer_arc.lock() {
                 Ok(mut analyzer) => {
-                    match analyzer.analyze(&mel, vocal_presence) {
+                    match analyzer.analyze(&mel) {
                         Ok(result) => {
                             log::info!(
-                                "process_single_track: '{}' ML analysis complete — genre={:?}, arousal={:?}",
-                                base_name, result.top_genre, result.arousal
+                                "process_single_track: '{}' ML analysis complete — genre={:?}, arousal={:?}, vocal={:.3}",
+                                base_name, result.top_genre, result.arousal, result.vocal_presence
                             );
                             Some(result)
                         }
                         Err(e) => {
                             log::warn!("process_single_track: '{}' ML inference failed: {}", base_name, e);
-                            // Fall back to vocal-only result
                             Some(MlAnalysisData {
-                                vocal_presence,
+                                vocal_presence: 0.0,
                                 arousal: None,
                                 valence: None,
                                 top_genre: None,
                                 genre_scores: Vec::new(),
                                 mood_themes: None,
+                                binary_moods: None,
+                                danceability: None,
+                                approachability: None,
+                                reverb: None,
+                                timbre: None,
+                                tonal: None,
+                                mood_acoustic: None,
+                                mood_electronic: None,
                             })
                         }
                     }
@@ -877,14 +868,22 @@ fn process_single_track(
                 }
             }
         } else {
-            // No mel spectrogram but we have vocal presence
+            // No mel spectrogram available
             Some(MlAnalysisData {
-                vocal_presence,
+                vocal_presence: 0.0,
                 arousal: None,
                 valence: None,
                 top_genre: None,
                 genre_scores: Vec::new(),
                 mood_themes: None,
+                binary_moods: None,
+                danceability: None,
+                approachability: None,
+                reverb: None,
+                timbre: None,
+                tonal: None,
+                mood_acoustic: None,
+                mood_electronic: None,
             })
         }
     } else {
@@ -961,9 +960,10 @@ pub const ML_TAG_COLORS: &[&str] = &[
     "#2563eb", // genre super (dark blue)
     "#60a5fa", // genre sub (light blue)
     "#3b82f6", // genre plain (blue)
-    "#8b5cf6", // mood (purple)
+    "#8b5cf6", // Jamendo mood (purple)
     "#2d8a4e", // vocal (green)
-    "#c49a2a", // instrumental (amber)
+    "#ec4899", // binary mood (pink)
+    "#0d9488", // audio characteristics (teal)
 ];
 
 /// Remove all ML-generated tags from a track before re-tagging.
@@ -1017,7 +1017,7 @@ pub fn auto_tag_from_ml(track_id: i64, ml: &MlAnalysisData, db: &DatabaseService
         }
     }
 
-    // Mood/theme tags (purple) — top 3 above 0.2 confidence (experimental only)
+    // Jamendo mood/theme tags (purple) — top 3 above 0.2 confidence
     if let Some(ref moods) = ml.mood_themes {
         for (label, score) in moods.iter().take(3) {
             if *score >= 0.2 {
@@ -1028,27 +1028,70 @@ pub fn auto_tag_from_ml(track_id: i64, ml: &MlAnalysisData, db: &DatabaseService
         }
     }
 
-    // Vocal/Instrumental tag (green/amber)
-    if ml.vocal_presence > 0.3 {
+    // Binary mood tags (pink) — above 0.5 threshold
+    if let Some(ref binary_moods) = ml.binary_moods {
+        for (label, prob) in binary_moods {
+            if *prob >= 0.5 {
+                if let Err(e) = db.add_tag(track_id, label, Some("#ec4899")) {
+                    log::warn!("auto_tag_from_ml: Failed to add binary mood tag '{}': {}", label, e);
+                }
+            }
+        }
+    }
+
+    // Vocal tag (green) — from ML voice/instrumental classifier
+    if ml.vocal_presence >= 0.5 {
         let _ = db.add_tag(track_id, "Vocal", Some("#2d8a4e"));
-    } else {
-        let _ = db.add_tag(track_id, "Instrumental", Some("#c49a2a"));
+    }
+
+    // Audio characteristic tags (teal) — from binary classifiers
+    // Timbre: Bright or Dark (mutually exclusive)
+    if let Some(bright_prob) = ml.timbre {
+        if bright_prob >= 0.5 {
+            let _ = db.add_tag(track_id, "Bright", Some("#0d9488"));
+        } else {
+            let _ = db.add_tag(track_id, "Dark", Some("#0d9488"));
+        }
+    }
+
+    // Tonal/Atonal (mutually exclusive)
+    if let Some(tonal_prob) = ml.tonal {
+        if tonal_prob >= 0.5 {
+            let _ = db.add_tag(track_id, "Tonal", Some("#0d9488"));
+        } else {
+            let _ = db.add_tag(track_id, "Atonal", Some("#0d9488"));
+        }
+    }
+
+    // Acoustic (positive class only — no tag for non-acoustic)
+    if let Some(acoustic_prob) = ml.mood_acoustic {
+        if acoustic_prob >= 0.5 {
+            let _ = db.add_tag(track_id, "Acoustic", Some("#0d9488"));
+        }
+    }
+
+    // Electronic (positive class only — no tag for non-electronic)
+    if let Some(electronic_prob) = ml.mood_electronic {
+        if electronic_prob >= 0.5 {
+            let _ = db.add_tag(track_id, "Electronic", Some("#0d9488"));
+        }
     }
 }
 
 /// Map a tag's color code to a display priority for category-based sorting.
 ///
 /// Priority order: genre super (0) → genre sub (1) → genre plain (2)
-/// → vocal (3) → instrumental (4) → user-defined (5) → mood (6)
+/// → vocal (3) → audio characteristics (4) → binary mood (5) → user-defined (6) → Jamendo mood (7)
 pub fn tag_sort_priority(color: Option<&str>) -> u8 {
     match color {
         Some("#2563eb") => 0, // genre super-category (dark blue)
         Some("#60a5fa") => 1, // genre sub-category (light blue)
         Some("#3b82f6") => 2, // genre plain (blue)
         Some("#2d8a4e") => 3, // vocal (green)
-        Some("#c49a2a") => 4, // instrumental (amber)
-        Some("#8b5cf6") => 6, // mood/experimental (purple)
-        _ => 5,              // user-defined / unknown
+        Some("#0d9488") => 4, // audio characteristics (teal)
+        Some("#ec4899") => 5, // binary mood (pink)
+        Some("#8b5cf6") => 7, // Jamendo mood (purple)
+        _ => 6,              // user-defined / unknown
     }
 }
 
@@ -1213,15 +1256,15 @@ pub fn run_batch_import(
         match ml_analysis::models::MlModelManager::new() {
             Ok(mgr) => {
                 // Ensure models are downloaded before starting import
-                if let Err(e) = mgr.ensure_all_models(config.experimental_ml) {
+                if let Err(e) = mgr.ensure_all_models() {
                     log::warn!("run_batch_import: Failed to download ML models: {}", e);
                 }
                 let model_dir = mgr.model_path(ml_analysis::MlModelType::EffNetEmbedding)
                     .parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
 
-                let ml = match MlAnalyzer::new(&model_dir, config.experimental_ml) {
+                let ml = match MlAnalyzer::new(&model_dir) {
                     Ok(analyzer) => {
-                        log::info!("run_batch_import: ML analyzer initialized (experimental={})", config.experimental_ml);
+                        log::info!("run_batch_import: ML analyzer initialized");
                         Some(Arc::new(Mutex::new(analyzer)))
                     }
                     Err(e) => {
@@ -1390,15 +1433,15 @@ pub fn run_batch_import_mixed(
     let (ml_analyzer, beat_this_analyzer): (Option<Arc<Mutex<MlAnalyzer>>>, Option<Arc<Mutex<BeatThisAnalyzer>>>) = {
         match ml_analysis::models::MlModelManager::new() {
             Ok(mgr) => {
-                if let Err(e) = mgr.ensure_all_models(config.experimental_ml) {
+                if let Err(e) = mgr.ensure_all_models() {
                     log::warn!("run_batch_import_mixed: Failed to download ML models: {}", e);
                 }
                 let model_dir = mgr.model_path(ml_analysis::MlModelType::EffNetEmbedding)
                     .parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
 
-                let ml = match MlAnalyzer::new(&model_dir, config.experimental_ml) {
+                let ml = match MlAnalyzer::new(&model_dir) {
                     Ok(analyzer) => {
-                        log::info!("run_batch_import_mixed: ML analyzer initialized (experimental={})", config.experimental_ml);
+                        log::info!("run_batch_import_mixed: ML analyzer initialized");
                         Some(Arc::new(Mutex::new(analyzer)))
                     }
                     Err(e) => {
