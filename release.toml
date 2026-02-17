@@ -6,6 +6,8 @@
 # CI builds and publishes all artifacts when the v* tag is pushed.
 
 allow-branch = ["main"]
+# Remote name (default is "origin", ours is "github")
+push-remote = "github"
 # All workspace crates share one version, release together
 shared-version = true
 consolidate-commits = true
