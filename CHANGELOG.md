@@ -29,6 +29,27 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 ---
 
+## [0.8.6]
+
+### Added
+
+- **Slicer editor modal** — The 16x16 slice editor grid has moved from an
+  inline element in the track editor to a dedicated modal overlay, following
+  the established FX Presets modal pattern. A new "Slicer" button in the app
+  header bar opens the modal (disabled when no track is loaded). This frees
+  vertical space in the track editor view previously occupied by the grid.
+
+### Fixed
+
+- **Tag category sorting** — ML-generated tags in the collection browser Tags
+  column are now sorted by semantic category instead of alphabetically. Display
+  order: genre super-category (dark blue), genre sub-category (light blue),
+  genre plain (blue), vocal/instrumental (green/amber), user-defined tags,
+  mood/experimental (purple). Uses a color-code-to-priority mapping applied at
+  the display boundary in `get_tracks_for_folder()`.
+
+---
+
 ## [0.8.3] - 2026-02-17
 
 ### Improved
