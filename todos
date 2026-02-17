@@ -1,0 +1,50 @@
+- instead of manual build scripts for mesh-player, mesh-cue, and all the model
+  files, this can be automated via ci scripts, which first checks if the source
+  is dirty, then runs the build and on success publishes to the according place
+  (check out the existing releases to know where to publish this). only does
+  that to version tags 
+
+- is ai bpm analysis on cpu even multi threaded (number of threads in settings)?
+  is this safe to do?
+
+- maybe we can utilise online metadata scraping as a fallback,comparison piont
+  for bpm and key analysis, also we can get accurate metadata tags, like name
+  artist, release date etc from good sources online. check which metadata these
+  pages have in common and are consistent, and first do a deep dive on the ease
+  of scraping these pages and consistently getting reliable metadata. also
+  search on your own for other potential candidates, that might fill other
+  genres.:
+For finding, organizing, and analyzing music with accurate metadata (BPM, Key, and Genre) across EDM and Rock, the best platforms combine high-quality audio, comprehensive search filters, and, in some cases, specialized DJ-focused analysis.
+ 
+Here are the best music pages for different genres based on accuracy and variety:
+1. Best for Electronic Dance Music (EDM)
+
+    Beatport: The industry standard for electronic music. It offers highly accurate BPM and key data, specialized sub-genre classification, and a wide variety of tracks.
+    Beatsource: Sister site to Beatport, focused on open-format and commercial dance music, providing reliable metadata for faster-paced genres.
+    ZipDJ: An excellent digital record pool, particularly strong in underground electronic styles and house music, with accurate, high-quality meta-tagged files.
+
+2. Best for Rock (and Indie/Alternative)
+
+    Bandcamp: An extensive catalog where artists upload their own music. It features a superior tagging system (including specific rock sub-genres) and high-quality metadata, making it excellent for finding new, specialized, or independent rock music.
+    Discogs: The most comprehensive database of recorded music, covering all rock eras and sub-genres. It is indispensable for verifying release details and finding specific, detailed metadata.
+    Apple Music: Offers a vast library with very high-standard, consistent metadata across Rock and related genres, useful for curating playlists. 
+
+    Also check spotify and deezer.
+
+
+- update ui as soon as db changes. ie on import/reanalysis.
+
+
+- rename the momentary mode to compact mode in the mapping step (just the user
+  facing description, keep the model and midi config file related names).
+
+
+- i would like to support a b2b mode, where 2 people with mesh systems, can
+  connect their 2 systems together via ethernet lan cable, the system recognizes
+  this and automatically goes into b2b mode, where each of their system shows
+  the info of the other deck (waveforms). this means that each dj has their own
+  hardware and settings, but can also play music from their partners library and
+  everything is synced to the same master clock and bpm.
+
+- why do we need to flash armbian once, then immediatly reflash the nixos image
+  on the sd card?
