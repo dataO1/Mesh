@@ -380,11 +380,13 @@ fn pick_peaks(activations: &[f32], threshold: f32, min_distance: usize) -> Vec<u
     final_peaks
 }
 
-/// Compute BPM from detected beat positions using median inter-beat interval.
+/// Compute BPM from detected beat positions using trimmed mean of inter-beat intervals.
 ///
-/// This is more robust than Essentia's Viterbi decoding — the median of all
-/// consecutive beat intervals naturally avoids octave errors because most
-/// intervals will cluster around the true tempo even if a few are outliers.
+/// At 50 fps, beat positions are quantized to 20ms frames. For ~174 BPM,
+/// the true IBI of 17.24 frames means consecutive beats alternate between
+/// 17 and 18 frames apart. The median would snap to exactly 17 (= 176.47 BPM)
+/// or 18 (= 166.67 BPM), never the true value. The trimmed mean averages out
+/// this quantization error over hundreds of beats for sub-frame precision.
 fn compute_bpm_from_beats(beat_times: &[f64]) -> f64 {
     if beat_times.len() < 2 {
         return 120.0; // Default fallback
@@ -400,14 +402,25 @@ fn compute_bpm_from_beats(beat_times: &[f64]) -> f64 {
         return 120.0;
     }
 
-    // Sort for median
+    // Sort for trimmed mean (robust to outliers from breakdowns/intros)
     ibis.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let median_ibi = ibis[ibis.len() / 2];
+
+    // Trim 10% from each end to remove outliers, then take the mean.
+    // The mean of the remaining IBIs averages out the ±1 frame quantization
+    // that would make the median snap to exactly 17 or 18 frames.
+    let trim = ibis.len() / 10;
+    let trimmed = if trim > 0 && ibis.len() > 2 * trim + 1 {
+        &ibis[trim..ibis.len() - trim]
+    } else {
+        &ibis[..]
+    };
+
+    let mean_ibi = trimmed.iter().sum::<f64>() / trimmed.len() as f64;
 
     // Convert inter-beat interval to BPM
-    let bpm = 60.0 / median_ibi;
+    let bpm = 60.0 / mean_ibi;
 
-    // Round to reasonable precision
+    // Round to reasonable precision (0.01 BPM)
     (bpm * 100.0).round() / 100.0
 }
 
@@ -474,6 +487,37 @@ mod tests {
     fn test_compute_bpm_empty() {
         assert_eq!(compute_bpm_from_beats(&[]), 120.0);
         assert_eq!(compute_bpm_from_beats(&[1.0]), 120.0);
+    }
+
+    #[test]
+    fn test_compute_bpm_frame_quantized() {
+        // Simulate 174 BPM beats quantized to 50fps frames (the real-world case).
+        // True IBI = 17.24 frames → beats alternate between 17 and 18 frames apart.
+        // The old median approach would give 176.47 BPM (17 frames); trimmed mean
+        // should recover ~174 BPM.
+        let fps = 50.0;
+        let true_bpm = 174.0;
+        let true_ibi_frames = 60.0 * fps / true_bpm; // 17.24 frames
+        let mut beat_times = Vec::new();
+        let mut pos: f64 = 0.0;
+        for _ in 0..500 {
+            // Quantize to integer frames, then convert to seconds
+            let frame = pos.round() as usize;
+            beat_times.push(frame as f64 / fps);
+            pos += true_ibi_frames;
+        }
+        let bpm = compute_bpm_from_beats(&beat_times);
+        assert!(
+            (bpm - true_bpm).abs() < 1.0,
+            "Frame-quantized 174 BPM should recover ~174, got {}",
+            bpm
+        );
+        // Must be much closer than the old median (176.47)
+        assert!(
+            (bpm - true_bpm).abs() < (176.47 - true_bpm).abs(),
+            "Trimmed mean ({}) should be closer to true BPM than median (176.47)",
+            bpm
+        );
     }
 
     #[test]
