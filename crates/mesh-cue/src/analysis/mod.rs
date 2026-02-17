@@ -9,7 +9,7 @@ pub mod key;
 pub mod loudness;
 
 pub use beatgrid::generate_beat_grid;
-pub use bpm::{detect_bpm, detect_onset_function, BpmResult, OnsetFunctionResult};
+pub use bpm::{detect_bpm, detect_onset_function, fit_bpm_to_range, BpmResult, OnsetFunctionResult};
 pub use key::detect_key;
 pub use loudness::{
     calculate_gain_compensation, calculate_gain_compensation_clamped, db_to_linear, linear_to_db,

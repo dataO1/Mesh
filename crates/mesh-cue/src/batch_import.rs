@@ -30,7 +30,7 @@
 //! // Poll progress_rx for updates
 //! ```
 
-use crate::analysis::{analyze_audio, generate_beat_grid, AnalysisResult};
+use crate::analysis::{analyze_audio, fit_bpm_to_range, generate_beat_grid, AnalysisResult};
 use crate::config::{BeatDetectionBackend, BpmConfig, BpmSource, LoudnessConfig};
 use crate::export::export_stem_file_with_gain;
 use crate::import::StemImporter;
@@ -691,7 +691,8 @@ fn process_single_track(
 
     // Override BPM/beat_grid with Beat This! results when available
     if let Some(ref bt_result) = beat_this_result {
-        analysis.bpm = bt_result.bpm;
+        // Round BPM for display/engine use; keep raw value as original for reference
+        analysis.bpm = fit_bpm_to_range(bt_result.bpm, config.bpm_config.min_tempo, config.bpm_config.max_tempo);
         analysis.original_bpm = bt_result.bpm;
         analysis.confidence = bt_result.confidence;
 

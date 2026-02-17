@@ -5,7 +5,8 @@
 //! preserving existing cue points, loops, and other data.
 
 use crate::analysis::{
-    analyze_partial_in_subprocess, AnalysisType, PartialAnalysisResult, ReanalysisProgress,
+    analyze_partial_in_subprocess, fit_bpm_to_range, AnalysisType, PartialAnalysisResult,
+    ReanalysisProgress,
 };
 use crate::config::{BeatDetectionBackend, BpmConfig, BpmSource, LoudnessConfig};
 use crate::ml_analysis::BeatThisAnalyzer;
@@ -144,7 +145,8 @@ pub fn reanalyze_track(
 
     // Override BPM/beat_grid with Beat This! results when available
     if let Some(ref bt_result) = beat_this_result {
-        result.bpm = Some(bt_result.bpm);
+        // Round BPM for display/engine use (same fitting as Essentia path)
+        result.bpm = Some(fit_bpm_to_range(bt_result.bpm, bpm_config.min_tempo, bpm_config.max_tempo));
         // Duration in system samples: last beat time + 2s padding, at 48kHz
         let duration_from_source = if !bt_result.beat_times.is_empty() {
             let last_beat = bt_result.beat_times.last().unwrap_or(&0.0);
