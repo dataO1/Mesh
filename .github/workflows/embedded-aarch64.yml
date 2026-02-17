@@ -59,8 +59,12 @@ jobs:
       # Cache the Nix store between CI runs. This caches ALL built derivations
       # (essentia, system deps, cargo vendor, etc.) using GitHub Actions cache.
       # On cache hit, only changed derivations are rebuilt.
+      # Cache the Nix store between CI runs using GitHub Actions cache only
+      # (FlakeHub disabled — no external service registration needed)
       - name: Nix store cache
         uses: DeterminateSystems/magic-nix-cache-action@v8
+        with:
+          use-flakehub: false
 
       - name: Get version
         id: version
@@ -225,8 +229,12 @@ jobs:
             extra-substituters = https://datao1.github.io/Mesh/
             extra-trusted-public-keys = mesh-embedded:TVnMdLIfPt4q20ulKuieSc2Rv2fcwnph/TdLh2dZuKA=
 
+      # Cache the Nix store between CI runs using GitHub Actions cache only
+      # (FlakeHub disabled — no external service registration needed)
       - name: Nix store cache
         uses: DeterminateSystems/magic-nix-cache-action@v8
+        with:
+          use-flakehub: false
 
       # Compute the Nix derivation hash — this captures ALL inputs to the image.
       # The hash changes if and only if something affecting the image changed
