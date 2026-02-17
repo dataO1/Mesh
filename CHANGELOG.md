@@ -29,7 +29,7 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 ---
 
-## [0.8.3] - 2026-02-16
+## [0.8.3] - 2026-02-17
 
 ### Improved
 
@@ -56,6 +56,16 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   normalized from [0, 5.32] to [0, 1]) instead of a hardcoded 0.8 value.
   Low-confidence tracks can be identified for manual review.
 
+- **Drums-only BPM source separation** — BPM analysis can now optionally run
+  on the isolated drum stem instead of the full mix. This removes melodic and
+  harmonic content that confuses tempo estimation, especially on tracks with
+  syncopated basslines or complex arrangements. Configurable in Settings → BPM
+  → Audio Source (drums, bass, other, vocals, or full mix).
+
+- **Trimmed-mean BPM estimation** — Inter-beat intervals are now aggregated
+  using a 10% trimmed mean instead of a simple median, reducing sensitivity to
+  50fps frame quantization artifacts and outlier beats in intros/outros.
+
 ### Fixed
 
 - **BPM re-analysis sample rate mismatch** — Re-analysis (Analyze > BPM) was
@@ -68,14 +78,19 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   using 48 kHz regardless of actual input rate. Now correctly uses 44.1 kHz to
   match the analysis audio.
 
+- **Beat This! BPM rounding** — The Advanced (Beat This!) backend now applies
+  `fit_bpm_to_range()` to round BPM and handle octave/triplet fitting before
+  storing, matching the Essentia path. Previously, raw median-IBI values like
+  173.47 were stored, causing the UI to display unrounded BPM.
+
 ### Added
 
 - **Beat This! ML beat detection** — SOTA beat and downbeat tracking via the
   Beat This! ONNX model (CPJKU, ISMIR 2024). The small variant (~2M params,
   ~10 MB) achieves Beat F1=88.8 and eliminates the half-tempo errors common
   with DnB and fast tempos. Select "Advanced" in Settings → BPM → Beat
-  Detection to enable (default). Falls back to Essentia ("Simple") if the model
-  is unavailable.
+  Detection to enable. The default backend is Essentia ("Simple"), which
+  provides the most reliable results across genres after statistical comparison.
   - Pure Rust Slaney mel spectrogram preprocessing (n_fft=1024, hop=441,
     f_min=30 Hz, f_max=11000 Hz) matching the original PyTorch `LogMelSpect`
   - Chunked ONNX inference with cosine overlap blending for tracks of any length
