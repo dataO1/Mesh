@@ -19,8 +19,9 @@ let
       # Cargo files
       baseName == "Cargo.toml" ||
       baseName == "Cargo.lock" ||
-      # Rust source files
-      pkgs.lib.hasSuffix ".rs" baseName;
+      # Rust source files + compile-time includes (WGSL shaders)
+      pkgs.lib.hasSuffix ".rs" baseName ||
+      pkgs.lib.hasSuffix ".wgsl" baseName;
   };
 
   # Build inputs for mesh packages

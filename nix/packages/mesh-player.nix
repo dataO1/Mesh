@@ -20,7 +20,8 @@ let
       type == "directory" ||
       baseName == "Cargo.toml" ||
       baseName == "Cargo.lock" ||
-      pkgs.lib.hasSuffix ".rs" baseName;
+      pkgs.lib.hasSuffix ".rs" baseName ||
+      pkgs.lib.hasSuffix ".wgsl" baseName;
   };
 
   meshBuildInputs = common.runtimeInputs ++ [
