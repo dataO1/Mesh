@@ -73,16 +73,21 @@
 pkgs.writeShellApplication {
   name = "build-windows";
   runtimeInputs = with pkgs; [ podman coreutils zip ];
+  # SC2016: Variables inside 'bash -c' single-quoted block are intentionally
+  # expanded by the container's shell, not the outer shell.
+  excludeShellChecks = [ "SC2016" ];
   text = ''
     set -euo pipefail
 
-    # Auto-detect container runtime (Docker for CI, Podman for NixOS)
-    if command -v podman &>/dev/null; then
-      CTR=podman
-    elif command -v docker &>/dev/null; then
+    # Auto-detect container runtime: prefer docker (works in CI without user namespaces),
+    # fall back to podman (NixOS local dev). Check /usr/bin first to find system docker
+    # before nix-provided podman on PATH.
+    if command -v docker &>/dev/null; then
       CTR=docker
+    elif command -v podman &>/dev/null; then
+      CTR=podman
     else
-      echo "ERROR: Neither podman nor docker found in PATH"
+      echo "ERROR: Neither docker nor podman found in PATH"
       echo "On NixOS, enable: virtualisation.podman.enable = true"
       exit 1
     fi
