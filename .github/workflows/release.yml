@@ -85,43 +85,42 @@ jobs:
 
       - name: Build release body
         run: |
-          cat > /tmp/release-body.md << 'INSTALL_EOF'
+          REPO="${{ github.repository }}"
+          cat > /tmp/release-body.md << EOF
           ## Installation
 
           ### Linux (.deb)
 
-          Download the `.deb` package for your system:
+          Download the \`.deb\` package for your system:
           - **mesh-player** — Performance mode (4-deck stem player)
           - **mesh-cue** — Editing mode (waveform editor, analysis, stem separation)
           - **mesh-cue-cuda** — Editing mode with NVIDIA GPU acceleration
 
-          ```bash
+          \`\`\`bash
           sudo dpkg -i mesh-player_*.deb mesh-cue_*.deb
           # Install dependencies if needed:
           sudo apt-get install -f
-          ```
+          \`\`\`
 
           **Requirements:** PipeWire (Ubuntu 22.04+, Fedora 34+) or JACK2, glibc 2.35+
 
           ### Windows (.zip)
 
-          Extract the zip and run the `.exe` directly. No installation required.
+          Extract the zip and run the \`.exe\` directly. No installation required.
           GPU acceleration via DirectML (any DirectX 12 GPU).
 
           ### NixOS
 
-          ```bash
-          INSTALL_EOF
+          \`\`\`bash
+          nix run github:${REPO}#mesh-player
+          nix run github:${REPO}#mesh-cue
+          \`\`\`
 
-          # Append repo-specific nix commands (can't use ${{ }} inside HEREDOC)
-          echo "          nix run github:${{ github.repository }}#mesh-player" >> /tmp/release-body.md
-          echo "          nix run github:${{ github.repository }}#mesh-cue" >> /tmp/release-body.md
-          echo '          ```' >> /tmp/release-body.md
-          echo "" >> /tmp/release-body.md
-          echo "          ML models are downloaded automatically on first use." >> /tmp/release-body.md
-          echo "" >> /tmp/release-body.md
-          echo "          ---" >> /tmp/release-body.md
-          echo "" >> /tmp/release-body.md
+          ML models are downloaded automatically on first use.
+
+          ---
+
+          EOF
 
           # Append changelog notes
           cat /tmp/changelog-notes.md >> /tmp/release-body.md
