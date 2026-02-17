@@ -43,9 +43,6 @@ pub struct SettingsState {
     // ── Beat Detection Settings ────────────────────────────────────────────
     /// Draft beat detection backend (Simple = Essentia, Advanced = Beat This!)
     pub draft_beat_detection: BeatDetectionBackend,
-    // ── ML Analysis Settings ───────────────────────────────────────────────
-    /// Draft experimental ML flag (arousal/valence, mood/theme)
-    pub draft_experimental_ml: bool,
 }
 
 impl SettingsState {
@@ -71,8 +68,6 @@ impl SettingsState {
             draft_separation_shifts: config.analysis.separation.shifts,
             // Beat detection
             draft_beat_detection: config.analysis.bpm.backend,
-            // ML Analysis
-            draft_experimental_ml: config.analysis.experimental_ml,
         }
     }
 

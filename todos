@@ -1,11 +1,27 @@
-- instead of manual build scripts for mesh-player, mesh-cue, and all the model
-  files, this can be automated via ci scripts, which first checks if the source
-  is dirty, then runs the build and on success publishes to the according place
-  (check out the existing releases to know where to publish this). only does
-  that to version tags 
+- summarize drumandbass/breakcore/jungle  tags as "dnb".
+- remove instrumental tag
+- ok a add these to the similarity analysis/reanalysis:
+  - timbre
+  - tonal/atonal
+  - mood acoustic 
+  - mood electronic 
+  - danceability
+  - approachability
+- on tracks, where the stem separation is not perfect (the bass stem is actually
+  in the drums layer), the lufs analysis is inaccurate. analyse if the lufs
+  analysis is actually done on the whole mix regardless of the beat analysis
+  config (if we analyse only the drum stem or whole mix). in general i feel like
+  tracks with less lufs are still too silent after the automatic gain correction
+  chain in mesh-player, make sure this is absolutely accurate! for example
+  allied oxidize is  -6.1db scaled down for a target of -14 lufs and Culture
+  Shock Breathe is -5db scaled down, which implies ~ db lufs difference, but
+  these tracks are in actuallity vastly different loudness. oxidize has the bass
+  stem empty and the bass is in the drums stem.
 
-- is ai bpm analysis on cpu even multi threaded (number of threads in settings)?
-  is this safe to do?
+- i realized the bpm and grid analysis mostly only has problems with tracks that have 175
+  bpm (only 2-3 problems with 174 compared to 8-10 with 175). maybe this has to
+  do something wiht our processing or rounding?. check for potential
+  causes, just evaluate first and report back.
 
 - maybe we can utilise online metadata scraping as a fallback,comparison piont
   for bpm and key analysis, also we can get accurate metadata tags, like name
@@ -45,6 +61,3 @@ Here are the best music pages for different genres based on accuracy and variety
   the info of the other deck (waveforms). this means that each dj has their own
   hardware and settings, but can also play music from their partners library and
   everything is synced to the same master clock and bpm.
-
-- why do we need to flash armbian once, then immediatly reflash the nixos image
-  on the sd card?

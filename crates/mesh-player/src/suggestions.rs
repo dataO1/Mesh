@@ -354,20 +354,6 @@ fn key_direction_penalty(tt: TransitionType, energy_bias: f32) -> f32 {
     0.5 - 0.5 * alignment.clamp(-1.0, 1.0)
 }
 
-/// Compute arousal-based energy direction penalty (0.0 = perfect match, 1.0 = worst mismatch).
-///
-/// Rewards candidates whose perceived energy (arousal) aligns with the energy fader.
-/// Arousal is 0.0–1.0 (from ML analysis); higher = more energetic.
-///
-/// At center (energy_bias=0), alignment is always 0 → penalty 0.5 for all tracks
-/// (constant offset, no differentiation). At extremes, penalty ranges 0.0–1.0.
-fn arousal_direction_penalty(candidate_arousal: f32, avg_seed_arousal: f32, energy_bias: f32) -> f32 {
-    let diff = candidate_arousal - avg_seed_arousal; // positive = more energetic
-    let alignment = diff * energy_bias; // positive when matching desired direction
-    // Map alignment (-1..1) to penalty (1..0): good alignment = low penalty
-    0.5 - 0.5 * alignment.clamp(-1.0, 1.0)
-}
-
 /// Human-readable label for a transition type
 fn transition_type_label(tt: TransitionType) -> &'static str {
     match tt {
@@ -426,7 +412,7 @@ fn generate_reason_tags(
 /// 1. Resolve each seed path to a track ID
 /// 2. For each seed, find similar tracks via HNSW index
 /// 3. Merge results keeping the best (minimum) distance per candidate
-/// 4. Score using unified formula: hnsw + key_transition + arousal + bpm
+/// 4. Score using unified formula: hnsw + key_transition + key_dir + bpm
 /// 5. Filter by adaptive harmonic threshold
 /// 6. Sort and return the top results
 pub fn query_suggestions(
@@ -495,22 +481,6 @@ pub fn query_suggestions(
 
     // Step 4: Compute seed averages for scoring
 
-    // Batch-fetch arousal values for candidates + seeds
-    let candidate_ids: Vec<i64> = candidates.keys().copied().collect();
-    let arousal_map = db.get_arousal_batch(&candidate_ids).unwrap_or_default();
-    let seed_arousal_map = db.get_arousal_batch(&seed_ids).unwrap_or_default();
-
-    let avg_seed_arousal = {
-        let arousal_values: Vec<f32> = seed_ids.iter()
-            .filter_map(|id| seed_arousal_map.get(id).copied())
-            .collect();
-        if arousal_values.is_empty() {
-            0.5 // neutral fallback
-        } else {
-            arousal_values.iter().sum::<f32>() / arousal_values.len() as f32
-        }
-    };
-
     let avg_seed_bpm = {
         let bpm_values: Vec<f64> = seed_tracks.iter().filter_map(|t| t.bpm).collect();
         if bpm_values.is_empty() {
@@ -533,17 +503,16 @@ pub fn query_suggestions(
     // Step 5: Unified scoring — single formula for all candidates
     //
     // Dynamic weights: as the fader moves to extremes, HNSW similarity (which
-    // inherently finds similar tracks) yields to key direction and arousal,
-    // letting contrasting-but-energy-appropriate tracks surface.
+    // inherently finds similar tracks) yields to key direction,
+    // letting energy-appropriate key transitions surface.
     //
-    // Center (bias=0): 0.40 hnsw + 0.25 key + 0.10 key_dir + 0.15 arousal + 0.10 bpm = 1.00
-    // Extreme (|bias|=1): 0.15 hnsw + 0.25 key + 0.20 key_dir + 0.30 arousal + 0.10 bpm = 1.00
+    // Center (bias=0): 0.45 hnsw + 0.25 key + 0.15 key_dir + 0.15 bpm = 1.00
+    // Extreme (|bias|=1): 0.20 hnsw + 0.25 key + 0.40 key_dir + 0.15 bpm = 1.00
     let bias_abs = energy_bias.abs();
-    let w_hnsw = 0.40 - 0.25 * bias_abs;      // 0.40 → 0.15
+    let w_hnsw = 0.45 - 0.25 * bias_abs;      // 0.45 → 0.20
     let w_key = 0.25;                           // constant — harmonic safety always matters
-    let w_arousal = 0.15 + 0.15 * bias_abs;    // 0.15 → 0.30
-    let w_bpm = 0.10;                           // constant
-    let w_key_dir = 0.10 + 0.10 * bias_abs;    // 0.10 → 0.20 (key energy direction)
+    let w_bpm = 0.15;                           // constant
+    let w_key_dir = 0.15 + 0.25 * bias_abs;    // 0.15 → 0.40 (key energy direction)
 
     let mut suggestions: Vec<SuggestedTrack> = candidates
         .into_values()
@@ -588,18 +557,9 @@ pub fn query_suggestions(
                 })
                 .unwrap_or(0.5);
 
-            // Arousal-based energy direction penalty (0.0 = perfect match, 1.0 = worst)
-            // Tracks without arousal data get 0.5 (neutral — neither boosted nor penalized)
-            let track_id = track.id.unwrap_or(-1);
-            let arousal_penalty = arousal_map
-                .get(&track_id)
-                .map(|&arousal| arousal_direction_penalty(arousal, avg_seed_arousal, energy_bias))
-                .unwrap_or(0.5);
-
             let score = w_hnsw * hnsw_dist
                 + w_key * key_penalty
                 + w_key_dir * key_dir_penalty
-                + w_arousal * arousal_penalty
                 + w_bpm * bpm_penalty;
 
             let reason_tags = generate_reason_tags(best_tt, best_key_score);
@@ -862,33 +822,6 @@ mod tests {
         let half = key_direction_penalty(TransitionType::SemitoneUp, 0.5);
         assert!(half < 0.5, "Should still be below neutral at half fader");
         assert!(half > full, "Effect should be stronger at full fader: half={} full={}", half, full);
-    }
-
-    // ─── Arousal Direction Penalty ────────────────────────────────────
-
-    #[test]
-    fn test_arousal_direction_center_is_neutral() {
-        // At center (energy_bias=0), all candidates get 0.5 (no differentiation)
-        assert_eq!(arousal_direction_penalty(0.7, 0.5, 0.0), 0.5);
-        assert_eq!(arousal_direction_penalty(0.2, 0.5, 0.0), 0.5);
-    }
-
-    #[test]
-    fn test_arousal_direction_raise_prefers_energetic() {
-        let high = arousal_direction_penalty(0.8, 0.5, 1.0); // more energetic
-        let low = arousal_direction_penalty(0.2, 0.5, 1.0); // less energetic
-        assert!(high < low, "Lower penalty = better, higher arousal should have lower penalty when raising energy");
-        assert!(high < 0.5, "Good match should be below neutral 0.5");
-        assert!(low > 0.5, "Bad match should be above neutral 0.5");
-    }
-
-    #[test]
-    fn test_arousal_direction_drop_prefers_calm() {
-        let high = arousal_direction_penalty(0.8, 0.5, -1.0);
-        let low = arousal_direction_penalty(0.2, 0.5, -1.0);
-        assert!(low < high, "Lower arousal should have lower penalty when dropping energy");
-        assert!(low < 0.5, "Good match should be below neutral 0.5");
-        assert!(high > 0.5, "Bad match should be above neutral 0.5");
     }
 
     // ─── Krumhansl Matrix Validation ────────────────────────────────
