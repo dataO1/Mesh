@@ -95,6 +95,79 @@ jobs:
           echo ""
           echo "narinfo count: $(ls ./${{ env.CACHE_NAME }}/*.narinfo 2>/dev/null | wc -l)"
 
+      # Generate a simple index page listing cached packages
+      - name: Generate index.html
+        run: |
+          cd ./${{ env.CACHE_NAME }}
+          VERSION="${{ steps.version.outputs.version }}"
+          NARINFO_COUNT=$(ls *.narinfo 2>/dev/null | wc -l)
+          CACHE_SIZE=$(du -sh . | cut -f1)
+          NAR_COUNT=$(ls nar/*.nar.xz 2>/dev/null | wc -l)
+
+          cat > index.html << 'HEADER'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <title>Mesh — Nix Binary Cache</title>
+            <style>
+              body { font-family: -apple-system, system-ui, sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; color: #e0e0e0; background: #1a1a2e; }
+              h1 { color: #fff; }
+              .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 1.5rem 0; }
+              .stat { background: #16213e; padding: 1rem; border-radius: 8px; text-align: center; }
+              .stat-value { font-size: 1.5rem; font-weight: bold; color: #0ea5e9; }
+              .stat-label { font-size: 0.85rem; color: #94a3b8; margin-top: 0.25rem; }
+              code { background: #16213e; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.9rem; }
+              pre { background: #16213e; padding: 1rem; border-radius: 8px; overflow-x: auto; }
+              a { color: #0ea5e9; }
+              table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+              th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #2a2a4a; }
+              th { color: #94a3b8; font-weight: normal; font-size: 0.85rem; }
+              td a { text-decoration: none; }
+              .footer { margin-top: 2rem; color: #64748b; font-size: 0.85rem; }
+            </style>
+          </head>
+          <body>
+            <h1>Mesh — Nix Binary Cache</h1>
+            <p>Pre-built aarch64-linux packages for the
+              <a href="https://github.com/dataO1/Mesh">Mesh DJ Player</a>
+              embedded deployment (Orange Pi 5 Pro).</p>
+          HEADER
+
+          cat >> index.html << EOF
+            <div class="stats">
+              <div class="stat"><div class="stat-value">${NARINFO_COUNT}</div><div class="stat-label">packages</div></div>
+              <div class="stat"><div class="stat-value">${NAR_COUNT}</div><div class="stat-label">nar archives</div></div>
+              <div class="stat"><div class="stat-value">${CACHE_SIZE}</div><div class="stat-label">total size</div></div>
+            </div>
+
+            <h2>Usage</h2>
+            <p>Add to <code>/etc/nix/nix.conf</code> or flake config:</p>
+            <pre>extra-substituters = https://datao1.github.io/Mesh/
+          extra-trusted-public-keys = mesh-embedded:TVnMdLIfPt4q20ulKuieSc2Rv2fcwnph/TdLh2dZuKA=</pre>
+
+            <p>Update the embedded device:</p>
+            <pre>nixos-rebuild switch --flake github:dataO1/Mesh/${VERSION}#mesh-embedded --no-write-lock-file</pre>
+
+            <h2>Packages</h2>
+            <table>
+              <tr><th>Package</th><th>Size</th></tr>
+          EOF
+
+          # List narinfo files with store path names
+          for f in *.narinfo; do
+            STORE_PATH=$(grep "^StorePath:" "$f" | sed 's/StorePath: \/nix\/store\///')
+            NAR_SIZE=$(grep "^NarSize:" "$f" | awk '{printf "%.1f MB", $2/1048576}')
+            echo "    <tr><td><a href=\"$f\">$STORE_PATH</a></td><td>$NAR_SIZE</td></tr>" >> index.html
+          done
+
+          cat >> index.html << EOF
+            </table>
+            <p class="footer">Last updated: $(date -u '+%Y-%m-%d %H:%M UTC') · Version: ${VERSION}</p>
+          </body>
+          </html>
+          EOF
+
       # Deploy the binary cache to GitHub Pages
       # The device fetches from: https://datao1.github.io/Mesh/
       - name: Deploy to GitHub Pages
