@@ -13,9 +13,12 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 env:
   CARGO_TERM_COLOR: always
+  CACHE_NAME: mesh-cache
 
 jobs:
   # ===========================================================================
@@ -109,11 +112,22 @@ jobs:
           Extract the zip and run the \`.exe\` directly. No installation required.
           GPU acceleration via DirectML (any DirectX 12 GPU).
 
-          ### NixOS
+          ### NixOS / Nix
 
+          Run directly (x86_64-linux):
           \`\`\`bash
           nix run github:${REPO}#mesh-player
           nix run github:${REPO}#mesh-cue
+          \`\`\`
+
+          **aarch64-linux** (Orange Pi 5 / embedded): A pre-built binary cache is published to GitHub Pages with every release. Configure the cache and update:
+          \`\`\`bash
+          # /etc/nix/nix.conf (or flake nixConfig)
+          extra-substituters = https://datao1.github.io/Mesh/
+          extra-trusted-public-keys = mesh-embedded:TVnMdLIfPt4q20ulKuieSc2Rv2fcwnph/TdLh2dZuKA=
+
+          # Update an embedded device
+          nixos-rebuild switch --flake github:${REPO}#mesh-embedded --no-write-lock-file
           \`\`\`
 
           ML models are downloaded automatically on first use.
@@ -374,11 +388,149 @@ jobs:
           echo "Models synced to 'models' release."
 
   # ===========================================================================
-  # Job 6: Collect artifacts and publish release
+  # Job 6: Build aarch64 mesh-player and publish Nix binary cache
+  # ===========================================================================
+  # Runs on every version tag so embedded devices can update via nixos-rebuild.
+  # The binary cache is served as static files from GitHub Pages at
+  # https://datao1.github.io/Mesh/ — the Orange Pi fetches pre-built packages
+  # from here instead of compiling from source.
+  build-aarch64:
+    name: Build aarch64 + Cache
+    needs: create-release
+    runs-on: ubuntu-24.04-arm  # Native aarch64 runner (free for public repos)
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://datao1.github.io/Mesh/
+            extra-trusted-public-keys = mesh-embedded:TVnMdLIfPt4q20ulKuieSc2Rv2fcwnph/TdLh2dZuKA=
+
+      - name: Nix store cache
+        uses: DeterminateSystems/magic-nix-cache-action@v8
+        with:
+          use-flakehub: false
+
+      - name: Set up signing key
+        run: |
+          echo "${{ secrets.NIX_CACHE_PRIV_KEY }}" > /tmp/cache-priv-key.pem
+
+      - name: Build mesh-player
+        run: |
+          echo "Building mesh-player for aarch64-linux..."
+          nix build -L .#packages.aarch64-linux.mesh-player
+
+      - name: Create binary cache
+        run: |
+          mkdir -p ./${{ env.CACHE_NAME }}
+          echo "Exporting store paths to binary cache..."
+
+          nix copy --to "file://$(pwd)/${{ env.CACHE_NAME }}" \
+            --secret-key-files /tmp/cache-priv-key.pem \
+            ./result
+
+          echo ""
+          echo "Cache contents:"
+          ls -lh ./${{ env.CACHE_NAME }}/
+          echo ""
+          du -sh ./${{ env.CACHE_NAME }}
+          echo ""
+          echo "narinfo count: $(ls ./${{ env.CACHE_NAME }}/*.narinfo 2>/dev/null | wc -l)"
+
+      - name: Generate index.html
+        run: |
+          cd ./${{ env.CACHE_NAME }}
+          VERSION="${{ needs.create-release.outputs.version }}"
+          NARINFO_COUNT=$(ls *.narinfo 2>/dev/null | wc -l)
+          CACHE_SIZE=$(du -sh . | cut -f1)
+          NAR_COUNT=$(ls nar/*.nar.xz 2>/dev/null | wc -l)
+
+          cat > index.html << 'HEADER'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <title>Mesh — Nix Binary Cache</title>
+            <style>
+              body { font-family: -apple-system, system-ui, sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; color: #e0e0e0; background: #1a1a2e; }
+              h1 { color: #fff; }
+              .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 1.5rem 0; }
+              .stat { background: #16213e; padding: 1rem; border-radius: 8px; text-align: center; }
+              .stat-value { font-size: 1.5rem; font-weight: bold; color: #0ea5e9; }
+              .stat-label { font-size: 0.85rem; color: #94a3b8; margin-top: 0.25rem; }
+              code { background: #16213e; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.9rem; }
+              pre { background: #16213e; padding: 1rem; border-radius: 8px; overflow-x: auto; }
+              a { color: #0ea5e9; }
+              table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+              th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #2a2a4a; }
+              th { color: #94a3b8; font-weight: normal; font-size: 0.85rem; }
+              td a { text-decoration: none; }
+              .footer { margin-top: 2rem; color: #64748b; font-size: 0.85rem; }
+            </style>
+          </head>
+          <body>
+            <h1>Mesh — Nix Binary Cache</h1>
+            <p>Pre-built aarch64-linux packages for the
+              <a href="https://github.com/dataO1/Mesh">Mesh DJ Player</a>
+              embedded deployment (Orange Pi 5 Pro).</p>
+          HEADER
+
+          cat >> index.html << EOF
+            <div class="stats">
+              <div class="stat"><div class="stat-value">${NARINFO_COUNT}</div><div class="stat-label">packages</div></div>
+              <div class="stat"><div class="stat-value">${NAR_COUNT}</div><div class="stat-label">nar archives</div></div>
+              <div class="stat"><div class="stat-value">${CACHE_SIZE}</div><div class="stat-label">total size</div></div>
+            </div>
+
+            <h2>Usage</h2>
+            <p>Add to <code>/etc/nix/nix.conf</code> or flake config:</p>
+            <pre>extra-substituters = https://datao1.github.io/Mesh/
+          extra-trusted-public-keys = mesh-embedded:TVnMdLIfPt4q20ulKuieSc2Rv2fcwnph/TdLh2dZuKA=</pre>
+
+            <p>Update the embedded device:</p>
+            <pre>nixos-rebuild switch --flake github:dataO1/Mesh/${VERSION}#mesh-embedded --no-write-lock-file</pre>
+
+            <h2>Packages</h2>
+            <table>
+              <tr><th>Package</th><th>Size</th></tr>
+          EOF
+
+          for f in *.narinfo; do
+            STORE_PATH=$(grep "^StorePath:" "$f" | sed 's/StorePath: \/nix\/store\///')
+            NAR_SIZE=$(grep "^NarSize:" "$f" | awk '{printf "%.1f MB", $2/1048576}')
+            echo "    <tr><td><a href=\"$f\">$STORE_PATH</a></td><td>$NAR_SIZE</td></tr>" >> index.html
+          done
+
+          cat >> index.html << EOF
+            </table>
+            <p class="footer">Last updated: $(date -u '+%Y-%m-%d %H:%M UTC') · Version: ${VERSION}</p>
+          </body>
+          </html>
+          EOF
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./${{ env.CACHE_NAME }}
+          keep_files: true
+          commit_message: "cache: ${{ needs.create-release.outputs.version }} aarch64-linux"
+
+      - name: Clean up signing key
+        if: always()
+        run: rm -f /tmp/cache-priv-key.pem
+
+  # ===========================================================================
+  # Job 7: Collect artifacts and publish release
   # ===========================================================================
   publish-release:
     name: Publish Release
-    needs: [create-release, build-deb, build-deb-cuda, build-windows, build-models]
+    needs: [create-release, build-deb, build-deb-cuda, build-windows, build-models, build-aarch64]
     runs-on: ubuntu-latest
     if: always() && needs.create-release.result == 'success'
 
@@ -445,6 +597,7 @@ jobs:
           echo "| Build .deb (CPU) | ${{ needs.build-deb.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Build .deb (CUDA) | ${{ needs.build-deb-cuda.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Build Windows | ${{ needs.build-windows.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build aarch64 + Cache | ${{ needs.build-aarch64.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Sync Models | ${{ needs.build-models.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 

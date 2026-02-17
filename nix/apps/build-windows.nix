@@ -480,6 +480,42 @@ TOOLCHAIN
         # but needs native gcc for host builds (build scripts, proc-macros).
         unset CC CXX AR RANLIB CFLAGS CXXFLAGS LDFLAGS
 
+        # Copy source to writable location (container mounts /project as read-only)
+        # patches/ is in .gitignore and needs to be created for libpd crates
+        echo ""
+        echo "==> Preparing writable source copy for patches..."
+        SRC_DIR=/tmp/build_src
+        rm -rf $SRC_DIR
+        mkdir -p $SRC_DIR
+        cd /project
+        find . -maxdepth 1 ! -name target ! -name . -exec cp -r {} $SRC_DIR/ \;
+        cd $SRC_DIR
+
+        # Create patched crates (patches/ is in .gitignore, not in git checkout)
+        # [patch.crates-io] in Cargo.toml points to patches/libpd-sys and patches/libpd-rs
+        if [ ! -d "patches/libpd-sys" ]; then
+          echo "    Creating patched libpd-sys (32-bit floats)..."
+          mkdir -p patches
+          cd /tmp
+          curl -sL https://crates.io/api/v1/crates/libpd-sys/0.3.4/download -o libpd-sys.tar.gz
+          tar xzf libpd-sys.tar.gz -C $SRC_DIR/patches
+          mv $SRC_DIR/patches/libpd-sys-* $SRC_DIR/patches/libpd-sys
+          sed -i "s/const PD_FLOATSIZE: &str = \"64\"/const PD_FLOATSIZE: \&str = \"32\"/" $SRC_DIR/patches/libpd-sys/build.rs
+          cd $SRC_DIR
+        fi
+        if [ ! -d "patches/libpd-rs" ]; then
+          echo "    Creating patched libpd-rs (c_char portability)..."
+          cd /tmp
+          curl -sL https://crates.io/api/v1/crates/libpd-rs/0.2.0/download -o libpd-rs.tar.gz
+          tar xzf libpd-rs.tar.gz -C $SRC_DIR/patches
+          mv $SRC_DIR/patches/libpd-rs-* $SRC_DIR/patches/libpd-rs
+          sed -i "s/\*const i8/\*const os::raw::c_char/g" $SRC_DIR/patches/libpd-rs/src/functions/receive.rs
+          cd $SRC_DIR
+        fi
+
+        # Point cargo at the persistent target directory (cached between builds)
+        export CARGO_TARGET_DIR=/project/target
+
         echo ""
         echo "==> Building mesh-player..."
         echo "    CONSOLE_FEATURE='$CONSOLE_FEATURE'"
@@ -616,7 +652,7 @@ Libs: -L\''${libdir} -lessentia -lfftw3f -ltag -lsamplerate -lchromaprint -lavfo
 Cflags: -I\''${includedir}
 ESSPC
 
-          cd /project
+          cd $SRC_DIR
           rm -rf /tmp/essentia-host-build
           unset CFLAGS CXXFLAGS
         fi

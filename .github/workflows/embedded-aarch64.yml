@@ -1,21 +1,26 @@
-name: Embedded aarch64 Build + Cache
+name: SD Image
 
-# Build mesh-player for aarch64-linux (Orange Pi 5 Pro) on a native ARM runner,
-# then publish a Nix binary cache to GitHub Pages. The embedded NixOS device
-# pulls pre-built packages from this cache, so it never compiles anything.
+# Build NixOS SD card image for Orange Pi 5 Pro (aarch64).
 #
-# The SD image job uses hash-based deduplication: the Nix derivation hash
-# captures ALL inputs (source, deps, config). If nothing changed, the build
+# Triggered AFTER the Release workflow completes — the aarch64 mesh-player
+# binary is already in the GitHub Pages Nix cache, so this job fetches it
+# instead of building from source.
+#
+# Only runs for minor/major releases (patch == 0, e.g. v0.9.0, v1.0.0).
+# Patch releases update the device via nixos-rebuild (pulling from cache).
+#
+# Uses Nix derivation hash for deduplication: the drvPath encodes ALL inputs.
+# If nothing affecting the image changed, the hash is identical and the build
 # is skipped entirely.
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag (e.g., v0.8.3)'
+        description: 'Version tag (e.g., v0.9.0)'
         required: true
         type: string
       force_sd_image:
@@ -24,223 +29,58 @@ on:
         type: boolean
         default: false
 
-# GitHub Pages + Releases require write access
 permissions:
   contents: write
-  pages: write
-  id-token: write
-
-env:
-  CARGO_TERM_COLOR: always
-  CACHE_NAME: mesh-cache
 
 jobs:
-  # ===========================================================================
-  # Job 1: Build mesh-player and publish binary cache to GitHub Pages
-  # ===========================================================================
-  build-aarch64:
-    name: Build aarch64 + Publish Cache
-    runs-on: ubuntu-24.04-arm  # Native aarch64 runner (free for public repos)
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      is_minor_release: ${{ steps.version.outputs.is_minor_release }}
+  sd-image:
+    name: Build SD Image
+    runs-on: ubuntu-24.04-arm
+    # Only run when:
+    # 1. Release workflow succeeded (workflow_run), OR
+    # 2. Manual trigger (workflow_dispatch)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            extra-substituters = https://datao1.github.io/Mesh/
-            extra-trusted-public-keys = mesh-embedded:TVnMdLIfPt4q20ulKuieSc2Rv2fcwnph/TdLh2dZuKA=
-
-      # Cache the Nix store between CI runs using GitHub Actions cache only
-      # (FlakeHub disabled — no external service registration needed)
-      - name: Nix store cache
-        uses: DeterminateSystems/magic-nix-cache-action@v8
-        with:
-          use-flakehub: false
-
-      - name: Get version
+      - name: Get version and check if minor release
         id: version
         run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="${{ github.event.inputs.version }}"
+            FORCE="${{ github.event.inputs.force_sd_image }}"
           else
-            VERSION="${GITHUB_REF#refs/tags/}"
+            # workflow_run: head_branch contains the tag that triggered Release
+            VERSION="${{ github.event.workflow_run.head_branch }}"
+            FORCE="false"
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-          # Detect minor/major version bumps (patch == 0, e.g. v0.9.0, v1.0.0)
-          # Strip v prefix and any pre-release suffix, then check patch number
+          # Detect minor/major version bumps (patch == 0)
           SEMVER="${VERSION#v}"
           SEMVER="${SEMVER%%-*}"
           PATCH=$(echo "$SEMVER" | cut -d. -f3)
-          if [ "$PATCH" = "0" ]; then
-            echo "is_minor_release=true" >> $GITHUB_OUTPUT
-            echo "Minor/major release detected (patch=0), SD image will build."
+
+          if [ "$FORCE" = "true" ]; then
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "Force build requested."
+          elif [ "$PATCH" = "0" ]; then
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "Minor/major release (patch=0), building SD image."
           else
-            echo "is_minor_release=false" >> $GITHUB_OUTPUT
-            echo "Patch release (patch=$PATCH), SD image will be skipped."
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Patch release (patch=$PATCH), skipping SD image."
           fi
 
-      - name: Set up signing key
-        run: |
-          echo "${{ secrets.NIX_CACHE_PRIV_KEY }}" > /tmp/cache-priv-key.pem
-
-      # Build mesh-player natively on ARM (no cross-compilation)
-      - name: Build mesh-player
-        run: |
-          echo "Building mesh-player for aarch64-linux..."
-          nix build -L .#packages.aarch64-linux.mesh-player
-
-      # Create a proper Nix binary cache directory
-      # Same format as cache.nixos.org — just static files (.narinfo + .nar.xz)
-      - name: Create binary cache
-        run: |
-          mkdir -p ./${{ env.CACHE_NAME }}
-          echo "Exporting store paths to binary cache..."
-
-          # Copy the mesh-player closure (and all its dependencies) to the cache
-          nix copy --to "file://$(pwd)/${{ env.CACHE_NAME }}" \
-            --secret-key-files /tmp/cache-priv-key.pem \
-            ./result
-
-          echo ""
-          echo "Cache contents:"
-          ls -lh ./${{ env.CACHE_NAME }}/
-          echo ""
-          du -sh ./${{ env.CACHE_NAME }}
-          echo ""
-          echo "narinfo count: $(ls ./${{ env.CACHE_NAME }}/*.narinfo 2>/dev/null | wc -l)"
-
-      # Generate a simple index page listing cached packages
-      - name: Generate index.html
-        run: |
-          cd ./${{ env.CACHE_NAME }}
-          VERSION="${{ steps.version.outputs.version }}"
-          NARINFO_COUNT=$(ls *.narinfo 2>/dev/null | wc -l)
-          CACHE_SIZE=$(du -sh . | cut -f1)
-          NAR_COUNT=$(ls nar/*.nar.xz 2>/dev/null | wc -l)
-
-          cat > index.html << 'HEADER'
-          <!DOCTYPE html>
-          <html lang="en">
-          <head>
-            <meta charset="utf-8">
-            <title>Mesh — Nix Binary Cache</title>
-            <style>
-              body { font-family: -apple-system, system-ui, sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; color: #e0e0e0; background: #1a1a2e; }
-              h1 { color: #fff; }
-              .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 1.5rem 0; }
-              .stat { background: #16213e; padding: 1rem; border-radius: 8px; text-align: center; }
-              .stat-value { font-size: 1.5rem; font-weight: bold; color: #0ea5e9; }
-              .stat-label { font-size: 0.85rem; color: #94a3b8; margin-top: 0.25rem; }
-              code { background: #16213e; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.9rem; }
-              pre { background: #16213e; padding: 1rem; border-radius: 8px; overflow-x: auto; }
-              a { color: #0ea5e9; }
-              table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
-              th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #2a2a4a; }
-              th { color: #94a3b8; font-weight: normal; font-size: 0.85rem; }
-              td a { text-decoration: none; }
-              .footer { margin-top: 2rem; color: #64748b; font-size: 0.85rem; }
-            </style>
-          </head>
-          <body>
-            <h1>Mesh — Nix Binary Cache</h1>
-            <p>Pre-built aarch64-linux packages for the
-              <a href="https://github.com/dataO1/Mesh">Mesh DJ Player</a>
-              embedded deployment (Orange Pi 5 Pro).</p>
-          HEADER
-
-          cat >> index.html << EOF
-            <div class="stats">
-              <div class="stat"><div class="stat-value">${NARINFO_COUNT}</div><div class="stat-label">packages</div></div>
-              <div class="stat"><div class="stat-value">${NAR_COUNT}</div><div class="stat-label">nar archives</div></div>
-              <div class="stat"><div class="stat-value">${CACHE_SIZE}</div><div class="stat-label">total size</div></div>
-            </div>
-
-            <h2>Usage</h2>
-            <p>Add to <code>/etc/nix/nix.conf</code> or flake config:</p>
-            <pre>extra-substituters = https://datao1.github.io/Mesh/
-          extra-trusted-public-keys = mesh-embedded:TVnMdLIfPt4q20ulKuieSc2Rv2fcwnph/TdLh2dZuKA=</pre>
-
-            <p>Update the embedded device:</p>
-            <pre>nixos-rebuild switch --flake github:dataO1/Mesh/${VERSION}#mesh-embedded --no-write-lock-file</pre>
-
-            <h2>Packages</h2>
-            <table>
-              <tr><th>Package</th><th>Size</th></tr>
-          EOF
-
-          # List narinfo files with store path names
-          for f in *.narinfo; do
-            STORE_PATH=$(grep "^StorePath:" "$f" | sed 's/StorePath: \/nix\/store\///')
-            NAR_SIZE=$(grep "^NarSize:" "$f" | awk '{printf "%.1f MB", $2/1048576}')
-            echo "    <tr><td><a href=\"$f\">$STORE_PATH</a></td><td>$NAR_SIZE</td></tr>" >> index.html
-          done
-
-          cat >> index.html << EOF
-            </table>
-            <p class="footer">Last updated: $(date -u '+%Y-%m-%d %H:%M UTC') · Version: ${VERSION}</p>
-          </body>
-          </html>
-          EOF
-
-      # Deploy the binary cache to GitHub Pages
-      # The device fetches from: https://datao1.github.io/Mesh/
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./${{ env.CACHE_NAME }}
-          # Keep files from previous releases so old versions remain available
-          keep_files: true
-          commit_message: "cache: ${{ steps.version.outputs.version }} aarch64-linux"
-
-      - name: Clean up signing key
-        if: always()
-        run: rm -f /tmp/cache-priv-key.pem
-
-      - name: Summary
-        run: |
-          echo "## Embedded aarch64 Build Complete" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Binary cache:** https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Update an embedded device" >> $GITHUB_STEP_SUMMARY
-          echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "nixos-rebuild switch --flake github:${{ github.repository }}/${{ steps.version.outputs.version }}#mesh-embedded --no-write-lock-file" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-  # ===========================================================================
-  # Job 2: Build SD card image and upload to GitHub Releases
-  # ===========================================================================
-  # Only runs on minor/major version bumps (patch == 0, e.g. v0.9.0, v1.0.0)
-  # or when force_sd_image is set via workflow_dispatch. Patch releases update
-  # the device via nixos-rebuild (pulling from the binary cache above).
-  #
-  # Uses Nix derivation hash for deduplication: the drvPath encodes ALL inputs
-  # (source code, nixpkgs pin, embedded config, dependencies). If nothing that
-  # affects the image has changed, the hash is identical and the build is skipped.
-  sd-image:
-    name: Build SD Image
-    needs: build-aarch64
-    runs-on: ubuntu-24.04-arm
-    if: >-
-      always() && needs.build-aarch64.result == 'success' &&
-      (needs.build-aarch64.outputs.is_minor_release == 'true' ||
-       github.event.inputs.force_sd_image == 'true')
-
-    steps:
       - name: Checkout repository
+        if: steps.version.outputs.skip != 'true'
         uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.version.outputs.version }}
 
       - name: Install Nix
+        if: steps.version.outputs.skip != 'true'
         uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: |
@@ -248,22 +88,20 @@ jobs:
             extra-substituters = https://datao1.github.io/Mesh/
             extra-trusted-public-keys = mesh-embedded:TVnMdLIfPt4q20ulKuieSc2Rv2fcwnph/TdLh2dZuKA=
 
-      # Cache the Nix store between CI runs using GitHub Actions cache only
-      # (FlakeHub disabled — no external service registration needed)
       - name: Nix store cache
+        if: steps.version.outputs.skip != 'true'
         uses: DeterminateSystems/magic-nix-cache-action@v8
         with:
           use-flakehub: false
 
-      # Compute the Nix derivation hash — this captures ALL inputs to the image.
-      # The hash changes if and only if something affecting the image changed
-      # (source code, nixpkgs pin, embedded config, kernel config, etc.)
+      # Compute the Nix derivation hash — captures ALL inputs to the image.
+      # The hash changes if and only if something affecting the image changed.
       - name: Compute derivation hash
+        if: steps.version.outputs.skip != 'true'
         id: hash
         run: |
           echo "Evaluating SD image derivation (no build yet)..."
           drv=$(nix eval --raw .#packages.aarch64-linux.sdImage.drvPath)
-          # Extract the 32-char hash from /nix/store/<hash>-name.drv
           hash=$(basename "$drv" | cut -c1-32)
           echo "hash=$hash" >> $GITHUB_OUTPUT
           echo "Derivation: $drv"
@@ -271,6 +109,7 @@ jobs:
 
       # Check if we already uploaded an image with this exact hash
       - name: Check for existing release
+        if: steps.version.outputs.skip != 'true'
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -290,23 +129,24 @@ jobs:
           fi
 
       # Build the full NixOS SD card image (kernel + system + mesh-player)
-      # System packages come from cache.nixos.org, only custom packages are built
+      # mesh-player is fetched from the GitHub Pages binary cache (published
+      # by the Release workflow). System packages come from cache.nixos.org.
       - name: Build SD image
-        if: steps.check.outputs.exists != 'true'
+        if: steps.version.outputs.skip != 'true' && steps.check.outputs.exists != 'true'
         run: |
           echo "Building NixOS SD image for Orange Pi 5 Pro..."
+          echo "mesh-player should be fetched from binary cache (not built from source)"
           nix build -L .#packages.aarch64-linux.sdImage
           echo ""
           echo "Image output:"
           ls -lh result/sd-image/
 
-      # Upload the compressed image to a GitHub Release
       - name: Upload to GitHub Release
-        if: steps.check.outputs.exists != 'true'
+        if: steps.version.outputs.skip != 'true' && steps.check.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          version="${{ needs.build-aarch64.outputs.version }}"
+          version="${{ steps.version.outputs.version }}"
           tag="sdimage-${{ steps.hash.outputs.hash }}"
           image=$(ls result/sd-image/*.img* | head -1)
           filename=$(basename "$image")
@@ -333,10 +173,20 @@ jobs:
             "$image"
 
       - name: Summary
+        if: always()
         run: |
-          echo "## SD Image" >> $GITHUB_STEP_SUMMARY
+          VERSION="${{ steps.version.outputs.version }}"
+          echo "## SD Image — $VERSION" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ steps.check.outputs.exists }}" = "true" ]; then
+
+          if [ "${{ steps.version.outputs.skip }}" = "true" ]; then
+            echo "Skipped — patch release (SD image only builds for minor/major versions)." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "The embedded device updates via:" >> $GITHUB_STEP_SUMMARY
+            echo '```bash' >> $GITHUB_STEP_SUMMARY
+            echo "nixos-rebuild switch --flake github:${{ github.repository }}/$VERSION#mesh-embedded --no-write-lock-file" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ steps.check.outputs.exists }}" = "true" ]; then
             echo "Skipped — image already exists for derivation hash \`${{ steps.hash.outputs.hash }}\`" >> $GITHUB_STEP_SUMMARY
           else
             echo "Built and uploaded as release \`sdimage-${{ steps.hash.outputs.hash }}\`" >> $GITHUB_STEP_SUMMARY
