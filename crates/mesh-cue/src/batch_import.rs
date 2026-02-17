@@ -96,59 +96,82 @@ impl Drop for TempFileGuard {
 /// causes failures due to buffer limits and memory pressure.
 ///
 /// See: <https://github.com/MTG/essentia/issues/87>
-fn analyze_in_subprocess(samples: Vec<f32>, bpm_config: BpmConfig) -> Result<AnalysisResult> {
+/// # Arguments
+/// * `samples` - Full mix audio samples (for key/LUFS/features)
+/// * `bpm_samples` - Optional separate audio for BPM analysis (drums-only when BpmSource::Drums)
+/// * `bpm_config` - BPM detection configuration
+fn analyze_in_subprocess(samples: Vec<f32>, bpm_samples: Option<Vec<f32>>, bpm_config: BpmConfig) -> Result<AnalysisResult> {
     use std::io::{Read, Write};
 
-    // Generate unique temp file path
-    let temp_path = std::env::temp_dir().join(format!(
-        "mesh_audio_{}.bin",
-        std::process::id() ^ (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u32)
-    ));
+    // Generate unique temp file paths
+    let uid = std::process::id() ^ (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u32);
+    let temp_path = std::env::temp_dir().join(format!("mesh_audio_{}.bin", uid));
+    let bpm_temp_path = std::env::temp_dir().join(format!("mesh_audio_{}_bpm.bin", uid));
 
     // RAII guard ensures cleanup on any exit path (early return, panic, or normal)
     let _temp_guard = TempFileGuard::new(temp_path.clone());
+    let _bpm_temp_guard = TempFileGuard::new(bpm_temp_path.clone());
 
-    // Write samples to temp file (raw f32 bytes)
-    {
-        let mut file = std::fs::File::create(&temp_path)
-            .with_context(|| format!("Failed to create temp file: {:?}", temp_path))?;
+    // Helper to write f32 samples to a temp file
+    let write_samples = |path: &std::path::Path, data: &[f32]| -> Result<()> {
+        let mut file = std::fs::File::create(path)
+            .with_context(|| format!("Failed to create temp file: {:?}", path))?;
         let bytes: &[u8] = unsafe {
             std::slice::from_raw_parts(
-                samples.as_ptr() as *const u8,
-                samples.len() * std::mem::size_of::<f32>(),
+                data.as_ptr() as *const u8,
+                data.len() * std::mem::size_of::<f32>(),
             )
         };
         file.write_all(bytes)
             .with_context(|| "Failed to write samples to temp file")?;
-    }
+        Ok(())
+    };
+
+    // Write main samples
+    write_samples(&temp_path, &samples)?;
     let sample_count = samples.len();
+
+    // Write BPM samples if separate
+    let bpm_sample_count = bpm_samples.as_ref().map(|s| s.len());
+    if let Some(ref bpm) = bpm_samples {
+        write_samples(&bpm_temp_path, bpm)?;
+    }
+
     drop(samples); // Free memory before spawning subprocess
+    drop(bpm_samples);
 
-    // Spawn subprocess with only the temp file path (small data)
+    // Spawn subprocess with temp file paths
     let temp_path_str = temp_path.to_string_lossy().to_string();
-    let handle = procspawn::spawn((temp_path_str.clone(), sample_count, bpm_config), |(path, count, config)| {
-        // Read samples from temp file in subprocess
-        let samples = (|| -> std::result::Result<Vec<f32>, String> {
-            let mut file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
-            let mut bytes = vec![0u8; count * std::mem::size_of::<f32>()];
-            file.read_exact(&mut bytes).map_err(|e| e.to_string())?;
+    let bpm_temp_path_str = bpm_temp_path.to_string_lossy().to_string();
+    let handle = procspawn::spawn(
+        (temp_path_str.clone(), sample_count, bpm_temp_path_str.clone(), bpm_sample_count, bpm_config),
+        |(path, count, bpm_path, bpm_count, config)| {
+            // Helper to read f32 samples from a temp file
+            let read_samples = |path: &str, count: usize| -> std::result::Result<Vec<f32>, String> {
+                let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+                let mut bytes = vec![0u8; count * std::mem::size_of::<f32>()];
+                file.read_exact(&mut bytes).map_err(|e| e.to_string())?;
+                Ok(bytes
+                    .chunks_exact(4)
+                    .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                    .collect())
+            };
 
-            // Convert bytes back to f32
-            let samples: Vec<f32> = bytes
-                .chunks_exact(4)
-                .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-                .collect();
-            Ok(samples)
-        })()?;
+            let samples = read_samples(&path, count)?;
+            let bpm_samples = match bpm_count {
+                Some(c) => Some(read_samples(&bpm_path, c)?),
+                None => None,
+            };
 
-        // Run analysis in isolated process
-        analyze_audio(&samples, &config).map_err(|e| e.to_string())
-    });
+            // Run analysis in isolated process
+            analyze_audio(&samples, bpm_samples.as_deref(), &config).map_err(|e| e.to_string())
+        },
+    );
 
-    // Wait for result - temp file cleanup is handled by _temp_guard on drop
+    // Wait for result - temp file cleanup is handled by guards on drop
     handle
         .join()
         .map_err(|e| anyhow::anyhow!("Analysis subprocess failed: {:?}", e))?
@@ -540,18 +563,8 @@ fn process_single_track(
     let source_sample_rate = imported.source_sample_rate;
     let buffers = imported.buffers;
 
-    // Get mono audio for BPM analysis based on configured source
-    let mono_samples = match config.bpm_config.source {
-        BpmSource::Drums => {
-            log::info!("process_single_track: Using drums-only for BPM analysis");
-            importer.get_drums_mono()
-        }
-        BpmSource::FullMix => {
-            log::info!("process_single_track: Using full mix for BPM analysis");
-            importer.get_mono_sum()
-        }
-    };
-    let mono_samples = match mono_samples {
+    // Create full mix for subprocess analysis (key/LUFS always need all audio content)
+    let mono_samples = match importer.get_mono_sum() {
         Ok(s) => s,
         Err(e) => {
             return TrackImportResult {
@@ -563,22 +576,31 @@ fn process_single_track(
         }
     };
 
+    // Create BPM-specific mono based on configured source (drums-only or full mix)
+    let bpm_mono = match config.bpm_config.source {
+        BpmSource::Drums => {
+            log::info!("process_single_track: Using drums-only for BPM analysis");
+            match importer.get_drums_mono() {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    log::warn!("process_single_track: Failed to get drums mono, falling back to full mix: {}", e);
+                    None
+                }
+            }
+        }
+        BpmSource::FullMix => None, // Will use mono_samples directly
+    };
+
     // Resample mono audio to 44100 Hz if source is at a different rate.
     // Essentia's algorithms (BPM, key, onset) internally assume 44100 Hz input.
-    let mono_samples = if source_sample_rate != 44100 {
+    let (mono_samples, bpm_mono) = if source_sample_rate != 44100 {
         log::info!(
             "process_single_track: Resampling mono analysis audio {} Hz → 44100 Hz ({} samples)",
             source_sample_rate,
             mono_samples.len()
         );
-        match mesh_core::audio_file::resample_mono_audio(&mono_samples, source_sample_rate, 44100) {
-            Ok(resampled) => {
-                log::info!(
-                    "process_single_track: Resampled to {} samples at 44100 Hz",
-                    resampled.len()
-                );
-                resampled
-            }
+        let resampled = match mesh_core::audio_file::resample_mono_audio(&mono_samples, source_sample_rate, 44100) {
+            Ok(r) => r,
             Err(e) => {
                 return TrackImportResult {
                     base_name,
@@ -587,17 +609,35 @@ fn process_single_track(
                     output_path: None,
                 };
             }
-        }
+        };
+        let bpm_resampled = match bpm_mono {
+            Some(bpm) => match mesh_core::audio_file::resample_mono_audio(&bpm, source_sample_rate, 44100) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    log::warn!("process_single_track: Failed to resample BPM mono, using full mix: {}", e);
+                    None
+                }
+            },
+            None => None,
+        };
+        log::info!(
+            "process_single_track: Resampled to {} samples at 44100 Hz",
+            resampled.len()
+        );
+        (resampled, bpm_resampled)
     } else {
-        mono_samples
+        (mono_samples, bpm_mono)
     };
 
+    // Select BPM audio: drums-only if available, otherwise full mix
+    let bpm_audio = bpm_mono.as_deref().unwrap_or(&mono_samples);
+
     // Run Beat This! BEFORE subprocess if using Advanced backend
-    // (ort is thread-safe, mel spectrogram borrows samples, then samples are moved to subprocess)
+    // (ort is thread-safe, mel spectrogram borrows bpm_audio, then mono_samples is moved to subprocess)
     let beat_this_result = if config.bpm_config.backend == BeatDetectionBackend::Advanced {
         if let Some(bt_arc) = beat_this {
             log::info!("process_single_track: Computing Beat This! mel spectrogram for '{}'", base_name);
-            match ml_analysis::preprocessing::compute_mel_spectrogram_beat_this(&mono_samples, 44100.0) {
+            match ml_analysis::preprocessing::compute_mel_spectrogram_beat_this(bpm_audio, 44100.0) {
                 Ok(mel) => {
                     match bt_arc.lock() {
                         Ok(mut analyzer) => {
@@ -637,7 +677,7 @@ fn process_single_track(
 
     // Analyze audio in isolated subprocess (Essentia for key, LUFS, features;
     // BPM only if Simple backend or if Beat This! failed above)
-    let mut analysis = match analyze_in_subprocess(mono_samples, config.bpm_config.clone()) {
+    let mut analysis = match analyze_in_subprocess(mono_samples, bpm_mono, config.bpm_config.clone()) {
         Ok(a) => a,
         Err(e) => {
             return TrackImportResult {

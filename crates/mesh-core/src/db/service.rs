@@ -482,6 +482,14 @@ impl DatabaseService {
         TrackQuery::delete(&self.db, id)
     }
 
+    /// Get all tracks in the database
+    ///
+    /// Returns tracks with basic metadata only (no cue_points/saved_loops/stem_links).
+    pub fn get_all_tracks(&self) -> Result<Vec<Track>, DbError> {
+        let rows = TrackQuery::get_all(&self.db)?;
+        Ok(rows.into_iter().map(Track::from_row_only).collect())
+    }
+
     /// Get all tracks in a folder
     ///
     /// Returns tracks with basic metadata only (no cue_points/saved_loops/stem_links).

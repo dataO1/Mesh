@@ -7,7 +7,7 @@
 use crate::analysis::{
     analyze_partial_in_subprocess, AnalysisType, PartialAnalysisResult, ReanalysisProgress,
 };
-use crate::config::{BeatDetectionBackend, BpmConfig, LoudnessConfig};
+use crate::config::{BeatDetectionBackend, BpmConfig, BpmSource, LoudnessConfig};
 use crate::ml_analysis::BeatThisAnalyzer;
 use anyhow::{Context, Result};
 use mesh_core::audio_file::AudioFileReader;
@@ -67,25 +67,39 @@ pub fn reanalyze_track(
         .read_all_stems_to(ESSENTIA_RATE)
         .with_context(|| format!("Failed to read stems from: {:?}", path))?;
 
-    // Create mono mix for analysis (sum all stems)
+    // Create full mix for subprocess (key/LUFS always need all audio content)
     let mono_samples = create_mono_mix(&stems);
 
+    // Create separate BPM mono when drums-only is configured.
+    // When FullMix, bpm_mono is None — subprocess/Beat This! will use mono_samples.
+    let bpm_mono: Option<Vec<f32>> = match bpm_config.source {
+        BpmSource::Drums => {
+            log::info!("reanalyze_track: Using drums-only for BPM analysis");
+            Some(create_drums_mono(&stems))
+        }
+        BpmSource::FullMix => None,
+    };
+
+    // Select BPM audio: drums-only if available, otherwise full mix
+    let bpm_audio = bpm_mono.as_deref().unwrap_or(&mono_samples);
+
     log::info!(
-        "reanalyze_track: Created mono mix with {} samples ({:.1}s at {} Hz, file was {} Hz)",
+        "reanalyze_track: {} samples ({:.1}s at {} Hz, file was {} Hz), BPM source: {}",
         mono_samples.len(),
         mono_samples.len() as f64 / ESSENTIA_RATE as f64,
         ESSENTIA_RATE,
         file_sample_rate,
+        bpm_config.source,
     );
 
     // Run Beat This! BEFORE subprocess when using Advanced backend
-    // (ort is thread-safe; mel spectrogram borrows samples before subprocess takes them)
+    // (ort is thread-safe; mel spectrogram borrows bpm_audio before subprocess takes mono_samples)
     let uses_bpm = matches!(analysis_type, AnalysisType::Bpm | AnalysisType::All);
     let beat_this_result = if uses_bpm {
         if let Some(bt_arc) = beat_this {
             log::info!("reanalyze_track: Running Beat This! for {:?}", path);
             match crate::ml_analysis::preprocessing::compute_mel_spectrogram_beat_this(
-                &mono_samples,
+                bpm_audio,
                 ESSENTIA_RATE as f32,
             ) {
                 Ok(mel) => match bt_arc.lock() {
@@ -124,7 +138,8 @@ pub fn reanalyze_track(
     let mono_len = mono_samples.len();
 
     // Run analysis in subprocess (Essentia for key/LUFS, and BPM if not using Beat This!)
-    let mut result = analyze_partial_in_subprocess(mono_samples, analysis_type, bpm_config.clone())
+    // Full mix goes as main samples; drums-only bpm_mono is passed separately
+    let mut result = analyze_partial_in_subprocess(mono_samples, bpm_mono, analysis_type, bpm_config.clone())
         .with_context(|| format!("Analysis failed for: {:?}", path))?;
 
     // Override BPM/beat_grid with Beat This! results when available
@@ -233,6 +248,18 @@ fn create_mono_mix(stems: &mesh_core::audio_file::StemBuffers) -> Vec<f32> {
 
         // Sum all stems at full level (no attenuation for accurate LUFS)
         mono.push(vocals + drums + bass + other);
+    }
+
+    mono
+}
+
+/// Create a drums-only mono signal from stem buffers for BPM analysis
+fn create_drums_mono(stems: &mesh_core::audio_file::StemBuffers) -> Vec<f32> {
+    let len = stems.len();
+    let mut mono = Vec::with_capacity(len);
+
+    for i in 0..len {
+        mono.push((stems.drums[i].left + stems.drums[i].right) * 0.5);
     }
 
     mono
@@ -474,7 +501,8 @@ fn reanalyze_ml_track(
         path
     );
 
-    // Step 2: Mono mix → mel spectrogram (pure Rust DSP, input to EffNet)
+    // Step 2: Full mix → mel spectrogram (pure Rust DSP, input to EffNet)
+    // Genre/mood classification always needs all audio content
     let mono_mix = create_mono_mix(&stems);
     let mel = crate::ml_analysis::preprocessing::compute_mel_spectrogram(
         &mono_mix,

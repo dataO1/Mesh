@@ -198,17 +198,26 @@ impl Default for AnalysisResult {
 ///
 /// # Returns
 /// Complete analysis result with BPM, key, beat grid, LUFS, and audio features
-pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<AnalysisResult> {
+/// # Arguments
+/// * `samples` - Full mix audio samples at 44100 Hz (for key/LUFS/features)
+/// * `bpm_samples` - Optional separate audio for BPM analysis (drums-only when BpmSource::Drums).
+///   When None, uses `samples` for BPM too.
+/// * `bpm_config` - BPM detection configuration
+pub fn analyze_audio(samples: &[f32], bpm_samples: Option<&[f32]>, bpm_config: &BpmConfig) -> anyhow::Result<AnalysisResult> {
     use crate::features::extract_audio_features;
     use mesh_core::types::SAMPLE_RATE;
 
     /// Essentia algorithms expect 44100 Hz input
     const ESSENTIA_RATE: f64 = 44100.0;
 
+    // BPM uses dedicated audio (drums-only or full mix based on config)
+    let bpm_audio = bpm_samples.unwrap_or(samples);
+
     log::info!(
-        "analyze_audio: received {} samples ({:.1}s at 44100 Hz)",
+        "analyze_audio: received {} samples ({:.1}s at 44100 Hz), bpm_source={}",
         samples.len(),
         samples.len() as f64 / ESSENTIA_RATE,
+        if bpm_samples.is_some() { "separate" } else { "same" }
     );
 
     // BPM detection: skip if using Advanced backend (Beat This! runs outside subprocess)
@@ -217,7 +226,7 @@ pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<
             log::info!("analyze_audio: Skipping Essentia BPM (Advanced backend — Beat This! runs outside subprocess)");
             (120.0, vec![], 0.0_f32)
         } else {
-            let bpm_result = detect_bpm(samples, bpm_config)?;
+            let bpm_result = detect_bpm(bpm_audio, bpm_config)?;
             log::info!(
                 "analyze_audio: Essentia returned {} beat ticks (first: {:.3}s, last: {:.3}s), confidence={:.2}",
                 bpm_result.beat_ticks.len(),
@@ -233,7 +242,7 @@ pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<
     let onset_function = if bpm_config.backend == BeatDetectionBackend::Advanced {
         None
     } else {
-        match detect_onset_function(samples) {
+        match detect_onset_function(bpm_audio) {
             Ok(odf) => {
                 log::info!(
                     "analyze_audio: ODF computed ({} frames at {:.1} fps)",
@@ -249,7 +258,7 @@ pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<
         }
     };
 
-    // Detect musical key
+    // Key and LUFS always use full mix
     let key = detect_key(samples)?;
 
     // Measure integrated LUFS loudness (for automatic gain staging)
@@ -262,7 +271,7 @@ pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<
         }
     };
 
-    // Extract 16-dimensional audio features for similarity search
+    // Extract 16-dimensional audio features for similarity search (full mix)
     let audio_features = match extract_audio_features(samples) {
         Ok(features) => {
             log::info!("analyze_audio: Audio features extracted successfully");
@@ -275,7 +284,7 @@ pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<
     };
 
     // Generate fixed beat grid from detected beats, using actual track duration
-    // Audio samples + ODF are passed for onset-weighted phase anchor computation
+    // BPM audio + ODF are used for onset-weighted phase anchor computation
     // Grid positions are at SAMPLE_RATE (48kHz), so duration must also be in 48kHz
     // Input samples are at Essentia's rate (44100 Hz) — scale up for consistent units
     let duration_at_system_rate =
@@ -283,7 +292,7 @@ pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<
     let beat_grid = generate_beat_grid(
         bpm_result_bpm,
         &beat_ticks,
-        samples,
+        bpm_audio,
         duration_at_system_rate,
         onset_function.as_ref(),
     );
@@ -317,15 +326,14 @@ pub fn analyze_audio(samples: &[f32], bpm_config: &BpmConfig) -> anyhow::Result<
 /// This is more efficient than full analysis when only updating specific metadata.
 ///
 /// # Arguments
-/// * `samples` - Mono audio samples at 44100 Hz (Essentia's expected rate).
-///   Callers must resample to 44100 Hz before calling this function.
+/// * `samples` - Full mix audio samples for key/LUFS analysis (44100 Hz)
+/// * `bpm_samples` - Optional separate audio for BPM analysis (drums-only when BpmSource::Drums).
+///   When None, uses `samples` for BPM too.
 /// * `analysis_type` - Which analysis to perform
-/// * `bpm_config` - BPM detection configuration (only used if type is Bpm or All)
-///
-/// # Returns
-/// Partial result with only the requested fields populated
+/// * `bpm_config` - BPM detection configuration
 pub fn analyze_partial(
     samples: &[f32],
+    bpm_samples: Option<&[f32]>,
     analysis_type: AnalysisType,
     bpm_config: &BpmConfig,
 ) -> anyhow::Result<PartialAnalysisResult> {
@@ -334,11 +342,15 @@ pub fn analyze_partial(
     /// Essentia algorithms expect 44100 Hz input
     const ESSENTIA_RATE: f64 = 44100.0;
 
+    // BPM uses dedicated audio (drums-only or full mix based on config)
+    let bpm_audio = bpm_samples.unwrap_or(samples);
+
     log::info!(
-        "analyze_partial: {} analysis on {} samples ({:.1}s at 44100 Hz)",
+        "analyze_partial: {} analysis on {} samples ({:.1}s at 44100 Hz), bpm_source={}",
         analysis_type.display_name(),
         samples.len(),
-        samples.len() as f64 / ESSENTIA_RATE
+        samples.len() as f64 / ESSENTIA_RATE,
+        if bpm_samples.is_some() { "separate" } else { "same" }
     );
 
     let mut result = PartialAnalysisResult::default();
@@ -348,14 +360,14 @@ pub fn analyze_partial(
             result.lufs = Some(measure_lufs(samples, ESSENTIA_RATE as f32)?);
         }
         AnalysisType::Bpm => {
-            let bpm_result = detect_bpm(samples, bpm_config)?;
-            let onset_function = detect_onset_function(samples).ok();
+            let bpm_result = detect_bpm(bpm_audio, bpm_config)?;
+            let onset_function = detect_onset_function(bpm_audio).ok();
             let duration_at_system_rate =
                 (samples.len() as f64 * SAMPLE_RATE as f64 / ESSENTIA_RATE) as u64;
             let beat_grid = generate_beat_grid(
                 bpm_result.bpm,
                 &bpm_result.beat_ticks,
-                samples,
+                bpm_audio,
                 duration_at_system_rate,
                 onset_function.as_ref(),
             );
@@ -371,20 +383,21 @@ pub fn analyze_partial(
             log::warn!("Similarity analysis requested in subprocess — use ML pipeline instead");
         }
         AnalysisType::All => {
-            // Run all analysis
-            let bpm_result = detect_bpm(samples, bpm_config)?;
-            let onset_function = detect_onset_function(samples).ok();
+            // BPM/beat grid uses bpm_audio (drums-only or full mix based on config)
+            let bpm_result = detect_bpm(bpm_audio, bpm_config)?;
+            let onset_function = detect_onset_function(bpm_audio).ok();
             let duration_at_system_rate =
                 (samples.len() as f64 * SAMPLE_RATE as f64 / ESSENTIA_RATE) as u64;
             let beat_grid = generate_beat_grid(
                 bpm_result.bpm,
                 &bpm_result.beat_ticks,
-                samples,
+                bpm_audio,
                 duration_at_system_rate,
                 onset_function.as_ref(),
             );
             result.bpm = Some(bpm_result.bpm);
             result.beat_grid = Some(beat_grid);
+            // Key and LUFS always use full mix
             result.key = Some(detect_key(samples)?);
             result.lufs = match measure_lufs(samples, ESSENTIA_RATE as f32) {
                 Ok(v) => Some(v),
@@ -412,61 +425,82 @@ pub fn analyze_partial(
 ///
 /// # Returns
 /// Partial result from subprocess
+/// # Arguments
+/// * `samples` - Full mix audio samples (for key/LUFS)
+/// * `bpm_samples` - Optional separate audio for BPM analysis (drums-only when BpmSource::Drums)
+/// * `analysis_type` - Which analysis to perform
+/// * `bpm_config` - BPM detection configuration
 pub fn analyze_partial_in_subprocess(
     samples: Vec<f32>,
+    bpm_samples: Option<Vec<f32>>,
     analysis_type: AnalysisType,
     bpm_config: BpmConfig,
 ) -> anyhow::Result<PartialAnalysisResult> {
     use anyhow::Context;
     use std::io::{Read, Write};
 
-    // Generate unique temp file path
-    let temp_path = std::env::temp_dir().join(format!(
-        "mesh_reanalyze_{}.bin",
-        std::process::id()
-            ^ (std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u32)
-    ));
+    // Generate unique temp file paths
+    let uid = std::process::id()
+        ^ (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u32);
+    let temp_path = std::env::temp_dir().join(format!("mesh_reanalyze_{}.bin", uid));
+    let bpm_temp_path = std::env::temp_dir().join(format!("mesh_reanalyze_{}_bpm.bin", uid));
 
-    // Write samples to temp file (raw f32 bytes)
-    {
-        let mut file = std::fs::File::create(&temp_path)
-            .with_context(|| format!("Failed to create temp file: {:?}", temp_path))?;
+    // Helper to write f32 samples to a temp file
+    let write_samples = |path: &std::path::Path, data: &[f32]| -> anyhow::Result<()> {
+        let mut file = std::fs::File::create(path)
+            .with_context(|| format!("Failed to create temp file: {:?}", path))?;
         let bytes: &[u8] = unsafe {
             std::slice::from_raw_parts(
-                samples.as_ptr() as *const u8,
-                samples.len() * std::mem::size_of::<f32>(),
+                data.as_ptr() as *const u8,
+                data.len() * std::mem::size_of::<f32>(),
             )
         };
         file.write_all(bytes)
             .with_context(|| "Failed to write samples to temp file")?;
-    }
+        Ok(())
+    };
+
+    // Write main samples
+    write_samples(&temp_path, &samples)?;
     let sample_count = samples.len();
+
+    // Write BPM samples if separate
+    let bpm_sample_count = bpm_samples.as_ref().map(|s| s.len());
+    if let Some(ref bpm) = bpm_samples {
+        write_samples(&bpm_temp_path, bpm)?;
+    }
+
     drop(samples); // Free memory before spawning subprocess
+    drop(bpm_samples);
 
     // Spawn subprocess with temp file path and analysis type
     let temp_path_str = temp_path.to_string_lossy().to_string();
+    let bpm_temp_path_str = bpm_temp_path.to_string_lossy().to_string();
     let handle = procspawn::spawn(
-        (temp_path_str.clone(), sample_count, analysis_type, bpm_config),
-        |(path, count, atype, config)| {
-            // Read samples from temp file in subprocess
-            let samples = (|| -> std::result::Result<Vec<f32>, String> {
-                let mut file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+        (temp_path_str.clone(), sample_count, bpm_temp_path_str.clone(), bpm_sample_count, analysis_type, bpm_config),
+        |(path, count, bpm_path, bpm_count, atype, config)| {
+            // Helper to read f32 samples from a temp file
+            let read_samples = |path: &str, count: usize| -> std::result::Result<Vec<f32>, String> {
+                let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
                 let mut bytes = vec![0u8; count * std::mem::size_of::<f32>()];
                 file.read_exact(&mut bytes).map_err(|e| e.to_string())?;
-
-                // Convert bytes back to f32
-                let samples: Vec<f32> = bytes
+                Ok(bytes
                     .chunks_exact(4)
                     .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-                    .collect();
-                Ok(samples)
-            })()?;
+                    .collect())
+            };
+
+            let samples = read_samples(&path, count)?;
+            let bpm_samples = match bpm_count {
+                Some(c) => Some(read_samples(&bpm_path, c)?),
+                None => None,
+            };
 
             // Run partial analysis in isolated process
-            analyze_partial(&samples, atype, &config).map_err(|e| e.to_string())
+            analyze_partial(&samples, bpm_samples.as_deref(), atype, &config).map_err(|e| e.to_string())
         },
     );
 
@@ -476,8 +510,9 @@ pub fn analyze_partial_in_subprocess(
         .map_err(|e| anyhow::anyhow!("Reanalysis subprocess failed: {:?}", e))?
         .map_err(|e| anyhow::anyhow!("Reanalysis error: {}", e));
 
-    // Clean up temp file
+    // Clean up temp files
     let _ = std::fs::remove_file(&temp_path);
+    let _ = std::fs::remove_file(&bpm_temp_path);
 
     result
 }

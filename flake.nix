@@ -178,6 +178,11 @@
           inherit pkgs;
         };
 
+        # BPM accuracy report (export DB + scrape Beatport + comparison)
+        bpmReportApp = import ./nix/apps/bpm-report.nix {
+          inherit pkgs;
+        };
+
         # =======================================================================
         # Development Shell
         # =======================================================================
@@ -246,6 +251,10 @@
           embedded-flash = {
             type = "app";
             program = "${embeddedFlashApp}/bin/embedded-flash";
+          };
+          bpm-report = {
+            type = "app";
+            program = "${bpmReportApp}/bin/bpm-report";
           };
         };
       }

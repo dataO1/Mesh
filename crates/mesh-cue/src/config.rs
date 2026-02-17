@@ -165,12 +165,12 @@ pub type LoudnessConfig = CoreLoudnessConfig;
 #[serde(rename_all = "snake_case")]
 pub enum BeatDetectionBackend {
     /// Essentia RhythmExtractor2013 + onset-weighted phase refinement
-    /// Fast, no model download required, but susceptible to half-tempo on DnB
+    /// Fast, no model download required
+    #[default]
     Simple,
     /// Beat This! ONNX model (CPJKU, ISMIR 2024)
-    /// SOTA accuracy, built-in downbeat detection, no DBN octave errors
+    /// Higher accuracy on some genres, built-in downbeat detection
     /// Downloads ~8 MB model on first use
-    #[default]
     Advanced,
 }
 

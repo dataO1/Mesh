@@ -7,3 +7,5 @@ target
 result
 dist
 patches/
+ground-truth.json
+bpm-comparison.json

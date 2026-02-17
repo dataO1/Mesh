@@ -54,5 +54,10 @@ symlink = "0.1"     # Cross-platform symlink creation
 [target.'cfg(target_os = "linux")'.dependencies]
 jack = { version = "0.11", optional = true }
 
+[[bin]]
+name = "export-analysis"
+path = "src/bin/export_analysis.rs"
+required-features = []
+
 [dev-dependencies]
 tempfile = "3.15"
