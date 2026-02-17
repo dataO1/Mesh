@@ -10,12 +10,6 @@ as much as possible in mesh-core and mesh-widget and only if necessary in the ui
   width. Toggle on/off. Represents one of 8 saved loops stored to file.
 
 ## Collection Browser
-- [ ] Multi selection (for multi drag and drop) and multi deletion. Implement
-  deletion of track from playlist/collection in the mesh-widget via del key.
-  Same for playlists. Always require confirmation via a small popup. Also need
-  a right-click context menu for rename/delete/re-analyse.
-- [ ] Sort by multiple columns: click column headers to sort by BPM, key,
-  artist, etc. Standard library UX.
 - [ ] Tag editing UI: support adding, removing, and editing tags on tracks
   directly from the browser. Needs inline tag editor or context menu with
   autocomplete from existing tags (get_all_tags). Color picker optional.
@@ -27,9 +21,6 @@ as much as possible in mesh-core and mesh-widget and only if necessary in the ui
   (like SB2). Must work with current snapping system: when a user nudges by N
   samples, that offset is preserved across beat jumps, hot cue presses and
   other seek operations so the DJ doesn't need to nudge again.
-- [ ] Light feedback: sometimes flickering. Need to distinguish RGB vs fixed
-  light color and map different actions/states to different colors for RGB
-  controllers.
 
 ## Stem Linking
 - [ ] On-the-fly (unprepared) stem linking: shift + stem button redirects to
@@ -94,15 +85,13 @@ for v3 and beyond.
   "no breakbeat") to narrow results.
 
 ### UI
-- [ ] Visual feedback: show *why* a track was suggested (e.g. small tag like
-  "↑ energy", "same key", "similar timbre") next to each suggestion row.
-- [ ] Per-deck vs global suggestion scope toggle.
+
+###
+
 
 ### Infrastructure
 - [ ] Per-stem audio feature indexing (HNSW per stem type) for stem-specific
   similarity queries.
-- [ ] BPM range constraint: allow the DJ to set a target BPM window
-  (e.g. ±5 from current). Useful when gradually accelerating or decelerating.
 
 ## DJ History & Playlists
 - [ ] Keep DJ history per session, per DJ, persisted to DB while playing.
@@ -116,7 +105,6 @@ for v3 and beyond.
   - [ ] Database backup (without wav files, just DB).
 
 ## Audio Processing
-- [ ] Master limiter/clipper — prevents speaker damage and distortion.
 - [ ] Live peak meter per channel and master channel.
 - [ ] Set recording master output.
 - [ ] Real-time short-term LUFS normalisation per stem (no latency) using
@@ -124,6 +112,30 @@ for v3 and beyond.
   comparable loudness to input stem loudness, since processing can be very
   loud or silent.
 - [ ] Built-in native effects (beat-synced echo, flanger, phaser, gater, etc.).
+
+### Documentation
+- we need much better strucutred and complete documentation:
+  * a readme that is actually useful for people that come to github, see the
+    project for the first time and dont want to get overwhelmed with
+    information. we need a strong overview, which is still faithful with the
+    goal of mesh. the key selling point of mesh is its very easy for beginners
+    to use (due to beat sync, auto lufs gain control etc), but has a ton of features that do not exist on denon, pioneer, other
+    software based mixing software like traktor etc (actually research what all
+    these have, dont make false claims), also explain that due to inherent
+    workflow of autosync and grid analysis electronic music and 4/4 beats are
+    the target music, then a short list of the most important
+    high-level features, which are important for the overall workflow of
+    preparation (cue) and performance(player). check the previous list, but most importantly actually scan the codebase to see if anything is missing or not true. then a roadmap, which lists features that we still need to implement and dont have(again check the todo file, this also should just describe the high level important features) then a how to install, that references the build artifacts. Remove the contributing section, i dont want any contributions. But people are welcome to start issues if they have feature requests or bugs (we need templates for this, research good templates). Keep License and Acknoledgements and extend these if necessary.
+  * linked md docs for various important documents:
+    + the mesh-collection folder, where it is for each os, how to import, how to
+      export to usb stick etc.
+    + midi/hid mapping, already supported devices
+    + effects (especially how to bundle puredata effets, including nn~ external,
+      or generally externals, but nn is special since we need to build this),
+      clap effects etc, where to place them
+    + Embedded (we already have this), including a complete bom for recommended
+      setup, how to wire, how to install sd image(we have the nix cache now,
+      reference this).
 
 # Bugs
 - [ ] Virtual deck toggle buttons need similar logic to action pad modes. On
@@ -237,6 +249,17 @@ Remaining Bottlenecks:
 3. Buffer allocation (~270-500ms) - Could pool/reuse buffers across loads
 
 # Changelog
+
+## v0.8.6
+- feat: slicer editor modal — moved the 16×16 slice editor grid from an
+  inline element in the track editor to a dedicated modal overlay (matching
+  the FX Presets modal pattern). New "Slicer" button in the app header bar
+  opens the modal; only enabled when a track is loaded. Declutters the track
+  editor view by freeing vertical space previously occupied by the grid.
+- fix: tag category sorting — ML-generated tags in the collection browser
+  Tags column are now sorted by semantic category instead of alphabetically.
+  Display order: genre super-category, genre sub-category, genre plain,
+  vocal/instrumental, user-defined tags, mood/experimental.
 
 ## v0.7.0
 - feat: tag system — TrackTag type in mesh-widgets, Tags column with colored

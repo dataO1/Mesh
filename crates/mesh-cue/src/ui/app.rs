@@ -86,6 +86,8 @@ pub struct MeshCueApp {
     pub(crate) export_state: ExportState,
     /// Effects editor modal state
     pub(crate) effects_editor: super::effects_editor::EffectsEditorState,
+    /// Slicer editor modal state
+    pub(crate) slicer_editor: super::slicer_editor::SlicerEditorState,
     /// Effect picker modal state
     pub(crate) effect_picker: super::effect_picker::EffectPickerState,
     /// Plugin GUI manager for CLAP parameter learning
@@ -195,6 +197,7 @@ impl MeshCueApp {
             reanalysis_state: ReanalysisState::default(),
             export_state: ExportState::default(),
             effects_editor: super::effects_editor::EffectsEditorState::new(),
+            slicer_editor: super::slicer_editor::SlicerEditorState::new(),
             effect_picker: super::effect_picker::EffectPickerState::new(),
             plugin_gui_manager: super::plugin_gui::PluginGuiManager::new(),
         };
@@ -335,6 +338,10 @@ impl MeshCueApp {
             Message::ConfirmStemLink(stem_idx) => return self.handle_confirm_stem_link(stem_idx),
             Message::ClearStemLink(stem_idx) => return self.handle_clear_stem_link(stem_idx),
             Message::ToggleStemLinkActive(stem_idx) => return self.handle_toggle_stem_link_active(stem_idx),
+
+            // Slicer Editor Modal
+            Message::OpenSlicerEditor => { self.slicer_editor.open(); }
+            Message::CloseSlicerEditor => { self.slicer_editor.close(); }
 
             // Slice Editor (delegated to handlers/slicer.rs)
             Message::SliceEditorCellToggle { step, slice } => return self.handle_slice_editor_cell_toggle(step, slice),
@@ -659,6 +666,16 @@ impl MeshCueApp {
             } else {
                 base
             }
+        } else if self.slicer_editor.is_open {
+            // Slicer editor modal
+            if let Some(slicer_view) = super::slicer_editor::slicer_editor_view(
+                &self.slicer_editor,
+                self.collection.loaded_track.as_ref(),
+            ) {
+                with_modal_overlay(base, slicer_view, Message::CloseSlicerEditor)
+            } else {
+                base
+            }
         } else if self.context_menu_state.is_open {
             // Context menu uses transparent backdrop and positioned content
             let backdrop: Element<Message> = mouse_area(
@@ -887,6 +904,14 @@ impl MeshCueApp {
             .padding([8, 16])
             .style(button::primary);
 
+        // Slicer button - only enable when a track is loaded
+        let slicer_btn = button(text("Slicer").size(14))
+            .on_press_maybe(
+                self.collection.loaded_track.as_ref().map(|_| Message::OpenSlicerEditor),
+            )
+            .padding([8, 16])
+            .style(button::primary);
+
         // Settings gear icon (⚙ U+2699)
         let settings_btn = button(text("⚙").size(20))
             .on_press(Message::OpenSettings)
@@ -895,6 +920,7 @@ impl MeshCueApp {
         row![
             text("mesh-cue").size(24),
             Space::new().width(Length::Fill),
+            slicer_btn,
             fx_btn,
             settings_btn,
         ]

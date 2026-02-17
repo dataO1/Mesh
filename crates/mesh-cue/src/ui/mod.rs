@@ -16,6 +16,7 @@ pub mod modals;
 pub mod plugin_gui;
 pub mod saved_loop_buttons;
 pub mod settings;
+pub mod slicer_editor;
 pub mod state;
 pub mod transport;
 pub mod utils;

@@ -67,7 +67,11 @@ pub fn get_tracks_for_folder(storage: &dyn PlaylistStorage, folder_id: &NodeId) 
                 row = row.with_lufs(lufs);
             }
             if !info.tags.is_empty() {
-                let tags: Vec<TrackTag> = info.tags.iter().map(|(label, color)| {
+                let mut sorted_tags = info.tags.clone();
+                sorted_tags.sort_by_key(|(_, color)| {
+                    crate::batch_import::tag_sort_priority(color.as_deref())
+                });
+                let tags: Vec<TrackTag> = sorted_tags.iter().map(|(label, color)| {
                     let mut tag = TrackTag::new(label);
                     if let Some(hex) = color {
                         if let Some(c) = parse_hex_color(hex) {

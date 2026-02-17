@@ -107,6 +107,12 @@ pub enum Message {
     /// Toggle between original and linked stem for playback (when linked stem is loaded)
     ToggleStemLinkActive(usize),
 
+    // Slicer Editor Modal
+    /// Open the slicer editor modal
+    OpenSlicerEditor,
+    /// Close the slicer editor modal
+    CloseSlicerEditor,
+
     // Slice Editor
     /// Toggle a cell in the slice editor grid (step 0-15, slice 0-15)
     SliceEditorCellToggle { step: usize, slice: u8 },

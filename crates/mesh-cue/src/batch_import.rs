@@ -1036,6 +1036,22 @@ pub fn auto_tag_from_ml(track_id: i64, ml: &MlAnalysisData, db: &DatabaseService
     }
 }
 
+/// Map a tag's color code to a display priority for category-based sorting.
+///
+/// Priority order: genre super (0) → genre sub (1) → genre plain (2)
+/// → vocal (3) → instrumental (4) → user-defined (5) → mood (6)
+pub fn tag_sort_priority(color: Option<&str>) -> u8 {
+    match color {
+        Some("#2563eb") => 0, // genre super-category (dark blue)
+        Some("#60a5fa") => 1, // genre sub-category (light blue)
+        Some("#3b82f6") => 2, // genre plain (blue)
+        Some("#2d8a4e") => 3, // vocal (green)
+        Some("#c49a2a") => 4, // instrumental (amber)
+        Some("#8b5cf6") => 6, // mood/experimental (purple)
+        _ => 5,              // user-defined / unknown
+    }
+}
+
 /// Process a mixed audio file: separate into stems, then import
 ///
 /// This function:

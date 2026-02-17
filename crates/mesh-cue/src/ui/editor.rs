@@ -5,7 +5,6 @@ use super::waveform::view_combined_waveform;
 use super::{cue_editor, transport};
 use iced::widget::{button, column, container, row, text, text_input, Space};
 use iced::{Alignment, Element, Length};
-use mesh_widgets::slice_editor;
 
 /// Render the track editor
 ///
@@ -36,24 +35,6 @@ pub fn view(state: &LoadedTrackState, stem_link_selection: Option<usize>) -> Ele
     // Hot cue buttons (single row of 8) - directly under waveforms
     let cue_panel = cue_editor::view(state);
 
-    // Slice editor - below hot cues
-    let slice_editor_widget = slice_editor(
-        &state.slice_editor,
-        |step, slice| Message::SliceEditorCellToggle { step, slice },
-        Message::SliceEditorMuteToggle,
-        Message::SliceEditorStemClick,
-        Message::SliceEditorPresetSelect,
-    );
-
-    // Save presets button (next to slice editor)
-    let save_presets_btn = button(text("Save Presets").size(11))
-        .padding([4, 8])
-        .on_press(Message::SaveSlicerPresets);
-
-    let slice_editor_view = row![slice_editor_widget, save_presets_btn]
-        .spacing(8)
-        .align_y(Alignment::End);
-
     let save_section = view_save_section(state);
 
     container(
@@ -62,7 +43,6 @@ pub fn view(state: &LoadedTrackState, stem_link_selection: Option<usize>) -> Ele
             Space::new().height(8.0),  // Explicit spacing after header
             main_row,
             cue_panel,         // Hot cues - directly under waveforms
-            slice_editor_view, // Slice editor - below hot cues
             // Spacer pushes save section to bottom
             Space::new().height(Length::Fill),
             save_section,
