@@ -904,11 +904,9 @@ impl MeshCueApp {
             .padding([8, 16])
             .style(button::primary);
 
-        // Slicer button - only enable when a track is loaded
+        // Slicer button - always clickable; modal handles no-track case
         let slicer_btn = button(text("Slicer").size(14))
-            .on_press_maybe(
-                self.collection.loaded_track.as_ref().map(|_| Message::OpenSlicerEditor),
-            )
+            .on_press(Message::OpenSlicerEditor)
             .padding([8, 16])
             .style(button::primary);
 
