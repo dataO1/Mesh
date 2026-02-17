@@ -26,12 +26,15 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
         // ─────────────────────────────────────────────────
         TogglePlayPause => {
             app.domain.toggle_play(deck_idx);
+            return Task::done(Message::ScheduleSuggestionRefresh);
         }
         CuePressed => {
             app.domain.cue_press(deck_idx);
+            return Task::done(Message::ScheduleSuggestionRefresh);
         }
         CueReleased => {
             app.domain.cue_release(deck_idx);
+            return Task::done(Message::ScheduleSuggestionRefresh);
         }
         SetCue => {
             app.domain.set_cue_point(deck_idx);

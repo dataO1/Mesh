@@ -108,6 +108,12 @@ pub enum Message {
     /// Smart suggestions query completed
     SuggestionsReady(Arc<Result<Vec<SuggestedTrack>, String>>),
 
+    /// A relevant seed condition changed (play/pause, volume threshold, track load).
+    /// Starts a debounced timer — only one pending at a time.
+    ScheduleSuggestionRefresh,
+    /// Debounce timer expired — compute active seeds and retrigger if changed.
+    CheckSuggestionSeeds,
+
     /// Hide the browser overlay (click-away backdrop)
     HideBrowserOverlay,
 }

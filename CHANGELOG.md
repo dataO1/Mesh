@@ -94,8 +94,9 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 - **Active seed filtering** — Smart suggestions now only use decks that are
   loaded, playing, **and** have mixer volume > 0 as seed tracks. Paused or
   muted decks are excluded so suggestions reflect what the audience is actually
-  hearing. Suggestions auto-refresh whenever the active seed set changes (play/
-  pause, volume to/from zero), not just on track load.
+  hearing. Seed changes are detected via event-driven message passing (play/
+  pause, volume threshold crossing, track load) with a 1-second debounced
+  `tokio::time::sleep` timer — zero overhead on the 60Hz tick handler.
 
 ### Fixed
 

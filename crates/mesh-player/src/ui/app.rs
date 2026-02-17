@@ -104,6 +104,8 @@ pub struct MeshApp {
     pub(crate) browser_hide_countdown: u16,
     /// Tick counter for frequency division (feedback throttled to 30Hz)
     pub(crate) tick_count: u32,
+    /// Whether a suggestion seed refresh is already scheduled (debounce guard)
+    pub(crate) suggestion_refresh_pending: bool,
     /// Actual JACK client name (for port reconnection)
     pub(crate) audio_client_name: String,
     /// Real output pipeline latency in samples (from CPAL/JACK timestamps)
@@ -280,6 +282,7 @@ impl MeshApp {
             browser_visible: false,
             browser_hide_countdown: 0,
             tick_count: 0,
+            suggestion_refresh_pending: false,
             audio_client_name,
             output_latency_samples,
             internal_latency_samples,
@@ -413,6 +416,14 @@ impl MeshApp {
 
             Message::SuggestionsReady(result) => {
                 super::handlers::browser::handle_suggestions_ready(self, result)
+            }
+
+            Message::ScheduleSuggestionRefresh => {
+                super::handlers::browser::schedule_suggestion_refresh(self)
+            }
+
+            Message::CheckSuggestionSeeds => {
+                super::handlers::browser::check_suggestion_seeds(self)
             }
 
             Message::HideBrowserOverlay => {

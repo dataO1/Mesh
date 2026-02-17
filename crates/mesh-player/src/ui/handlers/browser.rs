@@ -258,3 +258,39 @@ pub fn trigger_suggestion_query(app: &MeshApp) -> Task<Message> {
         |result| Message::SuggestionsReady(Arc::new(result)),
     )
 }
+
+/// Handle `ScheduleSuggestionRefresh`: start debounce timer if not already pending.
+///
+/// Called from event handlers (play/pause, volume threshold, track load) when the
+/// active seed set may have changed. Only one timer runs at a time — if a refresh
+/// is already pending, additional events are coalesced into the same window.
+pub fn schedule_suggestion_refresh(app: &mut MeshApp) -> Task<Message> {
+    if app.suggestion_refresh_pending || !app.collection_browser.is_suggestions_enabled() {
+        return Task::none();
+    }
+    app.suggestion_refresh_pending = true;
+    Task::perform(
+        async { tokio::time::sleep(std::time::Duration::from_secs(1)).await },
+        |_| Message::CheckSuggestionSeeds,
+    )
+}
+
+/// Handle `CheckSuggestionSeeds`: debounce timer expired, compute seeds and retrigger.
+///
+/// Compares the current active seed set against the last query's seeds.
+/// Only dispatches a new suggestion query if the set actually changed.
+pub fn check_suggestion_seeds(app: &mut MeshApp) -> Task<Message> {
+    app.suggestion_refresh_pending = false;
+
+    if !app.collection_browser.is_suggestions_enabled() {
+        return Task::none();
+    }
+
+    let current_seeds = active_seed_paths(app);
+    if app.collection_browser.update_seed_paths(current_seeds) {
+        app.collection_browser.set_suggestion_loading(true);
+        trigger_suggestion_query(app)
+    } else {
+        Task::none()
+    }
+}

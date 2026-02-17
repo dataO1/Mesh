@@ -12,16 +12,18 @@ use crate::ui::mixer_view::MixerMessage;
 pub fn handle(app: &mut MeshApp, mixer_msg: MixerMessage) -> Task<Message> {
     use MixerMessage::*;
 
+    // Detect volume 0↔nonzero threshold crossing before updating state
+    let seed_changed = matches!(&mixer_msg, SetChannelVolume(deck, volume)
+        if (app.mixer_view.channel_volume(*deck) > 0.0) != (*volume > 0.0));
+
     // Send mixer commands to audio engine via domain
     match &mixer_msg {
         SetChannelVolume(deck, volume) => {
             app.domain.set_volume(*deck, *volume);
         }
         ToggleChannelCue(deck) => {
-            // Read current state and toggle
             let enabled = !app.mixer_view.cue_enabled(*deck);
             app.domain.set_cue_listen(*deck, enabled);
-            // Update waveform canvas to show cue indicator
             app.player_canvas_state.set_cue_enabled(*deck, enabled);
         }
         SetChannelEqHi(deck, value) => {
@@ -49,5 +51,10 @@ pub fn handle(app: &mut MeshApp, mixer_msg: MixerMessage) -> Task<Message> {
 
     // Always update local UI state
     app.mixer_view.handle_local_message(mixer_msg);
-    Task::none()
+
+    if seed_changed {
+        Task::done(Message::ScheduleSuggestionRefresh)
+    } else {
+        Task::none()
+    }
 }

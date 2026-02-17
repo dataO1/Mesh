@@ -9,7 +9,6 @@ use std::sync::Arc;
 use iced::Task;
 
 use crate::ui::app::MeshApp;
-use crate::ui::handlers::browser::trigger_suggestion_query;
 use crate::ui::message::Message;
 use crate::ui::state::{LinkedStemLoadedMsg, StemLinkState, TrackLoadedMsg};
 
@@ -105,11 +104,8 @@ pub fn handle_track_loaded(app: &mut MeshApp, msg: TrackLoadedMsg) -> Task<Messa
 
             app.status = format!("Loaded {} to deck {}", filename, deck_idx + 1);
 
-            // Auto-refresh suggestions if enabled (new seed available)
-            if app.collection_browser.is_suggestions_enabled() {
-                app.collection_browser.set_suggestion_loading(true);
-                return trigger_suggestion_query(app);
-            }
+            // Schedule debounced suggestion refresh (seed set may have changed)
+            return Task::done(Message::ScheduleSuggestionRefresh);
         }
         Err(e) => {
             log::error!("Failed to load track to deck {}: {}", deck_idx + 1, e);
