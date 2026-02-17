@@ -91,6 +91,12 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   energy fader moves toward extremes. Dance and Reach tags show directional
   arrows (▲/▼/━) indicating energy trajectory relative to seed tracks.
 
+- **Active seed filtering** — Smart suggestions now only use decks that are
+  loaded, playing, **and** have mixer volume > 0 as seed tracks. Paused or
+  muted decks are excluded so suggestions reflect what the audience is actually
+  hearing. Suggestions auto-refresh whenever the active seed set changes (play/
+  pause, volume to/from zero), not just on track load.
+
 ### Fixed
 
 - **Tag category sorting** — ML-generated tags in the collection browser Tags

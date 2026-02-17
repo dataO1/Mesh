@@ -395,6 +395,11 @@ impl DeckView {
         self.is_secondary_layer = is_secondary;
     }
 
+    /// Get the current play state
+    pub fn play_state(&self) -> PlayState {
+        self.state
+    }
+
     /// Get the loaded track path (for suggestion queries)
     pub fn loaded_track_path(&self) -> Option<&str> {
         self.loaded_track_path.as_deref()

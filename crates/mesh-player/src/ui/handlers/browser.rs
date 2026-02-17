@@ -10,6 +10,7 @@ use iced::Task;
 use mesh_core::playlist::NodeId;
 use mesh_core::usb::UsbMessage as UsbMsg;
 use mesh_widgets::{parse_hex_color, scroll_to_centered_selection, TrackRow, TrackTag};
+use mesh_core::types::PlayState;
 use crate::suggestions::{query_suggestions, SuggestedTrack};
 use crate::ui::app::MeshApp;
 use crate::ui::collection_browser::CollectionBrowserMessage;
@@ -222,14 +223,27 @@ pub fn handle_suggestions_ready(
     Task::none()
 }
 
+/// Collect the current set of active seed paths (playing + volume > 0).
+///
+/// A deck contributes as a seed only if it has a loaded track, is playing,
+/// and its mixer volume is above zero. This prevents silent or paused decks
+/// from influencing suggestions.
+pub fn active_seed_paths(app: &MeshApp) -> Vec<String> {
+    (0..4)
+        .filter(|&i| {
+            app.deck_views[i].play_state() == PlayState::Playing
+                && app.mixer_view.channel_volume(i) > 0.0
+        })
+        .filter_map(|i| app.deck_views[i].loaded_track_path().map(String::from))
+        .collect()
+}
+
 /// Build and dispatch a background suggestion query from current deck seeds.
 ///
-/// Collects loaded track paths from all decks, then runs the similarity
-/// query on a background thread via `Task::perform()`.
+/// Only decks that are loaded, playing, and have volume > 0 are used as seeds.
+/// This ensures suggestions reflect what the audience is actually hearing.
 pub fn trigger_suggestion_query(app: &MeshApp) -> Task<Message> {
-    let seed_paths: Vec<String> = (0..4)
-        .filter_map(|i| app.deck_views[i].loaded_track_path().map(String::from))
-        .collect();
+    let seed_paths = active_seed_paths(app);
 
     if seed_paths.is_empty() {
         return Task::none();

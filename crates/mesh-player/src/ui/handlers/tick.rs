@@ -12,6 +12,7 @@ use iced::Task;
 
 use mesh_widgets::{PeaksComputeRequest, ZoomedViewMode};
 use crate::ui::app::{MeshApp, convert_midi_event_to_captured, convert_hid_event_to_captured};
+use crate::ui::handlers::browser;
 use crate::ui::message::Message;
 use crate::ui::midi_learn::{LearnPhase, SetupStep};
 
@@ -436,6 +437,15 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
                     });
                 }
             }
+        }
+    }
+
+    // Auto-refresh suggestions when active seeds change (play/pause, volume)
+    if app.collection_browser.is_suggestions_enabled() {
+        let current_seeds = browser::active_seed_paths(app);
+        if app.collection_browser.update_seed_paths(current_seeds) {
+            app.collection_browser.set_suggestion_loading(true);
+            midi_tasks.push(browser::trigger_suggestion_query(app));
         }
     }
 

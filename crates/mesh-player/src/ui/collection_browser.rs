@@ -58,6 +58,8 @@ pub struct CollectionBrowserState {
     suggestion_loading: bool,
     /// Energy direction fader (0.0 = drop, 0.5 = maintain, 1.0 = peak)
     energy_direction: f32,
+    /// Last set of active seed paths used for suggestions (for change detection)
+    last_seed_paths: Vec<String>,
 }
 
 /// Messages from the collection browser
@@ -133,6 +135,7 @@ impl CollectionBrowserState {
             suggestion_paths: HashMap::new(),
             suggestion_loading: false,
             energy_direction: 0.5,
+            last_seed_paths: Vec::new(),
         }
     }
 
@@ -949,6 +952,21 @@ impl CollectionBrowserState {
         self.suggestion_tracks.clear();
         self.suggestion_paths.clear();
         self.suggestion_loading = false;
+    }
+
+    /// Get the last active seed paths (for change detection in tick)
+    pub fn last_seed_paths(&self) -> &[String] {
+        &self.last_seed_paths
+    }
+
+    /// Update the last seed paths, returns true if they changed
+    pub fn update_seed_paths(&mut self, paths: Vec<String>) -> bool {
+        if paths != self.last_seed_paths {
+            self.last_seed_paths = paths;
+            true
+        } else {
+            false
+        }
     }
 }
 
