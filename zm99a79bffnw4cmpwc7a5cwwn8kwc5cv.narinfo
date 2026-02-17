@@ -6,3 +6,5 @@ FileSize: 438548
 NarHash: sha256:196vq2wcvddapr2p69xxv6j8w6s08wn1rqpd0vas4p7xz2iw0r5j
 NarSize: 2128144
 References: zm99a79bffnw4cmpwc7a5cwwn8kwc5cv-libunistring-1.4.1
+Deriver: v495mkjqmqnw48yyqfcf5cfm47kkqy6g-libunistring-1.4.1.drv
+Sig: cache.nixos.org-1:aph5QZxn0aca88WK5KjXrlxXhuSNB+4+DjeVPGg/QIZIpPG8zWXu6y+8kwrrrta3pJpbVcIlNfWtE/uQWCgCAw==

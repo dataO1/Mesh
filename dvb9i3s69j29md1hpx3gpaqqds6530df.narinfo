@@ -6,3 +6,5 @@ FileSize: 54548
 NarHash: sha256:01kfdqh0brbyh9y4abhhfpqgjayn7yl6arlrb89a5by2pawj5fxs
 NarSize: 153696
 References: 
+Deriver: jmkyh103861lrl17pp1vvxn0z7hya0v0-gcc-15.2.0.drv
+Sig: cache.nixos.org-1:SoYfm/4htBh0AeEIynKBVSyqq6jmyChNOILtoDZvNrmGTGVIph7a1LmvnBHe5GNf4KJtVH8IPkUyEqWOEUyZBQ==
