@@ -9,3 +9,4 @@ dist
 patches/
 ground-truth.json
 bpm-comparison.json
+analysis-export.json
