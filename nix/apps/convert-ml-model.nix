@@ -13,8 +13,13 @@ let
     pip
   ]);
 
+  # PyTorch/TF pip wheels link against libstdc++.so.6 at import time
+  libstdcppPath = "${pkgs.stdenv.cc.cc.lib}/lib";
+
   convertScript = pkgs.writeShellScriptBin "convert-ml-model" ''
     set -euo pipefail
+
+    export LD_LIBRARY_PATH="${libstdcppPath}:''${LD_LIBRARY_PATH:-}"
 
     MODEL_TYPE="''${1:-genre_discogs400}"
     OUTPUT_DIR="$(realpath -m "''${2:-./models}")"

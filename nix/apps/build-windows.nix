@@ -76,6 +76,17 @@ pkgs.writeShellApplication {
   text = ''
     set -euo pipefail
 
+    # Auto-detect container runtime (Docker for CI, Podman for NixOS)
+    if command -v podman &>/dev/null; then
+      CTR=podman
+    elif command -v docker &>/dev/null; then
+      CTR=docker
+    else
+      echo "ERROR: Neither podman nor docker found in PATH"
+      echo "On NixOS, enable: virtualisation.podman.enable = true"
+      exit 1
+    fi
+
     echo "╔═══════════════════════════════════════════════════════════════════════╗"
     echo "║             Windows Cross-Compilation (Container)                     ║"
     echo "╚═══════════════════════════════════════════════════════════════════════╝"
@@ -116,9 +127,9 @@ pkgs.writeShellApplication {
     mkdir -p "$OUTPUT_DIR"
     mkdir -p "$TARGET_DIR"
 
-    echo "==> Pulling Rust image (if needed)..."
-    podman pull "$IMAGE" || {
-      echo "Failed to pull image. Is podman running?"
+    echo "==> Pulling Rust image (if needed)... [$CTR]"
+    $CTR pull "$IMAGE" || {
+      echo "Failed to pull image. Is $CTR running?"
       echo "On NixOS, enable: virtualisation.podman.enable = true"
       exit 1
     }
@@ -134,7 +145,7 @@ pkgs.writeShellApplication {
     # - Mount separate target dir (persisted for incremental builds)
     # Note: We build BOTH Windows and Linux essentia inside the container to avoid
     # glibc/gcc compatibility issues with Nix-built libraries
-    podman run --rm \
+    $CTR run --rm \
       -v "$PROJECT_ROOT:/project:ro" \
       -v "$TARGET_DIR:/project/target:rw" \
       -e "CONSOLE_FEATURE=$CONSOLE_FEATURE" \

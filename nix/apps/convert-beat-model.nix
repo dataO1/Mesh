@@ -12,8 +12,15 @@ let
     pip
   ]);
 
+  # PyTorch pip wheels link against libstdc++.so.6 at import time.
+  # In pure nix environments (CI), this isn't on LD_LIBRARY_PATH by default.
+  libstdcppPath = "${pkgs.stdenv.cc.cc.lib}/lib";
+
   convertScript = pkgs.writeShellScriptBin "convert-beat-model" ''
     set -euo pipefail
+
+    # Ensure PyTorch can find libstdc++.so.6 (needed in pure nix environments)
+    export LD_LIBRARY_PATH="${libstdcppPath}:''${LD_LIBRARY_PATH:-}"
 
     VARIANT="''${1:-small}"
     OUTPUT_DIR="$(realpath -m "''${2:-./models}")"

@@ -40,6 +40,17 @@ pkgs.writeShellApplication {
   text = ''
     set -euo pipefail
 
+    # Auto-detect container runtime (Docker for CI, Podman for NixOS)
+    if command -v podman &>/dev/null; then
+      CTR=podman
+    elif command -v docker &>/dev/null; then
+      CTR=docker
+    else
+      echo "ERROR: Neither podman nor docker found in PATH"
+      echo "On NixOS, enable: virtualisation.podman.enable = true"
+      exit 1
+    fi
+
     # GPU acceleration settings (set at Nix build time)
     ENABLE_CUDA="${if enableCuda then "1" else "0"}"
     GPU_SUFFIX="${if enableCuda then "-cuda" else ""}"
@@ -76,9 +87,9 @@ pkgs.writeShellApplication {
     mkdir -p "$OUTPUT_DIR"
     mkdir -p "$TARGET_DIR"
 
-    echo "==> Pulling Ubuntu 22.04 image (if needed)..."
-    podman pull "$IMAGE" || {
-      echo "Failed to pull image. Is podman running?"
+    echo "==> Pulling Ubuntu 22.04 image (if needed)... [$CTR]"
+    $CTR pull "$IMAGE" || {
+      echo "Failed to pull image. Is $CTR running?"
       echo "On NixOS, enable: virtualisation.podman.enable = true"
       exit 1
     }
@@ -89,7 +100,7 @@ pkgs.writeShellApplication {
     echo ""
 
     # Run the build in the container
-    podman run --rm -i \
+    $CTR run --rm -i \
       -v "$PROJECT_ROOT:/project:ro" \
       -v "$TARGET_DIR:/build:rw" \
       -v "$OUTPUT_DIR:/output:rw" \

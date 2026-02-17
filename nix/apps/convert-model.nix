@@ -8,9 +8,14 @@ let
     pip
   ]);
 
+  # PyTorch pip wheels link against libstdc++.so.6 at import time
+  libstdcppPath = "${pkgs.stdenv.cc.cc.lib}/lib";
+
   # The conversion script
   convertScript = pkgs.writeShellScriptBin "convert-model" ''
     set -euo pipefail
+
+    export LD_LIBRARY_PATH="${libstdcppPath}:''${LD_LIBRARY_PATH:-}"
 
     # Parse arguments
     MODEL_TYPE="''${1:-htdemucs}"
