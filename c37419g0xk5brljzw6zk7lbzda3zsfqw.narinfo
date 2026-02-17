@@ -1,0 +1,10 @@
+StorePath: /nix/store/c37419g0xk5brljzw6zk7lbzda3zsfqw-libxau-1.0.12
+URL: nar/1339zxmnvlmy96p0f1sfm8q3ip1fmp0svl2wy5wk9lcr3ns803ng.nar.xz
+Compression: xz
+FileHash: sha256:1339zxmnvlmy96p0f1sfm8q3ip1fmp0svl2wy5wk9lcr3ns803ng
+FileSize: 8132
+NarHash: sha256:1q86fd40djha7857jq0m7az4cc1a1mfnv3wlrkilxjkxhccd5nll
+NarSize: 78280
+References: c37419g0xk5brljzw6zk7lbzda3zsfqw-libxau-1.0.12 wjxpaix0cdpww0bldvzsq2d1bjc6g62b-glibc-2.40-66
+Deriver: nl33fmhws1cm5khf97zhxkv4x74wzijj-libxau-1.0.12.drv
+Sig: cache.nixos.org-1:EBhY8Jc3pYF+34Yqx6U6uZD7FLQ5H4V4vSV5Yo+H36rsXy6rPgaC0YCMC++gQjRHR+qhUih3KH+wxYAoP2TpDA==

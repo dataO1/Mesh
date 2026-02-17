@@ -1,0 +1,10 @@
+StorePath: /nix/store/7b2py1iqgrfdrm4ddwn4dk0h3g7qnypz-alsa-lib-1.2.14
+URL: nar/0zfkdbfv56alph6h41jb8b5msz3qr92y4p8qyjlsn5hv8zfxsslh.nar.xz
+Compression: xz
+FileHash: sha256:0zfkdbfv56alph6h41jb8b5msz3qr92y4p8qyjlsn5hv8zfxsslh
+FileSize: 436264
+NarHash: sha256:0s5qnr67wpzgi7knjl1lkpnaka2mv9x36vzkn0inkgfxjcqsypx9
+NarSize: 1884224
+References: 2vhbl7bc5zfbhnmh7bgj49bx6miaay3a-alsa-ucm-conf-1.2.14 7b2py1iqgrfdrm4ddwn4dk0h3g7qnypz-alsa-lib-1.2.14 c0d2869jm7l7z97n7r7ql2sz0lld16a3-alsa-topology-conf-1.2.5.1 wjxpaix0cdpww0bldvzsq2d1bjc6g62b-glibc-2.40-66
+Deriver: b6chj6wmk7q3dg6661i5l98xgxh1wx7g-alsa-lib-1.2.14.drv
+Sig: cache.nixos.org-1:SCpv+jWKxI/FKG0kL4iq96XzQnY5EglTkFhUMcHK25B46y8ix+yzdvCa+y8bAs2akHExHlOyXZodtI9G9NktBg==

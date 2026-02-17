@@ -1,0 +1,10 @@
+StorePath: /nix/store/lfkbvwrjm90rwhlwrsyi9s05q0fqs4yl-libxext-1.3.6
+URL: nar/031kdnh4ys4ghscspcrsa0d1yg4b2hx8cgwn9qil7cz245216mgp.nar.xz
+Compression: xz
+FileHash: sha256:031kdnh4ys4ghscspcrsa0d1yg4b2hx8cgwn9qil7cz245216mgp
+FileSize: 25552
+NarHash: sha256:0f8xhgm0x6d2wdn4l01z4qpbwkalp4hkz748x64gzg5i569fk4wh
+NarSize: 151320
+References: lfkbvwrjm90rwhlwrsyi9s05q0fqs4yl-libxext-1.3.6 nrkkl7wdkfm269im62yj4pccp315rq1g-libx11-1.8.12 wjxpaix0cdpww0bldvzsq2d1bjc6g62b-glibc-2.40-66
+Deriver: 0n7lafzhcf7pi2i3zhac4gq2w6j7qbh1-libxext-1.3.6.drv
+Sig: cache.nixos.org-1:Nn+ojsp/CJxcWtuCBl1lD3BiEVc2HAvSfXjfG83DkRHWlNd5hVNsy7pZLEH4jdf7Wc/c68BWpzEgcpFFoQDABw==

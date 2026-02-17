@@ -1,0 +1,10 @@
+StorePath: /nix/store/skyjp3clik6nj7j0kfsgay8imsqfwfq9-libxrender-0.9.12
+URL: nar/1nlcnygm9h22h5kjp05rml1zawcppzrmghznw7aj6mxr20h3q1d4.nar.xz
+Compression: xz
+FileHash: sha256:1nlcnygm9h22h5kjp05rml1zawcppzrmghznw7aj6mxr20h3q1d4
+FileSize: 16192
+NarHash: sha256:141rs32m9y7nfsa180v4a0mim3dp5qs34qsdhdsrs6f6dkqq97vj
+NarSize: 76304
+References: nrkkl7wdkfm269im62yj4pccp315rq1g-libx11-1.8.12 skyjp3clik6nj7j0kfsgay8imsqfwfq9-libxrender-0.9.12 wjxpaix0cdpww0bldvzsq2d1bjc6g62b-glibc-2.40-66
+Deriver: 28pzmn2frmxmizc0pp5dqm2aibj5by68-libxrender-0.9.12.drv
+Sig: cache.nixos.org-1:81mRv5CGBdaDGt9TDF30ER46fJoBizFsTKo5atRfSbk9b6H4Makmay50OkpiFViWDOAfJKc5OIKP1rDSWHVrCg==

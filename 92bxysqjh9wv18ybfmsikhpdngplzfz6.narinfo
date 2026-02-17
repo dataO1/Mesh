@@ -1,0 +1,10 @@
+StorePath: /nix/store/92bxysqjh9wv18ybfmsikhpdngplzfz6-systemd-minimal-libs-258.2
+URL: nar/01zpl9fa4r5p3w92s8wjimbnazkx8p5isdb0qfxypinf15bb2kbq.nar.xz
+Compression: xz
+FileHash: sha256:01zpl9fa4r5p3w92s8wjimbnazkx8p5isdb0qfxypinf15bb2kbq
+FileSize: 894368
+NarHash: sha256:070drn4mcydl4fa4fsjiri6baqh2aibszm8612kwvf4wsjbhfxcv
+NarSize: 4137360
+References: 6li9zg9pswfcb3r3585wayv8c71jr13m-libcap-2.77-lib 92bxysqjh9wv18ybfmsikhpdngplzfz6-systemd-minimal-libs-258.2 sf699257mxqa316sg33j3w2wjcwr701z-util-linux-minimal-2.41.2-login wjxpaix0cdpww0bldvzsq2d1bjc6g62b-glibc-2.40-66
+Deriver: fx7n1bsc56752kigzssz24is9jr2cf32-systemd-minimal-libs-258.2.drv
+Sig: cache.nixos.org-1:pM2nwDT/QryS45IsvSTKGiVb5VMB21OkpwrTcNxOG0L8PtrqLzdfcuLrsUrAXlzdzhDYphY+NyOolhdeNG6QDA==

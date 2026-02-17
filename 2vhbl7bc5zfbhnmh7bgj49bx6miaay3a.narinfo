@@ -1,0 +1,10 @@
+StorePath: /nix/store/2vhbl7bc5zfbhnmh7bgj49bx6miaay3a-alsa-ucm-conf-1.2.14
+URL: nar/087cqc7h1kpkqpymv6wyax2fqyfn9wgndnandzn220lcag7qd3iy.nar.xz
+Compression: xz
+FileHash: sha256:087cqc7h1kpkqpymv6wyax2fqyfn9wgndnandzn220lcag7qd3iy
+FileSize: 67784
+NarHash: sha256:10wp312952l85lyc4vzd14cin71kdjaj24ahivxifnni0yamb16h
+NarSize: 762304
+References: 1m2pfwirwdq1cy28v2scw57ry5aji017-kmod-31 843ahdalwl120986c7ilk5q1c47biyap-coreutils-9.8
+Deriver: 97b9gr3d84nh35zai9l6pm5k3di9ws01-alsa-ucm-conf-1.2.14.drv
+Sig: cache.nixos.org-1:62jy/SdP5CDYDVG4me+fIkOto6p0uLL1MheY6MbwXICeHrK0CnO2PZIxlk1tvJJZ+SoxaIiAIMEH1ENBnUBDBg==
