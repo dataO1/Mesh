@@ -74,6 +74,14 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   NSynth Reverb model is wired but deferred (requires TF-to-ONNX conversion;
   see `documents/nsynth-reverb-conversion.md`).
 
+- **Energy-direction key scoring** — The key transition score now blends
+  harmonic compatibility with energy-direction alignment based on the fader
+  position. At center, scoring is pure harmonic compatibility (unchanged). At
+  extremes, energy-appropriate key changes (e.g. semitone up when raising,
+  energy cool when dropping) outscore harmonically safe same-key matches. This
+  works with both Camelot and Krumhansl scoring models — the energy direction
+  always uses Camelot transition classification for directionality.
+
 - **Multi-factor suggestion tags** — Suggestion results now show tags for all
   significant scoring factors, not just the key relationship. Tags include
   Similar (HNSW), BPM, Dance, Reach (approachability), and Contrast, each

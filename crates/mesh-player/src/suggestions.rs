@@ -158,11 +158,9 @@ fn base_score(tt: TransitionType) -> f32 {
     }
 }
 
-/// Compute the energy-dependent modifier for a transition type.
+/// Inherent energy direction of a transition type.
 ///
-/// The modifier scales linearly with `|energy_bias|` and is 0.0 at center.
-/// Positive modifier = bonus (raises score), negative = penalty (lowers score).
-///
+/// Ranges from -0.80 (strong energy drop) to +0.70 (strong energy lift).
 /// Based on research into the emotional impact of key transitions in DJ mixing:
 /// - **Semitone up** (+7 Camelot): Visceral pitch lift, strongest energy surge (+0.70)
 /// - **Energy boost** (+2): Dramatic whole-step lift, "hands in the air" (+0.50)
@@ -170,22 +168,14 @@ fn base_score(tt: TransitionType) -> f32 {
 /// - **Adjacent up** (+1): Gentle forward momentum via dominant modulation (+0.20)
 /// - **Diagonal up**: Complex lift combining energy + mood shift (+0.15)
 /// - **Same key**: Perfectly neutral — maintains current energy level (0.00)
-/// - **Adjacent down** (-1): Gentle relaxation via subdominant ("plagal") (-0.20)
 /// - **Diagonal down**: Complex cooldown with mood shift (-0.15)
+/// - **Adjacent down** (-1): Gentle relaxation via subdominant ("plagal") (-0.20)
 /// - **Mood darken** (major→minor): Emotional darkening, introspective (-0.30)
 /// - **Energy cool** (-2): Strong energy drain, whole-step descent (-0.50)
 /// - **Semitone down** (-7): Dramatic settling/sinking sensation (-0.50)
 /// - **Tritone** (6 steps): Maximum dissonance, chaotic tension (-0.80)
-///
-/// At full fader, these modifiers are strong enough that energy-aligned transitions
-/// (e.g. semitone up at +1.0 bias) can compete with harmonically safer options.
-fn energy_modifier(tt: TransitionType, energy_bias: f32) -> f32 {
-    let abs_bias = energy_bias.abs();
-
-    // Each transition has an inherent energy direction from -1.0 to +1.0.
-    // When the fader aligns with the transition direction, it gets a bonus.
-    // When they oppose, it gets a penalty.
-    let energy_direction = match tt {
+fn transition_energy_direction(tt: TransitionType) -> f32 {
+    match tt {
         TransitionType::SemitoneUp => 0.70,
         TransitionType::EnergyBoost => 0.50,
         TransitionType::MoodLift => 0.30,
@@ -200,14 +190,7 @@ fn energy_modifier(tt: TransitionType, energy_bias: f32) -> f32 {
         TransitionType::EnergyCool => -0.50,
         TransitionType::SemitoneDown => -0.50,
         TransitionType::Tritone => -0.80,
-    };
-
-    // Alignment: positive when fader direction matches transition direction.
-    // At center (bias=0) this is always 0 → no modifier.
-    // At extremes, aligned transitions get up to +0.56 bonus,
-    // opposing transitions get up to -0.64 penalty.
-    let alignment = energy_direction * energy_bias.signum();
-    alignment * abs_bias * 0.80
+    }
 }
 
 // ─── Krumhansl-Kessler Perceptual Key Distance ──────────────────────
@@ -278,15 +261,15 @@ fn krumhansl_base_score(seed: &MusicalKey, candidate: &MusicalKey) -> f32 {
 
 /// Compute the energy-direction-aware key transition score.
 ///
-/// Combines a base compatibility score with an energy-dependent modifier to produce
-/// a single score from 0.0 (worst) to ~1.0 (best).
+/// Blends harmonic compatibility with energy-direction alignment based on
+/// the fader position. At center (bias=0), returns pure harmonic compatibility.
+/// At extremes (|bias|=1), returns pure energy-direction alignment, making
+/// energy-appropriate transitions (e.g. SemitoneUp when raising) outscore
+/// harmonically safe ones (e.g. SameKey).
 ///
-/// At `energy_bias = 0.0` (fader center), this returns the base compatibility score,
-/// producing behavior identical to v1 for safe transitions.
-///
-/// The `model` parameter selects whether base scores come from the hand-tuned
-/// Camelot categories or the Krumhansl correlation matrix. Energy modifiers
-/// always use Camelot-based transition classification for directionality.
+/// The `model` parameter selects whether harmonic scores come from the hand-tuned
+/// Camelot categories or the Krumhansl correlation matrix. Energy direction
+/// always uses Camelot-based transition classification.
 fn key_transition_score(
     seed_key: &MusicalKey,
     cand_key: &MusicalKey,
@@ -298,8 +281,15 @@ fn key_transition_score(
         KeyScoringModel::Camelot => base_score(tt),
         KeyScoringModel::Krumhansl => krumhansl_base_score(seed_key, cand_key),
     };
-    let modifier = energy_modifier(tt, energy_bias);
-    (base + modifier).clamp(0.0, 1.0)
+
+    // Energy-direction score: how well the transition aligns with the fader.
+    // 1.0 = perfectly aligned, 0.0 = fully opposing.
+    let energy_dir = transition_energy_direction(tt);
+    let energy_score = (energy_dir * energy_bias.signum() + 1.0) / 2.0;
+
+    // Blend: linear interpolation from harmonic (center) to energy (extremes).
+    let blend = energy_bias.abs();
+    (base * (1.0 - blend) + energy_score * blend).clamp(0.0, 1.0)
 }
 
 /// Compute the adaptive filter threshold based on energy bias.
@@ -322,8 +312,7 @@ fn adaptive_filter_threshold(energy_bias: f32) -> f32 {
 
 /// Compute a key transition energy direction penalty (0.0 = perfect match, 1.0 = worst).
 ///
-/// Separate from `energy_modifier` (which adjusts the key *compatibility* score),
-/// this provides an independent signal about whether the transition's emotional
+/// Provides an independent signal about whether the transition's emotional
 /// energy direction aligns with the fader. At center (bias=0), returns 0.5
 /// for all transitions (neutral — no direction preference).
 ///
@@ -331,25 +320,9 @@ fn adaptive_filter_threshold(energy_bias: f32) -> f32 {
 /// fader can independently steer results toward energy-raising or energy-lowering
 /// key transitions.
 fn key_direction_penalty(tt: TransitionType, energy_bias: f32) -> f32 {
-    // Each transition has an inherent energy direction (same values as energy_modifier)
-    let energy_direction = match tt {
-        TransitionType::SemitoneUp => 0.70,
-        TransitionType::EnergyBoost => 0.50,
-        TransitionType::MoodLift => 0.30,
-        TransitionType::AdjacentUp => 0.20,
-        TransitionType::DiagonalUp => 0.15,
-        TransitionType::SameKey => 0.0,
-        TransitionType::FarStep(s) => s.signum() as f32 * 0.10,
-        TransitionType::FarCross(s) => s.signum() as f32 * 0.05,
-        TransitionType::DiagonalDown => -0.15,
-        TransitionType::AdjacentDown => -0.20,
-        TransitionType::MoodDarken => -0.30,
-        TransitionType::EnergyCool => -0.50,
-        TransitionType::SemitoneDown => -0.50,
-        TransitionType::Tritone => -0.80,
-    };
+    let energy_dir = transition_energy_direction(tt);
     // Alignment with fader direction: positive = matching, negative = opposing
-    let alignment = energy_direction * energy_bias;
+    let alignment = energy_dir * energy_bias;
     // Map to 0-1 penalty: good alignment → 0, opposing → 1, neutral → 0.5
     0.5 - 0.5 * alignment.clamp(-1.0, 1.0)
 }
@@ -869,25 +842,68 @@ mod tests {
         let center_score = key_transition_score(&am, &ebm, 0.0, CAM);
         let drop_score = key_transition_score(&am, &ebm, -1.0, CAM);
         assert!(drop_score > center_score, "Tritone should improve at drop");
-        assert!(drop_score > 0.10, "Tritone at drop should be viable: {}", drop_score);
+        assert!(drop_score >= 0.10, "Tritone at drop should be viable: {}", drop_score);
     }
 
     #[test]
-    fn test_key_score_mood_lift_boosted_when_raising() {
-        let am = MusicalKey::parse("Am").unwrap(); // 8A
-        let c = MusicalKey::parse("C").unwrap();   // 8B
-        let center_score = key_transition_score(&am, &c, 0.0, CAM);
-        let peak_score = key_transition_score(&am, &c, 1.0, CAM);
-        assert!(peak_score > center_score, "Mood lift should improve when raising energy");
+    fn test_key_score_extreme_prefers_energy_over_harmony() {
+        let am = MusicalKey::parse("Am").unwrap();
+        let em = MusicalKey::parse("Em").unwrap();  // AdjacentUp (+1)
+        let bm = MusicalKey::parse("Bm").unwrap();  // EnergyBoost (+2)
+        let bbm = MusicalKey::parse("Bbm").unwrap(); // SemitoneUp (+7)
+
+        // At full raise, energy-aligned transitions should outscore SameKey
+        let same = key_transition_score(&am, &am, 1.0, CAM);
+        let adj_up = key_transition_score(&am, &em, 1.0, CAM);
+        let boost = key_transition_score(&am, &bm, 1.0, CAM);
+        let semi_up = key_transition_score(&am, &bbm, 1.0, CAM);
+
+        assert!(semi_up > same, "SemitoneUp should outscore SameKey at +1.0: {} vs {}", semi_up, same);
+        assert!(boost > same, "EnergyBoost should outscore SameKey at +1.0: {} vs {}", boost, same);
+        assert!(adj_up > same, "AdjacentUp should outscore SameKey at +1.0: {} vs {}", adj_up, same);
+        // Ordering: strongest energy lift should score highest
+        assert!(semi_up > boost, "SemitoneUp > EnergyBoost: {} vs {}", semi_up, boost);
+        assert!(boost > adj_up, "EnergyBoost > AdjacentUp: {} vs {}", boost, adj_up);
     }
 
     #[test]
-    fn test_key_score_mood_darken_boosted_when_dropping() {
+    fn test_key_score_extreme_drop_prefers_energy_lowering() {
+        let am = MusicalKey::parse("Am").unwrap();
+        let gm = MusicalKey::parse("Gm").unwrap();  // EnergyCool (-2)
+        let dm = MusicalKey::parse("Dm").unwrap();  // AdjacentDown (-1)
+
+        // At full drop, energy-lowering transitions should outscore SameKey
+        let same = key_transition_score(&am, &am, -1.0, CAM);
+        let cool = key_transition_score(&am, &gm, -1.0, CAM);
+        let adj_down = key_transition_score(&am, &dm, -1.0, CAM);
+
+        assert!(cool > same, "EnergyCool should outscore SameKey at -1.0: {} vs {}", cool, same);
+        assert!(adj_down > same, "AdjacentDown should outscore SameKey at -1.0: {} vs {}", adj_down, same);
+    }
+
+    #[test]
+    fn test_key_score_mood_lift_direction_matters() {
+        let am = MusicalKey::parse("Am").unwrap(); // 8A
+        let c = MusicalKey::parse("C").unwrap();   // 8B
+        // MoodLift is a gentle energy lift — at moderate fader, raising should
+        // score higher than dropping (direction matters)
+        let raise = key_transition_score(&am, &c, 0.5, CAM);
+        let drop = key_transition_score(&am, &c, -0.5, CAM);
+        assert!(raise > drop, "Mood lift should score better when raising than dropping: {} vs {}", raise, drop);
+        // At extreme, more dramatic transitions dominate, but mood lift still viable
+        let extreme = key_transition_score(&am, &c, 1.0, CAM);
+        assert!(extreme > 0.50, "Mood lift should still be viable at extreme: {}", extreme);
+    }
+
+    #[test]
+    fn test_key_score_mood_darken_direction_matters() {
         let c = MusicalKey::parse("C").unwrap();   // 8B
         let am = MusicalKey::parse("Am").unwrap(); // 8A
-        let center_score = key_transition_score(&c, &am, 0.0, CAM);
-        let drop_score = key_transition_score(&c, &am, -1.0, CAM);
-        assert!(drop_score > center_score, "Mood darken should improve when dropping energy");
+        let drop = key_transition_score(&c, &am, -0.5, CAM);
+        let raise = key_transition_score(&c, &am, 0.5, CAM);
+        assert!(drop > raise, "Mood darken should score better when dropping than raising: {} vs {}", drop, raise);
+        let extreme = key_transition_score(&c, &am, -1.0, CAM);
+        assert!(extreme > 0.50, "Mood darken should still be viable at extreme: {}", extreme);
     }
 
     // ─── Adaptive Filter Threshold ──────────────────────────────────
