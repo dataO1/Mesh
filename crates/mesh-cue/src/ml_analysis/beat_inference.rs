@@ -37,6 +37,10 @@ const BEAT_THRESHOLD: f32 = 0.5;
 /// Minimum inter-beat distance in frames (corresponds to ~250 BPM at 50 fps)
 const MIN_BEAT_DISTANCE: usize = 12;
 
+/// Max-pool kernel size for peak picking (matches official Beat This! postprocessor).
+/// 7 frames = ±3 frames = ±60ms at 50 fps.
+const PEAK_POOL_KERNEL: usize = 7;
+
 /// Beat This! inference engine
 ///
 /// Holds a pre-loaded ONNX session for beat + downbeat activation prediction.
@@ -293,45 +297,87 @@ fn cosine_blend_weight(frame_in_chunk: usize, chunk_len: usize, overlap: usize) 
     1.0
 }
 
-/// Pick peaks from an activation curve.
+/// Pick peaks from an activation curve using max-pool, matching Beat This!
+/// "minimal" postprocessor.
 ///
-/// Finds local maxima above the threshold with minimum inter-peak distance.
-/// This is the Beat This! post-processing — no DBN, just simple peak picking.
+/// Algorithm (from `beat_this/model/postprocessor.py`):
+/// 1. 1D max-pool with kernel=7 (±3 frames = ±60ms) to find local maxima
+/// 2. Keep frames that equal their max-pooled value AND exceed threshold
+/// 3. Deduplicate adjacent peaks by keeping the highest
+/// 4. Enforce minimum inter-peak distance
 fn pick_peaks(activations: &[f32], threshold: f32, min_distance: usize) -> Vec<usize> {
     let n = activations.len();
     if n < 3 {
         return Vec::new();
     }
 
-    let mut peaks = Vec::new();
+    let half_k = PEAK_POOL_KERNEL / 2; // 3 for kernel=7
 
-    for i in 1..n - 1 {
-        // Must be above threshold
+    // Step 1: Max-pool with kernel=PEAK_POOL_KERNEL, stride=1, padding=half_k
+    // A frame is a peak if it equals the max in its ±half_k neighborhood
+    let mut peaks = Vec::new();
+    for i in 0..n {
         if activations[i] < threshold {
             continue;
         }
 
-        // Must be a local maximum
-        if activations[i] <= activations[i - 1] || activations[i] <= activations[i + 1] {
-            continue;
-        }
-
-        // Must be far enough from the last picked peak
-        if let Some(&last) = peaks.last() {
-            if i - last < min_distance {
-                // Keep the higher peak
-                if activations[i] > activations[last] {
-                    peaks.pop();
-                } else {
-                    continue;
-                }
+        // Check if this frame is the max within ±half_k
+        let start = i.saturating_sub(half_k);
+        let end = (i + half_k + 1).min(n);
+        let mut is_max = true;
+        for j in start..end {
+            if activations[j] > activations[i] {
+                is_max = false;
+                break;
             }
         }
 
-        peaks.push(i);
+        if is_max {
+            peaks.push(i);
+        }
     }
 
-    peaks
+    // Step 2: Deduplicate adjacent peaks (keep highest in each cluster)
+    // Adjacent = within 1 frame of each other
+    if peaks.len() < 2 {
+        return peaks;
+    }
+
+    let mut deduped = Vec::with_capacity(peaks.len());
+    let mut cluster_start = 0;
+    for i in 1..=peaks.len() {
+        let end_cluster = i == peaks.len() || peaks[i] - peaks[i - 1] > 1;
+        if end_cluster {
+            // Find the highest peak in this cluster
+            let best = (cluster_start..i)
+                .max_by(|&a, &b| {
+                    activations[peaks[a]]
+                        .partial_cmp(&activations[peaks[b]])
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .unwrap();
+            deduped.push(peaks[best]);
+            cluster_start = i;
+        }
+    }
+
+    // Step 3: Enforce minimum inter-peak distance
+    let mut final_peaks = Vec::with_capacity(deduped.len());
+    for &peak in &deduped {
+        if let Some(&last) = final_peaks.last() {
+            if peak - last < min_distance {
+                // Keep the higher peak
+                if activations[peak] > activations[last] {
+                    final_peaks.pop();
+                    final_peaks.push(peak);
+                }
+                continue;
+            }
+        }
+        final_peaks.push(peak);
+    }
+
+    final_peaks
 }
 
 /// Compute BPM from detected beat positions using median inter-beat interval.
@@ -371,17 +417,33 @@ mod tests {
 
     #[test]
     fn test_pick_peaks_basic() {
-        let activations = vec![0.0, 0.2, 0.8, 0.3, 0.1, 0.2, 0.9, 0.4, 0.0];
+        // Peaks well-separated (>PEAK_POOL_KERNEL apart)
+        let mut activations = vec![0.0; 20];
+        activations[3] = 0.8;
+        activations[14] = 0.9;
         let peaks = pick_peaks(&activations, 0.3, 1);
-        assert_eq!(peaks, vec![2, 6]);
+        assert_eq!(peaks, vec![3, 14]);
+    }
+
+    #[test]
+    fn test_pick_peaks_max_pool_suppression() {
+        // Two peaks within the max-pool window (kernel=7, ±3 frames)
+        // Only the higher one should survive
+        let mut activations = vec![0.0; 15];
+        activations[5] = 0.6;
+        activations[7] = 0.8; // within 3 frames of index 5
+        let peaks = pick_peaks(&activations, 0.3, 1);
+        assert_eq!(peaks, vec![7]); // Only the higher peak survives max-pool
     }
 
     #[test]
     fn test_pick_peaks_min_distance() {
-        // Two peaks too close together — should keep the higher one
-        let activations = vec![0.0, 0.5, 0.3, 0.6, 0.0];
-        let peaks = pick_peaks(&activations, 0.3, 3);
-        assert_eq!(peaks, vec![3]); // Keep the higher peak
+        // Two peaks far enough from max-pool but within min_distance
+        let mut activations = vec![0.0; 30];
+        activations[5] = 0.7;
+        activations[15] = 0.9; // >7 frames apart (passes max-pool) but within min_distance=12
+        let peaks = pick_peaks(&activations, 0.3, 12);
+        assert_eq!(peaks, vec![15]); // Keep the higher peak
     }
 
     #[test]

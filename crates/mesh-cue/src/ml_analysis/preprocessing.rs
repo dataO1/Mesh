@@ -375,8 +375,12 @@ fn create_mel_filterbank_slaney(
     filterbank
 }
 
-/// Compute magnitude spectrum (|X(k)| / n_fft) using realfft — matches
+/// Compute magnitude spectrum (|X(k)| / sqrt(n_fft)) using realfft — matches
 /// torchaudio with power=1 and normalized="frame_length".
+///
+/// IMPORTANT: torchaudio's `normalized="frame_length"` divides by sqrt(n_fft),
+/// NOT by n_fft. The parameter *name* says "frame_length" but the *math* is
+/// division by sqrt(frame_length). See torchaudio.functional.spectrogram docs.
 fn compute_magnitude_spectrum_normalized(
     frame: &[f32],
     fft: &dyn realfft::RealToComplex<f32>,
@@ -384,17 +388,17 @@ fn compute_magnitude_spectrum_normalized(
 ) -> Vec<f32> {
     let n = frame.len();
     let n_bins = n / 2 + 1;
-    let n_f32 = n as f32;
+    let norm = (n as f32).sqrt(); // sqrt(n_fft), NOT n_fft
 
     let mut input = frame.to_vec();
     let mut output = vec![realfft::num_complex::Complex::new(0.0f32, 0.0f32); n_bins];
 
     fft.process_with_scratch(&mut input, &mut output, scratch).ok();
 
-    // Magnitude (power=1) normalized by frame_length
+    // Magnitude (power=1) normalized by sqrt(frame_length)
     output
         .iter()
-        .map(|c| (c.re * c.re + c.im * c.im).sqrt() / n_f32)
+        .map(|c| (c.re * c.re + c.im * c.im).sqrt() / norm)
         .collect()
 }
 
