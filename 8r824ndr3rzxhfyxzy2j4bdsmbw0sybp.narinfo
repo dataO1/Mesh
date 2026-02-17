@@ -6,4 +6,3 @@ FileSize: 10361536
 NarHash: sha256:1jsyhgzx1wwm9m9mddcyq0nyldb5rqj54ni2kvzik7bfs3anzf08
 NarSize: 41720744
 References: 7b2py1iqgrfdrm4ddwn4dk0h3g7qnypz-alsa-lib-1.2.14 92bxysqjh9wv18ybfmsikhpdngplzfz6-systemd-minimal-libs-258.2 9nia1rznvhxjpdgiqgfh3g1czvij6y7i-libxi-1.8.2 h4qhxh7vwmxgy6w05g0xsf6r1bfi9vga-gcc-15.2.0-lib nrkkl7wdkfm269im62yj4pccp315rq1g-libx11-1.8.12 sr92cpqmj2xiqak0hlwsi7g9m0c99rlz-libxcursor-1.2.3 wjxpaix0cdpww0bldvzsq2d1bjc6g62b-glibc-2.40-66
-Deriver: 6nagwj463l5sf6903kfrcpz96zr802wp-mesh-player-0.8.3.drv
