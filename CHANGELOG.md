@@ -74,6 +74,15 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   NSynth Reverb model is wired but deferred (requires TF-to-ONNX conversion;
   see `documents/nsynth-reverb-conversion.md`).
 
+- **Multi-factor suggestion tags** — Suggestion results now show tags for all
+  significant scoring factors, not just the key relationship. Tags include
+  Similar (HNSW), BPM, Dance, Reach (approachability), and Contrast, each
+  color-coded green/amber/red by penalty quality. Tags are sorted by relevance
+  (weight × deviation from neutral) so the most impactful factors appear first.
+  At center only Key/Similar/BPM tags appear; ML-derived tags activate as the
+  energy fader moves toward extremes. Dance and Reach tags show directional
+  arrows (▲/▼/━) indicating energy trajectory relative to seed tracks.
+
 ### Fixed
 
 - **Tag category sorting** — ML-generated tags in the collection browser Tags

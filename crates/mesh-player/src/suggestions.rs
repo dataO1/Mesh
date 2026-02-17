@@ -403,20 +403,43 @@ fn transition_type_label(tt: TransitionType) -> &'static str {
     }
 }
 
-/// Generate human-readable reason tags from the scoring breakdown.
+/// Color a tag by penalty quality: low penalty = green (good), high = red (bad).
+fn penalty_color(penalty: f32) -> &'static str {
+    if penalty <= 0.3 { "#2d8a4e" }       // green = strong match
+    else if penalty <= 0.6 { "#c49a2a" }   // amber = moderate
+    else { "#a63d40" }                      // red = weak/opposing
+}
+
+/// Generate human-readable reason tags from the full scoring breakdown.
 ///
-/// Produces a single key-relationship tag with a directional arrow indicating
-/// the Camelot wheel movement direction:
-/// - **▲** = transition raises musical tension (clockwise on Camelot wheel)
-/// - **▼** = transition cools musical tension (counter-clockwise)
-/// - **━** = same key (no movement)
+/// Produces tags for all significant scoring factors, sorted by relevance.
+/// The key-relationship tag always leads, followed by other factors ordered
+/// by their impact on the final score (weight × deviation from neutral).
+///
+/// Directional arrows on key/dance/approach tags indicate transition direction:
+/// - **▲** = raises energy/tension
+/// - **▼** = lowers energy/tension
+/// - **━** = neutral/same
+#[allow(clippy::too_many_arguments)]
 fn generate_reason_tags(
     transition_type: TransitionType,
     key_score: f32,
+    hnsw_dist: f32,
+    bpm_penalty: f32,
+    dance_penalty: f32,
+    approach_penalty: f32,
+    contrast_pen: f32,
+    w_hnsw: f32,
+    w_bpm: f32,
+    w_dance: f32,
+    w_approach: f32,
+    w_contrast: f32,
 ) -> Vec<(String, Option<String>)> {
-    // Key direction: derived from the transition type itself
+    let mut tags: Vec<(String, Option<String>, f32)> = Vec::with_capacity(6);
+
+    // --- Key tag (always included, always first) ---
     let key_dir = match transition_type {
-        TransitionType::SameKey => "\u{2501}",  // ━ (heavy horizontal bar)
+        TransitionType::SameKey => "\u{2501}",  // ━
         TransitionType::AdjacentUp | TransitionType::EnergyBoost
         | TransitionType::MoodLift | TransitionType::DiagonalUp
         | TransitionType::SemitoneUp => "\u{25B2}",  // ▲
@@ -427,13 +450,50 @@ fn generate_reason_tags(
         TransitionType::FarStep(s) => if s > 0 { "\u{25B2}" } else { "\u{25BC}" },
         TransitionType::FarCross(s) => if s > 0 { "\u{25B2}" } else { "\u{25BC}" },
     };
-
     let key_label = transition_type_label(transition_type);
-    let key_color = if key_score >= 0.7 { "#2d8a4e" }      // green = great
-                    else if key_score >= 0.4 { "#c49a2a" }  // amber = ok
-                    else { "#a63d40" };                       // red = risky
+    let key_color = if key_score >= 0.7 { "#2d8a4e" }
+                    else if key_score >= 0.4 { "#c49a2a" }
+                    else { "#a63d40" };
+    // Key gets f32::MAX relevance so it sorts first
+    tags.push((format!("{} {}", key_dir, key_label), Some(key_color.to_string()), f32::MAX));
 
-    vec![(format!("{} {}", key_dir, key_label), Some(key_color.to_string()))]
+    // --- Other factor tags (included when weight is significant) ---
+    // Impact = weight × |penalty - 0.5| — measures how much this factor
+    // pushed the score away from a neutral contribution.
+    let min_weight = 0.03;
+
+    if w_hnsw >= min_weight {
+        let impact = w_hnsw * (hnsw_dist - 0.5).abs();
+        tags.push(("Similar".to_string(), Some(penalty_color(hnsw_dist).to_string()), impact));
+    }
+
+    if w_bpm >= min_weight {
+        let impact = w_bpm * (bpm_penalty - 0.5).abs();
+        tags.push(("BPM".to_string(), Some(penalty_color(bpm_penalty).to_string()), impact));
+    }
+
+    if w_dance >= min_weight {
+        let arrow = if dance_penalty < 0.4 { "▲" } else if dance_penalty > 0.6 { "▼" } else { "━" };
+        let impact = w_dance * (dance_penalty - 0.5).abs();
+        tags.push((format!("{} Dance", arrow), Some(penalty_color(dance_penalty).to_string()), impact));
+    }
+
+    if w_approach >= min_weight {
+        let arrow = if approach_penalty < 0.4 { "▲" } else if approach_penalty > 0.6 { "▼" } else { "━" };
+        let impact = w_approach * (approach_penalty - 0.5).abs();
+        tags.push((format!("{} Reach", arrow), Some(penalty_color(approach_penalty).to_string()), impact));
+    }
+
+    if w_contrast >= min_weight {
+        let impact = w_contrast * (contrast_pen - 0.5).abs();
+        tags.push(("Contrast".to_string(), Some(penalty_color(contrast_pen).to_string()), impact));
+    }
+
+    // Sort non-key tags by impact descending (key stays first via f32::MAX)
+    tags.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Strip the impact score from the output
+    tags.into_iter().map(|(label, color, _)| (label, color)).collect()
 }
 
 /// Query the database for track suggestions based on loaded deck seeds.
@@ -634,7 +694,12 @@ pub fn query_suggestions(
                 + w_approach * approach_penalty
                 + w_contrast * contrast_pen;
 
-            let reason_tags = generate_reason_tags(best_tt, best_key_score);
+            let reason_tags = generate_reason_tags(
+                best_tt, best_key_score,
+                hnsw_dist, bpm_penalty,
+                dance_penalty, approach_penalty, contrast_pen,
+                w_hnsw, w_bpm, w_dance, w_approach, w_contrast,
+            );
 
             Some(SuggestedTrack { track, score, reason_tags })
         })
