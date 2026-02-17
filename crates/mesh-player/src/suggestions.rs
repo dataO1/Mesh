@@ -459,7 +459,7 @@ fn generate_reason_tags(
 
     if w_contrast >= min_weight {
         let impact = w_contrast * (contrast_pen - 0.5).abs();
-        tags.push(("Contrast".to_string(), Some(penalty_color(contrast_pen).to_string()), impact));
+        tags.push(("Timbre".to_string(), Some(penalty_color(contrast_pen).to_string()), impact));
     }
 
     // Sort non-key tags by impact descending (key stays first via f32::MAX)
