@@ -48,7 +48,7 @@ in pkgs.rustPlatform.buildRustPackage {
 
   # Cargo.lock hash - update this when deps change
   # Run: nix build .#mesh-build 2>&1 | grep "got:" to get new hash
-  cargoHash = "sha256-Au58ZpzGMZ/LsaO009qofHGaEnYnP5sTs5eEb8RRrbM=";
+  cargoHash = "sha256-iRi9WmJt7olZcJ/cn/yl9Mk5eUIxKy/vUjZIHohIzKg=";
 
   nativeBuildInputs = with pkgs; [
     pkg-config
