@@ -1,9 +1,10 @@
-//! Mel spectrogram preprocessing for EffNet models
+//! Mel spectrogram preprocessing for EffNet and Beat This! models
 //!
-//! Computes 96-band mel spectrograms using Essentia's MelBands algorithm.
-//! This runs inside the procspawn subprocess alongside existing BPM/key analysis
-//! because Essentia's C++ FFI is not thread-safe.
+//! Computes mel spectrograms using realfft for O(N log N) STFT.
+//! - EffNet: 96-band, 16kHz, for genre/mood classification
+//! - Beat This!: 128-band Slaney, 22050 Hz, for beat detection
 
+use realfft::RealFftPlanner;
 use serde::{Serialize, Deserialize};
 
 /// Mel spectrogram result to be passed from subprocess to worker thread.
@@ -59,11 +60,15 @@ pub fn compute_mel_spectrogram(samples: &[f32], sample_rate: f32) -> Result<MelS
     // Step 2: Compute mel filterbank
     let mel_filterbank = create_mel_filterbank(N_BANDS, FRAME_SIZE, TARGET_SR as f32);
 
-    // Step 3: Frame-by-frame STFT + mel bands
+    // Step 3: Frame-by-frame STFT + mel bands (using realfft for O(N log N))
     let n_frames = (resampled.len().saturating_sub(FRAME_SIZE)) / HOP_SIZE + 1;
     let mut frames = Vec::with_capacity(n_frames);
 
     let window = hann_window(FRAME_SIZE);
+
+    let mut planner = RealFftPlanner::<f32>::new();
+    let fft = planner.plan_fft_forward(FRAME_SIZE);
+    let mut scratch = fft.make_scratch_vec();
 
     for frame_idx in 0..n_frames {
         let start = frame_idx * HOP_SIZE;
@@ -75,8 +80,8 @@ pub fn compute_mel_spectrogram(samples: &[f32], sample_rate: f32) -> Result<MelS
             windowed[i] = resampled[start + i] * window[i];
         }
 
-        // Compute power spectrum via DFT (real input)
-        let spectrum = compute_power_spectrum(&windowed);
+        // Compute power spectrum via FFT
+        let spectrum = compute_power_spectrum(&windowed, fft.as_ref(), &mut scratch);
 
         // Apply mel filterbank
         let mut mel_bands = vec![0.0f32; N_BANDS];
@@ -99,7 +104,76 @@ pub fn compute_mel_spectrogram(samples: &[f32], sample_rate: f32) -> Result<MelS
     })
 }
 
-/// Simple linear interpolation resampling
+/// Resample with anti-aliasing low-pass filter.
+///
+/// For downsampling (from_sr > to_sr), applies a windowed-sinc low-pass filter
+/// at the new Nyquist frequency before decimation. This prevents aliasing
+/// artifacts that corrupt the mel spectrogram.
+///
+/// For upsampling or small ratio changes, uses linear interpolation (sufficient
+/// since we're only adding information, not removing it).
+fn resample_with_anti_alias(samples: &[f32], from_sr: f32, to_sr: f32) -> Vec<f32> {
+    let ratio = from_sr / to_sr;
+
+    if ratio <= 1.01 {
+        // Upsampling or same rate — linear interpolation is fine
+        return resample_linear(samples, from_sr, to_sr);
+    }
+
+    // Downsampling: apply anti-aliasing low-pass filter first
+    // Cutoff at 95% of new Nyquist to avoid transition band artifacts
+    let cutoff_freq = to_sr * 0.475 / from_sr; // Normalized cutoff (0..0.5)
+
+    // Windowed-sinc FIR filter (Kaiser-like via Hann window)
+    // Filter length scales with downsampling ratio for adequate stopband rejection
+    let filter_len = ((32.0 * ratio) as usize) | 1; // Ensure odd length
+    let half = filter_len / 2;
+
+    let mut filter: Vec<f32> = (0..filter_len)
+        .map(|i| {
+            let n = i as f32 - half as f32;
+            // Sinc function
+            let sinc = if n.abs() < 1e-6 {
+                2.0 * cutoff_freq
+            } else {
+                (2.0 * std::f32::consts::PI * cutoff_freq * n).sin()
+                    / (std::f32::consts::PI * n)
+            };
+            // Hann window
+            let w = 0.5
+                * (1.0
+                    - (2.0 * std::f32::consts::PI * i as f32 / (filter_len - 1) as f32).cos());
+            sinc * w
+        })
+        .collect();
+
+    // Normalize filter to unity gain
+    let sum: f32 = filter.iter().sum();
+    if sum.abs() > 1e-10 {
+        for v in &mut filter {
+            *v /= sum;
+        }
+    }
+
+    // Apply FIR filter (convolution)
+    let filtered: Vec<f32> = (0..samples.len())
+        .map(|i| {
+            let mut acc = 0.0f32;
+            for (j, &coeff) in filter.iter().enumerate() {
+                let idx = i as isize + j as isize - half as isize;
+                if idx >= 0 && (idx as usize) < samples.len() {
+                    acc += samples[idx as usize] * coeff;
+                }
+            }
+            acc
+        })
+        .collect();
+
+    // Decimate: pick every ratio-th sample with linear interpolation
+    resample_linear(&filtered, from_sr, to_sr)
+}
+
+/// Simple linear interpolation resampling (no anti-aliasing)
 fn resample_linear(samples: &[f32], from_sr: f32, to_sr: f32) -> Vec<f32> {
     let ratio = from_sr / to_sr;
     let output_len = (samples.len() as f32 / ratio) as usize;
@@ -133,27 +207,23 @@ fn hann_window(size: usize) -> Vec<f32> {
         .collect()
 }
 
-/// Compute power spectrum from windowed frame using real DFT
+/// Compute power spectrum from windowed frame using realfft (O(N log N)).
 ///
-/// Returns N/2+1 power spectrum bins.
-fn compute_power_spectrum(frame: &[f32]) -> Vec<f32> {
+/// Returns N/2+1 power spectrum bins (|X[k]|² / N).
+fn compute_power_spectrum(frame: &[f32], fft: &dyn realfft::RealToComplex<f32>, scratch: &mut [realfft::num_complex::Complex<f32>]) -> Vec<f32> {
     let n = frame.len();
     let n_bins = n / 2 + 1;
-    let mut spectrum = vec![0.0f32; n_bins];
+    let n_f32 = n as f32;
 
-    // Direct DFT computation (O(N^2) but N=512 is small enough)
-    for k in 0..n_bins {
-        let mut real = 0.0f32;
-        let mut imag = 0.0f32;
-        for (i, &sample) in frame.iter().enumerate() {
-            let angle = -2.0 * std::f32::consts::PI * k as f32 * i as f32 / n as f32;
-            real += sample * angle.cos();
-            imag += sample * angle.sin();
-        }
-        spectrum[k] = (real * real + imag * imag) / (n as f32);
-    }
+    let mut input = frame.to_vec();
+    let mut output = vec![realfft::num_complex::Complex::new(0.0f32, 0.0f32); n_bins];
 
-    spectrum
+    fft.process_with_scratch(&mut input, &mut output, scratch).ok();
+
+    output
+        .iter()
+        .map(|c| (c.re * c.re + c.im * c.im) / n_f32)
+        .collect()
 }
 
 /// Create mel filterbank matrix
@@ -305,28 +375,27 @@ fn create_mel_filterbank_slaney(
     filterbank
 }
 
-/// Compute magnitude spectrum (|X(k)| / n_fft) — matches torchaudio with
-/// power=1 and normalized="frame_length".
-fn compute_magnitude_spectrum_normalized(frame: &[f32]) -> Vec<f32> {
+/// Compute magnitude spectrum (|X(k)| / n_fft) using realfft — matches
+/// torchaudio with power=1 and normalized="frame_length".
+fn compute_magnitude_spectrum_normalized(
+    frame: &[f32],
+    fft: &dyn realfft::RealToComplex<f32>,
+    scratch: &mut [realfft::num_complex::Complex<f32>],
+) -> Vec<f32> {
     let n = frame.len();
     let n_bins = n / 2 + 1;
     let n_f32 = n as f32;
-    let mut spectrum = vec![0.0f32; n_bins];
 
-    // Direct DFT computation — O(N^2) but N=1024 is manageable
-    for k in 0..n_bins {
-        let mut real = 0.0f32;
-        let mut imag = 0.0f32;
-        for (i, &sample) in frame.iter().enumerate() {
-            let angle = -2.0 * std::f32::consts::PI * k as f32 * i as f32 / n_f32;
-            real += sample * angle.cos();
-            imag += sample * angle.sin();
-        }
-        // Magnitude (power=1) normalized by frame_length (normalized="frame_length")
-        spectrum[k] = (real * real + imag * imag).sqrt() / n_f32;
-    }
+    let mut input = frame.to_vec();
+    let mut output = vec![realfft::num_complex::Complex::new(0.0f32, 0.0f32); n_bins];
 
-    spectrum
+    fft.process_with_scratch(&mut input, &mut output, scratch).ok();
+
+    // Magnitude (power=1) normalized by frame_length
+    output
+        .iter()
+        .map(|c| (c.re * c.re + c.im * c.im).sqrt() / n_f32)
+        .collect()
 }
 
 /// Compute mel spectrogram for Beat This! input.
@@ -357,11 +426,11 @@ pub fn compute_mel_spectrogram_beat_this(samples: &[f32], sample_rate: f32) -> R
     const F_MAX: f32 = 11000.0;
     const LOG_MULTIPLIER: f32 = 1000.0;
 
-    // Step 1: Resample to 22050 Hz if needed
+    // Step 1: Resample to 22050 Hz with anti-aliasing filter
     let resampled = if (sample_rate - TARGET_SR).abs() < 1.0 {
         samples.to_vec()
     } else {
-        resample_linear(samples, sample_rate, TARGET_SR)
+        resample_with_anti_alias(samples, sample_rate, TARGET_SR)
     };
 
     if resampled.len() < N_FFT {
@@ -387,11 +456,15 @@ pub fn compute_mel_spectrogram_beat_this(samples: &[f32], sample_rate: f32) -> R
     // Step 3: Compute mel filterbank (Slaney scale, f_min=30, f_max=11000)
     let mel_filterbank = create_mel_filterbank_slaney(N_BANDS, N_FFT, TARGET_SR, F_MIN, F_MAX);
 
-    // Step 4: Frame-by-frame STFT + mel bands
+    // Step 4: Frame-by-frame STFT + mel bands (using realfft for O(N log N))
     let n_frames = (padded.len().saturating_sub(N_FFT)) / HOP_SIZE + 1;
     let mut frames = Vec::with_capacity(n_frames);
 
     let window = hann_window(N_FFT);
+
+    let mut planner = RealFftPlanner::<f32>::new();
+    let fft = planner.plan_fft_forward(N_FFT);
+    let mut scratch = fft.make_scratch_vec();
 
     for frame_idx in 0..n_frames {
         let start = frame_idx * HOP_SIZE;
@@ -403,8 +476,8 @@ pub fn compute_mel_spectrogram_beat_this(samples: &[f32], sample_rate: f32) -> R
             windowed[i] = padded[start + i] * window[i];
         }
 
-        // Compute magnitude spectrum, normalized by frame length
-        let spectrum = compute_magnitude_spectrum_normalized(&windowed);
+        // Compute magnitude spectrum via FFT, normalized by frame length
+        let spectrum = compute_magnitude_spectrum_normalized(&windowed, fft.as_ref(), &mut scratch);
 
         // Apply mel filterbank + log compression: ln(1 + 1000 * x)
         let mut mel_bands = vec![0.0f32; N_BANDS];
