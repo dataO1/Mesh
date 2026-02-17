@@ -95,6 +95,10 @@ in pkgs.rustPlatform.buildRustPackage {
   # Only build mesh-player (no mesh-cue)
   cargoBuildFlags = [ "-p" "mesh-player" ];
 
+  # Skip tests — cargo test tries to compile the full workspace (including
+  # mesh-cue/ort-sys which downloads ONNX binaries, blocked by the sandbox)
+  doCheck = false;
+
   meta = with pkgs.lib; {
     description = "Mesh DJ Player — standalone stem mixing performance application";
     license = licenses.agpl3Plus;
