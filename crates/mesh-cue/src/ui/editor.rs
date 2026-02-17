@@ -35,23 +35,18 @@ pub fn view(state: &LoadedTrackState, stem_link_selection: Option<usize>) -> Ele
     // Hot cue buttons (single row of 8) - directly under waveforms
     let cue_panel = cue_editor::view(state);
 
-    let save_section = view_save_section(state);
-
     container(
         column![
             header,
             Space::new().height(8.0),  // Explicit spacing after header
             main_row,
             cue_panel,         // Hot cues - directly under waveforms
-            // Spacer pushes save section to bottom
-            Space::new().height(Length::Fill),
-            save_section,
         ],
         // No column spacing - use explicit Space widgets for control
     )
     .padding(15)
     .width(Length::Fill)
-    .height(Length::FillPortion(3))  // Editor gets 3/4 of space (vs 1/4 for browsers)
+    .height(Length::Shrink)  // Editor takes only the space it needs
     .into()
 }
 
@@ -123,19 +118,3 @@ fn view_header(state: &LoadedTrackState) -> Element<'_, Message> {
     .into()
 }
 
-/// Save section
-fn view_save_section(state: &LoadedTrackState) -> Element<'_, Message> {
-    let save_btn = button(text("Save Changes"))
-        .on_press_maybe(state.modified.then_some(Message::SaveTrack));
-
-    let status = if state.modified {
-        text("Unsaved changes").size(14)
-    } else {
-        text("All changes saved").size(14)
-    };
-
-    row![save_btn, status]
-        .spacing(10)
-        .align_y(Alignment::Center)
-        .into()
-}
