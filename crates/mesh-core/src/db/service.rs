@@ -517,12 +517,11 @@ impl DatabaseService {
 
     /// Delete a track and all associated metadata
     pub fn delete_track(&self, id: i64) -> Result<(), DbError> {
-        // Delete associated data first
-        CuePointQuery::delete_all_for_track(&self.db, id)?;
-        SavedLoopQuery::delete_all_for_track(&self.db, id)?;
-        StemLinkQuery::delete_all_for_track(&self.db, id)?;
+        // Delete all associated metadata (cue points, saved loops, stem links,
+        // ml_analysis, track_tags, audio_features)
+        BatchQuery::batch_delete_track_metadata(&self.db, id)?;
 
-        // Delete the track
+        // Delete the track row itself
         TrackQuery::delete(&self.db, id)
     }
 
