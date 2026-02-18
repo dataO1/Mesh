@@ -107,6 +107,11 @@ impl MeshCueApp {
                     self.reanalysis_state.failed += 1;
                 }
                 self.reanalysis_state.completed_tracks += 1;
+
+                // Refresh collection per-track so metadata updates are visible immediately
+                if success {
+                    return Task::perform(async {}, |_| Message::RefreshCollection);
+                }
             }
             ReanalysisProgress::AllComplete { succeeded, failed, .. } => {
                 self.reanalysis_state.is_running = false;

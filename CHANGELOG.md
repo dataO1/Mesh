@@ -4,6 +4,19 @@ All notable changes to Mesh are documented in this file.
 
 ---
 
+## [0.8.9]
+
+### Fixed
+
+- **Browser not updating during import/reanalysis** — Track metadata (BPM, key,
+  tags, new tracks) now refreshes in real-time as each track completes instead
+  of requiring manual navigation. The tick handler was silently discarding all
+  `Task` returns from progress handlers; these are now collected and returned
+  via `Task::batch()`. Reanalysis also fires per-track `RefreshCollection` on
+  success, matching the pattern import already used.
+
+---
+
 ## [0.8.8]
 
 ### Fixed

@@ -155,9 +155,12 @@ impl MeshCueApp {
             })
             .unwrap_or_default();
 
-        // Process collected messages
+        // Process collected messages, accumulating returned Tasks
+        let mut tasks: Vec<Task<Message>> = Vec::new();
+
         for progress in progress_messages {
-            let _ = self.update(Message::ImportProgressUpdate(progress));
+            let task = self.update(Message::ImportProgressUpdate(progress));
+            tasks.push(task);
         }
 
         // Poll re-analysis progress channel from domain (same pattern as import)
@@ -175,9 +178,14 @@ impl MeshCueApp {
 
         // Process collected re-analysis messages
         for progress in reanalysis_messages {
-            let _ = self.update(Message::ReanalysisProgress(progress));
+            let task = self.update(Message::ReanalysisProgress(progress));
+            tasks.push(task);
         }
 
-        Task::none()
+        if tasks.is_empty() {
+            Task::none()
+        } else {
+            Task::batch(tasks)
+        }
     }
 }
