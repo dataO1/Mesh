@@ -607,20 +607,8 @@ fn handle_start_export(
                 }
             }
             ExportProgress::Cancelled => UsbMessage::ExportCancelled,
-            ExportProgress::PlaylistOpsStarted { total_operations } => {
-                UsbMessage::ExportPlaylistOpsStarted { total_operations }
-            }
-            ExportProgress::PlaylistOpComplete { completed, total } => {
-                UsbMessage::ExportPlaylistOpComplete { completed, total }
-            }
-            ExportProgress::MetadataSyncStarted { total_tracks } => {
-                UsbMessage::ExportMetadataSyncStarted { total_tracks }
-            }
-            ExportProgress::MetadataSyncProgress { completed, total } => {
-                UsbMessage::ExportMetadataSyncProgress { completed, total }
-            }
-            ExportProgress::MetadataSyncComplete { tracks_synced } => {
-                UsbMessage::ExportMetadataSyncComplete { tracks_synced }
+            ExportProgress::UpdatingDatabase { completed, total } => {
+                UsbMessage::ExportUpdatingDatabase { completed, total }
             }
             ExportProgress::PresetsCopied => UsbMessage::ExportPresetsCopied,
         };

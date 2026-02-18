@@ -4,6 +4,28 @@ All notable changes to Mesh are documented in this file.
 
 ---
 
+## [0.8.10]
+
+### Improved
+
+- **USB export throughput** — Rewrote the export pipeline to separate file I/O
+  from database I/O. Track files are now copied sequentially with 1 MB buffered
+  writes and `fsync` per file (replacing parallel random writes via `par_iter`).
+  The USB database is staged locally: copied to a temp directory, updated there
+  with all metadata/playlist/deletion operations, then written back as a single
+  sequential copy. This eliminates random I/O on flash storage and should reduce
+  export times by 50–70%.
+- **Batched tag inserts** — `sync_track_atomic` now uses a single CozoDB batch
+  query for tag insertion instead of N individual `:put` operations per track.
+- **Buffered file copy with fsync** — New `copy_large_file()` utility uses
+  `BufReader`/`BufWriter` with 1 MB buffers, `posix_fadvise(SEQUENTIAL)` on
+  Linux, and `sync_all()` for data safety on removable media.
+- **Simplified export progress** — Merged five separate metadata/playlist
+  progress phases into a single unified "Updating database" phase, reducing UI
+  complexity and message overhead.
+
+---
+
 ## [0.8.9]
 
 ### Fixed

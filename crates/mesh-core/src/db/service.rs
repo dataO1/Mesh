@@ -464,10 +464,10 @@ impl DatabaseService {
             let _ = self.store_ml_analysis(track_id, &ml_data);
         }
 
-        // 6. Sync tags
+        // 6. Sync tags (batch insert — single query instead of N)
         if let Ok(tags) = source_db.get_tags(source_track_id) {
-            for (label, color) in &tags {
-                let _ = self.add_tag(track_id, label, color.as_deref());
+            if let Err(e) = BatchQuery::batch_insert_tags(&self.db, track_id, &tags) {
+                log::warn!("sync_track_atomic: Failed to batch insert tags for track {}: {}", track_id, e);
             }
         }
 

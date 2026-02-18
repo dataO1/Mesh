@@ -44,16 +44,8 @@ pub enum ExportPhase {
         start_time: Instant,
     },
 
-    /// Updating playlist memberships (after all tracks copied)
-    UpdatingPlaylists {
-        completed: usize,
-        total: usize,
-        start_time: Instant,
-    },
-
-    /// Syncing metadata (tags, ML analysis, audio features) for tracks
-    /// that don't need WAV re-copy
-    SyncingMetadata {
+    /// Unified database update phase (metadata sync + playlists + deletions + DB writeback)
+    UpdatingDatabase {
         completed: usize,
         total: usize,
         start_time: Instant,
@@ -88,8 +80,7 @@ impl ExportPhase {
                 | ExportPhase::ScanningUsb
                 | ExportPhase::BuildingSyncPlan { .. }
                 | ExportPhase::Exporting { .. }
-                | ExportPhase::UpdatingPlaylists { .. }
-                | ExportPhase::SyncingMetadata { .. }
+                | ExportPhase::UpdatingDatabase { .. }
                 | ExportPhase::CopyingPresets
         )
     }
@@ -107,11 +98,8 @@ impl ExportPhase {
             ExportPhase::Exporting { tracks_complete, total_tracks, .. } => {
                 format!("Exporting: {}/{} tracks", tracks_complete, total_tracks)
             }
-            ExportPhase::UpdatingPlaylists { completed, total, .. } => {
-                format!("Updating playlist entries: {}/{}", completed, total)
-            }
-            ExportPhase::SyncingMetadata { completed, total, .. } => {
-                format!("Syncing metadata: {}/{} tracks", completed, total)
+            ExportPhase::UpdatingDatabase { completed, total, .. } => {
+                format!("Updating database: {}/{}", completed, total)
             }
             ExportPhase::CopyingPresets => "Copying presets...".to_string(),
             ExportPhase::Complete { tracks_exported, failed_files, .. } => {
@@ -337,14 +325,7 @@ impl ExportState {
                     None
                 }
             }
-            ExportPhase::UpdatingPlaylists { completed, total, .. } => {
-                if *total > 0 {
-                    Some(*completed as f32 / *total as f32)
-                } else {
-                    None
-                }
-            }
-            ExportPhase::SyncingMetadata { completed, total, .. } => {
+            ExportPhase::UpdatingDatabase { completed, total, .. } => {
                 if *total > 0 {
                     Some(*completed as f32 / *total as f32)
                 } else {

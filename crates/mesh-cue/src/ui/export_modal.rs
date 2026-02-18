@@ -49,16 +49,11 @@ pub fn view(state: &ExportState, playlist_tree: Vec<TreeNode<NodeId>>) -> Elemen
             *total_bytes,
             start_time,
         ),
-        ExportPhase::UpdatingPlaylists {
+        ExportPhase::UpdatingDatabase {
             completed,
             total,
             start_time,
-        } => view_updating_playlists(*completed, *total, start_time),
-        ExportPhase::SyncingMetadata {
-            completed,
-            total,
-            start_time,
-        } => view_syncing_metadata(*completed, *total, start_time),
+        } => view_updating_database(*completed, *total, start_time),
         ExportPhase::CopyingPresets => view_copying_presets(),
         ExportPhase::Complete {
             duration,
@@ -561,61 +556,8 @@ fn view_exporting(
     .into()
 }
 
-/// View when updating playlist memberships
-fn view_updating_playlists(
-    completed: usize,
-    total: usize,
-    start_time: &std::time::Instant,
-) -> Element<'static, Message> {
-    let progress = if total > 0 {
-        completed as f32 / total as f32
-    } else {
-        0.0
-    };
-
-    // Calculate ETA based on completed operations
-    let elapsed = start_time.elapsed();
-    let eta_text = if completed > 0 {
-        let rate = completed as f64 / elapsed.as_secs_f64();
-        let remaining = total.saturating_sub(completed);
-        let eta_secs = remaining as f64 / rate;
-        if eta_secs > 60.0 {
-            format!(
-                "ETA: {}m {}s",
-                (eta_secs / 60.0) as u32,
-                (eta_secs % 60.0) as u32
-            )
-        } else {
-            format!("ETA: {:.0}s", eta_secs)
-        }
-    } else {
-        String::from("Calculating...")
-    };
-
-    let status = text(format!(
-        "Updating playlist entries: {}/{}",
-        completed, total
-    ))
-    .size(14);
-
-    let eta = text(eta_text).size(12);
-
-    let cancel_btn = button(text("Cancel"))
-        .on_press(Message::CancelExport)
-        .style(button::danger);
-
-    column![
-        status,
-        container(progress_bar(0.0..=1.0, progress)).width(Length::Fill),
-        row![Space::new().width(Length::Fill), eta],
-        row![Space::new().width(Length::Fill), cancel_btn],
-    ]
-    .spacing(10)
-    .into()
-}
-
-/// View while syncing metadata (tags, ML analysis, audio features)
-fn view_syncing_metadata(
+/// View while updating database (metadata + playlists + deletions + DB writeback)
+fn view_updating_database(
     completed: usize,
     total: usize,
     start_time: &std::time::Instant,
@@ -645,12 +587,12 @@ fn view_syncing_metadata(
     };
 
     let status = text(format!(
-        "Syncing metadata: {}/{} tracks",
+        "Updating database: {}/{}",
         completed, total
     ))
     .size(14);
 
-    let detail = text("Updating tags, ML analysis, and audio features...")
+    let detail = text("Syncing metadata, playlists, and audio features...")
         .size(12)
         .color(iced::Color::from_rgb(0.5, 0.5, 0.5));
 
@@ -860,7 +802,7 @@ pub fn view_progress_bar(state: &ExportState) -> Option<Element<'static, Message
                 Message::CancelExport,
             ))
         }
-        ExportPhase::UpdatingPlaylists {
+        ExportPhase::UpdatingDatabase {
             completed,
             total,
             ..
@@ -872,26 +814,8 @@ pub fn view_progress_bar(state: &ExportState) -> Option<Element<'static, Message
             };
 
             Some(super::import_modal::build_status_bar(
-                "Updating playlists...".to_string(),
+                "Updating database...".to_string(),
                 format!("{}/{}", completed, total),
-                progress,
-                Message::CancelExport,
-            ))
-        }
-        ExportPhase::SyncingMetadata {
-            completed,
-            total,
-            ..
-        } => {
-            let progress = if *total > 0 {
-                *completed as f32 / *total as f32
-            } else {
-                0.0
-            };
-
-            Some(super::import_modal::build_status_bar(
-                "Syncing metadata...".to_string(),
-                format!("{}/{} tracks", completed, total),
                 progress,
                 Message::CancelExport,
             ))

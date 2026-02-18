@@ -154,6 +154,49 @@ impl BatchQuery {
         Ok(())
     }
 
+    /// Batch insert tags for a track
+    ///
+    /// Inserts all tags in a single CozoDB query using the `$rows` parameter.
+    /// Much more efficient than individual `add_tag` calls during USB export.
+    pub fn batch_insert_tags(
+        db: &MeshDb,
+        track_id: i64,
+        tags: &[(String, Option<String>)],
+    ) -> Result<(), DbError> {
+        if tags.is_empty() {
+            return Ok(());
+        }
+
+        let rows: Vec<DataValue> = tags
+            .iter()
+            .enumerate()
+            .map(|(i, (label, color))| {
+                DataValue::List(vec![
+                    DataValue::from(track_id),
+                    DataValue::Str(label.clone().into()),
+                    color
+                        .as_ref()
+                        .map(|c| DataValue::Str(c.clone().into()))
+                        .unwrap_or(DataValue::Null),
+                    DataValue::from(i as i64),
+                ])
+            })
+            .collect();
+
+        let mut params = BTreeMap::new();
+        params.insert("rows".to_string(), DataValue::List(rows));
+
+        db.run_script(
+            r#"
+            ?[track_id, label, color, sort_order] <- $rows
+            :put track_tags {track_id, label => color, sort_order}
+        "#,
+            params,
+        )?;
+
+        Ok(())
+    }
+
     /// Delete all metadata for a track (cue_points, saved_loops, stem_links)
     ///
     /// Removes all associated metadata in 3 queries (one per relation).

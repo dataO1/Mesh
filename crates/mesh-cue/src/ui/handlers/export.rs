@@ -252,23 +252,24 @@ impl MeshCueApp {
                 log::warn!("Track export failed: {} - {}", filename, error);
                 // Don't change phase - let export continue with other tracks
             }
-            UsbMsg::ExportPlaylistOpsStarted { total_operations } => {
-                // Transition from Exporting to UpdatingPlaylists phase
-                self.export_state.phase = ExportPhase::UpdatingPlaylists {
-                    completed: 0,
-                    total: total_operations,
-                    start_time: std::time::Instant::now(),
-                };
-            }
-            UsbMsg::ExportPlaylistOpComplete { completed, total } => {
-                // Update playlist operations progress
-                if let ExportPhase::UpdatingPlaylists { start_time, .. } = &self.export_state.phase {
-                    let start = *start_time;
-                    self.export_state.phase = ExportPhase::UpdatingPlaylists {
-                        completed,
-                        total,
-                        start_time: start,
-                    };
+            UsbMsg::ExportUpdatingDatabase { completed, total } => {
+                match &self.export_state.phase {
+                    ExportPhase::UpdatingDatabase { start_time, .. } => {
+                        let start = *start_time;
+                        self.export_state.phase = ExportPhase::UpdatingDatabase {
+                            completed,
+                            total,
+                            start_time: start,
+                        };
+                    }
+                    _ => {
+                        // First message — enter the phase
+                        self.export_state.phase = ExportPhase::UpdatingDatabase {
+                            completed,
+                            total,
+                            start_time: std::time::Instant::now(),
+                        };
+                    }
                 }
             }
             UsbMsg::ExportComplete { duration, tracks_exported, failed_files } => {
@@ -285,35 +286,6 @@ impl MeshCueApp {
                 self.export_state.phase = ExportPhase::Error(err.to_string());
                 // Re-open modal to show error (even if user closed it during export)
                 self.export_state.is_open = true;
-            }
-            UsbMsg::ExportMetadataSyncStarted { total_tracks } => {
-                self.export_state.phase = ExportPhase::SyncingMetadata {
-                    completed: 0,
-                    total: total_tracks,
-                    start_time: std::time::Instant::now(),
-                };
-            }
-            UsbMsg::ExportMetadataSyncProgress { completed, total } => {
-                if let ExportPhase::SyncingMetadata { start_time, .. } = &self.export_state.phase {
-                    let start = *start_time;
-                    self.export_state.phase = ExportPhase::SyncingMetadata {
-                        completed,
-                        total,
-                        start_time: start,
-                    };
-                }
-            }
-            UsbMsg::ExportMetadataSyncComplete { tracks_synced } => {
-                // Update progress — if we were in SyncingMetadata, mark as complete
-                if let ExportPhase::SyncingMetadata { start_time, total, .. } = &self.export_state.phase {
-                    let start = *start_time;
-                    let total = *total;
-                    self.export_state.phase = ExportPhase::SyncingMetadata {
-                        completed: tracks_synced,
-                        total,
-                        start_time: start,
-                    };
-                }
             }
             UsbMsg::ExportPresetsCopied => {
                 self.export_state.phase = ExportPhase::CopyingPresets;

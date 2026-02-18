@@ -1,39 +1,48 @@
-//! Export service with thread pool for atomic per-track exports
+//! Export service with optimized sequential pipeline for USB flash
 //!
-//! This service owns a rayon thread pool and coordinates USB exports.
-//! Each track export is atomic: WAV copy + DB sync + progress callback.
+//! Key optimization: separates file I/O (sequential to USB) from DB I/O (local SSD).
+//! The old approach interleaved WAV copies with DB writes via par_iter — worst of both
+//! worlds for flash storage. The new pipeline:
+//!
+//! 1. Presets: Copy small YAML files to USB
+//! 2. Staging: Copy USB mesh.db to local temp dir, open as DatabaseService
+//! 3. WAV copy: Sequential 1 MB buffered writes to USB, fsync each file
+//! 4. DB update: All metadata/playlist ops against local staging DB
+//! 5. DB writeback: Copy staging DB back to USB (single large sequential write)
+//! 6. Delete: Remove obsolete track files from USB
+//!
+//! This eliminates random writes to USB flash entirely.
 
 use super::ExportProgress;
 use crate::db::DatabaseService;
-use crate::usb::get_or_open_usb_database;
-use crate::usb::sync::{copy_with_verification, SyncPlan, PlaylistTrack};
+use crate::usb::cache::register_usb_database;
+use crate::usb::sync::{copy_large_file, SyncPlan, PlaylistTrack};
 
-use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 /// Thread pool service for USB export operations
 ///
-/// Owns the thread pool and coordinates per-track atomic exports.
-/// Each worker thread handles: WAV copy -> DB sync -> progress callback
+/// Owns a single-thread pool and coordinates the sequential export pipeline.
+/// DB operations are batched against a local staging copy — not the USB drive.
 pub struct ExportService {
-    /// Thread pool for parallel track exports
+    /// Thread pool for export (single thread — pipeline is sequential by design)
     thread_pool: rayon::ThreadPool,
     /// Cancellation flag shared with workers
     cancel_flag: Arc<AtomicBool>,
 }
 
 impl ExportService {
-    /// Create a new export service with 4 worker threads
+    /// Create a new export service with a single worker thread
     ///
-    /// The thread pool is reusable - create once at startup, not per export.
+    /// Sequential pipeline: parallel threads caused random I/O on USB flash.
     pub fn new() -> Self {
         let thread_pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(4)
+            .num_threads(1)
             .thread_name(|i| format!("usb-export-{}", i))
             .build()
             .expect("Failed to create export thread pool");
@@ -46,18 +55,15 @@ impl ExportService {
 
     /// Execute the export plan
     ///
-    /// Runs tracks through the thread pool, each handling:
-    /// 1. WAV copy with verification (3 retries)
-    /// 2. Atomic DB sync (batch inserts)
-    /// 3. Progress notification
+    /// Pipeline:
+    /// 1. Copy presets to USB (small YAML files)
+    /// 2. Stage USB database locally (fast SSD copy)
+    /// 3. Sequential WAV copy to USB (1 MB buffered, fsync per file)
+    /// 4. Update staging DB (metadata + playlists + deletions)
+    /// 5. Write staging DB back to USB (single sequential copy)
+    /// 6. Delete obsolete track files from USB
     ///
-    /// Returns a receiver for progress messages. The export runs in the
-    /// background - poll the receiver for updates.
-    ///
-    /// # Arguments
-    /// * `plan` - The sync plan (what to copy/delete)
-    /// * `local_db` - The local database (source of track metadata)
-    /// * `usb_collection_root` - Path to mesh-collection/ on USB
+    /// Returns a receiver for progress messages.
     pub fn start_export(
         &self,
         plan: SyncPlan,
@@ -71,7 +77,6 @@ impl ExportService {
         let cancel_flag = self.cancel_flag.clone();
         let usb_root = usb_collection_root.to_path_buf();
 
-        // Move into thread pool scope
         let total_tracks = plan.tracks_to_copy.len();
         let total_bytes = plan.total_bytes;
         let tracks_to_copy = plan.tracks_to_copy.clone();
@@ -84,28 +89,13 @@ impl ExportService {
 
         self.thread_pool.spawn(move || {
             let start_time = Instant::now();
+            let mut tracks_exported: usize = 0;
+            let mut bytes_exported: u64 = 0;
+            let mut failed_files: Vec<(String, String)> = Vec::new();
 
-            // Thread-safe counters
-            let tracks_complete = AtomicUsize::new(0);
-            let bytes_complete = AtomicU64::new(0);
-            let tracks_failed = AtomicUsize::new(0);
-            let failed_files: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
-
-            // Get USB database from cache (or open if not cached)
-            let usb_db = match get_or_open_usb_database(&usb_root) {
-                Some(db) => db,
-                None => {
-                    log::error!("Failed to open USB database");
-                    let _ = progress_tx.send(ExportProgress::Complete {
-                        duration: start_time.elapsed(),
-                        tracks_exported: 0,
-                        failed_files: vec![("database".to_string(), "Failed to open".to_string())],
-                    });
-                    return;
-                }
-            };
-
-            // Phase 0: Copy preset files (small YAML files, no delta logic needed)
+            // ================================================================
+            // Phase 0: Copy preset files (small YAML files)
+            // ================================================================
             {
                 let local_root = local_db.collection_root();
                 let presets_stems_src = local_root.join("presets/stems");
@@ -130,30 +120,81 @@ impl ExportService {
                 let _ = progress_tx.send(ExportProgress::PresetsCopied);
             }
 
-            // Send started message AFTER presets (so Exporting phase isn't overwritten by PresetsCopied)
+            // ================================================================
+            // Phase 1: Stage USB database locally
+            // ================================================================
+            // Copy mesh.db from USB to a local temp directory, then open it.
+            // All DB operations happen against this fast local copy.
+            let temp_dir = match tempfile::TempDir::new() {
+                Ok(d) => d,
+                Err(e) => {
+                    log::error!("Failed to create temp directory for staging DB: {}", e);
+                    let _ = progress_tx.send(ExportProgress::Complete {
+                        duration: start_time.elapsed(),
+                        tracks_exported: 0,
+                        failed_files: vec![("staging".to_string(), format!("Temp dir creation failed: {}", e))],
+                    });
+                    return;
+                }
+            };
+
+            let usb_db_path = usb_root.join("mesh.db");
+            let staging_db_path = temp_dir.path().join("mesh.db");
+
+            // Copy USB database to staging (sequential read from USB — fast)
+            if usb_db_path.exists() {
+                if let Err(e) = std::fs::copy(&usb_db_path, &staging_db_path) {
+                    log::error!("Failed to copy USB database to staging: {}", e);
+                    let _ = progress_tx.send(ExportProgress::Complete {
+                        duration: start_time.elapsed(),
+                        tracks_exported: 0,
+                        failed_files: vec![("staging".to_string(), format!("DB copy failed: {}", e))],
+                    });
+                    return;
+                }
+            }
+
+            // Open staging database (temp path won't collide with USB_DB_CACHE)
+            let staging_db = match DatabaseService::new(temp_dir.path()) {
+                Ok(db) => db,
+                Err(e) => {
+                    log::error!("Failed to open staging database: {}", e);
+                    let _ = progress_tx.send(ExportProgress::Complete {
+                        duration: start_time.elapsed(),
+                        tracks_exported: 0,
+                        failed_files: vec![("staging".to_string(), format!("DB open failed: {}", e))],
+                    });
+                    return;
+                }
+            };
+
+            log::info!("Staging DB opened at {:?}", temp_dir.path());
+
+            // ================================================================
+            // Phase 2: Sequential WAV copy to USB
+            // ================================================================
             let _ = progress_tx.send(ExportProgress::Started {
                 total_tracks,
                 total_bytes,
             });
 
-            // Phase 1: Create playlists with hierarchy (sequential, parents before children)
+            // Create playlists on staging DB before track copy (parents before children)
             for info in &playlists_to_create {
-                // Resolve parent_id on USB if this playlist has a parent
                 let parent_id = info.parent_name.as_ref().and_then(|pname| {
-                    usb_db.get_playlist_by_name(pname, None)
+                    staging_db.get_playlist_by_name(pname, None)
                         .ok()
                         .flatten()
                         .map(|p| p.id)
                 });
 
-                if let Err(e) = usb_db.create_playlist(&info.name, parent_id) {
+                if let Err(e) = staging_db.create_playlist(&info.name, parent_id) {
                     log::warn!("Failed to create playlist {}: {}", info.name, e);
                 }
             }
 
-            // Phase 2: Export tracks in parallel (WAV copy + DB sync atomic)
-            tracks_to_copy.par_iter().enumerate().for_each(|(index, track)| {
+            for (index, track) in tracks_to_copy.iter().enumerate() {
                 if cancel_flag.load(Ordering::Relaxed) {
+                    let _ = progress_tx.send(ExportProgress::Cancelled);
                     return;
                 }
 
@@ -164,205 +205,209 @@ impl ExportService {
                     .unwrap_or("Unknown")
                     .to_string();
 
-                // Notify track started
                 let _ = progress_tx.send(ExportProgress::TrackStarted {
                     filename: filename.clone(),
                     track_index: index,
                 });
 
-                // Step 1: Copy WAV with verification
+                // Copy WAV with buffered I/O + fsync
                 let dest_path = usb_root.join(&track.destination);
-                if let Err(e) = copy_with_verification(&track.source, &dest_path, track.size, 3) {
-                    log::error!("Failed to copy {}: {}", filename, e);
-                    tracks_failed.fetch_add(1, Ordering::Relaxed);
-                    failed_files.lock().unwrap().push((filename.clone(), e.to_string()));
-                    let _ = progress_tx.send(ExportProgress::TrackFailed {
-                        filename,
-                        track_index: index,
-                        error: e.to_string(),
-                    });
-                    return;
-                }
+                match copy_large_file(&track.source, &dest_path, |_| {}) {
+                    Ok(bytes_written) => {
+                        tracks_exported += 1;
+                        bytes_exported += bytes_written;
 
-                // Step 2: Sync track to USB database (atomic batch inserts)
-                let source_path_str = track.source.to_string_lossy().to_string();
-                let local_track = match local_db.get_track_by_path(&source_path_str) {
-                    Ok(Some(t)) => t,
-                    Ok(None) => {
-                        log::warn!("Track {} not found in local DB, skipping metadata sync", filename);
-                        // WAV copied successfully, just no metadata
-                        let _ = tracks_complete.fetch_add(1, Ordering::Relaxed);
-                        let bytes = bytes_complete.fetch_add(track.size, Ordering::Relaxed) + track.size;
                         let _ = progress_tx.send(ExportProgress::TrackComplete {
                             filename,
                             track_index: index,
                             total_tracks,
-                            bytes_complete: bytes,
+                            bytes_complete: bytes_exported,
                             total_bytes,
                         });
-                        return;
                     }
                     Err(e) => {
-                        log::warn!("Failed to get track {} from local DB: {}", filename, e);
-                        tracks_failed.fetch_add(1, Ordering::Relaxed);
-                        failed_files.lock().unwrap().push((filename.clone(), e.to_string()));
+                        log::error!("Failed to copy {}: {}", filename, e);
+                        failed_files.push((filename.clone(), e.to_string()));
                         let _ = progress_tx.send(ExportProgress::TrackFailed {
                             filename,
                             track_index: index,
                             error: e.to_string(),
                         });
-                        return;
                     }
-                };
-
-                // Create USB track with updated path
-                let source_track_id = local_track.id.unwrap_or(0);
-                let mut usb_track = local_track.clone();
-                usb_track.id = None; // Generate new ID for USB database
-                usb_track.path = track.destination.clone(); // Relative path (portable across mounts)
-                usb_track.folder_path = "tracks".to_string();
-                usb_track.name = filename.trim_end_matches(".wav").to_string();
-
-                // Sync with atomic batch inserts
-                if let Err(e) = usb_db.sync_track_atomic(&usb_track, &local_db, source_track_id) {
-                    log::error!("Failed to sync track {} to USB DB: {}", filename, e);
-                    tracks_failed.fetch_add(1, Ordering::Relaxed);
-                    failed_files.lock().unwrap().push((filename.clone(), e.to_string()));
-                    let _ = progress_tx.send(ExportProgress::TrackFailed {
-                        filename,
-                        track_index: index,
-                        error: e.to_string(),
-                    });
-                    return;
                 }
+            }
 
-                // Step 3: Success - update counters and send progress
-                let _ = tracks_complete.fetch_add(1, Ordering::Relaxed);
-                let bytes = bytes_complete.fetch_add(track.size, Ordering::Relaxed) + track.size;
-
-                let _ = progress_tx.send(ExportProgress::TrackComplete {
-                    filename,
-                    track_index: index,
-                    total_tracks,
-                    bytes_complete: bytes,
-                    total_bytes,
-                });
-            });
-
-            // Check for cancellation
+            // Check for cancellation after WAV copy phase
             if cancel_flag.load(Ordering::Relaxed) {
                 let _ = progress_tx.send(ExportProgress::Cancelled);
                 return;
             }
 
-            // Phase 2.5: Metadata-only sync for tracks that don't need WAV re-copy
-            if !tracks_to_update.is_empty() {
-                let update_count = tracks_to_update.len();
-                let _ = progress_tx.send(ExportProgress::MetadataSyncStarted {
-                    total_tracks: update_count,
-                });
+            // ================================================================
+            // Phase 3: Update staging database (all DB ops on local SSD)
+            // ================================================================
+            // Count total discrete operations for unified progress
+            let total_db_ops = tracks_to_copy.len()
+                + tracks_to_update.len()
+                + playlist_tracks_to_add.len()
+                + playlist_tracks_to_remove.len()
+                + tracks_to_delete.len()
+                + playlists_to_delete.len();
 
-                // Build filename→track_id lookup once (avoids O(n²) get_all_tracks per file)
-                let track_id_by_filename: HashMap<String, i64> = local_db
-                    .get_all_tracks()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(|t| {
-                        let fname = t.path.file_name()?.to_str()?.to_string();
-                        Some((fname, t.id?))
-                    })
-                    .collect();
+            let mut db_ops_completed: usize = 0;
 
-                let mut synced = 0usize;
+            // Build filename→track_id lookup for metadata-only updates
+            let track_id_by_filename: HashMap<String, i64> = local_db
+                .get_all_tracks()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|t| {
+                    let fname = t.path.file_name()?.to_str()?.to_string();
+                    Some((fname, t.id?))
+                })
+                .collect();
 
-                // Sequential iteration — DB writes are serialized by write_lock,
-                // so par_iter just causes lock contention without speedup
-                for filename in &tracks_to_update {
-                    if cancel_flag.load(Ordering::Relaxed) {
-                        break;
-                    }
-
-                    // Look up track ID in pre-built map, then load full metadata
-                    let local_track = track_id_by_filename
-                        .get(filename.as_str())
-                        .and_then(|&id| local_db.get_track(id).ok().flatten());
-
-                    if let Some(local_track) = local_track {
-                        let source_id = local_track.id.unwrap_or(0);
-
-                        // Create USB track with relative path (portable across mounts)
-                        let mut usb_track = local_track;
-                        usb_track.id = None; // Generate new ID for USB database
-                        usb_track.path = PathBuf::from(format!("tracks/{}", filename));
-                        usb_track.folder_path = "tracks".to_string();
-                        usb_track.name = filename.trim_end_matches(".wav").to_string();
-
-                        if let Err(e) = usb_db.sync_track_atomic(&usb_track, &local_db, source_id) {
-                            log::warn!("Metadata sync failed for {}: {}", filename, e);
-                        }
-                    }
-
-                    synced += 1;
-                    let _ = progress_tx.send(ExportProgress::MetadataSyncProgress {
-                        completed: synced,
-                        total: update_count,
-                    });
+            // 3a: Sync track metadata for newly copied tracks
+            for track in &tracks_to_copy {
+                if cancel_flag.load(Ordering::Relaxed) {
+                    let _ = progress_tx.send(ExportProgress::Cancelled);
+                    return;
                 }
 
-                let _ = progress_tx.send(ExportProgress::MetadataSyncComplete {
-                    tracks_synced: synced,
+                let filename = track
+                    .source
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("Unknown")
+                    .to_string();
+
+                let source_path_str = track.source.to_string_lossy().to_string();
+                if let Ok(Some(local_track)) = local_db.get_track_by_path(&source_path_str) {
+                    let source_track_id = local_track.id.unwrap_or(0);
+                    let mut usb_track = local_track;
+                    usb_track.id = None;
+                    usb_track.path = track.destination.clone();
+                    usb_track.folder_path = "tracks".to_string();
+                    usb_track.name = filename.trim_end_matches(".wav").to_string();
+
+                    if let Err(e) = staging_db.sync_track_atomic(&usb_track, &local_db, source_track_id) {
+                        log::warn!("DB sync failed for {}: {}", filename, e);
+                    }
+                }
+
+                db_ops_completed += 1;
+                let _ = progress_tx.send(ExportProgress::UpdatingDatabase {
+                    completed: db_ops_completed,
+                    total: total_db_ops,
                 });
             }
 
-            // Phase 3-4: Update playlist memberships (parallel with progress)
-            let tracks_dir = usb_root.join("tracks");
-            let total_playlist_ops = playlist_tracks_to_add.len() + playlist_tracks_to_remove.len();
+            // 3b: Metadata-only sync for tracks that don't need WAV re-copy
+            for filename in &tracks_to_update {
+                if cancel_flag.load(Ordering::Relaxed) {
+                    let _ = progress_tx.send(ExportProgress::Cancelled);
+                    return;
+                }
 
-            if total_playlist_ops > 0 {
-                let _ = progress_tx.send(ExportProgress::PlaylistOpsStarted {
-                    total_operations: total_playlist_ops,
+                let local_track = track_id_by_filename
+                    .get(filename.as_str())
+                    .and_then(|&id| local_db.get_track(id).ok().flatten());
+
+                if let Some(local_track) = local_track {
+                    let source_id = local_track.id.unwrap_or(0);
+                    let mut usb_track = local_track;
+                    usb_track.id = None;
+                    usb_track.path = PathBuf::from(format!("tracks/{}", filename));
+                    usb_track.folder_path = "tracks".to_string();
+                    usb_track.name = filename.trim_end_matches(".wav").to_string();
+
+                    if let Err(e) = staging_db.sync_track_atomic(&usb_track, &local_db, source_id) {
+                        log::warn!("Metadata sync failed for {}: {}", filename, e);
+                    }
+                }
+
+                db_ops_completed += 1;
+                let _ = progress_tx.send(ExportProgress::UpdatingDatabase {
+                    completed: db_ops_completed,
+                    total: total_db_ops,
                 });
-
-                let playlist_ops_complete = AtomicUsize::new(0);
-
-                // Playlist DB ops are serialized (all writes, no file I/O)
-                for playlist_track in &playlist_tracks_to_add {
-                    add_track_to_playlist(&usb_db, &tracks_dir, playlist_track);
-                    let completed = playlist_ops_complete.fetch_add(1, Ordering::Relaxed) + 1;
-                    let _ = progress_tx.send(ExportProgress::PlaylistOpComplete {
-                        completed,
-                        total: total_playlist_ops,
-                    });
-                }
-
-                for playlist_track in &playlist_tracks_to_remove {
-                    remove_track_from_playlist(&usb_db, &tracks_dir, playlist_track);
-                    let completed = playlist_ops_complete.fetch_add(1, Ordering::Relaxed) + 1;
-                    let _ = progress_tx.send(ExportProgress::PlaylistOpComplete {
-                        completed,
-                        total: total_playlist_ops,
-                    });
-                }
             }
 
-            // Phase 5: Delete playlists (children before parents due to sort order)
+            // 3c: Playlist membership operations
+            let tracks_dir_rel = Path::new("_unused");
+            for playlist_track in &playlist_tracks_to_add {
+                add_track_to_playlist(&staging_db, tracks_dir_rel, playlist_track);
+                db_ops_completed += 1;
+                let _ = progress_tx.send(ExportProgress::UpdatingDatabase {
+                    completed: db_ops_completed,
+                    total: total_db_ops,
+                });
+            }
+
+            for playlist_track in &playlist_tracks_to_remove {
+                remove_track_from_playlist(&staging_db, tracks_dir_rel, playlist_track);
+                db_ops_completed += 1;
+                let _ = progress_tx.send(ExportProgress::UpdatingDatabase {
+                    completed: db_ops_completed,
+                    total: total_db_ops,
+                });
+            }
+
+            // 3d: Delete playlists (children before parents due to sort order)
             for info in &playlists_to_delete {
-                // Resolve parent_id to find the right playlist (handles duplicate names at different levels)
                 let parent_id = info.parent_name.as_ref().and_then(|pname| {
-                    usb_db.get_playlist_by_name(pname, None)
+                    staging_db.get_playlist_by_name(pname, None)
                         .ok()
                         .flatten()
                         .map(|p| p.id)
                 });
 
-                if let Ok(Some(playlist)) = usb_db.get_playlist_by_name(&info.name, parent_id) {
-                    if let Err(e) = usb_db.delete_playlist(playlist.id) {
+                if let Ok(Some(playlist)) = staging_db.get_playlist_by_name(&info.name, parent_id) {
+                    if let Err(e) = staging_db.delete_playlist(playlist.id) {
                         log::warn!("Failed to delete playlist {}: {}", info.name, e);
                     }
                 }
             }
 
-            // Phase 6: Delete tracks from USB
+            // 3e: Delete tracks from staging DB
+            for filename in &tracks_to_delete {
+                let rel_path = format!("tracks/{}", filename);
+                if let Ok(Some(track)) = staging_db.get_track_by_path(&rel_path) {
+                    if let Some(track_id) = track.id {
+                        if let Err(e) = staging_db.delete_track(track_id) {
+                            log::warn!("Failed to delete track {} from staging DB: {}", filename, e);
+                        }
+                    }
+                }
+
+                db_ops_completed += 1;
+                let _ = progress_tx.send(ExportProgress::UpdatingDatabase {
+                    completed: db_ops_completed,
+                    total: total_db_ops,
+                });
+            }
+
+            // 3f: Drop staging DB to flush CozoDB WAL and release file lock
+            drop(staging_db);
+
+            // 3g: Write staging DB back to USB (single large sequential write)
+            if staging_db_path.exists() {
+                log::info!("Writing staging database back to USB...");
+                if let Err(e) = copy_large_file(&staging_db_path, &usb_db_path, |_| {}) {
+                    log::error!("Failed to write staging DB to USB: {}", e);
+                    failed_files.push(("mesh.db".to_string(), format!("DB writeback failed: {}", e)));
+                }
+            }
+
+            // 3h: Re-register USB database in cache (re-open from USB)
+            if let Ok(fresh_db) = DatabaseService::new(&usb_root) {
+                register_usb_database(usb_root.clone(), fresh_db);
+            }
+
+            // ================================================================
+            // Phase 4: Delete removed track files from USB
+            // ================================================================
+            let tracks_dir = usb_root.join("tracks");
             for filename in &tracks_to_delete {
                 let track_path = tracks_dir.join(filename);
                 if track_path.exists() {
@@ -370,23 +415,15 @@ impl ExportService {
                         log::warn!("Failed to delete track {}: {}", track_path.display(), e);
                     }
                 }
-                // Also delete from database (use relative path matching USB DB format)
-                let rel_path = format!("tracks/{}", filename);
-                if let Ok(Some(track)) = usb_db.get_track_by_path(&rel_path) {
-                    if let Some(track_id) = track.id {
-                        if let Err(e) = usb_db.delete_track(track_id) {
-                            log::warn!("Failed to delete track {} from USB DB: {}", filename, e);
-                        }
-                    }
-                }
             }
 
-            // Send completion
-            let failed = failed_files.into_inner().unwrap();
+            // ================================================================
+            // Phase 5: Complete
+            // ================================================================
             let _ = progress_tx.send(ExportProgress::Complete {
                 duration: start_time.elapsed(),
-                tracks_exported: tracks_complete.load(Ordering::Relaxed),
-                failed_files: failed,
+                tracks_exported,
+                failed_files,
             });
         });
 

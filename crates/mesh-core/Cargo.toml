@@ -48,11 +48,13 @@ pathdiff = "0.2"    # Relative path computation for symlinks
 sysinfo = "0.33"    # Cross-platform disk detection (replaces udev/sysfs/blkid)
 walkdir = "2"       # Cross-platform recursive directory traversal
 symlink = "0.1"     # Cross-platform symlink creation
+tempfile = "3.15"   # Temp directories for USB export staging DB
 
 # Native JACK backend for Linux (optional, pro-audio port routing)
 # This dependency is Linux-only - on other platforms, jack-backend feature is a no-op
 [target.'cfg(target_os = "linux")'.dependencies]
 jack = { version = "0.11", optional = true }
+libc = "0.2"        # posix_fadvise for sequential read hints on USB export
 
 [[bin]]
 name = "export-analysis"
@@ -60,4 +62,3 @@ path = "src/bin/export_analysis.rs"
 required-features = []
 
 [dev-dependencies]
-tempfile = "3.15"

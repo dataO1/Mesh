@@ -3506,6 +3506,7 @@ dependencies = [
  "crossbeam",
  "dirs",
  "jack",
+ "libc",
  "libpd-rs",
  "log",
  "notify",

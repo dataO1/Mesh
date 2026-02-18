@@ -812,6 +812,90 @@ pub fn build_sync_plan(local: &CollectionState, usb: &CollectionState) -> SyncPl
     plan
 }
 
+/// Copy a large file with buffered I/O, sequential read hints, and fsync
+///
+/// Optimized for USB flash drives where sequential writes are 2-5x faster
+/// than random writes. Uses:
+/// - 1 MB read/write buffers (much larger than kernel default 8 KB)
+/// - `posix_fadvise(POSIX_FADV_SEQUENTIAL)` on source (Linux only)
+/// - `sync_all()` on destination after write (ensures data hits flash)
+/// - Size verification post-copy
+/// - Progress callback for sub-file progress
+///
+/// Returns bytes written on success.
+pub fn copy_large_file(
+    source: &Path,
+    destination: &Path,
+    on_bytes_written: impl Fn(u64),
+) -> Result<u64, super::UsbError> {
+    use std::io::{BufReader, BufWriter, Read, Write};
+
+    const BUFFER_SIZE: usize = 1024 * 1024; // 1 MB
+
+    // Ensure parent directory exists
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let source_file = std::fs::File::open(source)?;
+    let source_size = source_file.metadata()?.len();
+
+    // Apply sequential read hint on Linux
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::io::AsRawFd;
+        unsafe {
+            libc::posix_fadvise(
+                source_file.as_raw_fd(),
+                0,
+                source_size as libc::off_t,
+                libc::POSIX_FADV_SEQUENTIAL,
+            );
+        }
+    }
+
+    let dest_file = std::fs::File::create(destination)?;
+    let mut reader = BufReader::with_capacity(BUFFER_SIZE, source_file);
+    let mut writer = BufWriter::with_capacity(BUFFER_SIZE, &dest_file);
+
+    let mut total_written: u64 = 0;
+    let mut buf = vec![0u8; BUFFER_SIZE];
+
+    loop {
+        let bytes_read = reader.read(&mut buf).map_err(|e| {
+            super::UsbError::IoError(format!("Read error on {}: {}", source.display(), e))
+        })?;
+        if bytes_read == 0 {
+            break;
+        }
+        writer.write_all(&buf[..bytes_read]).map_err(|e| {
+            super::UsbError::IoError(format!("Write error on {}: {}", destination.display(), e))
+        })?;
+        total_written += bytes_read as u64;
+        on_bytes_written(total_written);
+    }
+
+    // Flush BufWriter, then sync to physical media
+    writer.flush().map_err(|e| {
+        super::UsbError::IoError(format!("Flush error on {}: {}", destination.display(), e))
+    })?;
+    drop(writer); // Drop BufWriter to release borrow on dest_file
+    dest_file.sync_all().map_err(|e| {
+        super::UsbError::IoError(format!("Sync error on {}: {}", destination.display(), e))
+    })?;
+
+    // Verify size
+    if total_written != source_size {
+        return Err(super::UsbError::SizeMismatch {
+            path: destination.to_path_buf(),
+            expected: source_size,
+            actual: total_written,
+        });
+    }
+
+    Ok(total_written)
+}
+
 /// Copy a file with size verification
 ///
 /// Returns Ok(()) on success, or error with retry info.
