@@ -27,11 +27,29 @@ pub mod pd {
 
     impl DiscoveredEffect {
         pub fn name(&self) -> &str { &self.metadata.name }
+        pub fn category(&self) -> &str { &self.metadata.category }
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub struct ParamMetadata {
+        pub name: String,
+        pub default: f32,
+        pub min: Option<f32>,
+        pub max: Option<f32>,
+        pub unit: Option<String>,
     }
 
     #[derive(Debug, Clone, Default)]
     pub struct EffectMetadata {
         pub name: String,
+        pub category: String,
+        pub author: Option<String>,
+        pub version: Option<String>,
+        pub description: Option<String>,
+        pub latency_samples: u32,
+        pub sample_rate: u32,
+        pub requires_externals: Vec<String>,
+        pub params: Vec<ParamMetadata>,
     }
 
     #[derive(Debug, thiserror::Error)]
@@ -44,11 +62,12 @@ pub mod pd {
         pub fn new(_path: &Path) -> Result<Self, String> { Ok(Self) }
         pub fn discovered_effects(&self) -> &[DiscoveredEffect] { &[] }
         pub fn available_effects(&self) -> Vec<&DiscoveredEffect> { vec![] }
+        pub fn get_effect(&self, _effect_id: &str) -> Option<&DiscoveredEffect> { None }
         pub fn rescan_effects(&mut self) {}
         pub fn create_effect(
             &mut self, _id: &str,
-        ) -> Result<Box<dyn crate::effect::Effect>, String> {
-            Err("PD effects not available (compiled without pd-effects feature)".into())
+        ) -> Result<Box<dyn crate::effect::Effect>, PdError> {
+            Err(PdError)
         }
     }
 

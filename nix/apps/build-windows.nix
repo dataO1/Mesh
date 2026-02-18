@@ -714,12 +714,7 @@ PKGWRAPPER
           MESH_CUE_FEATURES="load-dynamic,directml"
         fi
         echo "    Features: $MESH_CUE_FEATURES"
-        cargo build --release --target x86_64-pc-windows-gnu -p mesh-cue --no-default-features --features "$MESH_CUE_FEATURES" || {
-          echo ""
-          echo "WARNING: mesh-cue build failed (Essentia cross-compilation is complex)"
-          echo "         mesh-player.exe was built successfully"
-          echo ""
-        }
+        cargo build --release --target x86_64-pc-windows-gnu -p mesh-cue --no-default-features --features "$MESH_CUE_FEATURES"
 
         # =====================================================================
         # Phase 6: Download ONNX Runtime DirectML (pre-built from Microsoft)

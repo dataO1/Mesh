@@ -19,6 +19,12 @@ All notable changes to Mesh are documented in this file.
   CPU-intensive) pause the stream; export is I/O-bound and doesn't need it.
 - **Tags column too wide in mesh-cue** — Reduced track table Tags column from
   300px to 150px so the Name column has more room.
+- **mesh-cue Windows build failing** — mesh-cue hardcoded `pd-effects` as a
+  direct dependency, pulling in `libffi-sys` which fails to cross-compile for
+  MinGW. Now feature-gated like mesh-player: `pd-effects` is a default feature
+  (enabled on Linux) but disabled by `--no-default-features` on Windows. The
+  PD stub module was also updated with missing methods/fields. Windows build
+  script now fails on either crate instead of silently skipping mesh-cue.
 
 ---
 
