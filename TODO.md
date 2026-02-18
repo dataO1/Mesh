@@ -34,6 +34,15 @@ as much as possible in mesh-core and mesh-widget and only if necessary in the ui
 - [ ] Single morph knob per deck that scrolls through preset banks (up to 8
   presets per bank).
 
+## B2B Mode
+- i would like to support a b2b mode, where 2 people with mesh systems, can
+  connect their 2 systems together via ethernet lan cable, the system recognizes
+  this and automatically goes into b2b mode, where each of their system shows
+  the info of the other deck (waveforms). this means that each dj has their own
+  hardware and settings, but can also play music from their partners library and
+  everything is synced to the same master clock and bpm. all playlist features
+  like smart suggestions should also work.
+
 ## Smart Suggestions (v3 — Future Improvements)
 
 V2 (current) uses a unified scoring formula with energy direction fader and
