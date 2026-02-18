@@ -84,12 +84,6 @@ impl ExportService {
         self.thread_pool.spawn(move || {
             let start_time = Instant::now();
 
-            // Send started message
-            let _ = progress_tx.send(ExportProgress::Started {
-                total_tracks,
-                total_bytes,
-            });
-
             // Thread-safe counters
             let tracks_complete = AtomicUsize::new(0);
             let bytes_complete = AtomicU64::new(0);
@@ -134,6 +128,12 @@ impl ExportService {
                 }
                 let _ = progress_tx.send(ExportProgress::PresetsCopied);
             }
+
+            // Send started message AFTER presets (so Exporting phase isn't overwritten by PresetsCopied)
+            let _ = progress_tx.send(ExportProgress::Started {
+                total_tracks,
+                total_bytes,
+            });
 
             // Phase 1: Create playlists (sequential, must happen before tracks)
             for playlist_name in &playlists_to_create {
