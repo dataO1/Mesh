@@ -31,19 +31,23 @@ const TEXT_DIM: Color = Color::from_rgb(0.55, 0.55, 0.60);
 /// Layout:
 /// ```text
 /// ┌──────────────────────────────────────────────┐
-/// │  SLICER                                  [×] │
+/// │  SLICER               [Save Presets]     [×] │
 /// ├──────────────────────────────────────────────┤
 /// │  Usage instructions                          │
 /// ├──────────────────────────────────────────────┤
-/// │  [slice_editor widget]         [Save Presets]│
+/// │  [slice_editor widget — fills space]         │
 /// └──────────────────────────────────────────────┘
 /// ```
 pub fn slicer_editor_view<'a>(
     _state: &SlicerEditorState,
     loaded_track: Option<&'a LoadedTrackState>,
 ) -> Element<'a, Message> {
-    // Header: title + close button
+    // Header: title + save button + close button
     let title = text("SLICER").size(18).color(TEXT_PRIMARY);
+
+    let save_presets_btn = button(text("Save Presets").size(11))
+        .padding([4, 8])
+        .on_press(Message::SaveSlicerPresets);
 
     let close_btn = button(text("\u{00d7}").size(20))
         .on_press(Message::CloseSlicerEditor)
@@ -51,7 +55,8 @@ pub fn slicer_editor_view<'a>(
         .style(close_button_style);
 
     let header = container(
-        row![title, Space::new().width(Length::Fill), close_btn]
+        row![title, Space::new().width(Length::Fill), save_presets_btn, close_btn]
+            .spacing(8)
             .align_y(Alignment::Center),
     )
     .padding([12, 16])
@@ -61,10 +66,12 @@ pub fn slicer_editor_view<'a>(
     // Usage instructions
     let instructions = container(
         text(
-            "Click cells to toggle slices at each step. \
-             Use the stem buttons (V/D/B/O) on the left to assign rows to stems. \
-             Mute buttons silence individual steps. \
-             Switch between 8 preset banks with the tabs at the bottom."
+            "MIDI slicer: each stem (V/D/B/O) has its own slice pattern. \
+             Click a stem button to enable it and select it for editing. \
+             The grid is time (left \u{2192} right) vs. slice index (bottom \u{2192} top). \
+             Toggle cells to rearrange which audio slice plays at each step. \
+             Mute buttons above the grid silence individual time steps. \
+             8 preset banks at the bottom store different patterns per stem."
         )
         .size(12)
         .color(TEXT_DIM),
@@ -82,19 +89,11 @@ pub fn slicer_editor_view<'a>(
             Message::SliceEditorPresetSelect,
         );
 
-        let save_presets_btn = button(text("Save Presets").size(11))
-            .padding([4, 8])
-            .on_press(Message::SaveSlicerPresets);
-
-        container(
-            row![slice_editor_widget, save_presets_btn]
-                .spacing(8)
-                .align_y(Alignment::End),
-        )
-        .padding(12)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+        container(slice_editor_widget)
+            .padding(12)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
     } else {
         container(
             text("Load a track to edit slicer presets")

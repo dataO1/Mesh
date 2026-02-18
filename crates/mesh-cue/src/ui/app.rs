@@ -667,7 +667,7 @@ impl MeshCueApp {
                 base
             }
         } else if self.slicer_editor.is_open {
-            // Slicer editor modal — 60% width, 50% height via FillPortion
+            // Slicer editor modal — ~85% width, ~80% height via FillPortion
             let backdrop = super::modals::build_backdrop(Message::CloseSlicerEditor);
             let slicer_content = super::slicer_editor::slicer_editor_view(
                 &self.slicer_editor,
@@ -678,11 +678,11 @@ impl MeshCueApp {
                 row![
                     Space::new().width(Length::FillPortion(1)),
                     container(opaque(slicer_content))
-                        .width(Length::FillPortion(3))
+                        .width(Length::FillPortion(10))
                         .height(Length::Fill),
                     Space::new().width(Length::FillPortion(1)),
                 ]
-                .height(Length::FillPortion(2)),
+                .height(Length::FillPortion(8)),
                 Space::new().height(Length::FillPortion(1)),
             ]
             .width(Length::Fill)

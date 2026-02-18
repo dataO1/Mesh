@@ -8,20 +8,14 @@ use crate::theme::STEM_COLORS;
 use iced::widget::{button, column, row, text, Row};
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding};
 
-/// Cell dimensions (wider than high, rectangular)
-const CELL_WIDTH: f32 = 30.0;
-const CELL_HEIGHT: f32 = 15.0;
-
-/// Stem button dimensions
+/// Stem button width (fixed — labels need consistent space)
 const STEM_BUTTON_WIDTH: f32 = 48.0;
-const STEM_BUTTON_HEIGHT: f32 = 60.0; // Grid height / 4 stems
 
-/// Mute button dimensions
-const MUTE_BUTTON_WIDTH: f32 = 30.0;
+/// Mute button height (fixed — just a thin strip above the grid)
 const MUTE_BUTTON_HEIGHT: f32 = 20.0;
 
-/// Preset tab height (width uses FillPortion to span full widget)
-const PRESET_TAB_HEIGHT: f32 = 20.0;
+/// Preset tab height (fixed — just a thin strip below the grid)
+const PRESET_TAB_HEIGHT: f32 = 24.0;
 
 /// Colors
 const COLOR_BLACK: Color = Color::from_rgb(0.1, 0.1, 0.1);
@@ -57,18 +51,25 @@ pub fn slice_editor<'a, Message: Clone + 'a>(
     let grid = build_grid(state, on_cell_toggle);
 
     // Layout:
-    // [Preset tabs                    ]
     // [Stem btns] [Mute row           ]
     // [         ] [Grid 16x16         ]
+    // [Preset tabs                    ]
 
-    let grid_with_mute = column![mute_row, grid].spacing(0);
+    let grid_with_mute = column![mute_row, grid]
+        .spacing(0)
+        .width(Length::Fill)
+        .height(Length::Fill);
 
     let main_content = row![stem_buttons, grid_with_mute]
         .spacing(2)
+        .width(Length::Fill)
+        .height(Length::Fill)
         .align_y(Alignment::End);
 
-    column![preset_tabs, main_content]
+    column![main_content, preset_tabs]
         .spacing(4)
+        .width(Length::Fill)
+        .height(Length::Fill)
         .into()
 }
 
@@ -102,7 +103,7 @@ fn build_preset_tabs<'a, Message: Clone + 'a>(
     // No spacing - tabs fill the full width flush
     Row::from_vec(tabs)
         .spacing(0)
-        .width(Length::Fixed(STEM_BUTTON_WIDTH + 2.0 + (16.0 * CELL_WIDTH))) // Match main content width
+        .width(Length::Fill)
         .into()
 }
 
@@ -131,7 +132,7 @@ fn build_stem_buttons<'a, Message: Clone + 'a>(
             let on_click = on_stem_click.clone();
             button(text(STEM_NAMES[stem_idx]).size(14))
                 .width(STEM_BUTTON_WIDTH)
-                .height(STEM_BUTTON_HEIGHT)
+                .height(Length::FillPortion(1))
                 .padding(Padding::from([4, 8]))
                 .style(move |_theme, status| style.appearance(status))
                 .on_press(on_click(stem_idx))
@@ -141,6 +142,7 @@ fn build_stem_buttons<'a, Message: Clone + 'a>(
 
     column(buttons)
         .spacing(0)
+        .height(Length::Fill)
         .into()
 }
 
@@ -156,7 +158,7 @@ fn build_mute_row<'a, Message: Clone + 'a>(
 
             let on_toggle = on_mute_toggle.clone();
             button(text("").size(8))
-                .width(MUTE_BUTTON_WIDTH)
+                .width(Length::FillPortion(1))
                 .height(MUTE_BUTTON_HEIGHT)
                 .padding(0)
                 .style(move |_theme, status| style.appearance(status))
@@ -167,6 +169,7 @@ fn build_mute_row<'a, Message: Clone + 'a>(
 
     Row::from_vec(buttons)
         .spacing(0)
+        .width(Length::Fill)
         .into()
 }
 
@@ -194,8 +197,8 @@ fn build_grid<'a, Message: Clone + 'a>(
 
                     let on_toggle = on_cell_toggle.clone();
                     button(text("").size(6))
-                        .width(CELL_WIDTH)
-                        .height(CELL_HEIGHT)
+                        .width(Length::FillPortion(1))
+                        .height(Length::FillPortion(1))
                         .padding(0)
                         .style(move |_theme, status| style.appearance(status))
                         .on_press(on_toggle(step, slice_u8))
@@ -203,12 +206,18 @@ fn build_grid<'a, Message: Clone + 'a>(
                 })
                 .collect();
 
-            Row::from_vec(cells).spacing(0).into()
+            Row::from_vec(cells)
+                .spacing(0)
+                .width(Length::Fill)
+                .height(Length::FillPortion(1))
+                .into()
         })
         .collect();
 
     column(rows)
         .spacing(0)
+        .width(Length::Fill)
+        .height(Length::Fill)
         .into()
 }
 
