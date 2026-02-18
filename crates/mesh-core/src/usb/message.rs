@@ -246,6 +246,14 @@ pub enum UsbMessage {
         total_tracks: usize,
     },
 
+    /// Metadata sync progress (per-track)
+    ExportMetadataSyncProgress {
+        /// Number of tracks synced so far
+        completed: usize,
+        /// Total number of tracks to sync
+        total: usize,
+    },
+
     /// Metadata-only sync completed
     ExportMetadataSyncComplete {
         /// Number of tracks synced
@@ -339,6 +347,9 @@ impl UsbMessage {
             }
             UsbMessage::ExportMetadataSyncStarted { total_tracks } => {
                 format!("Syncing metadata for {} tracks...", total_tracks)
+            }
+            UsbMessage::ExportMetadataSyncProgress { completed, total } => {
+                format!("Syncing metadata: {}/{}", completed, total)
             }
             UsbMessage::ExportMetadataSyncComplete { tracks_synced } => {
                 format!("Metadata synced for {} tracks", tracks_synced)

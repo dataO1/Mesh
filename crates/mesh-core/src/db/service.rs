@@ -31,7 +31,7 @@ use super::batch::BatchQuery;
 use super::queries::{TrackQuery, PlaylistQuery, SimilarityQuery, CuePointQuery, SavedLoopQuery, StemLinkQuery};
 use super::schema::{TrackRow, Playlist, AudioFeatures, CuePoint, SavedLoop, StemLink};
 use super::{MeshDb, DbError};
-use cozo::DataValue;
+use cozo::{DataValue, Vector};
 use std::collections::BTreeMap;
 
 // ============================================================================
@@ -472,8 +472,29 @@ impl DatabaseService {
         }
 
         // 7. Sync audio features
-        if let Ok(Some(features)) = source_db.get_audio_features(source_track_id) {
-            let _ = self.store_audio_features(track_id, &features);
+        match source_db.get_audio_features(source_track_id) {
+            Ok(Some(features)) => {
+                if let Err(e) = self.store_audio_features(track_id, &features) {
+                    log::warn!(
+                        "sync_track_atomic: Failed to store audio features for track {}: {}",
+                        track_id, e
+                    );
+                } else {
+                    log::debug!("sync_track_atomic: Audio features synced for track {}", track_id);
+                }
+            }
+            Ok(None) => {
+                log::debug!(
+                    "sync_track_atomic: No audio features in source DB for source_track_id={}",
+                    source_track_id
+                );
+            }
+            Err(e) => {
+                log::warn!(
+                    "sync_track_atomic: Failed to read audio features from source: {}",
+                    e
+                );
+            }
         }
 
         log::debug!("sync_track_atomic: SUCCESS id={}", track_id);
@@ -801,14 +822,37 @@ impl DatabaseService {
         "#, params)?;
 
         if let Some(row) = result.rows.first() {
-            if let DataValue::List(vec_vals) = &row[0] {
-                let vec: Vec<f64> = vec_vals.iter()
-                    .filter_map(|v| v.get_float())
-                    .collect();
-                return Ok(AudioFeatures::from_vector(&vec));
+            match &row[0] {
+                // CozoDB stores <F32; 16> as DataValue::Vec(Vector::F32(...))
+                DataValue::Vec(Vector::F32(arr)) => {
+                    let vec: Vec<f64> = arr.iter().map(|&v| v as f64).collect();
+                    return Ok(AudioFeatures::from_vector(&vec));
+                }
+                DataValue::Vec(Vector::F64(arr)) => {
+                    let vec: Vec<f64> = arr.to_vec();
+                    return Ok(AudioFeatures::from_vector(&vec));
+                }
+                // Fallback for List representation (shouldn't happen with vector types)
+                DataValue::List(vec_vals) => {
+                    let vec: Vec<f64> = vec_vals.iter()
+                        .filter_map(|v| v.get_float())
+                        .collect();
+                    return Ok(AudioFeatures::from_vector(&vec));
+                }
+                other => {
+                    log::warn!(
+                        "get_audio_features: unexpected DataValue type for track {}: {:?}",
+                        track_id, std::mem::discriminant(other)
+                    );
+                }
             }
         }
         Ok(None)
+    }
+
+    /// Count tracks that have audio features stored
+    pub fn count_audio_features(&self) -> Result<usize, DbError> {
+        SimilarityQuery::count_with_features(&self.db)
     }
 
     /// Find similar tracks using audio features

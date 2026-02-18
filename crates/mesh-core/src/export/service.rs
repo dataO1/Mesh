@@ -9,6 +9,7 @@ use crate::usb::get_or_open_usb_database;
 use crate::usb::sync::{copy_with_verification, SyncPlan, PlaylistTrack};
 
 use rayon::prelude::*;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver};
@@ -261,20 +262,30 @@ impl ExportService {
                     total_tracks: update_count,
                 });
 
-                let synced = AtomicUsize::new(0);
+                // Build filename→track_id lookup once (avoids O(n²) get_all_tracks per file)
+                let track_id_by_filename: HashMap<String, i64> = local_db
+                    .get_all_tracks()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|t| {
+                        let fname = t.path.file_name()?.to_str()?.to_string();
+                        Some((fname, t.id?))
+                    })
+                    .collect();
 
-                tracks_to_update.par_iter().for_each(|filename| {
+                let mut synced = 0usize;
+
+                // Sequential iteration — DB writes are serialized by write_lock,
+                // so par_iter just causes lock contention without speedup
+                for filename in &tracks_to_update {
                     if cancel_flag.load(Ordering::Relaxed) {
-                        return;
+                        break;
                     }
 
-                    // Find the local track by filename to get its source ID
-                    let local_track = match local_db.get_all_tracks() {
-                        Ok(tracks) => tracks.into_iter().find(|t| {
-                            t.path.file_name().and_then(|n| n.to_str()) == Some(filename.as_str())
-                        }),
-                        Err(_) => None,
-                    };
+                    // Look up track ID in pre-built map, then load full metadata
+                    let local_track = track_id_by_filename
+                        .get(filename.as_str())
+                        .and_then(|&id| local_db.get_track(id).ok().flatten());
 
                     if let Some(local_track) = local_track {
                         let source_id = local_track.id.unwrap_or(0);
@@ -291,11 +302,15 @@ impl ExportService {
                         }
                     }
 
-                    synced.fetch_add(1, Ordering::Relaxed);
-                });
+                    synced += 1;
+                    let _ = progress_tx.send(ExportProgress::MetadataSyncProgress {
+                        completed: synced,
+                        total: update_count,
+                    });
+                }
 
                 let _ = progress_tx.send(ExportProgress::MetadataSyncComplete {
-                    tracks_synced: synced.load(Ordering::Relaxed),
+                    tracks_synced: synced,
                 });
             }
 

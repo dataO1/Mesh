@@ -330,8 +330,20 @@ impl MeshDomain {
     /// Returns TrackMetadata with stem_links properly converted (ID → path).
     pub fn load_track_metadata(&self, path: &str) -> Option<TrackMetadata> {
         let db = self.active_db();
-        // Use DatabaseService API that returns TrackMetadata with stem_links converted
-        match db.get_track_metadata(path) {
+
+        // USB DBs store relative paths (e.g. "tracks/song.wav") but callers pass
+        // absolute file paths. Convert once here at the storage boundary.
+        let lookup_path = match &self.active_storage {
+            StorageSource::Usb { path: collection_root, .. } => {
+                std::path::Path::new(path)
+                    .strip_prefix(collection_root)
+                    .map(|r| r.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| path.to_string())
+            }
+            StorageSource::Local => path.to_string(),
+        };
+
+        match db.get_track_metadata(&lookup_path) {
             Ok(Some(metadata)) => Some(metadata),
             Ok(None) => {
                 log::warn!("Track not found in active database: {}", path);

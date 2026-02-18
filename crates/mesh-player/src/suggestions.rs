@@ -574,6 +574,12 @@ pub fn query_suggestions(
         return Ok(Vec::new());
     }
 
+    // Diagnostic: log audio features count per source
+    for (idx, source) in sources.iter().enumerate() {
+        let features = source.db.count_audio_features().unwrap_or(0);
+        log::debug!("[SUGGESTIONS] Source {} ({}): audio_features={}", idx, source.name, features);
+    }
+
     // Step 1: Resolve seed paths to tracks across all database sources.
     // For each seed path, try each source — first with the absolute path
     // (local DB stores full paths), then with the path relative to collection_root
@@ -608,7 +614,19 @@ pub fn query_suggestions(
         }
     }
 
+    log::debug!(
+        "[SUGGESTIONS] Resolved {}/{} seeds across {} sources",
+        seed_tracks.len(), seed_paths.len(), sources.len()
+    );
+    for (src_idx, track) in &seed_tracks {
+        log::debug!(
+            "[SUGGESTIONS]   seed: src={} id={:?} path={:?}",
+            sources[*src_idx].name, track.id, track.path
+        );
+    }
+
     if seed_tracks.is_empty() {
+        log::debug!("[SUGGESTIONS] No seeds resolved — returning empty");
         return Ok(Vec::new());
     }
 
@@ -631,10 +649,12 @@ pub fn query_suggestions(
         };
 
         // Get the seed's feature vector for cross-DB search
-        let seed_vector = sources[seed_src_idx].db.get_audio_features(seed_id)
-            .ok()
-            .flatten()
-            .map(|f| f.to_vector());
+        let seed_features = sources[seed_src_idx].db.get_audio_features(seed_id);
+        let seed_vector = seed_features.ok().flatten().map(|f| f.to_vector());
+        log::debug!(
+            "[SUGGESTIONS] Seed {} (src={}) has_features={}",
+            seed_id, sources[seed_src_idx].name, seed_vector.is_some()
+        );
 
         for (target_idx, target_source) in sources.iter().enumerate() {
             let results = if target_idx == seed_src_idx {
@@ -649,6 +669,10 @@ pub fn query_suggestions(
 
             match results {
                 Ok(results) => {
+                    log::debug!(
+                        "[SUGGESTIONS] HNSW search: seed={} target={} returned {} results",
+                        seed_id, target_source.name, results.len()
+                    );
                     for (mut track, distance) in results {
                         if let Some(track_id) = track.id {
                             // Skip if this is a seed track in another DB (same filename)
@@ -681,7 +705,39 @@ pub fn query_suggestions(
         }
     }
 
+    // Cross-source dedup: same track may exist in both Local and USB DBs.
+    // Group by filename, keep the entry with the lowest HNSW distance.
+    if sources.len() > 1 {
+        let mut best_by_filename: HashMap<String, (usize, i64, f32)> = HashMap::new();
+        for (&(src_idx, track_id), (track, dist)) in &candidates {
+            if let Some(name) = track.path.file_name() {
+                let fname = name.to_string_lossy().to_string();
+                best_by_filename
+                    .entry(fname)
+                    .and_modify(|existing| {
+                        if *dist < existing.2 {
+                            *existing = (src_idx, track_id, *dist);
+                        }
+                    })
+                    .or_insert((src_idx, track_id, *dist));
+            }
+        }
+        let keep_keys: HashSet<(usize, i64)> = best_by_filename
+            .values()
+            .map(|&(src, id, _)| (src, id))
+            .collect();
+        let before = candidates.len();
+        candidates.retain(|key, _| keep_keys.contains(key));
+        let deduped = before - candidates.len();
+        if deduped > 0 {
+            log::debug!("[SUGGESTIONS] Deduped {} cross-source duplicates", deduped);
+        }
+    }
+
+    log::debug!("[SUGGESTIONS] Total candidates after HNSW: {}", candidates.len());
+
     if candidates.is_empty() {
+        log::debug!("[SUGGESTIONS] No candidates — returning empty");
         return Ok(Vec::new());
     }
 

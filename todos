@@ -1,7 +1,9 @@
-- in mesh-player hot cues from usb dont load anymore
-- do a final analysis that the usb export is idempotent (from any state of the
-  usb produces the fully working mesh-collection, which works the same way our
-  local collection works, besides midi mappings )
+- audio crackling and underruns during analysis. theres als no track loaded. we
+  should disable the audio output while importing, exporting, reanalysis.
+
+- how can we optimise the writing speed to usb stick, currently its quite slow.
+  both the file transport and db export(playlists, metadata, tags etc).
+  research how to optimise throughput of wav files and db queries/write.
 - slicer editor grid widget size can now be bigger and ideally adjust to the
   floating windows size (with some margin/padding to the edges). also move the
   save preset button to the header of the modal. Also the description is wrong,

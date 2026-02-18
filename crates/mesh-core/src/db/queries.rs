@@ -647,7 +647,7 @@ impl SimilarityQuery {
         let result = db.run_query(r#"
             ?[track_id, path, folder_path, name, artist, bpm, original_bpm, key,
               duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path, dist] :=
-                ~audio_features:similarity_index{track_id | query: $query_vec, k: $k, ef: $ef, bind_distance: dist},
+                ~audio_features:similarity_index{track_id | query: vec($query_vec), k: $k, ef: $ef, bind_distance: dist},
                 *tracks{id: track_id, path, folder_path, name, artist, bpm, original_bpm, key,
                         duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
             :order dist

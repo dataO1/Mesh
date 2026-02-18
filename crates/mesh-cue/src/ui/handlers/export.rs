@@ -286,6 +286,16 @@ impl MeshCueApp {
                     start_time: std::time::Instant::now(),
                 };
             }
+            UsbMsg::ExportMetadataSyncProgress { completed, total } => {
+                if let ExportPhase::SyncingMetadata { start_time, .. } = &self.export_state.phase {
+                    let start = *start_time;
+                    self.export_state.phase = ExportPhase::SyncingMetadata {
+                        completed,
+                        total,
+                        start_time: start,
+                    };
+                }
+            }
             UsbMsg::ExportMetadataSyncComplete { tracks_synced } => {
                 // Update progress — if we were in SyncingMetadata, mark as complete
                 if let ExportPhase::SyncingMetadata { start_time, total, .. } = &self.export_state.phase {
