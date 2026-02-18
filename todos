@@ -1,12 +1,15 @@
-- summarize drumandbass/breakcore/jungle  tags as "dnb".
-- remove instrumental tag
-- ok a add these to the similarity analysis/reanalysis:
-  - timbre
-  - tonal/atonal
-  - mood acoustic 
-  - mood electronic 
-  - danceability
-  - approachability
+- in mesh-player hot cues from usb dont load anymore
+- do a final analysis that the usb export is idempotent (from any state of the
+  usb produces the fully working mesh-collection, which works the same way our
+  local collection works, besides midi mappings )
+- slicer editor grid widget size can now be bigger and ideally adjust to the
+  floating windows size (with some margin/padding to the edges). also move the
+  save preset button to the header of the modal. Also the description is wrong,
+  the stem buttons edit the preset for a specific stem only, from left to right
+  the dimension is the time domain, from bottom to top its the sliced audio
+  snippets, kind of like a midi slicer in a daw. rewrite the explanation and go
+  more into detail.
+
 - on tracks, where the stem separation is not perfect (the bass stem is actually
   in the drums layer), the lufs analysis is inaccurate. analyse if the lufs
   analysis is actually done on the whole mix regardless of the beat analysis

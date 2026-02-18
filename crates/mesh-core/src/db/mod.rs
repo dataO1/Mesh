@@ -37,10 +37,18 @@ pub use service::{DatabaseService, Track, MlScores};
 use cozo::{DbInstance, DataValue, NamedRows};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Mutex;
 
 /// Database connection wrapper
+///
+/// Includes an internal write lock to serialize mutable operations.
+/// CozoDB's SQLite backend doesn't support concurrent writers — concurrent
+/// `run_script` calls from different threads cause "database is locked" errors.
+/// The write lock is transparent to callers.
 pub struct MeshDb {
     db: DbInstance,
+    /// Serializes mutable write operations (reads are lock-free)
+    write_lock: Mutex<()>,
 }
 
 impl MeshDb {
@@ -51,7 +59,7 @@ impl MeshDb {
         let db = DbInstance::new("sqlite", path, "")
             .map_err(|e| DbError::Open(e.to_string()))?;
 
-        let mesh_db = Self { db };
+        let mesh_db = Self { db, write_lock: Mutex::new(()) };
         mesh_db.ensure_schema()?;
 
         Ok(mesh_db)
@@ -62,7 +70,7 @@ impl MeshDb {
         let db = DbInstance::new("mem", "", "")
             .map_err(|e| DbError::Open(e.to_string()))?;
 
-        let mesh_db = Self { db };
+        let mesh_db = Self { db, write_lock: Mutex::new(()) };
         mesh_db.ensure_schema()?;
 
         Ok(mesh_db)
@@ -74,8 +82,9 @@ impl MeshDb {
         Ok(())
     }
 
-    /// Run a raw CozoScript query
+    /// Run a mutable CozoScript query (serialized via write lock)
     pub fn run_script(&self, script: &str, params: BTreeMap<String, DataValue>) -> Result<NamedRows, DbError> {
+        let _lock = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         self.db.run_script(script, params, cozo::ScriptMutability::Mutable)
             .map_err(|e| DbError::Query(e.to_string()))
     }

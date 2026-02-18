@@ -9,7 +9,7 @@ use crate::usb::get_or_open_usb_database;
 use crate::usb::sync::{copy_with_verification, SyncPlan, PlaylistTrack};
 
 use rayon::prelude::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
@@ -135,10 +135,18 @@ impl ExportService {
                 total_bytes,
             });
 
-            // Phase 1: Create playlists (sequential, must happen before tracks)
-            for playlist_name in &playlists_to_create {
-                if let Err(e) = usb_db.create_playlist(playlist_name, None) {
-                    log::warn!("Failed to create playlist {}: {}", playlist_name, e);
+            // Phase 1: Create playlists with hierarchy (sequential, parents before children)
+            for info in &playlists_to_create {
+                // Resolve parent_id on USB if this playlist has a parent
+                let parent_id = info.parent_name.as_ref().and_then(|pname| {
+                    usb_db.get_playlist_by_name(pname, None)
+                        .ok()
+                        .flatten()
+                        .map(|p| p.id)
+                });
+
+                if let Err(e) = usb_db.create_playlist(&info.name, parent_id) {
+                    log::warn!("Failed to create playlist {}: {}", info.name, e);
                 }
             }
 
@@ -210,7 +218,7 @@ impl ExportService {
                 let source_track_id = local_track.id.unwrap_or(0);
                 let mut usb_track = local_track.clone();
                 usb_track.id = None; // Generate new ID for USB database
-                usb_track.path = dest_path.clone();
+                usb_track.path = track.destination.clone(); // Relative path (portable across mounts)
                 usb_track.folder_path = "tracks".to_string();
                 usb_track.name = filename.trim_end_matches(".wav").to_string();
 
@@ -254,7 +262,6 @@ impl ExportService {
                 });
 
                 let synced = AtomicUsize::new(0);
-                let tracks_dir_update = usb_root.join("tracks");
 
                 tracks_to_update.par_iter().for_each(|filename| {
                     if cancel_flag.load(Ordering::Relaxed) {
@@ -271,12 +278,11 @@ impl ExportService {
 
                     if let Some(local_track) = local_track {
                         let source_id = local_track.id.unwrap_or(0);
-                        let usb_path = tracks_dir_update.join(filename);
 
-                        // Create USB track with correct path
+                        // Create USB track with relative path (portable across mounts)
                         let mut usb_track = local_track;
                         usb_track.id = None; // Generate new ID for USB database
-                        usb_track.path = usb_path;
+                        usb_track.path = PathBuf::from(format!("tracks/{}", filename));
                         usb_track.folder_path = "tracks".to_string();
                         usb_track.name = filename.trim_end_matches(".wav").to_string();
 
@@ -304,32 +310,39 @@ impl ExportService {
 
                 let playlist_ops_complete = AtomicUsize::new(0);
 
-                // Parallelize playlist track additions
-                playlist_tracks_to_add.par_iter().for_each(|playlist_track| {
+                // Playlist DB ops are serialized (all writes, no file I/O)
+                for playlist_track in &playlist_tracks_to_add {
                     add_track_to_playlist(&usb_db, &tracks_dir, playlist_track);
                     let completed = playlist_ops_complete.fetch_add(1, Ordering::Relaxed) + 1;
                     let _ = progress_tx.send(ExportProgress::PlaylistOpComplete {
                         completed,
                         total: total_playlist_ops,
                     });
-                });
+                }
 
-                // Parallelize playlist track removals
-                playlist_tracks_to_remove.par_iter().for_each(|playlist_track| {
+                for playlist_track in &playlist_tracks_to_remove {
                     remove_track_from_playlist(&usb_db, &tracks_dir, playlist_track);
                     let completed = playlist_ops_complete.fetch_add(1, Ordering::Relaxed) + 1;
                     let _ = progress_tx.send(ExportProgress::PlaylistOpComplete {
                         completed,
                         total: total_playlist_ops,
                     });
-                });
+                }
             }
 
-            // Phase 5: Delete playlists
-            for playlist_name in &playlists_to_delete {
-                if let Ok(Some(playlist)) = usb_db.get_playlist_by_name(playlist_name, None) {
+            // Phase 5: Delete playlists (children before parents due to sort order)
+            for info in &playlists_to_delete {
+                // Resolve parent_id to find the right playlist (handles duplicate names at different levels)
+                let parent_id = info.parent_name.as_ref().and_then(|pname| {
+                    usb_db.get_playlist_by_name(pname, None)
+                        .ok()
+                        .flatten()
+                        .map(|p| p.id)
+                });
+
+                if let Ok(Some(playlist)) = usb_db.get_playlist_by_name(&info.name, parent_id) {
                     if let Err(e) = usb_db.delete_playlist(playlist.id) {
-                        log::warn!("Failed to delete playlist {}: {}", playlist_name, e);
+                        log::warn!("Failed to delete playlist {}: {}", info.name, e);
                     }
                 }
             }
@@ -384,14 +397,33 @@ impl Default for ExportService {
     }
 }
 
+/// Resolve a qualified playlist name (e.g., "Parent/Child") to a playlist ID
+///
+/// Walks down the hierarchy path, resolving each segment via get_playlist_by_name.
+fn resolve_playlist_by_qualified_name(usb_db: &DatabaseService, qualified_name: &str) -> Option<i64> {
+    let parts: Vec<&str> = qualified_name.split('/').collect();
+    let mut parent_id: Option<i64> = None;
+
+    for part in &parts {
+        match usb_db.get_playlist_by_name(part, parent_id) {
+            Ok(Some(playlist)) => {
+                parent_id = Some(playlist.id);
+            }
+            _ => return None,
+        }
+    }
+
+    parent_id // The last resolved ID is the target playlist
+}
+
 /// Add a track to a playlist in the USB database
 fn add_track_to_playlist(
     usb_db: &DatabaseService,
     tracks_dir: &Path,
     playlist_track: &PlaylistTrack,
 ) {
-    // Find the playlist ID
-    if let Ok(Some(playlist)) = usb_db.get_playlist_by_name(&playlist_track.playlist, None) {
+    // Find the playlist ID (handles hierarchical qualified names like "Parent/Child")
+    if let Some(playlist_id) = resolve_playlist_by_qualified_name(usb_db, &playlist_track.playlist) {
         // Find the track ID by filename
         let track_path = tracks_dir.join(&playlist_track.track_filename);
         let track_path_str = track_path.to_string_lossy().to_string();
@@ -399,8 +431,8 @@ fn add_track_to_playlist(
         if let Ok(Some(track)) = usb_db.get_track_by_path(&track_path_str) {
             if let Some(track_id) = track.id {
                 // Get next sort order and add track to playlist
-                if let Ok(sort_order) = usb_db.next_playlist_sort_order(playlist.id) {
-                    if let Err(e) = usb_db.add_track_to_playlist(playlist.id, track_id, sort_order) {
+                if let Ok(sort_order) = usb_db.next_playlist_sort_order(playlist_id) {
+                    if let Err(e) = usb_db.add_track_to_playlist(playlist_id, track_id, sort_order) {
                         log::warn!(
                             "Failed to add track {} to playlist {}: {}",
                             playlist_track.track_filename,
@@ -436,15 +468,15 @@ fn remove_track_from_playlist(
     tracks_dir: &Path,
     playlist_track: &PlaylistTrack,
 ) {
-    // Find the playlist ID
-    if let Ok(Some(playlist)) = usb_db.get_playlist_by_name(&playlist_track.playlist, None) {
+    // Find the playlist ID (handles hierarchical qualified names like "Parent/Child")
+    if let Some(playlist_id) = resolve_playlist_by_qualified_name(usb_db, &playlist_track.playlist) {
         // Find the track ID by filename
         let track_path = tracks_dir.join(&playlist_track.track_filename);
         let track_path_str = track_path.to_string_lossy().to_string();
 
         if let Ok(Some(track)) = usb_db.get_track_by_path(&track_path_str) {
             if let Some(track_id) = track.id {
-                if let Err(e) = usb_db.remove_track_from_playlist(playlist.id, track_id) {
+                if let Err(e) = usb_db.remove_track_from_playlist(playlist_id, track_id) {
                     log::warn!(
                         "Failed to remove track {} from playlist {}: {}",
                         playlist_track.track_filename,

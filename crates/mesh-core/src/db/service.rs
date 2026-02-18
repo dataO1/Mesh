@@ -329,6 +329,18 @@ impl DatabaseService {
         Ok(Some(self.load_track_metadata(row)?))
     }
 
+    /// Find a track by matching the filename portion of its path
+    ///
+    /// Useful when absolute paths differ (e.g., USB mounted at different paths)
+    /// but the filename is the same. Returns the first match.
+    pub fn find_track_by_filename(&self, filename: &str) -> Result<Option<Track>, DbError> {
+        let row = TrackQuery::find_by_filename(&self.db, filename)?;
+        match row {
+            Some(r) => Ok(Some(Track::from_row_only(r))),
+            None => Ok(None),
+        }
+    }
+
     /// Save a track with all its metadata
     ///
     /// This will insert or update the track and all associated metadata
@@ -710,6 +722,26 @@ impl DatabaseService {
         PlaylistQuery::get_by_name(&self.db, name, parent_id)
     }
 
+    /// Resolve a NodeId path like "playlists/Parent/Child" to a playlist DB ID
+    ///
+    /// Walks the path segments, resolving each against its parent, supporting
+    /// arbitrary nesting depth.
+    pub fn resolve_playlist_path(&self, node_path: &str) -> Result<Option<i64>, DbError> {
+        let playlist_path = match node_path.strip_prefix("playlists/") {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+        let segments: Vec<&str> = playlist_path.split('/').collect();
+        let mut parent_id: Option<i64> = None;
+        for segment in &segments {
+            match PlaylistQuery::get_by_name(&self.db, segment, parent_id)? {
+                Some(playlist) => parent_id = Some(playlist.id),
+                None => return Ok(None),
+            }
+        }
+        Ok(parent_id)
+    }
+
     /// Create a new playlist
     pub fn create_playlist(&self, name: &str, parent_id: Option<i64>) -> Result<i64, DbError> {
         PlaylistQuery::create(&self.db, name, parent_id)
@@ -784,6 +816,15 @@ impl DatabaseService {
     /// Returns tracks with basic metadata only and similarity scores.
     pub fn find_similar_tracks(&self, track_id: i64, limit: usize) -> Result<Vec<(Track, f32)>, DbError> {
         let results = SimilarityQuery::find_similar(&self.db, track_id, limit)?;
+        Ok(results.into_iter().map(|(row, score)| (Track::from_row_only(row), score)).collect())
+    }
+
+    /// Find similar tracks using a raw feature vector (cross-database search).
+    ///
+    /// Searches this database's HNSW index using an externally-provided vector,
+    /// enabling seeds from one database to find matches in another.
+    pub fn find_similar_by_vector(&self, query_vec: &[f64], limit: usize) -> Result<Vec<(Track, f32)>, DbError> {
+        let results = SimilarityQuery::find_similar_by_vector(&self.db, query_vec, limit)?;
         Ok(results.into_iter().map(|(row, score)| (Track::from_row_only(row), score)).collect())
     }
 

@@ -47,10 +47,21 @@ pub struct TrackInfo {
 /// A track membership in a playlist (database record)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PlaylistTrack {
-    /// Playlist name
+    /// Playlist qualified name (e.g., "My Set" for root, "Live Sets/Opening" for nested)
     pub playlist: String,
     /// Track filename (e.g., "track.wav")
     pub track_filename: String,
+}
+
+/// Playlist metadata for sync comparison and hierarchical creation
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PlaylistExportInfo {
+    /// Playlist leaf name (e.g., "Opening")
+    pub name: String,
+    /// Parent playlist leaf name (None for root playlists)
+    pub parent_name: Option<String>,
+    /// Sort order within parent
+    pub sort_order: i32,
 }
 
 /// State of a collection (local or USB)
@@ -58,10 +69,10 @@ pub struct PlaylistTrack {
 pub struct CollectionState {
     /// Map of filename -> TrackInfo for tracks in tracks/
     pub tracks: HashMap<String, TrackInfo>,
-    /// Set of (playlist_name, track_filename) pairs
+    /// Set of (playlist_qualified_name, track_filename) pairs
     pub playlist_tracks: HashSet<PlaylistTrack>,
-    /// Set of playlist names
-    pub playlist_names: HashSet<String>,
+    /// Set of playlists with hierarchy info
+    pub playlists: HashSet<PlaylistExportInfo>,
 }
 
 /// A track to copy during sync
@@ -88,10 +99,10 @@ pub struct SyncPlan {
     pub playlist_tracks_to_add: Vec<PlaylistTrack>,
     /// Playlist track memberships to remove (delete from USB database)
     pub playlist_tracks_to_remove: Vec<PlaylistTrack>,
-    /// Playlists to create in USB database
-    pub playlists_to_create: Vec<String>,
-    /// Playlists to delete from USB database
-    pub playlists_to_delete: Vec<String>,
+    /// Playlists to create in USB database (ordered: parents before children)
+    pub playlists_to_create: Vec<PlaylistExportInfo>,
+    /// Playlists to delete from USB database (leaf name for lookup)
+    pub playlists_to_delete: Vec<PlaylistExportInfo>,
     /// Total bytes to transfer
     pub total_bytes: u64,
     /// Tracks missing LUFS analysis (need to analyze before export)
@@ -139,6 +150,35 @@ impl SyncPlan {
 /// Progress callback for scanning
 pub type ProgressCallback = Box<dyn Fn(usize, usize) + Send + Sync>;
 
+/// Build a qualified name for a playlist by walking up the parent chain
+///
+/// Returns path-like names: "Live Sets/Opening" for nested, "My Set" for root.
+/// This provides a unique identifier even when multiple playlists share a leaf name.
+fn build_qualified_name(playlist: &crate::db::Playlist, id_to_playlist: &HashMap<i64, &crate::db::Playlist>) -> String {
+    let mut parts = vec![playlist.name.clone()];
+    let mut current = playlist;
+    while let Some(pid) = current.parent_id {
+        if let Some(parent) = id_to_playlist.get(&pid) {
+            parts.push(parent.name.clone());
+            current = parent;
+        } else {
+            break;
+        }
+    }
+    parts.reverse();
+    parts.join("/")
+}
+
+/// Recursively collect all descendant playlist IDs
+fn collect_descendants(parent_id: i64, all_playlists: &[crate::db::Playlist], result: &mut HashSet<i64>) {
+    for p in all_playlists {
+        if p.parent_id == Some(parent_id) && !result.contains(&p.id) {
+            result.insert(p.id);
+            collect_descendants(p.id, all_playlists, result);
+        }
+    }
+}
+
 /// Scan a local collection from the database to discover tracks and playlist membership
 ///
 /// This is the database-based version that reads playlist membership from CozoDB
@@ -165,13 +205,57 @@ pub fn scan_local_collection_from_db(
     let all_playlists = PlaylistQuery::get_all(db)
         .map_err(|e| format!("Failed to get playlists: {}", e))?;
 
+    // Build id→playlist map for parent name resolution
+    let id_to_playlist: HashMap<i64, &crate::db::Playlist> =
+        all_playlists.iter().map(|p| (p.id, p)).collect();
+
+    // Build qualified_name→id map for matching against selected_playlists (which come from NodeIds)
+    let mut qualified_to_id: HashMap<String, i64> = HashMap::new();
+    let mut id_to_qualified: HashMap<i64, String> = HashMap::new();
+    for playlist in &all_playlists {
+        let qname = build_qualified_name(playlist, &id_to_playlist);
+        qualified_to_id.insert(qname.clone(), playlist.id);
+        id_to_qualified.insert(playlist.id, qname);
+    }
+
+    // Resolve selected_playlists to IDs, including descendants
+    let mut selected_ids: HashSet<i64> = HashSet::new();
+    for name in selected_playlists {
+        // Try exact match first (for root playlists, name == qualified_name)
+        if let Some(&id) = qualified_to_id.get(name.as_str()) {
+            selected_ids.insert(id);
+            collect_descendants(id, &all_playlists, &mut selected_ids);
+        } else {
+            // Also try matching just the leaf name for backwards compatibility
+            for playlist in &all_playlists {
+                if playlist.name == *name {
+                    selected_ids.insert(playlist.id);
+                    collect_descendants(playlist.id, &all_playlists, &mut selected_ids);
+                }
+            }
+        }
+    }
+
     // Filter to selected playlists and get their tracks
     for playlist in &all_playlists {
-        if !selected_playlists.contains(&playlist.name) {
+        if !selected_ids.contains(&playlist.id) {
             continue;
         }
 
-        state.playlist_names.insert(playlist.name.clone());
+        let qualified_name = id_to_qualified.get(&playlist.id)
+            .cloned()
+            .unwrap_or_else(|| playlist.name.clone());
+
+        // Resolve parent name for hierarchy preservation
+        let parent_name = playlist.parent_id
+            .and_then(|pid| id_to_playlist.get(&pid))
+            .map(|p| p.name.clone());
+
+        state.playlists.insert(PlaylistExportInfo {
+            name: playlist.name.clone(),
+            parent_name,
+            sort_order: playlist.sort_order,
+        });
 
         // Get tracks in this playlist
         let tracks = PlaylistQuery::get_tracks(db, playlist.id)
@@ -189,9 +273,9 @@ pub fn scan_local_collection_from_db(
             // Note: PlaylistQuery returns TrackRow, not Track
             track_data.entry(filename.clone()).or_insert((path, track));
 
-            // Add playlist track membership
+            // Add playlist track membership (using qualified name for unique identification)
             state.playlist_tracks.insert(PlaylistTrack {
-                playlist: playlist.name.clone(),
+                playlist: qualified_name.clone(),
                 track_filename: filename,
             });
         }
@@ -344,10 +428,31 @@ pub fn scan_usb_collection(
             }
         }
 
-        // Get playlists
+        // Get playlists with hierarchy info
         if let Ok(playlists) = PlaylistQuery::get_all(db_service.db()) {
-            for playlist in playlists {
-                state.playlist_names.insert(playlist.name.clone());
+            // Build id→playlist map for parent name resolution
+            let usb_id_to_playlist: HashMap<i64, &crate::db::Playlist> =
+                playlists.iter().map(|p| (p.id, p)).collect();
+            let mut usb_id_to_qualified: HashMap<i64, String> = HashMap::new();
+            for playlist in &playlists {
+                let qname = build_qualified_name(playlist, &usb_id_to_playlist);
+                usb_id_to_qualified.insert(playlist.id, qname);
+            }
+
+            for playlist in &playlists {
+                let parent_name = playlist.parent_id
+                    .and_then(|pid| usb_id_to_playlist.get(&pid))
+                    .map(|p| p.name.clone());
+
+                state.playlists.insert(PlaylistExportInfo {
+                    name: playlist.name.clone(),
+                    parent_name,
+                    sort_order: playlist.sort_order,
+                });
+
+                let qualified_name = usb_id_to_qualified.get(&playlist.id)
+                    .cloned()
+                    .unwrap_or_else(|| playlist.name.clone());
 
                 // Get tracks in this playlist
                 if let Ok(tracks) = PlaylistQuery::get_tracks(db_service.db(), playlist.id) {
@@ -359,7 +464,7 @@ pub fn scan_usb_collection(
                             .to_string();
 
                         state.playlist_tracks.insert(PlaylistTrack {
-                            playlist: playlist.name.clone(),
+                            playlist: qualified_name.clone(),
                             track_filename: filename,
                         });
                     }
@@ -650,19 +755,34 @@ pub fn build_sync_plan(local: &CollectionState, usb: &CollectionState) -> SyncPl
         }
     }
 
-    // Playlists to create: in local but not in USB
-    for name in &local.playlist_names {
-        if !usb.playlist_names.contains(name) {
-            plan.playlists_to_create.push(name.clone());
+    // Playlists to create: in local but not in USB (matched by name + parent_name)
+    for info in &local.playlists {
+        if !usb.playlists.contains(info) {
+            plan.playlists_to_create.push(info.clone());
         }
     }
+    // Sort playlists_to_create topologically: parents (parent_name=None) before children
+    plan.playlists_to_create.sort_by(|a, b| {
+        match (&a.parent_name, &b.parent_name) {
+            (None, Some(_)) => std::cmp::Ordering::Less,     // root before child
+            (Some(_), None) => std::cmp::Ordering::Greater,  // child after root
+            _ => a.sort_order.cmp(&b.sort_order),            // same level: by sort_order
+        }
+    });
 
-    // Playlists to delete: in USB but not in local
-    for name in &usb.playlist_names {
-        if !local.playlist_names.contains(name) {
-            plan.playlists_to_delete.push(name.clone());
+    // Playlists to delete: in USB but not in local (reverse order: children before parents)
+    for info in &usb.playlists {
+        if !local.playlists.contains(info) {
+            plan.playlists_to_delete.push(info.clone());
         }
     }
+    plan.playlists_to_delete.sort_by(|a, b| {
+        match (&a.parent_name, &b.parent_name) {
+            (None, Some(_)) => std::cmp::Ordering::Greater,  // root after child (delete children first)
+            (Some(_), None) => std::cmp::Ordering::Less,
+            _ => a.sort_order.cmp(&b.sort_order),
+        }
+    });
 
     // Check which tracks are missing LUFS (for auto-analysis before export)
     // Read LUFS from database, not from WAV file metadata
@@ -789,7 +909,11 @@ mod tests {
                 track_filename: "test.wav".to_string(),
             }],
             playlist_tracks_to_remove: vec![],
-            playlists_to_create: vec!["My Playlist".to_string()],
+            playlists_to_create: vec![PlaylistExportInfo {
+                name: "My Playlist".to_string(),
+                parent_name: None,
+                sort_order: 0,
+            }],
             playlists_to_delete: vec![],
             total_bytes: 10_000_000,
             tracks_missing_lufs: vec![],
@@ -899,5 +1023,82 @@ mod tests {
         let plan = build_sync_plan(&local, &usb);
         assert!(plan.tracks_to_copy.is_empty(), "Should not trigger WAV copy");
         assert_eq!(plan.tracks_to_update.len(), 1, "Should trigger metadata-only update");
+    }
+
+    #[test]
+    fn test_build_sync_plan_nested_playlists() {
+        let mut local = CollectionState::default();
+        // Root playlist "Live Sets"
+        local.playlists.insert(PlaylistExportInfo {
+            name: "Live Sets".to_string(),
+            parent_name: None,
+            sort_order: 0,
+        });
+        // Child playlist "Opening" under "Live Sets"
+        local.playlists.insert(PlaylistExportInfo {
+            name: "Opening".to_string(),
+            parent_name: Some("Live Sets".to_string()),
+            sort_order: 0,
+        });
+
+        let usb = CollectionState::default();
+        let plan = build_sync_plan(&local, &usb);
+
+        // Both playlists should be created
+        assert_eq!(plan.playlists_to_create.len(), 2);
+        // Parent should come first (topological sort)
+        assert_eq!(plan.playlists_to_create[0].name, "Live Sets");
+        assert!(plan.playlists_to_create[0].parent_name.is_none());
+        assert_eq!(plan.playlists_to_create[1].name, "Opening");
+        assert_eq!(plan.playlists_to_create[1].parent_name, Some("Live Sets".to_string()));
+    }
+
+    #[test]
+    fn test_build_sync_plan_nested_playlist_already_on_usb() {
+        let mut local = CollectionState::default();
+        local.playlists.insert(PlaylistExportInfo {
+            name: "Live Sets".to_string(),
+            parent_name: None,
+            sort_order: 0,
+        });
+        local.playlists.insert(PlaylistExportInfo {
+            name: "Opening".to_string(),
+            parent_name: Some("Live Sets".to_string()),
+            sort_order: 0,
+        });
+
+        // USB already has both playlists
+        let mut usb = CollectionState::default();
+        usb.playlists.insert(PlaylistExportInfo {
+            name: "Live Sets".to_string(),
+            parent_name: None,
+            sort_order: 0,
+        });
+        usb.playlists.insert(PlaylistExportInfo {
+            name: "Opening".to_string(),
+            parent_name: Some("Live Sets".to_string()),
+            sort_order: 0,
+        });
+
+        let plan = build_sync_plan(&local, &usb);
+        assert!(plan.playlists_to_create.is_empty(), "No playlists should be created");
+        assert!(plan.playlists_to_delete.is_empty(), "No playlists should be deleted");
+    }
+
+    #[test]
+    fn test_build_qualified_name() {
+        use crate::db::Playlist;
+
+        let parent = Playlist { id: 1, parent_id: None, name: "Live Sets".to_string(), sort_order: 0 };
+        let child = Playlist { id: 2, parent_id: Some(1), name: "Opening".to_string(), sort_order: 0 };
+        let grandchild = Playlist { id: 3, parent_id: Some(2), name: "Warm Up".to_string(), sort_order: 0 };
+
+        let id_map: HashMap<i64, &Playlist> = vec![
+            (1, &parent), (2, &child), (3, &grandchild)
+        ].into_iter().collect();
+
+        assert_eq!(build_qualified_name(&parent, &id_map), "Live Sets");
+        assert_eq!(build_qualified_name(&child, &id_map), "Live Sets/Opening");
+        assert_eq!(build_qualified_name(&grandchild, &id_map), "Live Sets/Opening/Warm Up");
     }
 }

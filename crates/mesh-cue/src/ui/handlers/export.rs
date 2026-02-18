@@ -17,9 +17,12 @@ impl MeshCueApp {
     pub fn handle_open_export(&mut self) -> Task<Message> {
         log::info!("Opening USB export modal");
         self.export_state.is_open = true;
-        self.export_state.reset();
-        // Request fresh device list from UsbManager
-        self.domain.refresh_usb_devices();
+        // Don't reset if export is in progress — re-opening should show current progress
+        if !self.export_state.phase.is_exporting() {
+            self.export_state.reset();
+            // Request fresh device list from UsbManager
+            self.domain.refresh_usb_devices();
+        }
         Task::none()
     }
 

@@ -97,6 +97,11 @@ impl UsbStorage {
         &self.collection_root
     }
 
+    /// Get the database service (for suggestion queries across all USB sources)
+    pub fn db(&self) -> Option<&Arc<DatabaseService>> {
+        self.db_service.as_ref()
+    }
+
     /// Load config from USB if present
     pub fn load_config(&self) -> Option<ExportableConfig> {
         let config_path = self.collection_root.join("player-config.yaml");
@@ -110,69 +115,97 @@ impl UsbStorage {
 
     /// Build the node tree from USB's mesh.db database
     ///
-    /// Playlists are direct children of root - no extra nesting.
+    /// Respects playlist hierarchy (parent_id) for nested display.
     fn build_tree_from_db(&mut self) {
         self.nodes.clear();
 
-        // Build playlists from database - they become direct children of root
-        let mut playlist_children = Vec::new();
-
-        if let Some(ref db_service) = self.db_service {
-            // Get all playlists from database
-            if let Ok(playlists) = PlaylistQuery::get_all(db_service.db()) {
-                for playlist in playlists {
-                    // Playlists are direct children of root (no "playlists/" prefix)
-                    let playlist_id = NodeId(format!("playlist:{}", playlist.name));
-                    playlist_children.push(playlist_id.clone());
-
-                    // Get tracks in this playlist
-                    let mut track_children = Vec::new();
-                    if let Ok(tracks) = PlaylistQuery::get_tracks(db_service.db(), playlist.id) {
-                        for track in tracks {
-                            // Build track path pointing to tracks/ folder
-                            let filename = PathBuf::from(&track.path)
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or(&track.name)
-                                .to_string();
-
-                            let track_id = playlist_id.child(&filename);
-                            let track_path = self.collection_root.join("tracks").join(&filename);
-
-                            let track_node = PlaylistNode {
-                                id: track_id.clone(),
-                                kind: NodeKind::Track,
-                                name: track.name.clone(),
-                                children: Vec::new(),
-                                track_path: Some(track_path),
-                            };
-                            self.nodes.insert(track_id.clone(), track_node);
-                            track_children.push(track_id);
-                        }
-                    }
-
-                    // Create playlist node
-                    let playlist_node = PlaylistNode {
-                        id: playlist_id.clone(),
-                        kind: NodeKind::Playlist,
-                        name: playlist.name,
-                        children: track_children,
-                        track_path: None,
-                    };
-                    self.nodes.insert(playlist_id, playlist_node);
-                }
+        // Clone the Arc to avoid borrow conflict (db_service is Arc<DatabaseService>)
+        let db_service = match self.db_service.clone() {
+            Some(db) => db,
+            None => {
+                self.nodes.insert(NodeId::root(), PlaylistNode {
+                    id: NodeId::root(),
+                    kind: NodeKind::Root,
+                    name: self.device.label.clone(),
+                    children: Vec::new(),
+                    track_path: None,
+                });
+                return;
             }
-        }
+        };
 
-        // Create root node with playlists as direct children
+        // Build root-level playlists, then recurse into children
+        let root_playlists = PlaylistQuery::get_roots(db_service.db())
+            .unwrap_or_default();
+
+        let root_children = self.build_playlist_nodes(db_service.db(), &root_playlists, "playlist");
+
         let root = PlaylistNode {
             id: NodeId::root(),
             kind: NodeKind::Root,
             name: self.device.label.clone(),
-            children: playlist_children,
+            children: root_children,
             track_path: None,
         };
         self.nodes.insert(NodeId::root(), root);
+    }
+
+    /// Recursively build playlist nodes with their tracks and child playlists
+    fn build_playlist_nodes(
+        &mut self,
+        db: &crate::db::MeshDb,
+        playlists: &[crate::db::Playlist],
+        parent_prefix: &str,
+    ) -> Vec<NodeId> {
+        let mut children = Vec::new();
+
+        for playlist in playlists {
+            let playlist_id = NodeId(format!("{}:{}", parent_prefix, playlist.name));
+            children.push(playlist_id.clone());
+
+            // Build track nodes for this playlist
+            let mut playlist_children = Vec::new();
+            if let Ok(tracks) = PlaylistQuery::get_tracks(db, playlist.id) {
+                for track in tracks {
+                    let filename = PathBuf::from(&track.path)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(&track.name)
+                        .to_string();
+
+                    let track_id = playlist_id.child(&filename);
+                    let track_path = self.collection_root.join("tracks").join(&filename);
+
+                    self.nodes.insert(track_id.clone(), PlaylistNode {
+                        id: track_id.clone(),
+                        kind: NodeKind::Track,
+                        name: track.name.clone(),
+                        children: Vec::new(),
+                        track_path: Some(track_path),
+                    });
+                    playlist_children.push(track_id);
+                }
+            }
+
+            // Recursively build child playlists
+            if let Ok(child_playlists) = PlaylistQuery::get_children(db, playlist.id) {
+                if !child_playlists.is_empty() {
+                    let child_prefix = format!("{}:{}", parent_prefix, playlist.name);
+                    let nested = self.build_playlist_nodes(db, &child_playlists, &child_prefix);
+                    playlist_children.extend(nested);
+                }
+            }
+
+            self.nodes.insert(playlist_id.clone(), PlaylistNode {
+                id: playlist_id,
+                kind: NodeKind::Playlist,
+                name: playlist.name.clone(),
+                children: playlist_children,
+                track_path: None,
+            });
+        }
+
+        children
     }
 }
 

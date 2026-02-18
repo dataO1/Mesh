@@ -33,6 +33,22 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 ### Added
 
+- **Cross-database suggestions** — The suggestion engine now searches all
+  connected libraries simultaneously (local collection + all mounted USB
+  sticks). Seeds loaded from any source find matches across every database
+  via cross-DB HNSW vector search. When results span multiple libraries,
+  a gray source tag (e.g., "Local", "SANDISK") identifies each suggestion's
+  origin. Single-source queries omit the tag to reduce visual noise.
+
+- **USB portable paths** — USB databases now store relative paths
+  (`tracks/song.wav`) instead of absolute mount paths, making the database
+  portable across machines with different mount points. **Migration:**
+  delete `mesh-collection/mesh.db` on existing USB sticks, then re-export.
+  WAV files do not need to be re-copied.
+
+- **Hierarchical USB playlists** — Playlists on USB now display with their
+  full folder hierarchy instead of being flattened to root level.
+
 - **Slicer editor modal** — The 16x16 slice editor grid has moved from an
   inline element in the track editor to a dedicated modal overlay, following
   the established FX Presets modal pattern. A new "Slicer" button in the app
@@ -145,6 +161,15 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   updates separately from file copies, so "42 metadata to sync" is visible
   instead of misleading "Everything up to date". The compact status bar at the
   bottom of the collection view also reflects all phases.
+
+- **Nested playlist track operations** — Fixed tracks not appearing after
+  drag-drop into nested playlists in mesh-cue (e.g., "Diskroma/test"). The
+  playlist resolver now walks the full hierarchy instead of doing a flat
+  name lookup.
+
+- **Suggestion silent failure** — Fixed the suggestion button turning green
+  but showing no results when no audible seeds are available. Now logs a
+  message and avoids entering the loading state.
 
 - **Tags visible on USB playlists** — Tags were missing from USB playlist views
   because `UsbStorage::get_tracks()` hardcoded `tags: Vec::new()` and the USB

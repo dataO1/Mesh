@@ -42,33 +42,25 @@ impl DatabaseStorage {
         }
     }
 
-    /// Get database playlist ID from a NodeId like "playlists/MyPlaylist"
+    /// Get database playlist ID from a NodeId like "playlists/MyPlaylist" or "playlists/Parent/Child"
+    ///
+    /// Walks down the hierarchy path segment by segment, resolving each name
+    /// via get_by_name with the correct parent_id. Supports arbitrary nesting depth.
     fn get_playlist_db_id(&self, node_id: &NodeId) -> Result<i64, PlaylistError> {
-        let playlist_name = node_id.0.strip_prefix("playlists/")
+        let playlist_path = node_id.0.strip_prefix("playlists/")
             .ok_or_else(|| PlaylistError::NotFound(node_id.0.clone()))?;
 
-        // Handle nested playlists: "playlists/Parent/Child" -> name="Child", parent="Parent"
-        let (parent_name, name) = if let Some((parent_path, name)) = playlist_name.rsplit_once('/') {
-            (Some(parent_path), name)
-        } else {
-            (None, playlist_name)
-        };
+        let segments: Vec<&str> = playlist_path.split('/').collect();
+        let mut parent_id: Option<i64> = None;
 
-        // Look up parent ID first if needed
-        let parent_id = if let Some(pname) = parent_name {
-            let parent = PlaylistQuery::get_by_name(self.service.db(), pname, None)
+        for segment in &segments {
+            let playlist = PlaylistQuery::get_by_name(self.service.db(), segment, parent_id)
                 .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?
-                .ok_or_else(|| PlaylistError::NotFound(format!("Parent playlist: {}", pname)))?;
-            Some(parent.id)
-        } else {
-            None
-        };
+                .ok_or_else(|| PlaylistError::NotFound(node_id.0.clone()))?;
+            parent_id = Some(playlist.id);
+        }
 
-        let playlist = PlaylistQuery::get_by_name(self.service.db(), name, parent_id)
-            .map_err(|e| PlaylistError::InvalidOperation(e.to_string()))?
-            .ok_or_else(|| PlaylistError::NotFound(node_id.0.clone()))?;
-
-        Ok(playlist.id)
+        parent_id.ok_or_else(|| PlaylistError::NotFound(node_id.0.clone()))
     }
 
     /// Get database track ID from a file path
@@ -178,18 +170,25 @@ impl PlaylistStorage for DatabaseStorage {
             });
         }
 
-        // Handle playlists (e.g., "playlists/MyPlaylist")
+        // Handle playlists (e.g., "playlists/MyPlaylist" or "playlists/Parent/Child")
         if id.0.starts_with("playlists/") {
-            let playlist_name = id.0.strip_prefix("playlists/")?;
-            // Could be a playlist or a track in a playlist
+            // Try to resolve as a playlist (handles arbitrary nesting depth)
+            if let Ok(playlist_db_id) = self.get_playlist_db_id(id) {
+                let display_name = id.name().to_string(); // leaf name for display
 
-            // First check if it's a playlist
-            if let Ok(Some(_)) = PlaylistQuery::get_by_name(self.service.db(), playlist_name, None) {
+                // Get child playlists to populate the tree
+                let child_playlists = PlaylistQuery::get_children(self.service.db(), playlist_db_id)
+                    .unwrap_or_default();
+                let children: Vec<NodeId> = child_playlists
+                    .iter()
+                    .map(|p| id.child(&p.name))
+                    .collect();
+
                 return Some(PlaylistNode {
                     id: id.clone(),
                     kind: NodeKind::Playlist,
-                    name: playlist_name.to_string(),
-                    children: Vec::new(),
+                    name: display_name,
+                    children,
                     track_path: None,
                 });
             }

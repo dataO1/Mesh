@@ -11,7 +11,7 @@ use mesh_core::playlist::NodeId;
 use mesh_core::usb::UsbMessage as UsbMsg;
 use mesh_widgets::{parse_hex_color, scroll_to_centered_selection, TrackRow, TrackTag};
 use mesh_core::types::PlayState;
-use crate::suggestions::{query_suggestions, SuggestedTrack};
+use crate::suggestions::{query_suggestions, DbSource, SuggestedTrack};
 use crate::ui::app::MeshApp;
 use crate::ui::collection_browser::CollectionBrowserMessage;
 use crate::ui::message::Message;
@@ -24,16 +24,23 @@ pub fn handle_browser(app: &mut MeshApp, browser_msg: CollectionBrowserMessage) 
             let was_enabled = app.collection_browser.is_suggestions_enabled();
             app.collection_browser.set_suggestions_enabled(!was_enabled);
             if !was_enabled {
-                // Just turned on — trigger query
-                app.collection_browser.set_suggestion_loading(true);
-                return trigger_suggestion_query(app);
+                // Just turned on — trigger query if seeds available
+                if active_seed_paths(app).is_empty() {
+                    log::info!("Suggestions enabled but no audible seeds (need playing deck with volume > 0)");
+                    app.collection_browser.set_suggestion_loading(false);
+                } else {
+                    app.collection_browser.set_suggestion_loading(true);
+                    return trigger_suggestion_query(app);
+                }
             }
             return Task::none();
         }
         CollectionBrowserMessage::RefreshSuggestions => {
             if app.collection_browser.is_suggestions_enabled() {
-                app.collection_browser.set_suggestion_loading(true);
-                return trigger_suggestion_query(app);
+                if !active_seed_paths(app).is_empty() {
+                    app.collection_browser.set_suggestion_loading(true);
+                    return trigger_suggestion_query(app);
+                }
             }
             return Task::none();
         }
@@ -242,6 +249,9 @@ pub fn active_seed_paths(app: &MeshApp) -> Vec<String> {
 ///
 /// Only decks that are loaded, playing, and have volume > 0 are used as seeds.
 /// This ensures suggestions reflect what the audience is actually hearing.
+///
+/// Collects all available database sources (local + mounted USBs) so the
+/// suggestion engine can search across all libraries simultaneously.
 pub fn trigger_suggestion_query(app: &MeshApp) -> Task<Message> {
     let seed_paths = active_seed_paths(app);
 
@@ -249,12 +259,27 @@ pub fn trigger_suggestion_query(app: &MeshApp) -> Task<Message> {
         return Task::none();
     }
 
-    let db = app.domain.active_db_arc();
+    // Collect all available database sources: local collection + all mounted USBs
+    let mut sources = vec![DbSource {
+        db: app.domain.local_db_arc(),
+        collection_root: app.domain.local_collection_path().to_path_buf(),
+        name: "Local".to_string(),
+    }];
+    for (_, usb_storage) in &app.collection_browser.usb_storages {
+        if let Some(db) = usb_storage.db() {
+            sources.push(DbSource {
+                db: db.clone(),
+                collection_root: usb_storage.collection_root().clone(),
+                name: usb_storage.device().label.clone(),
+            });
+        }
+    }
+
     let energy_direction = app.collection_browser.energy_direction();
     let key_model = app.config.display.key_scoring_model;
 
     Task::perform(
-        async move { query_suggestions(&db, seed_paths, energy_direction, key_model, 10_000, 30) },
+        async move { query_suggestions(&sources, seed_paths, energy_direction, key_model, 10_000, 30) },
         |result| Message::SuggestionsReady(Arc::new(result)),
     )
 }

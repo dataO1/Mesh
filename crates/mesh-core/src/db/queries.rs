@@ -96,6 +96,23 @@ impl TrackQuery {
         Ok(rows_to_tracks(&result).into_iter().next())
     }
 
+    /// Find a track by filename (last path segment), useful for cross-mount lookups
+    pub fn find_by_filename(db: &MeshDb, filename: &str) -> Result<Option<TrackRow>, DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("filename".to_string(), DataValue::Str(filename.into()));
+
+        let result = db.run_query(r#"
+            ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
+              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
+                *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
+                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
+                ends_with(path, $filename)
+            :limit 1
+        "#, params)?;
+
+        Ok(rows_to_tracks(&result).into_iter().next())
+    }
+
     /// Get all tracks in the database
     pub fn get_all(db: &MeshDb) -> Result<Vec<TrackRow>, DbError> {
         let result = db.run_query(r#"
@@ -607,6 +624,30 @@ impl SimilarityQuery {
                 *audio_features{track_id: $track_id, vec: query_vec},
                 ~audio_features:similarity_index{track_id | query: query_vec, k: $k, ef: $ef, bind_distance: dist},
                 track_id != $track_id,
+                *tracks{id: track_id, path, folder_path, name, artist, bpm, original_bpm, key,
+                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+            :order dist
+        "#, params)?;
+
+        Ok(rows_to_tracks_with_distance(&result))
+    }
+
+    /// Find similar tracks by raw feature vector (for cross-database search).
+    ///
+    /// Unlike `find_similar()` which looks up the vector from the same DB,
+    /// this accepts an external vector — enabling seeds from one database
+    /// to search another database's HNSW index.
+    pub fn find_similar_by_vector(db: &MeshDb, query_vec: &[f64], limit: usize) -> Result<Vec<(TrackRow, f32)>, DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("query_vec".to_string(), DataValue::List(query_vec.iter().map(|&v| DataValue::from(v)).collect()));
+        let k = limit as i64;
+        params.insert("k".to_string(), DataValue::from(k));
+        params.insert("ef".to_string(), DataValue::from(k.max(50)));
+
+        let result = db.run_query(r#"
+            ?[track_id, path, folder_path, name, artist, bpm, original_bpm, key,
+              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path, dist] :=
+                ~audio_features:similarity_index{track_id | query: $query_vec, k: $k, ef: $ef, bind_distance: dist},
                 *tracks{id: track_id, path, folder_path, name, artist, bpm, original_bpm, key,
                         duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
             :order dist

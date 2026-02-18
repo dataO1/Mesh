@@ -300,6 +300,16 @@ impl MeshDomain {
         &self.local_db
     }
 
+    /// Get local DB as an Arc (for async closures)
+    pub fn local_db_arc(&self) -> Arc<DatabaseService> {
+        self.local_db.clone()
+    }
+
+    /// Get the local collection path
+    pub fn local_collection_path(&self) -> &Path {
+        &self.local_collection_path
+    }
+
     /// Get the active collection path
     pub fn active_collection_path(&self) -> &Path {
         match &self.active_storage {

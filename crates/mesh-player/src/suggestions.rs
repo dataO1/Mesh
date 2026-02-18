@@ -4,8 +4,9 @@
 //! loaded deck seeds, then re-scores them using a unified multi-factor formula
 //! with energy-direction-aware harmonic scoring.
 
-use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::{Arc, LazyLock};
 use mesh_core::db::{DatabaseService, MlScores, Track};
 use mesh_core::music::MusicalKey;
 use crate::config::KeyScoringModel;
@@ -17,6 +18,18 @@ pub struct SuggestedTrack {
     pub score: f32,
     /// Auto-generated reason tags as (label, hex_color)
     pub reason_tags: Vec<(String, Option<String>)>,
+}
+
+/// A database source for suggestion queries.
+///
+/// Each source represents a separate track library (local collection or USB device).
+/// Seeds are resolved per-source, and HNSW vector search runs across all sources
+/// to find the best matches regardless of which library they're in.
+pub struct DbSource {
+    pub db: Arc<DatabaseService>,
+    pub collection_root: PathBuf,
+    /// Human-readable name (e.g., "Local" or USB device label)
+    pub name: String,
 }
 
 /// Classification of the musical relationship between two keys.
@@ -385,10 +398,10 @@ fn production_match_penalty(
 ///
 /// Genres with fewer than 3 tracks use raw values (insufficient sample for stats).
 /// The z-score is mapped to 0–1 via linear transform: `(z/3 + 0.5).clamp(0, 1)`.
-fn normalize_aggression_by_genre(
-    ml_scores: &HashMap<i64, MlScores>,
-) -> HashMap<i64, f32> {
-    let mut genre_values: HashMap<&str, Vec<(i64, f32)>> = HashMap::new();
+fn normalize_aggression_by_genre<K: Eq + std::hash::Hash + Copy>(
+    ml_scores: &HashMap<K, MlScores>,
+) -> HashMap<K, f32> {
+    let mut genre_values: HashMap<&str, Vec<(K, f32)>> = HashMap::new();
     for (&tid, scores) in ml_scores {
         let aggression = match scores.aggression {
             Some(a) => a,
@@ -550,26 +563,48 @@ fn generate_reason_tags(
 /// 5. Filter by adaptive harmonic threshold
 /// 6. Sort and return the top results
 pub fn query_suggestions(
-    db: &DatabaseService,
+    sources: &[DbSource],
     seed_paths: Vec<String>,
     energy_direction: f32,
     key_scoring_model: KeyScoringModel,
     per_seed_limit: usize,
     total_limit: usize,
 ) -> Result<Vec<SuggestedTrack>, String> {
-    // Step 1: Resolve seed paths to track IDs
-    let mut seed_tracks: Vec<Track> = Vec::new();
+    if sources.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Step 1: Resolve seed paths to tracks across all database sources.
+    // For each seed path, try each source — first with the absolute path
+    // (local DB stores full paths), then with the path relative to collection_root
+    // (USB DBs store portable relative paths).
+    let mut seed_tracks: Vec<(usize, Track)> = Vec::new(); // (source_index, track)
     for path in &seed_paths {
-        match db.get_track_by_path(path) {
-            Ok(Some(track)) if track.id.is_some() => {
-                seed_tracks.push(track);
+        let path_buf = PathBuf::from(path);
+        let mut found = false;
+        for (src_idx, source) in sources.iter().enumerate() {
+            // Try absolute path (local DB stores full paths)
+            if let Ok(Some(track)) = source.db.get_track_by_path(path) {
+                if track.id.is_some() {
+                    seed_tracks.push((src_idx, track));
+                    found = true;
+                    break;
+                }
             }
-            Ok(_) => {
-                log::debug!("Suggestion seed not in database: {}", path);
+            // Try relative path (USB DB stores paths relative to collection_root)
+            if let Ok(rel) = path_buf.strip_prefix(&source.collection_root) {
+                let rel_str = rel.to_string_lossy();
+                if let Ok(Some(track)) = source.db.get_track_by_path(&rel_str) {
+                    if track.id.is_some() {
+                        seed_tracks.push((src_idx, track));
+                        found = true;
+                        break;
+                    }
+                }
             }
-            Err(e) => {
-                log::warn!("Failed to look up seed track {}: {}", path, e);
-            }
+        }
+        if !found {
+            log::debug!("Suggestion seed not found in any database: {}", path);
         }
     }
 
@@ -577,34 +612,71 @@ pub fn query_suggestions(
         return Ok(Vec::new());
     }
 
-    let seed_ids: Vec<i64> = seed_tracks.iter().filter_map(|t| t.id).collect();
+    // Seed filenames for cross-DB deduplication (same audio file may exist in multiple DBs)
+    let seed_filenames: HashSet<String> = seed_tracks
+        .iter()
+        .filter_map(|(_, t)| t.path.file_name().map(|n| n.to_string_lossy().to_string()))
+        .collect();
 
-    // Step 2 & 3: Query similar tracks for each seed and merge
-    let mut candidates: HashMap<i64, (Track, f32)> = HashMap::new();
+    // Step 2 & 3: Cross-database HNSW search.
+    // For each seed, extract its feature vector and search ALL databases.
+    // In the seed's own DB we use the efficient by-ID lookup; in other DBs
+    // we pass the raw vector to their HNSW index.
+    let mut candidates: HashMap<(usize, i64), (Track, f32)> = HashMap::new();
 
-    for &seed_id in &seed_ids {
-        match db.find_similar_tracks(seed_id, per_seed_limit) {
-            Ok(results) => {
-                for (track, distance) in results {
-                    if let Some(track_id) = track.id {
-                        // Skip seed tracks themselves
-                        if seed_ids.contains(&track_id) {
-                            continue;
-                        }
-                        // Keep minimum distance per candidate
-                        candidates
-                            .entry(track_id)
-                            .and_modify(|(_, existing_dist)| {
-                                if distance < *existing_dist {
-                                    *existing_dist = distance;
+    for &(seed_src_idx, ref seed_track) in &seed_tracks {
+        let seed_id = match seed_track.id {
+            Some(id) => id,
+            None => continue,
+        };
+
+        // Get the seed's feature vector for cross-DB search
+        let seed_vector = sources[seed_src_idx].db.get_audio_features(seed_id)
+            .ok()
+            .flatten()
+            .map(|f| f.to_vector());
+
+        for (target_idx, target_source) in sources.iter().enumerate() {
+            let results = if target_idx == seed_src_idx {
+                // Same DB — efficient by-ID lookup
+                target_source.db.find_similar_tracks(seed_id, per_seed_limit)
+            } else if let Some(ref vec) = seed_vector {
+                // Different DB — cross-DB vector search
+                target_source.db.find_similar_by_vector(vec, per_seed_limit)
+            } else {
+                continue; // No features available for this seed
+            };
+
+            match results {
+                Ok(results) => {
+                    for (mut track, distance) in results {
+                        if let Some(track_id) = track.id {
+                            // Skip if this is a seed track in another DB (same filename)
+                            if let Some(name) = track.path.file_name() {
+                                if seed_filenames.contains(&*name.to_string_lossy()) {
+                                    continue;
                                 }
-                            })
-                            .or_insert((track, distance));
+                            }
+                            let key = (target_idx, track_id);
+                            // Resolve relative paths to absolute for loading
+                            if !track.path.is_absolute() {
+                                track.path = target_source.collection_root.join(&track.path);
+                            }
+                            // Keep minimum distance per candidate
+                            candidates
+                                .entry(key)
+                                .and_modify(|(_, existing_dist)| {
+                                    if distance < *existing_dist {
+                                        *existing_dist = distance;
+                                    }
+                                })
+                                .or_insert((track, distance));
+                        }
                     }
                 }
-            }
-            Err(e) => {
-                log::warn!("Similarity query failed for seed {}: {}", seed_id, e);
+                Err(e) => {
+                    log::warn!("Similarity query failed for seed {} in source {}: {}", seed_id, target_idx, e);
+                }
             }
         }
     }
@@ -616,7 +688,7 @@ pub fn query_suggestions(
     // Step 4: Compute seed averages for scoring
 
     let avg_seed_bpm = {
-        let bpm_values: Vec<f64> = seed_tracks.iter().filter_map(|t| t.bpm).collect();
+        let bpm_values: Vec<f64> = seed_tracks.iter().filter_map(|(_, t)| t.bpm).collect();
         if bpm_values.is_empty() {
             128.0
         } else {
@@ -627,22 +699,43 @@ pub fn query_suggestions(
     // Collect seed keys for harmonic scoring
     let seed_keys: Vec<MusicalKey> = seed_tracks
         .iter()
-        .filter_map(|t| t.key.as_deref().and_then(MusicalKey::parse))
+        .filter_map(|(_, t)| t.key.as_deref().and_then(MusicalKey::parse))
         .collect();
 
     // Energy direction bias: -1.0 (drop) through 0.0 (maintain) to +1.0 (peak)
     let energy_bias = (energy_direction - 0.5) * 2.0;
     let filter_threshold = adaptive_filter_threshold(energy_bias);
 
-    // Step 4b: Batch-fetch ML scores for all candidates + seeds
-    let candidate_ids: Vec<i64> = candidates.keys().copied().collect();
-    let mut all_ids = candidate_ids.clone();
-    all_ids.extend_from_slice(&seed_ids);
-
-    let ml_scores = db.get_ml_scores_batch(&all_ids).unwrap_or_default();
+    // Step 4b: Batch-fetch ML scores from each source DB, merged under composite keys
+    let ml_scores: HashMap<(usize, i64), MlScores> = {
+        // Group IDs by source index
+        let mut ids_by_source: HashMap<usize, Vec<i64>> = HashMap::new();
+        for &(src_idx, track_id) in candidates.keys() {
+            ids_by_source.entry(src_idx).or_default().push(track_id);
+        }
+        for &(src_idx, ref track) in &seed_tracks {
+            if let Some(id) = track.id {
+                ids_by_source.entry(src_idx).or_default().push(id);
+            }
+        }
+        // Fetch from each source and merge under (source_index, track_id) keys
+        let mut merged = HashMap::new();
+        for (src_idx, ids) in &ids_by_source {
+            if let Ok(scores) = sources[*src_idx].db.get_ml_scores_batch(ids) {
+                for (id, score) in scores {
+                    merged.insert((*src_idx, id), score);
+                }
+            }
+        }
+        merged
+    };
 
     // Compute seed ML averages (fallback 0.5 when no data)
-    let seed_ml: Vec<&MlScores> = seed_ids.iter().filter_map(|id| ml_scores.get(id)).collect();
+    let seed_ml: Vec<&MlScores> = seed_tracks
+        .iter()
+        .filter_map(|(idx, t)| t.id.map(|id| (*idx, id)))
+        .filter_map(|key| ml_scores.get(&key))
+        .collect();
     let avg_ml = |f: fn(&MlScores) -> Option<f32>| -> f32 {
         let vals: Vec<f32> = seed_ml.iter().filter_map(|s| f(s)).collect();
         if vals.is_empty() { 0.5 } else { vals.iter().sum::<f32>() / vals.len() as f32 }
@@ -657,7 +750,11 @@ pub fn query_suggestions(
     // Step 4c: Genre-normalize aggression across the candidate pool
     let norm_aggression = normalize_aggression_by_genre(&ml_scores);
     let avg_seed_aggression = {
-        let vals: Vec<f32> = seed_ids.iter().filter_map(|id| norm_aggression.get(id).copied()).collect();
+        let vals: Vec<f32> = seed_tracks
+            .iter()
+            .filter_map(|(idx, t)| t.id.map(|id| (*idx, id)))
+            .filter_map(|key| norm_aggression.get(&key).copied())
+            .collect();
         if vals.is_empty() { 0.5 } else { vals.iter().sum::<f32>() / vals.len() as f32 }
     };
 
@@ -681,9 +778,18 @@ pub fn query_suggestions(
     let w_contrast   = 0.04 * bias_abs;          // 0.00 → 0.04
     let w_aggression = 0.30 * bias_abs;          // 0.00 → 0.30
 
+    // Collect source names per candidate for source-tag generation later
+    let source_names: HashMap<usize, &str> = sources.iter().enumerate()
+        .map(|(i, s)| (i, s.name.as_str()))
+        .collect();
+    let multi_source = {
+        let active_sources: HashSet<usize> = candidates.keys().map(|(idx, _)| *idx).collect();
+        active_sources.len() > 1
+    };
+
     let mut suggestions: Vec<SuggestedTrack> = candidates
-        .into_values()
-        .filter_map(|(track, hnsw_dist)| {
+        .into_iter()
+        .filter_map(|((src_idx, _track_id), (track, hnsw_dist))| {
             // Key transition score: best match across all seeds
             // Also capture transition type for reason tag generation
             let (best_key_score, best_tt) = track
@@ -725,7 +831,8 @@ pub fn query_suggestions(
                 .unwrap_or(0.5);
 
             // ML score penalties (fallback 0.5 = neutral when no data)
-            let cand_ml = track.id.and_then(|id| ml_scores.get(&id));
+            let ml_key = track.id.map(|id| (src_idx, id));
+            let cand_ml = ml_key.and_then(|k| ml_scores.get(&k));
             let cand_dance = cand_ml.and_then(|s| s.danceability).unwrap_or(0.5);
             let cand_approach = cand_ml.and_then(|s| s.approachability).unwrap_or(0.5);
             let cand_timbre = cand_ml.and_then(|s| s.timbre).unwrap_or(0.5);
@@ -741,8 +848,8 @@ pub fn query_suggestions(
             );
 
             // Genre-normalized aggression (fallback 0.5 when no data)
-            let cand_norm_aggr = track.id
-                .and_then(|id| norm_aggression.get(&id).copied())
+            let cand_norm_aggr = ml_key
+                .and_then(|k| norm_aggression.get(&k).copied())
                 .unwrap_or(0.5);
             let aggression_pen = direction_penalty(cand_norm_aggr, avg_seed_aggression, energy_bias);
 
@@ -756,7 +863,7 @@ pub fn query_suggestions(
                 + w_contrast   * contrast_pen
                 + w_aggression * aggression_pen;
 
-            let reason_tags = generate_reason_tags(
+            let mut reason_tags = generate_reason_tags(
                 best_tt, best_key_score,
                 hnsw_dist, bpm_penalty,
                 dance_penalty, approach_penalty, contrast_pen,
@@ -764,6 +871,12 @@ pub fn query_suggestions(
                 w_hnsw, w_bpm, w_dance, w_approach, w_contrast,
                 w_aggression,
             );
+
+            // Prepend source library tag when results span multiple databases
+            if multi_source {
+                let source_name = source_names.get(&src_idx).copied().unwrap_or("?");
+                reason_tags.insert(0, (source_name.to_string(), Some("#808080".to_string())));
+            }
 
             Some(SuggestedTrack { track, score, reason_tags })
         })
