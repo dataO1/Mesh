@@ -104,6 +104,27 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   pause, volume threshold crossing, track load) with a 1-second debounced
   `tokio::time::sleep` timer — zero overhead on the 60Hz tick handler.
 
+- **USB export: tags, ML analysis & audio features** — The USB export pipeline
+  now syncs all metadata alongside WAV files. `sync_track_atomic()` copies ML
+  analysis data (genre scores, mood, arousal/valence, audio characteristics),
+  user-defined and ML-generated tags, and audio feature vectors (16-dim HNSW
+  embeddings) to the USB database. CozoDB auto-maintains the HNSW similarity
+  index on insert, so smart suggestions work immediately on mesh-player without
+  a local collection. Metadata deletion during track removal also covers the
+  three new relations (ml_analysis, track_tags, audio_features).
+
+- **USB export: metadata-only delta sync** — Re-exporting tracks where only tags,
+  ML analysis, or audio features changed no longer triggers a full WAV re-copy.
+  The sync plan now distinguishes content changes (file size/mtime differ →
+  `tracks_to_copy`) from metadata-only changes (tags/ML/features differ →
+  `tracks_to_update`). Metadata-only updates run as a separate lightweight
+  phase between file copy and playlist operations.
+
+- **USB export: preset files** — Stem presets (`presets/stems/`), deck presets
+  (`presets/decks/`), and slicer presets (`slicer-presets.yaml`) are now copied
+  to the USB device during export (Phase 0), so the performance system has
+  access to all effect configurations.
+
 ### Improved
 
 - **Tick handler performance hardening** — The 60fps tick handler now guards MIDI
@@ -116,6 +137,16 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   but infrequent work.
 
 ### Fixed
+
+- **Tags visible on USB playlists** — Tags were missing from USB playlist views
+  because `UsbStorage::get_tracks()` hardcoded `tags: Vec::new()` and the USB
+  TrackRow conversion never called `.with_tags()`. Both layers are now fixed:
+  the storage layer batch-loads tags from the USB database, and the browser
+  conversion renders them as colored pills identical to local collection views.
+
+- **Tags visible in local playlist views** — Playlist track rows returned empty
+  tags (`Vec::new()`) with a TODO comment. Now batch-loads tags via
+  `get_tags_batch()` — the same pattern collection folder views already used.
 
 - **Tag category sorting** — ML-generated tags in the collection browser Tags
   column are now sorted by semantic category instead of alphabetically. Display

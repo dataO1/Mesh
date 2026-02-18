@@ -419,16 +419,18 @@ impl DatabaseService {
         &self,
         track: &Track,
         source_db: &DatabaseService,
+        source_track_id: i64,
     ) -> Result<i64, DbError> {
         // Convert track to row and get the track ID
         let row = track.to_row(&self.collection_root);
         let track_id = row.id;
 
         log::debug!(
-            "sync_track_atomic: name='{}' path='{}' id={}",
+            "sync_track_atomic: name='{}' path='{}' id={} source_id={}",
             track.name,
             track.path.display(),
-            track_id
+            track_id,
+            source_track_id
         );
 
         // 1. Upsert track row
@@ -444,6 +446,23 @@ impl DatabaseService {
         BatchQuery::batch_insert_cue_points(&self.db, track_id, &track.cue_points)?;
         BatchQuery::batch_insert_saved_loops(&self.db, track_id, &track.saved_loops)?;
         BatchQuery::batch_insert_stem_links(&self.db, track_id, &remapped_links)?;
+
+        // 5. Sync ML analysis data
+        if let Ok(Some(ml_data)) = source_db.get_ml_analysis(source_track_id) {
+            let _ = self.store_ml_analysis(track_id, &ml_data);
+        }
+
+        // 6. Sync tags
+        if let Ok(tags) = source_db.get_tags(source_track_id) {
+            for (label, color) in &tags {
+                let _ = self.add_tag(track_id, label, color.as_deref());
+            }
+        }
+
+        // 7. Sync audio features
+        if let Ok(Some(features)) = source_db.get_audio_features(source_track_id) {
+            let _ = self.store_audio_features(track_id, &features);
+        }
 
         log::debug!("sync_track_atomic: SUCCESS id={}", track_id);
         Ok(track_id)
@@ -737,6 +756,28 @@ impl DatabaseService {
     /// Store audio features for a track
     pub fn store_audio_features(&self, track_id: i64, features: &AudioFeatures) -> Result<(), DbError> {
         SimilarityQuery::upsert_features(&self.db, track_id, features)
+    }
+
+    /// Get audio features for a track
+    ///
+    /// Returns the 16-dimensional feature vector if stored, or None if not analyzed.
+    pub fn get_audio_features(&self, track_id: i64) -> Result<Option<AudioFeatures>, DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("track_id".to_string(), DataValue::from(track_id));
+
+        let result = self.db.run_query(r#"
+            ?[vec] := *audio_features{track_id: $track_id, vec}
+        "#, params)?;
+
+        if let Some(row) = result.rows.first() {
+            if let DataValue::List(vec_vals) = &row[0] {
+                let vec: Vec<f64> = vec_vals.iter()
+                    .filter_map(|v| v.get_float())
+                    .collect();
+                return Ok(AudioFeatures::from_vector(&vec));
+            }
+        }
+        Ok(None)
     }
 
     /// Find similar tracks using audio features

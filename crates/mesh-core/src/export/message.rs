@@ -85,6 +85,21 @@ pub enum ExportProgress {
         /// Total number of operations
         total: usize,
     },
+
+    /// Metadata-only sync phase started (tags, ML analysis, audio features)
+    MetadataSyncStarted {
+        /// Total number of tracks needing metadata-only sync
+        total_tracks: usize,
+    },
+
+    /// Metadata-only sync completed
+    MetadataSyncComplete {
+        /// Number of tracks synced
+        tracks_synced: usize,
+    },
+
+    /// Preset files copied to USB
+    PresetsCopied,
 }
 
 impl ExportProgress {
@@ -134,6 +149,13 @@ impl ExportProgress {
             Self::PlaylistOpComplete { completed, total } => {
                 format!("Playlist entries: {}/{}", completed, total)
             }
+            Self::MetadataSyncStarted { total_tracks } => {
+                format!("Syncing metadata for {} tracks...", total_tracks)
+            }
+            Self::MetadataSyncComplete { tracks_synced } => {
+                format!("Metadata synced for {} tracks", tracks_synced)
+            }
+            Self::PresetsCopied => "Presets copied".to_string(),
         }
     }
 
@@ -154,7 +176,8 @@ impl ExportProgress {
                 Some(*completed as f32 / *total as f32)
             }
             Self::Complete { .. } => Some(1.0),
-            Self::Started { .. } | Self::PlaylistOpsStarted { .. } => Some(0.0),
+            Self::Started { .. } | Self::PlaylistOpsStarted { .. } | Self::MetadataSyncStarted { .. } => Some(0.0),
+            Self::MetadataSyncComplete { .. } | Self::PresetsCopied => Some(1.0),
             _ => None,
         }
     }

@@ -74,6 +74,7 @@ impl ExportService {
         let total_tracks = plan.tracks_to_copy.len();
         let total_bytes = plan.total_bytes;
         let tracks_to_copy = plan.tracks_to_copy.clone();
+        let tracks_to_update = plan.tracks_to_update.clone();
         let playlists_to_create = plan.playlists_to_create.clone();
         let playlist_tracks_to_add = plan.playlist_tracks_to_add.clone();
         let playlist_tracks_to_remove = plan.playlist_tracks_to_remove.clone();
@@ -108,6 +109,31 @@ impl ExportService {
                     return;
                 }
             };
+
+            // Phase 0: Copy preset files (small YAML files, no delta logic needed)
+            {
+                let local_root = local_db.collection_root();
+                let presets_stems_src = local_root.join("presets/stems");
+                let presets_decks_src = local_root.join("presets/decks");
+                let slicer_src = local_root.join("slicer-presets.yaml");
+
+                if presets_stems_src.exists() {
+                    if let Err(e) = copy_dir_all(&presets_stems_src, &usb_root.join("presets/stems")) {
+                        log::warn!("Failed to copy stem presets: {}", e);
+                    }
+                }
+                if presets_decks_src.exists() {
+                    if let Err(e) = copy_dir_all(&presets_decks_src, &usb_root.join("presets/decks")) {
+                        log::warn!("Failed to copy deck presets: {}", e);
+                    }
+                }
+                if slicer_src.exists() {
+                    if let Err(e) = std::fs::copy(&slicer_src, &usb_root.join("slicer-presets.yaml")) {
+                        log::warn!("Failed to copy slicer presets: {}", e);
+                    }
+                }
+                let _ = progress_tx.send(ExportProgress::PresetsCopied);
+            }
 
             // Phase 1: Create playlists (sequential, must happen before tracks)
             for playlist_name in &playlists_to_create {
@@ -181,6 +207,7 @@ impl ExportService {
                 };
 
                 // Create USB track with updated path
+                let source_track_id = local_track.id.unwrap_or(0);
                 let mut usb_track = local_track.clone();
                 usb_track.id = None; // Generate new ID for USB database
                 usb_track.path = dest_path.clone();
@@ -188,7 +215,7 @@ impl ExportService {
                 usb_track.name = filename.trim_end_matches(".wav").to_string();
 
                 // Sync with atomic batch inserts
-                if let Err(e) = usb_db.sync_track_atomic(&usb_track, &local_db) {
+                if let Err(e) = usb_db.sync_track_atomic(&usb_track, &local_db, source_track_id) {
                     log::error!("Failed to sync track {} to USB DB: {}", filename, e);
                     tracks_failed.fetch_add(1, Ordering::Relaxed);
                     failed_files.lock().unwrap().push((filename.clone(), e.to_string()));
@@ -217,6 +244,53 @@ impl ExportService {
             if cancel_flag.load(Ordering::Relaxed) {
                 let _ = progress_tx.send(ExportProgress::Cancelled);
                 return;
+            }
+
+            // Phase 2.5: Metadata-only sync for tracks that don't need WAV re-copy
+            if !tracks_to_update.is_empty() {
+                let update_count = tracks_to_update.len();
+                let _ = progress_tx.send(ExportProgress::MetadataSyncStarted {
+                    total_tracks: update_count,
+                });
+
+                let synced = AtomicUsize::new(0);
+                let tracks_dir_update = usb_root.join("tracks");
+
+                tracks_to_update.par_iter().for_each(|filename| {
+                    if cancel_flag.load(Ordering::Relaxed) {
+                        return;
+                    }
+
+                    // Find the local track by filename to get its source ID
+                    let local_track = match local_db.get_all_tracks() {
+                        Ok(tracks) => tracks.into_iter().find(|t| {
+                            t.path.file_name().and_then(|n| n.to_str()) == Some(filename.as_str())
+                        }),
+                        Err(_) => None,
+                    };
+
+                    if let Some(local_track) = local_track {
+                        let source_id = local_track.id.unwrap_or(0);
+                        let usb_path = tracks_dir_update.join(filename);
+
+                        // Create USB track with correct path
+                        let mut usb_track = local_track;
+                        usb_track.id = None; // Generate new ID for USB database
+                        usb_track.path = usb_path;
+                        usb_track.folder_path = "tracks".to_string();
+                        usb_track.name = filename.trim_end_matches(".wav").to_string();
+
+                        if let Err(e) = usb_db.sync_track_atomic(&usb_track, &local_db, source_id) {
+                            log::warn!("Metadata sync failed for {}: {}", filename, e);
+                        }
+                    }
+
+                    synced.fetch_add(1, Ordering::Relaxed);
+                });
+
+                let _ = progress_tx.send(ExportProgress::MetadataSyncComplete {
+                    tracks_synced: synced.load(Ordering::Relaxed),
+                });
             }
 
             // Phase 3-4: Update playlist memberships (parallel with progress)
@@ -338,6 +412,22 @@ fn add_track_to_playlist(
             }
         }
     }
+}
+
+/// Recursively copy a directory of files (used for preset directories)
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let dest_path = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_all(&entry.path(), &dest_path)?;
+        } else {
+            std::fs::copy(entry.path(), &dest_path)?;
+        }
+    }
+    Ok(())
 }
 
 /// Remove a track from a playlist in the USB database

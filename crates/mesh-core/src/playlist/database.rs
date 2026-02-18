@@ -235,6 +235,11 @@ impl PlaylistStorage for DatabaseStorage {
                     match PlaylistQuery::get_tracks(self.service.db(), playlist_db_id) {
                         Ok(tracks) => {
                             log::debug!("get_tracks: found {} tracks in playlist", tracks.len());
+
+                            // Batch-load tags for all playlist tracks
+                            let track_ids: Vec<i64> = tracks.iter().map(|t| t.id).collect();
+                            let tags_map = self.service.get_tags_batch(&track_ids).unwrap_or_default();
+
                             // Tracks are already ordered by sort_order from DB, use enumerate for display order
                             return tracks.iter()
                                 .enumerate()
@@ -248,7 +253,7 @@ impl PlaylistStorage for DatabaseStorage {
                                     key: track.key.clone(),
                                     duration: Some(track.duration_seconds),
                                     lufs: track.lufs,
-                                    tags: Vec::new(), // Playlist tracks don't batch-load tags yet
+                                    tags: tags_map.get(&track.id).cloned().unwrap_or_default(),
                                 })
                                 .collect();
                         }

@@ -8,7 +8,7 @@
 //!
 //! Both local and USB collections use CozoDB databases for track and playlist metadata.
 
-use crate::db::{MeshDb, PlaylistQuery, TrackRow, CuePoint, SavedLoop, StemLink, CuePointQuery, SavedLoopQuery, StemLinkQuery, TrackQuery};
+use crate::db::{DatabaseService, MeshDb, MlAnalysisData, PlaylistQuery, TrackRow, CuePoint, SavedLoop, StemLink, CuePointQuery, SavedLoopQuery, StemLinkQuery, TrackQuery, SimilarityQuery};
 use super::cache::get_or_open_usb_database;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -36,6 +36,12 @@ pub struct TrackInfo {
     pub saved_loops: Vec<SavedLoop>,
     /// Stem links for this track (linked stems for prepared mode)
     pub stem_links: Vec<StemLink>,
+    /// ML analysis data (for metadata-only sync detection)
+    pub ml_analysis: Option<MlAnalysisData>,
+    /// Track tags (label, color)
+    pub tags: Vec<(String, Option<String>)>,
+    /// Whether audio features are stored for this track
+    pub has_audio_features: bool,
 }
 
 /// A track membership in a playlist (database record)
@@ -74,6 +80,8 @@ pub struct TrackCopy {
 pub struct SyncPlan {
     /// Tracks to copy (new or changed content)
     pub tracks_to_copy: Vec<TrackCopy>,
+    /// Track filenames needing metadata-only sync (no WAV re-copy)
+    pub tracks_to_update: Vec<String>,
     /// Track filenames to delete from USB
     pub tracks_to_delete: Vec<String>,
     /// Playlist track memberships to add (insert into USB database)
@@ -94,6 +102,7 @@ impl SyncPlan {
     /// Check if there's anything to sync
     pub fn is_empty(&self) -> bool {
         self.tracks_to_copy.is_empty()
+            && self.tracks_to_update.is_empty()
             && self.tracks_to_delete.is_empty()
             && self.playlist_tracks_to_add.is_empty()
             && self.playlist_tracks_to_remove.is_empty()
@@ -103,14 +112,16 @@ impl SyncPlan {
 
     /// Get summary for display
     pub fn summary(&self) -> String {
-        format!(
-            "{} tracks to copy ({}), {} to delete, {} playlist entries to add, {} to remove",
-            self.tracks_to_copy.len(),
-            super::format_bytes(self.total_bytes),
-            self.tracks_to_delete.len(),
-            self.playlist_tracks_to_add.len(),
-            self.playlist_tracks_to_remove.len(),
-        )
+        let mut parts = vec![
+            format!("{} tracks to copy ({})", self.tracks_to_copy.len(), super::format_bytes(self.total_bytes)),
+        ];
+        if !self.tracks_to_update.is_empty() {
+            parts.push(format!("{} to update", self.tracks_to_update.len()));
+        }
+        parts.push(format!("{} to delete", self.tracks_to_delete.len()));
+        parts.push(format!("{} playlist entries to add", self.playlist_tracks_to_add.len()));
+        parts.push(format!("{} to remove", self.playlist_tracks_to_remove.len()));
+        parts.join(", ")
     }
 
     /// Validate that USB has enough space
@@ -138,11 +149,13 @@ pub type ProgressCallback = Box<dyn Fn(usize, usize) + Send + Sync>;
 /// * `collection_root` - Path to the local collection (for resolving track paths)
 /// * `selected_playlists` - List of playlist names to include
 /// * `progress` - Optional callback for progress updates
+/// * `db_service` - Optional DatabaseService for ML/tags/features queries
 pub fn scan_local_collection_from_db(
     db: &MeshDb,
     _collection_root: &Path,  // Kept for API compatibility, paths come from DB
     selected_playlists: &[String],
     progress: Option<ProgressCallback>,
+    db_service: Option<&DatabaseService>,
 ) -> Result<CollectionState, Box<dyn std::error::Error + Send + Sync>> {
     let mut state = CollectionState::default();
     // Map filename -> (path, Track) to keep the database record for metadata comparison
@@ -188,6 +201,10 @@ pub fn scan_local_collection_from_db(
     let mut cue_points_map: HashMap<i64, Vec<CuePoint>> = HashMap::new();
     let mut loops_map: HashMap<i64, Vec<SavedLoop>> = HashMap::new();
     let mut stem_links_map: HashMap<i64, Vec<StemLink>> = HashMap::new();
+    let mut ml_analysis_map: HashMap<i64, MlAnalysisData> = HashMap::new();
+    let mut tags_map: HashMap<i64, Vec<(String, Option<String>)>> = HashMap::new();
+    let mut audio_features_map: HashMap<i64, bool> = HashMap::new();
+
     for (_, (_, track)) in &track_data {
         if let Ok(cues) = CuePointQuery::get_for_track(db, track.id) {
             cue_points_map.insert(track.id, cues);
@@ -197,6 +214,18 @@ pub fn scan_local_collection_from_db(
         }
         if let Ok(links) = StemLinkQuery::get_for_track(db, track.id) {
             stem_links_map.insert(track.id, links);
+        }
+        // Fetch ML analysis, tags, and audio features via DatabaseService
+        if let Some(svc) = db_service {
+            if let Ok(Some(ml)) = svc.get_ml_analysis(track.id) {
+                ml_analysis_map.insert(track.id, ml);
+            }
+            if let Ok(t) = svc.get_tags(track.id) {
+                tags_map.insert(track.id, t);
+            }
+            if let Ok(has) = SimilarityQuery::has_features(db, track.id) {
+                audio_features_map.insert(track.id, has);
+            }
         }
     }
 
@@ -221,10 +250,13 @@ pub fn scan_local_collection_from_db(
                 cb(current, total_files);
             }
 
-            // Get pre-fetched cue points, loops, and stem links
+            // Get pre-fetched data
             let cue_points = cue_points_map.get(&db_track.id).cloned().unwrap_or_default();
             let saved_loops = loops_map.get(&db_track.id).cloned().unwrap_or_default();
             let stem_links = stem_links_map.get(&db_track.id).cloned().unwrap_or_default();
+            let ml_analysis = ml_analysis_map.get(&db_track.id).cloned();
+            let tags = tags_map.get(&db_track.id).cloned().unwrap_or_default();
+            let has_audio_features = audio_features_map.get(&db_track.id).copied().unwrap_or(false);
 
             Ok(TrackInfo {
                 path,
@@ -235,6 +267,9 @@ pub fn scan_local_collection_from_db(
                 cue_points,
                 saved_loops,
                 stem_links,
+                ml_analysis,
+                tags,
+                has_audio_features,
             })
         })
         .collect();
@@ -279,8 +314,10 @@ pub fn scan_usb_collection(
     // Get USB database from cache for metadata comparison
     let usb_db_service = get_or_open_usb_database(collection_root);
 
-    // Build map of filename -> (TrackRow, cue_points, saved_loops, stem_links) from USB database
-    let mut db_metadata: HashMap<String, (TrackRow, Vec<CuePoint>, Vec<SavedLoop>, Vec<StemLink>)> = HashMap::new();
+    // Build map of filename -> metadata from USB database
+    #[allow(clippy::type_complexity)]
+    let mut db_metadata: HashMap<String, (TrackRow, Vec<CuePoint>, Vec<SavedLoop>, Vec<StemLink>,
+        Option<MlAnalysisData>, Vec<(String, Option<String>)>, bool)> = HashMap::new();
     if let Some(ref db_service) = usb_db_service {
         // Get all tracks from database
         if let Ok(all_tracks) = TrackQuery::get_all(db_service.db()) {
@@ -297,8 +334,13 @@ pub fn scan_usb_collection(
                     .unwrap_or_default();
                 let stem_links = StemLinkQuery::get_for_track(db_service.db(), track.id)
                     .unwrap_or_default();
+                let ml_analysis = db_service.get_ml_analysis(track.id).unwrap_or(None);
+                let tags = db_service.get_tags(track.id).unwrap_or_default();
+                let has_audio_features = SimilarityQuery::has_features(db_service.db(), track.id)
+                    .unwrap_or(false);
 
-                db_metadata.insert(filename, (track, cue_points, saved_loops, stem_links));
+                db_metadata.insert(filename, (track, cue_points, saved_loops, stem_links,
+                    ml_analysis, tags, has_audio_features));
             }
         }
 
@@ -349,10 +391,11 @@ pub fn scan_usb_collection(
             }
 
             // Get database metadata if available
-            let (db_track, cue_points, saved_loops, stem_links) = db_metadata
-                .get(&filename)
-                .map(|(t, c, l, s)| (Some(t.clone()), c.clone(), l.clone(), s.clone()))
-                .unwrap_or((None, Vec::new(), Vec::new(), Vec::new()));
+            let (db_track, cue_points, saved_loops, stem_links, ml_analysis, tags, has_audio_features) =
+                db_metadata
+                    .get(&filename)
+                    .map(|(t, c, l, s, ml, tg, af)| (Some(t.clone()), c.clone(), l.clone(), s.clone(), ml.clone(), tg.clone(), *af))
+                    .unwrap_or((None, Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), false));
 
             Ok(TrackInfo {
                 path,
@@ -363,6 +406,9 @@ pub fn scan_usb_collection(
                 cue_points,
                 saved_loops,
                 stem_links,
+                ml_analysis,
+                tags,
+                has_audio_features,
             })
         })
         .collect();
@@ -443,6 +489,42 @@ fn metadata_differs(local: &TrackInfo, usb: &TrackInfo) -> bool {
         return true;
     }
 
+    // Compare ML analysis (check top_genre as a lightweight proxy)
+    match (&local.ml_analysis, &usb.ml_analysis) {
+        (Some(_), None) | (None, Some(_)) => {
+            log::debug!("metadata_differs: ml_analysis presence differs for {}", local.filename);
+            return true;
+        }
+        (Some(l), Some(u)) => {
+            if l.top_genre != u.top_genre {
+                log::debug!("metadata_differs: top_genre differs for {}", local.filename);
+                return true;
+            }
+        }
+        _ => {}
+    }
+
+    // Compare tags (sorted for consistent comparison)
+    if local.tags.len() != usb.tags.len() {
+        log::debug!("metadata_differs: tag count differs for {} ({} vs {})",
+            local.filename, local.tags.len(), usb.tags.len());
+        return true;
+    }
+    let mut local_tags = local.tags.clone();
+    let mut usb_tags = usb.tags.clone();
+    local_tags.sort_by(|a, b| a.0.cmp(&b.0));
+    usb_tags.sort_by(|a, b| a.0.cmp(&b.0));
+    if local_tags != usb_tags {
+        log::debug!("metadata_differs: tags differ for {}", local.filename);
+        return true;
+    }
+
+    // Compare audio features presence
+    if local.has_audio_features != usb.has_audio_features {
+        log::debug!("metadata_differs: audio_features presence differs for {}", local.filename);
+        return true;
+    }
+
     false
 }
 
@@ -518,28 +600,32 @@ fn stem_links_equal(a: &[StemLink], b: &[StemLink]) -> bool {
 pub fn build_sync_plan(local: &CollectionState, usb: &CollectionState) -> SyncPlan {
     let mut plan = SyncPlan::default();
 
-    // Tracks to copy: in local but not in USB, or metadata indicates change
+    // Tracks to copy or update: compare local vs USB
     for (filename, local_info) in &local.tracks {
-        let needs_copy = match usb.tracks.get(filename) {
+        match usb.tracks.get(filename) {
             Some(usb_info) => {
-                // Audio content changed?
                 if local_info.size != usb_info.size || local_info.mtime > usb_info.mtime {
-                    true
-                } else {
-                    // Audio same, check if metadata changed
-                    metadata_differs(local_info, usb_info)
+                    // Audio content changed → full copy
+                    plan.total_bytes += local_info.size;
+                    plan.tracks_to_copy.push(TrackCopy {
+                        source: local_info.path.clone(),
+                        destination: PathBuf::from("tracks").join(filename),
+                        size: local_info.size,
+                    });
+                } else if metadata_differs(local_info, usb_info) {
+                    // Only metadata changed → metadata-only sync (no WAV copy)
+                    plan.tracks_to_update.push(filename.clone());
                 }
             }
-            None => true, // New file
-        };
-
-        if needs_copy {
-            plan.total_bytes += local_info.size;
-            plan.tracks_to_copy.push(TrackCopy {
-                source: local_info.path.clone(),
-                destination: PathBuf::from("tracks").join(filename),
-                size: local_info.size,
-            });
+            None => {
+                // New file → full copy
+                plan.total_bytes += local_info.size;
+                plan.tracks_to_copy.push(TrackCopy {
+                    source: local_info.path.clone(),
+                    destination: PathBuf::from("tracks").join(filename),
+                    size: local_info.size,
+                });
+            }
         }
     }
 
@@ -671,6 +757,23 @@ pub fn copy_with_verification(
 mod tests {
     use super::*;
 
+    /// Helper to create a test TrackInfo with default new fields
+    fn test_track_info(path: &str, filename: &str, size: u64, mtime: SystemTime) -> TrackInfo {
+        TrackInfo {
+            path: PathBuf::from(path),
+            filename: filename.to_string(),
+            size,
+            mtime,
+            db_track: None,
+            cue_points: Vec::new(),
+            saved_loops: Vec::new(),
+            stem_links: Vec::new(),
+            ml_analysis: None,
+            tags: Vec::new(),
+            has_audio_features: false,
+        }
+    }
+
     #[test]
     fn test_sync_plan_summary() {
         let plan = SyncPlan {
@@ -679,6 +782,7 @@ mod tests {
                 destination: PathBuf::from("tracks/test.wav"),
                 size: 10_000_000,
             }],
+            tracks_to_update: vec![],
             tracks_to_delete: vec![],
             playlist_tracks_to_add: vec![PlaylistTrack {
                 playlist: "My Playlist".to_string(),
@@ -709,16 +813,7 @@ mod tests {
         let mut local = CollectionState::default();
         local.tracks.insert(
             "test.wav".to_string(),
-            TrackInfo {
-                path: PathBuf::from("/tmp/test.wav"),
-                filename: "test.wav".to_string(),
-                size: 1000,
-                mtime: SystemTime::now(),
-                db_track: None,
-                cue_points: Vec::new(),
-                saved_loops: Vec::new(),
-                stem_links: Vec::new(),
-            },
+            test_track_info("/tmp/test.wav", "test.wav", 1000, SystemTime::now()),
         );
 
         let usb = CollectionState::default();
@@ -731,16 +826,7 @@ mod tests {
     #[test]
     fn test_build_sync_plan_unchanged_track() {
         let mtime = SystemTime::now();
-        let track = TrackInfo {
-            path: PathBuf::from("/tmp/test.wav"),
-            filename: "test.wav".to_string(),
-            size: 1000,
-            mtime,
-            db_track: None,
-            cue_points: Vec::new(),
-            saved_loops: Vec::new(),
-            stem_links: Vec::new(),
-        };
+        let track = test_track_info("/tmp/test.wav", "test.wav", 1000, mtime);
 
         let mut local = CollectionState::default();
         local.tracks.insert("test.wav".to_string(), track.clone());
@@ -759,31 +845,13 @@ mod tests {
         let mut local = CollectionState::default();
         local.tracks.insert(
             "test.wav".to_string(),
-            TrackInfo {
-                path: PathBuf::from("/tmp/test.wav"),
-                filename: "test.wav".to_string(),
-                size: 2000, // Different size
-                mtime,
-                db_track: None,
-                cue_points: Vec::new(),
-                saved_loops: Vec::new(),
-                stem_links: Vec::new(),
-            },
+            test_track_info("/tmp/test.wav", "test.wav", 2000, mtime),
         );
 
         let mut usb = CollectionState::default();
         usb.tracks.insert(
             "test.wav".to_string(),
-            TrackInfo {
-                path: PathBuf::from("/usb/test.wav"),
-                filename: "test.wav".to_string(),
-                size: 1000,
-                mtime,
-                db_track: None,
-                cue_points: Vec::new(),
-                saved_loops: Vec::new(),
-                stem_links: Vec::new(),
-            },
+            test_track_info("/usb/test.wav", "test.wav", 1000, mtime),
         );
 
         let plan = build_sync_plan(&local, &usb);
@@ -800,34 +868,36 @@ mod tests {
         let mut local = CollectionState::default();
         local.tracks.insert(
             "test.wav".to_string(),
-            TrackInfo {
-                path: PathBuf::from("/tmp/test.wav"),
-                filename: "test.wav".to_string(),
-                size: 1000,
-                mtime: new_mtime, // Newer
-                db_track: None,
-                cue_points: Vec::new(),
-                saved_loops: Vec::new(),
-                stem_links: Vec::new(),
-            },
+            test_track_info("/tmp/test.wav", "test.wav", 1000, new_mtime),
         );
 
         let mut usb = CollectionState::default();
         usb.tracks.insert(
             "test.wav".to_string(),
-            TrackInfo {
-                path: PathBuf::from("/usb/test.wav"),
-                filename: "test.wav".to_string(),
-                size: 1000,
-                mtime: old_mtime, // Older
-                db_track: None,
-                cue_points: Vec::new(),
-                saved_loops: Vec::new(),
-                stem_links: Vec::new(),
-            },
+            test_track_info("/usb/test.wav", "test.wav", 1000, old_mtime),
         );
 
         let plan = build_sync_plan(&local, &usb);
         assert_eq!(plan.tracks_to_copy.len(), 1);
+    }
+
+    #[test]
+    fn test_build_sync_plan_metadata_only_update() {
+        let mtime = SystemTime::now();
+
+        let mut local_track = test_track_info("/tmp/test.wav", "test.wav", 1000, mtime);
+        local_track.tags = vec![("Techno".to_string(), Some("#3b82f6".to_string()))];
+
+        let usb_track = test_track_info("/usb/test.wav", "test.wav", 1000, mtime);
+
+        let mut local = CollectionState::default();
+        local.tracks.insert("test.wav".to_string(), local_track);
+
+        let mut usb = CollectionState::default();
+        usb.tracks.insert("test.wav".to_string(), usb_track);
+
+        let plan = build_sync_plan(&local, &usb);
+        assert!(plan.tracks_to_copy.is_empty(), "Should not trigger WAV copy");
+        assert_eq!(plan.tracks_to_update.len(), 1, "Should trigger metadata-only update");
     }
 }

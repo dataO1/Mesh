@@ -457,6 +457,7 @@ fn handle_build_sync_plan(
         local_collection_root,
         &playlist_names,
         Some(local_progress),
+        Some(&**db_service),
     ) {
         Ok(state) => state,
         Err(e) => {
@@ -612,6 +613,13 @@ fn handle_start_export(
             ExportProgress::PlaylistOpComplete { completed, total } => {
                 UsbMessage::ExportPlaylistOpComplete { completed, total }
             }
+            ExportProgress::MetadataSyncStarted { total_tracks } => {
+                UsbMessage::ExportMetadataSyncStarted { total_tracks }
+            }
+            ExportProgress::MetadataSyncComplete { tracks_synced } => {
+                UsbMessage::ExportMetadataSyncComplete { tracks_synced }
+            }
+            ExportProgress::PresetsCopied => UsbMessage::ExportPresetsCopied,
         };
 
         if message_tx.send(usb_msg).is_err() {

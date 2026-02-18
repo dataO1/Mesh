@@ -186,6 +186,33 @@ impl BatchQuery {
             ?[track_id, stem_index] := *stem_links{track_id, stem_index}, track_id = $track_id
             :rm stem_links {track_id, stem_index}
         "#,
+            params.clone(),
+        )?;
+
+        // Delete ML analysis
+        db.run_script(
+            r#"
+            ?[track_id] := *ml_analysis{track_id}, track_id = $track_id
+            :rm ml_analysis {track_id}
+        "#,
+            params.clone(),
+        )?;
+
+        // Delete track tags
+        db.run_script(
+            r#"
+            ?[track_id, label] := *track_tags{track_id, label}, track_id = $track_id
+            :rm track_tags {track_id, label}
+        "#,
+            params.clone(),
+        )?;
+
+        // Delete audio features
+        db.run_script(
+            r#"
+            ?[track_id] := *audio_features{track_id}, track_id = $track_id
+            :rm audio_features {track_id}
+        "#,
             params,
         )?;
 

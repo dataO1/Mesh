@@ -240,6 +240,21 @@ pub enum UsbMessage {
         total: usize,
     },
 
+    /// Metadata-only sync phase started (tags, ML analysis, audio features)
+    ExportMetadataSyncStarted {
+        /// Total number of tracks needing metadata sync
+        total_tracks: usize,
+    },
+
+    /// Metadata-only sync completed
+    ExportMetadataSyncComplete {
+        /// Number of tracks synced
+        tracks_synced: usize,
+    },
+
+    /// Preset files copied to USB
+    ExportPresetsCopied,
+
     // ─────────────────────────────────────────────────────────────────
     // General
     // ─────────────────────────────────────────────────────────────────
@@ -322,6 +337,13 @@ impl UsbMessage {
             UsbMessage::ExportPlaylistOpComplete { completed, total } => {
                 format!("Playlist entries: {}/{}", completed, total)
             }
+            UsbMessage::ExportMetadataSyncStarted { total_tracks } => {
+                format!("Syncing metadata for {} tracks...", total_tracks)
+            }
+            UsbMessage::ExportMetadataSyncComplete { tracks_synced } => {
+                format!("Metadata synced for {} tracks", tracks_synced)
+            }
+            UsbMessage::ExportPresetsCopied => "Presets copied".to_string(),
             _ => format!("{:?}", self),
         }
     }

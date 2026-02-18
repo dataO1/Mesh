@@ -858,6 +858,22 @@ impl CollectionBrowserState {
                         if let Some(lufs) = info.lufs {
                             row = row.with_lufs(lufs);
                         }
+                        if !info.tags.is_empty() {
+                            let mut sorted_tags = info.tags.clone();
+                            sorted_tags.sort_by_key(|(_, color)| {
+                                tag_sort_priority(color.as_deref())
+                            });
+                            let tags: Vec<TrackTag> = sorted_tags.iter().map(|(label, color)| {
+                                let mut tag = TrackTag::new(label);
+                                if let Some(hex) = color {
+                                    if let Some(c) = parse_hex_color(hex) {
+                                        tag = tag.with_color(c);
+                                    }
+                                }
+                                tag
+                            }).collect();
+                            row = row.with_tags(tags);
+                        }
                         row
                     })
                     .collect();
