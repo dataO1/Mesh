@@ -355,9 +355,9 @@ impl ExportService {
                         log::warn!("Failed to delete track {}: {}", track_path.display(), e);
                     }
                 }
-                // Also delete from database
-                let track_path_str = track_path.to_string_lossy().to_string();
-                if let Ok(Some(track)) = usb_db.get_track_by_path(&track_path_str) {
+                // Also delete from database (use relative path matching USB DB format)
+                let rel_path = format!("tracks/{}", filename);
+                if let Ok(Some(track)) = usb_db.get_track_by_path(&rel_path) {
                     if let Some(track_id) = track.id {
                         if let Err(e) = usb_db.delete_track(track_id) {
                             log::warn!("Failed to delete track {} from USB DB: {}", filename, e);
@@ -419,14 +419,13 @@ fn resolve_playlist_by_qualified_name(usb_db: &DatabaseService, qualified_name: 
 /// Add a track to a playlist in the USB database
 fn add_track_to_playlist(
     usb_db: &DatabaseService,
-    tracks_dir: &Path,
+    _tracks_dir: &Path,
     playlist_track: &PlaylistTrack,
 ) {
     // Find the playlist ID (handles hierarchical qualified names like "Parent/Child")
     if let Some(playlist_id) = resolve_playlist_by_qualified_name(usb_db, &playlist_track.playlist) {
-        // Find the track ID by filename
-        let track_path = tracks_dir.join(&playlist_track.track_filename);
-        let track_path_str = track_path.to_string_lossy().to_string();
+        // Find the track ID by relative path (USB DB stores portable relative paths)
+        let track_path_str = format!("tracks/{}", playlist_track.track_filename);
 
         if let Ok(Some(track)) = usb_db.get_track_by_path(&track_path_str) {
             if let Some(track_id) = track.id {
@@ -465,14 +464,13 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// Remove a track from a playlist in the USB database
 fn remove_track_from_playlist(
     usb_db: &DatabaseService,
-    tracks_dir: &Path,
+    _tracks_dir: &Path,
     playlist_track: &PlaylistTrack,
 ) {
     // Find the playlist ID (handles hierarchical qualified names like "Parent/Child")
     if let Some(playlist_id) = resolve_playlist_by_qualified_name(usb_db, &playlist_track.playlist) {
-        // Find the track ID by filename
-        let track_path = tracks_dir.join(&playlist_track.track_filename);
-        let track_path_str = track_path.to_string_lossy().to_string();
+        // Find the track ID by relative path (USB DB stores portable relative paths)
+        let track_path_str = format!("tracks/{}", playlist_track.track_filename);
 
         if let Ok(Some(track)) = usb_db.get_track_by_path(&track_path_str) {
             if let Some(track_id) = track.id {

@@ -245,19 +245,33 @@ impl PlaylistStorage for UsbStorage {
             return Vec::new();
         };
 
-        // Extract playlist name from folder_id (e.g., "playlist:My Set" -> "My Set")
-        let playlist_name = folder_id.as_str().strip_prefix("playlist:").unwrap_or("");
-        if playlist_name.is_empty() {
+        // Extract playlist path from folder_id (e.g., "playlist:Parent:Child" -> "Parent:Child")
+        let playlist_path = folder_id.as_str().strip_prefix("playlist:").unwrap_or("");
+        if playlist_path.is_empty() {
             return Vec::new();
         }
 
-        // Find playlist by name
-        let Ok(Some(playlist)) = db_service.get_playlist_by_name(playlist_name, None) else {
+        // Walk the colon-separated path to resolve nested playlists.
+        // e.g., "Diskroma:test" → find "Diskroma" (root), then "test" (child of Diskroma)
+        let segments: Vec<&str> = playlist_path.split(':').collect();
+        let mut parent_id: Option<i64> = None;
+        let mut resolved_id = None;
+        for segment in &segments {
+            match db_service.get_playlist_by_name(segment, parent_id) {
+                Ok(Some(pl)) => {
+                    resolved_id = Some(pl.id);
+                    parent_id = Some(pl.id);
+                }
+                _ => return Vec::new(),
+            }
+        }
+
+        let Some(playlist_db_id) = resolved_id else {
             return Vec::new();
         };
 
         // Get tracks from database
-        let Ok(tracks) = PlaylistQuery::get_tracks(db_service.db(), playlist.id) else {
+        let Ok(tracks) = PlaylistQuery::get_tracks(db_service.db(), playlist_db_id) else {
             return Vec::new();
         };
 
