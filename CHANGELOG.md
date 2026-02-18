@@ -1,33 +1,73 @@
 # Changelog
 
-## Cross-Source Suggestions & USB Export Fixes
+All notable changes to Mesh are documented in this file.
 
-### Features
-- **Cross-source suggestion search**: Suggestions now query all connected
-  databases (local + USB). When a deck seed is loaded from USB, HNSW vector
-  search runs across both the local and USB databases, combining results into a
-  single ranked list with source tags ("Local" / "USB") on each suggestion.
-- **Cross-source deduplication**: When the same track exists in both local and
+---
+
+## [0.8.8]
+
+### Fixed
+
+- **Audio crackling during batch operations** — CPAL audio stream is now paused
+  during import, export, and reanalysis to eliminate buffer underruns caused by
+  CPU contention between the real-time audio callback and heavy processing
+  threads (ML inference, stem separation, file I/O). The stream starts paused
+  at launch (no track loaded = no audio needed) and resumes only when a track
+  is loaded for preview. Cancel and error paths also correctly resume audio.
+
+---
+
+## [0.8.7]
+
+### Added
+
+- **Cross-source suggestions** — Suggestions now query all connected databases
+  (local + USB). HNSW vector search runs across both sources, combining results
+  into a unified ranked list with source tags ("Local" / "USB") on each
+  suggestion.
+- **Cross-source deduplication** — When the same track exists in both local and
   USB databases, only the entry with the best HNSW distance is kept, preventing
   duplicate suggestions.
-- **Metadata sync progress**: USB export now reports per-track progress during
-  the metadata-only sync phase, so the overlay progress bar updates smoothly
-  instead of stalling.
+- **USB export: tags, ML analysis, audio features & presets** — USB export now
+  syncs ML analysis data, track tags, and audio feature vectors alongside track
+  files. Effect presets (stems, decks, slicer) are also copied to USB.
+- **Metadata sync progress** — USB export reports per-track progress during the
+  metadata-only sync phase, keeping the overlay progress bar responsive.
+- **ML audio analysis** — 6 new EffNet classification heads: timbre
+  (bright/dark), tonal/atonal, acoustic, electronic, danceability, and
+  approachability. ML-based vocal detection replaces RMS-based approach.
+- **Energy-direction suggestion scoring** — Suggestions incorporate ML arousal
+  scores, genre-normalized aggression, and production match scoring. Key scoring
+  blends toward energy direction at fader extremes.
+- **Event-driven seed refresh** — Suggestion seeds now auto-refresh on deck
+  load, play/pause, and volume changes with debounced timer.
+- **Multi-factor reason tags** — Suggestion entries show sorted reason tags
+  (key compatibility, energy direction) with color-coded confidence.
+- **Hierarchical USB playlists** — USB export supports nested playlist folders
+  with portable relative paths.
 
-### Bug Fixes
-- **Audio features not exported to USB**: `get_audio_features()` failed
-  silently on CozoDB's native `DataValue::Vec(Vector::F32(...))` type, only
-  matching `DataValue::List`. This caused audio feature vectors to never be
-  synced to USB, breaking all similarity-based suggestions from USB seeds.
-- **Cross-DB HNSW search "Expected vector" error**: `find_similar_by_vector()`
-  passed the query vector as `DataValue::List`, but CozoDB's HNSW `~` operator
-  requires a proper Vector type. Fixed by wrapping with CozoScript's `vec()`
-  function at query time.
-- **USB track metadata lookup**: `load_track_metadata()` now converts absolute
-  file paths to relative paths when the active storage is USB, matching the
-  portable path format stored in the USB database.
+### Fixed
 
-### Performance
-- **Export metadata sync**: Replaced O(n^2) per-track `get_all_tracks()` scan
-  with a pre-built `HashMap<filename, track_id>` lookup. Switched from
-  `par_iter` to sequential iteration since DB writes are serialized anyway.
+- **Audio features not exported to USB** — `get_audio_features()` failed
+  silently on CozoDB's `DataValue::Vec(Vector::F32(...))` type, only matching
+  `DataValue::List`. Audio feature vectors were never synced to USB.
+- **Cross-DB HNSW search** — `find_similar_by_vector()` passed the query vector
+  as `DataValue::List`, but HNSW requires a proper Vector type. Fixed with
+  CozoScript's `vec()` function.
+- **USB track metadata lookup** — `load_track_metadata()` now converts absolute
+  paths to relative paths for USB storage.
+- **USB playlist browsing** — Fixed playlist browsing broken after relative-path
+  migration.
+- **Track deletion cleanup** — `delete_track` now cleans all child relations
+  (cue points, saved loops, stem links, tags, ML analysis, audio features).
+- **Export phase message ordering** — Corrected progress message ordering to
+  prevent UI stall during export.
+- **DnB sub-genre consolidation** — Consolidated DnB sub-genre tags, suppressed
+  redundant Instrumental genre tag.
+
+### Improved
+
+- **Tick handler performance** — Optimized hot-path tick handler with
+  documentation for lock-free architecture.
+- **Export metadata sync performance** — Replaced O(n^2) per-track
+  `get_all_tracks()` scan with pre-built `HashMap` lookup.
