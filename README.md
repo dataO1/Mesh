@@ -232,30 +232,34 @@ Install CLAP plugins from your distro's package manager or download from plugin 
 
 ## Smart Suggestions
 
-When you toggle suggestions on in the collection browser, Mesh analyzes the tracks loaded on your decks and recommends what to play next. The system combines seven scoring factors:
+When you toggle suggestions on in the collection browser, Mesh analyzes the tracks loaded on your decks and recommends what to play next. The system combines nine scoring factors:
 
 | Factor | What It Measures |
 |--------|-----------------|
 | **Audio similarity** | HNSW vector search on 16-dim audio fingerprints (rhythm, harmony, energy, timbre) |
 | **Harmonic compatibility** | Key transition safety via Camelot wheel or Krumhansl perceptual model |
 | **Key energy direction** | Emotional impact of the key transition (semitone up = +0.70, tritone = -0.80) |
+| **Genre-normalized aggression** | Per-genre z-score normalized intensity — answers "how aggressive is this track *for its genre*?" so house tracks can compete with DnB |
 | **Danceability** | ML-derived danceability alignment with the energy fader direction |
 | **Approachability** | ML-derived music approachability alignment with the energy fader direction |
 | **Tonal/timbre contrast** | At extremes, rewards opposite tonal and timbre characteristics to the seed |
+| **Production match** | Prefers candidates with similar acoustic/electronic production character |
 | **Tempo proximity** | BPM distance from currently playing tracks |
 
 ### Energy Direction Fader
 
-The fader steers what kinds of tracks are recommended. At center, audio similarity dominates for safe harmonic matches. At extremes, audio similarity drops to zero and ML-derived signals (danceability, approachability, contrast) take over:
+The fader steers what kinds of tracks are recommended. At center, audio similarity dominates for safe harmonic matches. At extremes, audio similarity drops to zero and genre-normalized aggression becomes the dominant signal (30%), with key harmony relaxing from 25% to 15% as the user accepts harmonic risk in exchange for energy direction:
 
 | | Center | Extreme |
 |-|--------|---------|
-| Audio similarity | 45% | 0% |
-| Key compatibility | 25% | 25% |
-| Key energy direction | 15% | 25% |
-| Danceability | 0% | 15% |
-| Approachability | 0% | 13% |
-| Tonal/timbre contrast | 0% | 12% |
+| Audio similarity | 42% | 0% |
+| Key compatibility | 25% | 15% |
+| Key energy direction | 15% | 22% |
+| Genre-normalized aggression | 0% | 30% |
+| Danceability | 0% | 10% |
+| Approachability | 0% | 6% |
+| Tonal/timbre contrast | 0% | 4% |
+| Production match | 3% | 3% |
 | BPM proximity | 15% | 10% |
 
 Each key transition has a research-calibrated emotional energy direction. The fader both steers which transitions are preferred and relaxes the harmonic filter to allow dramatic key changes:

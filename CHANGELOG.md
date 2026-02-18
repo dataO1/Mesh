@@ -46,21 +46,27 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
   generated (at >= 0.5 probability threshold). Removed `voice.rs` module and
   `get_vocals_mono()` import helper.
 
-- **ML-enhanced suggestion scoring** — The energy direction fader now
-  incorporates danceability, approachability, and tonal/timbre contrast from
-  ML analysis into the suggestion scoring formula. Three new penalty terms
-  activate proportionally as the fader moves away from center:
-  - **Danceability** (0→15%) — Higher danceability = higher energy alignment
-  - **Approachability** (0→13%) — More approachable = higher energy appeal
-  - **Tonal/timbre contrast** (0→12%) — At extremes, prefer opposite
+- **ML-enhanced suggestion scoring** — The energy direction fader now uses a
+  9-factor scoring formula incorporating genre-normalized aggression, production
+  character matching, danceability, approachability, and tonal/timbre contrast
+  from ML analysis. Key additions:
+  - **Genre-normalized aggression** (0→30%) — The dominant energy signal at
+    extremes. Raw aggression scores are z-score normalized within each track's
+    primary genre at query time, so a hard house track at the 90th percentile
+    of house aggression competes fairly with a gentle DnB track. This solves
+    the genre bias problem where inherently louder genres always dominated.
+  - **Acoustic/electronic match** (constant 3%) — Subtle tiebreaker preferring
+    candidates with similar production character to the seed tracks
+  - **Danceability** (0→10%) — Higher danceability = higher energy alignment
+  - **Approachability** (0→6%) — More approachable = higher energy appeal
+  - **Tonal/timbre contrast** (0→4%) — At extremes, prefer opposite
     characteristics to the seed tracks (e.g., dark+atonal seed → bright+tonal)
 
-  At center the formula is identical to the previous version (zero regression).
-  At extremes, HNSW audio similarity drops to 0% (from 20%) as the freed weight
-  budget flows into the new ML signals, giving the fader genuine control over
-  track selection based on musical characteristics rather than just audio
-  fingerprint distance. See `documents/similarity-search.md` for the full
-  7-term scoring formula.
+  Key harmony weight now drops from 25%→15% at extremes — when the fader is
+  pushed hard, the user accepts harmonic risk in exchange for energy direction.
+  At center the formula emphasizes similarity (42%) and harmony (25%). At
+  extremes, aggression (30%) and key direction (22%) dominate. See
+  `documents/similarity-search.md` for the full 9-term scoring formula.
 
 - **Audio characteristic analysis** — 6 new Essentia EffNet classification
   heads run during import and ML reanalysis:

@@ -49,6 +49,14 @@ pub struct MlScores {
     pub timbre: Option<f32>,
     /// Tonality probability (0.0 = atonal, 1.0 = tonal)
     pub tonal: Option<f32>,
+    /// Acoustic sound probability (0.0 = non-acoustic, 1.0 = acoustic)
+    pub mood_acoustic: Option<f32>,
+    /// Electronic sound probability (0.0 = non-electronic, 1.0 = electronic)
+    pub mood_electronic: Option<f32>,
+    /// Primary genre label (for genre-normalized aggression grouping)
+    pub top_genre: Option<String>,
+    /// Aggression probability extracted from binary_moods (0.0–1.0)
+    pub aggression: Option<f32>,
 }
 
 // ============================================================================
@@ -1024,7 +1032,7 @@ impl DatabaseService {
         Ok(map)
     }
 
-    /// Batch-fetch ML scores for suggestion scoring (danceability, approachability, timbre, tonal)
+    /// Batch-fetch ML scores for suggestion scoring
     pub fn get_ml_scores_batch(&self, track_ids: &[i64]) -> Result<std::collections::HashMap<i64, MlScores>, DbError> {
         use std::collections::HashMap;
 
@@ -1037,19 +1045,36 @@ impl DatabaseService {
         params.insert("ids".to_string(), DataValue::List(id_values));
 
         let result = self.db.run_query(r#"
-            ?[track_id, danceability, approachability, timbre, tonal] :=
-                *ml_analysis{track_id, danceability, approachability, timbre, tonal},
+            ?[track_id, danceability, approachability, timbre, tonal,
+              mood_acoustic, mood_electronic, top_genre, binary_moods_json] :=
+                *ml_analysis{track_id, danceability, approachability, timbre, tonal,
+                             mood_acoustic, mood_electronic, top_genre, binary_moods_json},
                 track_id in $ids
         "#, params)?;
 
         let mut map = HashMap::new();
         for row in &result.rows {
             if let Some(tid) = row[0].get_int() {
+                // Extract aggression probability from binary_moods_json
+                let aggression = row[8].get_str().and_then(|json_str| {
+                    serde_json::from_str::<Vec<(String, f32)>>(json_str)
+                        .ok()
+                        .and_then(|moods| {
+                            moods.iter()
+                                .find(|(label, _)| label == "Aggressive")
+                                .map(|(_, prob)| prob.clamp(0.0, 1.0))
+                        })
+                });
+
                 map.insert(tid, MlScores {
                     danceability: row[1].get_float().map(|f| f as f32),
                     approachability: row[2].get_float().map(|f| f as f32),
                     timbre: row[3].get_float().map(|f| f as f32),
                     tonal: row[4].get_float().map(|f| f as f32),
+                    mood_acoustic: row[5].get_float().map(|f| f as f32),
+                    mood_electronic: row[6].get_float().map(|f| f as f32),
+                    top_genre: row[7].get_str().map(|s| s.to_string()),
+                    aggression,
                 });
             }
         }
