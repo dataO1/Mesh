@@ -14,18 +14,24 @@
 //! scope unless the binary directly depends on them.
 
 fn main() {
-    // Force DT_RPATH instead of DT_RUNPATH so paths are inherited by
-    // transitive dependencies in the procspawn subprocess
-    println!("cargo:rustc-link-arg=-Wl,--disable-new-dtags");
+    // ELF-only linker flags for procspawn subprocess library resolution.
+    // These are Linux-specific (DT_RPATH, NEEDED entries) and must not be
+    // emitted when cross-compiling to Windows (MinGW ld doesn't support them).
+    let target = std::env::var("TARGET").unwrap_or_default();
+    if !target.contains("windows") {
+        // Force DT_RPATH instead of DT_RUNPATH so paths are inherited by
+        // transitive dependencies in the procspawn subprocess
+        println!("cargo:rustc-link-arg=-Wl,--disable-new-dtags");
 
-    // Force direct linkage to FFmpeg transitive deps — this adds them to
-    // the binary's NEEDED list, ensuring they're loaded at startup and
-    // their symbols are in the global resolution scope.
-    //
-    // --no-as-needed prevents the linker from dropping these even though
-    // our code doesn't directly reference their symbols.
-    for pkg in &["libopenmpt", "libmpg123"] {
-        add_forced_link(pkg);
+        // Force direct linkage to FFmpeg transitive deps — this adds them to
+        // the binary's NEEDED list, ensuring they're loaded at startup and
+        // their symbols are in the global resolution scope.
+        //
+        // --no-as-needed prevents the linker from dropping these even though
+        // our code doesn't directly reference their symbols.
+        for pkg in &["libopenmpt", "libmpg123"] {
+            add_forced_link(pkg);
+        }
     }
 }
 

@@ -25,6 +25,10 @@ All notable changes to Mesh are documented in this file.
   (enabled on Linux) but disabled by `--no-default-features` on Windows. The
   PD stub module was also updated with missing methods/fields. Windows build
   script now fails on either crate instead of silently skipping mesh-cue.
+- **mesh-cue Windows linker error** — `build.rs` emitted ELF-specific linker
+  flags (`--disable-new-dtags`, `--no-as-needed`, `-rpath`) unconditionally.
+  MinGW's `ld` doesn't recognize these. Now gated behind a `TARGET` check so
+  they only apply on Linux.
 
 ---
 
