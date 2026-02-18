@@ -119,8 +119,8 @@ impl MeshCueApp {
                 self.reanalysis_state.failed = failed;
                 self.reanalysis_state.current_track = None;
 
-                // Resume audio if a track is loaded (and not about to start export)
-                if self.collection.loaded_track.is_some() && !self.export_state.pending_lufs_analysis {
+                // Resume audio if a track is loaded
+                if self.collection.loaded_track.is_some() {
                     if let Some(ref handle) = self.audio_handle {
                         handle.play();
                     }

@@ -14,6 +14,11 @@ All notable changes to Mesh are documented in this file.
   `Task` returns from progress handlers; these are now collected and returned
   via `Task::batch()`. Reanalysis also fires per-track `RefreshCollection` on
   success, matching the pattern import already used.
+- **Audio muted during USB export** — Removed unnecessary audio stream
+  pause/resume around USB export. Only import and reanalysis (which are
+  CPU-intensive) pause the stream; export is I/O-bound and doesn't need it.
+- **Tags column too wide in mesh-cue** — Reduced track table Tags column from
+  300px to 150px so the Name column has more room.
 
 ---
 
