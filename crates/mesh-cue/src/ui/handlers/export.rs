@@ -276,6 +276,28 @@ impl MeshCueApp {
                 // Re-open modal to show error (even if user closed it during export)
                 self.export_state.is_open = true;
             }
+            UsbMsg::ExportMetadataSyncStarted { total_tracks } => {
+                self.export_state.phase = ExportPhase::SyncingMetadata {
+                    completed: 0,
+                    total: total_tracks,
+                    start_time: std::time::Instant::now(),
+                };
+            }
+            UsbMsg::ExportMetadataSyncComplete { tracks_synced } => {
+                // Update progress — if we were in SyncingMetadata, mark as complete
+                if let ExportPhase::SyncingMetadata { start_time, total, .. } = &self.export_state.phase {
+                    let start = *start_time;
+                    let total = *total;
+                    self.export_state.phase = ExportPhase::SyncingMetadata {
+                        completed: tracks_synced,
+                        total,
+                        start_time: start,
+                    };
+                }
+            }
+            UsbMsg::ExportPresetsCopied => {
+                self.export_state.phase = ExportPhase::CopyingPresets;
+            }
             UsbMsg::ExportCancelled => {
                 self.export_state.phase = ExportPhase::SelectDevice;
             }

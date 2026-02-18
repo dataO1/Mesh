@@ -138,6 +138,14 @@ sudo dpkg -i mesh-player_amd64.deb   # optional: lightweight player
 
 ### Fixed
 
+- **USB export progress visibility** — The export overlay modal now shows all
+  export phases with progress bars: track copying (with byte count + ETA),
+  metadata sync (tag/ML/feature updates with track count), playlist entry
+  updates, and preset copying. The sync plan summary displays metadata-only
+  updates separately from file copies, so "42 metadata to sync" is visible
+  instead of misleading "Everything up to date". The compact status bar at the
+  bottom of the collection view also reflects all phases.
+
 - **Tags visible on USB playlists** — Tags were missing from USB playlist views
   because `UsbStorage::get_tracks()` hardcoded `tags: Vec::new()` and the USB
   TrackRow conversion never called `.with_tags()`. Both layers are now fixed:

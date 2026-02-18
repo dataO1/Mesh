@@ -51,6 +51,17 @@ pub enum ExportPhase {
         start_time: Instant,
     },
 
+    /// Syncing metadata (tags, ML analysis, audio features) for tracks
+    /// that don't need WAV re-copy
+    SyncingMetadata {
+        completed: usize,
+        total: usize,
+        start_time: Instant,
+    },
+
+    /// Copying preset files to USB
+    CopyingPresets,
+
     /// Export complete
     Complete {
         duration: Duration,
@@ -78,6 +89,8 @@ impl ExportPhase {
                 | ExportPhase::BuildingSyncPlan { .. }
                 | ExportPhase::Exporting { .. }
                 | ExportPhase::UpdatingPlaylists { .. }
+                | ExportPhase::SyncingMetadata { .. }
+                | ExportPhase::CopyingPresets
         )
     }
 
@@ -97,6 +110,10 @@ impl ExportPhase {
             ExportPhase::UpdatingPlaylists { completed, total, .. } => {
                 format!("Updating playlist entries: {}/{}", completed, total)
             }
+            ExportPhase::SyncingMetadata { completed, total, .. } => {
+                format!("Syncing metadata: {}/{} tracks", completed, total)
+            }
+            ExportPhase::CopyingPresets => "Copying presets...".to_string(),
             ExportPhase::Complete { tracks_exported, failed_files, .. } => {
                 if failed_files.is_empty() {
                     format!("Export complete! {} tracks exported", tracks_exported)
@@ -320,6 +337,21 @@ impl ExportState {
                     None
                 }
             }
+            ExportPhase::UpdatingPlaylists { completed, total, .. } => {
+                if *total > 0 {
+                    Some(*completed as f32 / *total as f32)
+                } else {
+                    None
+                }
+            }
+            ExportPhase::SyncingMetadata { completed, total, .. } => {
+                if *total > 0 {
+                    Some(*completed as f32 / *total as f32)
+                } else {
+                    None
+                }
+            }
+            ExportPhase::CopyingPresets => Some(1.0),
             _ => None,
         }
     }

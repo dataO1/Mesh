@@ -54,6 +54,12 @@ pub fn view(state: &ExportState, playlist_tree: Vec<TreeNode<NodeId>>) -> Elemen
             total,
             start_time,
         } => view_updating_playlists(*completed, *total, start_time),
+        ExportPhase::SyncingMetadata {
+            completed,
+            total,
+            start_time,
+        } => view_syncing_metadata(*completed, *total, start_time),
+        ExportPhase::CopyingPresets => view_copying_presets(),
         ExportPhase::Complete {
             duration,
             tracks_exported,
@@ -203,6 +209,7 @@ fn view_device_selection(
             .into()
     } else if let Some(ref plan) = state.sync_plan {
         let copy_count = plan.tracks_to_copy.len();
+        let update_count = plan.tracks_to_update.len();
         let delete_count = plan.tracks_to_delete.len();
         let link_changes = plan.playlist_tracks_to_add.len() + plan.playlist_tracks_to_remove.len();
 
@@ -212,14 +219,20 @@ fn view_device_selection(
                 .color(iced::Color::from_rgb(0.2, 0.7, 0.2))
                 .into()
         } else {
-            let summary = format!(
-                "{} tracks to copy ({}), {} to delete, {} playlist links to update",
-                copy_count,
-                mesh_core::usb::format_bytes(plan.total_bytes),
-                delete_count,
-                link_changes
-            );
-            text(summary)
+            let mut parts = Vec::new();
+            if copy_count > 0 {
+                parts.push(format!("{} tracks to copy ({})", copy_count, mesh_core::usb::format_bytes(plan.total_bytes)));
+            }
+            if update_count > 0 {
+                parts.push(format!("{} metadata to sync", update_count));
+            }
+            if delete_count > 0 {
+                parts.push(format!("{} to delete", delete_count));
+            }
+            if link_changes > 0 {
+                parts.push(format!("{} playlist links", link_changes));
+            }
+            text(parts.join(", "))
                 .size(12)
                 .color(iced::Color::from_rgb(0.4, 0.6, 0.9))
                 .into()
@@ -326,16 +339,27 @@ fn view_ready_to_sync(
 
     // Summary stats
     let copy_count = plan.tracks_to_copy.len();
+    let update_count = plan.tracks_to_update.len();
     let delete_count = plan.tracks_to_delete.len();
     let playlist_add_count = plan.playlist_tracks_to_add.len();
     let playlist_remove_count = plan.playlist_tracks_to_remove.len();
+
+    let grey = iced::Color::from_rgb(0.5, 0.5, 0.5);
 
     let copy_text = text(format!("{} tracks to copy ({})", copy_count, mesh_core::usb::format_bytes(plan.total_bytes)))
         .size(14)
         .color(if copy_count > 0 {
             iced::Color::from_rgb(0.2, 0.7, 0.2)
         } else {
-            iced::Color::from_rgb(0.5, 0.5, 0.5)
+            grey
+        });
+
+    let update_text = text(format!("{} tracks to sync metadata", update_count))
+        .size(14)
+        .color(if update_count > 0 {
+            iced::Color::from_rgb(0.6, 0.5, 0.9)
+        } else {
+            grey
         });
 
     let delete_text = text(format!("{} tracks to delete", delete_count))
@@ -343,7 +367,7 @@ fn view_ready_to_sync(
         .color(if delete_count > 0 {
             iced::Color::from_rgb(0.9, 0.4, 0.2)
         } else {
-            iced::Color::from_rgb(0.5, 0.5, 0.5)
+            grey
         });
 
     // Show playlist link changes instead of unchanged count
@@ -354,7 +378,7 @@ fn view_ready_to_sync(
         .color(if playlist_changes > 0 {
             iced::Color::from_rgb(0.4, 0.6, 0.9)
         } else {
-            iced::Color::from_rgb(0.5, 0.5, 0.5)
+            grey
         });
 
     // Device space check
@@ -407,12 +431,17 @@ fn view_ready_to_sync(
             preview_col = preview_col.push(
                 text(format!("  ... and {} more", plan.tracks_to_copy.len() - 5))
                     .size(12)
-                    .color(iced::Color::from_rgb(0.5, 0.5, 0.5)),
+                    .color(grey),
             );
         }
 
         column![text("Tracks to copy:").size(14), preview_col]
             .spacing(4)
+            .into()
+    } else if update_count > 0 || playlist_changes > 0 {
+        text("All audio files up to date — metadata sync only")
+            .size(14)
+            .color(iced::Color::from_rgb(0.6, 0.5, 0.9))
             .into()
     } else {
         text("All tracks are up to date!")
@@ -449,6 +478,7 @@ fn view_ready_to_sync(
     column![
         summary_title,
         copy_text,
+        update_text,
         delete_text,
         playlist_text,
         device_info,
@@ -579,6 +609,76 @@ fn view_updating_playlists(
         container(progress_bar(0.0..=1.0, progress)).width(Length::Fill),
         row![Space::new().width(Length::Fill), eta],
         row![Space::new().width(Length::Fill), cancel_btn],
+    ]
+    .spacing(10)
+    .into()
+}
+
+/// View while syncing metadata (tags, ML analysis, audio features)
+fn view_syncing_metadata(
+    completed: usize,
+    total: usize,
+    start_time: &std::time::Instant,
+) -> Element<'static, Message> {
+    let progress = if total > 0 {
+        completed as f32 / total as f32
+    } else {
+        0.0
+    };
+
+    let elapsed = start_time.elapsed();
+    let eta_text = if completed > 0 {
+        let rate = completed as f64 / elapsed.as_secs_f64();
+        let remaining = total.saturating_sub(completed);
+        let eta_secs = remaining as f64 / rate;
+        if eta_secs > 60.0 {
+            format!(
+                "ETA: {}m {}s",
+                (eta_secs / 60.0) as u32,
+                (eta_secs % 60.0) as u32
+            )
+        } else {
+            format!("ETA: {:.0}s", eta_secs)
+        }
+    } else {
+        String::from("Calculating...")
+    };
+
+    let status = text(format!(
+        "Syncing metadata: {}/{} tracks",
+        completed, total
+    ))
+    .size(14);
+
+    let detail = text("Updating tags, ML analysis, and audio features...")
+        .size(12)
+        .color(iced::Color::from_rgb(0.5, 0.5, 0.5));
+
+    let eta = text(eta_text).size(12);
+
+    let cancel_btn = button(text("Cancel"))
+        .on_press(Message::CancelExport)
+        .style(button::danger);
+
+    column![
+        status,
+        detail,
+        container(progress_bar(0.0..=1.0, progress)).width(Length::Fill),
+        row![Space::new().width(Length::Fill), eta],
+        row![Space::new().width(Length::Fill), cancel_btn],
+    ]
+    .spacing(10)
+    .into()
+}
+
+/// View while copying presets
+fn view_copying_presets() -> Element<'static, Message> {
+    column![
+        text("Copying presets...").size(14),
+        text("Syncing stem, deck, and slicer presets to USB")
+            .size(12)
+            .color(iced::Color::from_rgb(0.5, 0.5, 0.5)),
+        container(progress_bar(0.0..=1.0, 0.5)).width(Length::Fill),
     ]
     .spacing(10)
     .into()
@@ -757,6 +857,50 @@ pub fn view_progress_bar(state: &ExportState) -> Option<Element<'static, Message
                 "Calculating changes...".to_string(),
                 format!("{}/{} files", files_scanned, total_files),
                 progress,
+                Message::CancelExport,
+            ))
+        }
+        ExportPhase::UpdatingPlaylists {
+            completed,
+            total,
+            ..
+        } => {
+            let progress = if *total > 0 {
+                *completed as f32 / *total as f32
+            } else {
+                0.0
+            };
+
+            Some(super::import_modal::build_status_bar(
+                "Updating playlists...".to_string(),
+                format!("{}/{}", completed, total),
+                progress,
+                Message::CancelExport,
+            ))
+        }
+        ExportPhase::SyncingMetadata {
+            completed,
+            total,
+            ..
+        } => {
+            let progress = if *total > 0 {
+                *completed as f32 / *total as f32
+            } else {
+                0.0
+            };
+
+            Some(super::import_modal::build_status_bar(
+                "Syncing metadata...".to_string(),
+                format!("{}/{} tracks", completed, total),
+                progress,
+                Message::CancelExport,
+            ))
+        }
+        ExportPhase::CopyingPresets => {
+            Some(super::import_modal::build_status_bar(
+                "Copying presets...".to_string(),
+                String::new(),
+                0.5,
                 Message::CancelExport,
             ))
         }
