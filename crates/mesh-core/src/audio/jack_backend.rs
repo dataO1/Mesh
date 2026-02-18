@@ -74,6 +74,12 @@ impl JackAudioHandle {
     pub fn latency_ms(&self) -> f32 {
         (self.buffer_size as f32 / self.sample_rate as f32) * 1000.0
     }
+
+    /// Pause audio (no-op for JACK — RT scheduling handles CPU contention)
+    pub fn pause(&self) {}
+
+    /// Resume audio (no-op for JACK)
+    pub fn play(&self) {}
 }
 
 /// JACK process handler

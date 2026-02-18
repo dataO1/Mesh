@@ -116,6 +116,24 @@ impl AudioHandle {
             AudioHandle::Jack(h) => h.latency_ms(),
         }
     }
+
+    /// Pause the audio stream to free CPU for batch operations
+    pub fn pause(&self) {
+        match self {
+            AudioHandle::Cpal(h) => h.pause(),
+            #[cfg(all(target_os = "linux", feature = "jack-backend"))]
+            AudioHandle::Jack(h) => h.pause(),
+        }
+    }
+
+    /// Resume the audio stream for playback
+    pub fn play(&self) {
+        match self {
+            AudioHandle::Cpal(h) => h.play(),
+            #[cfg(all(target_os = "linux", feature = "jack-backend"))]
+            AudioHandle::Jack(h) => h.play(),
+        }
+    }
 }
 
 /// Command sender for the UI thread

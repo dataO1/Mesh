@@ -66,6 +66,11 @@ impl MeshCueApp {
             tracks.len()
         );
 
+        // Pause audio stream to free CPU for analysis
+        if let Some(ref handle) = self.audio_handle {
+            handle.pause();
+        }
+
         // Set up UI state
         self.reanalysis_state.is_running = true;
         self.reanalysis_state.analysis_type = Some(analysis_type);
@@ -109,6 +114,13 @@ impl MeshCueApp {
                 self.reanalysis_state.failed = failed;
                 self.reanalysis_state.current_track = None;
 
+                // Resume audio if a track is loaded (and not about to start export)
+                if self.collection.loaded_track.is_some() && !self.export_state.pending_lufs_analysis {
+                    if let Some(ref handle) = self.audio_handle {
+                        handle.play();
+                    }
+                }
+
                 // Clear domain reanalysis state
                 self.domain.clear_reanalysis_state();
 
@@ -139,6 +151,13 @@ impl MeshCueApp {
         // Cancel through domain (owns the cancel flag)
         self.domain.cancel_reanalysis();
         log::info!("Re-analysis cancellation requested");
+
+        // Resume audio if a track is loaded
+        if self.collection.loaded_track.is_some() {
+            if let Some(ref handle) = self.audio_handle {
+                handle.play();
+            }
+        }
         Task::none()
     }
 

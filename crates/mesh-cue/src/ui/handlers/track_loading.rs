@@ -178,6 +178,11 @@ impl MeshCueApp {
                         duration_seconds,
                     };
 
+                    // Resume audio stream (may have been paused at startup or during batch ops)
+                    if let Some(ref handle) = self.audio_handle {
+                        handle.play();
+                    }
+
                     // Load track into audio engine (creates PreparedTrack internally)
                     self.audio.load_track(loaded_track);
                     // Set global BPM to track's BPM for original-speed playback (no time-stretching)

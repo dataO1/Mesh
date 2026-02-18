@@ -35,7 +35,19 @@ pub const PREVIEW_DECK: usize = 0;
 
 /// Handle to the active audio system
 pub struct AudioHandle {
-    _handle: mesh_core::audio::AudioHandle,
+    handle: mesh_core::audio::AudioHandle,
+}
+
+impl AudioHandle {
+    /// Pause the audio stream to free CPU for batch operations
+    pub fn pause(&self) {
+        self.handle.pause();
+    }
+
+    /// Resume the audio stream for playback
+    pub fn play(&self) {
+        self.handle.play();
+    }
 }
 
 /// Audio state for UI interaction
@@ -840,7 +852,7 @@ pub fn start_audio_system(
     Ok((
         audio_state,
         AudioHandle {
-            _handle: result.handle,
+            handle: result.handle,
         },
     ))
 }

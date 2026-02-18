@@ -55,9 +55,8 @@ pub struct MeshCueApp {
     pub(crate) collection: CollectionState,
     /// Audio playback state
     pub(crate) audio: AudioState,
-    /// Audio handle (keeps audio running)
-    #[allow(dead_code)]
-    audio_handle: Option<AudioHandle>,
+    /// Audio handle (keeps audio running, supports pause/play for CPU management)
+    pub(crate) audio_handle: Option<AudioHandle>,
     /// Settings modal state
     pub(crate) settings: SettingsState,
     /// Whether shift key is currently held (for shift+click actions)
@@ -165,7 +164,9 @@ impl MeshCueApp {
         // Domain owns the db_service internally
         let (mut audio, audio_handle) = match domain.init_audio_preview() {
             Ok((audio_state, handle)) => {
-                log::info!("Audio preview enabled (lock-free)");
+                // Pause stream immediately — no track loaded yet, no need to burn CPU
+                handle.pause();
+                log::info!("Audio preview initialized (paused until track load)");
                 (audio_state, Some(handle))
             }
             Err(e) => {

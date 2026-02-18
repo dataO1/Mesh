@@ -1,6 +1,3 @@
-- audio crackling and underruns during analysis. theres als no track loaded. we
-  should disable the audio output while importing, exporting, reanalysis.
-
 - how can we optimise the writing speed to usb stick, currently its quite slow.
   both the file transport and db export(playlists, metadata, tags etc).
   research how to optimise throughput of wav files and db queries/write.

@@ -112,6 +112,11 @@ impl MeshCueApp {
 
         log::info!("Starting batch import of {} tracks", complete_groups.len());
 
+        // Pause audio stream to free CPU for import
+        if let Some(ref handle) = self.audio_handle {
+            handle.pause();
+        }
+
         // Set initial UI phase
         self.import_state.results.clear();
         self.import_state.phase = Some(ImportPhase::Processing {
@@ -147,6 +152,11 @@ impl MeshCueApp {
         }
 
         log::info!("Starting mixed audio import of {} tracks (with stem separation)", files.len());
+
+        // Pause audio stream to free CPU for import
+        if let Some(ref handle) = self.audio_handle {
+            handle.pause();
+        }
 
         // Set initial UI phase
         self.import_state.results.clear();
@@ -222,6 +232,14 @@ impl MeshCueApp {
             }
             ImportProgress::AllComplete { results } => {
                 log::info!("Import complete: {} tracks processed", results.len());
+
+                // Resume audio if a track is loaded
+                if self.collection.loaded_track.is_some() {
+                    if let Some(ref handle) = self.audio_handle {
+                        handle.play();
+                    }
+                }
+
                 // Calculate duration from start_time if available
                 let duration = if let Some(ImportPhase::Processing { start_time, .. }) =
                     self.import_state.phase
@@ -256,6 +274,13 @@ impl MeshCueApp {
         self.domain.cancel_import();
         self.domain.clear_import_state();
         self.import_state.phase = None;
+
+        // Resume audio if a track is loaded
+        if self.collection.loaded_track.is_some() {
+            if let Some(ref handle) = self.audio_handle {
+                handle.play();
+            }
+        }
         Task::none()
     }
 

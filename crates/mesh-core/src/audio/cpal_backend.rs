@@ -64,9 +64,9 @@ use super::backend::{AudioHandle, AudioSystemResult, CommandSender, StereoPair};
 /// Keeps the audio streams alive. Drop this to stop audio.
 pub struct CpalAudioHandle {
     /// Master output stream
-    _master_stream: Stream,
+    master_stream: Stream,
     /// Cue output stream (only present in MasterAndCue mode)
-    _cue_stream: Option<Stream>,
+    cue_stream: Option<Stream>,
     /// Sample rate of the audio system
     sample_rate: u32,
     /// Actual buffer size in frames (as negotiated with the device)
@@ -87,6 +87,30 @@ impl CpalAudioHandle {
     /// Get the audio latency in milliseconds (one-way, output only)
     pub fn latency_ms(&self) -> f32 {
         (self.buffer_size as f32 / self.sample_rate as f32) * 1000.0
+    }
+
+    /// Pause the audio stream (stops the audio callback, frees CPU)
+    pub fn pause(&self) {
+        if let Err(e) = self.master_stream.pause() {
+            log::warn!("Failed to pause master stream: {}", e);
+        }
+        if let Some(ref cue) = self.cue_stream {
+            if let Err(e) = cue.pause() {
+                log::warn!("Failed to pause cue stream: {}", e);
+            }
+        }
+    }
+
+    /// Resume the audio stream
+    pub fn play(&self) {
+        if let Err(e) = self.master_stream.play() {
+            log::warn!("Failed to resume master stream: {}", e);
+        }
+        if let Some(ref cue) = self.cue_stream {
+            if let Err(e) = cue.play() {
+                log::warn!("Failed to resume cue stream: {}", e);
+            }
+        }
     }
 }
 
@@ -180,8 +204,8 @@ fn start_master_only(
     log::info!("Audio stream started (master-only mode)");
 
     let handle = CpalAudioHandle {
-        _master_stream: stream,
-        _cue_stream: None,
+        master_stream: stream,
+        cue_stream: None,
         sample_rate,
         buffer_size,
     };
@@ -331,8 +355,8 @@ fn start_master_and_cue(
     log::info!("Audio streams started (master+cue mode, lock-free)");
 
     let handle = CpalAudioHandle {
-        _master_stream: master_stream,
-        _cue_stream: Some(cue_stream),
+        master_stream,
+        cue_stream: Some(cue_stream),
         sample_rate,
         buffer_size,
     };

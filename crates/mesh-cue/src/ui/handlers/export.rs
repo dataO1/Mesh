@@ -127,6 +127,11 @@ impl MeshCueApp {
                         return Task::none();
                     }
 
+                    // Pause audio stream to free CPU for export
+                    if let Some(ref handle) = self.audio_handle {
+                        handle.pause();
+                    }
+
                     // No tracks missing LUFS, proceed with export directly
                     let config = self.build_export_config();
                     self.domain.start_usb_export(
@@ -146,6 +151,13 @@ impl MeshCueApp {
         log::info!("Cancelling USB export");
         self.domain.cancel_usb_export();
         self.export_state.phase = ExportPhase::SelectDevice;
+
+        // Resume audio if a track is loaded
+        if self.collection.loaded_track.is_some() {
+            if let Some(ref handle) = self.audio_handle {
+                handle.play();
+            }
+        }
         Task::none()
     }
 
@@ -265,6 +277,13 @@ impl MeshCueApp {
                 }
             }
             UsbMsg::ExportComplete { duration, tracks_exported, failed_files } => {
+                // Resume audio if a track is loaded
+                if self.collection.loaded_track.is_some() {
+                    if let Some(ref handle) = self.audio_handle {
+                        handle.play();
+                    }
+                }
+
                 self.export_state.phase = ExportPhase::Complete {
                     duration,
                     tracks_exported,
@@ -275,6 +294,13 @@ impl MeshCueApp {
                 self.export_state.is_open = true;
             }
             UsbMsg::ExportError(err) => {
+                // Resume audio if a track is loaded
+                if self.collection.loaded_track.is_some() {
+                    if let Some(ref handle) = self.audio_handle {
+                        handle.play();
+                    }
+                }
+
                 self.export_state.phase = ExportPhase::Error(err.to_string());
                 // Re-open modal to show error (even if user closed it during export)
                 self.export_state.is_open = true;
