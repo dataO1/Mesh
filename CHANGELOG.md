@@ -8,6 +8,11 @@ All notable changes to Mesh are documented in this file.
 
 ### Added
 
+- **Suggestion energy slider in MIDI learn** — The Browser phase now includes
+  two Suggestion Energy steps (left and right side), placed after the browse
+  encoder. This allows mapping physical knobs/faders to the smart suggestion
+  energy direction slider during MIDI learn. The `deck.suggestion_energy` action
+  controls the global energy bias (DROP ↔ PEAK) used by the suggestion engine.
 - **Streaming track loading with priority regions** — Track loading is now a
   three-phase progressive pipeline: (1) skeleton with metadata loads instantly
   (<10 ms), giving immediate access to beat markers, cue markers, and navigation;

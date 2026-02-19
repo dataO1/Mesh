@@ -1124,11 +1124,10 @@ devices:
       protocol: hid
       device_id: B2220F4E
       name: fader_4
-    action: deck.fx_macro
+    action: deck.suggestion_energy
     physical_deck: 0
     deck_index: null
-    params:
-      macro: 1
+    params: {}
     behavior: continuous
     shift_action: null
     encoder_mode: absolute
@@ -1202,11 +1201,10 @@ devices:
       protocol: hid
       device_id: E82DF2FC
       name: fader_4
-    action: deck.fx_macro
+    action: deck.suggestion_energy
     physical_deck: 3
     deck_index: null
-    params:
-      macro: 1
+    params: {}
     behavior: continuous
     shift_action: null
     encoder_mode: absolute
