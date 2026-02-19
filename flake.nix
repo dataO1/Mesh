@@ -27,7 +27,7 @@
   outputs = { self, nixpkgs, flake-utils, rust-overlay, nn-tilde, demucs-onnx, nixos-rk3588 }:
     let
       # =====================================================================
-      # Embedded NixOS configuration (Orange Pi 5 Pro)
+      # Embedded NixOS configuration (Orange Pi 5)
       # =====================================================================
       # Built natively on aarch64 by GitHub Actions ARM runner.
       # Standard NixOS packages come from cache.nixos.org (aarch64-linux).
@@ -44,7 +44,7 @@
       };
 
       embeddedOutputs = {
-        # NixOS system configuration for the Orange Pi 5 Pro
+        # NixOS system configuration for the Orange Pi 5
         # No buildPlatform override — defaults to the evaluating machine's arch:
         #   aarch64 CI runner → native build
         #   x86_64 dev machine → needs binfmt or --builders (not recommended, use CI)
@@ -69,6 +69,18 @@
 
             # Mesh embedded configuration
             ./nix/embedded/configuration.nix
+
+            # Embed U-Boot in the SD image so the board boots without SPI NOR flash.
+            # Prebuilt binaries extracted from official Orange Pi Debian v1.1.8.
+            # https://opensource.rock-chips.com/wiki_Boot_option
+            ({ pkgs, ... }:
+              let uboot = pkgs.callPackage ./nix/embedded/u-boot-orangepi5 {};
+              in {
+                sdImage.postBuildCommands = ''
+                  dd if=${uboot}/idbloader.img of=$img seek=64 conv=notrunc
+                  dd if=${uboot}/u-boot.itb of=$img seek=16384 conv=notrunc
+                '';
+              })
 
             # Build mesh-player from the NixOS module system's own pkgs
             # (native aarch64 on CI, no separate cross-compilation pkgs needed)
@@ -182,7 +194,7 @@
           inherit pkgs;
         };
 
-        # Embedded: download and flash NixOS SD image for Orange Pi 5 Pro
+        # Embedded: download and flash NixOS SD image for Orange Pi 5
         embeddedFlashApp = import ./nix/apps/embedded-flash.nix {
           inherit pkgs;
         };
@@ -245,7 +257,7 @@
         #   nix run .#convert-ml-model   → models/genre_discogs400-*.onnx (genre head)
         #   nix run .#convert-beat-model → models/beat_this_small.onnx (beat detection)
         #
-        # Embedded (Orange Pi 5 Pro):
+        # Embedded (Orange Pi 5):
         #   nix run .#embedded-setup     — one-time CI keypair + secrets setup
         #   nix run .#embedded-flash     — download + flash SD image to card
         #

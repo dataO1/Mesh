@@ -92,6 +92,19 @@ All notable changes to Mesh are documented in this file.
   (everything not covered by priority areas) are computed for sequential
   background filling.
 
+### Fixed
+
+- **Embedded SD image not booting on Orange Pi 5** — The SD card image built by
+  CI was missing the U-Boot bootloader. The upstream `gnull/nixos-rk3588` Orange
+  Pi 5 module does not embed U-Boot (it expects SPI NOR flash to be
+  pre-programmed). Added prebuilt U-Boot binaries (idbloader.img + u-boot.itb,
+  extracted from official Orange Pi Debian v1.1.8) and `postBuildCommands` that
+  `dd` them into the image gap at the Rockchip-mandated sector offsets (64 and
+  16384). The image now boots on a factory-fresh board with no prior setup.
+- **Board name mismatch** — All references to "Orange Pi 5 Pro" corrected to
+  "Orange Pi 5" across flake.nix, CI workflows, devshell, and flash script.
+  The target board is the base Orange Pi 5 (RK3588S).
+
 ---
 
 ## [0.8.10]

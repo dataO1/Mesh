@@ -1,4 +1,4 @@
-# Download and flash the NixOS SD image for Orange Pi 5 Pro
+# Download and flash the NixOS SD image for Orange Pi 5
 #
 # Usage:
 #   nix run .#embedded-flash              # interactive: pick release + device
@@ -17,7 +17,7 @@ pkgs.writeShellApplication {
     DEVICE="''${1:-}"
 
     echo "╔═══════════════════════════════════════════════════════════╗"
-    echo "║  Mesh Embedded — Flash SD Image (Orange Pi 5 Pro)       ║"
+    echo "║  Mesh Embedded — Flash SD Image (Orange Pi 5)            ║"
     echo "╚═══════════════════════════════════════════════════════════╝"
     echo ""
 
@@ -113,7 +113,7 @@ pkgs.writeShellApplication {
     fi
 
     echo ""
-    echo "Done! Insert the microSD into the Orange Pi 5 Pro and power on."
+    echo "Done! Insert the microSD into the Orange Pi 5 and power on."
     echo "Default SSH: ssh mesh@<board-ip> (password: mesh)"
   '';
 }

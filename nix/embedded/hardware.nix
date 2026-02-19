@@ -1,4 +1,4 @@
-# Orange Pi 5 Pro hardware configuration
+# Orange Pi 5 hardware configuration
 #
 # Board-specific: RK3588S SoC, Mali-G610 GPU, PCM5102A I2S DAC on GPIO.
 # The nixos-rk3588 module (imported in flake.nix) provides kernel and

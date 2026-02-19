@@ -16,7 +16,7 @@
   networking.hostName = "mesh-embedded";
   time.timeZone = "UTC";
 
-  # WiFi (built-in on OPi 5 Pro)
+  # WiFi (built-in on OPi 5)
   networking.networkmanager.enable = true;
 
   # Nix configuration

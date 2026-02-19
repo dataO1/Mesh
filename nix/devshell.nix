@@ -191,7 +191,7 @@ pkgs.mkShell {
     echo "║  LUFS Comparison Report:                                             ║"
     echo "║    cargo run -p mesh-core --bin lufs-report  # Drop vs integrated  ║"
     echo "╠═══════════════════════════════════════════════════════════════════════╣"
-    echo "║  Embedded (Orange Pi 5 Pro):                                         ║"
+    echo "║  Embedded (Orange Pi 5):                                              ║"
     echo "║    nix run .#embedded-flash            # Download + flash SD image  ║"
     echo "║    nix run .#embedded-flash /dev/sdX   # Flash to specific device   ║"
     echo "╚═══════════════════════════════════════════════════════════════════════╝"

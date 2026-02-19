@@ -489,7 +489,7 @@ jobs:
             <h1>Mesh — Nix Binary Cache</h1>
             <p>Pre-built aarch64-linux packages for the
               <a href="https://github.com/dataO1/Mesh">Mesh DJ Player</a>
-              embedded deployment (Orange Pi 5 Pro).</p>
+              embedded deployment (Orange Pi 5).</p>
           HEADER
 
           REPO="${{ github.repository }}"

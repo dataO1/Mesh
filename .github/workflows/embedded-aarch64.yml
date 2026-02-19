@@ -1,6 +1,6 @@
 name: SD Image
 
-# Build NixOS SD card image for Orange Pi 5 Pro (aarch64).
+# Build NixOS SD card image for Orange Pi 5 (aarch64).
 #
 # Triggered AFTER the Release workflow completes — the aarch64 mesh-player
 # binary is already in the GitHub Pages Nix cache, so this job fetches it
@@ -134,7 +134,7 @@ jobs:
       - name: Build SD image
         if: steps.version.outputs.skip != 'true' && steps.check.outputs.exists != 'true'
         run: |
-          echo "Building NixOS SD image for Orange Pi 5 Pro..."
+          echo "Building NixOS SD image for Orange Pi 5..."
           echo "mesh-player should be fetched from binary cache (not built from source)"
           nix build -L .#packages.aarch64-linux.sdImage
           echo ""
@@ -154,10 +154,12 @@ jobs:
           gh release create "$tag" \
             --title "SD Image — ${version}" \
             --notes "$(cat <<EOF
-          NixOS SD card image for Orange Pi 5 Pro (aarch64).
+          NixOS SD card image for Orange Pi 5 (aarch64).
+          Includes embedded U-Boot bootloader — boots on a fresh board with no SPI flash setup.
 
           **Version:** ${version}
           **Derivation hash:** \`${{ steps.hash.outputs.hash }}\`
+          **U-Boot:** Orange Pi vendor v1.1.8 (prebuilt, idbloader @ sector 64 + u-boot.itb @ sector 16384)
 
           ### Flash to SD card
           \`\`\`bash
