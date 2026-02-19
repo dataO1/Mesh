@@ -593,6 +593,20 @@ impl DatabaseService {
         TrackQuery::get_folders(&self.db)
     }
 
+    /// Get all distinct artist names from the collection
+    ///
+    /// Returns only non-null artist strings. Used by the metadata module
+    /// for known-artist disambiguation during filename parsing.
+    pub fn get_distinct_artists(&self) -> Result<Vec<String>, DbError> {
+        let result = self.db.run_query(r#"
+            ?[artist] := *tracks{artist}, is_not_null(artist)
+        "#, BTreeMap::new())?;
+
+        Ok(result.rows.into_iter()
+            .filter_map(|row| row.first().and_then(|v| v.get_str().map(|s| s.to_string())))
+            .collect())
+    }
+
     /// Count total tracks in the database
     pub fn track_count(&self) -> Result<usize, DbError> {
         TrackQuery::count(&self.db)

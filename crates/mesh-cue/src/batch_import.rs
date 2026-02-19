@@ -205,6 +205,8 @@ impl StemType {
 pub struct StemGroup {
     /// Base name of the track (e.g., "Artist - Track")
     pub base_name: String,
+    /// Original source file for embedded tag reading (None for pre-separated stems)
+    pub source_path: Option<PathBuf>,
     /// Path to vocals stem
     pub vocals: Option<PathBuf>,
     /// Path to drums stem
@@ -220,6 +222,7 @@ impl StemGroup {
     pub fn new(base_name: String) -> Self {
         Self {
             base_name,
+            source_path: None,
             vocals: None,
             drums: None,
             bass: None,
@@ -521,6 +524,7 @@ fn process_single_track(
     config: &ImportConfig,
     ml_analyzer: Option<&Arc<Mutex<MlAnalyzer>>>,
     beat_this: Option<&Arc<Mutex<BeatThisAnalyzer>>>,
+    known_artists: &std::collections::HashSet<String>,
 ) -> TrackImportResult {
     let base_name = group.base_name.clone();
     log::info!("process_single_track: Processing '{}'", base_name);
@@ -728,11 +732,12 @@ fn process_single_track(
         analysis.key
     );
 
-    // Extract artist from base_name if in "Artist - Track" format
-    let artist = base_name
-        .split(" - ")
-        .next()
-        .map(|s| s.to_string());
+    // Extract artist/title from embedded tags and filename patterns
+    let resolved = crate::metadata::resolve_metadata(
+        group.source_path.as_deref(),
+        &base_name,
+        known_artists,
+    );
 
     // Calculate resampling ratio: target samples will differ from source if rates mismatch
     // E.g., 44100 Hz input → 48000 Hz output means samples scale by 48000/44100 = 1.088
@@ -891,8 +896,8 @@ fn process_single_track(
     };
 
     // Insert track into the shared database service using new Track API
-    let mut track = Track::new(final_path.clone(), base_name.clone());
-    track.artist = artist;
+    let mut track = Track::new(final_path.clone(), resolved.name.clone());
+    track.artist = resolved.artist;
     track.bpm = Some(analysis.bpm);
     track.original_bpm = Some(analysis.original_bpm);
     track.key = Some(analysis.key.clone());
@@ -1099,6 +1104,7 @@ fn process_mixed_track(
     progress_tx: &Sender<ImportProgress>,
     ml_analyzer: Option<&Arc<Mutex<MlAnalyzer>>>,
     beat_this: Option<&Arc<Mutex<BeatThisAnalyzer>>>,
+    known_artists: &std::collections::HashSet<String>,
 ) -> TrackImportResult {
     let base_name = file.base_name.clone();
     log::info!("process_mixed_track: Separating '{}'", base_name);
@@ -1191,6 +1197,7 @@ fn process_mixed_track(
 
     // Create a StemGroup from the temp files
     let mut group = StemGroup::new(base_name.clone());
+    group.source_path = Some(file.path.clone());
     group.vocals = Some(vocals_path);
     group.drums = Some(drums_path);
     group.bass = Some(bass_path);
@@ -1199,7 +1206,7 @@ fn process_mixed_track(
     // Process using existing pipeline
     // Note: We don't delete source files from group.all_paths() since they're temp files
     // that will be cleaned up by the guards
-    process_single_track(&group, config, ml_analyzer, beat_this)
+    process_single_track(&group, config, ml_analyzer, beat_this, known_artists)
 }
 
 /// Run the batch import process
@@ -1292,6 +1299,9 @@ pub fn run_batch_import(
         }
     };
 
+    // Load known artists once for filename disambiguation across all tracks
+    let known_artists = crate::metadata::get_known_artists(&config.db_service);
+
     // Configure rayon thread pool with user-specified parallelism
     let num_workers = config.parallel_processes.clamp(1, 16) as usize;
     log::info!("run_batch_import: Using {} parallel workers", num_workers);
@@ -1324,7 +1334,7 @@ pub fn run_batch_import(
                 });
 
                 // Process the track
-                let result = process_single_track(group, &config, ml_analyzer.as_ref(), beat_this_analyzer.as_ref());
+                let result = process_single_track(group, &config, ml_analyzer.as_ref(), beat_this_analyzer.as_ref(), &known_artists);
 
                 // Delete source files on success
                 if result.success {
@@ -1468,6 +1478,9 @@ pub fn run_batch_import_mixed(
         }
     };
 
+    // Load known artists once for filename disambiguation across all tracks
+    let known_artists = crate::metadata::get_known_artists(&config.db_service);
+
     // Process files sequentially (separation is memory-intensive)
     // TODO: Consider parallel processing with memory limits
     let mut results = Vec::with_capacity(total);
@@ -1492,7 +1505,7 @@ pub fn run_batch_import_mixed(
         });
 
         // Process the track (separation + import)
-        let result = process_mixed_track(file, &config, &progress_tx, ml_analyzer.as_ref(), beat_this_analyzer.as_ref());
+        let result = process_mixed_track(file, &config, &progress_tx, ml_analyzer.as_ref(), beat_this_analyzer.as_ref(), &known_artists);
 
         // Delete source file on success
         if result.success {

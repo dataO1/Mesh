@@ -18,6 +18,7 @@
 pub mod analysis;
 pub mod audio;
 pub mod batch_import;
+pub mod metadata;
 pub mod config;
 pub mod domain;
 pub mod export;

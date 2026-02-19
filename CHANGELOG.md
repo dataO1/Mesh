@@ -8,6 +8,16 @@ All notable changes to Mesh are documented in this file.
 
 ### Added
 
+- **Metadata parsing for import pipeline** — Artist and title extraction now
+  reads embedded audio tags (ID3v2, Vorbis, MP4, FLAC) via lofty before falling
+  back to filename parsing. The filename parser handles UVR5 numeric prefixes
+  (`56_Artist - Title`), track number prefixes (`01 - `), en/em dashes,
+  underscore separators, and multi-dash filenames with DB-assisted known-artist
+  disambiguation (`Black Sun Empire - Arrakis - Remix` correctly splits on the
+  artist). Artist connectors (`&`, `feat.`, `ft.`, `x`, `vs.`) are normalized
+  to comma-separated lists, square brackets are converted to parentheses, and
+  `(Original Mix)` is stripped. The known-artist set is loaded once per batch
+  from the database for case-insensitive matching.
 - **Suggestion energy slider in MIDI learn** — The Browser phase now includes
   two Suggestion Energy steps (left and right side), placed after the browse
   encoder. This allows mapping physical knobs/faders to the smart suggestion
