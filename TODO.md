@@ -19,16 +19,9 @@ as much as possible in mesh-core and mesh-widget and only if necessary in the ui
 ## MIDI
 - [ ] Jog wheel beat nudging for backwards compatibility with older devices
   (like SB2). Must work with current snapping system: when a user nudges by N
-  samples, that offset is preserved across beat jumps, hot cue presses and
+  samples, that offset is stored for this deck only, resets on load of a new
+  track and is preserved across beat jumps, hot cue presses and
   other seek operations so the DJ doesn't need to nudge again.
-
-## Stem Linking
-- [ ] On-the-fly (unprepared) stem linking: shift + stem button redirects to
-  browser with highlighting. Encoder press confirms. Populates the deck's
-  linked stem buffer with the selected track's stem (matching the grid). New
-  stem is prepared but not active until shift + stem button toggles it.
-  Happens internally in the deck, UI sends high-level commands only. Waveform
-  should visually indicate linked stems.
 
 ## Slicer
 - [ ] Single morph knob per deck that scrolls through preset banks (up to 8
@@ -75,33 +68,10 @@ for v3 and beyond.
   (B2B, shared USB), per-DJ history should be kept separate so suggestions
   reflect each DJ's mixing style, not a blended average.
 
-### Stem-Specific Search
-- [ ] **"Find a fitting vocal"** mode: search for tracks whose *vocal* stem
-  characteristics complement the currently playing mix. Uses per-stem audio
-  features (if indexed) or falls back to full-track features with a stem-type
-  weight. The DJ selects which stem type they're looking for (Vocals, Drums,
-  Bass, Other).
-- [ ] **Stem contrast mode**: find tracks that are *harmonically compatible*
-  but *timbrally different* — useful when the DJ wants to introduce fresh
-  texture without clashing. Invert the HNSW distance component so that
-  higher timbral distance scores better, while still enforcing key/BPM fit.
-
-### Genre / Tag Awareness
-- [ ] **Genre affinity scoring**: if genre tags or cluster labels are stored
-  in the DB, use them as an optional filter or soft weight. The DJ can say
-  "stay in techno" or "drift toward house" to control genre blending.
-- [ ] **Tag-based exclusion**: allow the DJ to exclude tags (e.g. "no vocals",
-  "no breakbeat") to narrow results.
-
-### UI
-- in mesh-cue there is a huge gap between the waveforms hot cue buttons and file browser. the browser
-  should take all the space up until hot cue buttons. also remove the save changes button, since we have auto save.
 
 ###
 
 ### Infrastructure
-- [ ] Per-stem audio feature indexing (HNSW per stem type) for stem-specific
-  similarity queries.
 
 ## DJ History & Playlists
 - [ ] Keep DJ history per session, per DJ, persisted to DB while playing.
@@ -151,24 +121,19 @@ for v3 and beyond.
 - [ ] Virtual deck toggle buttons need similar logic to action pad modes. On
   DDJ-SB2, deck toggle makes deck-specific buttons use their own channel
   (action buttons, mode switches).
-- [ ] Importing tracks don't appear in collection (mesh-cue) immediately after
+- [x] Importing tracks don't appear in collection (mesh-cue) immediately after
   analysis. Visible as finished in status bar and written as file, but not in
   the collection list in the file browser.
-- [ ] On window resize the last canvas state is imprinted and does not go
+- [x] On window resize the last canvas state is imprinted and does not go
   away. The actual canvas still works normally.
 - [ ] When deleting a file in the file browser, select the next item (or
-  previous if no next) instead of scrolling to the top.
+  previous if no next) instead of scrolling to the top ( i think this happens,
+  since we index something that isnt there anymore ).
 - [ ] USB manager should invalidate DB connection, cache and notify UI to
   return to root in file browser when a USB stick is removed.
-- [ ] Beat grid analysis quality is not good enough. Research essentia
-  beatgrid/rhythm section for EDM-specific beat grid detection.
 
 # Performance
 - [ ] Optimise stem storage (currently ~200-300 MB per multi-track file).
-- [ ] Reduce code in tick handlers (both player and cue) to lower per-frame
-  overhead. Factor out infrequently-changing information into
-  message/subscription instead of tick handlers. Canvas sometimes skips
-  frames.
 - [ ] Real-time thread priority: set SCHED_FIFO with priority ~70 (below
   JACK's 80) for the audio callback thread when not using JACK. On a typical
   Linux desktop a CPU spike from another process can preempt the audio thread.
@@ -182,48 +147,50 @@ for v3 and beyond.
   settings to use? First connected? Should there be a B2B mode where specific
   decks use specific DJ's settings?
 
-# Performance Profiling Reference
+# Other
 
-Host Track Load (Deck 0) - 524ms Total
+- loading animation both in the ui and as led feedback for mapped controllers
+  (for the loading deck, all action buttons/hotcue buttons or in momentary mode all buttons whose
+  secondary mapping is action button/hotcuebutton is should blink fast while a
+  track is loading)
 
-Track: 100_Nocturnal - Surveillance (Original Mix).wav
-Size: 16.35M frames (523.3 MB of audio data)
-┌───────────────────┬───────┬─────────────────────────────────┐
-│       Phase       │ Time  │              Notes              │
-├───────────────────┼───────┼─────────────────────────────────┤
-│ File open         │ 22µs  │ Negligible                      │
-├───────────────────┼───────┼─────────────────────────────────┤
-│ Buffer allocation │ 271ms │ 4× stem buffers (65MB each)     │
-├───────────────────┼───────┼─────────────────────────────────┤
-│ Audio read        │ 159ms │ 1647 MB/s from USB              │
-├───────────────────┼───────┼─────────────────────────────────┤
-│ Peak computation  │ 92ms  │ Highres waveform (65536 points) │
-├───────────────────┼───────┼─────────────────────────────────┤
-│ Total             │ 524ms │                                 │
-└───────────────────┴───────┴─────────────────────────────────┘
 
-Linked Stem Load (Stem 1 for Deck 0) - 2.86s Total
+- on tracks, where the stem separation is not perfect (the bass stem is actually
+  in the drums layer), the lufs analysis is inaccurate. analyse if the lufs
+  analysis is actually done on the whole mix regardless of the beat analysis
+  config (if we analyse only the drum stem or whole mix). in general i feel like
+  tracks with less lufs are still too silent after the automatic gain correction
+  chain in mesh-player, make sure this is absolutely accurate! for example
+  allied oxidize is  -6.1db scaled down for a target of -14 lufs and Culture
+  Shock Breathe is -5db scaled down, which implies ~ db lufs difference, but
+  these tracks are in actuallity vastly different loudness. oxidize has the bass
+  stem empty and the bass is in the drums stem.
 
-Track: 101_Noisia - Block Control.wav
-Source BPM: 172.0 → Target: 174.0 (ratio: 1.0116)
-Size: 20.68M frames (661.6 MB)
-┌─────────────────────┬────────┬────────────┬───────────────────────────┐
-│        Phase        │  Time  │ % of Total │           Notes           │
-├─────────────────────┼────────┼────────────┼───────────────────────────┤
-│ USB database lookup │ ~0.1ms │ 0%         │ Cache HIT - instant       │
-├─────────────────────┼────────┼────────────┼───────────────────────────┤
-│ Audio file load     │ 450ms  │ 16%        │ USB I/O (2813 MB/s)       │
-├─────────────────────┼────────┼────────────┼───────────────────────────┤
-│ Time stretching     │ 2169ms │ 76%        │ The dominant bottleneck   │
-├─────────────────────┼────────┼────────────┼───────────────────────────┤
-│ Buffer alignment    │ 109ms  │ 4%         │ Crop/pad to host duration │
-├─────────────────────┼────────┼────────────┼───────────────────────────┤
-│ Peak computation    │ 30ms   │ 1%         │ Highres waveform          │
-├─────────────────────┼────────┼────────────┼───────────────────────────┤
-│ Total               │ 2859ms │ 100%       │                           │
-└─────────────────────┴────────┴────────────┴───────────────────────────┘
+- i realized the bpm and grid analysis mostly only has problems with tracks that have 175
+  bpm (only 2-3 problems with 174 compared to 8-10 with 175). maybe this has to
+  do something wiht our processing or rounding?. check for potential
+  causes, just evaluate first and report back.
 
-Remaining Bottlenecks:
-1. Time stretching (76% of linked stem load) - Would need GPU acceleration or quality tradeoffs
-2. USB I/O (~450ms per track) - Hardware limited, could potentially use async prefetching
-3. Buffer allocation (~270-500ms) - Could pool/reuse buffers across loads
+- maybe we can utilise online metadata scraping as a fallback,comparison piont
+  for bpm and key analysis, also we can get accurate metadata tags, like name
+  artist, release date etc from good sources online. check which metadata these
+  pages have in common and are consistent, and first do a deep dive on the ease
+  of scraping these pages and consistently getting reliable metadata. also
+  search on your own for other potential candidates, that might fill other
+  genres.:
+For finding, organizing, and analyzing music with accurate metadata (BPM, Key, and Genre) across EDM and Rock, the best platforms combine high-quality audio, comprehensive search filters, and, in some cases, specialized DJ-focused analysis.
+
+Here are the best music pages for different genres based on accuracy and variety:
+1. Best for Electronic Dance Music (EDM)
+
+    Beatport: The industry standard for electronic music. It offers highly accurate BPM and key data, specialized sub-genre classification, and a wide variety of tracks.
+    Beatsource: Sister site to Beatport, focused on open-format and commercial dance music, providing reliable metadata for faster-paced genres.
+    ZipDJ: An excellent digital record pool, particularly strong in underground electronic styles and house music, with accurate, high-quality meta-tagged files.
+
+2. Best for Rock (and Indie/Alternative)
+
+    Bandcamp: An extensive catalog where artists upload their own music. It features a superior tagging system (including specific rock sub-genres) and high-quality metadata, making it excellent for finding new, specialized, or independent rock music.
+    Discogs: The most comprehensive database of recorded music, covering all rock eras and sub-genres. It is indispensable for verifying release details and finding specific, detailed metadata.
+    Apple Music: Offers a vast library with very high-standard, consistent metadata across Rock and related genres, useful for curating playlists.
+
+    Also check spotify and deezer.
