@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
-use crate::audio_file::LoadedTrack;
+use crate::audio_file::{LoadedTrack, StemBuffers};
+use basedrop::Shared;
 use crate::effect::{Effect, MultibandHost};
 use crate::types::{
     DeckId, PlayState, Stem, StereoBuffer, StereoSample, TransportPosition,
@@ -668,6 +669,20 @@ impl Deck {
         self.sync_state_atomic();
         self.sync_cue_atomic();
         self.sync_loop_atomic();
+    }
+
+    /// Upgrade stems on a loaded track without resetting playback position.
+    ///
+    /// Used for streaming loading: the skeleton track loads instantly with
+    /// empty stems, then priority regions and finally full audio arrive
+    /// via this method. Navigation (beat jump, hot cue, seek) uses
+    /// `duration_samples` from metadata, while audio reads use `stem.len()`.
+    pub fn upgrade_stems(&mut self, new_stems: Shared<StemBuffers>, new_duration: usize) {
+        if let Some(track) = &mut self.track {
+            track.stems = new_stems;
+            track.duration_samples = new_duration;
+            track.duration_seconds = new_duration as f64 / SAMPLE_RATE as f64;
+        }
     }
 
     /// Check if a track is loaded
@@ -1593,7 +1608,6 @@ impl Deck {
         // Extract values needed for parallel processing (avoids borrow conflicts)
         let any_soloed = self.any_stem_soloed();
         let position = self.position;
-        let duration_samples = track.duration_samples;
         let samples_per_beat = track.samples_per_beat();
 
         // Extract linked stem buffer references and gains before parallel section
@@ -1662,9 +1676,13 @@ impl Deck {
                     }
                 } else {
                     // ORIGINAL STEM PATH: Read from track's stem buffer
+                    // Use stem_data.len() (not duration_samples) for audio bounds:
+                    // during streaming loading, stems may be shorter than duration
+                    // while navigation uses the full duration from metadata.
+                    let audio_len = stem_data.len();
                     for i in 0..samples_to_read {
                         let read_pos = position + i;
-                        if read_pos < duration_samples {
+                        if read_pos < audio_len {
                             buf_slice[i] = stem_data[read_pos];
                         } else {
                             buf_slice[i] = StereoSample::silence();
@@ -1692,7 +1710,7 @@ impl Deck {
                             position,
                             samples_per_beat,
                             stem_data.as_slice(),
-                            duration_samples,
+                            stem_data.len(),
                         );
                     }
                 }

@@ -12,108 +12,85 @@ use crate::ui::app::MeshApp;
 use crate::ui::message::Message;
 use crate::ui::state::{LinkedStemLoadedMsg, StemLinkState, TrackLoadedMsg};
 
-/// Handle track loaded message (main track with stems)
+/// Handle track loaded message (streaming: RegionLoaded, Complete, or Error)
 pub fn handle_track_loaded(app: &mut MeshApp, msg: TrackLoadedMsg) -> Task<Message> {
     // Extract the result from Arc wrapper
-    // We use Arc::try_unwrap to get ownership if we're the sole owner,
-    // otherwise we need to handle the shared case
     let result = match Arc::try_unwrap(msg.0) {
         Ok(r) => r,
         Err(_arc) => {
-            // Still shared - this shouldn't happen in practice since
-            // subscriptions deliver to one handler, but handle gracefully
             log::warn!("TrackLoadResult Arc still shared, skipping");
             return Task::none();
         }
     };
 
-    let deck_idx = result.deck_idx;
+    use crate::loader::TrackLoadResult;
 
-    match result.result {
-        Ok(prepared) => {
-            let track = &prepared.track;
-            let filename = track.path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("Unknown")
-                .to_string();
-
-            log::info!(
-                "[TRACK] Loaded {} to deck {} ({} samples)",
-                filename,
-                deck_idx + 1,
-                track.duration_samples
-            );
-
-            // ─────────────────────────────────────────────────
-            // UI State Updates (waveforms, display)
-            // ─────────────────────────────────────────────────
-
-            // Apply pre-computed waveform states (expensive work already done in loader)
-            app.player_canvas_state.decks[deck_idx].overview = result.overview_state;
-            app.player_canvas_state.decks[deck_idx].zoomed = result.zoomed_state;
-
-            // Apply user's display config (loader has no access to config)
-            app.player_canvas_state.decks[deck_idx]
-                .overview
-                .set_grid_bars(app.config.display.grid_bars);
-            app.player_canvas_state.decks[deck_idx]
-                .zoomed
-                .set_zoom(app.config.display.default_zoom_bars);
-
-            // Set track info on player canvas state (for header display)
-            app.player_canvas_state.set_track_name(deck_idx, filename.clone());
-            app.player_canvas_state.set_track_key(
-                deck_idx,
-                track.metadata.key.clone().unwrap_or_default()
-            );
-            app.player_canvas_state.set_track_bpm(deck_idx, track.metadata.bpm);
-
-            // Sync hot cues to deck view for display
-            for (slot, hot_cue) in prepared.hot_cues.iter().enumerate() {
-                app.deck_views[deck_idx].set_hot_cue_position(
-                    slot,
-                    hot_cue.as_ref().map(|hc| hc.position as u64)
-                );
+    match result {
+        TrackLoadResult::RegionLoaded { deck_idx, overview_peaks, highres_peaks, path } => {
+            // Stale check: a different track may have been loaded since
+            let path_str = path.to_string_lossy().to_string();
+            if app.deck_views[deck_idx].loaded_track_path() != Some(path_str.as_str()) {
+                return Task::none();
             }
 
-            // Store loaded track path for suggestion seed queries
-            app.deck_views[deck_idx].set_loaded_track_path(
-                Some(track.path.to_string_lossy().to_string())
-            );
-
-            // Reset stem mute/solo state for the deck (all stems active)
-            for stem_idx in 0..4 {
-                app.deck_views[deck_idx].set_stem_muted(stem_idx, false);
-                app.deck_views[deck_idx].set_stem_soloed(stem_idx, false);
-                app.player_canvas_state.set_stem_active(deck_idx, stem_idx, true);
-                // Clear linked stem visual state
-                app.player_canvas_state.set_linked_stem(deck_idx, stem_idx, false, false);
-            }
-
-            // ─────────────────────────────────────────────────
-            // Domain State Updates (encapsulated)
-            // ─────────────────────────────────────────────────
-
-            // Domain handles: stem buffers, LUFS cache, linked stem cleanup, engine send
-            app.domain.apply_loaded_track(
-                deck_idx,
-                result.stems,
-                track.metadata.lufs,
-                prepared,
-            );
-
-            app.status = format!("Loaded {} to deck {}", filename, deck_idx + 1);
-
-            // Schedule debounced suggestion refresh (seed set may have changed)
-            return Task::done(Message::ScheduleSuggestionRefresh);
+            // Update overview waveform peaks (visual growth effect)
+            app.player_canvas_state.decks[deck_idx].overview.stem_waveforms = overview_peaks;
+            app.player_canvas_state.decks[deck_idx].overview.highres_peaks = highres_peaks;
+            Task::none()
         }
-        Err(e) => {
-            log::error!("Failed to load track to deck {}: {}", deck_idx + 1, e);
-            app.status = format!("Error loading track: {}", e);
+
+        TrackLoadResult::Complete { deck_idx, result: track_result, overview_state, zoomed_state,
+                                     stems, duration_samples, path } => {
+            // Stale check
+            let path_str = path.to_string_lossy().to_string();
+            if app.deck_views[deck_idx].loaded_track_path() != Some(path_str.as_str()) {
+                log::info!("[TRACK] Discarding stale Complete for deck {}", deck_idx + 1);
+                return Task::none();
+            }
+
+            match track_result {
+                Ok(prepared) => {
+                    let filename = prepared.track.path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("Unknown")
+                        .to_string();
+
+                    // Deliver stems to engine (single UpgradeStems)
+                    app.domain.upgrade_loaded_stems(deck_idx, stems, duration_samples);
+
+                    // Update waveform with final smoothed peaks (replaces incremental)
+                    app.player_canvas_state.decks[deck_idx].overview = overview_state;
+                    app.player_canvas_state.decks[deck_idx].zoomed = zoomed_state;
+
+                    // Apply user display config
+                    app.player_canvas_state.decks[deck_idx]
+                        .overview.set_grid_bars(app.config.display.grid_bars);
+                    app.player_canvas_state.decks[deck_idx]
+                        .zoomed.set_zoom(app.config.display.default_zoom_bars);
+
+                    app.deck_views[deck_idx].set_audio_loading(false);
+                    app.status = format!("Loaded {} to deck {}", filename, deck_idx + 1);
+                    log::info!("[TRACK] Full audio ready for deck {}", deck_idx + 1);
+
+                    // Schedule debounced suggestion refresh
+                    return Task::done(Message::ScheduleSuggestionRefresh);
+                }
+                Err(e) => {
+                    app.deck_views[deck_idx].set_audio_loading(false);
+                    log::error!("Failed to load track to deck {}: {}", deck_idx + 1, e);
+                    app.status = format!("Error loading track: {}", e);
+                }
+            }
+            Task::none()
+        }
+
+        TrackLoadResult::Error { deck_idx, error } => {
+            app.deck_views[deck_idx].set_audio_loading(false);
+            log::error!("Failed to load track to deck {}: {}", deck_idx + 1, error);
+            app.status = format!("Error loading audio: {}", error);
+            Task::none()
         }
     }
-
-    Task::none()
 }
 
 /// Handle peaks computed message (background waveform computation)

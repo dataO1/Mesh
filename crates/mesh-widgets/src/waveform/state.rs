@@ -278,29 +278,25 @@ impl OverviewState {
     /// Create a placeholder from metadata only (no audio data yet)
     ///
     /// Shows cue markers while audio loads in background.
-    pub fn from_metadata(metadata: &mesh_core::audio_file::TrackMetadata) -> Self {
-        let cue_markers: Vec<CueMarker> = metadata
-            .cue_points
-            .iter()
-            .map(|cue| {
-                let color = CUE_COLORS[(cue.index as usize) % 8];
-                CueMarker {
-                    position: 0.0, // Will be normalized when duration is known
-                    label: cue.label.clone(),
-                    color,
-                    index: cue.index,
-                }
-            })
-            .collect();
+    pub fn from_metadata(metadata: &mesh_core::audio_file::TrackMetadata, duration_samples: u64) -> Self {
+        let cue_markers = Self::cue_points_to_markers(&metadata.cue_points, duration_samples);
+
+        let beat_markers: Vec<f64> = if duration_samples > 0 {
+            metadata.beat_grid.beats.iter()
+                .map(|&pos| pos as f64 / duration_samples as f64)
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         Self {
             stem_waveforms: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
-            highres_peaks: [Vec::new(), Vec::new(), Vec::new(), Vec::new()], // Will be populated when stems load
+            highres_peaks: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             position: 0.0,
             cue_position: None,
-            beat_markers: Vec::new(),
+            beat_markers,
             cue_markers,
-            duration_samples: 0,
+            duration_samples,
             has_track: true,
             loading: true,
             missing_preview_message: None,

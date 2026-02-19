@@ -92,6 +92,8 @@ pub struct DeckView {
     is_secondary_layer: bool,
     /// Full path of the currently loaded track (for suggestion seed queries)
     loaded_track_path: Option<String>,
+    /// Whether audio is currently loading in the background (streaming load in progress)
+    audio_loading: bool,
 }
 
 /// Messages for deck interaction
@@ -189,6 +191,7 @@ impl DeckView {
             midi_active: false,
             is_secondary_layer: false,
             loaded_track_path: None,
+            audio_loading: false,
         }
     }
 
@@ -408,6 +411,16 @@ impl DeckView {
     /// Set the loaded track path
     pub fn set_loaded_track_path(&mut self, path: Option<String>) {
         self.loaded_track_path = path;
+    }
+
+    /// Whether audio is currently loading in the background
+    pub fn audio_loading(&self) -> bool {
+        self.audio_loading
+    }
+
+    /// Set the audio loading state
+    pub fn set_audio_loading(&mut self, loading: bool) {
+        self.audio_loading = loading;
     }
 
     /// Get hot cues bitmap (bit N = hot cue N is set)

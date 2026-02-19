@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::mpsc::Receiver;
 
 use basedrop::Shared;
-use mesh_core::audio_file::{StemBuffers, TrackMetadata};
+use mesh_core::audio_file::{LoadedTrack, StemBuffers, TrackMetadata};
 use mesh_core::config::LoudnessConfig;
 use mesh_core::db::DatabaseService;
 use mesh_core::effect::{Effect, EffectInfo};
@@ -41,10 +41,23 @@ use mesh_core::preset_loader::{PresetLoader, PresetLoadResultReceiver, Multiband
 use mesh_core::usb::get_or_open_usb_database;
 use mesh_core::types::{Stem, StereoBuffer};
 use mesh_core::usb::{UsbCommand, UsbManager, UsbMessage};
-use mesh_widgets::{PeaksComputer, PeaksResultReceiver};
+use mesh_widgets::{CueMarker, OverviewState, ZoomedState, CUE_COLORS, PeaksComputer, PeaksResultReceiver};
 
 use crate::audio::CommandSender;
 use crate::loader::{TrackLoader, TrackLoadResultReceiver};
+
+/// Data returned from skeleton creation for immediate UI application.
+///
+/// Contains everything the UI needs to display the track skeleton (beat markers,
+/// cue markers, track info) while audio loads in the background.
+pub struct SkeletonTrackData {
+    pub prepared: PreparedTrack,
+    pub overview_state: OverviewState,
+    pub zoomed_state: ZoomedState,
+    pub stems: Shared<StemBuffers>,
+    pub duration_samples: usize,
+    pub lufs: Option<f32>,
+}
 
 /// Type alias for USB message receiver
 pub type UsbMessageReceiver = Arc<Mutex<Receiver<UsbMessage>>>;
@@ -551,7 +564,7 @@ impl MeshDomain {
     // Track Loading (delegates to TrackLoader)
     // =========================================================================
 
-    /// Request loading a track (non-blocking)
+    /// Request loading a track (non-blocking) — legacy path, bypasses skeleton.
     ///
     /// Uses the active database to load metadata, then sends to background loader.
     pub fn request_track_load(&mut self, deck_idx: usize, path: PathBuf) -> Result<(), String> {
@@ -559,6 +572,103 @@ impl MeshDomain {
         self.track_loader
             .load(deck_idx, path, metadata)
             .map_err(|e| format!("Failed to request track load: {}", e))
+    }
+
+    /// Create a skeleton track and start background audio loading.
+    ///
+    /// Returns instant skeleton data (empty stems, correct metadata) for immediate
+    /// UI/engine application. The background loader will send PriorityReady and
+    /// Complete results via the subscription channel.
+    pub fn create_skeleton_and_load(
+        &mut self,
+        deck_idx: usize,
+        path: PathBuf,
+    ) -> Result<SkeletonTrackData, String> {
+        let metadata = self.load_track_metadata_or_default(path.to_str().unwrap_or_default());
+        let sample_rate = self.track_loader.sample_rate();
+        let duration_seconds = metadata.duration_seconds.unwrap_or(0.0);
+        let duration_samples = (duration_seconds * sample_rate as f64) as usize;
+
+        // Skeleton stems: length 0, zero allocation
+        let skeleton_stems = Shared::new(
+            &mesh_core::engine::gc::gc_handle(),
+            StemBuffers::with_length(0),
+        );
+
+        let lufs = metadata.lufs;
+        let bpm = metadata.bpm.unwrap_or(120.0);
+
+        // Build skeleton LoadedTrack with empty stems
+        let skeleton_track = LoadedTrack {
+            path: path.clone(),
+            stems: skeleton_stems.clone(),
+            metadata: metadata.clone(),
+            duration_samples,
+            duration_seconds,
+        };
+        let prepared = PreparedTrack::prepare(skeleton_track);
+
+        // Build skeleton overview: beat markers + cue markers at correct positions
+        let overview_state = OverviewState::from_metadata(&metadata, duration_samples as u64);
+
+        // Build skeleton zoomed state
+        let cue_markers: Vec<CueMarker> = metadata
+            .cue_points
+            .iter()
+            .map(|cue| {
+                let position = if duration_samples > 0 {
+                    cue.sample_position as f64 / duration_samples as f64
+                } else {
+                    0.0
+                };
+                CueMarker {
+                    position,
+                    label: cue.label.clone(),
+                    color: CUE_COLORS[(cue.index as usize) % 8],
+                    index: cue.index,
+                }
+            })
+            .collect();
+
+        let mut zoomed_state = ZoomedState::from_metadata(
+            bpm,
+            metadata.beat_grid.beats.clone(),
+            cue_markers,
+        );
+        zoomed_state.set_duration(duration_samples as u64);
+        zoomed_state.set_drop_marker(metadata.drop_marker);
+
+        // Send audio load request to background loader
+        self.track_loader
+            .load(deck_idx, path, metadata)
+            .map_err(|e| format!("Failed to request track load: {}", e))?;
+
+        Ok(SkeletonTrackData {
+            prepared,
+            overview_state,
+            zoomed_state,
+            stems: skeleton_stems,
+            duration_samples,
+            lufs,
+        })
+    }
+
+    /// Upgrade stems on a loaded deck without resetting playback position.
+    ///
+    /// Used when streaming audio arrives (PriorityReady or Complete from loader).
+    /// Updates both the domain's stem cache and the engine via UpgradeStems command.
+    pub fn upgrade_loaded_stems(
+        &mut self,
+        deck: usize,
+        stems: Shared<StemBuffers>,
+        duration_samples: usize,
+    ) {
+        self.set_deck_stems(deck, Some(stems.clone()));
+        self.send_command(EngineCommand::UpgradeStems {
+            deck,
+            stems,
+            duration_samples,
+        });
     }
 
     /// Update track loader's sample rate (if audio system rate changes)

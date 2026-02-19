@@ -1441,6 +1441,64 @@ impl AudioFileReader {
     ///
     /// Reads data in 1MB chunks instead of per-frame to reduce syscall overhead.
     fn read_16bit_samples(&mut self, stems: &mut StemBuffers, frame_count: usize) -> Result<(), AudioFileError> {
+        self.read_16bit_region(stems, 0, frame_count)
+    }
+
+    /// Read 24-bit samples using chunked I/O for better performance
+    fn read_24bit_samples(&mut self, stems: &mut StemBuffers, frame_count: usize) -> Result<(), AudioFileError> {
+        self.read_24bit_region(stems, 0, frame_count)
+    }
+
+    /// Read 32-bit float samples using chunked I/O for better performance
+    fn read_32bit_float_samples(&mut self, stems: &mut StemBuffers, frame_count: usize) -> Result<(), AudioFileError> {
+        self.read_32bit_float_region(stems, 0, frame_count)
+    }
+
+    /// Read 32-bit integer samples using chunked I/O for better performance
+    fn read_32bit_int_samples(&mut self, stems: &mut StemBuffers, frame_count: usize) -> Result<(), AudioFileError> {
+        self.read_32bit_int_region(stems, 0, frame_count)
+    }
+
+    /// Check whether this file needs resampling to match the target rate.
+    pub fn needs_resampling(&self, target_rate: u32) -> bool {
+        self.format.sample_rate != target_rate
+    }
+
+    /// Read a region of samples from the file into pre-allocated stems.
+    ///
+    /// Seeks to `file_start` in the data chunk and reads `count` frames,
+    /// writing into `stems` at offset `buffer_start`. Handles 16/24/32-bit.
+    ///
+    /// Precondition: `buffer_start + count <= stems.len()`
+    pub fn read_region_into(
+        &mut self,
+        stems: &mut StemBuffers,
+        file_start: usize,
+        buffer_start: usize,
+        count: usize,
+    ) -> Result<(), AudioFileError> {
+        // Seek to the correct position within the data chunk
+        let byte_offset = self.data_offset
+            + (file_start as u64) * self.format.block_align as u64;
+        self.reader.seek(SeekFrom::Start(byte_offset))
+            .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+
+        match self.format.bits_per_sample {
+            16 => self.read_16bit_region(stems, buffer_start, count),
+            24 => self.read_24bit_region(stems, buffer_start, count),
+            32 => {
+                if self.format.format_tag == 3 {
+                    self.read_32bit_float_region(stems, buffer_start, count)
+                } else {
+                    self.read_32bit_int_region(stems, buffer_start, count)
+                }
+            }
+            _ => Err(AudioFileError::UnsupportedBitDepth(self.format.bits_per_sample)),
+        }
+    }
+
+    /// Read 16-bit samples into stems at the given buffer offset.
+    fn read_16bit_region(&mut self, stems: &mut StemBuffers, buffer_start: usize, frame_count: usize) -> Result<(), AudioFileError> {
         const BYTES_PER_FRAME: usize = 16; // 8 channels * 2 bytes
         const CHUNK_FRAMES: usize = 65536; // 64K frames = 1MB chunks
         const SCALE: f32 = 1.0 / 32768.0;
@@ -1455,12 +1513,10 @@ impl AudioFileReader {
             self.reader.read_exact(&mut chunk_buffer[..bytes_to_read])
                 .map_err(|e| AudioFileError::IoError(e.to_string()))?;
 
-            // Convert chunk with good cache locality
             for j in 0..frames_this_chunk {
                 let offset = j * BYTES_PER_FRAME;
-                let i = frames_read + j;
+                let i = buffer_start + frames_read + j;
 
-                // Channel order: Vocals L/R, Drums L/R, Bass L/R, Other L/R
                 let vocals_l = i16::from_le_bytes([chunk_buffer[offset], chunk_buffer[offset + 1]]) as f32 * SCALE;
                 let vocals_r = i16::from_le_bytes([chunk_buffer[offset + 2], chunk_buffer[offset + 3]]) as f32 * SCALE;
                 let drums_l = i16::from_le_bytes([chunk_buffer[offset + 4], chunk_buffer[offset + 5]]) as f32 * SCALE;
@@ -1482,17 +1538,14 @@ impl AudioFileReader {
         Ok(())
     }
 
-    /// Read 24-bit samples using chunked I/O for better performance
-    ///
-    /// Reads data in ~1MB chunks instead of per-frame to reduce syscall overhead.
-    fn read_24bit_samples(&mut self, stems: &mut StemBuffers, frame_count: usize) -> Result<(), AudioFileError> {
+    /// Read 24-bit samples into stems at the given buffer offset.
+    fn read_24bit_region(&mut self, stems: &mut StemBuffers, buffer_start: usize, frame_count: usize) -> Result<(), AudioFileError> {
         const BYTES_PER_FRAME: usize = 24; // 8 channels * 3 bytes
         const CHUNK_FRAMES: usize = 43008; // ~1MB chunks (43008 * 24 = 1,032,192 bytes)
         const SCALE: f32 = 1.0 / 8388608.0; // 2^23
 
         let mut chunk_buffer = vec![0u8; CHUNK_FRAMES * BYTES_PER_FRAME];
 
-        // Convert 24-bit to i32 (sign-extend)
         let to_i32 = |b: &[u8]| -> i32 {
             let val = (b[0] as i32) | ((b[1] as i32) << 8) | ((b[2] as i32) << 16);
             if val & 0x800000 != 0 {
@@ -1510,10 +1563,9 @@ impl AudioFileReader {
             self.reader.read_exact(&mut chunk_buffer[..bytes_to_read])
                 .map_err(|e| AudioFileError::IoError(e.to_string()))?;
 
-            // Convert chunk with good cache locality
             for j in 0..frames_this_chunk {
                 let offset = j * BYTES_PER_FRAME;
-                let i = frames_read + j;
+                let i = buffer_start + frames_read + j;
 
                 let vocals_l = to_i32(&chunk_buffer[offset..offset + 3]) as f32 * SCALE;
                 let vocals_r = to_i32(&chunk_buffer[offset + 3..offset + 6]) as f32 * SCALE;
@@ -1536,10 +1588,8 @@ impl AudioFileReader {
         Ok(())
     }
 
-    /// Read 32-bit float samples using chunked I/O for better performance
-    ///
-    /// Reads data in 1MB chunks instead of per-frame to reduce syscall overhead.
-    fn read_32bit_float_samples(&mut self, stems: &mut StemBuffers, frame_count: usize) -> Result<(), AudioFileError> {
+    /// Read 32-bit float samples into stems at the given buffer offset.
+    fn read_32bit_float_region(&mut self, stems: &mut StemBuffers, buffer_start: usize, frame_count: usize) -> Result<(), AudioFileError> {
         const BYTES_PER_FRAME: usize = 32; // 8 channels * 4 bytes
         const CHUNK_FRAMES: usize = 32768; // 1MB chunks (32768 * 32 = 1,048,576 bytes)
 
@@ -1553,10 +1603,9 @@ impl AudioFileReader {
             self.reader.read_exact(&mut chunk_buffer[..bytes_to_read])
                 .map_err(|e| AudioFileError::IoError(e.to_string()))?;
 
-            // Convert chunk with good cache locality
             for j in 0..frames_this_chunk {
                 let offset = j * BYTES_PER_FRAME;
-                let i = frames_read + j;
+                let i = buffer_start + frames_read + j;
 
                 let vocals_l = f32::from_le_bytes([chunk_buffer[offset], chunk_buffer[offset + 1], chunk_buffer[offset + 2], chunk_buffer[offset + 3]]);
                 let vocals_r = f32::from_le_bytes([chunk_buffer[offset + 4], chunk_buffer[offset + 5], chunk_buffer[offset + 6], chunk_buffer[offset + 7]]);
@@ -1579,10 +1628,8 @@ impl AudioFileReader {
         Ok(())
     }
 
-    /// Read 32-bit integer samples using chunked I/O for better performance
-    ///
-    /// Reads data in 1MB chunks instead of per-frame to reduce syscall overhead.
-    fn read_32bit_int_samples(&mut self, stems: &mut StemBuffers, frame_count: usize) -> Result<(), AudioFileError> {
+    /// Read 32-bit integer samples into stems at the given buffer offset.
+    fn read_32bit_int_region(&mut self, stems: &mut StemBuffers, buffer_start: usize, frame_count: usize) -> Result<(), AudioFileError> {
         const BYTES_PER_FRAME: usize = 32; // 8 channels * 4 bytes
         const CHUNK_FRAMES: usize = 32768; // 1MB chunks (32768 * 32 = 1,048,576 bytes)
         const SCALE: f32 = 1.0 / 2147483648.0; // 2^31
@@ -1597,10 +1644,9 @@ impl AudioFileReader {
             self.reader.read_exact(&mut chunk_buffer[..bytes_to_read])
                 .map_err(|e| AudioFileError::IoError(e.to_string()))?;
 
-            // Convert chunk with good cache locality
             for j in 0..frames_this_chunk {
                 let offset = j * BYTES_PER_FRAME;
-                let i = frames_read + j;
+                let i = buffer_start + frames_read + j;
 
                 let vocals_l = i32::from_le_bytes([chunk_buffer[offset], chunk_buffer[offset + 1], chunk_buffer[offset + 2], chunk_buffer[offset + 3]]) as f32 * SCALE;
                 let vocals_r = i32::from_le_bytes([chunk_buffer[offset + 4], chunk_buffer[offset + 5], chunk_buffer[offset + 6], chunk_buffer[offset + 7]]) as f32 * SCALE;

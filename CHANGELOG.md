@@ -4,6 +4,49 @@ All notable changes to Mesh are documented in this file.
 
 ---
 
+## [0.9.0]
+
+### Added
+
+- **Streaming track loading with priority regions** — Track loading is now a
+  three-phase progressive pipeline: (1) skeleton with metadata loads instantly
+  (<10 ms), giving immediate access to beat markers, cue markers, and navigation;
+  (2) priority regions around hot cues and the drop marker load next (~200 ms);
+  (3) remaining audio fills in incrementally. The DJ can beat-jump, seek, and
+  navigate cue points while audio loads in the background.
+- **Incremental waveform visualization** — The overview waveform now grows
+  visually as audio loads. Priority regions (hot cue areas) appear first, then
+  gap regions fill in progressively in ~30-second batches. Unloaded areas render
+  as flat/silent, giving clear visual feedback of which parts of the track are
+  ready for playback. High-resolution zoomed peaks also update incrementally.
+- **Region-based audio file reading** — New `read_region_into()` method on
+  `AudioFileReader` enables seeking to arbitrary sample positions and reading
+  directly into pre-allocated stem buffers. Supports 16-bit, 24-bit, and
+  32-bit (float and integer) formats. Existing full-read methods now delegate
+  to the region reader internally, eliminating code duplication.
+- **Engine `UpgradeStems` command** — New real-time-safe command that upgrades
+  a deck's stem buffers without resetting playback position. Uses `basedrop::Shared`
+  for lock-free deallocation on the audio thread.
+- **Skeleton track loading** — `create_skeleton_and_load()` on the domain layer
+  creates an instant-load track with zero-length stems but correct duration,
+  beat grid, cue points, and metadata. The engine uses `duration_samples` for
+  navigation and `stem_data.len()` for audio reads, so navigation works
+  immediately while stems are still empty.
+
+### Improved
+
+- **Track load memory usage** — Eliminated the 460 MB buffer clone that was
+  previously required to send partially-loaded stems to the engine. Peak memory
+  during track loading dropped from ~920 MB to ~462 MB. Only lightweight peak
+  snapshots (~2 MB) are sent during incremental loading.
+- **Priority region planning** — New `regions` module computes optimal load
+  regions around hot cues, drop markers, and the first beat. Regions within
+  64 beats of each other are merged to minimize seek operations. Gap regions
+  (everything not covered by priority areas) are computed for sequential
+  background filling.
+
+---
+
 ## [0.8.10]
 
 ### Improved

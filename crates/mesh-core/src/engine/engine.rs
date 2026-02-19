@@ -630,6 +630,12 @@ impl AudioEngine {
                 EngineCommand::UnloadTrack { deck } => {
                     self.unload_track(deck);
                 }
+                EngineCommand::UpgradeStems { deck, stems, duration_samples } => {
+                    if deck < NUM_DECKS {
+                        self.decks[deck].upgrade_stems(stems, duration_samples);
+                        self.update_deck_latencies(deck);
+                    }
+                }
 
                 // Playback Control (with inter-deck phase sync)
                 EngineCommand::Play { deck } => {

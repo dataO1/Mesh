@@ -41,7 +41,7 @@ impl MeshCueApp {
                 // Create combined waveform view (both zoomed + overview in single canvas)
                 let mut combined_waveform = CombinedWaveformView::new();
                 // Initialize overview with beat markers from metadata
-                combined_waveform.overview = WaveformView::from_metadata(&metadata);
+                combined_waveform.overview = WaveformView::from_metadata(&metadata, 0);
                 // Apply grid density from config
                 combined_waveform
                     .overview

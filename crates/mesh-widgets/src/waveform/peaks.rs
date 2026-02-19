@@ -326,3 +326,88 @@ pub fn generate_waveform_preview_with_gain(stems: &StemBuffers, gain_linear: f32
 
     preview
 }
+
+/// Allocate peak arrays pre-filled with (0.0, 0.0) for incremental loading.
+///
+/// Returns 4 arrays (one per stem) of the specified width, ready to be
+/// incrementally updated via `update_peaks_for_region()`.
+pub fn allocate_empty_peaks(width: usize) -> [Vec<(f32, f32)>; 4] {
+    [
+        vec![(0.0, 0.0); width],
+        vec![(0.0, 0.0); width],
+        vec![(0.0, 0.0); width],
+        vec![(0.0, 0.0); width],
+    ]
+}
+
+/// Update pre-allocated peak arrays for a specific sample range.
+///
+/// Given a sample range `[sample_start, sample_end)`, computes which peak
+/// columns are affected and recalculates min/max for those columns from the
+/// stem data. Unloaded columns remain at `(0.0, 0.0)` — rendered as flat/silent.
+///
+/// This is designed for incremental loading: call after reading each batch of
+/// audio data into the stem buffer. Only processes the affected columns, so
+/// a 1.5M-sample batch across 4 stems completes in <5 ms.
+///
+/// # Arguments
+/// * `stems` - The stem buffers (may be partially filled with audio data)
+/// * `peaks` - Pre-allocated peak arrays to update in-place
+/// * `sample_start` - Start of the loaded sample range (inclusive)
+/// * `sample_end` - End of the loaded sample range (exclusive)
+/// * `total_duration` - Total track duration in samples
+/// * `total_width` - Width of the peak arrays (e.g., 800 for overview, 65536 for highres)
+pub fn update_peaks_for_region(
+    stems: &StemBuffers,
+    peaks: &mut [Vec<(f32, f32)>; 4],
+    sample_start: usize,
+    sample_end: usize,
+    total_duration: usize,
+    total_width: usize,
+) {
+    if total_duration == 0 || total_width == 0 {
+        return;
+    }
+
+    let samples_per_col = total_duration / total_width;
+    if samples_per_col == 0 {
+        return;
+    }
+
+    // Determine which columns are affected by this sample range
+    let col_start = sample_start / samples_per_col;
+    let col_end = ((sample_end + samples_per_col - 1) / samples_per_col).min(total_width);
+
+    let stem_refs = [&stems.vocals, &stems.drums, &stems.bass, &stems.other];
+    let stem_len = stems.len();
+
+    for (stem_idx, stem_buf) in stem_refs.iter().enumerate() {
+        if peaks[stem_idx].len() < total_width {
+            continue; // Skip if peaks array not properly allocated
+        }
+
+        for col in col_start..col_end {
+            let s = col * samples_per_col;
+            let e = ((col + 1) * samples_per_col).min(stem_len);
+
+            if s >= stem_len || s >= e {
+                continue;
+            }
+
+            let mut min = f32::INFINITY;
+            let mut max = f32::NEG_INFINITY;
+
+            for i in s..e {
+                let sample = (stem_buf[i].left + stem_buf[i].right) / 2.0;
+                min = min.min(sample);
+                max = max.max(sample);
+            }
+
+            if min == f32::INFINITY {
+                peaks[stem_idx][col] = (0.0, 0.0);
+            } else {
+                peaks[stem_idx][col] = (min, max);
+            }
+        }
+    }
+}

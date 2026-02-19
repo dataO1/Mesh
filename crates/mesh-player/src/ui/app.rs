@@ -344,14 +344,69 @@ impl MeshApp {
             }
 
             Message::LoadTrack(deck_idx, path) => {
-                // Send load request to background thread (non-blocking)
-                // Result will be picked up via subscription from domain's track_loader
+                // Streaming track loading: create skeleton immediately, load audio in background
                 if deck_idx < 4 {
-                    self.status = format!("Loading track to deck {}...", deck_idx + 1);
+                    match self.domain.create_skeleton_and_load(deck_idx, path.into()) {
+                        Ok(skeleton) => {
+                            // Apply skeleton waveform (loading state with beat/cue markers)
+                            self.player_canvas_state.decks[deck_idx].overview = skeleton.overview_state;
+                            self.player_canvas_state.decks[deck_idx].zoomed = skeleton.zoomed_state;
 
-                    // Domain handles metadata lookup and track loading
-                    if let Err(e) = self.domain.request_track_load(deck_idx, path.into()) {
-                        self.status = format!("Failed to start load: {}", e);
+                            // Apply user display config
+                            self.player_canvas_state.decks[deck_idx]
+                                .overview.set_grid_bars(self.config.display.grid_bars);
+                            self.player_canvas_state.decks[deck_idx]
+                                .zoomed.set_zoom(self.config.display.default_zoom_bars);
+
+                            // Set track info from skeleton metadata
+                            let track = &skeleton.prepared.track;
+                            let filename = track.path.file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("Unknown")
+                                .to_string();
+
+                            self.player_canvas_state.set_track_name(deck_idx, filename.clone());
+                            self.player_canvas_state.set_track_key(
+                                deck_idx,
+                                track.metadata.key.clone().unwrap_or_default(),
+                            );
+                            self.player_canvas_state.set_track_bpm(deck_idx, track.metadata.bpm);
+
+                            // Sync hot cues to deck view
+                            for (slot, hot_cue) in skeleton.prepared.hot_cues.iter().enumerate() {
+                                self.deck_views[deck_idx].set_hot_cue_position(
+                                    slot,
+                                    hot_cue.as_ref().map(|hc| hc.position as u64),
+                                );
+                            }
+
+                            // Store loaded track path for stale detection
+                            self.deck_views[deck_idx].set_loaded_track_path(
+                                Some(track.path.to_string_lossy().to_string()),
+                            );
+
+                            // Reset stem mute/solo state
+                            for stem_idx in 0..4 {
+                                self.deck_views[deck_idx].set_stem_muted(stem_idx, false);
+                                self.deck_views[deck_idx].set_stem_soloed(stem_idx, false);
+                                self.player_canvas_state.set_stem_active(deck_idx, stem_idx, true);
+                                self.player_canvas_state.set_linked_stem(deck_idx, stem_idx, false, false);
+                            }
+
+                            // Send skeleton to engine (empty stems, correct duration for navigation)
+                            self.domain.apply_loaded_track(
+                                deck_idx,
+                                skeleton.stems,
+                                skeleton.lufs,
+                                skeleton.prepared,
+                            );
+
+                            self.deck_views[deck_idx].set_audio_loading(true);
+                            self.status = format!("Loading audio for deck {}...", deck_idx + 1);
+                        }
+                        Err(e) => {
+                            self.status = format!("Failed to start load: {}", e);
+                        }
                     }
                 }
                 Task::none()

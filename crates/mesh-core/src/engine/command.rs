@@ -39,7 +39,9 @@
 use super::{LinkedStemData, PreparedTrack};
 use super::scratch::InterpolationMethod;
 use super::slicer::{SlicerPreset, StepSequence};
+use crate::audio_file::StemBuffers;
 use crate::types::Stem;
+use basedrop::Shared;
 
 /// Request data for loading a linked stem from a file path
 ///
@@ -73,6 +75,14 @@ pub enum EngineCommand {
     },
     /// Unload track from a deck
     UnloadTrack { deck: usize },
+    /// Upgrade stems on a deck without resetting playback position.
+    /// Used for streaming loading: skeleton loads first, audio arrives later.
+    /// Shared drop on audio thread is RT-safe (basedrop defers to GC).
+    UpgradeStems {
+        deck: usize,
+        stems: Shared<StemBuffers>,
+        duration_samples: usize,
+    },
 
     // ─────────────────────────────────────────────────────────────
     // Playback Control

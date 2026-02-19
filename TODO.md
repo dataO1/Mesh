@@ -93,7 +93,14 @@ for v3 and beyond.
   loud or silent.
 - [ ] Built-in native effects (beat-synced echo, flanger, phaser, gater, etc.).
 
-### Documentation
+## Release Pipeline
+- The sd image build has the derivation hash in the name, but this should have
+  the tagged version, which triggered the build in name, like the other build
+  artifact releases. Also in the build description for the releases for the
+  debian and windows builds, cluster linux builds first, then windows build
+  (nixos is linux).
+
+## Documentation
 - we need much better strucutred and complete documentation:
   * a readme that is actually useful for people that come to github, see the
     project for the first time and dont want to get overwhelmed with

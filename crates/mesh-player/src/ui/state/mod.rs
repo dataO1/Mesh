@@ -55,8 +55,13 @@ pub struct TrackLoadedMsg(pub Arc<TrackLoadResult>);
 
 impl std::fmt::Debug for TrackLoadedMsg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let deck_idx = match &*self.0 {
+            TrackLoadResult::RegionLoaded { deck_idx, .. } => *deck_idx,
+            TrackLoadResult::Complete { deck_idx, .. } => *deck_idx,
+            TrackLoadResult::Error { deck_idx, .. } => *deck_idx,
+        };
         f.debug_struct("TrackLoadedMsg")
-            .field("deck_idx", &self.0.deck_idx)
+            .field("deck_idx", &deck_idx)
             .finish_non_exhaustive()
     }
 }
