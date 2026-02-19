@@ -419,6 +419,8 @@ pub struct TrackTableState<Id: Clone + Eq + Hash> {
     pub edit_buffer: String,
     /// Last known mouse position (for context menu placement)
     pub last_mouse_position: Point,
+    /// Optional override for Tags column width (default: 150px)
+    pub tag_column_width: Option<f32>,
 }
 
 impl<Id: Clone + Eq + Hash> Default for TrackTableState<Id> {
@@ -440,7 +442,18 @@ impl<Id: Clone + Eq + Hash> TrackTableState<Id> {
             editing: None,
             edit_buffer: String::new(),
             last_mouse_position: Point::ORIGIN,
+            tag_column_width: None,
         }
+    }
+
+    /// Get the width for a column, respecting tag_column_width override
+    pub fn column_width(&self, column: TrackColumn) -> Length {
+        if column == TrackColumn::Tags {
+            if let Some(w) = self.tag_column_width {
+                return Length::Fixed(w);
+            }
+        }
+        column.width()
     }
 
     /// Update the last known mouse position
@@ -760,7 +773,7 @@ where
 
     button(text(label).size(11))
         .padding(Padding::from([2, 4]))
-        .width(column.width())
+        .width(state.column_width(column))
         .style(|theme: &Theme, _status| {
             let palette = theme.extended_palette();
             button::Style {
@@ -805,7 +818,7 @@ where
         }).collect();
 
         return container(row(pills).spacing(3))
-            .width(column.width())
+            .width(state.column_width(column))
             .clip(true)
             .into();
     }
@@ -834,7 +847,7 @@ where
             .on_submit(on_msg_submit(TrackTableMessage::CommitEdit))
             .size(12)
             .padding(2)
-            .width(column.width())
+            .width(state.column_width(column))
             .into()
     } else if column.is_editable() {
         // Editable cell - wrap in mouse_area for double-click to edit
@@ -854,7 +867,7 @@ where
 
         mouse_area(
             container(txt)
-                .width(column.width())
+                .width(state.column_width(column))
                 .clip(true),
         )
         .on_double_click(on_msg(TrackTableMessage::StartEdit(id, column, current_value)))
@@ -867,7 +880,7 @@ where
             .wrapping(iced::widget::text::Wrapping::None);
 
         container(txt)
-            .width(column.width())
+            .width(state.column_width(column))
             .clip(true)
             .into()
     }
