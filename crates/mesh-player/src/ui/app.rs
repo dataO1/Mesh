@@ -718,10 +718,9 @@ impl MeshApp {
                         Some(DeckMessage::DeckPreset(mesh_widgets::DeckPresetMessage::SetMacro { index: macro_index, value }))
                     }
                     MidiDeckAction::SetSuggestionEnergy(value) => {
-                        let _ = self.update(Message::CollectionBrowser(
+                        return self.update(Message::CollectionBrowser(
                             CollectionBrowserMessage::SetEnergyDirection(value),
                         ));
-                        None
                     }
                     MidiDeckAction::ToggleSlip => Some(DeckMessage::ToggleSlip),
                     MidiDeckAction::ToggleKeyMatch => Some(DeckMessage::ToggleKeyMatch),
