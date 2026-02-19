@@ -17,12 +17,15 @@ in
   };
 
   config = {
-    # Mesh user account
+    # Mesh user account (wheel for sudo access)
     users.users.mesh = {
       isNormalUser = true;
-      extraGroups = [ "audio" "video" "input" "plugdev" ];
+      extraGroups = [ "audio" "video" "input" "plugdev" "wheel" ];
       initialPassword = "mesh";
     };
+
+    # Root account (for emergency console access)
+    users.users.root.initialPassword = "mesh";
 
     # cage Wayland kiosk compositor
     services.cage = {
@@ -31,10 +34,12 @@ in
       program = "${meshPlayer}/bin/mesh-player";
       extraArguments = [ "-d" ];
       environment = {
-        # Use GLES via Panfrost (Mali-G610)
+        # Use GLES via Panthor (Mali-G610)
         WGPU_BACKEND = "gl";
         MESA_GL_VERSION_OVERRIDE = "3.1";
         WLR_NO_HARDWARE_CURSORS = "1";
+        # winit loads wayland/xkbcommon via dlopen — not in RPATH on NixOS
+        LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.wayland pkgs.libxkbcommon pkgs.libGL pkgs.vulkan-loader ];
       };
     };
 
