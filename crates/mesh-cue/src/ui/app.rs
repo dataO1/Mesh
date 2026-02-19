@@ -8,7 +8,7 @@ use crate::audio::{AudioHandle, AudioState};
 use crate::config;
 use crate::domain::MeshCueDomain;
 use crate::keybindings::{self, KeybindingsConfig};
-use iced::widget::{button, column, container, mouse_area, opaque, row, stack, text, Space};
+use iced::widget::{button, checkbox, column, container, mouse_area, opaque, row, stack, text, Space};
 use iced::{Color, Element, Length, Task, Theme};
 use super::modals::with_modal_overlay;
 use mesh_core::playlist::NodeId;
@@ -464,7 +464,14 @@ impl MeshCueApp {
             Message::CloseContextMenu => return self.handle_close_context_menu(),
 
             // Reanalysis (delegated to handlers/reanalysis.rs)
-            Message::StartReanalysis { analysis_type, scope } => return self.handle_start_reanalysis(analysis_type, scope),
+            Message::StartBeatsReanalysis { scope } => return self.handle_start_beats_reanalysis(scope),
+            Message::OpenMetadataReanalysisConfig { scope } => return self.handle_open_metadata_reanalysis_config(scope),
+            Message::ToggleReanalysisNameArtist(v) => return self.handle_toggle_reanalysis_name_artist(v),
+            Message::ToggleReanalysisLoudness(v) => return self.handle_toggle_reanalysis_loudness(v),
+            Message::ToggleReanalysisKey(v) => return self.handle_toggle_reanalysis_key(v),
+            Message::ToggleReanalysisTags(v) => return self.handle_toggle_reanalysis_tags(v),
+            Message::ConfirmMetadataReanalysis => return self.handle_confirm_metadata_reanalysis(),
+            Message::CloseReanalysisConfig => return self.handle_close_reanalysis_config(),
             Message::ReanalysisProgress(progress) => return self.handle_reanalysis_progress(progress),
             Message::CancelReanalysis => return self.handle_cancel_reanalysis(),
             Message::StartRenamePlaylist(playlist_id) => return self.handle_start_rename_playlist(playlist_id),
@@ -688,6 +695,12 @@ impl MeshCueApp {
             .width(Length::Fill)
             .height(Length::Fill);
             stack![base, backdrop, sized].into()
+        } else if self.reanalysis_state.config_modal_open {
+            with_modal_overlay(
+                base,
+                self.view_reanalysis_config_modal(),
+                Message::CloseReanalysisConfig,
+            )
         } else if self.context_menu_state.is_open {
             // Context menu uses transparent backdrop and positioned content
             let backdrop: Element<Message> = mouse_area(
@@ -844,6 +857,86 @@ impl MeshCueApp {
     }
 
     /// Render a progress bar for re-analysis operations
+    /// View for the metadata reanalysis config modal
+    fn view_reanalysis_config_modal(&self) -> Element<'_, Message> {
+        let any_checked = self.reanalysis_state.config_name_artist
+            || self.reanalysis_state.config_loudness
+            || self.reanalysis_state.config_key
+            || self.reanalysis_state.config_tags;
+
+        let scope_desc = self.reanalysis_state.config_scope
+            .as_ref()
+            .map(|s| s.description())
+            .unwrap_or_else(|| "tracks".to_string());
+
+        let title = text(format!("Re-analyse Metadata ({})", scope_desc))
+            .size(18);
+
+        let cb_name = checkbox(self.reanalysis_state.config_name_artist)
+            .label("Name / Artist")
+            .on_toggle(Message::ToggleReanalysisNameArtist)
+            .size(16);
+        let cb_loudness = checkbox(self.reanalysis_state.config_loudness)
+            .label("Loudness")
+            .on_toggle(Message::ToggleReanalysisLoudness)
+            .size(16);
+        let cb_key = checkbox(self.reanalysis_state.config_key)
+            .label("Key")
+            .on_toggle(Message::ToggleReanalysisKey)
+            .size(16);
+        let cb_tags = checkbox(self.reanalysis_state.config_tags)
+            .label("Tags (genre, mood, ML)")
+            .on_toggle(Message::ToggleReanalysisTags)
+            .size(16);
+
+        let start_btn = if any_checked {
+            button(text("Start").size(14))
+                .on_press(Message::ConfirmMetadataReanalysis)
+                .padding([8, 20])
+                .style(button::primary)
+        } else {
+            button(text("Start").size(14))
+                .padding([8, 20])
+                .style(button::secondary)
+        };
+
+        let cancel_btn = button(text("Cancel").size(14))
+            .on_press(Message::CloseReanalysisConfig)
+            .padding([8, 20])
+            .style(button::secondary);
+
+        let buttons = row![start_btn, cancel_btn].spacing(12);
+
+        container(
+            column![
+                title,
+                Space::new().height(12),
+                cb_name,
+                cb_loudness,
+                cb_key,
+                cb_tags,
+                Space::new().height(16),
+                buttons,
+            ]
+            .spacing(8)
+            .padding(24)
+            .width(Length::Fixed(340.0)),
+        )
+        .style(|theme: &iced::Theme| {
+            let palette = theme.extended_palette();
+            container::Style {
+                background: Some(iced::Background::Color(palette.background.strong.color)),
+                border: iced::Border {
+                    color: palette.background.weak.color,
+                    width: 1.0,
+                    radius: 8.0.into(),
+                },
+                ..Default::default()
+            }
+        })
+        .into()
+    }
+
     fn view_reanalysis_progress_bar(&self) -> Option<Element<'_, Message>> {
         if !self.reanalysis_state.is_running {
             return None;
@@ -884,15 +977,15 @@ impl MeshCueApp {
             Message::CancelReanalysis,
         );
 
-        // Show a subtle hint when ML beat detection is active for BPM analysis
-        let uses_bpm = matches!(
+        // Show a subtle hint when ML beat detection is active for Beats analysis
+        let uses_beats = matches!(
             self.reanalysis_state.analysis_type,
-            Some(crate::analysis::AnalysisType::Bpm) | Some(crate::analysis::AnalysisType::All)
+            Some(crate::analysis::AnalysisType::Beats)
         );
         let uses_advanced = self.domain.config().analysis.bpm.backend
             == crate::config::BeatDetectionBackend::Advanced;
 
-        if uses_bpm && uses_advanced {
+        if uses_beats && uses_advanced {
             Some(
                 column![
                     bar,

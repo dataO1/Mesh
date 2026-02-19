@@ -10,7 +10,7 @@ use mesh_core::audio_file::TrackMetadata;
 use mesh_core::playlist::NodeId;
 use mesh_widgets::PlaylistBrowserMessage;
 
-use crate::analysis::{AnalysisType, ReanalysisProgress, ReanalysisScope};
+use crate::analysis::{ReanalysisProgress, ReanalysisScope};
 use crate::batch_import::{ImportProgress, MixedAudioFile, StemGroup};
 use crate::config::{BackendType, BeatDetectionBackend, BpmSource, ModelType};
 use mesh_core::usb::UsbMessage;
@@ -250,11 +250,19 @@ pub enum Message {
     StartRenamePlaylist(NodeId),
 
     // Re-analysis
-    /// Start re-analysis of tracks with specified type and scope
-    StartReanalysis {
-        analysis_type: AnalysisType,
-        scope: ReanalysisScope,
-    },
+    /// Directly start beats reanalysis (from context menu)
+    StartBeatsReanalysis { scope: ReanalysisScope },
+    /// Open metadata reanalysis config modal (from context menu)
+    OpenMetadataReanalysisConfig { scope: ReanalysisScope },
+    /// Toggle metadata reanalysis checkboxes
+    ToggleReanalysisNameArtist(bool),
+    ToggleReanalysisLoudness(bool),
+    ToggleReanalysisKey(bool),
+    ToggleReanalysisTags(bool),
+    /// Confirm metadata reanalysis from modal
+    ConfirmMetadataReanalysis,
+    /// Close metadata reanalysis config modal
+    CloseReanalysisConfig,
     /// Progress update from re-analysis worker thread
     ReanalysisProgress(ReanalysisProgress),
     /// Cancel the current re-analysis

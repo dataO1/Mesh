@@ -53,6 +53,24 @@ All notable changes to Mesh are documented in this file.
   beat grid, cue points, and metadata. The engine uses `duration_samples` for
   navigation and `stem_data.len()` for audio reads, so navigation works
   immediately while stems are still empty.
+- **Original filename preservation** — The raw filename (`base_name`) is now
+  saved as `original_name` in the tracks database before metadata parsing
+  normalizes it into artist/title. This enables re-running metadata analysis
+  later (e.g., after parser improvements) without reimporting. Existing
+  databases are migrated automatically on startup.
+- **Reanalysis overhaul** — The context menu now offers two reanalysis actions
+  instead of five: "Re-analyse Beats" fires immediately (unchanged BPM/beat
+  grid pipeline), while "Re-analyse Metadata..." opens a modal with four
+  checkboxes (all enabled by default): Name/Artist (re-parse `original_name`),
+  Loudness (LUFS via Essentia subprocess), Key (key detection via Essentia),
+  and Tags (genre, mood, vocal detection via EffNet ML pipeline). Only the
+  ticked analyses run, and Essentia subprocess calls are batched when both
+  loudness and key are selected. Beat analysis is kept separate since beat
+  grids are frequently edited manually.
+- **DB schema migration for tracks** — Automatic migration detects old track
+  schemas missing the `original_name` column. Data is backed up, the relation
+  is recreated with the new schema, and all rows are restored with
+  `original_name` defaulted to empty string. Runs transparently on startup.
 
 ### Improved
 

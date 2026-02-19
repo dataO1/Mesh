@@ -1,6 +1,6 @@
 //! Re-analysis state
 
-use crate::analysis::{AnalysisType, ReanalysisProgress};
+use crate::analysis::{AnalysisType, ReanalysisProgress, ReanalysisScope};
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
@@ -26,4 +26,18 @@ pub struct ReanalysisState {
     pub cancel_flag: Option<Arc<AtomicBool>>,
     /// Channel to receive progress updates from worker thread
     pub progress_rx: Option<Receiver<ReanalysisProgress>>,
+
+    // Config modal state (for "Re-analyse Metadata..." modal)
+    /// Whether the metadata config modal is open
+    pub config_modal_open: bool,
+    /// Scope for the pending metadata reanalysis
+    pub config_scope: Option<ReanalysisScope>,
+    /// Checkbox: re-parse name/artist from original filename
+    pub config_name_artist: bool,
+    /// Checkbox: LUFS loudness measurement
+    pub config_loudness: bool,
+    /// Checkbox: musical key detection
+    pub config_key: bool,
+    /// Checkbox: ML tags (genre, mood, etc.)
+    pub config_tags: bool,
 }

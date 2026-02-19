@@ -5,54 +5,45 @@
 //! preserving existing cue points, loops, and other data.
 
 use crate::analysis::{
-    analyze_partial_in_subprocess, fit_bpm_to_range, AnalysisType, PartialAnalysisResult,
-    ReanalysisProgress,
+    analyze_partial_in_subprocess, fit_bpm_to_range, AnalysisType, MetadataOptions,
+    PartialAnalysisResult, ReanalysisProgress, SubprocessTask,
 };
-use crate::config::{BeatDetectionBackend, BpmConfig, BpmSource, LoudnessConfig};
+use crate::config::{BeatDetectionBackend, BpmConfig, BpmSource};
 use crate::ml_analysis::BeatThisAnalyzer;
 use anyhow::{Context, Result};
 use mesh_core::audio_file::AudioFileReader;
 use mesh_core::db::DatabaseService;
 use mesh_core::types::SAMPLE_RATE;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Re-analyze a single track file and update its metadata in the database
+/// Re-analyze a single track's BPM and beat grid
 ///
 /// This function:
 /// 1. Loads the audio from the existing WAV file
 /// 2. Creates a mono mix for analysis
-/// 3. Runs the requested analysis in an isolated subprocess
-/// 4. Updates the database with new metadata (BPM, key, LUFS)
-///
-/// For LUFS changes, the waveform preview is regenerated and stored externally.
-/// The database is the single source of truth - WAV files contain only audio.
+/// 3. Runs BPM detection in an isolated Essentia subprocess
+/// 4. Optionally runs Beat This! for ML-based beat detection
+/// 5. Updates the database with new BPM and beat grid
 ///
 /// # Arguments
 /// * `path` - Path to the WAV file to re-analyze
-/// * `analysis_type` - Which analysis to perform
 /// * `bpm_config` - BPM detection configuration
-/// * `loudness_config` - Loudness normalization configuration (for waveform regeneration)
 /// * `db` - Optional database service for storing analysis results
 ///
 /// # Returns
-/// The partial analysis result with the updated fields
+/// The partial analysis result with BPM and beat grid
 pub fn reanalyze_track(
     path: &Path,
-    analysis_type: AnalysisType,
     bpm_config: &BpmConfig,
-    loudness_config: &LoudnessConfig,
     db: Option<&Arc<DatabaseService>>,
     beat_this: Option<&Arc<Mutex<BeatThisAnalyzer>>>,
 ) -> Result<PartialAnalysisResult> {
-    log::info!(
-        "reanalyze_track: {} analysis on {:?}",
-        analysis_type.display_name(),
-        path
-    );
+    log::info!("reanalyze_track: Beats analysis on {:?}", path);
 
     // Load audio from existing file
     let mut reader = AudioFileReader::open(path)
@@ -95,8 +86,7 @@ pub fn reanalyze_track(
 
     // Run Beat This! BEFORE subprocess when using Advanced backend
     // (ort is thread-safe; mel spectrogram borrows bpm_audio before subprocess takes mono_samples)
-    let uses_bpm = matches!(analysis_type, AnalysisType::Bpm | AnalysisType::All);
-    let beat_this_result = if uses_bpm {
+    let beat_this_result = {
         if let Some(bt_arc) = beat_this {
             log::info!("reanalyze_track: Running Beat This! for {:?}", path);
             match crate::ml_analysis::preprocessing::compute_mel_spectrogram_beat_this(
@@ -131,17 +121,15 @@ pub fn reanalyze_track(
         } else {
             None
         }
-    } else {
-        None
     };
 
     // Capture length before mono_samples is moved into the subprocess
     let mono_len = mono_samples.len();
 
-    // Run analysis in subprocess (Essentia for key/LUFS, and BPM if not using Beat This!)
+    // Run BPM analysis in subprocess (Essentia for BPM detection and beat grid)
     // Full mix goes as main samples; drums-only bpm_mono is passed separately
-    let mut result = analyze_partial_in_subprocess(mono_samples, bpm_mono, analysis_type, bpm_config.clone())
-        .with_context(|| format!("Analysis failed for: {:?}", path))?;
+    let mut result = analyze_partial_in_subprocess(mono_samples, bpm_mono, SubprocessTask::Beats(bpm_config.clone()))
+        .with_context(|| format!("Beats analysis failed for: {:?}", path))?;
 
     // Override BPM/beat_grid with Beat This! results when available
     if let Some(ref bt_result) = beat_this_result {
@@ -192,44 +180,18 @@ pub fn reanalyze_track(
             if let Err(e) = db_service.update_track_field(track_id, "bpm", &bpm.to_string()) {
                 log::error!("Failed to update BPM in database: {:?}", e);
             }
-            // Set original_bpm if this is first analysis
-            // (handled by upsert logic in import, so we skip here to preserve user edits)
         }
 
-        // Update key if detected
-        if let Some(ref key) = result.key {
-            if let Err(e) = db_service.update_track_field(track_id, "key", key) {
-                log::error!("Failed to update key in database: {:?}", e);
+        // Update first_beat_sample from beat grid
+        if let Some(first_beat) = result.beat_grid.as_ref().and_then(|g| g.first().copied()) {
+            if let Err(e) = db_service.update_track_field(track_id, "first_beat_sample", &first_beat.to_string()) {
+                log::error!("Failed to update first_beat_sample in database: {:?}", e);
             }
         }
-
-        // Update LUFS if measured (both drop and integrated)
-        if let Some(lufs) = result.lufs {
-            if let Err(e) = db_service.update_track_field(track_id, "lufs", &lufs.to_string()) {
-                log::error!("Failed to update LUFS in database: {:?}", e);
-            }
-        }
-        if let Some(integrated) = result.integrated_lufs {
-            if let Err(e) = db_service.update_track_field(track_id, "integrated_lufs", &integrated.to_string()) {
-                log::error!("Failed to update integrated LUFS in database: {:?}", e);
-            }
-        }
-
-        // TODO: Store first_beat_sample in database when schema is updated
-        // if let Some(first_beat) = result.beat_grid.as_ref().and_then(|g| g.first().copied()) {
-        //     db_service.update_track_field(track_id, "first_beat_sample", &first_beat.to_string())?;
-        // }
 
         log::info!("reanalyze_track: Updated database for {:?}", path);
     } else {
         log::warn!("reanalyze_track: No database provided, analysis results not persisted");
-    }
-
-    // For LUFS changes, regenerate waveform preview (stored externally via waveform_path)
-    if analysis_type.requires_waveform_regeneration() {
-        // TODO: Generate and store waveform preview to external file
-        // For now, waveform will be regenerated on-demand when track is loaded
-        log::info!("reanalyze_track: LUFS changed, waveform will be regenerated on next load");
     }
 
     log::info!(
@@ -272,7 +234,7 @@ fn create_drums_mono(stems: &mesh_core::audio_file::StemBuffers) -> Vec<f32> {
     mono
 }
 
-/// Run batch re-analysis on multiple tracks
+/// Run batch beats re-analysis on multiple tracks
 ///
 /// Processes tracks in parallel using rayon thread pool.
 /// Sends progress updates through the channel for UI display.
@@ -280,41 +242,34 @@ fn create_drums_mono(stems: &mesh_core::audio_file::StemBuffers) -> Vec<f32> {
 ///
 /// # Arguments
 /// * `tracks` - List of track file paths to re-analyze
-/// * `analysis_type` - Which analysis to perform
 /// * `bpm_config` - BPM detection configuration
-/// * `loudness_config` - Loudness configuration (unused, kept for API compatibility)
 /// * `parallel_processes` - Number of parallel workers (1-16)
 /// * `progress_tx` - Channel to send progress updates
 /// * `cancel_flag` - Atomic flag to check for cancellation
 /// * `db` - Optional database service for storing results
 pub fn run_batch_reanalysis(
     tracks: Vec<PathBuf>,
-    analysis_type: AnalysisType,
     bpm_config: BpmConfig,
-    loudness_config: LoudnessConfig,
     parallel_processes: u8,
     progress_tx: Sender<ReanalysisProgress>,
     cancel_flag: std::sync::Arc<AtomicBool>,
     db: Option<Arc<DatabaseService>>,
 ) {
-    // Note: loudness_config is kept for API compatibility but no longer used
-    // since WAV files no longer store metadata
-    let _ = &loudness_config;
     use rayon::prelude::*;
 
     let start_time = Instant::now();
     let total = tracks.len();
 
     log::info!(
-        "run_batch_reanalysis: Starting {} analysis for {} tracks",
-        analysis_type.display_name(),
+        "run_batch_reanalysis: Starting Beats analysis for {} tracks",
         total
     );
 
     // Send start notification
     let _ = progress_tx.send(ReanalysisProgress::Started {
         total_tracks: total,
-        analysis_type,
+        analysis_type: AnalysisType::Beats,
+        metadata_options: None,
     });
 
     // Check for early cancellation
@@ -328,10 +283,9 @@ pub fn run_batch_reanalysis(
         return;
     }
 
-    // Initialize Beat This! analyzer when using Advanced backend and analysis includes BPM
-    let uses_bpm = matches!(analysis_type, AnalysisType::Bpm | AnalysisType::All);
+    // Initialize Beat This! analyzer when using Advanced backend
     let beat_this_analyzer: Option<Arc<Mutex<BeatThisAnalyzer>>> =
-        if uses_bpm && bpm_config.backend == BeatDetectionBackend::Advanced {
+        if bpm_config.backend == BeatDetectionBackend::Advanced {
             match crate::ml_analysis::MlModelManager::new() {
                 Ok(mgr) => {
                     if let Err(e) = mgr.ensure_beat_detection_models() {
@@ -397,7 +351,7 @@ pub fn run_batch_reanalysis(
                 });
 
                 // Re-analyze the track
-                let success = match reanalyze_track(path, analysis_type, &bpm_config, &loudness_config, db.as_ref(), beat_this_analyzer.as_ref()) {
+                let success = match reanalyze_track(path, &bpm_config, db.as_ref(), beat_this_analyzer.as_ref()) {
                     Ok(_) => {
                         let _ = progress_tx.send(ReanalysisProgress::TrackCompleted {
                             track_name,
@@ -442,111 +396,146 @@ pub fn run_batch_reanalysis(
 }
 
 // ============================================================================
-// ML / Similarity Reanalysis
+// Metadata Reanalysis (Name/Artist, Loudness, Key, ML Tags)
 // ============================================================================
 
-/// Re-analyze a single track's ML/similarity features
+/// Re-analyze a single track's metadata based on selected options
 ///
-/// This function:
-/// 1. Loads the audio from the existing WAV file
-/// 2. Creates a full mono mix for mel spectrogram computation
-/// 3. Computes mel spectrogram (pure Rust DSP, 96-band, 16kHz)
-/// 4. Runs EffNet → genre predictions + embedding → mood head → voice classifier → arousal/valence
-/// 5. Clears old ML-generated tags, then auto-tags with new results
-/// 6. Stores ML analysis data in the database
-///
-/// Unlike BPM/key/LUFS reanalysis, this does NOT use a subprocess — ort is thread-safe.
-fn reanalyze_ml_track(
+/// Steps (only runs what's ticked):
+/// 1. Name/Artist: look up original_name from DB, re-parse with metadata module
+/// 2. Essentia subprocess (LUFS and/or Key): read audio at 44100Hz, run analysis
+/// 3. ML features (Tags): compute mel spectrogram, run EffNet, auto-tag
+fn reanalyze_metadata_track(
     path: &Path,
-    ml_analyzer: &Arc<Mutex<crate::ml_analysis::MlAnalyzer>>,
+    options: &MetadataOptions,
     db: &Arc<DatabaseService>,
+    known_artists: &HashSet<String>,
+    ml_analyzer: Option<&Arc<Mutex<crate::ml_analysis::MlAnalyzer>>>,
 ) -> Result<()> {
-    log::info!("reanalyze_ml_track: {:?}", path);
+    log::info!("reanalyze_metadata_track: {:?} (name={}, loudness={}, key={}, tags={})",
+        path, options.name_artist, options.loudness, options.key, options.tags);
 
-    // Load audio from existing file
-    let mut reader = AudioFileReader::open(path)
-        .with_context(|| format!("Failed to open file: {:?}", path))?;
-
-    let stems = reader
-        .read_all_stems()
-        .with_context(|| format!("Failed to read stems from: {:?}", path))?;
-
-    // Look up track_id by path
+    // Look up track by path to get track_id and original_name
     let path_str = path.to_string_lossy();
-    let track_id = match db.get_track_by_path(&path_str) {
-        Ok(Some(track)) => match track.id {
-            Some(id) => id,
-            None => {
-                anyhow::bail!("Track has no ID: {}", path_str);
+    let track = db.get_track_by_path(&path_str)
+        .with_context(|| format!("Failed to look up track: {}", path_str))?
+        .ok_or_else(|| anyhow::anyhow!("Track not found in database: {}", path_str))?;
+    let track_id = track.id.ok_or_else(|| anyhow::anyhow!("Track has no ID: {}", path_str))?;
+
+    // Step 1: Name/Artist re-parsing
+    if options.name_artist {
+        let original = &track.original_name;
+        if !original.is_empty() {
+            let resolved = crate::metadata::resolve_metadata(None, original, known_artists);
+            if let Err(e) = db.update_track_field(track_id, "name", &resolved.name) {
+                log::error!("reanalyze_metadata_track: Failed to update name: {:?}", e);
             }
-        },
-        Ok(None) => {
-            anyhow::bail!("Track not found in database: {}", path_str);
+            if let Some(ref artist) = resolved.artist {
+                if let Err(e) = db.update_track_field(track_id, "artist", artist) {
+                    log::error!("reanalyze_metadata_track: Failed to update artist: {:?}", e);
+                }
+            }
+            log::info!("reanalyze_metadata_track: Re-parsed name='{}', artist={:?}",
+                resolved.name, resolved.artist);
+        } else {
+            log::info!("reanalyze_metadata_track: No original_name stored, skipping name re-parse");
         }
-        Err(e) => {
-            anyhow::bail!("Failed to look up track: {:?}", e);
-        }
-    };
-
-    // Full mix → mel spectrogram (pure Rust DSP, input to EffNet)
-    let mono_mix = create_mono_mix(&stems);
-    let mel = crate::ml_analysis::preprocessing::compute_mel_spectrogram(
-        &mono_mix,
-        SAMPLE_RATE as f32,
-    )
-    .map_err(|e| anyhow::anyhow!("Mel spectrogram failed: {}", e))?;
-
-    log::info!(
-        "reanalyze_ml_track: mel spectrogram {} frames × {} bands",
-        mel.frames.len(),
-        mel.n_bands
-    );
-
-    // Run EffNet + classification heads (genre, mood, voice/instrumental, arousal/valence)
-    let ml_result = {
-        let mut analyzer = ml_analyzer
-            .lock()
-            .map_err(|e| anyhow::anyhow!("MlAnalyzer lock poisoned: {}", e))?;
-        analyzer
-            .analyze(&mel)
-            .map_err(|e| anyhow::anyhow!("ML inference failed: {}", e))?
-    };
-
-    log::info!(
-        "reanalyze_ml_track: genre={:?}, arousal={:?}, valence={:?}, vocal={:.3}",
-        ml_result.top_genre,
-        ml_result.arousal,
-        ml_result.valence,
-        ml_result.vocal_presence
-    );
-
-    // Step 4: Store ML analysis data in database
-    if let Err(e) = db.store_ml_analysis(track_id, &ml_result) {
-        log::error!("reanalyze_ml_track: Failed to store ML analysis: {:?}", e);
     }
 
-    // Step 5: Clear old ML-generated tags, then auto-tag with new results
-    crate::batch_import::clear_ml_tags(track_id, db);
-    crate::batch_import::auto_tag_from_ml(track_id, &ml_result, db);
+    // Step 2: Essentia subprocess for LUFS and/or Key
+    if options.needs_essentia() {
+        const ESSENTIA_RATE: u32 = 44100;
+        let mut reader = AudioFileReader::open(path)
+            .with_context(|| format!("Failed to open file: {:?}", path))?;
+        let stems = reader
+            .read_all_stems_to(ESSENTIA_RATE)
+            .with_context(|| format!("Failed to read stems from: {:?}", path))?;
+        let mono_samples = create_mono_mix(&stems);
 
-    log::info!("reanalyze_ml_track: Complete for {:?}", path);
+        let essentia_opts = MetadataOptions {
+            name_artist: false,
+            loudness: options.loudness,
+            key: options.key,
+            tags: false,
+        };
+
+        let result = analyze_partial_in_subprocess(
+            mono_samples, None, SubprocessTask::Metadata(essentia_opts),
+        ).with_context(|| format!("Essentia analysis failed for: {:?}", path))?;
+
+        // Update database with Essentia results
+        if let Some(lufs) = result.lufs {
+            if let Err(e) = db.update_track_field(track_id, "lufs", &lufs.to_string()) {
+                log::error!("reanalyze_metadata_track: Failed to update LUFS: {:?}", e);
+            }
+        }
+        if let Some(integrated) = result.integrated_lufs {
+            if let Err(e) = db.update_track_field(track_id, "integrated_lufs", &integrated.to_string()) {
+                log::error!("reanalyze_metadata_track: Failed to update integrated LUFS: {:?}", e);
+            }
+        }
+        if let Some(ref key) = result.key {
+            if let Err(e) = db.update_track_field(track_id, "key", key) {
+                log::error!("reanalyze_metadata_track: Failed to update key: {:?}", e);
+            }
+        }
+    }
+
+    // Step 3: ML features (Tags) — ort is thread-safe, no subprocess needed
+    if options.tags {
+        if let Some(ml_arc) = ml_analyzer {
+            let mut reader = AudioFileReader::open(path)
+                .with_context(|| format!("Failed to open file: {:?}", path))?;
+            let stems = reader
+                .read_all_stems()
+                .with_context(|| format!("Failed to read stems from: {:?}", path))?;
+            let mono_mix = create_mono_mix(&stems);
+
+            let mel = crate::ml_analysis::preprocessing::compute_mel_spectrogram(
+                &mono_mix, SAMPLE_RATE as f32,
+            ).map_err(|e| anyhow::anyhow!("Mel spectrogram failed: {}", e))?;
+
+            let ml_result = {
+                let mut analyzer = ml_arc.lock()
+                    .map_err(|e| anyhow::anyhow!("MlAnalyzer lock poisoned: {}", e))?;
+                analyzer.analyze(&mel)
+                    .map_err(|e| anyhow::anyhow!("ML inference failed: {}", e))?
+            };
+
+            log::info!(
+                "reanalyze_metadata_track: ML genre={:?}, arousal={:?}, vocal={:.3}",
+                ml_result.top_genre, ml_result.arousal, ml_result.vocal_presence
+            );
+
+            if let Err(e) = db.store_ml_analysis(track_id, &ml_result) {
+                log::error!("reanalyze_metadata_track: Failed to store ML analysis: {:?}", e);
+            }
+            crate::batch_import::clear_ml_tags(track_id, db);
+            crate::batch_import::auto_tag_from_ml(track_id, &ml_result, db);
+        } else {
+            log::warn!("reanalyze_metadata_track: Tags requested but ML analyzer not available");
+        }
+    }
+
+    log::info!("reanalyze_metadata_track: Complete for {:?}", path);
     Ok(())
 }
 
-/// Run batch ML/similarity reanalysis on multiple tracks
+/// Run batch metadata reanalysis on multiple tracks
 ///
-/// Initializes the MlAnalyzer (EffNet + mood heads), then processes
-/// tracks in parallel using rayon. Each track gets: vocal presence detection,
-/// mel spectrogram computation, EffNet inference, and auto-tagging.
+/// Processes tracks in parallel using rayon thread pool.
+/// Initializes shared resources once (known_artists, MlAnalyzer) before the batch.
 ///
 /// # Arguments
 /// * `tracks` - List of track file paths to re-analyze
+/// * `options` - Which metadata sub-analyses to run
 /// * `parallel_processes` - Number of parallel workers (1-16)
 /// * `progress_tx` - Channel to send progress updates
 /// * `cancel_flag` - Atomic flag to check for cancellation
 /// * `db` - Database service for storing results
-pub fn run_batch_ml_reanalysis(
+pub fn run_batch_metadata_reanalysis(
     tracks: Vec<PathBuf>,
+    options: MetadataOptions,
     parallel_processes: u8,
     progress_tx: Sender<ReanalysisProgress>,
     cancel_flag: Arc<AtomicBool>,
@@ -559,19 +548,20 @@ pub fn run_batch_ml_reanalysis(
     let total = tracks.len();
 
     log::info!(
-        "run_batch_ml_reanalysis: Starting similarity analysis for {} tracks",
-        total
+        "run_batch_metadata_reanalysis: Starting for {} tracks (name={}, loudness={}, key={}, tags={})",
+        total, options.name_artist, options.loudness, options.key, options.tags
     );
 
     // Send start notification
     let _ = progress_tx.send(ReanalysisProgress::Started {
         total_tracks: total,
-        analysis_type: AnalysisType::Similarity,
+        analysis_type: AnalysisType::Metadata,
+        metadata_options: Some(options),
     });
 
     // Check for early cancellation
     if cancel_flag.load(Ordering::Relaxed) {
-        log::info!("run_batch_ml_reanalysis: Cancelled before processing");
+        log::info!("run_batch_metadata_reanalysis: Cancelled before processing");
         let _ = progress_tx.send(ReanalysisProgress::AllComplete {
             succeeded: 0,
             failed: 0,
@@ -580,51 +570,48 @@ pub fn run_batch_ml_reanalysis(
         return;
     }
 
-    // Initialize ML analyzer (downloads models if needed)
-    let ml_analyzer: Arc<Mutex<ml_analysis::MlAnalyzer>> = {
-        let mgr = match ml_analysis::MlModelManager::new() {
-            Ok(mgr) => mgr,
-            Err(e) => {
-                log::error!("run_batch_ml_reanalysis: Cannot determine model cache dir: {}", e);
-                let _ = progress_tx.send(ReanalysisProgress::AllComplete {
-                    succeeded: 0,
-                    failed: total,
-                    duration: start_time.elapsed(),
-                });
-                return;
+    // Load known artists once for name re-parsing (if needed)
+    let known_artists: HashSet<String> = if options.name_artist {
+        crate::metadata::get_known_artists(&db)
+    } else {
+        HashSet::new()
+    };
+
+    // Initialize ML analyzer once for the entire batch (if Tags is ticked)
+    let ml_analyzer: Option<Arc<Mutex<ml_analysis::MlAnalyzer>>> = if options.tags {
+        match ml_analysis::MlModelManager::new() {
+            Ok(mgr) => {
+                if let Err(e) = mgr.ensure_all_models() {
+                    log::warn!("run_batch_metadata_reanalysis: Failed to download ML models: {}", e);
+                }
+                let model_dir = mgr
+                    .model_path(ml_analysis::MlModelType::EffNetEmbedding)
+                    .parent()
+                    .unwrap_or(std::path::Path::new("."))
+                    .to_path_buf();
+                match ml_analysis::MlAnalyzer::new(&model_dir) {
+                    Ok(analyzer) => {
+                        log::info!("run_batch_metadata_reanalysis: ML analyzer initialized");
+                        Some(Arc::new(Mutex::new(analyzer)))
+                    }
+                    Err(e) => {
+                        log::warn!("run_batch_metadata_reanalysis: ML models not available, skipping tags: {}", e);
+                        None
+                    }
+                }
             }
-        };
-
-        if let Err(e) = mgr.ensure_all_models() {
-            log::warn!("run_batch_ml_reanalysis: Failed to download ML models: {}", e);
-        }
-
-        let model_dir = mgr
-            .model_path(ml_analysis::MlModelType::EffNetEmbedding)
-            .parent()
-            .unwrap_or(std::path::Path::new("."))
-            .to_path_buf();
-
-        match ml_analysis::MlAnalyzer::new(&model_dir) {
-            Ok(analyzer) => {
-                log::info!("run_batch_ml_reanalysis: ML analyzer initialized");
-                Arc::new(Mutex::new(analyzer))
-            }
             Err(e) => {
-                log::error!("run_batch_ml_reanalysis: ML models not available: {}", e);
-                let _ = progress_tx.send(ReanalysisProgress::AllComplete {
-                    succeeded: 0,
-                    failed: total,
-                    duration: start_time.elapsed(),
-                });
-                return;
+                log::error!("run_batch_metadata_reanalysis: Cannot determine model cache dir: {}", e);
+                None
             }
         }
+    } else {
+        None
     };
 
     // Configure rayon thread pool
     let num_workers = parallel_processes.clamp(1, 16) as usize;
-    log::info!("run_batch_ml_reanalysis: Using {} parallel workers", num_workers);
+    log::info!("run_batch_metadata_reanalysis: Using {} parallel workers", num_workers);
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(num_workers)
         .build()
@@ -652,7 +639,7 @@ pub fn run_batch_ml_reanalysis(
                     total,
                 });
 
-                match reanalyze_ml_track(path, &ml_analyzer, &db) {
+                match reanalyze_metadata_track(path, &options, &db, &known_artists, ml_analyzer.as_ref()) {
                     Ok(()) => {
                         let _ = progress_tx.send(ReanalysisProgress::TrackCompleted {
                             track_name,
@@ -662,7 +649,7 @@ pub fn run_batch_ml_reanalysis(
                         true
                     }
                     Err(e) => {
-                        log::error!("run_batch_ml_reanalysis: Failed for {:?}: {}", path, e);
+                        log::error!("run_batch_metadata_reanalysis: Failed for {:?}: {}", path, e);
                         let _ = progress_tx.send(ReanalysisProgress::TrackCompleted {
                             track_name,
                             success: false,
@@ -680,7 +667,7 @@ pub fn run_batch_ml_reanalysis(
     let failed = results.len() - succeeded;
 
     log::info!(
-        "run_batch_ml_reanalysis: Complete in {:.1}s - {} succeeded, {} failed",
+        "run_batch_metadata_reanalysis: Complete in {:.1}s - {} succeeded, {} failed",
         duration.as_secs_f64(),
         succeeded,
         failed

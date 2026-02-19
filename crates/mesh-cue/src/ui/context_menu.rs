@@ -3,7 +3,7 @@
 //! Provides popup menus for tracks and playlists with appropriate actions.
 
 use super::app::Message;
-use crate::analysis::{AnalysisType, ReanalysisScope};
+use crate::analysis::ReanalysisScope;
 use iced::widget::{button, column, container, text};
 use iced::{Background, Border, Element, Length, Point};
 use mesh_core::playlist::NodeId;
@@ -134,40 +134,12 @@ pub fn view(state: &ContextMenuState) -> Option<Element<'static, Message>> {
 
             vec![
                 menu_item(
-                    &format!("Re-analyse Loudness{}", scope_label),
-                    Message::StartReanalysis {
-                        analysis_type: AnalysisType::Loudness,
-                        scope: scope.clone(),
-                    },
+                    &format!("Re-analyse Metadata...{}", scope_label),
+                    Message::OpenMetadataReanalysisConfig { scope: scope.clone() },
                 ),
                 menu_item(
-                    &format!("Re-analyse BPM{}", scope_label),
-                    Message::StartReanalysis {
-                        analysis_type: AnalysisType::Bpm,
-                        scope: scope.clone(),
-                    },
-                ),
-                menu_item(
-                    &format!("Re-analyse Key{}", scope_label),
-                    Message::StartReanalysis {
-                        analysis_type: AnalysisType::Key,
-                        scope: scope.clone(),
-                    },
-                ),
-                menu_item(
-                    &format!("Re-analyse Similarity{}", scope_label),
-                    Message::StartReanalysis {
-                        analysis_type: AnalysisType::Similarity,
-                        scope: scope.clone(),
-                    },
-                ),
-                menu_separator(),
-                menu_item(
-                    &format!("Re-analyse All{}", scope_label),
-                    Message::StartReanalysis {
-                        analysis_type: AnalysisType::All,
-                        scope,
-                    },
+                    &format!("Re-analyse Beats{}", scope_label),
+                    Message::StartBeatsReanalysis { scope },
                 ),
                 menu_separator(),
                 menu_item_danger("Delete (Permanent)", Message::RequestDeleteById(track_id.clone())),
@@ -186,40 +158,12 @@ pub fn view(state: &ContextMenuState) -> Option<Element<'static, Message>> {
 
             vec![
                 menu_item(
-                    &format!("Re-analyse Loudness{}", scope_label),
-                    Message::StartReanalysis {
-                        analysis_type: AnalysisType::Loudness,
-                        scope: scope.clone(),
-                    },
+                    &format!("Re-analyse Metadata...{}", scope_label),
+                    Message::OpenMetadataReanalysisConfig { scope: scope.clone() },
                 ),
                 menu_item(
-                    &format!("Re-analyse BPM{}", scope_label),
-                    Message::StartReanalysis {
-                        analysis_type: AnalysisType::Bpm,
-                        scope: scope.clone(),
-                    },
-                ),
-                menu_item(
-                    &format!("Re-analyse Key{}", scope_label),
-                    Message::StartReanalysis {
-                        analysis_type: AnalysisType::Key,
-                        scope: scope.clone(),
-                    },
-                ),
-                menu_item(
-                    &format!("Re-analyse Similarity{}", scope_label),
-                    Message::StartReanalysis {
-                        analysis_type: AnalysisType::Similarity,
-                        scope: scope.clone(),
-                    },
-                ),
-                menu_separator(),
-                menu_item(
-                    &format!("Re-analyse All{}", scope_label),
-                    Message::StartReanalysis {
-                        analysis_type: AnalysisType::All,
-                        scope,
-                    },
+                    &format!("Re-analyse Beats{}", scope_label),
+                    Message::StartBeatsReanalysis { scope },
                 ),
                 menu_separator(),
                 menu_item("Remove from Playlist", Message::RequestDeleteById(track_id.clone())),
@@ -229,40 +173,12 @@ pub fn view(state: &ContextMenuState) -> Option<Element<'static, Message>> {
             let scope = ReanalysisScope::PlaylistFolder(playlist_id.clone());
             vec![
                 menu_item(
-                    "Re-analyse Loudness (Playlist)",
-                    Message::StartReanalysis {
-                        analysis_type: AnalysisType::Loudness,
-                        scope: scope.clone(),
-                    },
+                    "Re-analyse Metadata... (Playlist)",
+                    Message::OpenMetadataReanalysisConfig { scope: scope.clone() },
                 ),
                 menu_item(
-                    "Re-analyse BPM (Playlist)",
-                    Message::StartReanalysis {
-                        analysis_type: AnalysisType::Bpm,
-                        scope: scope.clone(),
-                    },
-                ),
-                menu_item(
-                    "Re-analyse Key (Playlist)",
-                    Message::StartReanalysis {
-                        analysis_type: AnalysisType::Key,
-                        scope: scope.clone(),
-                    },
-                ),
-                menu_item(
-                    "Re-analyse Similarity (Playlist)",
-                    Message::StartReanalysis {
-                        analysis_type: AnalysisType::Similarity,
-                        scope: scope.clone(),
-                    },
-                ),
-                menu_separator(),
-                menu_item(
-                    "Re-analyse All (Playlist)",
-                    Message::StartReanalysis {
-                        analysis_type: AnalysisType::All,
-                        scope,
-                    },
+                    "Re-analyse Beats (Playlist)",
+                    Message::StartBeatsReanalysis { scope },
                 ),
                 menu_separator(),
                 menu_item("Rename", Message::StartRenamePlaylist(playlist_id.clone())),
@@ -273,40 +189,12 @@ pub fn view(state: &ContextMenuState) -> Option<Element<'static, Message>> {
             let scope = ReanalysisScope::EntireCollection;
             vec![
                 menu_item(
-                    "Re-analyse Loudness (All)",
-                    Message::StartReanalysis {
-                        analysis_type: AnalysisType::Loudness,
-                        scope: scope.clone(),
-                    },
+                    "Re-analyse Metadata... (All)",
+                    Message::OpenMetadataReanalysisConfig { scope: scope.clone() },
                 ),
                 menu_item(
-                    "Re-analyse BPM (All)",
-                    Message::StartReanalysis {
-                        analysis_type: AnalysisType::Bpm,
-                        scope: scope.clone(),
-                    },
-                ),
-                menu_item(
-                    "Re-analyse Key (All)",
-                    Message::StartReanalysis {
-                        analysis_type: AnalysisType::Key,
-                        scope: scope.clone(),
-                    },
-                ),
-                menu_item(
-                    "Re-analyse Similarity (All)",
-                    Message::StartReanalysis {
-                        analysis_type: AnalysisType::Similarity,
-                        scope: scope.clone(),
-                    },
-                ),
-                menu_separator(),
-                menu_item(
-                    "Re-analyse All (Collection)",
-                    Message::StartReanalysis {
-                        analysis_type: AnalysisType::All,
-                        scope,
-                    },
+                    "Re-analyse Beats (All)",
+                    Message::StartBeatsReanalysis { scope },
                 ),
             ]
         }

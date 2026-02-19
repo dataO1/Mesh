@@ -86,6 +86,8 @@ pub struct Track {
     pub folder_path: String,
     /// Track display name
     pub name: String,
+    /// Original filename before metadata parsing (for re-analysis)
+    pub original_name: String,
     /// Artist name
     pub artist: Option<String>,
     /// Detected BPM (after rounding)
@@ -130,6 +132,7 @@ impl Track {
             path: path.into(),
             folder_path: String::new(),
             name: name.into(),
+            original_name: String::new(),
             artist: None,
             bpm: None,
             original_bpm: None,
@@ -160,6 +163,7 @@ impl Track {
             path: PathBuf::from(&row.path),
             folder_path: row.folder_path,
             name: row.name,
+            original_name: row.original_name,
             artist: row.artist,
             bpm: row.bpm,
             original_bpm: row.original_bpm,
@@ -197,6 +201,7 @@ impl Track {
             path: self.path.to_string_lossy().to_string(),
             folder_path,
             name: self.name.clone(),
+            original_name: self.original_name.clone(),
             artist: self.artist.clone(),
             bpm: self.bpm,
             original_bpm: self.original_bpm,

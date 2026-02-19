@@ -31,7 +31,7 @@ use mesh_widgets::TrackRow;
 use mesh_core::usb::{UsbManager, UsbCommand, UsbMessage, SyncPlan, ExportableConfig};
 use mesh_widgets::TreeNode;
 
-use crate::analysis::{AnalysisType, ReanalysisProgress};
+use crate::analysis::{AnalysisType, MetadataOptions, ReanalysisProgress};
 use crate::audio::{AudioError, AudioHandle, AudioState, start_audio_system};
 use crate::batch_import::{ImportProgress, MixedAudioFile, StemGroup};
 use crate::config::Config;
@@ -1008,12 +1008,13 @@ impl MeshCueDomain {
     /// Start reanalysis in background thread
     ///
     /// Routes to the appropriate pipeline based on analysis type:
-    /// - Similarity → ML pipeline (ort/EffNet, no subprocess)
-    /// - Loudness/BPM/Key/All → Essentia subprocess pipeline
+    /// - Beats → Essentia subprocess for BPM + beat grid (+ optional Beat This!)
+    /// - Metadata → unified pipeline: name/artist, LUFS, key, ML tags
     pub fn start_reanalysis(
         &mut self,
         tracks: Vec<PathBuf>,
         analysis_type: AnalysisType,
+        metadata_options: Option<MetadataOptions>,
     ) -> Result<()> {
         let (progress_tx, progress_rx) = std::sync::mpsc::channel();
         let cancel_flag = Arc::new(AtomicBool::new(false));
@@ -1022,33 +1023,33 @@ impl MeshCueDomain {
         let db = self.db_service.clone();
         let cancel = cancel_flag.clone();
 
-        if analysis_type.is_ml_analysis() {
-            // ML pipeline: ort-based EffNet + classification heads (no subprocess)
-            std::thread::spawn(move || {
-                crate::reanalysis::run_batch_ml_reanalysis(
-                    tracks,
-                    parallel,
-                    progress_tx,
-                    cancel,
-                    db,
-                );
-            });
-        } else {
-            // Subprocess pipeline: Essentia C++ for BPM/key/LUFS
-            let bpm_config = self.config.analysis.bpm.clone();
-            let loudness_config = self.config.analysis.loudness.clone();
-            std::thread::spawn(move || {
-                run_batch_reanalysis(
-                    tracks,
-                    analysis_type,
-                    bpm_config,
-                    loudness_config,
-                    parallel,
-                    progress_tx,
-                    cancel,
-                    Some(db),
-                );
-            });
+        match analysis_type {
+            AnalysisType::Beats => {
+                let bpm_config = self.config.analysis.bpm.clone();
+                std::thread::spawn(move || {
+                    run_batch_reanalysis(
+                        tracks,
+                        bpm_config,
+                        parallel,
+                        progress_tx,
+                        cancel,
+                        Some(db),
+                    );
+                });
+            }
+            AnalysisType::Metadata => {
+                let options = metadata_options.unwrap_or_default();
+                std::thread::spawn(move || {
+                    crate::reanalysis::run_batch_metadata_reanalysis(
+                        tracks,
+                        options,
+                        parallel,
+                        progress_tx,
+                        cancel,
+                        db,
+                    );
+                });
+            }
         }
 
         self.reanalysis_progress_rx = Some(progress_rx);

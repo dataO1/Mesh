@@ -154,50 +154,31 @@ for v3 and beyond.
   settings to use? First connected? Should there be a B2B mode where specific
   decks use specific DJ's settings?
 
-# Other
+# Auto Headphones Cue system
+- [ ] Instead of the user needing to automatically cue tracks to headphones out
+  (theres a button per channel currently), we can automate this. usually the use
+  case for this button is to pre listen to a newly loaded track, to beat match
+  and check if this fits and we are at the correct beat grid offset etc, but
+  since we have auto sync, a lot of this is useless, and for mesh its only
+  important to prelisten to the newly cued track to verify its on the same
+  beatgrid snap and that it musically fits. this means that all tracks, that are
+  loaded but currently at volume 0 (or a threshold very low, like 0.3 of 1)
+  should be send to cue headphones out. this should not just binary, but
+  gradually mixed in so at 0.5 they might be audible still a bit, at 0.3 to 0 fully
+  (exponential curve or just two stages linear, both is fine). users can still
+  use the cue buttons (make this configurable in the player ui, default is
+  auto-cue). plan this thorougly, break it into subtasks, at the end document
+  this as a new feature in the changelog and commit all.
 
-- loading animation both in the ui and as led feedback for mapped controllers
-  (for the loading deck, all action buttons/hotcue buttons or in momentary mode all buttons whose
-  secondary mapping is action button/hotcuebutton is should blink fast while a
-  track is loading)
-
-
-- on tracks, where the stem separation is not perfect (the bass stem is actually
-  in the drums layer), the lufs analysis is inaccurate. analyse if the lufs
-  analysis is actually done on the whole mix regardless of the beat analysis
-  config (if we analyse only the drum stem or whole mix). in general i feel like
-  tracks with less lufs are still too silent after the automatic gain correction
-  chain in mesh-player, make sure this is absolutely accurate! for example
-  allied oxidize is  -6.1db scaled down for a target of -14 lufs and Culture
-  Shock Breathe is -5db scaled down, which implies ~ db lufs difference, but
-  these tracks are in actuallity vastly different loudness. oxidize has the bass
-  stem empty and the bass is in the drums stem.
-
-- i realized the bpm and grid analysis mostly only has problems with tracks that have 175
-  bpm (only 2-3 problems with 174 compared to 8-10 with 175). maybe this has to
-  do something wiht our processing or rounding?. check for potential
-  causes, just evaluate first and report back.
-
-- maybe we can utilise online metadata scraping as a fallback,comparison piont
-  for bpm and key analysis, also we can get accurate metadata tags, like name
-  artist, release date etc from good sources online. check which metadata these
-  pages have in common and are consistent, and first do a deep dive on the ease
-  of scraping these pages and consistently getting reliable metadata. also
-  search on your own for other potential candidates, that might fill other
-  genres.:
-For finding, organizing, and analyzing music with accurate metadata (BPM, Key, and Genre) across EDM and Rock, the best platforms combine high-quality audio, comprehensive search filters, and, in some cases, specialized DJ-focused analysis.
-
-Here are the best music pages for different genres based on accuracy and variety:
-1. Best for Electronic Dance Music (EDM)
-
-    Beatport: The industry standard for electronic music. It offers highly accurate BPM and key data, specialized sub-genre classification, and a wide variety of tracks.
-    Beatsource: Sister site to Beatport, focused on open-format and commercial dance music, providing reliable metadata for faster-paced genres.
-    ZipDJ: An excellent digital record pool, particularly strong in underground electronic styles and house music, with accurate, high-quality meta-tagged files.
-
-2. Best for Rock (and Indie/Alternative)
-
-    Bandcamp: An extensive catalog where artists upload their own music. It features a superior tagging system (including specific rock sub-genres) and high-quality metadata, making it excellent for finding new, specialized, or independent rock music.
-    Discogs: The most comprehensive database of recorded music, covering all rock eras and sub-genres. It is indispensable for verifying release details and finding specific, detailed metadata.
-    Apple Music: Offers a vast library with very high-standard, consistent metadata across Rock and related genres, useful for curating playlists.
-
-    Also check spotify and deezer.
+# OTHER
+- [x] Before parsing the original name from the import step, save this into the
+  db as original_name. no need to display this, that is just for further
+  reanlisis.
+- [x] Rename the similarity analysis to reanalize metadata and add name parsing,
+  which reanalizes the original_name (that unaltered from the import) to the
+  already existing other analysis steps. we can also move the lufs and key analysis into
+  this step. Also instead of directly opening a progress bar and starting the
+  analysis in the modal, ask the user to tick a list of checkboxes (preticked
+  everything by default) for each analysis field, then start analysis for the ticked ones and show the progress bar accordingly. try to batch the processes that need similar subprocesses etc as much as possible and reduce runtime and optimise our multithreading. no need for backwards compatability, make it clean and efficient.
+ beat analysis should be its own reanalysis, since most of the time
+  the beatgrid and bpm is manually edited and we dont want to destroy this.

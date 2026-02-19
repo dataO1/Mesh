@@ -897,6 +897,7 @@ fn process_single_track(
 
     // Insert track into the shared database service using new Track API
     let mut track = Track::new(final_path.clone(), resolved.name.clone());
+    track.original_name = base_name.clone();
     track.artist = resolved.artist;
     track.bpm = Some(analysis.bpm);
     track.original_bpm = Some(analysis.original_bpm);

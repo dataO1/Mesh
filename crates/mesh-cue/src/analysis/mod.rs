@@ -31,31 +31,23 @@ use std::time::Duration;
 
 /// Types of analysis that can be performed
 ///
-/// Used for partial re-analysis to only run specific analysis algorithms
-/// without re-processing the entire track.
+/// The two top-level categories correspond to the two context menu items:
+/// - **Beats**: BPM detection + beat grid (destructive to manual edits)
+/// - **Metadata**: Everything else (name/artist, loudness, key, ML tags)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AnalysisType {
-    /// LUFS loudness measurement (requires waveform regeneration)
-    Loudness,
-    /// BPM detection and beat grid generation
-    Bpm,
-    /// Musical key detection
-    Key,
-    /// ML similarity features: genre, mood, vocal presence, arousal/valence
-    Similarity,
-    /// All analysis types
-    All,
+    /// BPM detection and beat grid generation (destructive to manual edits)
+    Beats,
+    /// Metadata reanalysis with user-selected sub-options
+    Metadata,
 }
 
 impl AnalysisType {
     /// Returns human-readable display name
     pub fn display_name(&self) -> &'static str {
         match self {
-            Self::Loudness => "Loudness",
-            Self::Bpm => "BPM",
-            Self::Key => "Key",
-            Self::Similarity => "Similarity",
-            Self::All => "All",
+            Self::Beats => "Beats",
+            Self::Metadata => "Metadata",
         }
     }
 
@@ -64,14 +56,49 @@ impl AnalysisType {
     /// LUFS changes affect the waveform preview gain, so we need to
     /// re-export the entire file rather than just updating the bext chunk.
     pub fn requires_waveform_regeneration(&self) -> bool {
-        matches!(self, Self::Loudness | Self::All)
+        matches!(self, Self::Metadata)
     }
+}
 
-    /// Returns whether this analysis type uses the ML pipeline (ort/EffNet)
-    /// rather than the Essentia subprocess pipeline.
-    pub fn is_ml_analysis(&self) -> bool {
-        matches!(self, Self::Similarity)
+/// User-selectable sub-options for metadata reanalysis
+///
+/// Each checkbox in the "Re-analyse Metadata..." modal corresponds to one field.
+/// Only the ticked options are executed during reanalysis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetadataOptions {
+    /// Re-parse original_name with the metadata module (no audio needed)
+    pub name_artist: bool,
+    /// LUFS loudness measurement (Essentia subprocess)
+    pub loudness: bool,
+    /// Musical key detection (Essentia subprocess)
+    pub key: bool,
+    /// ML features: genre, mood, vocal presence, etc. (EffNet pipeline)
+    pub tags: bool,
+}
+
+impl Default for MetadataOptions {
+    fn default() -> Self {
+        Self { name_artist: true, loudness: true, key: true, tags: true }
     }
+}
+
+impl MetadataOptions {
+    /// Returns true if any Essentia subprocess work is needed (LUFS or Key)
+    pub fn needs_essentia(&self) -> bool {
+        self.loudness || self.key
+    }
+}
+
+/// Task dispatched to the Essentia subprocess
+///
+/// Essentia's C++ library has global state and is NOT thread-safe,
+/// so each analysis runs in an isolated process via procspawn.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SubprocessTask {
+    /// BPM detection and beat grid generation
+    Beats(BpmConfig),
+    /// Metadata analysis: only LUFS and/or Key (based on options)
+    Metadata(MetadataOptions),
 }
 
 /// Scope of re-analysis operation
@@ -128,6 +155,8 @@ pub enum ReanalysisProgress {
     Started {
         total_tracks: usize,
         analysis_type: AnalysisType,
+        /// Present when analysis_type is Metadata
+        metadata_options: Option<MetadataOptions>,
     },
     /// Starting analysis of a specific track
     TrackStarted {
@@ -327,49 +356,39 @@ pub fn analyze_audio(samples: &[f32], bpm_samples: Option<&[f32]>, bpm_config: &
 // Partial Analysis (for re-analysis of specific metadata)
 // ============================================================================
 
-/// Run selective analysis on audio samples
+/// Run selective analysis on audio samples in the Essentia subprocess
 ///
-/// Only performs the analysis algorithms corresponding to the requested type.
-/// This is more efficient than full analysis when only updating specific metadata.
+/// Only performs the analysis algorithms corresponding to the requested task.
 ///
 /// # Arguments
-/// * `samples` - Full mix audio samples for key/LUFS analysis (44100 Hz)
-/// * `bpm_samples` - Optional separate audio for BPM analysis (drums-only when BpmSource::Drums).
-///   When None, uses `samples` for BPM too.
-/// * `analysis_type` - Which analysis to perform
-/// * `bpm_config` - BPM detection configuration
+/// * `samples` - Full mix audio samples (44100 Hz)
+/// * `bpm_samples` - Optional separate audio for BPM analysis (drums-only). Only used for Beats.
+/// * `task` - Which analysis to perform
 pub fn analyze_partial(
     samples: &[f32],
     bpm_samples: Option<&[f32]>,
-    analysis_type: AnalysisType,
-    bpm_config: &BpmConfig,
+    task: SubprocessTask,
 ) -> anyhow::Result<PartialAnalysisResult> {
     use mesh_core::types::SAMPLE_RATE;
 
     /// Essentia algorithms expect 44100 Hz input
     const ESSENTIA_RATE: f64 = 44100.0;
 
-    // BPM uses dedicated audio (drums-only or full mix based on config)
-    let bpm_audio = bpm_samples.unwrap_or(samples);
-
-    log::info!(
-        "analyze_partial: {} analysis on {} samples ({:.1}s at 44100 Hz), bpm_source={}",
-        analysis_type.display_name(),
-        samples.len(),
-        samples.len() as f64 / ESSENTIA_RATE,
-        if bpm_samples.is_some() { "separate" } else { "same" }
-    );
-
     let mut result = PartialAnalysisResult::default();
 
-    match analysis_type {
-        AnalysisType::Loudness => {
-            let lr = measure_lufs(samples, ESSENTIA_RATE as f32)?;
-            result.lufs = Some(lr.drop_lufs);
-            result.integrated_lufs = Some(lr.integrated_lufs);
-        }
-        AnalysisType::Bpm => {
-            let bpm_result = detect_bpm(bpm_audio, bpm_config)?;
+    match task {
+        SubprocessTask::Beats(bpm_config) => {
+            // BPM uses dedicated audio (drums-only or full mix based on config)
+            let bpm_audio = bpm_samples.unwrap_or(samples);
+
+            log::info!(
+                "analyze_partial: Beats analysis on {} samples ({:.1}s), bpm_source={}",
+                samples.len(),
+                samples.len() as f64 / ESSENTIA_RATE,
+                if bpm_samples.is_some() { "separate" } else { "same" }
+            );
+
+            let bpm_result = detect_bpm(bpm_audio, &bpm_config)?;
             let onset_function = detect_onset_function(bpm_audio).ok();
             let duration_at_system_rate =
                 (samples.len() as f64 * SAMPLE_RATE as f64 / ESSENTIA_RATE) as u64;
@@ -383,39 +402,29 @@ pub fn analyze_partial(
             result.bpm = Some(bpm_result.bpm);
             result.beat_grid = Some(beat_grid);
         }
-        AnalysisType::Key => {
-            result.key = Some(detect_key(samples)?);
-        }
-        AnalysisType::Similarity => {
-            // ML analysis uses a separate pipeline (ort/EffNet), not this subprocess.
-            // This path should not be reached — handled by run_batch_ml_reanalysis().
-            log::warn!("Similarity analysis requested in subprocess — use ML pipeline instead");
-        }
-        AnalysisType::All => {
-            // BPM/beat grid uses bpm_audio (drums-only or full mix based on config)
-            let bpm_result = detect_bpm(bpm_audio, bpm_config)?;
-            let onset_function = detect_onset_function(bpm_audio).ok();
-            let duration_at_system_rate =
-                (samples.len() as f64 * SAMPLE_RATE as f64 / ESSENTIA_RATE) as u64;
-            let beat_grid = generate_beat_grid(
-                bpm_result.bpm,
-                &bpm_result.beat_ticks,
-                bpm_audio,
-                duration_at_system_rate,
-                onset_function.as_ref(),
+        SubprocessTask::Metadata(opts) => {
+            log::info!(
+                "analyze_partial: Metadata analysis on {} samples ({:.1}s), loudness={}, key={}",
+                samples.len(),
+                samples.len() as f64 / ESSENTIA_RATE,
+                opts.loudness,
+                opts.key,
             );
-            result.bpm = Some(bpm_result.bpm);
-            result.beat_grid = Some(beat_grid);
-            // Key and LUFS always use full mix
-            result.key = Some(detect_key(samples)?);
-            match measure_lufs(samples, ESSENTIA_RATE as f32) {
-                Ok(lr) => {
-                    result.lufs = Some(lr.drop_lufs);
-                    result.integrated_lufs = Some(lr.integrated_lufs);
+
+            if opts.loudness {
+                match measure_lufs(samples, ESSENTIA_RATE as f32) {
+                    Ok(lr) => {
+                        result.lufs = Some(lr.drop_lufs);
+                        result.integrated_lufs = Some(lr.integrated_lufs);
+                    }
+                    Err(e) => {
+                        log::warn!("LUFS measurement failed: {}", e);
+                    }
                 }
-                Err(e) => {
-                    log::warn!("LUFS measurement failed: {}", e);
-                }
+            }
+
+            if opts.key {
+                result.key = Some(detect_key(samples)?);
             }
         }
     }
@@ -430,22 +439,13 @@ pub fn analyze_partial(
 /// This spawns each analysis in a separate process for isolation.
 ///
 /// # Arguments
-/// * `samples` - Audio samples (ownership transferred to avoid copy)
-/// * `analysis_type` - Which analysis to perform
-/// * `bpm_config` - BPM detection configuration
-///
-/// # Returns
-/// Partial result from subprocess
-/// # Arguments
-/// * `samples` - Full mix audio samples (for key/LUFS)
-/// * `bpm_samples` - Optional separate audio for BPM analysis (drums-only when BpmSource::Drums)
-/// * `analysis_type` - Which analysis to perform
-/// * `bpm_config` - BPM detection configuration
+/// * `samples` - Full mix audio samples (ownership transferred to avoid copy)
+/// * `bpm_samples` - Optional separate audio for BPM analysis (drums-only). Only used for Beats.
+/// * `task` - Which analysis to perform (Beats or Metadata with selected options)
 pub fn analyze_partial_in_subprocess(
     samples: Vec<f32>,
     bpm_samples: Option<Vec<f32>>,
-    analysis_type: AnalysisType,
-    bpm_config: BpmConfig,
+    task: SubprocessTask,
 ) -> anyhow::Result<PartialAnalysisResult> {
     use anyhow::Context;
     use std::io::{Read, Write};
@@ -491,8 +491,8 @@ pub fn analyze_partial_in_subprocess(
     let temp_path_str = temp_path.to_string_lossy().to_string();
     let bpm_temp_path_str = bpm_temp_path.to_string_lossy().to_string();
     let handle = procspawn::spawn(
-        (temp_path_str.clone(), sample_count, bpm_temp_path_str.clone(), bpm_sample_count, analysis_type, bpm_config),
-        |(path, count, bpm_path, bpm_count, atype, config)| {
+        (temp_path_str.clone(), sample_count, bpm_temp_path_str.clone(), bpm_sample_count, task),
+        |(path, count, bpm_path, bpm_count, subprocess_task)| {
             // Helper to read f32 samples from a temp file
             let read_samples = |path: &str, count: usize| -> std::result::Result<Vec<f32>, String> {
                 let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -511,7 +511,7 @@ pub fn analyze_partial_in_subprocess(
             };
 
             // Run partial analysis in isolated process
-            analyze_partial(&samples, bpm_samples.as_deref(), atype, &config).map_err(|e| e.to_string())
+            analyze_partial(&samples, bpm_samples.as_deref(), subprocess_task).map_err(|e| e.to_string())
         },
     );
 

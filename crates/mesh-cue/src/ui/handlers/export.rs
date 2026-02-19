@@ -9,7 +9,7 @@ use mesh_core::usb::{UsbMessage as UsbMsg, ExportableConfig, ExportableAudioConf
 use super::super::app::MeshCueApp;
 use super::super::message::Message;
 use super::super::state::ExportPhase;
-use crate::analysis::AnalysisType;
+use crate::analysis::{AnalysisType, MetadataOptions};
 use mesh_core::playlist::NodeId;
 
 impl MeshCueApp {
@@ -108,7 +108,7 @@ impl MeshCueApp {
 
                         // Set up UI reanalysis state
                         self.reanalysis_state.is_running = true;
-                        self.reanalysis_state.analysis_type = Some(AnalysisType::Loudness);
+                        self.reanalysis_state.analysis_type = Some(AnalysisType::Metadata);
                         self.reanalysis_state.total_tracks = tracks_missing_lufs.len();
                         self.reanalysis_state.completed_tracks = 0;
                         self.reanalysis_state.succeeded = 0;
@@ -119,7 +119,8 @@ impl MeshCueApp {
                         self.export_state.pending_lufs_analysis = true;
 
                         // Start reanalysis through domain (owns db_service, config)
-                        if let Err(e) = self.domain.start_reanalysis(tracks_missing_lufs, AnalysisType::Loudness) {
+                        let lufs_only = MetadataOptions { name_artist: false, loudness: true, key: false, tags: false };
+                        if let Err(e) = self.domain.start_reanalysis(tracks_missing_lufs, AnalysisType::Metadata, Some(lufs_only)) {
                             log::error!("Failed to start LUFS analysis: {:?}", e);
                             self.reanalysis_state.is_running = false;
                         }
