@@ -19,6 +19,11 @@ All notable changes to Mesh are documented in this file.
   gap regions fill in progressively in ~30-second batches. Unloaded areas render
   as flat/silent, giving clear visual feedback of which parts of the track are
   ready for playback. High-resolution zoomed peaks also update incrementally.
+- **Instant partial playback during loading** — Each incremental region load
+  delivers a stem buffer snapshot to the audio engine via `UpgradeStems`, so
+  the DJ can press play or cue and hear audio from any region that has finished
+  loading. Visible waveform peaks always match the playable audio — unloaded
+  areas render as silent and produce silence on playback.
 - **Region-based audio file reading** — New `read_region_into()` method on
   `AudioFileReader` enables seeking to arbitrary sample positions and reading
   directly into pre-allocated stem buffers. Supports 16-bit, 24-bit, and
@@ -35,10 +40,10 @@ All notable changes to Mesh are documented in this file.
 
 ### Improved
 
-- **Track load memory usage** — Eliminated the 460 MB buffer clone that was
-  previously required to send partially-loaded stems to the engine. Peak memory
-  during track loading dropped from ~920 MB to ~462 MB. Only lightweight peak
-  snapshots (~2 MB) are sent during incremental loading.
+- **Track load memory usage** — Each incremental region sends a ~460 MB stem
+  buffer clone to the engine for instant playback. Peak memory during loading
+  is ~920 MB (working buffer + latest engine clone). The `basedrop` GC thread
+  collects stale clones within 100 ms, preventing unbounded growth.
 - **Priority region planning** — New `regions` module computes optimal load
   regions around hot cues, drop markers, and the first beat. Regions within
   64 beats of each other are merged to minimize seek operations. Gap regions

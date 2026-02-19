@@ -59,12 +59,16 @@ pub struct TrackLoadRequest {
 ///
 /// Files that need resampling skip streaming and send a single `Complete`.
 pub enum TrackLoadResult {
-    /// Incremental peak update — a region of audio has been loaded.
-    /// Updates the overview and highres peaks for the loaded portion.
-    /// Sent after each priority region and gap batch so the waveform
-    /// visually grows from hot cue positions outward.
+    /// Incremental update — a region of audio has been loaded.
+    /// Carries a snapshot of the stem buffer (cloned at this point in loading)
+    /// so the engine can play from any loaded region immediately. Also carries
+    /// updated overview and highres peaks matching the playable audio.
     RegionLoaded {
         deck_idx: usize,
+        /// Snapshot of stems at this loading stage (460 MB clone)
+        stems: Shared<StemBuffers>,
+        /// Track duration in samples
+        duration_samples: usize,
         /// Full overview peaks (800 entries per stem, ~25 KB clone)
         overview_peaks: [Vec<(f32, f32)>; 4],
         /// Full highres peaks (65536 entries per stem, ~2 MB clone)
@@ -310,8 +314,9 @@ fn handle_full_load(
 /// `RegionLoaded` message so the waveform grows visually. At the end, sends
 /// a single `Complete` with the full stems and final waveform states.
 ///
-/// No buffer clone: a single 460 MB allocation is used throughout, and only
-/// lightweight peak snapshots (~2 MB each) are sent during loading.
+/// Each `RegionLoaded` message carries a cloned `Shared<StemBuffers>` snapshot
+/// (~460 MB per clone, ~100 ms) so the engine can play from any loaded region
+/// immediately. The visible waveform peaks always match the playable audio.
 fn handle_streaming_load(
     request: TrackLoadRequest,
     tx: &Sender<TrackLoadResult>,
@@ -375,9 +380,11 @@ fn handle_streaming_load(
         update_peaks_for_region(&stems, &mut overview_peaks, region.start, region.end, frame_count, DEFAULT_WIDTH);
         update_peaks_for_region(&stems, &mut highres_peaks, region.start, region.end, frame_count, HIGHRES_WIDTH);
 
-        // Send incremental visual update
+        // Send incremental update with playable stem snapshot
         let _ = tx.send(TrackLoadResult::RegionLoaded {
             deck_idx,
+            stems: Shared::new(&mesh_core::engine::gc::gc_handle(), stems.clone()),
+            duration_samples: frame_count,
             overview_peaks: overview_peaks.clone(),
             highres_peaks: highres_peaks.clone(),
             path: path.clone(),
@@ -407,9 +414,11 @@ fn handle_streaming_load(
             update_peaks_for_region(&stems, &mut overview_peaks, pos, batch_end, frame_count, DEFAULT_WIDTH);
             update_peaks_for_region(&stems, &mut highres_peaks, pos, batch_end, frame_count, HIGHRES_WIDTH);
 
-            // Send incremental visual update
+            // Send incremental update with playable stem snapshot
             let _ = tx.send(TrackLoadResult::RegionLoaded {
                 deck_idx,
+                stems: Shared::new(&mesh_core::engine::gc::gc_handle(), stems.clone()),
+                duration_samples: frame_count,
                 overview_peaks: overview_peaks.clone(),
                 highres_peaks: highres_peaks.clone(),
                 path: path.clone(),

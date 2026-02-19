@@ -26,12 +26,16 @@ pub fn handle_track_loaded(app: &mut MeshApp, msg: TrackLoadedMsg) -> Task<Messa
     use crate::loader::TrackLoadResult;
 
     match result {
-        TrackLoadResult::RegionLoaded { deck_idx, overview_peaks, highres_peaks, path } => {
+        TrackLoadResult::RegionLoaded { deck_idx, stems, duration_samples,
+                                         overview_peaks, highres_peaks, path } => {
             // Stale check: a different track may have been loaded since
             let path_str = path.to_string_lossy().to_string();
             if app.deck_views[deck_idx].loaded_track_path() != Some(path_str.as_str()) {
                 return Task::none();
             }
+
+            // Upgrade engine stems so partially-loaded audio is immediately playable
+            app.domain.upgrade_loaded_stems(deck_idx, stems, duration_samples);
 
             // Update overview waveform peaks (visual growth effect)
             app.player_canvas_state.decks[deck_idx].overview.stem_waveforms = overview_peaks;
