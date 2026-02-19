@@ -164,21 +164,23 @@ for v3 and beyond.
   beatgrid snap and that it musically fits. this means that all tracks, that are
   loaded but currently at volume 0 (or a threshold very low, like 0.3 of 1)
   should be send to cue headphones out. this should not just binary, but
-  gradually mixed in so at 0.5 they might be audible still a bit, at 0.3 to 0 fully
-  (exponential curve or just two stages linear, both is fine). users can still
+  gradually mixed in so at 0.5 they might be audible still a bit, at 0.3 fully (at 0 still fully )(exponential curve or just two stages linear, both is fine). users can still
   use the cue buttons (make this configurable in the player ui, default is
   auto-cue). plan this thorougly, break it into subtasks, at the end document
   this as a new feature in the changelog and commit all.
 
+# DB
+- [ ] we need to introduce database versions, so when the schema changes the db
+  knows it needs to migrate. this is also relevant for usb sticks, at some point
+  we need to be able to be backwards compatible (not yet, but we should pave the
+  way for this possibility, by adding a versioning system for the schema/db version)
+
 # OTHER
-- [x] Before parsing the original name from the import step, save this into the
-  db as original_name. no need to display this, that is just for further
-  reanlisis.
-- [x] Rename the similarity analysis to reanalize metadata and add name parsing,
-  which reanalizes the original_name (that unaltered from the import) to the
-  already existing other analysis steps. we can also move the lufs and key analysis into
-  this step. Also instead of directly opening a progress bar and starting the
-  analysis in the modal, ask the user to tick a list of checkboxes (preticked
-  everything by default) for each analysis field, then start analysis for the ticked ones and show the progress bar accordingly. try to batch the processes that need similar subprocesses etc as much as possible and reduce runtime and optimise our multithreading. no need for backwards compatability, make it clean and efficient.
- beat analysis should be its own reanalysis, since most of the time
-  the beatgrid and bpm is manually edited and we dont want to destroy this.
+- some tracks still have some numbers in front of the name (as part of the
+  artist apparently) from the name parsing, we need to fix that, some examples:
+  * 01 Black Sun Empire - Feed The Machine (you can check the original name in
+    /home/data01/Music/mesh-collection/import/backup/)
+- loading a track from local, then trying to load tracks from  smart suggestions
+  from other sources (usb) doesnt correctly load the metadata, other suggestions
+  from local load fine. from usb loads
+  all other sources correctly.
