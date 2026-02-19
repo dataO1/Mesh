@@ -34,8 +34,10 @@ pub fn handle_track_loaded(app: &mut MeshApp, msg: TrackLoadedMsg) -> Task<Messa
                 return Task::none();
             }
 
-            // Upgrade engine stems so partially-loaded audio is immediately playable
-            app.domain.upgrade_loaded_stems(deck_idx, stems, duration_samples);
+            // Upgrade engine stems if this message carries a buffer snapshot
+            if let Some(stems) = stems {
+                app.domain.upgrade_loaded_stems(deck_idx, stems, duration_samples);
+            }
 
             // Update overview waveform peaks (visual growth effect)
             app.player_canvas_state.decks[deck_idx].overview.stem_waveforms = overview_peaks;

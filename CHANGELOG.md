@@ -16,14 +16,15 @@ All notable changes to Mesh are documented in this file.
   navigate cue points while audio loads in the background.
 - **Incremental waveform visualization** — The overview waveform now grows
   visually as audio loads. Priority regions (hot cue areas) appear first, then
-  gap regions fill in progressively in ~30-second batches. Unloaded areas render
-  as flat/silent, giving clear visual feedback of which parts of the track are
-  ready for playback. High-resolution zoomed peaks also update incrementally.
-- **Instant partial playback during loading** — Each incremental region load
-  delivers a stem buffer snapshot to the audio engine via `UpgradeStems`, so
-  the DJ can press play or cue and hear audio from any region that has finished
-  loading. Visible waveform peaks always match the playable audio — unloaded
-  areas render as silent and produce silence on playback.
+  gap regions fill in progressively in ~15-second visual batches. Unloaded areas
+  render as flat/silent, giving clear visual feedback of which parts of the track
+  are ready for playback. High-resolution zoomed peaks also update incrementally.
+- **Instant partial playback during loading** — Stem buffer snapshots are
+  delivered to the audio engine at ~100-second intervals via `UpgradeStems`, so
+  the DJ can press play or cue and hear audio from any loaded region. Visual
+  peak updates (cheap, ~2 MB) are decoupled from stem clones (expensive,
+  ~460 MB) — the waveform grows smoothly while playback catches up at clone
+  boundaries. Unloaded areas produce silence on playback.
 - **Region-based audio file reading** — New `read_region_into()` method on
   `AudioFileReader` enables seeking to arbitrary sample positions and reading
   directly into pre-allocated stem buffers. Supports 16-bit, 24-bit, and
@@ -40,10 +41,11 @@ All notable changes to Mesh are documented in this file.
 
 ### Improved
 
-- **Track load memory usage** — Each incremental region sends a ~460 MB stem
-  buffer clone to the engine for instant playback. Peak memory during loading
-  is ~920 MB (working buffer + latest engine clone). The `basedrop` GC thread
-  collects stale clones within 100 ms, preventing unbounded growth.
+- **Track load memory usage** — Stem clones (~460 MB each) are sent only at
+  ~100-second intervals (~5 clones per 5-minute track, ~500 ms total overhead).
+  Visual peak updates are sent every ~15 seconds at negligible cost (~2 MB).
+  Peak memory during loading is ~920 MB; the `basedrop` GC thread collects
+  stale clones within 100 ms, preventing unbounded growth.
 - **Priority region planning** — New `regions` module computes optimal load
   regions around hot cues, drop markers, and the first beat. Regions within
   64 beats of each other are merged to minimize seek operations. Gap regions

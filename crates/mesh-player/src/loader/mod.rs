@@ -33,9 +33,15 @@ use mesh_widgets::{
 
 use self::regions::{compute_gaps, compute_priority_regions};
 
-/// Number of frames per batch when reading gap regions incrementally.
-/// ~30 seconds of audio at 48 kHz → ~10 batches for a 5-minute track.
-const BATCH_FRAMES: usize = 1_500_000;
+/// Number of frames per visual batch (peak-only updates).
+/// ~15 seconds of audio at 48 kHz → smooth waveform growth.
+/// Peak snapshots are ~2 MB each — negligible cost.
+const VISUAL_BATCH_FRAMES: usize = 750_000;
+
+/// Number of frames between stem buffer clones (playback updates).
+/// ~100 seconds of audio at 48 kHz → ~3 clones for a 5-minute track.
+/// Each clone copies the full ~460 MB buffer (~100 ms).
+const CLONE_INTERVAL_FRAMES: usize = 4_800_000;
 
 /// Request to load a track in the background
 ///
@@ -60,13 +66,16 @@ pub struct TrackLoadRequest {
 /// Files that need resampling skip streaming and send a single `Complete`.
 pub enum TrackLoadResult {
     /// Incremental update — a region of audio has been loaded.
-    /// Carries a snapshot of the stem buffer (cloned at this point in loading)
-    /// so the engine can play from any loaded region immediately. Also carries
-    /// updated overview and highres peaks matching the playable audio.
+    ///
+    /// **Visual-only** (stems = None): cheap peak update (~2 MB) for smooth
+    /// waveform growth. Sent after each small read batch.
+    ///
+    /// **Playable** (stems = Some): includes a full stem buffer clone (~460 MB)
+    /// so the engine can play from loaded regions. Sent at clone intervals.
     RegionLoaded {
         deck_idx: usize,
-        /// Snapshot of stems at this loading stage (460 MB clone)
-        stems: Shared<StemBuffers>,
+        /// Stem buffer snapshot — None for visual-only updates, Some for playable updates
+        stems: Option<Shared<StemBuffers>>,
         /// Track duration in samples
         duration_samples: usize,
         /// Full overview peaks (800 entries per stem, ~25 KB clone)
@@ -364,9 +373,10 @@ fn handle_streaming_load(
         gaps.len()
     );
 
-    // 4. Read priority regions and send incremental peak updates
+    // 4. Read ALL priority regions: peak-only visual updates per region,
+    //    single expensive stem clone after all regions are read.
     let priority_start = std::time::Instant::now();
-    for region in &regions {
+    for (i, region) in regions.iter().enumerate() {
         if let Err(e) = reader.read_region_into(&mut stems, region.start, region.start, region.len()) {
             log::error!("Failed to read priority region: {}", e);
             let _ = tx.send(TrackLoadResult::Error {
@@ -376,14 +386,19 @@ fn handle_streaming_load(
             return;
         }
 
-        // Update peaks for the loaded region
+        // Update peaks (cheap: ~5 ms per region)
         update_peaks_for_region(&stems, &mut overview_peaks, region.start, region.end, frame_count, DEFAULT_WIDTH);
         update_peaks_for_region(&stems, &mut highres_peaks, region.start, region.end, frame_count, HIGHRES_WIDTH);
 
-        // Send incremental update with playable stem snapshot
+        let is_last = i + 1 == regions.len();
         let _ = tx.send(TrackLoadResult::RegionLoaded {
             deck_idx,
-            stems: Shared::new(&mesh_core::engine::gc::gc_handle(), stems.clone()),
+            // Clone stems only on the last priority region (all regions playable)
+            stems: if is_last {
+                Some(Shared::new(&mesh_core::engine::gc::gc_handle(), stems.clone()))
+            } else {
+                None
+            },
             duration_samples: frame_count,
             overview_peaks: overview_peaks.clone(),
             highres_peaks: highres_peaks.clone(),
@@ -392,13 +407,14 @@ fn handle_streaming_load(
     }
     log::info!("[PERF] Loader: Priority regions read took {:?}", priority_start.elapsed());
 
-    // 5. Read remaining gaps in batches with incremental peak updates
+    // 5. Read remaining gaps: visual-only updates every VISUAL_BATCH_FRAMES,
+    //    stem clones every CLONE_INTERVAL_FRAMES.
     let gap_start = std::time::Instant::now();
+    let mut frames_since_clone: usize = 0;
     for gap in &gaps {
-        // Split large gaps into BATCH_FRAMES-sized chunks
         let mut pos = gap.start;
         while pos < gap.end {
-            let batch_end = (pos + BATCH_FRAMES).min(gap.end);
+            let batch_end = (pos + VISUAL_BATCH_FRAMES).min(gap.end);
             let batch_len = batch_end - pos;
 
             if let Err(e) = reader.read_region_into(&mut stems, pos, pos, batch_len) {
@@ -410,14 +426,21 @@ fn handle_streaming_load(
                 return;
             }
 
-            // Update peaks for this batch
+            // Update peaks for this batch (cheap: ~5 ms)
             update_peaks_for_region(&stems, &mut overview_peaks, pos, batch_end, frame_count, DEFAULT_WIDTH);
             update_peaks_for_region(&stems, &mut highres_peaks, pos, batch_end, frame_count, HIGHRES_WIDTH);
 
-            // Send incremental update with playable stem snapshot
+            frames_since_clone += batch_len;
+            let clone_now = frames_since_clone >= CLONE_INTERVAL_FRAMES;
+
             let _ = tx.send(TrackLoadResult::RegionLoaded {
                 deck_idx,
-                stems: Shared::new(&mesh_core::engine::gc::gc_handle(), stems.clone()),
+                stems: if clone_now {
+                    frames_since_clone = 0;
+                    Some(Shared::new(&mesh_core::engine::gc::gc_handle(), stems.clone()))
+                } else {
+                    None
+                },
                 duration_samples: frame_count,
                 overview_peaks: overview_peaks.clone(),
                 highres_peaks: highres_peaks.clone(),
@@ -426,6 +449,17 @@ fn handle_streaming_load(
 
             pos = batch_end;
         }
+    }
+    // Clone any remaining uncloned frames so all gap audio is playable before Complete
+    if frames_since_clone > 0 {
+        let _ = tx.send(TrackLoadResult::RegionLoaded {
+            deck_idx,
+            stems: Some(Shared::new(&mesh_core::engine::gc::gc_handle(), stems.clone())),
+            duration_samples: frame_count,
+            overview_peaks: overview_peaks.clone(),
+            highres_peaks: highres_peaks.clone(),
+            path: path.clone(),
+        });
     }
     log::info!("[PERF] Loader: Gap regions read took {:?}", gap_start.elapsed());
 
@@ -483,23 +517,18 @@ fn build_waveform_states(track: &LoadedTrack) -> (OverviewState, ZoomedState) {
         })
         .collect();
 
-    // Pre-compute overview waveform (from preview if available)
-    let mut overview_state = if let Some(ref preview) = track.metadata.waveform_preview {
-        OverviewState::from_preview(
-            preview,
-            &track.metadata.beat_grid.beats,
-            &track.metadata.cue_points,
-            duration,
-        )
-    } else {
-        OverviewState::empty_with_message(
-            "No waveform preview",
-            &track.metadata.cue_points,
-            duration,
-        )
-    };
-
+    // Build overview from metadata (beat markers, cue markers, drop marker)
+    // then compute peaks from raw stems. We avoid from_preview() here because
+    // stored previews may have LUFS gain baked in, causing a visual "pop" when
+    // replacing the incrementally-built raw peaks.
+    let mut overview_state = OverviewState::from_metadata(&track.metadata, duration);
     overview_state.set_drop_marker(track.metadata.drop_marker);
+    overview_state.loading = false;
+
+    // Compute overview peaks from raw stems (consistent with incremental path)
+    let overview_start = std::time::Instant::now();
+    overview_state.stem_waveforms = generate_peaks(&track.stems, DEFAULT_WIDTH);
+    log::info!("[PERF] Loader: Overview peaks took {:?}", overview_start.elapsed());
 
     // Compute high-resolution peaks
     let highres_start = std::time::Instant::now();
