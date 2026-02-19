@@ -329,24 +329,53 @@ impl MeshDomain {
     ///
     /// Returns TrackMetadata with stem_links properly converted (ID → path).
     pub fn load_track_metadata(&self, path: &str) -> Option<TrackMetadata> {
-        let db = self.active_db();
+        // Path-aware lookup: detect whether the path belongs to local or USB,
+        // regardless of what active_storage is set to. This is critical for
+        // cross-source suggestions where the domain may be browsing USB but
+        // the suggestion track is local (or vice versa).
+        let p = std::path::Path::new(path);
 
-        // USB DBs store relative paths (e.g. "tracks/song.wav") but callers pass
-        // absolute file paths. Convert once here at the storage boundary.
-        let lookup_path = match &self.active_storage {
-            StorageSource::Usb { path: collection_root, .. } => {
-                std::path::Path::new(path)
-                    .strip_prefix(collection_root)
+        // Check if path is under the local collection root
+        if p.starts_with(&self.local_collection_path) {
+            return match self.local_db.get_track_metadata(path) {
+                Ok(Some(metadata)) => Some(metadata),
+                Ok(None) => {
+                    log::warn!("Track not found in local database: {}", path);
+                    None
+                }
+                Err(e) => {
+                    log::error!("Failed to load track metadata from local DB: {}", e);
+                    None
+                }
+            };
+        }
+
+        // Check if path is under the active USB collection root
+        if let StorageSource::Usb { path: collection_root, db, .. } = &self.active_storage {
+            if p.starts_with(collection_root) {
+                let lookup_path = p.strip_prefix(collection_root)
                     .map(|r| r.to_string_lossy().into_owned())
-                    .unwrap_or_else(|_| path.to_string())
+                    .unwrap_or_else(|_| path.to_string());
+                return match db.get_track_metadata(&lookup_path) {
+                    Ok(Some(metadata)) => Some(metadata),
+                    Ok(None) => {
+                        log::warn!("Track not found in USB database: {}", path);
+                        None
+                    }
+                    Err(e) => {
+                        log::error!("Failed to load track metadata from USB DB: {}", e);
+                        None
+                    }
+                };
             }
-            StorageSource::Local => path.to_string(),
-        };
+        }
 
-        match db.get_track_metadata(&lookup_path) {
+        // Fallback: try active database with path as-is
+        let db = self.active_db();
+        match db.get_track_metadata(path) {
             Ok(Some(metadata)) => Some(metadata),
             Ok(None) => {
-                log::warn!("Track not found in active database: {}", path);
+                log::warn!("Track not found in any database: {}", path);
                 None
             }
             Err(e) => {
