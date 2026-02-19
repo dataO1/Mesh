@@ -203,10 +203,15 @@ pub fn reanalyze_track(
             }
         }
 
-        // Update LUFS if measured
+        // Update LUFS if measured (both drop and integrated)
         if let Some(lufs) = result.lufs {
             if let Err(e) = db_service.update_track_field(track_id, "lufs", &lufs.to_string()) {
                 log::error!("Failed to update LUFS in database: {:?}", e);
+            }
+        }
+        if let Some(integrated) = result.integrated_lufs {
+            if let Err(e) = db_service.update_track_field(track_id, "integrated_lufs", &integrated.to_string()) {
+                log::error!("Failed to update integrated LUFS in database: {:?}", e);
             }
         }
 

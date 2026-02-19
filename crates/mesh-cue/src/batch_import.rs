@@ -898,6 +898,7 @@ fn process_single_track(
     track.key = Some(analysis.key.clone());
     track.duration_seconds = (duration_samples as f64) / (SAMPLE_RATE as f64);
     track.lufs = analysis.lufs;
+    track.integrated_lufs = analysis.integrated_lufs;
     track.first_beat_sample = first_beat as i64;
 
     match config.db_service.save_track(&track) {

@@ -13,7 +13,7 @@ pub use bpm::{detect_bpm, detect_onset_function, fit_bpm_to_range, BpmResult, On
 pub use key::detect_key;
 pub use loudness::{
     calculate_gain_compensation, calculate_gain_compensation_clamped, db_to_linear, linear_to_db,
-    measure_lufs,
+    measure_lufs, LufsResult,
 };
 
 // Note: Re-analysis types (AnalysisType, ReanalysisScope, etc.) and functions
@@ -113,8 +113,10 @@ pub struct PartialAnalysisResult {
     pub beat_grid: Option<Vec<u64>>,
     /// Musical key (if Key or All analysis was requested)
     pub key: Option<String>,
-    /// Integrated LUFS loudness (if Loudness or All analysis was requested)
+    /// Drop LUFS loudness (if Loudness or All analysis was requested)
     pub lufs: Option<f32>,
+    /// Integrated LUFS loudness (if Loudness or All analysis was requested)
+    pub integrated_lufs: Option<f32>,
 }
 
 /// Progress updates for batch re-analysis operations
@@ -162,9 +164,12 @@ pub struct AnalysisResult {
     pub beat_grid: Vec<u64>,
     /// Analysis confidence (0.0 - 1.0)
     pub confidence: f32,
-    /// Integrated LUFS loudness (EBU R128)
+    /// Drop LUFS loudness (top 10% of 3-second short-term windows)
     /// Used for automatic gain compensation to target loudness
     pub lufs: Option<f32>,
+    /// Integrated LUFS loudness (EBU R128 whole-track average)
+    /// Stored for future use, not used for gain staging
+    pub integrated_lufs: Option<f32>,
     /// 16-dimensional audio features for similarity search
     /// Includes rhythm, harmony, energy, and timbre features
     pub audio_features: Option<mesh_core::db::AudioFeatures>,
@@ -183,6 +188,7 @@ impl Default for AnalysisResult {
             beat_grid: Vec::new(),
             confidence: 0.0,
             lufs: None,
+            integrated_lufs: None,
             audio_features: None,
             mel_spectrogram: None,
         }
@@ -261,9 +267,9 @@ pub fn analyze_audio(samples: &[f32], bpm_samples: Option<&[f32]>, bpm_config: &
     // Key and LUFS always use full mix
     let key = detect_key(samples)?;
 
-    // Measure integrated LUFS loudness (for automatic gain staging)
+    // Measure LUFS loudness (drop + integrated) for automatic gain staging
     // Samples are at 44100 Hz — pass correct rate for K-weighting filter
-    let lufs = match measure_lufs(samples, ESSENTIA_RATE as f32) {
+    let lufs_result = match measure_lufs(samples, ESSENTIA_RATE as f32) {
         Ok(value) => Some(value),
         Err(e) => {
             log::warn!("LUFS measurement failed, skipping: {}", e);
@@ -310,7 +316,8 @@ pub fn analyze_audio(samples: &[f32], bpm_samples: Option<&[f32]>, bpm_config: &
         key,
         beat_grid,
         confidence: bpm_confidence,
-        lufs,
+        lufs: lufs_result.map(|r| r.drop_lufs),
+        integrated_lufs: lufs_result.map(|r| r.integrated_lufs),
         audio_features,
         mel_spectrogram: None, // Computed in worker thread, not subprocess
     })
@@ -357,7 +364,9 @@ pub fn analyze_partial(
 
     match analysis_type {
         AnalysisType::Loudness => {
-            result.lufs = Some(measure_lufs(samples, ESSENTIA_RATE as f32)?);
+            let lr = measure_lufs(samples, ESSENTIA_RATE as f32)?;
+            result.lufs = Some(lr.drop_lufs);
+            result.integrated_lufs = Some(lr.integrated_lufs);
         }
         AnalysisType::Bpm => {
             let bpm_result = detect_bpm(bpm_audio, bpm_config)?;
@@ -399,13 +408,15 @@ pub fn analyze_partial(
             result.beat_grid = Some(beat_grid);
             // Key and LUFS always use full mix
             result.key = Some(detect_key(samples)?);
-            result.lufs = match measure_lufs(samples, ESSENTIA_RATE as f32) {
-                Ok(v) => Some(v),
+            match measure_lufs(samples, ESSENTIA_RATE as f32) {
+                Ok(lr) => {
+                    result.lufs = Some(lr.drop_lufs);
+                    result.integrated_lufs = Some(lr.integrated_lufs);
+                }
                 Err(e) => {
                     log::warn!("LUFS measurement failed: {}", e);
-                    None
                 }
-            };
+            }
         }
     }
 

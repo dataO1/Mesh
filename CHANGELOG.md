@@ -46,6 +46,9 @@ All notable changes to Mesh are documented in this file.
 
 ### Improved
 
+- **Drop-aware LUFS measurement** — Loudness analysis now targets the loudest
+  sections of a track (drops, refrains) instead of the whole-track average, so
+  auto-gain matches tracks where it matters. Requires LUFS reanalysis.
 - **Suggestion energy MIDI debounce** — The energy direction fader now uses
   trailing-edge debounce (300ms) so the suggestion query only fires once the
   fader stops moving, instead of on every value change. Moving the fader also

@@ -228,9 +228,9 @@ impl QueryService {
         // Query for BPM-compatible tracks
         let query = format!(r#"
             ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
+              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                 *tracks{{id, path, folder_path, name, artist, bpm, original_bpm, key,
-                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}},
+                        duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}},
                 id != $current_id,
                 is_not_null(bpm),
                 bpm >= $bpm_min,
@@ -264,11 +264,12 @@ impl QueryService {
                     key: row.get(7)?.get_str().map(|s| s.to_string()),
                     duration_seconds: row.get(8)?.get_float().unwrap_or(0.0),
                     lufs: row.get(9)?.get_float().map(|f| f as f32),
-                    drop_marker: row.get(10)?.get_int(),
-                    first_beat_sample: row.get(11)?.get_int().unwrap_or(0),
-                    file_mtime: row.get(12)?.get_int().unwrap_or(0),
-                    file_size: row.get(13)?.get_int().unwrap_or(0),
-                    waveform_path: row.get(14)?.get_str().map(|s| s.to_string()),
+                    integrated_lufs: row.get(10)?.get_float().map(|f| f as f32),
+                    drop_marker: row.get(11)?.get_int(),
+                    first_beat_sample: row.get(12)?.get_int().unwrap_or(0),
+                    file_mtime: row.get(13)?.get_int().unwrap_or(0),
+                    file_size: row.get(14)?.get_int().unwrap_or(0),
+                    waveform_path: row.get(15)?.get_str().map(|s| s.to_string()),
                     // For mix suggestions, we don't need full metadata
                     cue_points: Vec::new(),
                     saved_loops: Vec::new(),
@@ -442,6 +443,7 @@ mod tests {
             key: Some("8A".to_string()),
             duration_seconds: 180.0,
             lufs: Some(-8.0),
+            integrated_lufs: Some(-10.0),
             drop_marker: None,
             first_beat_sample: 0,
             file_mtime: 1234567890,

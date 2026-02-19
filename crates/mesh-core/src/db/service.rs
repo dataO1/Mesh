@@ -96,8 +96,10 @@ pub struct Track {
     pub key: Option<String>,
     /// Duration in seconds
     pub duration_seconds: f64,
-    /// Integrated LUFS loudness
+    /// Drop LUFS loudness (top 10% of short-term windows, used for gain staging)
     pub lufs: Option<f32>,
+    /// Integrated LUFS loudness (whole-track EBU R128 average, stored for future use)
+    pub integrated_lufs: Option<f32>,
     /// Drop marker sample position (for stem alignment)
     pub drop_marker: Option<i64>,
     /// First beat sample position (for beat grid regeneration)
@@ -134,6 +136,7 @@ impl Track {
             key: None,
             duration_seconds: 0.0,
             lufs: None,
+            integrated_lufs: None,
             drop_marker: None,
             first_beat_sample: 0,
             file_mtime: 0,
@@ -163,6 +166,7 @@ impl Track {
             key: row.key,
             duration_seconds: row.duration_seconds,
             lufs: row.lufs,
+            integrated_lufs: row.integrated_lufs,
             drop_marker: row.drop_marker,
             first_beat_sample: row.first_beat_sample,
             file_mtime: row.file_mtime,
@@ -199,6 +203,7 @@ impl Track {
             key: self.key.clone(),
             duration_seconds: self.duration_seconds,
             lufs: self.lufs,
+            integrated_lufs: self.integrated_lufs,
             drop_marker: self.drop_marker,
             first_beat_sample: self.first_beat_sample,
             file_mtime: self.file_mtime,

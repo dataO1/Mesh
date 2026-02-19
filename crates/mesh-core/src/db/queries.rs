@@ -8,7 +8,7 @@ use cozo::{DataValue, NamedRows};
 use std::collections::BTreeMap;
 
 /// Column list for track queries (must match schema order for first_beat_sample)
-const TRACK_COLUMNS: &str = "id, path, folder_path, name, artist, bpm, original_bpm, key, duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path";
+const TRACK_COLUMNS: &str = "id, path, folder_path, name, artist, bpm, original_bpm, key, duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path";
 
 // ============================================================================
 // Track Queries
@@ -27,9 +27,9 @@ impl TrackQuery {
 
         let result = db.run_query(r#"
             ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
+              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                 *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
-                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
+                        duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                 folder_path = $folder
             :order name
         "#, params)?;
@@ -46,9 +46,9 @@ impl TrackQuery {
 
         let result = db.run_query(r#"
             ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
+              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                 *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
-                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
+                        duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                 id = $id
         "#, params)?;
 
@@ -71,9 +71,9 @@ impl TrackQuery {
 
         let result = db.run_query(r#"
             ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
+              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                 *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
-                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
+                        duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                 id in $ids
         "#, params)?;
 
@@ -87,9 +87,9 @@ impl TrackQuery {
 
         let result = db.run_query(r#"
             ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
+              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                 *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
-                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
+                        duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                 path = $path
         "#, params)?;
 
@@ -103,9 +103,9 @@ impl TrackQuery {
 
         let result = db.run_query(r#"
             ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
+              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                 *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
-                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
+                        duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                 ends_with(path, $filename)
             :limit 1
         "#, params)?;
@@ -117,9 +117,9 @@ impl TrackQuery {
     pub fn get_all(db: &MeshDb) -> Result<Vec<TrackRow>, DbError> {
         let result = db.run_query(r#"
             ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
+              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                 *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
-                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+                        duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
             :order name
         "#, BTreeMap::new())?;
 
@@ -135,9 +135,9 @@ impl TrackQuery {
 
         let result = db.run_query(r#"
             ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
+              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                 *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
-                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
+                        duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                 (lowercase(name) ~ $query or
                  (is_not_null(artist) and lowercase(artist) ~ $query))
             :limit $limit
@@ -160,6 +160,7 @@ impl TrackQuery {
         params.insert("key".to_string(), track.key.as_ref().map(|s| DataValue::Str(s.clone().into())).unwrap_or(DataValue::Null));
         params.insert("duration_seconds".to_string(), DataValue::from(track.duration_seconds));
         params.insert("lufs".to_string(), track.lufs.map(|v| DataValue::from(v as f64)).unwrap_or(DataValue::Null));
+        params.insert("integrated_lufs".to_string(), track.integrated_lufs.map(|v| DataValue::from(v as f64)).unwrap_or(DataValue::Null));
         params.insert("drop_marker".to_string(), track.drop_marker.map(DataValue::from).unwrap_or(DataValue::Null));
         params.insert("first_beat_sample".to_string(), DataValue::from(track.first_beat_sample));
         params.insert("file_mtime".to_string(), DataValue::from(track.file_mtime));
@@ -168,12 +169,12 @@ impl TrackQuery {
 
         db.run_script(r#"
             ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] <- [[
+              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] <- [[
                 $id, $path, $folder_path, $name, $artist, $bpm, $original_bpm, $key,
-                $duration_seconds, $lufs, $drop_marker, $first_beat_sample, $file_mtime, $file_size, $waveform_path
+                $duration_seconds, $lufs, $integrated_lufs, $drop_marker, $first_beat_sample, $file_mtime, $file_size, $waveform_path
             ]]
             :put tracks {id => path, folder_path, name, artist, bpm, original_bpm, key,
-                         duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+                         duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
         "#, params)?;
 
         Ok(())
@@ -208,13 +209,13 @@ impl TrackQuery {
                 params.insert("value".to_string(), val);
                 r#"
                     ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-                      duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
+                      duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                         *tracks{id, path, folder_path, name, bpm, original_bpm, key,
-                                duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
+                                duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                         id = $id,
                         artist = $value
                     :put tracks {id => path, folder_path, name, artist, bpm, original_bpm, key,
-                                 duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+                                 duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
                 "#
             }
             "bpm" => {
@@ -222,13 +223,13 @@ impl TrackQuery {
                 params.insert("value".to_string(), DataValue::from(val));
                 r#"
                     ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-                      duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
+                      duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                         *tracks{id, path, folder_path, name, artist, original_bpm, key,
-                                duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
+                                duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                         id = $id,
                         bpm = $value
                     :put tracks {id => path, folder_path, name, artist, bpm, original_bpm, key,
-                                 duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+                                 duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
                 "#
             }
             "original_bpm" => {
@@ -236,13 +237,13 @@ impl TrackQuery {
                 params.insert("value".to_string(), DataValue::from(val));
                 r#"
                     ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-                      duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
+                      duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                         *tracks{id, path, folder_path, name, artist, bpm, key,
-                                duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
+                                duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                         id = $id,
                         original_bpm = $value
                     :put tracks {id => path, folder_path, name, artist, bpm, original_bpm, key,
-                                 duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+                                 duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
                 "#
             }
             "key" => {
@@ -250,13 +251,13 @@ impl TrackQuery {
                 params.insert("value".to_string(), val);
                 r#"
                     ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-                      duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
+                      duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                         *tracks{id, path, folder_path, name, artist, bpm, original_bpm,
-                                duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
+                                duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                         id = $id,
                         key = $value
                     :put tracks {id => path, folder_path, name, artist, bpm, original_bpm, key,
-                                 duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+                                 duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
                 "#
             }
             "lufs" => {
@@ -264,13 +265,27 @@ impl TrackQuery {
                 params.insert("value".to_string(), DataValue::from(val));
                 r#"
                     ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-                      duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
+                      duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                         *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
-                                duration_seconds, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
+                                duration_seconds, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                         id = $id,
                         lufs = $value
                     :put tracks {id => path, folder_path, name, artist, bpm, original_bpm, key,
-                                 duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+                                 duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+                "#
+            }
+            "integrated_lufs" => {
+                let val: f64 = value.parse().map_err(|_| DbError::Query(format!("Invalid integrated_lufs value: {}", value)))?;
+                params.insert("value".to_string(), DataValue::from(val));
+                r#"
+                    ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
+                      duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
+                        *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
+                                duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
+                        id = $id,
+                        integrated_lufs = $value
+                    :put tracks {id => path, folder_path, name, artist, bpm, original_bpm, key,
+                                 duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
                 "#
             }
             "drop_marker" => {
@@ -278,13 +293,13 @@ impl TrackQuery {
                 params.insert("value".to_string(), DataValue::from(val));
                 r#"
                     ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-                      duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
+                      duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                         *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
-                                duration_seconds, lufs, first_beat_sample, file_mtime, file_size, waveform_path},
+                                duration_seconds, lufs, integrated_lufs, first_beat_sample, file_mtime, file_size, waveform_path},
                         id = $id,
                         drop_marker = $value
                     :put tracks {id => path, folder_path, name, artist, bpm, original_bpm, key,
-                                 duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+                                 duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
                 "#
             }
             "first_beat_sample" => {
@@ -292,13 +307,13 @@ impl TrackQuery {
                 params.insert("value".to_string(), DataValue::from(val));
                 r#"
                     ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-                      duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
+                      duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                         *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
-                                duration_seconds, lufs, drop_marker, file_mtime, file_size, waveform_path},
+                                duration_seconds, lufs, integrated_lufs, drop_marker, file_mtime, file_size, waveform_path},
                         id = $id,
                         first_beat_sample = $value
                     :put tracks {id => path, folder_path, name, artist, bpm, original_bpm, key,
-                                 duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+                                 duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
                 "#
             }
             _ => {
@@ -407,10 +422,10 @@ impl PlaylistQuery {
         // Note: sort_order must be in output columns to use :order in CozoDB
         let result = db.run_query(r#"
             ?[track_id, path, folder_path, name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path, sort_order] :=
+              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path, sort_order] :=
                 *playlist_tracks{playlist_id: pid, track_id, sort_order},
                 *tracks{id: track_id, path, folder_path, name, artist, bpm, original_bpm, key,
-                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
+                        duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                 pid = $playlist_id
             :order sort_order
         "#, params)?;
@@ -620,12 +635,12 @@ impl SimilarityQuery {
         // First get the embedding for the query track, then search using HNSW
         let result = db.run_query(r#"
             ?[track_id, path, folder_path, name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path, dist] :=
+              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path, dist] :=
                 *audio_features{track_id: $track_id, vec: query_vec},
                 ~audio_features:similarity_index{track_id | query: query_vec, k: $k, ef: $ef, bind_distance: dist},
                 track_id != $track_id,
                 *tracks{id: track_id, path, folder_path, name, artist, bpm, original_bpm, key,
-                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+                        duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
             :order dist
         "#, params)?;
 
@@ -646,10 +661,10 @@ impl SimilarityQuery {
 
         let result = db.run_query(r#"
             ?[track_id, path, folder_path, name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path, dist] :=
+              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path, dist] :=
                 ~audio_features:similarity_index{track_id | query: vec($query_vec), k: $k, ef: $ef, bind_distance: dist},
                 *tracks{id: track_id, path, folder_path, name, artist, bpm, original_bpm, key,
-                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+                        duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
             :order dist
         "#, params)?;
 
@@ -664,10 +679,10 @@ impl SimilarityQuery {
 
         let result = db.run_query(r#"
             ?[id, path, folder_path, name, artist, bpm, original_bpm, key,
-              duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
+              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                 *harmonic_match{from_track: $track_id, to_track: id},
                 *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
-                        duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
+                        duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
             :limit $limit
         "#, params)?;
 
@@ -1016,11 +1031,12 @@ fn rows_to_tracks(result: &NamedRows) -> Vec<TrackRow> {
             key: row.get(7)?.get_str().map(|s| s.to_string()),
             duration_seconds: row.get(8)?.get_float().unwrap_or(0.0),
             lufs: row.get(9)?.get_float().map(|f| f as f32),
-            drop_marker: row.get(10)?.get_int(),
-            first_beat_sample: row.get(11)?.get_int().unwrap_or(0),
-            file_mtime: row.get(12)?.get_int().unwrap_or(0),
-            file_size: row.get(13)?.get_int().unwrap_or(0),
-            waveform_path: row.get(14)?.get_str().map(|s| s.to_string()),
+            integrated_lufs: row.get(10)?.get_float().map(|f| f as f32),
+            drop_marker: row.get(11)?.get_int(),
+            first_beat_sample: row.get(12)?.get_int().unwrap_or(0),
+            file_mtime: row.get(13)?.get_int().unwrap_or(0),
+            file_size: row.get(14)?.get_int().unwrap_or(0),
+            waveform_path: row.get(15)?.get_str().map(|s| s.to_string()),
         })
     }).collect()
 }
@@ -1038,13 +1054,14 @@ fn rows_to_tracks_with_distance(result: &NamedRows) -> Vec<(TrackRow, f32)> {
             key: row.get(7)?.get_str().map(|s| s.to_string()),
             duration_seconds: row.get(8)?.get_float().unwrap_or(0.0),
             lufs: row.get(9)?.get_float().map(|f| f as f32),
-            drop_marker: row.get(10)?.get_int(),
-            first_beat_sample: row.get(11)?.get_int().unwrap_or(0),
-            file_mtime: row.get(12)?.get_int().unwrap_or(0),
-            file_size: row.get(13)?.get_int().unwrap_or(0),
-            waveform_path: row.get(14)?.get_str().map(|s| s.to_string()),
+            integrated_lufs: row.get(10)?.get_float().map(|f| f as f32),
+            drop_marker: row.get(11)?.get_int(),
+            first_beat_sample: row.get(12)?.get_int().unwrap_or(0),
+            file_mtime: row.get(13)?.get_int().unwrap_or(0),
+            file_size: row.get(14)?.get_int().unwrap_or(0),
+            waveform_path: row.get(15)?.get_str().map(|s| s.to_string()),
         };
-        let distance = row.get(15)?.get_float()? as f32;
+        let distance = row.get(16)?.get_float()? as f32;
         Some((track, distance))
     }).collect()
 }
@@ -1090,6 +1107,7 @@ mod tests {
             key: Some("8A".to_string()),
             duration_seconds: 180.0,
             lufs: Some(-8.0),
+            integrated_lufs: Some(-10.0),
             drop_marker: None,
             first_beat_sample: 14335,
             file_mtime: 1234567890,

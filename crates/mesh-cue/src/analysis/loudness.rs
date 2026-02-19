@@ -1,8 +1,10 @@
 //! Loudness measurement using Essentia's EBU R128 algorithm
 //!
-//! Provides integrated LUFS measurement for automatic gain staging.
-//! The measured LUFS value is stored in track metadata, and gain
-//! compensation is calculated at runtime based on the configured target.
+//! Provides "drop loudness" LUFS measurement for automatic gain staging.
+//! Instead of integrated loudness (which averages the entire track including
+//! quiet intros), we measure the top 10% of 3-second short-term loudness
+//! windows. This captures the loudness of the drop/peak sections, ensuring
+//! tracks are level-matched where it matters most for DJ performance.
 
 use anyhow::{Context, Result};
 use essentia::algorithm::loudness_dynamics::loudness_ebur_128::LoudnessEbur128;
@@ -20,18 +22,28 @@ struct StereoSample {
     right: f32,
 }
 
-/// Measure integrated LUFS loudness of audio samples
+/// Result of LUFS measurement containing both drop and integrated loudness.
+#[derive(Debug, Clone, Copy)]
+pub struct LufsResult {
+    /// "Drop loudness": energy-averaged top 10% of 3-second short-term windows.
+    /// Captures the loudness of the loudest sections (the drop), used for gain staging.
+    pub drop_lufs: f32,
+    /// Traditional EBU R128 integrated loudness over the entire track.
+    /// Stored for future use but not used for gain compensation.
+    pub integrated_lufs: f32,
+}
+
+/// Measure LUFS loudness of audio samples (both drop and integrated).
 ///
-/// Uses EBU R128 algorithm which is the broadcast standard for loudness
-/// normalization. Returns integrated loudness over the entire track.
+/// Returns a `LufsResult` with two values:
+/// - `drop_lufs`: top 10% of 3-second short-term windows (energy-averaged).
+///   This measures the loudness of the drop/peak sections for DJ gain staging.
+/// - `integrated_lufs`: traditional EBU R128 whole-track average, stored for
+///   future use.
 ///
-/// # Arguments
-/// * `samples` - Mono audio samples at 48kHz (converted internally to stereo)
-/// * `sample_rate` - Sample rate of the audio (typically 48000.0)
-///
-/// # Returns
-/// Integrated LUFS value (typically -24 to 0 for music)
-pub fn measure_lufs(samples: &[f32], sample_rate: f32) -> Result<f32> {
+/// If short-term data is unavailable or the track is very short, `drop_lufs`
+/// falls back to `integrated_lufs`.
+pub fn measure_lufs(samples: &[f32], sample_rate: f32) -> Result<LufsResult> {
     log::info!(
         "Starting LUFS measurement on {} samples ({:.1}s)",
         samples.len(),
@@ -71,15 +83,81 @@ pub fn measure_lufs(samples: &[f32], sample_rate: f32) -> Result<f32> {
         .compute(ffi_samples)
         .context("LoudnessEBUR128 computation failed")?;
 
-    // Extract integrated LUFS value
+    // Extract integrated LUFS (whole-track average)
     let integrated_lufs: f32 = result
         .integrated_loudness()
         .context("Failed to get integrated loudness output")?
         .get();
 
-    log::info!("LUFS measurement complete: {:.2} LUFS", integrated_lufs);
+    // Extract short-term loudness (3-second windows) for drop measurement
+    let drop_lufs = match result.short_term_loudness() {
+        Ok(st_container) => {
+            let st_values: Vec<f32> = st_container.get();
+            compute_drop_loudness(&st_values, integrated_lufs)
+        }
+        Err(e) => {
+            log::warn!("Short-term loudness unavailable ({}), using integrated", e);
+            integrated_lufs
+        }
+    };
 
-    Ok(integrated_lufs)
+    log::info!(
+        "LUFS measurement complete: drop={:.2} LUFS (integrated={:.2} LUFS, delta={:+.1} dB)",
+        drop_lufs,
+        integrated_lufs,
+        drop_lufs - integrated_lufs,
+    );
+
+    Ok(LufsResult { drop_lufs, integrated_lufs })
+}
+
+/// Compute drop loudness from short-term LUFS windows.
+///
+/// Takes the top 10% of 3-second windows (minimum 3 windows = 9 seconds),
+/// energy-averages them in the linear domain, and converts back to LUFS.
+/// This captures the loudness of the drop/peak sections of a track.
+fn compute_drop_loudness(st_values: &[f32], integrated_fallback: f32) -> f32 {
+    // Filter out -inf/-200 silence windows (Essentia uses -200 for silence)
+    let mut valid: Vec<f32> = st_values
+        .iter()
+        .copied()
+        .filter(|&v| v > -70.0)
+        .collect();
+
+    if valid.len() < 3 {
+        log::debug!(
+            "Too few valid short-term windows ({}), using integrated LUFS",
+            valid.len()
+        );
+        return integrated_fallback;
+    }
+
+    // Sort descending (loudest first)
+    valid.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Take top 10%, minimum 3 windows (9 seconds)
+    let top_count = (valid.len() / 10).max(3).min(valid.len());
+    let top_windows = &valid[..top_count];
+
+    // Energy-average in linear domain: LUFS → power → mean → LUFS
+    // LUFS is defined as 10*log10(power) relative to reference, so:
+    //   power = 10^(LUFS/10)
+    //   mean_LUFS = 10 * log10(mean(powers))
+    let power_sum: f64 = top_windows
+        .iter()
+        .map(|&lufs| 10.0_f64.powf(lufs as f64 / 10.0))
+        .sum();
+    let mean_power = power_sum / top_count as f64;
+    let drop_lufs = (10.0 * mean_power.log10()) as f32;
+
+    log::debug!(
+        "Drop loudness: top {} of {} windows = {:.2} LUFS",
+        top_count,
+        valid.len(),
+        drop_lufs,
+    );
+
+    drop_lufs
 }
 
 /// Calculate gain compensation in dB to reach target loudness

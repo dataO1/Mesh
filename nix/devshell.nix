@@ -188,6 +188,8 @@ pkgs.mkShell {
     echo "║    nix run .#bpm-report               # Export + scrape + report    ║"
     echo "║    nix run .#bpm-report -- --limit 20 # Scrape only 20 new tracks  ║"
     echo "║    nix run .#bpm-report -- --no-scrape  # Report from cached GT    ║"
+    echo "║  LUFS Comparison Report:                                             ║"
+    echo "║    cargo run -p mesh-core --bin lufs-report  # Drop vs integrated  ║"
     echo "╠═══════════════════════════════════════════════════════════════════════╣"
     echo "║  Embedded (Orange Pi 5 Pro):                                         ║"
     echo "║    nix run .#embedded-flash            # Download + flash SD image  ║"

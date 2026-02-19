@@ -61,4 +61,9 @@ name = "export-analysis"
 path = "src/bin/export_analysis.rs"
 required-features = []
 
+[[bin]]
+name = "lufs-report"
+path = "src/bin/lufs_report.rs"
+required-features = []
+
 [dev-dependencies]

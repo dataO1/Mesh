@@ -30,6 +30,7 @@ pub struct TrackRow {
     pub key: Option<String>,
     pub duration_seconds: f64,
     pub lufs: Option<f32>,
+    pub integrated_lufs: Option<f32>,
     pub drop_marker: Option<i64>,
     /// First beat position in samples (for beat grid regeneration)
     pub first_beat_sample: i64,
@@ -442,6 +443,7 @@ fn create_tracks_relation(db: &DbInstance) -> Result<(), DbError> {
             key: String?,
             duration_seconds: Float,
             lufs: Float?,
+            integrated_lufs: Float?,
             drop_marker: Int?,
             first_beat_sample: Int default 0,
             file_mtime: Int,
