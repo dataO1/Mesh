@@ -478,7 +478,11 @@ TOOLCHAIN
         # CRITICAL: Unset global CC/CXX that were set for Essentia build.
         # Cargo uses target-specific vars (CC_x86_64_pc_windows_gnu) for Windows
         # but needs native gcc for host builds (build scripts, proc-macros).
-        unset CC CXX AR RANLIB CFLAGS CXXFLAGS LDFLAGS
+        # BINDGEN_EXTRA_CLANG_ARGS must also be unset — it contains
+        # --sysroot=/usr/x86_64-w64-mingw32 which prevents clang from finding
+        # its built-in headers (stdbool.h, stddef.h) when other crates like
+        # signalsmith-stretch invoke bindgen. Re-exported in Phase 5 for mesh-cue.
+        unset CC CXX AR RANLIB CFLAGS CXXFLAGS LDFLAGS BINDGEN_EXTRA_CLANG_ARGS
 
         # Copy source to writable location (container mounts /project as read-only)
         # patches/ is in .gitignore and needs to be created for libpd crates
@@ -690,6 +694,13 @@ PKGWRAPPER
         # Configure for cross-compilation
         export PKG_CONFIG_ALLOW_CROSS=1
         export USE_TENSORFLOW=0
+
+        # Re-export BINDGEN_EXTRA_CLANG_ARGS for essentia-sys bindgen.
+        # Was unset in Phase 4 to avoid polluting mesh-player builds.
+        # Include clang resource directory so stdbool.h is always found
+        # even with --sysroot overriding default header search paths.
+        CLANG_INCLUDE=$(find /usr/lib/llvm-*/lib/clang -path "*/include/stdbool.h" -printf "%h\n" 2>/dev/null | head -1)
+        export BINDGEN_EXTRA_CLANG_ARGS="--sysroot=/usr/x86_64-w64-mingw32 -I/usr/x86_64-w64-mingw32/include ''${GCC_INCLUDE:+-I$GCC_INCLUDE} ''${CLANG_INCLUDE:+-I$CLANG_INCLUDE}"
 
         # Set C++ flags for Windows TARGET builds only (not host builds):
         # - C++17: required for std::variant in essentia-sys bridge code

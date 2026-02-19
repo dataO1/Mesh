@@ -4,6 +4,22 @@ All notable changes to Mesh are documented in this file.
 
 ---
 
+## [0.9.1]
+
+### Fixed
+
+- **Windows cross-compilation failing on `stdbool.h`** — The container-based
+  Windows build (`build-windows.nix`) set `BINDGEN_EXTRA_CLANG_ARGS` with
+  `--sysroot=/usr/x86_64-w64-mingw32` for Essentia's cross-compilation, but
+  forgot to unset it before building mesh-player. This caused clang to search
+  the MinGW sysroot for compiler built-in headers like `stdbool.h`, which
+  aren't there — they live in clang's resource directory. Fixed by unsetting
+  `BINDGEN_EXTRA_CLANG_ARGS` before Phase 4 (mesh-player) and re-exporting it
+  with the clang resource directory explicitly included before Phase 5
+  (mesh-cue).
+
+---
+
 ## [0.9.0]
 
 ### Added
