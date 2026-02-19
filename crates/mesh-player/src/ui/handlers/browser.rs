@@ -45,8 +45,12 @@ pub fn handle_browser(app: &mut MeshApp, browser_msg: CollectionBrowserMessage) 
             return Task::none();
         }
         CollectionBrowserMessage::SetEnergyDirection(value) => {
+            // Auto-enable suggestions when energy direction is adjusted
+            if !app.collection_browser.is_suggestions_enabled() {
+                app.collection_browser.set_suggestions_enabled(true);
+            }
             let changed = app.collection_browser.set_energy_direction(*value);
-            if changed && app.collection_browser.is_suggestions_enabled() {
+            if changed {
                 app.collection_browser.set_suggestion_loading(true);
                 return trigger_suggestion_query(app);
             }
