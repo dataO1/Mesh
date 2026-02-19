@@ -106,6 +106,8 @@ pub struct MeshApp {
     pub(crate) tick_count: u32,
     /// Whether a suggestion seed refresh is already scheduled (debounce guard)
     pub(crate) suggestion_refresh_pending: bool,
+    /// Generation counter for energy direction debounce (trailing-edge: only the last timer fires)
+    pub(crate) energy_debounce_gen: u64,
     /// Actual JACK client name (for port reconnection)
     pub(crate) audio_client_name: String,
     /// Real output pipeline latency in samples (from CPAL/JACK timestamps)
@@ -283,6 +285,7 @@ impl MeshApp {
             browser_hide_countdown: 0,
             tick_count: 0,
             suggestion_refresh_pending: false,
+            energy_debounce_gen: 0,
             audio_client_name,
             output_latency_samples,
             internal_latency_samples,
@@ -479,6 +482,10 @@ impl MeshApp {
 
             Message::CheckSuggestionSeeds => {
                 super::handlers::browser::check_suggestion_seeds(self)
+            }
+
+            Message::CheckEnergyDebounce(gen) => {
+                super::handlers::browser::check_energy_debounce(self, gen)
             }
 
             Message::HideBrowserOverlay => {

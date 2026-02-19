@@ -46,6 +46,10 @@ All notable changes to Mesh are documented in this file.
 
 ### Improved
 
+- **Suggestion energy MIDI debounce** — The energy direction fader now uses
+  trailing-edge debounce (300ms) so the suggestion query only fires once the
+  fader stops moving, instead of on every value change. Moving the fader also
+  auto-enables suggestion mode if not already active.
 - **Track load memory usage** — Stem clones (~460 MB each) are sent only at
   ~100-second intervals (~5 clones per 5-minute track, ~500 ms total overhead).
   Visual peak updates are sent every ~15 seconds at negligible cost (~2 MB).

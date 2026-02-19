@@ -51,8 +51,15 @@ pub fn handle_browser(app: &mut MeshApp, browser_msg: CollectionBrowserMessage) 
             }
             let changed = app.collection_browser.set_energy_direction(*value);
             if changed {
+                // Trailing-edge debounce: bump generation and start a timer.
+                // Only the last timer (matching current gen) will fire the query.
+                app.energy_debounce_gen = app.energy_debounce_gen.wrapping_add(1);
+                let gen = app.energy_debounce_gen;
                 app.collection_browser.set_suggestion_loading(true);
-                return trigger_suggestion_query(app);
+                return Task::perform(
+                    async move { tokio::time::sleep(std::time::Duration::from_millis(300)).await },
+                    move |_| Message::CheckEnergyDebounce(gen),
+                );
             }
             return Task::none();
         }
@@ -322,4 +329,23 @@ pub fn check_suggestion_seeds(app: &mut MeshApp) -> Task<Message> {
     } else {
         Task::none()
     }
+}
+
+/// Handle `CheckEnergyDebounce`: trailing-edge debounce for energy direction slider.
+///
+/// Each fader movement bumps a generation counter and starts a 300ms timer carrying
+/// that generation. When the timer fires, if no newer movement has occurred (gen matches),
+/// the fader has stopped — fire the suggestion query.
+pub fn check_energy_debounce(app: &mut MeshApp, gen: u64) -> Task<Message> {
+    if gen != app.energy_debounce_gen {
+        // A newer movement happened — this timer is stale, ignore it
+        return Task::none();
+    }
+
+    if !app.collection_browser.is_suggestions_enabled() {
+        app.collection_browser.set_suggestion_loading(false);
+        return Task::none();
+    }
+
+    trigger_suggestion_query(app)
 }

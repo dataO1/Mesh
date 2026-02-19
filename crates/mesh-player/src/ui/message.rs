@@ -113,6 +113,8 @@ pub enum Message {
     ScheduleSuggestionRefresh,
     /// Debounce timer expired — compute active seeds and retrigger if changed.
     CheckSuggestionSeeds,
+    /// Energy direction debounce timer expired — query if generation still matches.
+    CheckEnergyDebounce(u64),
 
     /// Hide the browser overlay (click-away backdrop)
     HideBrowserOverlay,
