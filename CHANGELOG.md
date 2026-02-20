@@ -4,6 +4,38 @@ All notable changes to Mesh are documented in this file.
 
 ---
 
+## [0.9.3]
+
+### Fixed
+
+- **Embedded: ES8388 audio init** — `mesh-audio-init` service was failing on every
+  boot because the `Headphone` mixer control is a switch, not a volume. Replaced
+  the single broken `amixer` command with a proper init script that enables the
+  headphone amplifier path (`hp switch` on), sets PCM and output volumes, disables
+  3D spatial processing, and ensures left/right mixer paths are enabled.
+- **Embedded: ALSA device aliases** — `mesh_cue` and `mesh_master` PCM aliases
+  used `type hw` (raw hardware access), which rejected mono audio and any format
+  the ES8388 doesn't natively accept. Changed to `type plug` with nested
+  `slave.pcm` for automatic format, channel, and sample rate conversion.
+- **Embedded: PipeWire low-latency config** — Added PipeWire clock configuration
+  with 256-sample quantum at 48kHz (5.33ms per period), min 64, max 1024. Without
+  this, PipeWire defaulted to 1024 samples (21.3ms).
+- **Embedded: WirePlumber device rules** — Split the combined ES8388/PCM5102A
+  match into separate rules with per-device priorities. Reduced `api.alsa.headroom`
+  from 256 to 0 (I2S codecs use DMA, not USB batch transfer, so headroom adds
+  unnecessary latency). PCM5102A gets higher `priority.driver` so it becomes the
+  graph clock source when connected.
+
+### Added
+
+- **Embedded: PAM audio limits** — `@audio` group gets unlimited memlock,
+  rtprio 99, and nice -19 for real-time audio scheduling.
+- **Embedded: RT kernel tuning** — Added `threadirqs` kernel parameter (threads
+  all IRQ handlers for priority control) and `vm.swappiness=10` (keeps audio
+  buffers in RAM).
+
+---
+
 ## [0.9.2]
 
 ### Added

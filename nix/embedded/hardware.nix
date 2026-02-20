@@ -41,7 +41,11 @@
     "rd.udev.log_level=3"
     "vt.global_cursor_default=0"
     "logo.nologo"
+    "threadirqs"
   ];
+
+  # Low swappiness: keep audio buffers in RAM
+  boot.kernel.sysctl."vm.swappiness" = 10;
 
   # Don't wait for network or udev settle during boot
   systemd.services.systemd-udev-settle.enable = false;
