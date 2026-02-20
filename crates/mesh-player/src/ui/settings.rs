@@ -4,6 +4,8 @@
 
 use super::message::{Message, SettingsMessage};
 use super::midi_learn::MidiLearnMessage;
+use super::network::NetworkState;
+use super::system_update::UpdateState;
 use crate::audio::{get_available_stereo_pairs, StereoPair};
 use crate::config::{LOOP_LENGTH_OPTIONS, StemColorPalette, KeyScoringModel, WaveformLayout};
 use iced::widget::{button, column, container, pick_list, row, scrollable, text, toggler, Id, Space};
@@ -75,6 +77,10 @@ pub struct SettingsState {
     pub status: String,
     /// MIDI navigation state (Some when opened via MIDI, None when opened via mouse)
     pub settings_midi_nav: Option<SettingsMidiNav>,
+    /// Network management state (None if nmcli not available)
+    pub network: Option<NetworkState>,
+    /// System update state (None if not on NixOS)
+    pub update: Option<UpdateState>,
     /// Snapshot of values at open time (for dirty detection)
     initial_snapshot: Option<SettingsSnapshot>,
 }
@@ -106,6 +112,8 @@ impl SettingsState {
             available_devices,
             status: String::new(),
             settings_midi_nav: None,
+            network: super::handlers::network::init_network_state(),
+            update: super::handlers::system_update::init_update_state(),
             initial_snapshot: None,
         }
     }
@@ -133,6 +141,8 @@ impl SettingsState {
             available_devices,
             status: String::new(),
             settings_midi_nav: None,
+            network: super::handlers::network::init_network_state(),
+            update: super::handlers::system_update::init_update_state(),
             initial_snapshot: None,
         }
     }
@@ -418,12 +428,34 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
     // Slicer settings section
     let slicer_section = view_slicer_section(state, nav);
 
+    // Network settings section (only when nmcli available)
+    let network_section: Option<Element<'_, Message>> = state.network.as_ref().map(|ns| {
+        super::network::view_network_section(ns)
+    });
+
+    // System update section (only on NixOS)
+    let update_section: Option<Element<'_, Message>> = state.update.as_ref().map(|us| {
+        super::system_update::view_update_section(us)
+    });
+
     // MIDI settings section
     let midi_section = view_midi_section();
 
     // Scrollable content area for all sections (audio output first)
+    let mut sections: Vec<Element<'_, Message>> = vec![
+        audio_output_section, loop_section, display_section,
+        loudness_section, slicer_section,
+    ];
+    if let Some(ns) = network_section {
+        sections.push(ns);
+    }
+    if let Some(us) = update_section {
+        sections.push(us);
+    }
+    sections.push(midi_section);
+
     let scrollable_content = scrollable(
-        column![audio_output_section, loop_section, display_section, loudness_section, slicer_section, midi_section]
+        column(sections)
             .spacing(15)
             .width(Length::Fill)
     )

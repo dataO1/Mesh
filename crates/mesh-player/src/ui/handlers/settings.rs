@@ -10,6 +10,7 @@ use crate::ui::app::MeshApp;
 use crate::ui::handlers::browser::trigger_suggestion_query;
 use crate::config::WaveformLayout;
 use crate::ui::message::{Message, SettingsMessage};
+use crate::ui::network::NetworkMessage;
 use crate::ui::settings::SettingsState;
 
 /// Handle settings messages
@@ -19,10 +20,19 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
     match msg {
         Open => {
             let midi_nav = app.settings.settings_midi_nav.take();
+            let network = app.settings.network.take();
+            let update = app.settings.update.take();
             app.settings = SettingsState::from_config(&app.config);
+            // Preserve stateful sections across reopen (avoid re-detecting nmcli/NixOS)
+            app.settings.network = network;
+            app.settings.update = update;
             app.settings.is_open = true;
             app.settings.settings_midi_nav = midi_nav;
             app.settings.take_snapshot();
+            // Trigger network status refresh if network management is available
+            if app.settings.network.is_some() {
+                return Task::done(Message::Network(NetworkMessage::CheckStatus));
+            }
             Task::none()
         }
         Close => {

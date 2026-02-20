@@ -30,6 +30,7 @@ use mesh_midi::{ControllerManager, MidiMessage as MidiMsg, MidiEvent, MidiInputE
 use mesh_core::engine::{DeckAtomics, LinkedStemAtomics, SlicerAtomics};
 use mesh_core::types::NUM_DECKS;
 use mesh_widgets::{mpsc_subscription, multiband_editor, MultibandEditorState, SliceEditorState};
+use mesh_widgets::keyboard::{KeyboardState, KeyboardEvent, keyboard_view, keyboard_handle};
 
 use super::collection_browser::{CollectionBrowserState, CollectionBrowserMessage};
 use super::deck_view::{DeckView, DeckMessage};
@@ -116,6 +117,8 @@ pub struct MeshApp {
     pub(crate) internal_latency_samples: Option<Arc<AtomicU32>>,
     /// Audio sample rate for latency calculations
     pub(crate) audio_sample_rate: u32,
+    /// On-screen keyboard state (shared widget from mesh-widgets)
+    pub(crate) keyboard: KeyboardState,
 }
 
 // Message enum moved to message.rs
@@ -290,6 +293,7 @@ impl MeshApp {
             output_latency_samples,
             internal_latency_samples,
             audio_sample_rate: sample_rate,
+            keyboard: KeyboardState::new(),
         }
     }
 
@@ -492,6 +496,41 @@ impl MeshApp {
                 self.hide_browser_overlay();
                 Task::none()
             }
+
+            Message::Keyboard(kb_msg) => {
+                if let Some(event) = keyboard_handle(&mut self.keyboard, kb_msg) {
+                    match event {
+                        KeyboardEvent::Submit(password) => {
+                            // Route to WiFi connect if a network was selected
+                            if let Some(ref net_state) = self.settings.network {
+                                if let Some(idx) = net_state.selected_network {
+                                    if let Some(network) = net_state.networks.get(idx) {
+                                        let ssid = network.ssid.clone();
+                                        return self.update(Message::Network(
+                                            super::network::NetworkMessage::ConnectSecured {
+                                                ssid,
+                                                password,
+                                            },
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        KeyboardEvent::Cancel => {
+                            log::debug!("Keyboard cancelled");
+                        }
+                    }
+                }
+                Task::none()
+            }
+
+            Message::Network(net_msg) => {
+                super::handlers::network::handle(self, net_msg)
+            }
+
+            Message::SystemUpdate(update_msg) => {
+                super::handlers::system_update::handle(self, update_msg)
+            }
         }
     }
 
@@ -634,6 +673,26 @@ impl MeshApp {
     pub(crate) fn handle_midi_message(&mut self, event: MidiEvent) -> Task<Message> {
         let engine_dispatched = event.engine_dispatched;
         let msg = event.message;
+
+        // ── Keyboard MIDI interception ──
+        // When on-screen keyboard is open, intercept browser scroll/select
+        // for key navigation before anything else.
+        if self.keyboard.is_open {
+            match &msg {
+                MidiMsg::Browser(MidiBrowserAction::Scroll { delta }) => {
+                    let delta = *delta;
+                    return self.update(Message::Keyboard(
+                        mesh_widgets::keyboard::KeyboardMessage::MidiScroll(delta),
+                    ));
+                }
+                MidiMsg::Browser(MidiBrowserAction::Select) => {
+                    return self.update(Message::Keyboard(
+                        mesh_widgets::keyboard::KeyboardMessage::MidiSelect,
+                    ));
+                }
+                _ => {} // Other messages fall through
+            }
+        }
 
         // ── Settings MIDI nav interception ──
         // When settings is open via MIDI, intercept browser scroll/select
@@ -1060,6 +1119,14 @@ impl MeshApp {
             Subscription::none()
         };
 
+        // Journal polling subscription for OTA update progress
+        let journal_poll_sub = if self.settings.update.as_ref().is_some_and(|u| u.is_installing()) {
+            time::every(std::time::Duration::from_secs(2))
+                .map(|_| Message::SystemUpdate(super::system_update::SystemUpdateMessage::PollJournal))
+        } else {
+            Subscription::none()
+        };
+
         Subscription::batch([
             // Update UI at ~60fps for smooth waveform animation
             time::every(std::time::Duration::from_millis(16)).map(|_| Message::Tick),
@@ -1082,6 +1149,8 @@ impl MeshApp {
             mouse_capture_sub,
             // Plugin GUI parameter learning polling
             plugin_gui_sub,
+            // OTA update journal polling (2s interval, only during install)
+            journal_poll_sub,
         ])
     }
 
@@ -1285,7 +1354,7 @@ impl MeshApp {
         };
 
         // Overlay settings modal if open
-        if self.settings.is_open {
+        let with_modal: Element<'a, Message> = if self.settings.is_open {
             let backdrop = mouse_area(
                 container(Space::new())
                     .width(Length::Fill)
@@ -1312,6 +1381,28 @@ impl MeshApp {
             }
         } else {
             with_fx_dropdown
+        };
+
+        // On-screen keyboard overlay (topmost — can appear above settings for WiFi password)
+        if self.keyboard.is_open {
+            let kb_backdrop = mouse_area(
+                container(Space::new())
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .style(|_theme| container::Style {
+                        background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.5).into()),
+                        ..Default::default()
+                    }),
+            )
+            .on_press(Message::Keyboard(mesh_widgets::keyboard::KeyboardMessage::Cancel));
+
+            let kb_modal = center(opaque(keyboard_view(&self.keyboard).map(Message::Keyboard)))
+                .width(Length::Fill)
+                .height(Length::Fill);
+
+            stack![with_modal, kb_backdrop, kb_modal].into()
+        } else {
+            with_modal
         }
     }
 

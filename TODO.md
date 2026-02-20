@@ -166,7 +166,8 @@ for v3 and beyond.
   should be send to cue headphones out. this should not just binary, but
   gradually mixed in so at 0.5 they might be audible still a bit, at 0.3 fully (at 0 still fully )(exponential curve or just two stages linear, both is fine). users can still
   use the cue buttons (make this configurable in the player ui, default is
-  auto-cue). plan this thorougly, break it into subtasks, at the end document
+  auto-cue). Autocue should ONLY be active, when the master and cue outputs are
+  different outputs, otherwise there is problems with the output! plan this thorougly, break it into subtasks, at the end document
   this as a new feature in the changelog and commit all.
 
 # DB
@@ -183,12 +184,6 @@ for v3 and beyond.
   nthe nix cache (from my repo) and automatically install and relaunch
   everything so the newly installed version is running. for this a internet
   connection is required.
-
-# OTHER
-- [x] MIDI settings navigation: `global.settings_toggle` action opens/closes
-  settings modal. When open, browser encoder scrolls through settings, encoder
-  press enters editing mode for the focused setting, and scroll cycles through
-  options with live preview. Closing auto-saves if changes were made.
 
 ## Embedded: Silent Boot (investigated, partially working)
 - [x] Removed Plymouth splash entirely — the script theme (`ModuleName=script`)
@@ -210,13 +205,16 @@ for v3 and beyond.
   /dev/fb0 early in boot) or recompile vendor U-Boot with `CONFIG_SPLASH_SCREEN`
   for a true pre-kernel splash.
 
-- some tracks still have some numbers in front of the name (as part of the
+# OTHER
+- [ ] when starting the player first, then connecting the hid and midi devices, they
+  are not recognized, we already have reconnection logic (connecting then
+  disconnecting hardware works well), reuse that for detecting hardware after
+  the software launch.
+- [ ] some tracks still have some numbers in front of the name (as part of the
   artist apparently) from the name parsing, we need to fix that, some examples:
   * 01 Black Sun Empire - Feed The Machine (you can check the original name in
     /home/data01/Music/mesh-collection/import/backup/)
-- loading a track from local, then trying to load tracks from  smart suggestions
+- [ ] loading a track from local, then trying to load tracks from  smart suggestions
   from other sources (usb) doesnt correctly load the metadata, other suggestions
   from local load fine. from usb loads
   all other sources correctly.
-
-

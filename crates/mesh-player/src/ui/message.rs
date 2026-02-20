@@ -9,6 +9,9 @@ use crate::config::{StemColorPalette, KeyScoringModel, WaveformLayout};
 use crate::suggestions::SuggestedTrack;
 use super::collection_browser::CollectionBrowserMessage;
 use super::deck_view::DeckMessage;
+use mesh_widgets::keyboard::KeyboardMessage;
+use super::network::NetworkMessage;
+use super::system_update::SystemUpdateMessage;
 use super::midi_learn::MidiLearnMessage;
 use super::mixer_view::MixerMessage;
 use super::state::{LinkedStemLoadedMsg, PresetLoadedMsg, TrackLoadedMsg};
@@ -118,4 +121,13 @@ pub enum Message {
 
     /// Hide the browser overlay (click-away backdrop)
     HideBrowserOverlay,
+
+    /// On-screen keyboard message
+    Keyboard(KeyboardMessage),
+
+    /// Network management message (WiFi/LAN)
+    Network(NetworkMessage),
+
+    /// System update message (OTA)
+    SystemUpdate(SystemUpdateMessage),
 }

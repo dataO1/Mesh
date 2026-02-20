@@ -35,7 +35,7 @@ in
     # Mesh user account (wheel for sudo access)
     users.users.mesh = {
       isNormalUser = true;
-      extraGroups = [ "audio" "video" "input" "plugdev" "wheel" ];
+      extraGroups = [ "audio" "video" "input" "plugdev" "wheel" "networkmanager" ];
       initialPassword = "mesh";
     };
 

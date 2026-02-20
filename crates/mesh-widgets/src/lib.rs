@@ -27,6 +27,7 @@
 
 pub mod button_styles;
 pub mod deck_preset;
+pub mod keyboard;
 pub mod knob;
 pub mod multiband;
 pub mod playlist_browser;
@@ -129,4 +130,9 @@ pub use stem_preset::{
 pub use deck_preset::{
     deck_preset_view, DeckPresetMessage, DeckPresetState, MacroParamMapping,
     MacroTargetType, NUM_MACROS as DECK_PRESET_NUM_MACROS,
+};
+
+// On-screen keyboard widget for embedded touchscreen and MIDI encoder
+pub use keyboard::{
+    keyboard_view, keyboard_handle, KeyboardState, KeyboardMessage, KeyboardEvent,
 };
