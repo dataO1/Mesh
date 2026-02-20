@@ -1067,7 +1067,8 @@ impl MeshApp {
     }
 
     /// Handle encoder press while in settings MIDI navigation mode.
-    /// Sub-panel: activates the focused action. Otherwise: toggles edit mode.
+    /// Shift+press always exits current mode (sub-panel → editing → scroll).
+    /// Normal press: sub-panel activates action, otherwise toggles edit mode.
     /// For Network/Update entries: press in edit mode enters sub-panel.
     fn handle_settings_midi_select(&mut self) -> Task<Message> {
         use super::settings::SubPanelFocus;
@@ -1075,6 +1076,19 @@ impl MeshApp {
         use super::system_update::SystemUpdateMessage;
 
         if self.settings.settings_midi_nav.is_none() {
+            return Task::none();
+        }
+
+        // Shift+press: step out of current mode
+        let shift_held = self.controller.as_ref()
+            .is_some_and(|c| c.is_shift_held());
+        if shift_held {
+            let nav = self.settings.settings_midi_nav.as_mut().unwrap();
+            if nav.sub_panel.is_some() {
+                nav.sub_panel = None;
+            } else if nav.editing {
+                nav.editing = false;
+            }
             return Task::none();
         }
 
@@ -1119,22 +1133,38 @@ impl MeshApp {
         let networks_empty = self.settings.network.as_ref()
             .is_some_and(|n| n.networks.is_empty());
 
+        // Compute MIDI Learn entry index (always last)
+        let midi_learn_idx = base_entries
+            + if has_network { 1 } else { 0 }
+            + if has_update { 1 } else { 0 };
+
         let nav = self.settings.settings_midi_nav.as_mut().unwrap();
 
-        if nav.editing {
-            if Some(nav.focused_index) == network_entry_idx {
-                nav.sub_panel = Some(SubPanelFocus::WifiNetworkList { selected: initial_net_selection });
-                if networks_empty {
-                    return self.update(Message::Network(NetworkMessage::Scan));
-                }
-                return Task::none();
-            } else if Some(nav.focused_index) == update_entry_idx {
-                nav.sub_panel = Some(SubPanelFocus::UpdateActions { selected: 0 });
-                return Task::none();
+        // Network/Update: go directly to sub-panel (no editing step needed)
+        if Some(nav.focused_index) == network_entry_idx {
+            nav.sub_panel = Some(SubPanelFocus::WifiNetworkList { selected: initial_net_selection });
+            if networks_empty {
+                return self.update(Message::Network(NetworkMessage::Scan));
             }
+            return Task::none();
+        } else if Some(nav.focused_index) == update_entry_idx {
+            nav.sub_panel = Some(SubPanelFocus::UpdateActions { selected: 0 });
+            return Task::none();
         }
 
-        nav.editing = !nav.editing;
+        // MIDI Learn: press triggers Start directly
+        if nav.focused_index == midi_learn_idx {
+            return self.update(Message::MidiLearn(
+                super::midi_learn::MidiLearnMessage::Start,
+            ));
+        }
+
+        // Regular settings: toggle editing mode
+        if nav.editing {
+            nav.editing = false;
+        } else {
+            nav.editing = true;
+        }
         Task::none()
     }
 

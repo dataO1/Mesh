@@ -238,8 +238,31 @@ pub fn restart_cage() -> Result<(), String> {
 
 // ── View ──
 
-/// Render the system update settings section
-pub fn view_update_section(state: &UpdateState) -> Element<'_, Message> {
+/// Wrap an element with a highlight background when it's the focused sub-panel action.
+fn wrap_focus<'a>(
+    elem: Element<'a, Message>,
+    action_idx: usize,
+    focused: Option<usize>,
+) -> Element<'a, Message> {
+    let bg = if focused == Some(action_idx) {
+        Color::from_rgba(0.3, 0.5, 1.0, 0.3)
+    } else {
+        Color::TRANSPARENT
+    };
+    container(elem)
+        .style(move |_theme| container::Style {
+            background: Some(bg.into()),
+            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+            ..Default::default()
+        })
+        .padding(2)
+        .width(Length::Fill)
+        .into()
+}
+
+/// Render the system update settings section.
+/// `focused_action` is Some(idx) when in sub-panel (0=Check, 1=Install/Restart).
+pub fn view_update_section(state: &UpdateState, focused_action: Option<usize>) -> Element<'_, Message> {
     let section_title = text("System Update").size(18);
 
     let version_label = text(format!("Current version: v{}", state.current_version))
@@ -257,7 +280,7 @@ pub fn view_update_section(state: &UpdateState) -> Element<'_, Message> {
             let check_btn = button(text("Check for Updates").size(11))
                 .on_press(Message::SystemUpdate(SystemUpdateMessage::CheckForUpdate))
                 .style(button::secondary);
-            content_items.push(check_btn.into());
+            content_items.push(wrap_focus(check_btn.into(), 0, focused_action));
         }
         UpdateCheckStatus::Checking => {
             let label = text("Checking for updates...")
@@ -272,11 +295,13 @@ pub fn view_update_section(state: &UpdateState) -> Element<'_, Message> {
             let check_btn = button(text("Check Again").size(11))
                 .on_press(Message::SystemUpdate(SystemUpdateMessage::CheckForUpdate))
                 .style(button::secondary);
-            content_items.push(
+            content_items.push(wrap_focus(
                 row![label, Space::new().width(Length::Fill), check_btn]
                     .align_y(Alignment::Center)
-                    .into()
-            );
+                    .into(),
+                0,
+                focused_action,
+            ));
         }
         UpdateCheckStatus::Available(version) => {
             let label = text(format!("{} available", version))
@@ -288,11 +313,13 @@ pub fn view_update_section(state: &UpdateState) -> Element<'_, Message> {
                     let install_btn = button(text("Install").size(11))
                         .on_press(Message::SystemUpdate(SystemUpdateMessage::InstallUpdate))
                         .style(button::primary);
-                    content_items.push(
+                    content_items.push(wrap_focus(
                         row![label, Space::new().width(Length::Fill), install_btn]
                             .align_y(Alignment::Center)
-                            .into()
-                    );
+                            .into(),
+                        1,
+                        focused_action,
+                    ));
                 }
                 UpdateInstallStatus::Starting => {
                     let status = text("Starting update...")
@@ -313,11 +340,13 @@ pub fn view_update_section(state: &UpdateState) -> Element<'_, Message> {
                     let restart_btn = button(text("Restart Now").size(11))
                         .on_press(Message::SystemUpdate(SystemUpdateMessage::RestartCage))
                         .style(button::primary);
-                    content_items.push(
+                    content_items.push(wrap_focus(
                         row![status, Space::new().width(Length::Fill), restart_btn]
                             .align_y(Alignment::Center)
-                            .into()
-                    );
+                            .into(),
+                        1,
+                        focused_action,
+                    ));
                 }
                 UpdateInstallStatus::Error(e) => {
                     let err = text(e)
@@ -334,11 +363,13 @@ pub fn view_update_section(state: &UpdateState) -> Element<'_, Message> {
             let retry_btn = button(text("Retry").size(11))
                 .on_press(Message::SystemUpdate(SystemUpdateMessage::CheckForUpdate))
                 .style(button::secondary);
-            content_items.push(
+            content_items.push(wrap_focus(
                 row![err, Space::new().width(Length::Fill), retry_btn]
                     .align_y(Alignment::Center)
-                    .into()
-            );
+                    .into(),
+                0,
+                focused_action,
+            ));
         }
     }
 

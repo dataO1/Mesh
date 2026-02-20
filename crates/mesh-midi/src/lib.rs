@@ -955,6 +955,13 @@ impl ControllerManager {
             .unwrap_or(LayerSelection::A)
     }
 
+    /// Check if shift is currently held (global across all physical decks)
+    pub fn is_shift_held(&self) -> bool {
+        self.first_shared_state()
+            .map(|s| s.is_shift_held_global())
+            .unwrap_or(false)
+    }
+
     /// Check if we're in layer mode
     pub fn is_layer_mode(&self) -> bool {
         self.first_shared_state()

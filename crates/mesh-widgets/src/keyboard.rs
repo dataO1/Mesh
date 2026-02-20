@@ -288,19 +288,12 @@ pub fn keyboard_view(state: &KeyboardState) -> Element<'_, KeyboardMessage> {
             ..Default::default()
         });
 
-    // Prompt + cancel header
+    // Prompt header (Cancel moved to bottom of keyboard)
     let prompt_label = text(&state.prompt).size(13);
-    let cancel_btn = button(text("Cancel").size(13))
-        .on_press(KeyboardMessage::Cancel)
-        .style(button::secondary);
 
-    let header = row![
-        prompt_label,
-        Space::new().width(Length::Fill),
-        cancel_btn,
-    ]
-    .align_y(Alignment::Center)
-    .width(Length::Fill);
+    let header = row![prompt_label]
+        .align_y(Alignment::Center)
+        .width(Length::Fill);
 
     // Build keyboard rows
     let total = total_keys();
@@ -378,7 +371,26 @@ pub fn keyboard_view(state: &KeyboardState) -> Element<'_, KeyboardMessage> {
         .spacing(KEY_SPACING)
         .align_x(Alignment::Center);
 
-    let content = column![header, text_display, Space::new().height(8), keyboard_grid]
+    // Cancel button below keyboard grid
+    let cancel_btn = button(
+        container(text("Cancel").size(14))
+            .center_x(Length::Fill)
+            .center_y(Length::Fill),
+    )
+    .on_press(KeyboardMessage::Cancel)
+    .style(|_theme: &iced::Theme, _status| button::Style {
+        background: Some(Color::from_rgba(0.4, 0.15, 0.15, 0.8).into()),
+        text_color: Color::WHITE,
+        border: iced::Border {
+            radius: 4.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .width(Length::Fill)
+    .height(Length::Fixed(KEY_HEIGHT));
+
+    let content = column![header, text_display, Space::new().height(8), keyboard_grid, cancel_btn]
         .spacing(8)
         .width(Length::Shrink)
         .align_x(Alignment::Center);

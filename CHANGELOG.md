@@ -11,7 +11,10 @@ All notable changes to Mesh are documented in this file.
 - **In-app WiFi management** — Settings now include a Network section with WiFi
   scanning, connection, and disconnection. Uses `nmrs` (Rust D-Bus bindings for
   NetworkManager) instead of shell-based `nmcli` for type-safe, reliable network
-  operations. Secured networks open an on-screen keyboard for password entry.
+  operations. Each D-Bus call runs on a dedicated thread with its own
+  single-threaded tokio runtime to work around nmrs's `!Send` futures and iced's
+  nested-runtime constraint. Secured networks open an on-screen keyboard for
+  password entry (Cancel button now inside the scrollable keyboard grid).
   Platform-gated: Linux-only via `#[cfg(target_os = "linux")]` with no-op stubs
   on other platforms, so Windows builds are unaffected. The on-screen keyboard
   widget lives in mesh-widgets for reuse across crates.
@@ -32,11 +35,14 @@ All notable changes to Mesh are documented in this file.
   editing mode so all options are visible while cycling with the encoder.
 - **MIDI sub-panel navigation** — When MIDI-navigating to the Network or System
   Update entries in settings, pressing the encoder enters a domain-specific
-  sub-panel. WiFi sub-panel: encoder cycles through scanned networks, press
-  connects (or opens keyboard for secured networks). Update sub-panel: encoder
-  cycles between Check and Install/Restart actions. Press encoder again to exit
-  the sub-panel. Priority chain: keyboard > sub-panel > settings edit > settings
-  scroll > normal MIDI.
+  sub-panel directly (no editing-mode step). WiFi sub-panel: encoder cycles
+  through scanned networks, press connects (or opens keyboard for secured
+  networks). Update sub-panel: encoder cycles between Check and Install/Restart
+  actions with visual highlighting on the focused action. Shift+encoder press
+  steps out of the current mode (sub-panel → scroll). The MIDI Learn section
+  is now a navigable entry — encoder press triggers Start MIDI Learn directly.
+  Priority chain: keyboard > sub-panel > settings edit > settings scroll >
+  normal MIDI.
 - **Embedded: silent boot** — Comprehensive kernel param and systemd
   configuration for minimal boot output: `loglevel=0`, `quiet`,
   `rd.systemd.show_status=false`, `systemd.show_status=false`,

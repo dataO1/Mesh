@@ -20,11 +20,12 @@ pub static SETTINGS_SCROLLABLE_ID: LazyLock<Id> = LazyLock::new(|| Id::new("mesh
 pub fn settings_entry_count(state: &SettingsState) -> usize {
     let mut count = 13; // Base entries from build_settings_entries
     if state.network.is_some() {
-        count += 1; // Network section (WiFi scan/list)
+        count += 1; // Network section
     }
     if state.update.is_some() {
         count += 1; // System update section
     }
+    count += 1; // MIDI Learn (always present, always last)
     count
 }
 
@@ -391,7 +392,8 @@ pub fn build_settings_entries(state: &SettingsState) -> Vec<SettingsEntry> {
 
 // ── Visual Highlighting ──
 
-/// Wrap a setting row with visual highlighting when focused via MIDI navigation
+/// Wrap a setting row with visual highlighting when focused via MIDI navigation.
+/// Always applies the same padding so layout doesn't shift when focus changes.
 pub fn wrap_navigable<'a>(
     content: Element<'a, Message>,
     setting_index: usize,
@@ -400,27 +402,26 @@ pub fn wrap_navigable<'a>(
     let is_focused = nav.is_some_and(|n| n.focused_index == setting_index);
     let is_editing = nav.is_some_and(|n| n.focused_index == setting_index && n.editing);
 
-    if is_focused {
-        let bg_color = if is_editing {
-            Color::from_rgba(0.3, 0.6, 1.0, 0.2)
-        } else {
-            Color::from_rgba(0.2, 0.4, 0.8, 0.12)
-        };
-        container(content)
-            .style(move |_theme| container::Style {
-                background: Some(bg_color.into()),
-                border: iced::Border {
-                    radius: 4.0.into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-            .padding(4)
-            .width(Length::Fill)
-            .into()
+    let bg_color = if is_editing {
+        Color::from_rgba(0.3, 0.6, 1.0, 0.2)
+    } else if is_focused {
+        Color::from_rgba(0.2, 0.4, 0.8, 0.12)
     } else {
-        content
-    }
+        Color::TRANSPARENT
+    };
+
+    container(content)
+        .style(move |_theme| container::Style {
+            background: Some(bg_color.into()),
+            border: iced::Border {
+                radius: 4.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .padding(4)
+        .width(Length::Fill)
+        .into()
 }
 
 /// Render the settings modal content
@@ -451,18 +452,33 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
     // Slicer settings section
     let slicer_section = view_slicer_section(state, nav);
 
+    // Dynamic entry indices for network/update (base entries = indices 0..12)
+    let mut next_idx = 13usize;
+
     // Network settings section (only when nmcli available)
     let network_section: Option<Element<'_, Message>> = state.network.as_ref().map(|ns| {
-        super::network::view_network_section(ns)
+        let idx = next_idx;
+        next_idx += 1;
+        wrap_navigable(super::network::view_network_section(ns), idx, nav)
     });
 
     // System update section (only on NixOS)
+    // Extract focused action from sub-panel for highlighting
+    let update_focused_action = nav.and_then(|n| {
+        if let Some(SubPanelFocus::UpdateActions { selected }) = &n.sub_panel {
+            Some(*selected)
+        } else {
+            None
+        }
+    });
     let update_section: Option<Element<'_, Message>> = state.update.as_ref().map(|us| {
-        super::system_update::view_update_section(us)
+        let idx = next_idx;
+        next_idx += 1;
+        wrap_navigable(super::system_update::view_update_section(us, update_focused_action), idx, nav)
     });
 
-    // MIDI settings section
-    let midi_section = view_midi_section();
+    // MIDI settings section (always last navigable entry)
+    let midi_section = wrap_navigable(view_midi_section(), next_idx, nav);
 
     // Scrollable content area for all sections (audio output first)
     let mut sections: Vec<Element<'_, Message>> = vec![

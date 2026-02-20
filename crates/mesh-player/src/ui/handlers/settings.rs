@@ -10,7 +10,6 @@ use crate::ui::app::MeshApp;
 use crate::ui::handlers::browser::trigger_suggestion_query;
 use crate::config::WaveformLayout;
 use crate::ui::message::{Message, SettingsMessage};
-use crate::ui::network::NetworkMessage;
 use crate::ui::settings::SettingsState;
 
 /// Handle settings messages
@@ -29,9 +28,20 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             app.settings.is_open = true;
             app.settings.settings_midi_nav = midi_nav;
             app.settings.take_snapshot();
-            // Trigger network status refresh if network management is available
+            // Refresh network status synchronously on open. D-Bus round-trips
+            // are fast (~10-30ms total), imperceptible when opening a modal.
+            // We avoid Task::perform here because iced silently drops tasks
+            // returned from handlers called within the Settings(Open) path.
             if app.settings.network.is_some() {
-                return Task::done(Message::Network(NetworkMessage::CheckStatus));
+                use crate::ui::network::backend;
+                let has_wifi = backend::detect_wifi_adapter();
+                let wifi = backend::get_wifi_status();
+                let lan = backend::get_lan_status();
+                if let Some(ref mut state) = app.settings.network {
+                    state.has_wifi_adapter = has_wifi;
+                    state.wifi_status = wifi;
+                    state.lan_status = lan;
+                }
             }
             Task::none()
         }

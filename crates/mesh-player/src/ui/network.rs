@@ -100,8 +100,6 @@ pub enum NetworkMessage {
 }
 
 // ── Backend: Linux (nmrs via D-Bus) ──
-
-// ── Backend: Linux (nmrs via D-Bus) ──
 //
 // All functions are synchronous/blocking. Each spawns a dedicated thread with its
 // own single-threaded tokio runtime to execute nmrs async calls. Two constraints
@@ -119,62 +117,112 @@ pub mod backend {
     /// Run an async closure on a dedicated thread with its own tokio runtime.
     /// The closure creates !Send futures (nmrs/zbus) that stay on the new thread.
     /// The result is sent back via sync_channel.
-    fn run_on_thread<T, F, Fut>(f: F) -> Result<T, String>
+    fn run_on_thread<T, F, Fut>(label: &str, f: F) -> Result<T, String>
     where
         T: Send + 'static,
         F: FnOnce() -> Fut + Send + 'static,
         Fut: std::future::Future<Output = T>,
     {
+        let label_owned = label.to_string();
+        log::debug!("[nmrs] run_on_thread: spawning thread for '{}'", label);
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
+            log::debug!("[nmrs] thread '{}': building tokio runtime", label_owned);
+            let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .expect("tokio runtime for nmrs");
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    log::error!("[nmrs] thread '{}': failed to build runtime: {}", label_owned, e);
+                    return;
+                }
+            };
+            log::debug!("[nmrs] thread '{}': calling block_on", label_owned);
             let result = rt.block_on(f());
+            log::debug!("[nmrs] thread '{}': block_on completed, sending result", label_owned);
             let _ = tx.send(result);
         });
-        rx.recv().map_err(|e| format!("nmrs thread failed: {}", e))
+        log::debug!("[nmrs] run_on_thread: waiting for '{}' result", label);
+        let result = rx.recv().map_err(|e| format!("nmrs thread failed: {}", e));
+        log::debug!("[nmrs] run_on_thread: '{}' result received (ok={})", label, result.is_ok());
+        result
     }
 
     /// Check if NetworkManager is available by attempting a D-Bus connection.
     pub fn is_available() -> bool {
-        run_on_thread(|| async {
-            nmrs::NetworkManager::new().await.is_ok()
+        run_on_thread("is_available", || async {
+            let result = nmrs::NetworkManager::new().await;
+            log::debug!("[nmrs] is_available: NetworkManager::new() = {:?}", result.is_ok());
+            result.is_ok()
         }).unwrap_or(false)
     }
 
     /// Detect whether a WiFi adapter is present.
     pub fn detect_wifi_adapter() -> bool {
-        run_on_thread(|| async {
+        run_on_thread("detect_wifi_adapter", || async {
             let nm = match nmrs::NetworkManager::new().await {
                 Ok(nm) => nm,
-                Err(_) => return false,
+                Err(e) => {
+                    log::debug!("[nmrs] detect_wifi_adapter: NM connect failed: {}", e);
+                    return false;
+                }
             };
             let devices = match nm.list_devices().await {
-                Ok(d) => d,
-                Err(_) => return false,
+                Ok(d) => {
+                    log::debug!("[nmrs] detect_wifi_adapter: {} devices found", d.len());
+                    for dev in &d {
+                        log::debug!("[nmrs]   device: {} type={:?} state={:?}",
+                            dev.interface, dev.device_type, dev.state);
+                    }
+                    d
+                }
+                Err(e) => {
+                    log::debug!("[nmrs] detect_wifi_adapter: list_devices failed: {}", e);
+                    return false;
+                }
             };
-            devices.iter().any(|d| d.device_type == nmrs::DeviceType::Wifi)
+            let has_wifi = devices.iter().any(|d| d.device_type == nmrs::DeviceType::Wifi);
+            log::debug!("[nmrs] detect_wifi_adapter: has_wifi={}", has_wifi);
+            has_wifi
         }).unwrap_or(false)
     }
 
     /// Get current WiFi status (connected SSID + signal, or disconnected).
     pub fn get_wifi_status() -> WifiStatus {
-        run_on_thread(|| async {
+        run_on_thread("get_wifi_status", || async {
             let nm = match nmrs::NetworkManager::new().await {
                 Ok(nm) => nm,
-                Err(_) => return WifiStatus::Disconnected,
+                Err(e) => {
+                    log::debug!("[nmrs] get_wifi_status: NM connect failed: {}", e);
+                    return WifiStatus::Disconnected;
+                }
             };
 
             let ssid = match nm.current_ssid().await {
-                Some(s) => s,
-                None => return WifiStatus::Disconnected,
+                Some(s) => {
+                    log::debug!("[nmrs] get_wifi_status: current_ssid = {:?}", s);
+                    s
+                }
+                None => {
+                    log::debug!("[nmrs] get_wifi_status: no current SSID");
+                    return WifiStatus::Disconnected;
+                }
             };
 
             let signal = match nm.current_network().await {
-                Ok(Some(net)) => net.strength.unwrap_or(0),
-                _ => 0,
+                Ok(Some(net)) => {
+                    log::debug!("[nmrs] get_wifi_status: current_network strength={:?}", net.strength);
+                    net.strength.unwrap_or(0)
+                }
+                Ok(None) => {
+                    log::debug!("[nmrs] get_wifi_status: current_network = None");
+                    0
+                }
+                Err(e) => {
+                    log::debug!("[nmrs] get_wifi_status: current_network error: {}", e);
+                    0
+                }
             };
 
             WifiStatus::Connected { ssid, signal }
@@ -183,33 +231,41 @@ pub mod backend {
 
     /// Get current LAN (ethernet) status.
     pub fn get_lan_status() -> LanStatus {
-        run_on_thread(|| async {
+        run_on_thread("get_lan_status", || async {
             let nm = match nmrs::NetworkManager::new().await {
                 Ok(nm) => nm,
-                Err(_) => return LanStatus::Disconnected,
+                Err(e) => {
+                    log::debug!("[nmrs] get_lan_status: NM connect failed: {}", e);
+                    return LanStatus::Disconnected;
+                }
             };
             let devices = match nm.list_devices().await {
                 Ok(d) => d,
-                Err(_) => return LanStatus::Disconnected,
+                Err(e) => {
+                    log::debug!("[nmrs] get_lan_status: list_devices failed: {}", e);
+                    return LanStatus::Disconnected;
+                }
             };
 
             for device in &devices {
                 if device.device_type == nmrs::DeviceType::Ethernet
                     && device.state == nmrs::DeviceState::Activated
                 {
+                    log::debug!("[nmrs] get_lan_status: found active ethernet: {}", device.interface);
                     return LanStatus::Connected {
                         interface: device.interface.clone(),
                     };
                 }
             }
 
+            log::debug!("[nmrs] get_lan_status: no active ethernet");
             LanStatus::Disconnected
         }).unwrap_or(LanStatus::Disconnected)
     }
 
     /// Scan for available WiFi networks.
     pub fn scan_wifi() -> Result<Vec<WifiNetwork>, String> {
-        run_on_thread(|| async {
+        run_on_thread("scan_wifi", || async {
             let nm = nmrs::NetworkManager::new()
                 .await
                 .map_err(|e| format!("NetworkManager connection failed: {}", e))?;
@@ -260,7 +316,7 @@ pub mod backend {
     pub fn connect_wifi(ssid: &str, password: Option<&str>) -> Result<(), String> {
         let ssid = ssid.to_string();
         let password = password.map(|p| p.to_string());
-        run_on_thread(move || async move {
+        run_on_thread("connect_wifi", move || async move {
             let nm = nmrs::NetworkManager::new()
                 .await
                 .map_err(|e| format!("NetworkManager connection failed: {}", e))?;
@@ -278,7 +334,7 @@ pub mod backend {
 
     /// Disconnect from the current WiFi network.
     pub fn disconnect_wifi() -> Result<(), String> {
-        run_on_thread(|| async {
+        run_on_thread("disconnect_wifi", || async {
             let nm = nmrs::NetworkManager::new()
                 .await
                 .map_err(|e| format!("NetworkManager connection failed: {}", e))?;
