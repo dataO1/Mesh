@@ -223,13 +223,16 @@ pub struct SettingsMidiNav {
     pub focused_index: usize,
     /// Whether we're editing the focused setting's value (vs browsing the list)
     pub editing: bool,
+    /// Browse mode state for each side before settings opened (to restore on close)
+    pub saved_browse_state: [bool; 2],
 }
 
 impl SettingsMidiNav {
-    pub fn new() -> Self {
+    pub fn new(saved_browse_state: [bool; 2]) -> Self {
         Self {
             focused_index: 0,
             editing: false,
+            saved_browse_state,
         }
     }
 }

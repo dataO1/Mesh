@@ -962,6 +962,28 @@ impl ControllerManager {
             .unwrap_or(false)
     }
 
+    /// Set browse mode directly for a given side (0 or 1) on all HID mapping engines.
+    /// Used to force browse mode when the settings UI is open via MIDI, so
+    /// encoders produce Browser::Scroll instead of LoopSize.
+    pub fn set_browse_mode(&self, side: usize, active: bool) {
+        for device in self.hid_devices.values() {
+            if let Some(ref engine) = device.mapping_engine {
+                engine.set_browse_mode(side, active);
+            }
+        }
+        // Note: MIDI devices have the mapping engine captured inside the input
+        // callback closure, not accessible here. HID devices are sufficient for
+        // settings navigation since all encoder-based setups use HID.
+    }
+
+    /// Get current browse mode state for a given side from the first available HID engine.
+    pub fn get_browse_mode(&self, side: usize) -> bool {
+        self.hid_devices.values()
+            .find_map(|d| d.mapping_engine.as_ref())
+            .map(|engine| engine.get_browse_mode(side))
+            .unwrap_or(false)
+    }
+
     /// Start the background feedback worker thread for HID devices
     ///
     /// Collects feedback mappings, output channels, and shared state from all

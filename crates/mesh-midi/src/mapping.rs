@@ -865,6 +865,20 @@ impl MappingEngine {
     pub fn resolve_deck_for_physical(&self, physical_deck: usize) -> usize {
         self.shared_state.resolve_deck(physical_deck)
     }
+
+    /// Set browse mode directly for a given side (0 or 1).
+    /// Used by the app to force browse mode when settings UI is open via MIDI,
+    /// so encoders produce Browser::Scroll instead of LoopSize.
+    pub fn set_browse_mode(&self, side: usize, active: bool) {
+        let mut browse = self.browse_held.lock().unwrap();
+        browse[side.min(1)] = active;
+    }
+
+    /// Get current browse mode state for a given side.
+    pub fn get_browse_mode(&self, side: usize) -> bool {
+        let browse = self.browse_held.lock().unwrap();
+        browse[side.min(1)]
+    }
 }
 
 #[cfg(test)]

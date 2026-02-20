@@ -857,13 +857,31 @@ impl MeshApp {
                             if self.settings.has_changes() {
                                 let _ = self.update(Message::Settings(SettingsMessage::Save));
                             }
+                            // Restore browse mode state from before settings opened
+                            if let Some(ref nav) = self.settings.settings_midi_nav {
+                                let saved = nav.saved_browse_state;
+                                if let Some(ref ctrl) = self.controller {
+                                    ctrl.set_browse_mode(0, saved[0]);
+                                    ctrl.set_browse_mode(1, saved[1]);
+                                }
+                            }
                             self.settings.settings_midi_nav = None;
                             let _ = self.update(Message::Settings(SettingsMessage::Close));
                         } else {
+                            // Save current browse mode state, then force both sides active
+                            // so encoders produce Browser::Scroll for settings navigation
+                            let saved = if let Some(ref ctrl) = self.controller {
+                                let s = [ctrl.get_browse_mode(0), ctrl.get_browse_mode(1)];
+                                ctrl.set_browse_mode(0, true);
+                                ctrl.set_browse_mode(1, true);
+                                s
+                            } else {
+                                [false, false]
+                            };
                             // Open: snapshot + activate MIDI nav
                             let _ = self.update(Message::Settings(SettingsMessage::Open));
                             self.settings.settings_midi_nav = Some(
-                                super::settings::SettingsMidiNav::new()
+                                super::settings::SettingsMidiNav::new(saved)
                             );
                         }
                     }
