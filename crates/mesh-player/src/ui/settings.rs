@@ -6,8 +6,15 @@ use super::message::{Message, SettingsMessage};
 use super::midi_learn::MidiLearnMessage;
 use crate::audio::{get_available_stereo_pairs, StereoPair};
 use crate::config::{LOOP_LENGTH_OPTIONS, StemColorPalette, KeyScoringModel, WaveformLayout};
-use iced::widget::{button, column, container, pick_list, row, scrollable, text, toggler, Space};
+use iced::widget::{button, column, container, pick_list, row, scrollable, text, toggler, Id, Space};
 use iced::{Alignment, Color, Element, Length};
+use std::sync::LazyLock;
+
+/// Scrollable ID for the settings content area (used for programmatic scrolling via MIDI nav)
+pub static SETTINGS_SCROLLABLE_ID: LazyLock<Id> = LazyLock::new(|| Id::new("mesh_settings_scrollable"));
+
+/// Total number of navigable settings entries (must match build_settings_entries)
+pub const SETTINGS_ENTRY_COUNT: usize = 13;
 
 /// Target LUFS presets for loudness normalization
 /// Index 0 = loudest (DJ standard), Index 3 = quietest (broadcast safe)
@@ -361,24 +368,17 @@ pub fn wrap_navigable<'a>(
     let is_editing = nav.is_some_and(|n| n.focused_index == setting_index && n.editing);
 
     if is_focused {
-        let (bg_color, border_color) = if is_editing {
-            (
-                Color::from_rgba(0.3, 0.6, 1.0, 0.2),
-                Color::from_rgba(0.3, 0.5, 1.0, 0.6),
-            )
+        let bg_color = if is_editing {
+            Color::from_rgba(0.3, 0.6, 1.0, 0.2)
         } else {
-            (
-                Color::from_rgba(0.2, 0.4, 0.8, 0.12),
-                Color::from_rgba(0.3, 0.5, 1.0, 0.4),
-            )
+            Color::from_rgba(0.2, 0.4, 0.8, 0.12)
         };
         container(content)
             .style(move |_theme| container::Style {
                 background: Some(bg_color.into()),
                 border: iced::Border {
-                    color: border_color,
-                    width: 1.0,
                     radius: 4.0.into(),
+                    ..Default::default()
                 },
                 ..Default::default()
             })
@@ -427,6 +427,7 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
             .spacing(15)
             .width(Length::Fill)
     )
+    .id(SETTINGS_SCROLLABLE_ID.clone())
     .height(Length::Fill);
 
     // Status message (for save feedback)
@@ -878,16 +879,26 @@ fn view_audio_output_section<'a>(state: &'a SettingsState, nav: Option<&Settings
     let hint = text("Route master and cue to different audio devices")
         .size(12);
 
-    // Master output dropdown
+    // Master output — show button group when MIDI-editing, pick_list otherwise
     let master_label = text("Master (Speakers):").size(14);
-    let master_dropdown: Element<'_, Message> = if state.available_devices.is_empty() {
+    let master_is_editing = nav.is_some_and(|n| n.focused_index == 0 && n.editing);
+    let master_control: Element<'_, Message> = if state.available_devices.is_empty() {
         text("No audio devices available").size(12).into()
+    } else if master_is_editing {
+        // Inline button group so user can see all options while cycling via encoder
+        let btns: Vec<Element<Message>> = state.available_devices.iter().enumerate().map(|(idx, dev)| {
+            let is_selected = state.draft_master_device == idx;
+            button(text(dev.to_string()).size(11))
+                .on_press(Message::Settings(SettingsMessage::UpdateMasterPair(idx)))
+                .style(if is_selected { button::primary } else { button::secondary })
+                .into()
+        }).collect();
+        column(btns).spacing(4).width(Length::Fixed(280.0)).into()
     } else {
         pick_list(
             state.available_devices.clone(),
             state.available_devices.get(state.draft_master_device).cloned(),
             |pair| {
-                // Find index of selected pair
                 let idx = state.available_devices.iter()
                     .position(|p| p == &pair)
                     .unwrap_or(0);
@@ -897,15 +908,25 @@ fn view_audio_output_section<'a>(state: &'a SettingsState, nav: Option<&Settings
         .width(Length::Fixed(280.0))
         .into()
     };
-    let master_row = row![master_label, Space::new().width(Length::Fill), master_dropdown]
+    let master_row = row![master_label, Space::new().width(Length::Fill), master_control]
         .spacing(10)
-        .align_y(Alignment::Center);
+        .align_y(if master_is_editing { Alignment::Start } else { Alignment::Center });
     let master_row = wrap_navigable(master_row.into(), 0, nav);
 
-    // Cue output dropdown
+    // Cue output — show button group when MIDI-editing, pick_list otherwise
     let cue_label = text("Cue (Headphones):").size(14);
-    let cue_dropdown: Element<'_, Message> = if state.available_devices.is_empty() {
+    let cue_is_editing = nav.is_some_and(|n| n.focused_index == 1 && n.editing);
+    let cue_control: Element<'_, Message> = if state.available_devices.is_empty() {
         text("No audio devices available").size(12).into()
+    } else if cue_is_editing {
+        let btns: Vec<Element<Message>> = state.available_devices.iter().enumerate().map(|(idx, dev)| {
+            let is_selected = state.draft_cue_device == idx;
+            button(text(dev.to_string()).size(11))
+                .on_press(Message::Settings(SettingsMessage::UpdateCuePair(idx)))
+                .style(if is_selected { button::primary } else { button::secondary })
+                .into()
+        }).collect();
+        column(btns).spacing(4).width(Length::Fixed(280.0)).into()
     } else {
         pick_list(
             state.available_devices.clone(),
@@ -920,9 +941,9 @@ fn view_audio_output_section<'a>(state: &'a SettingsState, nav: Option<&Settings
         .width(Length::Fixed(280.0))
         .into()
     };
-    let cue_row = row![cue_label, Space::new().width(Length::Fill), cue_dropdown]
+    let cue_row = row![cue_label, Space::new().width(Length::Fill), cue_control]
         .spacing(10)
-        .align_y(Alignment::Center);
+        .align_y(if cue_is_editing { Alignment::Start } else { Alignment::Center });
     let cue_row = wrap_navigable(cue_row.into(), 1, nav);
 
     // Refresh button

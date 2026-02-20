@@ -924,7 +924,7 @@ impl MeshApp {
     /// When browsing: cycles through the flat list of settings.
     /// When editing: cycles through the focused setting's options (live draft update).
     fn handle_settings_midi_scroll(&mut self, delta: i32) -> Task<Message> {
-        use super::settings::build_settings_entries;
+        use super::settings::{build_settings_entries, SETTINGS_ENTRY_COUNT, SETTINGS_SCROLLABLE_ID};
 
         let entries = build_settings_entries(&self.settings);
         let nav = match self.settings.settings_midi_nav.as_mut() {
@@ -959,7 +959,16 @@ impl MeshApp {
             }
         }
 
-        Task::none()
+        // Scroll the settings container to keep the focused item visible
+        let focused = nav.focused_index;
+        let max_idx = SETTINGS_ENTRY_COUNT.saturating_sub(1);
+        let relative_y = if max_idx > 0 {
+            (focused as f32 / max_idx as f32).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let offset = iced::widget::operation::RelativeOffset { x: 0.0, y: relative_y };
+        iced::widget::operation::snap_to(SETTINGS_SCROLLABLE_ID.clone(), offset)
     }
 
     /// Handle encoder press while in settings MIDI navigation mode.

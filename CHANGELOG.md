@@ -41,7 +41,10 @@ All notable changes to Mesh are documented in this file.
   auto-saves if changes were made. Opening settings automatically forces browse
   mode on the mapping engine so encoders that share loop-size and browser-scroll
   mappings (mode-switched) produce browser events for navigation. Previous
-  browse mode state is saved and restored on close.
+  browse mode state is saved and restored on close. The settings scrollable
+  auto-scrolls to keep the focused setting visible as the encoder moves through
+  the list. Audio device dropdowns expand into inline button groups during
+  editing mode so all options are visible while cycling with the encoder.
 - **Windows cross-compilation failing on `stdbool.h`** — The container-based
   Windows build (`build-windows.nix`) set `BINDGEN_EXTRA_CLANG_ARGS` with
   `--sysroot=/usr/x86_64-w64-mingw32` for Essentia's cross-compilation, but
