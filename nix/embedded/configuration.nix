@@ -42,6 +42,7 @@
   # System packages for debugging and maintenance
   environment.systemPackages = with pkgs; [
     vim
+    git
     htop
     curl
     alsa-utils
