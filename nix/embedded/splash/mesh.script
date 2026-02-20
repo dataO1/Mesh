@@ -1,0 +1,71 @@
+# Mesh boot splash — dark background, text logo, "Spinning up" + dot spinner
+#
+# Plymouth script reference: freedesktop.org/wiki/Software/Plymouth/Scripts/
+# Colors match the app: BG_DARK = rgb(0.10, 0.10, 0.12)
+
+# ─── Background ──────────────────────────────────────────────────────────────
+Window.SetBackgroundTopColor(0.10, 0.10, 0.12);
+Window.SetBackgroundBottomColor(0.10, 0.10, 0.12);
+
+screen_w = Window.GetWidth();
+screen_h = Window.GetHeight();
+center_x = screen_w / 2;
+center_y = screen_h / 2;
+
+# ─── Logo (text-based, no PNG dependency) ────────────────────────────────────
+logo = Image.Text("M E S H", 0.85, 0.85, 0.90, 1, "Sans Bold 48", "center");
+logo_sprite = Sprite(logo);
+logo_sprite.SetX(center_x - logo.GetWidth() / 2);
+logo_sprite.SetY(center_y - 80);
+logo_sprite.SetZ(10);
+
+# ─── Tagline ─────────────────────────────────────────────────────────────────
+tagline = Image.Text("Spinning up", 0.50, 0.50, 0.55, 1, "Sans 16", "center");
+tagline_sprite = Sprite(tagline);
+tagline_sprite.SetX(center_x - tagline.GetWidth() / 2);
+tagline_sprite.SetY(center_y + 10);
+tagline_sprite.SetZ(10);
+
+# ─── Dot spinner ─────────────────────────────────────────────────────────────
+# 8 dots in a circle, opacity fades like a trailing comet
+NUM_DOTS = 8;
+SPINNER_RADIUS = 24;
+spinner_center_y = center_y + 60;
+
+# Pre-render a small dot image (circle approximation via Unicode bullet)
+dot_image = Image.Text("●", 0.85, 0.85, 0.90, 1, "Sans 10", "center");
+
+for (i = 0; i < NUM_DOTS; i++) {
+    dots[i] = Sprite(dot_image);
+    dots[i].SetZ(10);
+}
+
+tick = 0;
+
+fun refresh() {
+    tick++;
+
+    # Rotate the leading dot — one full revolution every ~2.5 seconds (at ~50 fps)
+    phase = tick * 0.05;
+
+    for (i = 0; i < NUM_DOTS; i++) {
+        angle = (2 * Math.Pi * i / NUM_DOTS) + phase;
+        x = center_x + Math.Sin(angle) * SPINNER_RADIUS - dot_image.GetWidth() / 2;
+        y = spinner_center_y - Math.Cos(angle) * SPINNER_RADIUS - dot_image.GetHeight() / 2;
+        dots[i].SetX(x);
+        dots[i].SetY(y);
+
+        # Trailing opacity: dot 0 = brightest, fades back
+        trail = (NUM_DOTS - i) / NUM_DOTS;
+        dots[i].SetOpacity(0.15 + trail * 0.85);
+    }
+}
+
+Plymouth.SetRefreshFunction(refresh);
+
+# ─── Hide password/message prompts (not used on this device) ─────────────────
+fun message_callback(text) {
+    # Swallow boot status messages — keep the screen clean
+}
+
+Plymouth.SetMessageFunction(message_callback);

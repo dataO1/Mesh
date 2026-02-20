@@ -8,6 +8,37 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Embedded: mesh-player crash on boot (`NoWaylandLib`)** — PipeWire's PAM
+  session overrides the systemd `Environment=` directive, clobbering
+  `LD_LIBRARY_PATH` with only `pipewire-jack/lib`. winit/wgpu `dlopen()` calls
+  for `libwayland-client.so`, `libxkbcommon.so`, `libEGL.so`, and
+  `libvulkan.so` then fail. Fixed with a wrapper script that sets
+  `LD_LIBRARY_PATH` before exec'ing mesh-player, immune to PAM overrides.
+
+### Added
+
+- **Embedded: USB automounting** — udev rules auto-mount USB sticks to
+  `/media/<label>` via `systemd-mount` when plugged in, and clean up on removal.
+  No daemon, no D-Bus session, no polkit required — runs directly from udev
+  context. Mounted with `noatime` to reduce background writes and make
+  hot-unplug safer. mesh-player detects new mounts via its existing 2-second
+  `sysinfo` polling loop.
+- **Embedded: boot splash screen** — Custom Plymouth theme with dark background
+  matching the app (`rgb(0.10, 0.10, 0.12)`), "M E S H" text logo, "Spinning
+  up" tagline, and animated 8-dot circular spinner. Silent boot via
+  `quiet`/`loglevel=0`/`logo.nologo` suppresses all kernel and systemd messages.
+  `rockchipdrm` loaded in initrd for early DRM availability.
+- **Embedded: seamless Plymouth-to-cage transition** — Overrides the upstream
+  cage module's `After=plymouth-quit.service` ordering so cage starts while
+  Plymouth is still running. cage takes DRM master, then `ExecStartPost` quits
+  Plymouth with `--retain-splash` to keep the splash pixels in the framebuffer
+  until mesh-player renders its first frame. No text console flash between boot
+  splash and app.
+- **Embedded: debugging infrastructure** — cage `-s` flag enables VT switching
+  (Ctrl+Alt+F2), TTY2 getty provides a login shell for local debugging,
+  persistent journal (`Storage=persistent`, 50MB cap) preserves logs across
+  reboots, and `boot.initrd.systemd.emergencyAccess` enables emergency shell
+  access during boot failures.
 - **Windows cross-compilation failing on `stdbool.h`** — The container-based
   Windows build (`build-windows.nix`) set `BINDGEN_EXTRA_CLANG_ARGS` with
   `--sysroot=/usr/x86_64-w64-mingw32` for Essentia's cross-compilation, but
