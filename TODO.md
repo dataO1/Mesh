@@ -202,8 +202,11 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
-- add ui settings mapping to the other F1 controller as well (also on the type
-  button) in my midi.yaml under /home/data01/Music/mesh-collection/
+- [ ] the audio output of the orangepi5 (default jack headphones jack) does not
+  output any sound even though i set it as my only output in mesh-player, evaluate why this is the case (check our sd image and ), if this is a software or hardware problem. i can provide you further details if you give me diagnostic steps which i can run on the host.
+- [ ] we need to map master bpm slider in midi mapping mode. also for now map
+  this to the macrofx 2 slider of the f1, whch has decks 1 and 3 mapped to it
+  for my current mapping (under /home/data01/Music/mesh-collection/).
 - [ ] when starting the player first, then connecting the hid and midi devices, they
   are not recognized, we already have reconnection logic (connecting then
   disconnecting hardware works well), reuse that for detecting hardware after
@@ -217,3 +220,47 @@ for v3 and beyond.
   from other sources (usb) doesnt correctly load the metadata, other suggestions
   from local load fine. from usb loads
   all other sources correctly.
+- [ ] We need to support custom resolutions and optionally dynamic ui based on
+  the window size, heres some information:
+  - [ ] Setting a custom resolution, such as
+2880×864 (a likely ultra-wide or specialized aspect ratio), in an Iced UI application involves configuring the window settings via winit (the underlying windowing library) in Rust.
+Here is how to implement custom resolution sizes and handle screen scaling:
+1. Setting the Window Resolution
+When setting up your application in iced::Application::new or within the Settings struct, you can define the initial window size.
+rust
+
+use iced::{Application, Settings, Window, Size};
+
+// ... inside your main or where you define settings
+let settings = Settings {
+    window: Window {
+        size: Size::new(2880.0, 864.0), // Set the desired width and height
+        position: iced::window::Position::Centered, // Optional: Center the window
+        ..Default::default()
+    },
+    ..Default::default()
+};
+
+// ... run your application
+
+2. Handling DPI and Scaling
+If you are using a high-resolution display (HiDPI), the actual pixels used might be different from the logical pixels (2880x864). Iced handles this through winit.
+
+    Logical vs Physical: The Size::new(2880.0, 864.0) typically refers to logical pixels.
+    Scaling: If you need the window to be strictly a physical 2880x864, you may need to factor in the monitor's DPI scaling, which can be retrieved via winit window handles.
+
+3. Querying Monitor Resolution (Dynamic Sizing)
+If you want to ensure the 2880x864 size fits within the user's screen or spans it, you should query the monitor's dimensions, especially to avoid issues with taskbars.
+
+    Current Solution: Use iced::window::Id and window::get_monitor_size to query the current display size.
+    Future/Draft: There is ongoing work to improve iced::window::get_monitor_size to better handle primary display checks.
+
+4. Constraints for Custom Resolutions (Wayland/Linux)
+If you are using Linux/Wayland, be aware that setting custom resolutions can sometimes be restricted by the compositor. Ensure your system recognizes the resolution via xrandr or equivalent Wayland configuration tools.
+Summary Checklist for 2880x864
+
+    Define size: Use Size::new(2880.0, 864.0).
+    Toggle Fullscreen: If this is for a screen-spanning display, ensure the window is not restricted by standard taskbar heights.
+    Use winit settings: Leverage iced::window::Settings for resizing behavior if the user changes the window size.
+
+    Make sure this is also compatible with cage! and our hardware.
