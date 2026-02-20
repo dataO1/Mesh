@@ -175,7 +175,23 @@ for v3 and beyond.
   we need to be able to be backwards compatible (not yet, but we should pave the
   way for this possibility, by adding a versioning system for the schema/db version)
 
+# UPDATE LIFECYCLE
+- [ ] We need to be able to connect to wifi in mesh-player ui settings (with an
+  onboard keyboard, that works with touch), this should be safe and go through
+  regular linux wifi setup cli (nmcli or something).
+- [ ] From the settings ui, we need to be able to scan for available updates i
+  nthe nix cache (from my repo) and automatically install and relaunch
+  everything so the newly installed version is running. for this a internet
+  connection is required.
+
 # OTHER
+- we have no way right now to enter the settings and navigate it. i think we
+  need a mapping for the settings button in mesh-player (mapped in midi-learn
+  ).then pressing shift + button leaves it again, browse encoders that are
+  mapped in this mode scroll through the settings (each setting, not its
+  options), then pressing the browse encoder enters the setting and then the
+  user can scroll through the options (for buttons and dropdowns cyclically scroll through). then on leave ask the user if they want to save, this also needs to be scrollable via encoder.
+
 - some tracks still have some numbers in front of the name (as part of the
   artist apparently) from the name parsing, we need to fix that, some examples:
   * 01 Black Sun Empire - Feed The Machine (you can check the original name in
