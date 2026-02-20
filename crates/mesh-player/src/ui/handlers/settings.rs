@@ -18,14 +18,17 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
 
     match msg {
         Open => {
-            app.settings.is_open = true;
+            let midi_nav = app.settings.settings_midi_nav.take();
             app.settings = SettingsState::from_config(&app.config);
             app.settings.is_open = true;
+            app.settings.settings_midi_nav = midi_nav;
+            app.settings.take_snapshot();
             Task::none()
         }
         Close => {
             app.settings.is_open = false;
             app.settings.status.clear();
+            app.settings.settings_midi_nav = None;
             Task::none()
         }
         UpdateLoopLength(index) => {
@@ -184,6 +187,7 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
                 Ok(()) => {
                     app.settings.status = "Settings saved".to_string();
                     app.status = "Settings saved".to_string();
+                    app.settings.settings_midi_nav = None;
                 }
                 Err(e) => {
                     app.settings.status = format!("Save failed: {}", e);

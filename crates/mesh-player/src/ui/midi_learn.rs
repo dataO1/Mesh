@@ -140,6 +140,9 @@ pub enum HighlightTarget {
 
     // Suggestion energy direction slider (one per side: 0=left, 1=right)
     SuggestionEnergy(usize),
+
+    // Settings toggle button (global)
+    SettingsButton,
 }
 
 impl HighlightTarget {
@@ -205,6 +208,7 @@ impl HighlightTarget {
                 let side_name = if *side == 0 { "LEFT" } else { "RIGHT" };
                 format!("Move the {} SUGGESTION ENERGY slider/knob", side_name)
             }
+            HighlightTarget::SettingsButton => "Press SETTINGS button (or skip)".to_string(),
         }
     }
 }
@@ -1135,27 +1139,25 @@ impl MidiLearnState {
             // FxEncoder, FxSelect, BrowserEncoder(0), BrowserSelect(0),
             // BrowserEncoder(1), BrowserSelect(1),
             // SuggestionEnergy(0), SuggestionEnergy(1),
-            // MasterVolume, CueVolume, CueMix
-            11
+            // SettingsButton, MasterVolume, CueVolume, CueMix
+            12
         } else if self.deck_count == 4 {
             if self.momentary_mode_buttons {
                 // FxEncoder, FxSelect, SideBrowseMode(0), SideBrowseMode(1),
                 // SuggestionEnergy(0), SuggestionEnergy(1),
-                // DeckLoad(0-3), MasterVolume, CueVolume, CueMix
-                // (No BrowserEncoderDeck — same physical encoder as DeckLoopEncoder,
-                //  browser.scroll auto-generated from transport mapping with mode:browse)
-                13
+                // DeckLoad(0-3), SettingsButton, MasterVolume, CueVolume, CueMix
+                14
             } else {
                 // FxEncoder, FxSelect, BrowserEncoderDeck(0), BrowserEncoderDeck(1),
                 // SuggestionEnergy(0), SuggestionEnergy(1),
-                // DeckLoad(0-3), MasterVolume, CueVolume, CueMix
-                13
+                // DeckLoad(0-3), SettingsButton, MasterVolume, CueVolume, CueMix
+                14
             }
         } else {
             // FxEncoder, FxSelect, BrowserEncoder, BrowserSelect,
             // SuggestionEnergy(0), SuggestionEnergy(1),
-            // MasterVolume, CueVolume, CueMix
-            9
+            // SettingsButton, MasterVolume, CueVolume, CueMix
+            10
         }
     }
 
@@ -1174,8 +1176,8 @@ impl MidiLearnState {
             // 2: BrowserEncoder(left), 3: BrowserSelect(left),
             // 4: BrowserEncoder(right), 5: BrowserSelect(right),
             // 6: SuggestionEnergy(left), 7: SuggestionEnergy(right),
-            // 8: MasterVolume, 9: CueVolume, 10: CueMix
-            // 11 steps total (0-10)
+            // 8: SettingsButton, 9: MasterVolume, 10: CueVolume, 11: CueMix
+            // 12 steps total (0-11)
             match self.current_step {
                 0 => HighlightTarget::FxEncoder,
                 1 => HighlightTarget::FxSelect,
@@ -1185,8 +1187,9 @@ impl MidiLearnState {
                 5 => HighlightTarget::BrowserSelectDeck(1),
                 6 => HighlightTarget::SuggestionEnergy(0),
                 7 => HighlightTarget::SuggestionEnergy(1),
-                8 => HighlightTarget::MasterVolume,
-                9 => HighlightTarget::CueVolume,
+                8 => HighlightTarget::SettingsButton,
+                9 => HighlightTarget::MasterVolume,
+                10 => HighlightTarget::CueVolume,
                 _ => HighlightTarget::CueMix,
             }
         } else if self.deck_count == 4 && self.momentary_mode_buttons {
@@ -1194,9 +1197,9 @@ impl MidiLearnState {
             // 0: FxEncoder, 1: FxSelect,
             // 2: SideBrowseMode(0), 3: SideBrowseMode(1),
             // 4: SuggestionEnergy(left), 5: SuggestionEnergy(right),
-            // 6-9: DeckLoad(0..3), 10: MasterVolume, 11: CueVolume, 12: CueMix
-            // 13 steps total (0-12)
-            // (browser.scroll auto-generated from DeckLoopEncoder with mode:browse)
+            // 6-9: DeckLoad(0..3), 10: SettingsButton,
+            // 11: MasterVolume, 12: CueVolume, 13: CueMix
+            // 14 steps total (0-13)
             match self.current_step {
                 0 => HighlightTarget::FxEncoder,
                 1 => HighlightTarget::FxSelect,
@@ -1208,16 +1211,18 @@ impl MidiLearnState {
                 7 => HighlightTarget::DeckLoad(1),
                 8 => HighlightTarget::DeckLoad(2),
                 9 => HighlightTarget::DeckLoad(3),
-                10 => HighlightTarget::MasterVolume,
-                11 => HighlightTarget::CueVolume,
+                10 => HighlightTarget::SettingsButton,
+                11 => HighlightTarget::MasterVolume,
+                12 => HighlightTarget::CueVolume,
                 _ => HighlightTarget::CueMix,
             }
         } else if self.deck_count == 4 {
             // 4-deck non-layered: left/right browse encoders + dedicated load per deck
             // 0: FxEncoder, 1: FxSelect, 2: BrowserEncoderDeck(0), 3: BrowserEncoderDeck(1),
             // 4: SuggestionEnergy(left), 5: SuggestionEnergy(right),
-            // 6-9: DeckLoad(0..3), 10: MasterVolume, 11: CueVolume, 12: CueMix
-            // 13 steps total (0-12)
+            // 6-9: DeckLoad(0..3), 10: SettingsButton,
+            // 11: MasterVolume, 12: CueVolume, 13: CueMix
+            // 14 steps total (0-13)
             match self.current_step {
                 0 => HighlightTarget::FxEncoder,
                 1 => HighlightTarget::FxSelect,
@@ -1229,16 +1234,17 @@ impl MidiLearnState {
                 7 => HighlightTarget::DeckLoad(1),
                 8 => HighlightTarget::DeckLoad(2),
                 9 => HighlightTarget::DeckLoad(3),
-                10 => HighlightTarget::MasterVolume,
-                11 => HighlightTarget::CueVolume,
+                10 => HighlightTarget::SettingsButton,
+                11 => HighlightTarget::MasterVolume,
+                12 => HighlightTarget::CueVolume,
                 _ => HighlightTarget::CueMix,
             }
         } else {
             // Global browse layout:
             // 0: FxEncoder, 1: FxSelect, 2: BrowserEncoder, 3: BrowserSelect,
             // 4: SuggestionEnergy(left), 5: SuggestionEnergy(right),
-            // 6: MasterVolume, 7: CueVolume, 8: CueMix
-            // 9 steps total (0-8)
+            // 6: SettingsButton, 7: MasterVolume, 8: CueVolume, 9: CueMix
+            // 10 steps total (0-9)
             match self.current_step {
                 0 => HighlightTarget::FxEncoder,
                 1 => HighlightTarget::FxSelect,
@@ -1246,8 +1252,9 @@ impl MidiLearnState {
                 3 => HighlightTarget::BrowserSelect,
                 4 => HighlightTarget::SuggestionEnergy(0),
                 5 => HighlightTarget::SuggestionEnergy(1),
-                6 => HighlightTarget::MasterVolume,
-                7 => HighlightTarget::CueVolume,
+                6 => HighlightTarget::SettingsButton,
+                7 => HighlightTarget::MasterVolume,
+                8 => HighlightTarget::CueVolume,
                 _ => HighlightTarget::CueMix,
             }
         });
@@ -1522,6 +1529,11 @@ impl MidiLearnState {
                 // Suggestion energy direction slider (controls global energy direction)
                 HighlightTarget::SuggestionEnergy(side) => {
                     ("deck.suggestion_energy".to_string(), Some(side), None, ControlBehavior::Continuous, None)
+                }
+
+                // Settings toggle button (global)
+                HighlightTarget::SettingsButton => {
+                    ("global.settings_toggle".to_string(), None, None, ControlBehavior::Momentary, None)
                 }
             };
 

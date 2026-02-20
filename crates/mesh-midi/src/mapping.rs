@@ -100,6 +100,7 @@ impl ActionRegistry {
         actions.insert("mixer.cue_mix".to_string(), ActionInfo { deck_targetable: false, value_range: ControlRange::Unit });
         actions.insert("global.fx_scroll".to_string(), ActionInfo { deck_targetable: false, value_range: ControlRange::Unit });
         actions.insert("global.fx_select".to_string(), ActionInfo { deck_targetable: false, value_range: ControlRange::Unit });
+        actions.insert("global.settings_toggle".to_string(), ActionInfo { deck_targetable: false, value_range: ControlRange::Unit });
 
         // FX macro knobs (per-deck)
         actions.insert("deck.fx_macro".to_string(), ActionInfo { deck_targetable: true, value_range: ControlRange::Unit });
@@ -812,6 +813,9 @@ impl MappingEngine {
             }
             "global.fx_select" => {
                 if event.value.is_press() { Some(MidiMessage::Global(GlobalAction::FxSelect)) } else { None }
+            }
+            "global.settings_toggle" => {
+                if event.value.is_press() { Some(MidiMessage::Global(GlobalAction::SettingsToggle)) } else { None }
             }
 
             _ => {

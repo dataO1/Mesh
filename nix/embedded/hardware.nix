@@ -5,18 +5,6 @@
 # base board support. This module adds mesh-specific hardware config.
 { pkgs, lib, ... }:
 
-let
-  # Custom Plymouth theme — dark background matching the app, text logo, dot spinner
-  meshPlymouthTheme = pkgs.runCommand "mesh-plymouth-theme" {} ''
-    dir=$out/share/plymouth/themes/mesh
-    mkdir -p $dir
-    cp ${./splash/mesh.script} $dir/mesh.script
-
-    # Rewrite NIXDIR placeholder to the Nix store path
-    substitute ${./splash/mesh.plymouth} $dir/mesh.plymouth \
-      --replace-warn "NIXDIR" "$dir"
-  '';
-in
 {
   # PCM5102A I2S DAC on GPIO header — registers as ALSA card "PCM5102A"
   # Filter restricts overlay application to just the Orange Pi 5 DTB
@@ -38,27 +26,22 @@ in
   boot.initrd.systemd.enable = true;
   boot.initrd.systemd.emergencyAccess = true;
 
-  # Boot splash — custom Plymouth theme (dark bg, "M E S H" logo, dot spinner)
-  boot.plymouth = {
-    enable = true;
-    theme = "mesh";
-    themePackages = [ meshPlymouthTheme ];
-    extraConfig = "DeviceTimeout=3";
-  };
-
-  # Silent boot — suppress all kernel/systemd messages behind Plymouth
+  # Silent boot — black screen from power-on until cage/mesh-player starts
+  # console=tty2 redirects ALL output off the display; cage runs on tty1
+  # Debug: switch to tty2 (Ctrl+Alt+F2) or use journalctl -b
   boot.consoleLogLevel = 0;
   boot.initrd.verbose = false;
+  boot.kernel.sysctl."kernel.printk" = "0 0 0 0";
   boot.kernelParams = [
     "quiet"
+    "loglevel=0"
+    "systemd.show_status=false"
+    "rd.systemd.show_status=false"
+    "udev.log_level=3"
+    "rd.udev.log_level=3"
     "vt.global_cursor_default=0"
     "logo.nologo"
-    "udev.log_priority=3"
-    "rd.systemd.show_status=auto"
   ];
-
-  # Early DRM for Plymouth display (rockchipdrm = VOP2 display controller)
-  boot.initrd.kernelModules = [ "rockchipdrm" ];
 
   # Don't wait for network or udev settle during boot
   systemd.services.systemd-udev-settle.enable = false;

@@ -185,12 +185,30 @@ for v3 and beyond.
   connection is required.
 
 # OTHER
-- we have no way right now to enter the settings and navigate it. i think we
-  need a mapping for the settings button in mesh-player (mapped in midi-learn
-  ).then pressing shift + button leaves it again, browse encoders that are
-  mapped in this mode scroll through the settings (each setting, not its
-  options), then pressing the browse encoder enters the setting and then the
-  user can scroll through the options (for buttons and dropdowns cyclically scroll through). then on leave ask the user if they want to save, this also needs to be scrollable via encoder.
+- [x] MIDI settings navigation: `global.settings_toggle` action opens/closes
+  settings modal. When open, browser encoder scrolls through settings, encoder
+  press enters editing mode for the focused setting, and scroll cycles through
+  options with live preview. Closing auto-saves if changes were made.
+
+## Embedded: Silent Boot (investigated, partially working)
+- [x] Removed Plymouth splash entirely — the script theme (`ModuleName=script`)
+  failed on ARM/RK3588S. Plymouth rendered the NixOS fallback theme instead of
+  the custom mesh theme. Root cause never fully identified, but likely:
+  font rendering (`Image.Text()` with "Sans Bold 48" needs fonts in initrd),
+  and/or `rd.systemd.show_status=auto` switching to verbose mode on slow SD I/O.
+  Armbian/Orange Pi Debian doesn't use Plymouth at all — they use a U-Boot-level
+  boot logo via the proprietary `resource.img` mechanism.
+- [x] Silent boot params applied: `quiet`, `loglevel=0`,
+  `rd.systemd.show_status=false`, `systemd.show_status=false`,
+  `udev.log_level=3`, `rd.udev.log_level=3`, `vt.global_cursor_default=0`,
+  `logo.nologo`, `kernel.printk=0 0 0 0`. Significantly reduces boot output
+  but does not achieve fully silent boot on this hardware.
+- Attempted `console=tty2` — redirects ALL console output to tty2, but this
+  breaks cage-tty1 because the kernel's active VT switches to tty2, preventing
+  cage from acquiring DRM master on tty1. Not usable with kiosk setups.
+- Future option: raw framebuffer `dd` service (write pre-rendered .fb to
+  /dev/fb0 early in boot) or recompile vendor U-Boot with `CONFIG_SPLASH_SCREEN`
+  for a true pre-kernel splash.
 
 - some tracks still have some numbers in front of the name (as part of the
   artist apparently) from the name parsing, we need to fix that, some examples:
@@ -200,3 +218,5 @@ for v3 and beyond.
   from other sources (usb) doesnt correctly load the metadata, other suggestions
   from local load fine. from usb loads
   all other sources correctly.
+
+

@@ -7,7 +7,7 @@ use super::midi_learn::MidiLearnMessage;
 use crate::audio::{get_available_stereo_pairs, StereoPair};
 use crate::config::{LOOP_LENGTH_OPTIONS, StemColorPalette, KeyScoringModel, WaveformLayout};
 use iced::widget::{button, column, container, pick_list, row, scrollable, text, toggler, Space};
-use iced::{Alignment, Element, Length};
+use iced::{Alignment, Color, Element, Length};
 
 /// Target LUFS presets for loudness normalization
 /// Index 0 = loudest (DJ standard), Index 3 = quietest (broadcast safe)
@@ -66,6 +66,10 @@ pub struct SettingsState {
     pub available_devices: Vec<StereoPair>,
     /// Status message (for save feedback)
     pub status: String,
+    /// MIDI navigation state (Some when opened via MIDI, None when opened via mouse)
+    pub settings_midi_nav: Option<SettingsMidiNav>,
+    /// Snapshot of values at open time (for dirty detection)
+    initial_snapshot: Option<SettingsSnapshot>,
 }
 
 impl SettingsState {
@@ -94,6 +98,8 @@ impl SettingsState {
             }),
             available_devices,
             status: String::new(),
+            settings_midi_nav: None,
+            initial_snapshot: None,
         }
     }
 
@@ -119,6 +125,8 @@ impl SettingsState {
             draft_cue_device: if num_devices >= 2 { 1 } else { 0 }, // Second device or fallback
             available_devices,
             status: String::new(),
+            settings_midi_nav: None,
+            initial_snapshot: None,
         }
     }
 
@@ -137,11 +145,245 @@ impl SettingsState {
             .copied()
             .unwrap_or(-9.0)
     }
+
+    /// Take a snapshot of current draft values for dirty detection
+    pub fn take_snapshot(&mut self) {
+        self.initial_snapshot = Some(SettingsSnapshot {
+            loop_length_index: self.draft_loop_length_index,
+            zoom_bars: self.draft_zoom_bars,
+            grid_bars: self.draft_grid_bars,
+            stem_color_palette: self.draft_stem_color_palette,
+            phase_sync: self.draft_phase_sync,
+            slicer_buffer_bars: self.draft_slicer_buffer_bars,
+            auto_gain_enabled: self.draft_auto_gain_enabled,
+            target_lufs_index: self.draft_target_lufs_index,
+            show_local_collection: self.draft_show_local_collection,
+            key_scoring_model: self.draft_key_scoring_model,
+            waveform_layout: self.draft_waveform_layout,
+            master_device: self.draft_master_device,
+            cue_device: self.draft_cue_device,
+        });
+    }
+
+    /// Check if any draft values differ from the snapshot taken at open time
+    pub fn has_changes(&self) -> bool {
+        match &self.initial_snapshot {
+            None => false,
+            Some(snap) => {
+                snap.loop_length_index != self.draft_loop_length_index
+                    || snap.zoom_bars != self.draft_zoom_bars
+                    || snap.grid_bars != self.draft_grid_bars
+                    || snap.stem_color_palette != self.draft_stem_color_palette
+                    || snap.phase_sync != self.draft_phase_sync
+                    || snap.slicer_buffer_bars != self.draft_slicer_buffer_bars
+                    || snap.auto_gain_enabled != self.draft_auto_gain_enabled
+                    || snap.target_lufs_index != self.draft_target_lufs_index
+                    || snap.show_local_collection != self.draft_show_local_collection
+                    || snap.key_scoring_model != self.draft_key_scoring_model
+                    || snap.waveform_layout != self.draft_waveform_layout
+                    || snap.master_device != self.draft_master_device
+                    || snap.cue_device != self.draft_cue_device
+            }
+        }
+    }
 }
 
 impl Default for SettingsState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ── Snapshot for dirty detection ──
+
+/// Captures all draft values at open time so we can detect changes
+#[derive(Debug, Clone, PartialEq)]
+struct SettingsSnapshot {
+    loop_length_index: usize,
+    zoom_bars: u32,
+    grid_bars: u32,
+    stem_color_palette: StemColorPalette,
+    phase_sync: bool,
+    slicer_buffer_bars: u32,
+    auto_gain_enabled: bool,
+    target_lufs_index: usize,
+    show_local_collection: bool,
+    key_scoring_model: KeyScoringModel,
+    waveform_layout: WaveformLayout,
+    master_device: usize,
+    cue_device: usize,
+}
+
+// ── MIDI Navigation State ──
+
+/// State for MIDI-driven settings navigation
+#[derive(Debug, Clone)]
+pub struct SettingsMidiNav {
+    /// Currently focused setting index in the flat list
+    pub focused_index: usize,
+    /// Whether we're editing the focused setting's value (vs browsing the list)
+    pub editing: bool,
+}
+
+impl SettingsMidiNav {
+    pub fn new() -> Self {
+        Self {
+            focused_index: 0,
+            editing: false,
+        }
+    }
+}
+
+// ── Data-Driven Settings Registry ──
+
+/// A navigable setting entry — pure data describing one setting and its options.
+/// The navigation system only sees Vec<SettingsEntry> and indices.
+pub struct SettingsEntry {
+    /// Display label for this setting
+    pub label: &'static str,
+    /// Display labels for each selectable option
+    pub options: Vec<String>,
+    /// Currently selected option index
+    pub selected: usize,
+    /// Message factory: given an option index, returns the SettingsMessage to apply it
+    pub on_select: fn(usize) -> SettingsMessage,
+}
+
+/// Zoom bar options used in both the registry and view
+pub const ZOOM_SIZES: [u32; 6] = [2, 4, 8, 16, 32, 64];
+/// Grid bar options used in both the registry and view
+pub const GRID_SIZES: [u32; 4] = [4, 8, 16, 32];
+/// Slicer buffer bar options used in both the registry and view
+pub const BUFFER_SIZES: [u32; 4] = [1, 4, 8, 16];
+
+/// Build the flat, ordered list of all navigable settings from current state.
+///
+/// This is the SINGLE source of truth for which settings exist, their options,
+/// and current values. When restructuring the settings UI, update this function
+/// and the view layout — navigation logic stays untouched.
+pub fn build_settings_entries(state: &SettingsState) -> Vec<SettingsEntry> {
+    vec![
+        SettingsEntry {
+            label: "Master Device",
+            options: state.available_devices.iter().map(|d| d.to_string()).collect(),
+            selected: state.draft_master_device,
+            on_select: |idx| SettingsMessage::UpdateMasterPair(idx),
+        },
+        SettingsEntry {
+            label: "Cue Device",
+            options: state.available_devices.iter().map(|d| d.to_string()).collect(),
+            selected: state.draft_cue_device,
+            on_select: |idx| SettingsMessage::UpdateCuePair(idx),
+        },
+        SettingsEntry {
+            label: "Automatic Beat Sync",
+            options: vec!["On".into(), "Off".into()],
+            selected: if state.draft_phase_sync { 0 } else { 1 },
+            on_select: |idx| SettingsMessage::UpdatePhaseSync(idx == 0),
+        },
+        SettingsEntry {
+            label: "Loop/Beat Jump Length",
+            options: LOOP_LENGTH_OPTIONS.iter().map(|&b| {
+                if b < 1.0 { format!("{:.2}", b) } else { format!("{:.0}", b) }
+            }).collect(),
+            selected: state.draft_loop_length_index,
+            on_select: |idx| SettingsMessage::UpdateLoopLength(idx),
+        },
+        SettingsEntry {
+            label: "Waveform Layout",
+            options: WaveformLayout::ALL.iter().map(|l| l.display_name().to_string()).collect(),
+            selected: WaveformLayout::ALL.iter().position(|&l| l == state.draft_waveform_layout).unwrap_or(0),
+            on_select: |idx| SettingsMessage::UpdateWaveformLayout(WaveformLayout::ALL[idx.min(WaveformLayout::ALL.len() - 1)]),
+        },
+        SettingsEntry {
+            label: "Zoomed Waveform Level",
+            options: ZOOM_SIZES.iter().map(|s| format!("{} bars", s)).collect(),
+            selected: ZOOM_SIZES.iter().position(|&s| s == state.draft_zoom_bars).unwrap_or(2),
+            on_select: |idx| SettingsMessage::UpdateZoomBars(ZOOM_SIZES[idx.min(ZOOM_SIZES.len() - 1)]),
+        },
+        SettingsEntry {
+            label: "Overview Grid Density",
+            options: GRID_SIZES.iter().map(|s| format!("{} bars", s)).collect(),
+            selected: GRID_SIZES.iter().position(|&s| s == state.draft_grid_bars).unwrap_or(1),
+            on_select: |idx| SettingsMessage::UpdateGridBars(GRID_SIZES[idx.min(GRID_SIZES.len() - 1)]),
+        },
+        SettingsEntry {
+            label: "Stem Color Palette",
+            options: StemColorPalette::ALL.iter().map(|p| p.display_name().to_string()).collect(),
+            selected: StemColorPalette::ALL.iter().position(|&p| p == state.draft_stem_color_palette).unwrap_or(0),
+            on_select: |idx| SettingsMessage::UpdateStemColorPalette(StemColorPalette::ALL[idx.min(StemColorPalette::ALL.len() - 1)]),
+        },
+        SettingsEntry {
+            label: "Show Local Collection",
+            options: vec!["On".into(), "Off".into()],
+            selected: if state.draft_show_local_collection { 0 } else { 1 },
+            on_select: |idx| SettingsMessage::UpdateShowLocalCollection(idx == 0),
+        },
+        SettingsEntry {
+            label: "Key Matching",
+            options: KeyScoringModel::ALL.iter().map(|m| m.display_name().to_string()).collect(),
+            selected: KeyScoringModel::ALL.iter().position(|&m| m == state.draft_key_scoring_model).unwrap_or(0),
+            on_select: |idx| SettingsMessage::UpdateKeyScoringModel(KeyScoringModel::ALL[idx.min(KeyScoringModel::ALL.len() - 1)]),
+        },
+        SettingsEntry {
+            label: "Auto-Gain",
+            options: vec!["On".into(), "Off".into()],
+            selected: if state.draft_auto_gain_enabled { 0 } else { 1 },
+            on_select: |idx| SettingsMessage::UpdateAutoGainEnabled(idx == 0),
+        },
+        SettingsEntry {
+            label: "Target Loudness",
+            options: TARGET_LUFS_OPTIONS.iter().map(|&l| format!("{:.0} LUFS", l)).collect(),
+            selected: state.draft_target_lufs_index,
+            on_select: |idx| SettingsMessage::UpdateTargetLufs(idx),
+        },
+        SettingsEntry {
+            label: "Slicer Buffer",
+            options: BUFFER_SIZES.iter().map(|s| format!("{} bars", s)).collect(),
+            selected: BUFFER_SIZES.iter().position(|&s| s == state.draft_slicer_buffer_bars).unwrap_or(0),
+            on_select: |idx| SettingsMessage::UpdateSlicerBufferBars(BUFFER_SIZES[idx.min(BUFFER_SIZES.len() - 1)]),
+        },
+    ]
+}
+
+// ── Visual Highlighting ──
+
+/// Wrap a setting row with visual highlighting when focused via MIDI navigation
+pub fn wrap_navigable<'a>(
+    content: Element<'a, Message>,
+    setting_index: usize,
+    nav: Option<&SettingsMidiNav>,
+) -> Element<'a, Message> {
+    let is_focused = nav.is_some_and(|n| n.focused_index == setting_index);
+    let is_editing = nav.is_some_and(|n| n.focused_index == setting_index && n.editing);
+
+    if is_focused {
+        let (bg_color, border_color) = if is_editing {
+            (
+                Color::from_rgba(0.3, 0.6, 1.0, 0.2),
+                Color::from_rgba(0.3, 0.5, 1.0, 0.6),
+            )
+        } else {
+            (
+                Color::from_rgba(0.2, 0.4, 0.8, 0.12),
+                Color::from_rgba(0.3, 0.5, 1.0, 0.4),
+            )
+        };
+        container(content)
+            .style(move |_theme| container::Style {
+                background: Some(bg_color.into()),
+                border: iced::Border {
+                    color: border_color,
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                ..Default::default()
+            })
+            .padding(4)
+            .width(Length::Fill)
+            .into()
+    } else {
+        content
     }
 }
 
@@ -156,20 +398,22 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
         .align_y(Alignment::Center)
         .width(Length::Fill);
 
+    let nav = state.settings_midi_nav.as_ref();
+
     // Audio output section (at top - important for DJ workflow)
-    let audio_output_section = view_audio_output_section(state);
+    let audio_output_section = view_audio_output_section(state, nav);
 
     // Loop length section
-    let loop_section = view_loop_section(state);
+    let loop_section = view_loop_section(state, nav);
 
     // Display settings section
-    let display_section = view_display_section(state);
+    let display_section = view_display_section(state, nav);
 
     // Loudness normalization section
-    let loudness_section = view_loudness_section(state);
+    let loudness_section = view_loudness_section(state, nav);
 
     // Slicer settings section
-    let slicer_section = view_slicer_section(state);
+    let slicer_section = view_slicer_section(state, nav);
 
     // MIDI settings section
     let midi_section = view_midi_section();
@@ -215,7 +459,7 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
 }
 
 /// Playback settings (loop length, phase sync)
-fn view_loop_section(state: &SettingsState) -> Element<'_, Message> {
+fn view_loop_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiNav>) -> Element<'a, Message> {
     let section_title = text("Playback").size(18);
 
     // Phase sync toggle
@@ -231,6 +475,7 @@ fn view_loop_section(state: &SettingsState) -> Element<'_, Message> {
     ]
     .spacing(10)
     .align_y(Alignment::Center);
+    let phase_sync_row = wrap_navigable(phase_sync_row.into(), 2, nav);
 
     // Loop length section
     let subsection_title = text("Default Loop/Beat Jump Length").size(14);
@@ -267,6 +512,7 @@ fn view_loop_section(state: &SettingsState) -> Element<'_, Message> {
     ]
     .spacing(10)
     .align_y(Alignment::Center);
+    let loop_row = wrap_navigable(loop_row.into(), 3, nav);
 
     container(
         column![
@@ -285,7 +531,7 @@ fn view_loop_section(state: &SettingsState) -> Element<'_, Message> {
 }
 
 /// Display settings (waveform zoom and grid)
-fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
+fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiNav>) -> Element<'a, Message> {
     let section_title = text("Display").size(18);
 
     // Waveform layout section
@@ -310,6 +556,7 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
         .collect();
 
     let layout_row = row(layout_buttons).spacing(4).align_y(Alignment::Center);
+    let layout_row = wrap_navigable(layout_row.into(), 4, nav);
 
     // Zoom level section
     let zoom_subsection = text("Default Zoomed Waveform Level").size(14);
@@ -340,6 +587,7 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
     ]
     .spacing(10)
     .align_y(Alignment::Center);
+    let zoom_row = wrap_navigable(zoom_row.into(), 5, nav);
 
     // Grid density section
     let grid_subsection = text("Overview Grid Density").size(14);
@@ -370,6 +618,7 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
     ]
     .spacing(10)
     .align_y(Alignment::Center);
+    let grid_row = wrap_navigable(grid_row.into(), 6, nav);
 
     // Stem color palette section
     let palette_subsection = text("Stem Color Palette").size(14);
@@ -393,6 +642,7 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
         .collect();
 
     let palette_row = row(palette_buttons).spacing(4).align_y(Alignment::Center);
+    let palette_row = wrap_navigable(palette_row.into(), 7, nav);
 
     // Browser settings
     let browser_subsection = text("Browser").size(14);
@@ -408,6 +658,7 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
     ]
     .spacing(10)
     .align_y(Alignment::Center);
+    let local_collection_row = wrap_navigable(local_collection_row.into(), 8, nav);
 
     // Key scoring model section
     let key_model_subsection = text("Key Matching").size(14);
@@ -431,6 +682,7 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
         .collect();
 
     let model_row = row(model_buttons).spacing(4).align_y(Alignment::Center);
+    let model_row = wrap_navigable(model_row.into(), 9, nav);
 
     container(
         column![
@@ -466,7 +718,7 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
 }
 
 /// Loudness normalization settings (auto-gain, target LUFS)
-fn view_loudness_section(state: &SettingsState) -> Element<'_, Message> {
+fn view_loudness_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiNav>) -> Element<'a, Message> {
     let section_title = text("Loudness").size(18);
 
     // Auto-gain toggle
@@ -482,6 +734,7 @@ fn view_loudness_section(state: &SettingsState) -> Element<'_, Message> {
     ]
     .spacing(10)
     .align_y(Alignment::Center);
+    let auto_gain_row = wrap_navigable(auto_gain_row.into(), 10, nav);
 
     // Target LUFS section
     let target_subsection = text("Target Loudness").size(14);
@@ -513,6 +766,7 @@ fn view_loudness_section(state: &SettingsState) -> Element<'_, Message> {
     ]
     .spacing(10)
     .align_y(Alignment::Center);
+    let target_row = wrap_navigable(target_row.into(), 11, nav);
 
     // Current preset description
     let preset_desc = text(lufs_preset_name(state.draft_target_lufs_index)).size(12);
@@ -535,7 +789,7 @@ fn view_loudness_section(state: &SettingsState) -> Element<'_, Message> {
 }
 
 /// Slicer settings (buffer size)
-fn view_slicer_section(state: &SettingsState) -> Element<'_, Message> {
+fn view_slicer_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiNav>) -> Element<'a, Message> {
     let section_title = text("Slicer").size(18);
 
     // Buffer bars section
@@ -567,6 +821,7 @@ fn view_slicer_section(state: &SettingsState) -> Element<'_, Message> {
     ]
     .spacing(10)
     .align_y(Alignment::Center);
+    let buffer_row = wrap_navigable(buffer_row.into(), 12, nav);
 
     // Note about preset editing
     let preset_hint = text("Edit slicer presets and per-stem patterns in mesh-cue")
@@ -614,7 +869,7 @@ fn view_midi_section() -> Element<'static, Message> {
 }
 
 /// Audio output settings section (device routing)
-fn view_audio_output_section(state: &SettingsState) -> Element<'_, Message> {
+fn view_audio_output_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiNav>) -> Element<'a, Message> {
     let section_title = text("Audio Output").size(18);
 
     let hint = text("Route master and cue to different audio devices")
@@ -642,6 +897,7 @@ fn view_audio_output_section(state: &SettingsState) -> Element<'_, Message> {
     let master_row = row![master_label, Space::new().width(Length::Fill), master_dropdown]
         .spacing(10)
         .align_y(Alignment::Center);
+    let master_row = wrap_navigable(master_row.into(), 0, nav);
 
     // Cue output dropdown
     let cue_label = text("Cue (Headphones):").size(14);
@@ -664,6 +920,7 @@ fn view_audio_output_section(state: &SettingsState) -> Element<'_, Message> {
     let cue_row = row![cue_label, Space::new().width(Length::Fill), cue_dropdown]
         .spacing(10)
         .align_y(Alignment::Center);
+    let cue_row = wrap_navigable(cue_row.into(), 1, nav);
 
     // Refresh button
     let refresh_btn = button(text("Refresh Devices").size(11))

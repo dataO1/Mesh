@@ -246,6 +246,8 @@ pub enum GlobalAction {
         /// Whether browse mode is now active
         active: bool,
     },
+    /// Toggle settings modal open/close
+    SettingsToggle,
 }
 
 impl MidiMessage {

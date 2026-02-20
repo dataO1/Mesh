@@ -634,6 +634,23 @@ impl MeshApp {
     pub(crate) fn handle_midi_message(&mut self, event: MidiEvent) -> Task<Message> {
         let engine_dispatched = event.engine_dispatched;
         let msg = event.message;
+
+        // ── Settings MIDI nav interception ──
+        // When settings is open via MIDI, intercept browser scroll/select
+        // to navigate settings instead of the collection browser.
+        if self.settings.is_open && self.settings.settings_midi_nav.is_some() {
+            match &msg {
+                MidiMsg::Browser(MidiBrowserAction::Scroll { delta }) => {
+                    let delta = *delta;
+                    return self.handle_settings_midi_scroll(delta);
+                }
+                MidiMsg::Browser(MidiBrowserAction::Select) => {
+                    return self.handle_settings_midi_select();
+                }
+                _ => {} // Other messages fall through
+            }
+        }
+
         match msg {
             MidiMsg::Deck { deck, action } if engine_dispatched => {
                 // Engine already processed this — skip UI dispatch to avoid double-execution.
@@ -834,6 +851,22 @@ impl MeshApp {
                             });
                         return self.update(Message::SelectGlobalFxPreset(preset_name));
                     }
+                    MidiGlobalAction::SettingsToggle => {
+                        if self.settings.is_open {
+                            // Close: auto-save if changed, then close
+                            if self.settings.has_changes() {
+                                let _ = self.update(Message::Settings(SettingsMessage::Save));
+                            }
+                            self.settings.settings_midi_nav = None;
+                            let _ = self.update(Message::Settings(SettingsMessage::Close));
+                        } else {
+                            // Open: snapshot + activate MIDI nav
+                            let _ = self.update(Message::Settings(SettingsMessage::Open));
+                            self.settings.settings_midi_nav = Some(
+                                super::settings::SettingsMidiNav::new()
+                            );
+                        }
+                    }
                     MidiGlobalAction::BrowseModeChanged { side, active } => {
                         if side < 2 {
                             self.browse_mode_active[side] = active;
@@ -866,6 +899,60 @@ impl MeshApp {
             }
         }
 
+        Task::none()
+    }
+
+    /// Handle encoder scroll while in settings MIDI navigation mode.
+    /// When browsing: cycles through the flat list of settings.
+    /// When editing: cycles through the focused setting's options (live draft update).
+    fn handle_settings_midi_scroll(&mut self, delta: i32) -> Task<Message> {
+        use super::settings::build_settings_entries;
+
+        let entries = build_settings_entries(&self.settings);
+        let nav = match self.settings.settings_midi_nav.as_mut() {
+            Some(n) => n,
+            None => return Task::none(),
+        };
+
+        if nav.editing {
+            // Cycle through options for the focused setting
+            if let Some(entry) = entries.get(nav.focused_index) {
+                let count = entry.options.len();
+                if count > 0 {
+                    let new_idx = if delta > 0 {
+                        (entry.selected + 1) % count
+                    } else {
+                        (entry.selected + count - 1) % count
+                    };
+                    let msg = (entry.on_select)(new_idx);
+                    return self.update(Message::Settings(msg));
+                }
+            }
+        } else {
+            // Cycle focused_index through all settings (wrapping)
+            let count = entries.len();
+            if count > 0 {
+                let new_idx = if delta > 0 {
+                    (nav.focused_index + 1) % count
+                } else {
+                    (nav.focused_index + count - 1) % count
+                };
+                nav.focused_index = new_idx;
+            }
+        }
+
+        Task::none()
+    }
+
+    /// Handle encoder press while in settings MIDI navigation mode.
+    /// Toggles between browsing the settings list and editing the focused setting.
+    fn handle_settings_midi_select(&mut self) -> Task<Message> {
+        let nav = match self.settings.settings_midi_nav.as_mut() {
+            Some(n) => n,
+            None => return Task::none(),
+        };
+
+        nav.editing = !nav.editing;
         Task::none()
     }
 

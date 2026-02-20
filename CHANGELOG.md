@@ -23,22 +23,22 @@ All notable changes to Mesh are documented in this file.
   context. Mounted with `noatime` to reduce background writes and make
   hot-unplug safer. mesh-player detects new mounts via its existing 2-second
   `sysinfo` polling loop.
-- **Embedded: boot splash screen** — Custom Plymouth theme with dark background
-  matching the app (`rgb(0.10, 0.10, 0.12)`), "M E S H" text logo, "Spinning
-  up" tagline, and animated 8-dot circular spinner. Silent boot via
-  `quiet`/`loglevel=0`/`logo.nologo` suppresses all kernel and systemd messages.
-  `rockchipdrm` loaded in initrd for early DRM availability.
-- **Embedded: seamless Plymouth-to-cage transition** — Overrides the upstream
-  cage module's `After=plymouth-quit.service` ordering so cage starts while
-  Plymouth is still running. cage takes DRM master, then `ExecStartPost` quits
-  Plymouth with `--retain-splash` to keep the splash pixels in the framebuffer
-  until mesh-player renders its first frame. No text console flash between boot
-  splash and app.
+- **Embedded: silent boot** — Comprehensive kernel param and systemd
+  configuration for minimal boot output: `loglevel=0`, `quiet`,
+  `rd.systemd.show_status=false`, `systemd.show_status=false`,
+  `rd.udev.log_level=3`, `kernel.printk=0 0 0 0`, `vt.global_cursor_default=0`,
+  `logo.nologo`. Replaces the previous Plymouth-based splash which failed to
+  render the custom script theme on ARM/RK3588S (fell back to NixOS default).
 - **Embedded: debugging infrastructure** — cage `-s` flag enables VT switching
   (Ctrl+Alt+F2), TTY2 getty provides a login shell for local debugging,
   persistent journal (`Storage=persistent`, 50MB cap) preserves logs across
   reboots, and `boot.initrd.systemd.emergencyAccess` enables emergency shell
   access during boot failures.
+- **MIDI settings navigation** — New `global.settings_toggle` action
+  opens/closes the settings modal via MIDI. When open, the browser encoder
+  scrolls through settings, encoder press enters editing mode for the focused
+  setting, and scroll cycles through options with live draft preview. Closing
+  auto-saves if changes were made.
 - **Windows cross-compilation failing on `stdbool.h`** — The container-based
   Windows build (`build-windows.nix`) set `BINDGEN_EXTRA_CLANG_ARGS` with
   `--sysroot=/usr/x86_64-w64-mingw32` for Essentia's cross-compilation, but

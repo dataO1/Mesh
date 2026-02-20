@@ -57,36 +57,13 @@ in
     };
 
     # Crash restart + pin to A76 big cores (cores 4-7)
-    # Plymouth handoff: the upstream cage module has After=plymouth-quit.service,
-    # which creates a visible gap (Plymouth quits → text console → cage starts).
-    # We override this so cage starts WHILE Plymouth is still running, then cage
-    # takes DRM master and tells Plymouth to quit with --retain-splash (keeps the
-    # last frame in the framebuffer until cage paints over it).
     systemd.services."cage-tty1" = {
-      after = lib.mkForce [
-        "systemd-user-sessions.service"
-        "plymouth-start.service"       # wait for Plymouth to START (not quit)
-        "systemd-logind.service"
-        "getty@tty1.service"
-      ];
-      wants = lib.mkForce [
-        "dbus.socket"
-        "systemd-logind.service"
-        # plymouth-quit.service deliberately omitted — we handle it below
-      ];
       serviceConfig = {
         Restart = "always";
         RestartSec = 2;
         CPUAffinity = "4-7";
-        # Tell Plymouth to exit after cage has acquired DRM (- = don't fail if already gone)
-        ExecStartPost = "-${pkgs.plymouth}/bin/plymouth quit --retain-splash";
       };
     };
-
-    # Prevent the default plymouth-quit from firing via multi-user.target
-    # (we quit Plymouth from cage-tty1.ExecStartPost instead)
-    systemd.services.plymouth-quit.wantedBy = lib.mkForce [];
-    systemd.services.plymouth-quit-wait.wantedBy = lib.mkForce [];
 
     # TTY2 login shell for local debugging (Ctrl+Alt+F2 when cage has -s flag)
     systemd.services."getty@tty2".enable = true;

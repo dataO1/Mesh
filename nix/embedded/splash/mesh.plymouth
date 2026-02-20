@@ -1,8 +1,0 @@
-[Plymouth Theme]
-Name=Mesh
-Description=Mesh DJ boot splash
-ModuleName=script
-
-[script]
-ScriptFile=NIXDIR/mesh.script
-ImageDir=NIXDIR/
