@@ -1347,6 +1347,30 @@ devices:
     shift_action: null
     encoder_mode: null
     hardware_type: button
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: type_btn
+    action: global.settings_toggle
+    physical_deck: null
+    deck_index: null
+    params: {}
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: type_btn
+    action: global.settings_toggle
+    physical_deck: null
+    deck_index: null
+    params: {}
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
   feedback:
   - state: side.browse_mode
     physical_deck: 0

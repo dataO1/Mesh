@@ -177,13 +177,9 @@ for v3 and beyond.
   way for this possibility, by adding a versioning system for the schema/db version)
 
 # UPDATE LIFECYCLE
-- [ ] We need to be able to connect to wifi in mesh-player ui settings (with an
-  onboard keyboard, that works with touch), this should be safe and go through
-  regular linux wifi setup cli (nmcli or something).
-- [ ] From the settings ui, we need to be able to scan for available updates i
-  nthe nix cache (from my repo) and automatically install and relaunch
-  everything so the newly installed version is running. for this a internet
-  connection is required.
+- [ ] connecting to wifi should first check if we already have credentials
+  stored (via networkmanager) and just reconnect then, since we wont need a
+  password entry then.
 
 ## Embedded: Silent Boot (investigated, partially working)
 - [x] Removed Plymouth splash entirely — the script theme (`ModuleName=script`)
@@ -206,6 +202,8 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
+- add ui settings mapping to the other F1 controller as well (also on the type
+  button) in my midi.yaml under /home/data01/Music/mesh-collection/
 - [ ] when starting the player first, then connecting the hid and midi devices, they
   are not recognized, we already have reconnection logic (connecting then
   disconnecting hardware works well), reuse that for detecting hardware after

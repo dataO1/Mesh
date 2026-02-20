@@ -25,7 +25,7 @@
 //! }
 //! ```
 
-use iced::widget::{button, column, container, row, text, Space};
+use iced::widget::{button, column, container, row, stack, text, Space};
 use iced::{Alignment, Color, Element, Length};
 
 // ── Key Layout ──
@@ -50,6 +50,7 @@ pub enum SpecialKey {
     Backspace,
     Space,
     Done,
+    Cancel,
 }
 
 impl KeyDef {
@@ -77,10 +78,25 @@ impl KeyDef {
             Some(SpecialKey::Backspace) => "\u{232B}".to_string(), // ⌫
             Some(SpecialKey::Space) => " ".to_string(),
             Some(SpecialKey::Done) => "Done".to_string(),
+            Some(SpecialKey::Cancel) => "Cancel".to_string(),
             None => {
                 let ch = if shifted { self.shifted } else { self.normal };
                 ch.to_string()
             }
+        }
+    }
+
+    /// Shift hint character, if the key has a distinct shifted output.
+    /// Returns None for special keys and keys where normal == shifted (e.g. letters use uppercase).
+    pub fn shift_hint(&self) -> Option<char> {
+        if self.special.is_some() {
+            return None;
+        }
+        // Only show hint when shifted differs and isn't just uppercase of normal
+        if self.shifted != self.normal && self.shifted != self.normal.to_ascii_uppercase() {
+            Some(self.shifted)
+        } else {
+            None
         }
     }
 
@@ -133,12 +149,13 @@ pub const ROW_3: &[KeyDef] = &[
     KeyDef::special('\u{232B}', SpecialKey::Backspace, 1.5),
 ];
 
-/// Row 4: space bar and done
+/// Row 4: space bar, done, and cancel
 pub const ROW_4: &[KeyDef] = &[
     KeyDef::symbol('-', '_'),
-    KeyDef::special(' ', SpecialKey::Space, 6.0),
+    KeyDef::special(' ', SpecialKey::Space, 5.0),
     KeyDef::symbol('/', '?'),
-    KeyDef::special('D', SpecialKey::Done, 2.0),
+    KeyDef::special('D', SpecialKey::Done, 1.5),
+    KeyDef::special('C', SpecialKey::Cancel, 1.5),
 ];
 
 /// All rows in order.
@@ -307,10 +324,13 @@ pub fn keyboard_view(state: &KeyboardState) -> Element<'_, KeyboardMessage> {
             let is_focused = state.focused_key == idx && idx < total;
             let label = key_def.label(state.shift_active);
             let is_shift = key_def.special == Some(SpecialKey::Shift);
+            let is_cancel = key_def.special == Some(SpecialKey::Cancel);
             let shift_engaged = is_shift && state.shift_active;
 
             let btn_style = move |_theme: &iced::Theme, status: button::Status| {
-                let base_bg = if shift_engaged {
+                let base_bg = if is_cancel {
+                    Color::from_rgba(0.4, 0.15, 0.15, 0.8)
+                } else if shift_engaged {
                     Color::from_rgba(0.3, 0.5, 1.0, 0.4)
                 } else {
                     match status {
@@ -344,12 +364,39 @@ pub fn keyboard_view(state: &KeyboardState) -> Element<'_, KeyboardMessage> {
             };
 
             let width = KEY_WIDTH * key_def.width + KEY_SPACING * (key_def.width - 1.0);
+            let shift_hint = key_def.shift_hint();
 
-            let btn = button(
+            let key_content: Element<'_, KeyboardMessage> = if let Some(hint_ch) = shift_hint {
+                // Main label centered + shift hint bottom-right
+                let main_label = container(text(label).size(16))
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill)
+                    .width(Length::Fill)
+                    .height(Length::Fill);
+                let hint_label = container(
+                    text(hint_ch.to_string())
+                        .size(10)
+                        .color(Color::from_rgba(0.5, 0.5, 0.5, 0.7)),
+                )
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(Alignment::End)
+                .align_y(Alignment::End)
+                .padding(iced::Padding { top: 0.0, right: 4.0, bottom: 2.0, left: 0.0 });
+                stack![main_label, hint_label]
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into()
+            } else {
                 container(text(label).size(16))
                     .center_x(Length::Fill)
-                    .center_y(Length::Fill),
-            )
+                    .center_y(Length::Fill)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into()
+            };
+
+            let btn = button(key_content)
             .on_press(KeyboardMessage::KeyPress(idx))
             .style(btn_style)
             .width(Length::Fixed(width))
@@ -371,26 +418,7 @@ pub fn keyboard_view(state: &KeyboardState) -> Element<'_, KeyboardMessage> {
         .spacing(KEY_SPACING)
         .align_x(Alignment::Center);
 
-    // Cancel button below keyboard grid
-    let cancel_btn = button(
-        container(text("Cancel").size(14))
-            .center_x(Length::Fill)
-            .center_y(Length::Fill),
-    )
-    .on_press(KeyboardMessage::Cancel)
-    .style(|_theme: &iced::Theme, _status| button::Style {
-        background: Some(Color::from_rgba(0.4, 0.15, 0.15, 0.8).into()),
-        text_color: Color::WHITE,
-        border: iced::Border {
-            radius: 4.0.into(),
-            ..Default::default()
-        },
-        ..Default::default()
-    })
-    .width(Length::Fill)
-    .height(Length::Fixed(KEY_HEIGHT));
-
-    let content = column![header, text_display, Space::new().height(8), keyboard_grid, cancel_btn]
+    let content = column![header, text_display, Space::new().height(8), keyboard_grid]
         .spacing(8)
         .width(Length::Shrink)
         .align_x(Alignment::Center);
@@ -426,6 +454,10 @@ pub fn keyboard_handle(
                         let result = state.text.clone();
                         state.close();
                         return Some(KeyboardEvent::Submit(result));
+                    }
+                    Some(SpecialKey::Cancel) => {
+                        state.close();
+                        return Some(KeyboardEvent::Cancel);
                     }
                     None => {
                         if let Some(ch) = key_def.character(state.shift_active) {

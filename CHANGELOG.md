@@ -14,7 +14,10 @@ All notable changes to Mesh are documented in this file.
   operations. Each D-Bus call runs on a dedicated thread with its own
   single-threaded tokio runtime to work around nmrs's `!Send` futures and iced's
   nested-runtime constraint. Secured networks open an on-screen keyboard for
-  password entry (Cancel button now inside the scrollable keyboard grid).
+  password entry. The Cancel button is part of the key grid (after Done) so it's
+  reachable via MIDI encoder navigation. Keys with distinct shifted symbols
+  (numbers, punctuation) show a small dark-gray hint in the bottom-right corner
+  so users know which symbols are available via Shift without guessing.
   Platform-gated: Linux-only via `#[cfg(target_os = "linux")]` with no-op stubs
   on other platforms, so Windows builds are unaffected. The on-screen keyboard
   widget lives in mesh-widgets for reuse across crates.
