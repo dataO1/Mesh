@@ -103,35 +103,50 @@ pub enum NetworkMessage {
 
 // ── Backend: Linux (nmrs via D-Bus) ──
 //
-// All functions are synchronous/blocking. They create a lightweight single-threaded
-// tokio runtime to execute nmrs async calls. This is necessary because nmrs uses
-// zbus internally which produces !Send futures, but iced's Task::perform requires
-// Send. The pattern matches the old nmcli approach (blocking Command::output() calls).
+// All functions are synchronous/blocking. Each spawns a dedicated thread with its
+// own single-threaded tokio runtime to execute nmrs async calls. Two constraints
+// force this design:
+//   1. nmrs (zbus) futures are !Send — can't pass them to iced's Task::perform
+//   2. iced's Task::perform runs on tokio's thread pool — calling block_on() there
+//      panics with "Cannot start a runtime from within a runtime"
+// The dedicated thread has no pre-existing runtime, so block_on() works safely.
+// Thread spawn cost (~100μs) is negligible vs D-Bus I/O (~10-100ms).
 
 #[cfg(target_os = "linux")]
 pub mod backend {
     use super::*;
 
-    /// Create a single-threaded tokio runtime for nmrs D-Bus calls.
-    /// Very lightweight (~microseconds), negligible vs D-Bus I/O.
-    fn block_on<T>(f: impl std::future::Future<Output = T>) -> Result<T, String> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| format!("Failed to create async runtime: {}", e))?;
-        Ok(rt.block_on(f))
+    /// Run an async closure on a dedicated thread with its own tokio runtime.
+    /// The closure creates !Send futures (nmrs/zbus) that stay on the new thread.
+    /// The result is sent back via sync_channel.
+    fn run_on_thread<T, F, Fut>(f: F) -> Result<T, String>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = T>,
+    {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tokio runtime for nmrs");
+            let result = rt.block_on(f());
+            let _ = tx.send(result);
+        });
+        rx.recv().map_err(|e| format!("nmrs thread failed: {}", e))
     }
 
     /// Check if NetworkManager is available by attempting a D-Bus connection.
     pub fn is_available() -> bool {
-        block_on(async {
+        run_on_thread(|| async {
             nmrs::NetworkManager::new().await.is_ok()
         }).unwrap_or(false)
     }
 
     /// Detect whether a WiFi adapter is present.
     pub fn detect_wifi_adapter() -> bool {
-        block_on(async {
+        run_on_thread(|| async {
             let nm = match nmrs::NetworkManager::new().await {
                 Ok(nm) => nm,
                 Err(_) => return false,
@@ -146,7 +161,7 @@ pub mod backend {
 
     /// Get current WiFi status (connected SSID + signal, or disconnected).
     pub fn get_wifi_status() -> WifiStatus {
-        block_on(async {
+        run_on_thread(|| async {
             let nm = match nmrs::NetworkManager::new().await {
                 Ok(nm) => nm,
                 Err(_) => return WifiStatus::Disconnected,
@@ -168,7 +183,7 @@ pub mod backend {
 
     /// Get current LAN (ethernet) status.
     pub fn get_lan_status() -> LanStatus {
-        block_on(async {
+        run_on_thread(|| async {
             let nm = match nmrs::NetworkManager::new().await {
                 Ok(nm) => nm,
                 Err(_) => return LanStatus::Disconnected,
@@ -194,7 +209,7 @@ pub mod backend {
 
     /// Scan for available WiFi networks.
     pub fn scan_wifi() -> Result<Vec<WifiNetwork>, String> {
-        block_on(async {
+        run_on_thread(|| async {
             let nm = nmrs::NetworkManager::new()
                 .await
                 .map_err(|e| format!("NetworkManager connection failed: {}", e))?;
@@ -245,7 +260,7 @@ pub mod backend {
     pub fn connect_wifi(ssid: &str, password: Option<&str>) -> Result<(), String> {
         let ssid = ssid.to_string();
         let password = password.map(|p| p.to_string());
-        block_on(async {
+        run_on_thread(move || async move {
             let nm = nmrs::NetworkManager::new()
                 .await
                 .map_err(|e| format!("NetworkManager connection failed: {}", e))?;
@@ -263,7 +278,7 @@ pub mod backend {
 
     /// Disconnect from the current WiFi network.
     pub fn disconnect_wifi() -> Result<(), String> {
-        block_on(async {
+        run_on_thread(|| async {
             let nm = nmrs::NetworkManager::new()
                 .await
                 .map_err(|e| format!("NetworkManager connection failed: {}", e))?;
