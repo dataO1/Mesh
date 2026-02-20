@@ -1,29 +1,29 @@
-//! Network management state, nmcli commands, and view for settings UI.
+//! Network management state, backend, and view for settings UI.
 //!
 //! Provides WiFi and LAN status display with connection management.
-//! All network operations use `nmcli` via `std::process::Command`.
-//! On systems without `nmcli` (desktop dev), the network section is hidden.
+//! On Linux, uses `nmrs` (D-Bus bindings for NetworkManager) for all operations.
+//! On other platforms, the network section is hidden gracefully.
 
 use iced::widget::{button, column, container, row, text, Space};
 use iced::{Alignment, Color, Element, Length};
 
 use super::message::Message;
 
-// ── State Types ──
+// ── State Types (unconditional — no platform gating) ──
 
 /// WiFi connection status
 #[derive(Debug, Clone)]
 pub enum WifiStatus {
     Disconnected,
     Connecting { ssid: String },
-    Connected { ssid: String, signal: u8, ip: String },
+    Connected { ssid: String, signal: u8 },
 }
 
 /// LAN (ethernet) connection status
 #[derive(Debug, Clone)]
 pub enum LanStatus {
     Disconnected,
-    Connected { interface: String, ip: String },
+    Connected { interface: String },
 }
 
 /// A discovered WiFi network from scan
@@ -36,7 +36,7 @@ pub struct WifiNetwork {
 }
 
 /// Network management state. Lives on SettingsState as `Option<NetworkState>`.
-/// None when nmcli is not available (desktop dev environments).
+/// None when not on Linux or NetworkManager is not available.
 #[derive(Debug, Clone)]
 pub struct NetworkState {
     /// False when no WiFi adapter is present (section greyed out)
@@ -99,232 +99,214 @@ pub enum NetworkMessage {
     ScrollNetworks(i32),
 }
 
-// ── nmcli Command Wrappers ──
-// These are pure functions that run synchronous commands.
-// They are called from Task::perform async blocks.
+// ── Backend: Linux (nmrs via D-Bus) ──
 
-/// Check if nmcli is available on PATH
-pub fn is_nmcli_available() -> bool {
-    std::process::Command::new("which")
-        .arg("nmcli")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
+// ── Backend: Linux (nmrs via D-Bus) ──
+//
+// All functions are synchronous/blocking. They create a lightweight single-threaded
+// tokio runtime to execute nmrs async calls. This is necessary because nmrs uses
+// zbus internally which produces !Send futures, but iced's Task::perform requires
+// Send. The pattern matches the old nmcli approach (blocking Command::output() calls).
 
-/// Detect if a WiFi adapter is present via nmcli
-pub fn detect_wifi_adapter() -> bool {
-    let output = std::process::Command::new("nmcli")
-        .args(["-t", "-f", "TYPE,STATE", "device"])
-        .output();
+#[cfg(target_os = "linux")]
+pub mod backend {
+    use super::*;
 
-    match output {
-        Ok(o) => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            stdout.lines().any(|line| line.starts_with("wifi:"))
-        }
-        Err(_) => false,
+    /// Create a single-threaded tokio runtime for nmrs D-Bus calls.
+    /// Very lightweight (~microseconds), negligible vs D-Bus I/O.
+    fn block_on<T>(f: impl std::future::Future<Output = T>) -> Result<T, String> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("Failed to create async runtime: {}", e))?;
+        Ok(rt.block_on(f))
     }
-}
 
-/// Get current WiFi status (SSID, signal, IP)
-pub fn get_wifi_status() -> WifiStatus {
-    // Find active wifi connection
-    let output = std::process::Command::new("nmcli")
-        .args(["-t", "-f", "TYPE,NAME,DEVICE", "connection", "show", "--active"])
-        .output();
+    /// Check if NetworkManager is available by attempting a D-Bus connection.
+    pub fn is_available() -> bool {
+        block_on(async {
+            nmrs::NetworkManager::new().await.is_ok()
+        }).unwrap_or(false)
+    }
 
-    let (ssid, device) = match output {
-        Ok(o) => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            let mut found = (String::new(), String::new());
-            for line in stdout.lines() {
-                let parts: Vec<&str> = line.split(':').collect();
-                // format: TYPE:NAME:DEVICE (802-11-wireless:MyNetwork:wlan0)
-                if parts.len() >= 3 && parts[0].contains("wireless") {
-                    found = (parts[1].to_string(), parts[2].to_string());
-                    break;
+    /// Detect whether a WiFi adapter is present.
+    pub fn detect_wifi_adapter() -> bool {
+        block_on(async {
+            let nm = match nmrs::NetworkManager::new().await {
+                Ok(nm) => nm,
+                Err(_) => return false,
+            };
+            let devices = match nm.list_devices().await {
+                Ok(d) => d,
+                Err(_) => return false,
+            };
+            devices.iter().any(|d| d.device_type == nmrs::DeviceType::Wifi)
+        }).unwrap_or(false)
+    }
+
+    /// Get current WiFi status (connected SSID + signal, or disconnected).
+    pub fn get_wifi_status() -> WifiStatus {
+        block_on(async {
+            let nm = match nmrs::NetworkManager::new().await {
+                Ok(nm) => nm,
+                Err(_) => return WifiStatus::Disconnected,
+            };
+
+            let ssid = match nm.current_ssid().await {
+                Some(s) => s,
+                None => return WifiStatus::Disconnected,
+            };
+
+            let signal = match nm.current_network().await {
+                Ok(Some(net)) => net.strength.unwrap_or(0),
+                _ => 0,
+            };
+
+            WifiStatus::Connected { ssid, signal }
+        }).unwrap_or(WifiStatus::Disconnected)
+    }
+
+    /// Get current LAN (ethernet) status.
+    pub fn get_lan_status() -> LanStatus {
+        block_on(async {
+            let nm = match nmrs::NetworkManager::new().await {
+                Ok(nm) => nm,
+                Err(_) => return LanStatus::Disconnected,
+            };
+            let devices = match nm.list_devices().await {
+                Ok(d) => d,
+                Err(_) => return LanStatus::Disconnected,
+            };
+
+            for device in &devices {
+                if device.device_type == nmrs::DeviceType::Ethernet
+                    && device.state == nmrs::DeviceState::Activated
+                {
+                    return LanStatus::Connected {
+                        interface: device.interface.clone(),
+                    };
                 }
             }
-            found
-        }
-        Err(_) => return WifiStatus::Disconnected,
-    };
 
-    if ssid.is_empty() {
-        return WifiStatus::Disconnected;
+            LanStatus::Disconnected
+        }).unwrap_or(LanStatus::Disconnected)
     }
 
-    // Get IP and signal from device
-    let ip = get_device_ip(&device);
-    let signal = get_wifi_signal(&device);
+    /// Scan for available WiFi networks.
+    pub fn scan_wifi() -> Result<Vec<WifiNetwork>, String> {
+        block_on(async {
+            let nm = nmrs::NetworkManager::new()
+                .await
+                .map_err(|e| format!("NetworkManager connection failed: {}", e))?;
 
-    WifiStatus::Connected { ssid, signal, ip }
-}
+            // Trigger a fresh scan
+            nm.scan_networks()
+                .await
+                .map_err(|e| format!("WiFi scan failed: {}", e))?;
 
-/// Get current LAN status (interface, IP)
-pub fn get_lan_status() -> LanStatus {
-    let output = std::process::Command::new("nmcli")
-        .args(["-t", "-f", "TYPE,DEVICE,STATE", "device"])
-        .output();
+            // List discovered networks
+            let raw_networks = nm
+                .list_networks()
+                .await
+                .map_err(|e| format!("Failed to list networks: {}", e))?;
 
-    let device = match output {
-        Ok(o) => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            let mut found = String::new();
-            for line in stdout.lines() {
-                let parts: Vec<&str> = line.split(':').collect();
-                if parts.len() >= 3 && parts[0] == "ethernet" && parts[2] == "connected" {
-                    found = parts[1].to_string();
-                    break;
+            let mut networks = Vec::new();
+            let mut seen_ssids = std::collections::HashSet::new();
+
+            for net in raw_networks {
+                if net.ssid.is_empty() || !seen_ssids.insert(net.ssid.clone()) {
+                    continue;
                 }
+                networks.push(WifiNetwork {
+                    ssid: net.ssid,
+                    signal: net.strength.unwrap_or(0),
+                    secured: net.secured,
+                    in_use: false,
+                });
             }
-            found
-        }
-        Err(_) => return LanStatus::Disconnected,
-    };
 
-    if device.is_empty() {
-        return LanStatus::Disconnected;
-    }
+            networks.sort_by(|a, b| b.signal.cmp(&a.signal));
 
-    let ip = get_device_ip(&device);
-    LanStatus::Connected { interface: device, ip }
-}
-
-/// Get IP address for a network device
-fn get_device_ip(device: &str) -> String {
-    let output = std::process::Command::new("nmcli")
-        .args(["-t", "-f", "IP4.ADDRESS", "device", "show", device])
-        .output();
-
-    match output {
-        Ok(o) => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            for line in stdout.lines() {
-                // Format: IP4.ADDRESS[1]:192.168.1.100/24
-                if let Some(addr) = line.strip_prefix("IP4.ADDRESS") {
-                    if let Some(ip) = addr.split(':').nth(1) {
-                        // Strip CIDR suffix
-                        return ip.split('/').next().unwrap_or(ip).to_string();
+            // Mark the currently connected network
+            if let Some(current_ssid) = nm.current_ssid().await {
+                for net in &mut networks {
+                    if net.ssid == current_ssid {
+                        net.in_use = true;
+                        break;
                     }
                 }
             }
-            String::new()
-        }
-        Err(_) => String::new(),
+
+            Ok(networks)
+        })?
+    }
+
+    /// Connect to a WiFi network (open or with password).
+    pub fn connect_wifi(ssid: &str, password: Option<&str>) -> Result<(), String> {
+        let ssid = ssid.to_string();
+        let password = password.map(|p| p.to_string());
+        block_on(async {
+            let nm = nmrs::NetworkManager::new()
+                .await
+                .map_err(|e| format!("NetworkManager connection failed: {}", e))?;
+
+            let security = match password {
+                Some(psk) => nmrs::WifiSecurity::WpaPsk { psk },
+                None => nmrs::WifiSecurity::Open,
+            };
+
+            nm.connect(&ssid, security)
+                .await
+                .map_err(|e| format!("Connection failed: {}", e))
+        })?
+    }
+
+    /// Disconnect from the current WiFi network.
+    pub fn disconnect_wifi() -> Result<(), String> {
+        block_on(async {
+            let nm = nmrs::NetworkManager::new()
+                .await
+                .map_err(|e| format!("NetworkManager connection failed: {}", e))?;
+
+            nm.disconnect()
+                .await
+                .map_err(|e| format!("Disconnect failed: {}", e))
+        })?
     }
 }
 
-/// Get WiFi signal strength for a device
-fn get_wifi_signal(device: &str) -> u8 {
-    let output = std::process::Command::new("nmcli")
-        .args(["-t", "-f", "IN-USE,SIGNAL", "device", "wifi", "list", "ifname", device])
-        .output();
+// ── Backend: Non-Linux (stubs) ──
 
-    match output {
-        Ok(o) => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            for line in stdout.lines() {
-                let parts: Vec<&str> = line.split(':').collect();
-                if parts.len() >= 2 && parts[0] == "*" {
-                    return parts[1].parse().unwrap_or(0);
-                }
-            }
-            0
-        }
-        Err(_) => 0,
-    }
-}
+#[cfg(not(target_os = "linux"))]
+pub mod backend {
+    use super::*;
 
-/// Scan for available WiFi networks
-pub fn scan_wifi() -> Result<Vec<WifiNetwork>, String> {
-    let output = std::process::Command::new("nmcli")
-        .args(["-t", "-f", "SSID,SIGNAL,SECURITY,IN-USE", "device", "wifi", "list", "--rescan", "yes"])
-        .output()
-        .map_err(|e| format!("Failed to run nmcli: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("nmcli scan failed: {}", stderr));
+    pub fn is_available() -> bool {
+        false
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut networks = Vec::new();
-    let mut seen_ssids = std::collections::HashSet::new();
-
-    for line in stdout.lines() {
-        let parts: Vec<&str> = line.split(':').collect();
-        if parts.len() >= 4 {
-            let ssid = parts[0].to_string();
-            if ssid.is_empty() || !seen_ssids.insert(ssid.clone()) {
-                continue; // Skip empty SSIDs and duplicates
-            }
-            let signal = parts[1].parse().unwrap_or(0);
-            let secured = !parts[2].is_empty() && parts[2] != "--";
-            let in_use = parts[3] == "*";
-            networks.push(WifiNetwork { ssid, signal, secured, in_use });
-        }
+    pub fn detect_wifi_adapter() -> bool {
+        false
     }
 
-    // Sort by signal strength descending
-    networks.sort_by(|a, b| b.signal.cmp(&a.signal));
-    Ok(networks)
-}
-
-/// Connect to a WiFi network (open or secured)
-pub fn connect_wifi(ssid: &str, password: Option<&str>) -> Result<(), String> {
-    let mut cmd = std::process::Command::new("nmcli");
-    cmd.args(["device", "wifi", "connect", ssid]);
-    if let Some(pw) = password {
-        cmd.args(["password", pw]);
+    pub fn get_wifi_status() -> WifiStatus {
+        WifiStatus::Disconnected
     }
 
-    let output = cmd.output().map_err(|e| format!("Failed to run nmcli: {}", e))?;
-
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!("Connection failed: {}", stderr.trim()))
+    pub fn get_lan_status() -> LanStatus {
+        LanStatus::Disconnected
     }
-}
 
-/// Disconnect from WiFi
-pub fn disconnect_wifi() -> Result<(), String> {
-    // Find the wifi device name first
-    let output = std::process::Command::new("nmcli")
-        .args(["-t", "-f", "TYPE,DEVICE", "device"])
-        .output()
-        .map_err(|e| format!("Failed to run nmcli: {}", e))?;
+    pub fn scan_wifi() -> Result<Vec<WifiNetwork>, String> {
+        Err("WiFi management not available on this platform".to_string())
+    }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let wifi_device = stdout.lines()
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.split(':').collect();
-            if parts.len() >= 2 && parts[0] == "wifi" {
-                Some(parts[1].to_string())
-            } else {
-                None
-            }
-        })
-        .next();
+    pub fn connect_wifi(_ssid: &str, _password: Option<&str>) -> Result<(), String> {
+        Err("WiFi management not available on this platform".to_string())
+    }
 
-    match wifi_device {
-        Some(device) => {
-            let output = std::process::Command::new("nmcli")
-                .args(["device", "disconnect", &device])
-                .output()
-                .map_err(|e| format!("Failed to run nmcli: {}", e))?;
-
-            if output.status.success() {
-                Ok(())
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                Err(format!("Disconnect failed: {}", stderr.trim()))
-            }
-        }
-        None => Err("No WiFi device found".to_string()),
+    pub fn disconnect_wifi() -> Result<(), String> {
+        Err("WiFi management not available on this platform".to_string())
     }
 }
 
@@ -348,8 +330,8 @@ pub fn view_network_section(state: &NetworkState) -> Element<'_, Message> {
 
     // LAN status (always shown if connected)
     match &state.lan_status {
-        LanStatus::Connected { interface, ip } => {
-            let lan_label = text(format!("LAN: Connected ({}) — {}", interface, ip))
+        LanStatus::Connected { interface } => {
+            let lan_label = text(format!("LAN: Connected ({})", interface))
                 .size(12)
                 .color(Color::from_rgb(0.4, 0.8, 0.4));
             content_items.push(lan_label.into());
@@ -367,10 +349,10 @@ pub fn view_network_section(state: &NetworkState) -> Element<'_, Message> {
 
     // WiFi status line
     let wifi_status_elem: Element<'_, Message> = match &state.wifi_status {
-        WifiStatus::Connected { ssid, signal, ip } => {
+        WifiStatus::Connected { ssid, signal } => {
             text(format!(
-                "WiFi: Connected to {} ({}) — {}",
-                ssid, signal_bars(*signal), ip
+                "WiFi: Connected to {} ({})",
+                ssid, signal_bars(*signal),
             ))
             .size(12)
             .color(Color::from_rgb(0.4, 0.8, 0.4))

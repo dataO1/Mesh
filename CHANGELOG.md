@@ -4,6 +4,51 @@ All notable changes to Mesh are documented in this file.
 
 ---
 
+## [0.9.2]
+
+### Added
+
+- **In-app WiFi management** — Settings now include a Network section with WiFi
+  scanning, connection, and disconnection. Uses `nmrs` (Rust D-Bus bindings for
+  NetworkManager) instead of shell-based `nmcli` for type-safe, reliable network
+  operations. Secured networks open an on-screen keyboard for password entry.
+  Platform-gated: Linux-only via `#[cfg(target_os = "linux")]` with no-op stubs
+  on other platforms, so Windows builds are unaffected. The on-screen keyboard
+  widget lives in mesh-widgets for reuse across crates.
+- **OTA system updates** — New System Update section in settings checks GitHub
+  releases for newer versions, installs via the `mesh-update` systemd service,
+  shows live journal output during installation, and restarts the cage compositor
+  to run the new binary. Only active on NixOS embedded (detected by `/etc/NIXOS`).
+- **MIDI settings navigation** — New `global.settings_toggle` action
+  opens/closes the settings modal via MIDI. When open, the browser encoder
+  scrolls through settings, encoder press enters editing mode for the focused
+  setting, and scroll cycles through options with live draft preview. Closing
+  auto-saves if changes were made. Opening settings automatically forces browse
+  mode on the mapping engine so encoders that share loop-size and browser-scroll
+  mappings (mode-switched) produce browser events for navigation. Previous
+  browse mode state is saved and restored on close. The settings scrollable
+  auto-scrolls to keep the focused setting visible as the encoder moves through
+  the list. Audio device dropdowns expand into inline button groups during
+  editing mode so all options are visible while cycling with the encoder.
+- **MIDI sub-panel navigation** — When MIDI-navigating to the Network or System
+  Update entries in settings, pressing the encoder enters a domain-specific
+  sub-panel. WiFi sub-panel: encoder cycles through scanned networks, press
+  connects (or opens keyboard for secured networks). Update sub-panel: encoder
+  cycles between Check and Install/Restart actions. Press encoder again to exit
+  the sub-panel. Priority chain: keyboard > sub-panel > settings edit > settings
+  scroll > normal MIDI.
+- **Embedded: silent boot** — Comprehensive kernel param and systemd
+  configuration for minimal boot output: `loglevel=0`, `quiet`,
+  `rd.systemd.show_status=false`, `systemd.show_status=false`,
+  `rd.udev.log_level=3`, `kernel.printk=0 0 0 0`, `vt.global_cursor_default=0`,
+  `logo.nologo`. Replaces the previous Plymouth-based splash which failed to
+  render the custom script theme on ARM/RK3588S (fell back to NixOS default).
+- **Embedded: NetworkManager permissions** — mesh user added to
+  `networkmanager` group, polkit rules expanded to allow managing both
+  `mesh-update.service` and `cage-tty1.service`.
+
+---
+
 ## [0.9.1]
 
 ### Fixed
@@ -23,28 +68,11 @@ All notable changes to Mesh are documented in this file.
   context. Mounted with `noatime` to reduce background writes and make
   hot-unplug safer. mesh-player detects new mounts via its existing 2-second
   `sysinfo` polling loop.
-- **Embedded: silent boot** — Comprehensive kernel param and systemd
-  configuration for minimal boot output: `loglevel=0`, `quiet`,
-  `rd.systemd.show_status=false`, `systemd.show_status=false`,
-  `rd.udev.log_level=3`, `kernel.printk=0 0 0 0`, `vt.global_cursor_default=0`,
-  `logo.nologo`. Replaces the previous Plymouth-based splash which failed to
-  render the custom script theme on ARM/RK3588S (fell back to NixOS default).
 - **Embedded: debugging infrastructure** — cage `-s` flag enables VT switching
   (Ctrl+Alt+F2), TTY2 getty provides a login shell for local debugging,
   persistent journal (`Storage=persistent`, 50MB cap) preserves logs across
   reboots, and `boot.initrd.systemd.emergencyAccess` enables emergency shell
   access during boot failures.
-- **MIDI settings navigation** — New `global.settings_toggle` action
-  opens/closes the settings modal via MIDI. When open, the browser encoder
-  scrolls through settings, encoder press enters editing mode for the focused
-  setting, and scroll cycles through options with live draft preview. Closing
-  auto-saves if changes were made. Opening settings automatically forces browse
-  mode on the mapping engine so encoders that share loop-size and browser-scroll
-  mappings (mode-switched) produce browser events for navigation. Previous
-  browse mode state is saved and restored on close. The settings scrollable
-  auto-scrolls to keep the focused setting visible as the encoder moves through
-  the list. Audio device dropdowns expand into inline button groups during
-  editing mode so all options are visible while cycling with the encoder.
 - **Windows cross-compilation failing on `stdbool.h`** — The container-based
   Windows build (`build-windows.nix`) set `BINDGEN_EXTRA_CLANG_ARGS` with
   `--sysroot=/usr/x86_64-w64-mingw32` for Essentia's cross-compilation, but

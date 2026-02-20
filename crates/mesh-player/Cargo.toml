@@ -75,3 +75,7 @@ crossbeam.workspace = true
 # CLAP plugin GUI hosting
 baseview = { git = "https://github.com/RustAudio/baseview.git" }
 raw-window-handle = "0.6"
+
+# Linux-only: NetworkManager D-Bus bindings for WiFi management
+[target.'cfg(target_os = "linux")'.dependencies]
+nmrs = "2"

@@ -980,16 +980,53 @@ impl MeshApp {
     }
 
     /// Handle encoder scroll while in settings MIDI navigation mode.
-    /// When browsing: cycles through the flat list of settings.
-    /// When editing: cycles through the focused setting's options (live draft update).
+    /// Priority: sub-panel → editing → browsing settings list.
     fn handle_settings_midi_scroll(&mut self, delta: i32) -> Task<Message> {
-        use super::settings::{build_settings_entries, SETTINGS_ENTRY_COUNT, SETTINGS_SCROLLABLE_ID};
+        use super::settings::{build_settings_entries, settings_entry_count, SubPanelFocus, SETTINGS_SCROLLABLE_ID};
 
+        if self.settings.settings_midi_nav.is_none() {
+            return Task::none();
+        }
+
+        // Sub-panel has highest priority — handle before taking other borrows
+        if let Some(ref mut nav) = self.settings.settings_midi_nav {
+            if let Some(ref mut panel) = nav.sub_panel {
+                match panel {
+                    SubPanelFocus::WifiNetworkList { selected } => {
+                        let count = self.settings.network.as_ref()
+                            .map(|n| n.networks.len()).unwrap_or(0);
+                        if count > 0 {
+                            *selected = if delta > 0 {
+                                (*selected + 1) % count
+                            } else {
+                                (*selected + count - 1) % count
+                            };
+                            // Sync visual selection
+                            let sel = *selected;
+                            if let Some(ref mut net) = self.settings.network {
+                                net.selected_network = Some(sel);
+                            }
+                        }
+                        return Task::none();
+                    }
+                    SubPanelFocus::UpdateActions { selected } => {
+                        let action_count = 2;
+                        *selected = if delta > 0 {
+                            (*selected + 1) % action_count
+                        } else {
+                            (*selected + action_count - 1) % action_count
+                        };
+                        return Task::none();
+                    }
+                }
+            }
+        }
+
+        // Pre-compute values that need &self.settings before mutably borrowing nav
         let entries = build_settings_entries(&self.settings);
-        let nav = match self.settings.settings_midi_nav.as_mut() {
-            Some(n) => n,
-            None => return Task::none(),
-        };
+        let entry_count = settings_entry_count(&self.settings);
+
+        let nav = self.settings.settings_midi_nav.as_mut().unwrap();
 
         if nav.editing {
             // Cycle through options for the focused setting
@@ -1007,12 +1044,11 @@ impl MeshApp {
             }
         } else {
             // Cycle focused_index through all settings (wrapping)
-            let count = entries.len();
-            if count > 0 {
+            if entry_count > 0 {
                 let new_idx = if delta > 0 {
-                    (nav.focused_index + 1) % count
+                    (nav.focused_index + 1) % entry_count
                 } else {
-                    (nav.focused_index + count - 1) % count
+                    (nav.focused_index + entry_count - 1) % entry_count
                 };
                 nav.focused_index = new_idx;
             }
@@ -1020,7 +1056,7 @@ impl MeshApp {
 
         // Scroll the settings container to keep the focused item visible
         let focused = nav.focused_index;
-        let max_idx = SETTINGS_ENTRY_COUNT.saturating_sub(1);
+        let max_idx = entry_count.saturating_sub(1);
         let relative_y = if max_idx > 0 {
             (focused as f32 / max_idx as f32).clamp(0.0, 1.0)
         } else {
@@ -1031,12 +1067,72 @@ impl MeshApp {
     }
 
     /// Handle encoder press while in settings MIDI navigation mode.
-    /// Toggles between browsing the settings list and editing the focused setting.
+    /// Sub-panel: activates the focused action. Otherwise: toggles edit mode.
+    /// For Network/Update entries: press in edit mode enters sub-panel.
     fn handle_settings_midi_select(&mut self) -> Task<Message> {
-        let nav = match self.settings.settings_midi_nav.as_mut() {
-            Some(n) => n,
-            None => return Task::none(),
-        };
+        use super::settings::SubPanelFocus;
+        use super::network::NetworkMessage;
+        use super::system_update::SystemUpdateMessage;
+
+        if self.settings.settings_midi_nav.is_none() {
+            return Task::none();
+        }
+
+        // If in sub-panel, take it and activate the selected item
+        let sub_panel = self.settings.settings_midi_nav.as_mut()
+            .and_then(|n| n.sub_panel.take());
+        if let Some(panel) = sub_panel {
+            match panel {
+                SubPanelFocus::WifiNetworkList { selected } => {
+                    return self.update(Message::Network(NetworkMessage::SelectNetwork(selected)));
+                }
+                SubPanelFocus::UpdateActions { selected } => {
+                    match selected {
+                        0 => return self.update(Message::SystemUpdate(SystemUpdateMessage::CheckForUpdate)),
+                        1 => {
+                            if let Some(ref us) = self.settings.update {
+                                if us.is_install_complete() {
+                                    return self.update(Message::SystemUpdate(SystemUpdateMessage::RestartCage));
+                                } else if us.has_available_update() {
+                                    return self.update(Message::SystemUpdate(SystemUpdateMessage::InstallUpdate));
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    return Task::none();
+                }
+            }
+        }
+
+        // Pre-compute indices before mutably borrowing nav
+        let base_entries = 13usize;
+        let has_network = self.settings.network.is_some();
+        let has_update = self.settings.update.is_some();
+        let network_entry_idx = if has_network { Some(base_entries) } else { None };
+        let update_entry_idx = if has_update {
+            Some(base_entries + if has_network { 1 } else { 0 })
+        } else { None };
+        let initial_net_selection = self.settings.network.as_ref()
+            .and_then(|n| n.selected_network)
+            .unwrap_or(0);
+        let networks_empty = self.settings.network.as_ref()
+            .is_some_and(|n| n.networks.is_empty());
+
+        let nav = self.settings.settings_midi_nav.as_mut().unwrap();
+
+        if nav.editing {
+            if Some(nav.focused_index) == network_entry_idx {
+                nav.sub_panel = Some(SubPanelFocus::WifiNetworkList { selected: initial_net_selection });
+                if networks_empty {
+                    return self.update(Message::Network(NetworkMessage::Scan));
+                }
+                return Task::none();
+            } else if Some(nav.focused_index) == update_entry_idx {
+                nav.sub_panel = Some(SubPanelFocus::UpdateActions { selected: 0 });
+                return Task::none();
+            }
+        }
 
         nav.editing = !nav.editing;
         Task::none()

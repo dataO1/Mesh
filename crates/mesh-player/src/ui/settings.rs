@@ -15,8 +15,18 @@ use std::sync::LazyLock;
 /// Scrollable ID for the settings content area (used for programmatic scrolling via MIDI nav)
 pub static SETTINGS_SCROLLABLE_ID: LazyLock<Id> = LazyLock::new(|| Id::new("mesh_settings_scrollable"));
 
-/// Total number of navigable settings entries (must match build_settings_entries)
-pub const SETTINGS_ENTRY_COUNT: usize = 13;
+/// Calculate the total number of navigable settings entries.
+/// Dynamic because Network and Update sections are optional.
+pub fn settings_entry_count(state: &SettingsState) -> usize {
+    let mut count = 13; // Base entries from build_settings_entries
+    if state.network.is_some() {
+        count += 1; // Network section (WiFi scan/list)
+    }
+    if state.update.is_some() {
+        count += 1; // System update section
+    }
+    count
+}
 
 /// Target LUFS presets for loudness normalization
 /// Index 0 = loudest (DJ standard), Index 3 = quietest (broadcast safe)
@@ -233,6 +243,16 @@ struct SettingsSnapshot {
 
 // ── MIDI Navigation State ──
 
+/// Sub-panel focus state for domain-specific MIDI navigation within settings.
+/// When active, encoder scroll/select operate on the sub-panel instead of the settings list.
+#[derive(Debug, Clone)]
+pub enum SubPanelFocus {
+    /// Navigating the WiFi network list (encoder cycles networks, press connects)
+    WifiNetworkList { selected: usize },
+    /// Navigating update actions (encoder cycles actions, press activates)
+    UpdateActions { selected: usize },
+}
+
 /// State for MIDI-driven settings navigation
 #[derive(Debug, Clone)]
 pub struct SettingsMidiNav {
@@ -242,6 +262,8 @@ pub struct SettingsMidiNav {
     pub editing: bool,
     /// Browse mode state for each side before settings opened (to restore on close)
     pub saved_browse_state: [bool; 2],
+    /// Active sub-panel (overrides normal navigation when Some)
+    pub sub_panel: Option<SubPanelFocus>,
 }
 
 impl SettingsMidiNav {
@@ -250,6 +272,7 @@ impl SettingsMidiNav {
             focused_index: 0,
             editing: false,
             saved_browse_state,
+            sub_panel: None,
         }
     }
 }

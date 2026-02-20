@@ -103,11 +103,12 @@ in
       };
     };
 
-    # Polkit rule: allow mesh user to start the update service
+    # Polkit rule: allow mesh user to manage update and cage services
     security.polkit.extraConfig = ''
       polkit.addRule(function(action, subject) {
         if (action.id == "org.freedesktop.systemd1.manage-units" &&
-            action.lookup("unit") == "mesh-update.service" &&
+            (action.lookup("unit") == "mesh-update.service" ||
+             action.lookup("unit") == "cage-tty1.service") &&
             subject.user == "mesh") {
           return polkit.Result.YES;
         }

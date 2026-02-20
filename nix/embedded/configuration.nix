@@ -43,6 +43,7 @@
   environment.systemPackages = with pkgs; [
     vim
     htop
+    curl
     alsa-utils
     usbutils
     pciutils

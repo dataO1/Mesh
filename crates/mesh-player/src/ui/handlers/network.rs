@@ -1,19 +1,18 @@
 //! Network message handler
 //!
-//! Handles WiFi scanning, connection, and status checking via nmcli.
-//! All blocking nmcli calls run inside Task::perform async blocks.
+//! Handles WiFi scanning, connection, and status checking.
+//! On Linux, operations use nmrs (D-Bus → NetworkManager) via blocking backend calls.
+//! On other platforms, network management is disabled.
 
 use iced::Task;
 
 use crate::ui::app::MeshApp;
 use crate::ui::message::Message;
-use crate::ui::network::{
-    self, NetworkMessage, NetworkState, WifiStatus,
-};
+use crate::ui::network::{backend, NetworkMessage, NetworkState, WifiStatus};
 
 /// Handle network messages
 pub fn handle(app: &mut MeshApp, msg: NetworkMessage) -> Task<Message> {
-    // Bail if no network state (nmcli not available)
+    // Bail if no network state (not available on this platform)
     let state = match app.settings.network.as_mut() {
         Some(s) => s,
         None => return Task::none(),
@@ -24,7 +23,7 @@ pub fn handle(app: &mut MeshApp, msg: NetworkMessage) -> Task<Message> {
             state.scanning = true;
             state.error_message.clear();
             Task::perform(
-                async { network::scan_wifi() },
+                async { backend::scan_wifi() },
                 |result| Message::Network(NetworkMessage::ScanComplete(result)),
             )
         }
@@ -47,9 +46,9 @@ pub fn handle(app: &mut MeshApp, msg: NetworkMessage) -> Task<Message> {
         NetworkMessage::CheckStatus => {
             Task::perform(
                 async {
-                    let has_wifi = network::detect_wifi_adapter();
-                    let wifi = network::get_wifi_status();
-                    let lan = network::get_lan_status();
+                    let has_wifi = backend::detect_wifi_adapter();
+                    let wifi = backend::get_wifi_status();
+                    let lan = backend::get_lan_status();
                     Ok((wifi, lan, has_wifi))
                 },
                 |result| Message::Network(NetworkMessage::StatusComplete(result)),
@@ -80,8 +79,6 @@ pub fn handle(app: &mut MeshApp, msg: NetworkMessage) -> Task<Message> {
                         format!("WiFi password for \"{}\"", network.ssid),
                         true, // masked
                     );
-                    // Store SSID for when keyboard submits
-                    // We use the keyboard prompt to carry the SSID context
                     state.selected_network = Some(idx);
                 } else {
                     // Connect directly to open network
@@ -89,7 +86,7 @@ pub fn handle(app: &mut MeshApp, msg: NetworkMessage) -> Task<Message> {
                     state.error_message.clear();
                     let ssid = network.ssid.clone();
                     return Task::perform(
-                        async move { network::connect_wifi(&ssid, None) },
+                        async move { backend::connect_wifi(&ssid, None) },
                         |result| Message::Network(NetworkMessage::ConnectComplete(result)),
                     );
                 }
@@ -103,7 +100,7 @@ pub fn handle(app: &mut MeshApp, msg: NetworkMessage) -> Task<Message> {
             state.wifi_status = WifiStatus::Connecting { ssid: ssid.clone() };
             state.error_message.clear();
             Task::perform(
-                async move { network::connect_wifi(&ssid, None) },
+                async move { backend::connect_wifi(&ssid, None) },
                 |result| Message::Network(NetworkMessage::ConnectComplete(result)),
             )
         }
@@ -114,7 +111,7 @@ pub fn handle(app: &mut MeshApp, msg: NetworkMessage) -> Task<Message> {
             state.wifi_status = WifiStatus::Connecting { ssid: ssid.clone() };
             state.error_message.clear();
             Task::perform(
-                async move { network::connect_wifi(&ssid, Some(&password)) },
+                async move { backend::connect_wifi(&ssid, Some(&password)) },
                 |result| Message::Network(NetworkMessage::ConnectComplete(result)),
             )
         }
@@ -125,12 +122,12 @@ pub fn handle(app: &mut MeshApp, msg: NetworkMessage) -> Task<Message> {
             match result {
                 Ok(()) => {
                     state.error_message.clear();
-                    // Refresh status to get IP and signal
+                    // Refresh status to get signal strength
                     return Task::perform(
                         async {
-                            let has_wifi = network::detect_wifi_adapter();
-                            let wifi = network::get_wifi_status();
-                            let lan = network::get_lan_status();
+                            let has_wifi = backend::detect_wifi_adapter();
+                            let wifi = backend::get_wifi_status();
+                            let lan = backend::get_lan_status();
                             Ok((wifi, lan, has_wifi))
                         },
                         |result| Message::Network(NetworkMessage::StatusComplete(result)),
@@ -148,7 +145,7 @@ pub fn handle(app: &mut MeshApp, msg: NetworkMessage) -> Task<Message> {
             let state = app.settings.network.as_mut().unwrap();
             state.error_message.clear();
             Task::perform(
-                async { network::disconnect_wifi() },
+                async { backend::disconnect_wifi() },
                 |result| Message::Network(NetworkMessage::DisconnectComplete(result)),
             )
         }
@@ -183,12 +180,17 @@ pub fn handle(app: &mut MeshApp, msg: NetworkMessage) -> Task<Message> {
     }
 }
 
-/// Initialize network state if nmcli is available
+/// Initialize network state.
+/// On Linux: always returns Some (adapter detection happens async via CheckStatus).
+/// On non-Linux: returns None (network section hidden).
 pub fn init_network_state() -> Option<NetworkState> {
-    if network::is_nmcli_available() {
+    #[cfg(target_os = "linux")]
+    {
         Some(NetworkState::new())
-    } else {
-        log::info!("nmcli not found — network settings disabled");
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        log::info!("Network management not available on this platform");
         None
     }
 }

@@ -63,6 +63,16 @@ impl UpdateState {
     pub fn is_installing(&self) -> bool {
         self.install_status == UpdateInstallStatus::Installing
     }
+
+    /// Whether installation completed successfully (ready for restart)
+    pub fn is_install_complete(&self) -> bool {
+        self.install_status == UpdateInstallStatus::Complete
+    }
+
+    /// Whether a newer version is available for install
+    pub fn has_available_update(&self) -> bool {
+        matches!(self.check_status, UpdateCheckStatus::Available(_))
+    }
 }
 
 /// Messages for system update management

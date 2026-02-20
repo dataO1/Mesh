@@ -209,7 +209,8 @@ for v3 and beyond.
 - [ ] when starting the player first, then connecting the hid and midi devices, they
   are not recognized, we already have reconnection logic (connecting then
   disconnecting hardware works well), reuse that for detecting hardware after
-  the software launch.
+  the software launch. we know which hardware to expect from the midi mapping
+  file.
 - [ ] some tracks still have some numbers in front of the name (as part of the
   artist apparently) from the name parsing, we need to fix that, some examples:
   * 01 Black Sun Empire - Feed The Machine (you can check the original name in
