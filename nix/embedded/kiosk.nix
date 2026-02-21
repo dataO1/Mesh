@@ -35,8 +35,9 @@ let
       sleep 0.5
     done
 
-    # Start mesh-player via pw-jack in background
-    ${pkgs.pipewire.jack}/bin/pw-jack ${meshPlayer}/bin/mesh-player "$@" &
+    # Start mesh-player via pw-jack in background, log to journald
+    ${pkgs.pipewire.jack}/bin/pw-jack ${meshPlayer}/bin/mesh-player "$@" \
+      > >(${pkgs.systemd}/bin/systemd-cat -t mesh-player) 2>&1 &
     PLAYER_PID=$!
 
     # Wait for mesh-player's JACK ports to appear (up to 10s)
