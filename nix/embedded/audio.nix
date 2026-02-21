@@ -70,6 +70,8 @@
         ]
         actions = {
           update-props = {
+            node.description = "Headphone (ES8388)"
+            node.nick = "Headphone"
             session.suspend-timeout-seconds = 0
             audio.rate = 48000
             api.alsa.period-size = 256
@@ -85,6 +87,8 @@
         ]
         actions = {
           update-props = {
+            node.description = "Mains Out (PCM5102A)"
+            node.nick = "Mains Out"
             session.suspend-timeout-seconds = 0
             audio.rate = 48000
             api.alsa.period-size = 256
