@@ -24,10 +24,18 @@ let
       pkgs.libGL
       pkgs.vulkan-loader
     ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export RUST_LOG="''${RUST_LOG:-info}"
 
     PW_LINK="${pkgs.pipewire}/bin/pw-link"
     PW_CLI="${pkgs.pipewire}/bin/pw-cli"
+    SYSTEMD_CAT="${pkgs.systemd}/bin/systemd-cat"
     ES8388="alsa_output.platform-es8388-sound.stereo-fallback"
+
+    # Set up logging pipe — process substitution doesn't survive pw-jack's exec
+    LOGFIFO=$(mktemp -u /tmp/mesh-log.XXXXXX)
+    mkfifo "$LOGFIFO"
+    $SYSTEMD_CAT -t mesh-player < "$LOGFIFO" &
+    LOGCAT_PID=$!
 
     # Wait for PipeWire to enumerate the ES8388 ALSA node (up to 15s)
     for i in $(seq 1 30); do
@@ -35,9 +43,9 @@ let
       sleep 0.5
     done
 
-    # Start mesh-player via pw-jack in background, log to journald
+    # Start mesh-player via pw-jack in background, log to journald via FIFO
     ${pkgs.pipewire.jack}/bin/pw-jack ${meshPlayer}/bin/mesh-player "$@" \
-      > >(${pkgs.systemd}/bin/systemd-cat -t mesh-player) 2>&1 &
+      >"$LOGFIFO" 2>&1 &
     PLAYER_PID=$!
 
     # Wait for mesh-player's JACK ports to appear (up to 10s)
@@ -52,6 +60,8 @@ let
 
     # Wait for mesh-player to exit (cage restarts on crash)
     wait $PLAYER_PID
+    kill $LOGCAT_PID 2>/dev/null
+    rm -f "$LOGFIFO"
   '';
 in
 {
