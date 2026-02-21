@@ -492,12 +492,16 @@ jobs:
       - name: Verify cache signatures
         run: |
           CACHE_DIR="$(pwd)/${{ env.CACHE_NAME }}"
-          RESULT_HASH=$(nix-store -q --hash $(readlink ./result) | cut -c12-43)
+          # Extract the store path hash (base32, first component after /nix/store/)
+          STORE_PATH=$(readlink ./result)
+          STORE_HASH=$(basename "$STORE_PATH" | cut -d'-' -f1)
 
-          echo "Checking narinfo for mesh-player..."
-          NARINFO="${CACHE_DIR}/${RESULT_HASH}.narinfo"
+          echo "Checking narinfo for mesh-player (${STORE_HASH})..."
+          NARINFO="${CACHE_DIR}/${STORE_HASH}.narinfo"
           if [ ! -f "$NARINFO" ]; then
             echo "::error::narinfo not found: ${NARINFO}"
+            echo "Available narinfos:"
+            ls "${CACHE_DIR}"/*.narinfo 2>/dev/null | head -5
             exit 1
           fi
 
