@@ -44,6 +44,23 @@ All notable changes to Mesh are documented in this file.
   - View helpers: `waveform_shader_zoomed()`, `waveform_shader_overview()`,
     `waveform_player_shader()`
 
+- **Rendering: hybrid canvas/shader composition** — The 4-deck waveform display now
+  uses a two-layer `Stack`: canvas on bottom (headers + overview waveforms) and shader
+  widgets on top (zoomed waveforms). The canvas only redraws on structural changes
+  (track load, stem mute, loop toggle), not on every playhead tick. The shader handles
+  all per-frame animation. This eliminates all CPU lyon tessellation from the playback
+  hot path while preserving the canvas text rendering for deck headers (badge, track
+  name, BPM, key, loop indicator, LUFS gain).
+
+### Fixed
+
+- **Rendering: beat grid not visible in shader** — Beat marker threshold calculations
+  in the WGSL shader used UV-space pixel widths (`1.0/width`) for source-space
+  comparisons, causing thresholds to exceed 1.0 in zoomed views (every pixel matched
+  as a beat line, making them invisible). Fixed by computing `px_in_source` based on
+  the view mode: `1.0/width` for overview, `(win_end - win_start)/width` for zoomed.
+  Also corrected cue marker and slicer line widths with the same fix.
+
 ---
 
 ## [0.9.3]

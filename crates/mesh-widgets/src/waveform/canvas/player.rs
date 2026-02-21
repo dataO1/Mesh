@@ -104,6 +104,9 @@ where
     pub state: &'a PlayerCanvasState,
     pub on_seek: SeekFn,
     pub on_zoom: ZoomFn,
+    /// When true, skip drawing zoomed waveforms (rendered by shader overlay instead).
+    /// Canvas only draws headers + overview waveforms + overview playhead.
+    pub skip_zoomed: bool,
 }
 
 impl<'a, Message, SeekFn, ZoomFn> PlayerCanvas<'a, Message, SeekFn, ZoomFn>
@@ -194,8 +197,8 @@ where
                 (zoomed_start, zoomed_end, overview_start, overview_end)
             };
 
-            // Check if in zoomed region (drag to zoom)
-            if local_y >= zoomed_start && local_y < zoomed_end {
+            // Check if in zoomed region (drag to zoom) — skip when shader handles zoomed
+            if !self.skip_zoomed && local_y >= zoomed_start && local_y < zoomed_end {
                 match event {
                     Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                         interaction.active_deck = Some(deck_idx);
@@ -404,6 +407,7 @@ where
                     loop_active,
                     volume,
                     mirrored,
+                    self.skip_zoomed,
                 );
             }
         });
@@ -455,6 +459,7 @@ fn draw_deck_quadrant(
     loop_active: bool,
     volume: f32,
     mirrored: bool,
+    skip_zoomed: bool,
 ) {
     use iced::widget::canvas::Text;
     use iced::alignment::{Horizontal, Vertical};
@@ -748,55 +753,57 @@ fn draw_deck_quadrant(
         });
     }
 
-    // Draw zoomed waveform
-    draw_zoomed_at(
-        frame,
-        &deck.zoomed,
-        &deck.overview.highres_peaks,
-        &deck.overview.linked_highres_peaks,
-        deck.zoomed.lufs_gain,
-        &deck.overview.linked_lufs_gains,
-        deck.overview.duration_samples,
-        playhead,
-        x,
-        zoomed_y,
-        width,
-        zoomed_height,
-        is_master,
-        stem_colors,
-        stem_active,
-        linked_active,
-    );
+    // Draw zoomed waveform (skip when shader overlay handles this)
+    if !skip_zoomed {
+        draw_zoomed_at(
+            frame,
+            &deck.zoomed,
+            &deck.overview.highres_peaks,
+            &deck.overview.linked_highres_peaks,
+            deck.zoomed.lufs_gain,
+            &deck.overview.linked_lufs_gains,
+            deck.overview.duration_samples,
+            playhead,
+            x,
+            zoomed_y,
+            width,
+            zoomed_height,
+            is_master,
+            stem_colors,
+            stem_active,
+            linked_active,
+        );
 
-    // Draw stem status indicators on inner edge of zoomed waveform (towards center gap)
-    let indicator_height = (zoomed_height - (STEM_INDICATOR_GAP * 3.0)) / 4.0;
-    // Left column decks (0, 2): indicators on right edge; right column (1, 3): on left edge
-    let indicator_x = if deck_idx % 2 == 0 {
-        x + width - STEM_INDICATOR_WIDTH - 2.0
-    } else {
-        x + 2.0
-    };
-
-    for (visual_idx, &stem_idx) in STEM_INDICATOR_ORDER.iter().enumerate() {
-        let indicator_y = zoomed_y + (visual_idx as f32) * (indicator_height + STEM_INDICATOR_GAP);
-        let color = stem_colors[stem_idx];
-
-        // Simple bypass toggle: 50% brightness if active, dark if bypassed
-        let indicator_color = if stem_active[stem_idx] {
-            Color::from_rgb(
-                color.r * 0.5,
-                color.g * 0.5,
-                color.b * 0.5,
-            )
+        // Draw stem status indicators on inner edge of zoomed waveform (towards center gap)
+        let indicator_height = (zoomed_height - (STEM_INDICATOR_GAP * 3.0)) / 4.0;
+        // Left column decks (0, 2): indicators on right edge; right column (1, 3): on left edge
+        let indicator_x = if deck_idx % 2 == 0 {
+            x + width - STEM_INDICATOR_WIDTH - 2.0
         } else {
-            Color::from_rgb(0.12, 0.12, 0.12)
+            x + 2.0
         };
 
-        frame.fill_rectangle(
-            Point::new(indicator_x, indicator_y),
-            Size::new(STEM_INDICATOR_WIDTH, indicator_height),
-            indicator_color,
-        );
+        for (visual_idx, &stem_idx) in STEM_INDICATOR_ORDER.iter().enumerate() {
+            let indicator_y = zoomed_y + (visual_idx as f32) * (indicator_height + STEM_INDICATOR_GAP);
+            let color = stem_colors[stem_idx];
+
+            // Simple bypass toggle: 50% brightness if active, dark if bypassed
+            let indicator_color = if stem_active[stem_idx] {
+                Color::from_rgb(
+                    color.r * 0.5,
+                    color.g * 0.5,
+                    color.b * 0.5,
+                )
+            } else {
+                Color::from_rgb(0.12, 0.12, 0.12)
+            };
+
+            frame.fill_rectangle(
+                Point::new(indicator_x, indicator_y),
+                Size::new(STEM_INDICATOR_WIDTH, indicator_height),
+                indicator_color,
+            );
+        }
     }
     draw_overview_at(
         frame,
@@ -812,9 +819,8 @@ fn draw_deck_quadrant(
         overview_scale,
     );
 
-    // Draw volume dimming overlay over the zoomed waveform only
-    // At full volume (1.0) no dimming, at zero volume max dimming (0.4 alpha)
-    if volume < 0.99 {
+    // Draw volume dimming overlay over the zoomed waveform only (skip when shader handles this)
+    if !skip_zoomed && volume < 0.99 {
         let dim_alpha = (1.0 - volume) * 0.4;
         frame.fill_rectangle(
             Point::new(x, zoomed_y),

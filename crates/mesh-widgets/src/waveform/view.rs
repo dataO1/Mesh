@@ -198,6 +198,7 @@ where
         state,
         on_seek,
         on_zoom,
+        skip_zoomed: false,
     })
     .width(Length::Fill)
     .height(Length::Fill)

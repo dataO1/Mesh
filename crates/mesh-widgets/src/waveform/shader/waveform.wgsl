@@ -156,6 +156,21 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
+    // Compute source_x change per pixel — needed for correct line widths.
+    // Overview: one pixel = 1/width of track (or 1/(width*bpm_scale) with stretch)
+    // Zoomed: one pixel = (win_end - win_start) / width of track
+    var px_in_source: f32;
+    if (is_overview) {
+        let bpm_scale_px = u.window_params.w;
+        if (bpm_scale_px > 0.01) {
+            px_in_source = 1.0 / (width * bpm_scale_px);
+        } else {
+            px_in_source = 1.0 / width;
+        }
+    } else {
+        px_in_source = (u.window_params.y - u.window_params.x) / width;
+    }
+
     // -----------------------------------------------------------------
     // 1. Loop region (green tint if active)
     // -----------------------------------------------------------------
@@ -190,7 +205,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             if (slicer_width > 0.0) {
                 let slice_frac = (source_x - sl_start) / slicer_width * 8.0;
                 let at_division = fract(slice_frac);
-                let line_width = 1.0 / width;
+                // One pixel in fract(slice_frac) space = 8 * px_in_source / slicer_width
+                let line_width = 8.0 * px_in_source / slicer_width;
                 if (at_division < line_width || at_division > 1.0 - line_width) {
                     color = blend_over(color, vec4<f32>(1.0, 0.5, 0.0, 0.6));
                 }
@@ -207,20 +223,21 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     if (grid_step > 0.001) {
         let beat_phase = (source_x - first_beat) / grid_step;
-        let line_w = 1.0 / width;
 
         // Bar lines (every beats_per_bar beats) — brighter
+        // Threshold: how many bars does 2 pixels span? = 2 * px_in_source / (grid_step * beats_per_bar)
         let bar_phase = beat_phase / beats_per_bar;
         let bar_frac = fract(bar_phase);
-        let bar_threshold = line_w * 2.0 / grid_step; // 2px wide
+        let bar_threshold = px_in_source * 2.0 / (grid_step * beats_per_bar);
         if (bar_frac < bar_threshold || bar_frac > 1.0 - bar_threshold) {
             if (beat_phase > -0.5) { // Only after first beat
                 color = blend_over(color, vec4<f32>(0.4, 0.4, 0.4, 0.5));
             }
         } else {
             // Beat lines — subtle
+            // Threshold: how many beats does 1 pixel span? = px_in_source / grid_step
             let beat_frac = fract(beat_phase);
-            let beat_threshold = line_w / grid_step; // 1px wide
+            let beat_threshold = px_in_source / grid_step;
             if (beat_frac < beat_threshold || beat_frac > 1.0 - beat_threshold) {
                 if (beat_phase > -0.5) {
                     color = blend_over(color, vec4<f32>(0.3, 0.3, 0.3, 0.3));
@@ -271,7 +288,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // 5. Cue markers (colored vertical lines + triangle)
     // -----------------------------------------------------------------
     let cue_count = u32(u.cue_params.x);
-    let cue_line_w = 2.0 / width;
+    let cue_line_w = px_in_source * 2.0;
 
     for (var i = 0u; i < cue_count; i++) {
         let cue_pos = get_cue_pos(i);
@@ -296,7 +313,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (has_main_cue) {
         let main_pos = u.cue_params.y;
         let main_dist = abs(source_x - main_pos);
-        let main_line_w = 2.5 / width;
+        let main_line_w = px_in_source * 2.5;
         if (main_dist < main_line_w) {
             let alpha = smoothstep(main_line_w, 0.0, main_dist);
             color = blend_over(color, vec4<f32>(1.0, 1.0, 1.0, 0.9 * alpha));

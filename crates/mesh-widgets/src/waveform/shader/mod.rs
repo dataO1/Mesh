@@ -413,7 +413,16 @@ pub fn waveform_shader_overview<'a, Message: Clone + 'a>(
     .into()
 }
 
-/// Create the full 4-deck waveform display using GPU shader rendering.
+/// Create the full 4-deck waveform display using hybrid canvas/shader rendering.
+///
+/// Architecture:
+/// - **Bottom layer (Canvas)**: Headers + overview waveforms (static after track load,
+///   only invalidated by structural changes like stem mutes, track loads, etc.)
+/// - **Top layer (Shader)**: Zoomed waveforms rendered entirely on the GPU via WGSL
+///   fragment shader. Peak data uploaded once; only 384-byte uniforms per frame.
+///
+/// Composed via `Stack`: shader widgets are positioned with spacers to overlay
+/// exactly on top of the zoomed waveform areas in the canvas layout.
 ///
 /// Layout: 2x2 grid with decks 0-1 on top (zoomed above overview) and
 /// decks 2-3 on bottom (mirrored: overview above zoomed).
@@ -421,33 +430,57 @@ pub fn waveform_player_shader<'a, Message: Clone + 'a>(
     state: &'a PlayerCanvasState,
     on_action: impl Fn(WaveformAction) -> Message + Clone + 'a,
 ) -> Element<'a, Message> {
-    use iced::widget::{column, row};
+    use iced::widget::{column, row, stack, Canvas, Space};
+    use super::canvas::PlayerCanvas;
+    use super::state::DECK_HEADER_HEIGHT;
 
-    let deck_view = |idx: usize, mirrored: bool| -> Element<'a, Message> {
+    // Bottom layer: canvas draws headers + overview waveforms (no zoomed)
+    let on_action_seek = on_action.clone();
+    let on_action_zoom = on_action.clone();
+    let canvas_layer: Element<'a, Message> = Canvas::new(PlayerCanvas {
+        state,
+        on_seek: move |deck, pos| on_action_seek(WaveformAction::Seek(deck, pos)),
+        on_zoom: move |deck, bars| on_action_zoom(WaveformAction::SetZoom(deck, bars)),
+        skip_zoomed: true,
+    })
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into();
+
+    // Height of the non-zoomed content per deck cell (header + gap + overview)
+    let spacer_h = DECK_HEADER_HEIGHT + DECK_INTERNAL_GAP + WAVEFORM_HEIGHT;
+
+    // Top layer: shader widgets positioned to overlay the zoomed waveform areas.
+    // Each deck column: [shader(Fill)] + [spacer(Fixed)] matching the canvas layout.
+    // Top row (non-mirrored): zoomed is above header+overview
+    // Bottom row (mirrored): header+overview is above zoomed
+    let deck_shader = |idx: usize, mirrored: bool| -> Element<'a, Message> {
         let zoomed = waveform_shader_zoomed(state, idx, on_action.clone());
-        let overview = waveform_shader_overview(state, idx, on_action.clone());
-
         if mirrored {
-            column![overview, zoomed]
-                .spacing(DECK_INTERNAL_GAP)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
+            column![
+                Space::new().width(Length::Fill).height(Length::Fixed(spacer_h)),
+                zoomed,
+            ]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
         } else {
-            column![zoomed, overview]
-                .spacing(DECK_INTERNAL_GAP)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
+            column![
+                zoomed,
+                Space::new().width(Length::Fill).height(Length::Fixed(spacer_h)),
+            ]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
         }
     };
 
-    column![
-        row![deck_view(0, false), deck_view(1, false)]
+    let shader_overlay: Element<'a, Message> = column![
+        row![deck_shader(0, false), deck_shader(1, false)]
             .spacing(DECK_GRID_GAP)
             .width(Length::Fill)
             .height(Length::Fill),
-        row![deck_view(2, true), deck_view(3, true)]
+        row![deck_shader(2, true), deck_shader(3, true)]
             .spacing(DECK_GRID_GAP)
             .width(Length::Fill)
             .height(Length::Fill),
@@ -455,5 +488,10 @@ pub fn waveform_player_shader<'a, Message: Clone + 'a>(
     .spacing(DECK_GRID_GAP)
     .width(Length::Fill)
     .height(Length::Fill)
-    .into()
+    .into();
+
+    stack![canvas_layer, shader_overlay]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }
