@@ -63,18 +63,20 @@
   # PCM5102A gets higher priority.driver so it becomes graph clock source when present.
   services.pipewire.wireplumber.extraConfig."99-mesh-audio" = {
     "monitor.alsa.rules" = [
-      # Disable DisplayPort and HDMI audio — not needed in kiosk mode,
-      # and they steal the PipeWire graph driver role from the real outputs
+      # Deprioritize DisplayPort and HDMI audio — not needed in kiosk mode.
+      # priority.driver=0 ensures they never become the PipeWire graph driver.
       {
         matches = [{ "node.name" = "~alsa_output.*dp*"; }];
         actions.update-props = {
-          "node.disabled" = true;
+          "priority.driver" = 0;
+          "priority.session" = 0;
         };
       }
       {
         matches = [{ "node.name" = "~alsa_output.*hdmi*"; }];
         actions.update-props = {
-          "node.disabled" = true;
+          "priority.driver" = 0;
+          "priority.session" = 0;
         };
       }
       {
@@ -84,8 +86,8 @@
           "audio.rate" = 48000;
           "api.alsa.period-size" = 256;
           "api.alsa.headroom" = 0;
-          "priority.driver" = 2000;
-          "priority.session" = 2000;
+          "priority.driver" = 10000;
+          "priority.session" = 10000;
         };
       }
       {
