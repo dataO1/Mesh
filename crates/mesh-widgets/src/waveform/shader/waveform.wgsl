@@ -16,7 +16,7 @@ struct Uniforms {
     loop_params: vec4<f32>,     // loop_start, loop_end, loop_active, has_track
     beat_params: vec4<f32>,     // grid_step_norm, first_beat_norm, beats_per_bar, volume
     cue_params: vec4<f32>,      // cue_count, main_cue_pos, has_main_cue, slicer_active
-    slicer_params: vec4<f32>,   // slicer_start, slicer_end, current_slice, _pad
+    slicer_params: vec4<f32>,   // slicer_start, slicer_end, current_slice, peaks_per_pixel
     cue_pos_0_3: vec4<f32>,
     cue_pos_4_7: vec4<f32>,
     cue_color_0: vec4<f32>,
@@ -27,7 +27,7 @@ struct Uniforms {
     cue_color_5: vec4<f32>,
     cue_color_6: vec4<f32>,
     cue_color_7: vec4<f32>,
-    stem_smooth: vec4<f32>,  // per-stem Gaussian smooth radius multiplier [vocals, drums, bass, other]
+    stem_smooth: vec4<f32>,  // reserved (layout alignment)
 }
 
 @group(0) @binding(0)
@@ -76,53 +76,52 @@ fn get_subsample_target(stem_idx: u32) -> f32 {
     return 1.0; // Vocals, Drums, Other
 }
 
-/// Gaussian-smoothed peak sample at a specific integer index.
-/// Applies Gaussian-weighted average over a window of `radius` peaks on each side.
-/// sigma = radius / 2 gives good falloff (matches old canvas gaussian_weight).
-fn gaussian_sample(stem_idx: u32, center: u32, radius: u32) -> vec2<f32> {
+/// Min/max reduction over a range of peaks.
+/// Returns vec2(min_of_mins, max_of_maxes) — the TRUE envelope.
+/// This is the mathematically correct operation for waveform display:
+/// if any peak in the range hit -0.8, the pixel must show -0.8.
+/// Unlike Gaussian averaging, min/max is monotonic — adding peaks to
+/// the range can only extend the envelope, never shrink it — so it
+/// produces rock-stable display with no "dancing" artifacts.
+fn minmax_reduce(stem_idx: u32, start: u32, end_idx: u32) -> vec2<f32> {
     let pps = u32(u.view_params.z);
-    if (radius == 0u) { return raw_peak(stem_idx, center); }
+    let s = min(start, pps - 1u);
+    let e = min(end_idx, pps - 1u);
 
-    let sigma = max(f32(radius) * 0.5, 0.5);
-    let start = select(0u, center - radius, center >= radius);
-    let end_idx = min(center + radius, pps - 1u);
+    // Cap iterations at 64 per grid point to stay in GPU budget
+    let range = e - s + 1u;
+    let step = max(1u, range / 64u);
 
-    var min_sum = 0.0;
-    var max_sum = 0.0;
-    var weight_sum = 0.0;
-
-    var i = start;
+    var result_min = 1.0;
+    var result_max = -1.0;
+    var i = s;
     loop {
-        if (i > end_idx) { break; }
-        let dist = abs(f32(i) - f32(center));
-        let w = exp(-0.5 * (dist / sigma) * (dist / sigma));
+        if (i > e) { break; }
         let p = raw_peak(stem_idx, i);
-        min_sum += p.x * w;
-        max_sum += p.y * w;
-        weight_sum += w;
-        i += 1u;
+        result_min = min(result_min, p.x);
+        result_max = max(result_max, p.y);
+        i += step;
     }
-
-    if (weight_sum > 0.0) {
-        return vec2<f32>(min_sum / weight_sum, max_sum / weight_sum);
-    }
-    return raw_peak(stem_idx, center);
+    return vec2<f32>(result_min, result_max);
 }
 
-/// Stable peak sampling with grid-aligned subsampling and Gaussian smoothing.
+/// Stable peak sampling with grid-aligned min/max reduction.
 ///
-/// Reproduces the old canvas "STABLE RENDERING" approach:
-/// 1. Compute step size: how many peaks to skip (matches HIGHRES_PIXELS_PER_POINT)
-/// 2. Snap to step-aligned grid anchored at peak 0 (prevents "dancing peaks")
-/// 3. Gaussian-smooth at each grid point (per-stem radius multiplier)
-/// 4. Linearly interpolate between the two nearest grid points
+/// Algorithm:
+/// 1. Compute step = round(subsample_target * peaks_per_pixel)
+///    peaks_per_pixel is a CPU-computed uniform (not derived from
+///    win_end - win_start in the shader), eliminating float instability.
+/// 2. Snap to step-aligned grid anchored at peak index 0.
+///    The grid never shifts relative to the track.
+/// 3. At each grid point, take TRUE min/max over the half-step range.
+///    This is correct for waveform envelopes (not averaging).
+/// 4. Linearly interpolate between the two nearest grid points.
+///    This produces the abstract "fewer points connected by lines" look
+///    matching the old canvas path rendering.
 ///
-/// The grid is fixed to the track (not the window), so peaks stay stable as
-/// the playhead scrolls. This is the fragment-shader equivalent of the canvas's
-/// peak-index iteration with grid alignment.
-///
-/// For overview (very zoomed out), uses min/max aggregation instead.
-fn sample_peak(stem_idx: u32, x_norm: f32, peaks_per_pixel: f32, smooth_mult: f32) -> vec2<f32> {
+/// For overview (very zoomed out): full min/max over the pixel's range.
+/// For deep zoom (< 2 ppp): linear interpolation between raw peaks.
+fn sample_peak(stem_idx: u32, x_norm: f32, peaks_per_pixel: f32) -> vec2<f32> {
     let pps = u32(u.view_params.z);
     if (pps == 0u) {
         return vec2<f32>(0.0, 0.0);
@@ -130,64 +129,63 @@ fn sample_peak(stem_idx: u32, x_norm: f32, peaks_per_pixel: f32, smooth_mult: f3
 
     let float_idx = x_norm * f32(pps);
 
-    if (peaks_per_pixel > 40.0) {
-        // Overview: min/max aggregation for accurate envelope shape
-        let half_range = peaks_per_pixel * 0.5;
-        let start_f = max(0.0, float_idx - half_range);
-        let end_f = min(f32(pps) - 1.0, float_idx + half_range);
-        let start_idx = u32(start_f);
-        let end_idx = u32(end_f);
-        let range = end_idx - start_idx + 1u;
-        let step = max(1u, range / 64u);
-
-        var result_min = 1.0;
-        var result_max = -1.0;
-        var i = start_idx;
-        loop {
-            if (i > end_idx) { break; }
-            let p = raw_peak(stem_idx, i);
-            result_min = min(result_min, p.x);
-            result_max = max(result_max, p.y);
-            i += step;
-        }
-        return vec2<f32>(result_min, result_max);
+    // Deep zoom (< 2 peaks per pixel): linear interpolation for smooth
+    // sub-pixel motion. No subsampling needed — every peak is visible.
+    if (peaks_per_pixel < 2.0) {
+        let idx0 = u32(clamp(floor(float_idx), 0.0, f32(pps) - 1.0));
+        let idx1 = min(idx0 + 1u, pps - 1u);
+        let frac = fract(float_idx);
+        return mix(raw_peak(stem_idx, idx0), raw_peak(stem_idx, idx1), vec2<f32>(frac));
     }
 
-    // --- Stable grid-aligned sampling (zoomed/mid-range) ---
+    // Overview (very zoomed out): simple min/max over pixel's range
+    if (peaks_per_pixel > 40.0) {
+        let half_range = peaks_per_pixel * 0.5;
+        let start_idx = u32(max(0.0, float_idx - half_range));
+        let end_idx = u32(min(f32(pps) - 1.0, float_idx + half_range));
+        return minmax_reduce(stem_idx, start_idx, end_idx);
+    }
 
-    // Step size: how many peaks to skip per rendered point.
-    // Matches old canvas: step = round(target_ppp / pixels_per_peak)
-    //                          = round(target_ppp * peaks_per_pixel)
+    // --- Grid-aligned min/max sampling (zoomed/mid-range) ---
+    //
+    // Step size: how many peaks each rendered "point" covers.
+    // peaks_per_pixel is a stable CPU-computed uniform, so step_f is
+    // constant across all pixels and all frames at the same zoom level.
+    // This eliminates the grid restructuring that caused dancing.
     let subsample_target = get_subsample_target(stem_idx);
     let step_f = max(round(subsample_target * peaks_per_pixel), 1.0);
-    let step_u = u32(step_f);
 
-    // Gaussian smooth radius: scales with step and per-stem multiplier.
-    // Drums (0.1): step=4 → radius=0, sharp transients
-    // Bass (0.4): step=10 → radius=4, smooth curves
-    let smooth_r = u32(round(step_f * smooth_mult));
-    // Cap radius at 16 to limit GPU work per pixel
-    let capped_r = min(smooth_r, 16u);
-
-    // Snap to step-aligned grid anchored at peak index 0.
-    // This is the key to preventing "dancing peaks": the grid never shifts
-    // relative to the track, only the interpolation fraction changes as
-    // the window scrolls.
+    // Grid position: snap to multiples of step_f anchored at peak 0.
+    // As the window scrolls, only grid_frac changes (smoothly 0→1).
+    // At each grid crossing, idx_a/idx_b shift to the next pair —
+    // same as the old canvas scrolling behavior.
     let grid_pos = float_idx / step_f;
     let grid_floor = floor(grid_pos);
     let grid_frac = grid_pos - grid_floor;
 
     // Two nearest grid-aligned peak indices
-    let idx_a = u32(clamp(grid_floor * step_f, 0.0, f32(pps) - 1.0));
-    let idx_b = u32(clamp((grid_floor + 1.0) * step_f, 0.0, f32(pps) - 1.0));
+    let center_a = u32(clamp(grid_floor * step_f, 0.0, f32(pps) - 1.0));
+    let center_b = u32(clamp((grid_floor + 1.0) * step_f, 0.0, f32(pps) - 1.0));
 
-    // Gaussian-smoothed samples at each grid point
-    let p_a = gaussian_sample(stem_idx, idx_a, capped_r);
-    let p_b = gaussian_sample(stem_idx, idx_b, capped_r);
+    // Min/max reduction over the half-step range at each grid point.
+    // This captures the true envelope around each grid point without
+    // the averaging artifacts of Gaussian smoothing.
+    let half_step = u32(step_f * 0.5);
+    let p_a = minmax_reduce(
+        stem_idx,
+        select(0u, center_a - half_step, center_a >= half_step),
+        min(center_a + half_step, pps - 1u)
+    );
+    let p_b = minmax_reduce(
+        stem_idx,
+        select(0u, center_b - half_step, center_b >= half_step),
+        min(center_b + half_step, pps - 1u)
+    );
 
-    // Linear interpolation between grid-aligned smoothed samples.
+    // Linear interpolation between grid-aligned min/max samples.
     // This is the shader equivalent of the canvas path connecting
-    // step-aligned points with straight lines.
+    // step-aligned points with straight lines — producing the
+    // abstract reduced-detail look.
     return mix(p_a, p_b, vec2<f32>(grid_frac));
 }
 
@@ -372,16 +370,24 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let center_y = 0.5;
     let height_scale = u.view_params.y;
 
-    // How many peak samples one screen pixel covers — drives adaptive sampling
-    let peaks_per_pixel = f32(pps) * px_in_source;
+    // peaks_per_pixel: CPU-computed stable uniform for zoomed view,
+    // or derived from px_in_source for overview.
+    // Using the CPU uniform avoids float subtraction noise from
+    // (win_end - win_start) / width that caused step_f instability.
+    var peaks_per_pixel: f32;
+    let cpu_ppp = u.slicer_params.w;
+    if (is_overview || cpu_ppp <= 0.0) {
+        peaks_per_pixel = f32(pps) * px_in_source;
+    } else {
+        peaks_per_pixel = cpu_ppp;
+    }
 
     // Render order: Drums(1), Bass(2), Vocals(0), Other(3)
     let render_order = array<u32, 4>(1u, 2u, 0u, 3u);
 
     for (var i = 0u; i < 4u; i++) {
         let stem = render_order[i];
-        let smooth_mult = u.stem_smooth[stem];
-        let peak = sample_peak(stem, source_x, peaks_per_pixel, smooth_mult);
+        let peak = sample_peak(stem, source_x, peaks_per_pixel);
         let stem_color = get_stem_color(stem);
         let is_active = u.stem_active[stem] > 0.5;
 

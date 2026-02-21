@@ -239,10 +239,16 @@ where
         let deck = self.state.deck(self.deck_idx);
         let overview = &deck.overview;
 
+        // Use f64 throughout to avoid precision loss on large sample positions.
+        // A 4-min track at 48kHz = ~11.5M samples, exceeding f32's 2^23 = 8.4M
+        // integer precision limit. f32 normalization would lose ~1 sample of
+        // precision, causing visible drift over the track's duration.
+        let dur_f64 = overview.duration_samples as f64;
+
         // Playhead position (normalized 0.0-1.0)
         let playhead = if overview.duration_samples > 0 {
             let ph = self.state.interpolated_playhead(self.deck_idx, SAMPLE_RATE as u32);
-            ph as f32 / overview.duration_samples as f32
+            (ph as f64 / dur_f64) as f32
         } else {
             0.0
         };
@@ -255,10 +261,14 @@ where
         };
 
         // Window parameters for zoomed view
-        // Uses signed arithmetic to allow negative start (before track) for edge padding.
-        // The shader treats source_x outside [0, 1] as silence, providing symmetric centering
-        // at track boundaries (matching the old canvas WindowInfo.left_padding behavior).
-        let (window_start, window_end, window_total) = if !self.is_overview && overview.duration_samples > 0 {
+        // Uses signed f64 arithmetic for precision + edge padding.
+        // The shader treats source_x outside [0, 1] as silence, providing symmetric
+        // centering at track boundaries.
+        //
+        // CRITICAL: window_span is computed directly from window_samples / duration
+        // in f64, NOT as (end_norm - start_norm) which would lose precision from
+        // two independent f32 casts. This keeps peaks_per_pixel stable across frames.
+        let (window_start, window_end, window_total, peaks_per_pixel) = if !self.is_overview && overview.duration_samples > 0 {
             let zoom_bars = deck.zoomed.zoom_bars;
             let bpm = self.state.track_bpm(self.deck_idx).unwrap_or(120.0);
             let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
@@ -271,12 +281,19 @@ where
             let virtual_start = ph as i64 - half_window;
             let virtual_end = virtual_start + window_samples as i64;
 
-            let dur = overview.duration_samples as f32;
-            let start_norm = virtual_start as f32 / dur;
-            let end_norm = virtual_end as f32 / dur;
-            (start_norm, end_norm, peaks_per_stem as f32)
+            // Normalize in f64 before casting to f32 — avoids precision loss
+            let start_norm = (virtual_start as f64 / dur_f64) as f32;
+            let end_norm = (virtual_end as f64 / dur_f64) as f32;
+
+            // Compute peaks_per_pixel on CPU for stability.
+            // This is the SAME value the shader would compute as pps * px_in_source,
+            // but computed directly from integers to avoid float subtraction noise.
+            let window_span_f64 = window_samples as f64 / dur_f64;
+            let ppp = (peaks_per_stem as f64 * window_span_f64 / bounds.width as f64) as f32;
+
+            (start_norm, end_norm, peaks_per_stem as f32, ppp)
         } else {
-            (0.0, 1.0, peaks_per_stem as f32)
+            (0.0, 1.0, peaks_per_stem as f32, 0.0)
         };
 
         // BPM stretch for overview
@@ -370,7 +387,7 @@ where
             loop_params: [loop_start, loop_end, loop_active_f, if overview.has_track { 1.0 } else { 0.0 }],
             beat_params: [grid_step, first_beat, 4.0, volume],
             cue_params: [cue_count as f32, main_cue_pos, has_main_cue, slicer_active],
-            slicer_params: [slicer_start, slicer_end, current_slice, 0.0],
+            slicer_params: [slicer_start, slicer_end, current_slice, peaks_per_pixel],
             cue_pos_0_3: cue_positions[0],
             cue_pos_4_7: cue_positions[1],
             cue_color_0: cue_colors[0],

@@ -40,7 +40,7 @@ pub struct WaveformUniforms {
     pub beat_params: [f32; 4],
     /// [cue_count, main_cue_pos, has_main_cue, slicer_active]
     pub cue_params: [f32; 4],
-    /// [slicer_start, slicer_end, current_slice, _pad]
+    /// [slicer_start, slicer_end, current_slice, peaks_per_pixel]
     pub slicer_params: [f32; 4],
     /// Cue positions 0-3 (normalized)
     pub cue_pos_0_3: [f32; 4],
@@ -55,7 +55,8 @@ pub struct WaveformUniforms {
     pub cue_color_5: [f32; 4],
     pub cue_color_6: [f32; 4],
     pub cue_color_7: [f32; 4],
-    /// Per-stem Gaussian smooth radius multiplier [vocals, drums, bass, other]
+    /// Reserved (was: per-stem Gaussian smooth radius multiplier).
+    /// Kept to maintain uniform layout alignment.
     pub stem_smooth: [f32; 4],
 }
 
