@@ -893,8 +893,12 @@ impl MeshApp {
                     MidiGlobalAction::SetCueMix(v) => {
                         let _ = self.update(Message::Mixer(MixerMessage::SetCueMix(v)));
                     }
-                    MidiGlobalAction::SetBpm(_) | MidiGlobalAction::AdjustBpm(_) => {
-                        // BPM control not implemented yet
+                    MidiGlobalAction::SetBpm(bpm) => {
+                        let bpm_rounded = bpm.round();
+                        self.domain.set_global_bpm_with_engine(bpm_rounded);
+                    }
+                    MidiGlobalAction::AdjustBpm(_delta) => {
+                        // Relative BPM adjustment — not needed yet
                     }
                     MidiGlobalAction::FxScroll(delta) => {
                         return self.update(Message::ScrollGlobalFx(delta));

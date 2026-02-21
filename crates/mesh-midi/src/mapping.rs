@@ -805,6 +805,10 @@ impl MappingEngine {
                 let normalized = self.extract_continuous_value(event, action, mapping, None);
                 normalized.map(|v| MidiMessage::Global(GlobalAction::SetCueMix(v)))
             }
+            "global.bpm" => {
+                let normalized = self.extract_continuous_value(event, action, mapping, None);
+                normalized.map(|v| MidiMessage::Global(GlobalAction::SetBpm(v as f64)))
+            }
 
             // FX preset browsing
             "global.fx_scroll" => {

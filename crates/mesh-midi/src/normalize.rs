@@ -157,6 +157,7 @@ pub fn range_for_action(action: &str) -> ControlRange {
 
         // Global controls
         "global.master_volume" | "global.cue_volume" => ControlRange::Unit,
+        "global.bpm" => ControlRange::Custom { min: 60.0, max: 200.0 },
 
         // Default to unit range
         _ => ControlRange::Unit,

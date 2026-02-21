@@ -43,6 +43,12 @@ All notable changes to Mesh are documented in this file.
 
 ### Added
 
+- **MIDI: Master BPM slider control** — The master BPM slider is now controllable
+  via MIDI. `GlobalAction::SetBpm` was stubbed out; it now routes through the
+  full pipeline: `range_for_action("global.bpm")` maps CC 0-127 to 60-200 BPM,
+  the mapping engine converts to `SetBpm`, and the app handler calls
+  `set_global_bpm_with_engine()`. The MIDI learn wizard includes a "Move the
+  BPM slider" step at the end of the Browser phase across all layout variants.
 - **Embedded: PAM audio limits** — `@audio` group gets unlimited memlock,
   rtprio 99, and nice -19 for real-time audio scheduling.
 - **Embedded: RT kernel tuning** — Added `threadirqs` kernel parameter (threads
