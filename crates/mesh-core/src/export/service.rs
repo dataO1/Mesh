@@ -15,7 +15,7 @@
 
 use super::ExportProgress;
 use crate::db::DatabaseService;
-use crate::usb::cache::register_usb_database;
+use crate::usb::cache::clear_usb_database;
 use crate::usb::sync::{copy_large_file, SyncPlan, PlaylistTrack};
 
 use std::collections::HashMap;
@@ -77,7 +77,7 @@ impl ExportService {
         let cancel_flag = self.cancel_flag.clone();
         let usb_root = usb_collection_root.to_path_buf();
 
-        let total_tracks = plan.tracks_to_copy.len();
+        let total_tracks = plan.tracks_to_copy.len() + plan.tracks_to_update.len();
         let total_bytes = plan.total_bytes;
         let tracks_to_copy = plan.tracks_to_copy.clone();
         let tracks_to_update = plan.tracks_to_update.clone();
@@ -93,10 +93,17 @@ impl ExportService {
             let mut bytes_exported: u64 = 0;
             let mut failed_files: Vec<(String, String)> = Vec::new();
 
+            // Send Started immediately so the UI transitions before any I/O
+            let _ = progress_tx.send(ExportProgress::Started {
+                total_tracks,
+                total_bytes,
+            });
+
             // ================================================================
             // Phase 0: Copy preset files (small YAML files)
             // ================================================================
             {
+                let t = Instant::now();
                 let local_root = local_db.collection_root();
                 let presets_stems_src = local_root.join("presets/stems");
                 let presets_decks_src = local_root.join("presets/decks");
@@ -117,6 +124,7 @@ impl ExportService {
                         log::warn!("Failed to copy slicer presets: {}", e);
                     }
                 }
+                log::info!("[export] Phase 0 (presets to USB): {:.1}s", t.elapsed().as_secs_f64());
                 let _ = progress_tx.send(ExportProgress::PresetsCopied);
             }
 
@@ -125,6 +133,7 @@ impl ExportService {
             // ================================================================
             // Copy mesh.db from USB to a local temp directory, then open it.
             // All DB operations happen against this fast local copy.
+            let t_phase1 = Instant::now();
             let temp_dir = match tempfile::TempDir::new() {
                 Ok(d) => d,
                 Err(e) => {
@@ -168,15 +177,11 @@ impl ExportService {
                 }
             };
 
-            log::info!("Staging DB opened at {:?}", temp_dir.path());
+            log::info!("[export] Phase 1 (stage DB locally): {:.1}s", t_phase1.elapsed().as_secs_f64());
 
             // ================================================================
             // Phase 2: Sequential WAV copy to USB
             // ================================================================
-            let _ = progress_tx.send(ExportProgress::Started {
-                total_tracks,
-                total_bytes,
-            });
 
             // Create playlists on staging DB before track copy (parents before children)
             for info in &playlists_to_create {
@@ -388,21 +393,23 @@ impl ExportService {
             }
 
             // 3f: Drop staging DB to flush CozoDB WAL and release file lock
+            let t = Instant::now();
             drop(staging_db);
+            log::info!("[export] CozoDB WAL flush: {:.1}s", t.elapsed().as_secs_f64());
 
             // 3g: Write staging DB back to USB (single large sequential write)
             if staging_db_path.exists() {
+                let t = Instant::now();
                 log::info!("Writing staging database back to USB...");
                 if let Err(e) = copy_large_file(&staging_db_path, &usb_db_path, |_| {}) {
                     log::error!("Failed to write staging DB to USB: {}", e);
                     failed_files.push(("mesh.db".to_string(), format!("DB writeback failed: {}", e)));
                 }
+                log::info!("[export] DB writeback to USB: {:.1}s", t.elapsed().as_secs_f64());
             }
 
-            // 3h: Re-register USB database in cache (re-open from USB)
-            if let Ok(fresh_db) = DatabaseService::new(&usb_root) {
-                register_usb_database(usb_root.clone(), fresh_db);
-            }
+            // 3h: Invalidate cached USB database (will be lazily re-opened on next access)
+            clear_usb_database(&usb_root);
 
             // ================================================================
             // Phase 4: Delete removed track files from USB

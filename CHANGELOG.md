@@ -17,6 +17,12 @@ All notable changes to Mesh are documented in this file.
   metadata lookup independent of which stick is currently browsed. Also fixed the
   browser storage sync guard that prevented USB→USB switches between sticks.
 
+- **USB: export progress and performance** — Pressing "Export" showed no UI feedback
+  for metadata-only changes (no progress bar, export button stayed clickable). The UI
+  now transitions immediately when export starts, and the progress bar correctly counts
+  metadata-only updates. Also eliminated an expensive database re-open on USB flash
+  after export completes (lazy cache invalidation instead).
+
 - **USB: sync plan performance** — "Calculating changes" in the export modal took
   60+ seconds for a 200-track collection because supplementary metadata (cue points,
   saved loops, stem links, ML analysis, tags, audio features) was fetched with 6

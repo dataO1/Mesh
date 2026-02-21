@@ -133,6 +133,17 @@ impl MeshCueApp {
                     }
 
                     // No tracks missing LUFS, proceed with export directly
+                    // Transition UI immediately so the user sees progress and can't double-click
+                    let total_tracks = plan.tracks_to_copy.len() + plan.tracks_to_update.len();
+                    self.export_state.phase = ExportPhase::Exporting {
+                        current_track: String::new(),
+                        tracks_complete: 0,
+                        bytes_complete: 0,
+                        total_tracks,
+                        total_bytes: plan.total_bytes,
+                        start_time: std::time::Instant::now(),
+                    };
+
                     let config = self.build_export_config();
                     let label = if self.export_state.device_label.is_empty() {
                         None
