@@ -418,12 +418,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         var edge_alpha = aa_top * aa_bot;
 
         // For sub-pixel thin envelopes (< 2px), the overlapping smoothstep
-        // transitions produce very low alpha. Boost proportional to coverage
-        // so thin peaks remain visible rather than vanishing.
+        // transitions produce very low alpha. Boost proportional to coverage,
+        // but ONLY for pixels near the envelope center — without the proximity
+        // check, `max(edge_alpha, coverage)` would override the smoothstep's
+        // spatial falloff and paint the entire column with the stem color.
         let thickness = y_max - y_min;
         if (thickness < 2.0 * fw && thickness > 0.0) {
             let coverage = thickness / (2.0 * fw);
-            edge_alpha = max(edge_alpha, coverage * 0.6);
+            let center = (y_min + y_max) * 0.5;
+            let proximity = smoothstep(fw, 0.0, abs(uv.y - center));
+            edge_alpha = max(edge_alpha, proximity * coverage * 0.8);
         }
 
         if (edge_alpha > 0.005) {
