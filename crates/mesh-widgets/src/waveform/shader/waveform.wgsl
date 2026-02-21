@@ -27,6 +27,7 @@ struct Uniforms {
     cue_color_5: vec4<f32>,
     cue_color_6: vec4<f32>,
     cue_color_7: vec4<f32>,
+    stem_smooth: vec4<f32>,  // per-stem Gaussian smooth radius multiplier [vocals, drums, bass, other]
 }
 
 @group(0) @binding(0)
@@ -67,12 +68,21 @@ fn raw_peak(stem_idx: u32, idx: u32) -> vec2<f32> {
     return vec2<f32>(peaks[base], peaks[base + 1u]);
 }
 
-/// Adaptive peak sampling: interpolates when zoomed in, aggregates when zoomed out.
+/// Get per-stem smooth radius multiplier from uniforms.
+fn get_smooth_multiplier(stem_idx: u32) -> f32 {
+    return u.stem_smooth[stem_idx];
+}
+
+/// Adaptive peak sampling with per-stem Gaussian smoothing.
+///
+/// Matches the old canvas rendering's abstract look:
+/// - Gaussian-weighted averaging reduces detail proportional to `smooth_mult`
+/// - Bass (0.4) gets heavy smoothing, Drums (0.1) stays sharp
+/// - For overview (high peaks_per_pixel), uses min/max to preserve envelope shape
 ///
 /// `peaks_per_pixel` = how many peak samples one screen pixel covers.
-/// - < 1.5: zoomed in, linear interpolation for smooth curves
-/// - >= 1.5: zoomed out, min/max over covered range (capped at 64 iterations)
-fn sample_peak(stem_idx: u32, x_norm: f32, peaks_per_pixel: f32) -> vec2<f32> {
+/// `smooth_mult` = per-stem Gaussian radius multiplier (0.1=sharp, 0.4=smooth).
+fn sample_peak(stem_idx: u32, x_norm: f32, peaks_per_pixel: f32, smooth_mult: f32) -> vec2<f32> {
     let pps = u32(u.view_params.z);
     if (pps == 0u) {
         return vec2<f32>(0.0, 0.0);
@@ -80,38 +90,66 @@ fn sample_peak(stem_idx: u32, x_norm: f32, peaks_per_pixel: f32) -> vec2<f32> {
 
     let float_idx = x_norm * f32(pps);
 
-    if (peaks_per_pixel < 1.5) {
-        // Zoomed in: linear interpolation between adjacent peaks
-        let idx0 = clamp(u32(floor(float_idx)), 0u, pps - 1u);
-        let idx1 = min(idx0 + 1u, pps - 1u);
-        let frac = fract(float_idx);
-        let p0 = raw_peak(stem_idx, idx0);
-        let p1 = raw_peak(stem_idx, idx1);
-        return mix(p0, p1, vec2<f32>(frac));
+    // Smooth radius in peak indices: scales with peaks_per_pixel and stem multiplier.
+    // At 8 bars zoom with HIGHRES_WIDTH=65536, ppp ≈ 5-10, so radius ≈ 2-4 for bass.
+    // Minimum radius of 2 peaks for zoomed views gives the abstract look.
+    let base_radius = max(peaks_per_pixel * smooth_mult, select(0.0, 2.0 * smooth_mult, peaks_per_pixel > 0.5));
+    let radius = base_radius;
+
+    if (peaks_per_pixel > 40.0) {
+        // Very zoomed out (overview): min/max aggregation for accurate envelope
+        let half_range = peaks_per_pixel * 0.5;
+        let start_f = max(0.0, float_idx - half_range);
+        let end_f = min(f32(pps) - 1.0, float_idx + half_range);
+        let start_idx = u32(start_f);
+        let end_idx = u32(end_f);
+        let range = end_idx - start_idx + 1u;
+        let step = max(1u, range / 64u);
+
+        var result_min = 1.0;
+        var result_max = -1.0;
+        var i = start_idx;
+        loop {
+            if (i > end_idx) { break; }
+            let p = raw_peak(stem_idx, i);
+            result_min = min(result_min, p.x);
+            result_max = max(result_max, p.y);
+            i += step;
+        }
+        return vec2<f32>(result_min, result_max);
     }
 
-    // Zoomed out: min/max aggregation over the peaks this pixel covers
-    let half_range = peaks_per_pixel * 0.5;
-    let start_f = max(0.0, float_idx - half_range);
-    let end_f = min(f32(pps) - 1.0, float_idx + half_range);
-    let start_idx = u32(start_f);
-    let end_idx = u32(end_f);
+    // Zoomed/mid-range: Gaussian-weighted average for smooth abstract look.
+    // sigma = radius / 2 gives good falloff (matches old canvas gaussian_weight).
+    let sigma = max(radius * 0.5, 0.5);
+    let int_radius = u32(ceil(radius));
+    // Cap at 16 taps per side (33 total) — plenty for smooth results
+    let capped_radius = min(int_radius, 16u);
 
-    // Limit iterations to avoid GPU stalls on very zoomed-out views
-    let range = end_idx - start_idx + 1u;
-    let step = max(1u, range / 64u);
+    let center_idx = u32(clamp(floor(float_idx), 0.0, f32(pps) - 1.0));
+    let window_start = select(0u, center_idx - capped_radius, center_idx >= capped_radius);
+    let window_end = min(center_idx + capped_radius, pps - 1u);
 
-    var result_min = 1.0;
-    var result_max = -1.0;
-    var i = start_idx;
+    var min_sum = 0.0;
+    var max_sum = 0.0;
+    var weight_sum = 0.0;
+
+    var i = window_start;
     loop {
-        if (i > end_idx) { break; }
+        if (i > window_end) { break; }
+        let dist = abs(f32(i) - float_idx);
+        let w = exp(-0.5 * (dist / sigma) * (dist / sigma));
         let p = raw_peak(stem_idx, i);
-        result_min = min(result_min, p.x);
-        result_max = max(result_max, p.y);
-        i += step;
+        min_sum += p.x * w;
+        max_sum += p.y * w;
+        weight_sum += w;
+        i += 1u;
     }
-    return vec2<f32>(result_min, result_max);
+
+    if (weight_sum > 0.0) {
+        return vec2<f32>(min_sum / weight_sum, max_sum / weight_sum);
+    }
+    return raw_peak(stem_idx, center_idx);
 }
 
 /// Get stem color by index
@@ -303,7 +341,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     for (var i = 0u; i < 4u; i++) {
         let stem = render_order[i];
-        let peak = sample_peak(stem, source_x, peaks_per_pixel);
+        let smooth_mult = get_smooth_multiplier(stem);
+        let peak = sample_peak(stem, source_x, peaks_per_pixel, smooth_mult);
         let stem_color = get_stem_color(stem);
         let is_active = u.stem_active[stem] > 0.5;
 

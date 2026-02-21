@@ -25,6 +25,14 @@ use super::state::{
 };
 use pipeline::{WaveformPrimitive, WaveformUniforms};
 
+/// Audio engine sample rate — must match mesh_core::types::SAMPLE_RATE.
+const SAMPLE_RATE: u64 = 48000;
+
+/// Per-stem Gaussian smooth radius multiplier.
+/// Index: 0=Vocals, 1=Drums, 2=Bass, 3=Other
+/// Matches the old canvas SMOOTH_RADIUS_MULTIPLIER constants.
+const SMOOTH_RADIUS_MULTIPLIER: [f32; 4] = [0.25, 0.1, 0.4, 0.4];
+
 // Layout constants matching the old canvas renderer
 /// Gap between deck cells in the 2x2 grid
 pub const DECK_GRID_GAP: f32 = 10.0;
@@ -233,7 +241,7 @@ where
 
         // Playhead position (normalized 0.0-1.0)
         let playhead = if overview.duration_samples > 0 {
-            let ph = self.state.interpolated_playhead(self.deck_idx, 44100);
+            let ph = self.state.interpolated_playhead(self.deck_idx, SAMPLE_RATE as u32);
             ph as f32 / overview.duration_samples as f32
         } else {
             0.0
@@ -252,12 +260,11 @@ where
         // at track boundaries (matching the old canvas WindowInfo.left_padding behavior).
         let (window_start, window_end, window_total) = if !self.is_overview && overview.duration_samples > 0 {
             let zoom_bars = deck.zoomed.zoom_bars;
-            let sample_rate = 44100u64;
             let bpm = self.state.track_bpm(self.deck_idx).unwrap_or(120.0);
-            let samples_per_beat = (sample_rate as f64 * 60.0 / bpm) as u64;
+            let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
             let samples_per_bar = samples_per_beat * 4;
             let window_samples = samples_per_bar * zoom_bars as u64;
-            let ph = self.state.interpolated_playhead(self.deck_idx, sample_rate as u32);
+            let ph = self.state.interpolated_playhead(self.deck_idx, SAMPLE_RATE as u32);
 
             // Allow window to extend before 0 and after duration for symmetric centering
             let half_window = window_samples as i64 / 2;
@@ -374,6 +381,7 @@ where
             cue_color_5: cue_colors[5],
             cue_color_6: cue_colors[6],
             cue_color_7: cue_colors[7],
+            stem_smooth: SMOOTH_RADIUS_MULTIPLIER,
         }
     }
 }

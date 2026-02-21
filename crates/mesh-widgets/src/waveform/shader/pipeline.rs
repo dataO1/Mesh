@@ -55,6 +55,8 @@ pub struct WaveformUniforms {
     pub cue_color_5: [f32; 4],
     pub cue_color_6: [f32; 4],
     pub cue_color_7: [f32; 4],
+    /// Per-stem Gaussian smooth radius multiplier [vocals, drums, bass, other]
+    pub stem_smooth: [f32; 4],
 }
 
 // =============================================================================
