@@ -255,6 +255,10 @@ where
             overview.highres_peak_buffer.as_ref().map_or(0, |p| p.peaks_per_stem)
         };
 
+        // BPM used for both window sizing and beat grid fallback.
+        // Always has a value (falls back to 120 BPM).
+        let bpm = self.state.track_bpm(self.deck_idx).unwrap_or(120.0);
+
         // Window parameters for zoomed view
         // Uses signed f64 arithmetic for precision + edge padding.
         // The shader treats source_x outside [0, 1] as silence, providing symmetric
@@ -265,7 +269,6 @@ where
         // two independent f32 casts. This keeps peaks_per_pixel stable across frames.
         let (window_start, window_end, window_total, peaks_per_pixel) = if !self.is_overview && overview.duration_samples > 0 {
             let zoom_bars = deck.zoomed.zoom_bars;
-            let bpm = self.state.track_bpm(self.deck_idx).unwrap_or(120.0);
             let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
             let samples_per_bar = samples_per_beat * 4;
             let window_samples = samples_per_bar * zoom_bars as u64;
@@ -327,22 +330,20 @@ where
         };
 
         // Beat grid parameters
-        // Prefer analyzed beat grid; fall back to procedural BPM grid
+        // Prefer analyzed beat grid; fall back to procedural BPM grid.
+        // Uses the same `bpm` variable as the window computation above,
+        // so the grid always matches the window sizing (even at 120 BPM fallback).
         let (grid_step, first_beat) = if overview.beat_markers.len() > 1 {
             // Use analyzed beat grid (normalized positions 0.0-1.0)
             let total_span = overview.beat_markers.last().unwrap() - overview.beat_markers[0];
             let avg_interval = total_span as f32 / (overview.beat_markers.len() - 1) as f32;
             let first = *overview.beat_markers.first().unwrap() as f32;
             (avg_interval, first)
-        } else if let Some(bpm) = self.state.track_bpm(self.deck_idx) {
+        } else if bpm > 0.0 && dur_f64 > 0.0 {
             // Fallback: procedural grid from BPM when beat_markers empty/single
-            if bpm > 0.0 && dur_f64 > 0.0 {
-                let samples_per_beat = SAMPLE_RATE as f64 * 60.0 / bpm;
-                let grid_step_norm = (samples_per_beat / dur_f64) as f32;
-                (grid_step_norm, 0.0)
-            } else {
-                (0.0, 0.0)
-            }
+            let samples_per_beat = SAMPLE_RATE as f64 * 60.0 / bpm;
+            let grid_step_norm = (samples_per_beat / dur_f64) as f32;
+            (grid_step_norm, 0.0)
         } else {
             (0.0, 0.0)
         };
