@@ -484,6 +484,14 @@ TOOLCHAIN
         # signalsmith-stretch invoke bindgen. Re-exported in Phase 5 for mesh-cue.
         unset CC CXX AR RANLIB CFLAGS CXXFLAGS LDFLAGS BINDGEN_EXTRA_CLANG_ARGS
 
+        # Re-export clang resource dir so bindgen can find stdbool.h when cross-compiling.
+        # bindgen auto-injects --target=x86_64-pc-windows-gnu which makes clang lose its
+        # resource directory. We only need the include path, not the MinGW sysroot.
+        CLANG_INCLUDE=$(find /usr/lib/llvm-*/lib/clang -path "*/include/stdbool.h" -printf "%h\n" 2>/dev/null | head -1)
+        if [[ -n "$CLANG_INCLUDE" ]]; then
+          export BINDGEN_EXTRA_CLANG_ARGS="-I$CLANG_INCLUDE"
+        fi
+
         # Copy source to writable location (container mounts /project as read-only)
         # patches/ is in .gitignore and needs to be created for libpd crates
         echo ""

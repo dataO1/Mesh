@@ -96,6 +96,15 @@ in
       };
     };
 
+    # Seed default config files on first boot (C = copy-if-not-exists)
+    systemd.tmpfiles.rules = [
+      "d /home/mesh/Music 0755 mesh mesh -"
+      "d /home/mesh/Music/mesh-collection 0755 mesh mesh -"
+      "C /home/mesh/Music/mesh-collection/midi.yaml 0644 mesh mesh - ${../../config/midi.yaml}"
+      "C /home/mesh/Music/mesh-collection/slicer-presets.yaml 0644 mesh mesh - ${../../config/slicer-presets.yaml}"
+      "C /home/mesh/Music/mesh-collection/theme.yaml 0644 mesh mesh - ${../../config/theme.yaml}"
+    ];
+
     # TTY2 login shell for local debugging (Ctrl+Alt+F2 when cage has -s flag)
     systemd.services."getty@tty2".enable = true;
     systemd.services."getty@tty2".wantedBy = [ "multi-user.target" ];

@@ -40,6 +40,11 @@ All notable changes to Mesh are documented in this file.
   `environment.etc` for direct file creation with WirePlumber 0.5 SPA-JSON
   format, ensuring ALSA tuning rules (`session.suspend-timeout-seconds`,
   `api.alsa.period-size`, `priority.driver`) are actually deployed.
+- **CI: Windows cross-compilation bindgen** — `signalsmith-stretch` bindgen
+  failed with `stdbool.h` not found after Phase 4's `unset BINDGEN_EXTRA_CLANG_ARGS`.
+  bindgen auto-injects `--target=x86_64-pc-windows-gnu` which makes clang lose
+  its resource directory. Now re-exports `BINDGEN_EXTRA_CLANG_ARGS` with just
+  the clang include path (no MinGW sysroot) immediately after the unset.
 
 ### Added
 
@@ -49,6 +54,10 @@ All notable changes to Mesh are documented in this file.
   the mapping engine converts to `SetBpm`, and the app handler calls
   `set_global_bpm_with_engine()`. The MIDI learn wizard includes a "Move the
   BPM slider" step at the end of the Browser phase across all layout variants.
+- **Embedded: Default config files** — Ship `midi.yaml`, `slicer-presets.yaml`,
+  and `theme.yaml` to `/home/mesh/Music/mesh-collection/` via systemd tmpfiles
+  `C` (copy-if-not-exists) rules, so the Orange Pi boots with working defaults
+  while preserving any user modifications on subsequent updates.
 - **Embedded: PAM audio limits** — `@audio` group gets unlimited memlock,
   rtprio 99, and nice -19 for real-time audio scheduling.
 - **Embedded: RT kernel tuning** — Added `threadirqs` kernel parameter (threads
