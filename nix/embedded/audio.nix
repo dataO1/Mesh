@@ -58,51 +58,44 @@
     }
   '';
 
-  # WirePlumber: per-node ALSA tuning
-  # DP/HDMI sinks are kept alive (device.disabled breaks the ALSA monitor)
-  # but deprioritized. Actual routing is forced by jack.rules + PIPEWIRE_NODE.
-  services.pipewire.wireplumber.extraConfig."99-mesh-audio" = {
-    "monitor.alsa.rules" = [
-      # ES8388 onboard codec (3.5mm headphone jack)
+  # WirePlumber ALSA tuning rules.
+  # NixOS's services.pipewire.wireplumber.extraConfig doesn't generate files
+  # on this system, so we write the config directly via environment.etc.
+  # Routing is handled by pw-link in the kiosk wrapper (see kiosk.nix).
+  environment.etc."wireplumber/wireplumber.conf.d/99-mesh-audio.conf".text = ''
+    monitor.alsa.rules = [
       {
-        matches = [{ "node.name" = "~alsa_output.*es8388*"; }];
-        actions.update-props = {
-          "session.suspend-timeout-seconds" = 0;
-          "audio.rate" = 48000;
-          "api.alsa.period-size" = 256;
-          "api.alsa.headroom" = 0;
-          "priority.driver" = 10000;
-          "priority.session" = 10000;
-        };
+        matches = [
+          { node.name = "~alsa_output.*es8388*" }
+        ]
+        actions = {
+          update-props = {
+            session.suspend-timeout-seconds = 0
+            audio.rate = 48000
+            api.alsa.period-size = 256
+            api.alsa.headroom = 0
+            priority.driver = 10000
+            priority.session = 10000
+          }
+        }
       }
-      # PCM5102A I2S DAC (master output to PA)
       {
-        matches = [{ "node.name" = "~alsa_output.*PCM5102A*"; }];
-        actions.update-props = {
-          "session.suspend-timeout-seconds" = 0;
-          "audio.rate" = 48000;
-          "api.alsa.period-size" = 256;
-          "api.alsa.headroom" = 0;
-          "priority.driver" = 3000;
-          "priority.session" = 3000;
-        };
+        matches = [
+          { node.name = "~alsa_output.*PCM5102A*" }
+        ]
+        actions = {
+          update-props = {
+            session.suspend-timeout-seconds = 0
+            audio.rate = 48000
+            api.alsa.period-size = 256
+            api.alsa.headroom = 0
+            priority.driver = 3000
+            priority.session = 3000
+          }
+        }
       }
-    ];
-  };
-
-  # PipeWire JACK rules: route mesh-player to the ES8388 output.
-  # priority.driver only controls clock source, NOT audio routing —
-  # JACK client routing requires an explicit target.object.
-  services.pipewire.extraConfig.jack."99-mesh-target" = {
-    "jack.rules" = [
-      {
-        matches = [{ "application.process.binary" = "mesh-player"; }];
-        actions.update-props = {
-          "target.object" = "alsa_output.platform-es8388-sound.stereo-fallback";
-        };
-      }
-    ];
-  };
+    ]
+  '';
 
   # Initialize ES8388 mixer on boot: enable headphone path, set volumes,
   # disable 3D processing for faithful audio reproduction

@@ -13,6 +13,10 @@ let
   # fails on NixOS without explicit library paths. We can't rely on the
   # systemd Environment= directive because PipeWire's PAM session setup
   # overrides LD_LIBRARY_PATH with just pipewire-jack/lib.
+  # Helper: wait for a PipeWire node to appear, then link ports.
+  # PipeWire JACK clients with node.always-process=true stick on Dummy-Driver
+  # unless explicit links are created to a real ALSA sink. We start mesh-player
+  # in the background, wait for its ports, and then pw-link them to ES8388.
   meshPlayerWrapper = pkgs.writeShellScript "mesh-player-wrapper" ''
     export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
       pkgs.wayland
@@ -21,16 +25,32 @@ let
       pkgs.vulkan-loader
     ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-    # Wait for PipeWire to enumerate the ES8388 ALSA device.
-    # Without this, mesh-player connects to Dummy-Driver on boot.
+    PW_LINK="${pkgs.pipewire}/bin/pw-link"
+    PW_CLI="${pkgs.pipewire}/bin/pw-cli"
+    ES8388="alsa_output.platform-es8388-sound.stereo-fallback"
+
+    # Wait for PipeWire to enumerate the ES8388 ALSA node (up to 15s)
     for i in $(seq 1 30); do
-      ${pkgs.pipewire}/bin/pw-cli list-objects Node 2>/dev/null | grep -q es8388 && break
+      $PW_CLI list-objects Node 2>/dev/null | grep -q es8388 && break
       sleep 0.5
     done
 
-    # Force pw-jack to route audio to the ES8388 headphone codec.
-    export PIPEWIRE_NODE="alsa_output.platform-es8388-sound.stereo-fallback"
-    exec ${pkgs.pipewire.jack}/bin/pw-jack ${meshPlayer}/bin/mesh-player "$@"
+    # Start mesh-player via pw-jack in background
+    ${pkgs.pipewire.jack}/bin/pw-jack ${meshPlayer}/bin/mesh-player "$@" &
+    PLAYER_PID=$!
+
+    # Wait for mesh-player's JACK ports to appear (up to 10s)
+    for i in $(seq 1 50); do
+      $PW_LINK -o 2>/dev/null | grep -q "mesh-player:master_left" && break
+      sleep 0.2
+    done
+
+    # Link master output to ES8388 headphone jack
+    $PW_LINK "mesh-player:master_left"  "$ES8388:playback_FL" 2>/dev/null
+    $PW_LINK "mesh-player:master_right" "$ES8388:playback_FR" 2>/dev/null
+
+    # Wait for mesh-player to exit (cage restarts on crash)
+    wait $PLAYER_PID
   '';
 in
 {
