@@ -40,8 +40,15 @@ pub fn handle_track_loaded(app: &mut MeshApp, msg: TrackLoadedMsg) -> Task<Messa
             }
 
             // Update overview waveform peaks (visual growth effect)
-            app.player_canvas_state.decks[deck_idx].overview.stem_waveforms = overview_peaks;
-            app.player_canvas_state.decks[deck_idx].overview.highres_peaks = highres_peaks;
+            // Rebuild GPU peak buffers so the shader reflects incremental loading
+            let overview = &mut app.player_canvas_state.decks[deck_idx].overview;
+            overview.overview_peak_buffer =
+                mesh_widgets::PeakBuffer::from_stem_peaks(&overview_peaks);
+            overview.highres_peak_buffer =
+                mesh_widgets::PeakBuffer::from_stem_peaks(&highres_peaks);
+            overview.stem_waveforms = overview_peaks;
+            overview.highres_peaks = highres_peaks;
+            app.player_canvas_state.invalidate_cache();
             Task::none()
         }
 

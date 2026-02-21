@@ -247,21 +247,26 @@ where
         };
 
         // Window parameters for zoomed view
+        // Uses signed arithmetic to allow negative start (before track) for edge padding.
+        // The shader treats source_x outside [0, 1] as silence, providing symmetric centering
+        // at track boundaries (matching the old canvas WindowInfo.left_padding behavior).
         let (window_start, window_end, window_total) = if !self.is_overview && overview.duration_samples > 0 {
             let zoom_bars = deck.zoomed.zoom_bars;
-            let sample_rate = 44100u64; // TODO: pass actual sample rate
+            let sample_rate = 44100u64;
             let bpm = self.state.track_bpm(self.deck_idx).unwrap_or(120.0);
             let samples_per_beat = (sample_rate as f64 * 60.0 / bpm) as u64;
             let samples_per_bar = samples_per_beat * 4;
             let window_samples = samples_per_bar * zoom_bars as u64;
             let ph = self.state.interpolated_playhead(self.deck_idx, sample_rate as u32);
 
-            let half_window = window_samples / 2;
-            let window_start = ph.saturating_sub(half_window);
-            let window_end = (window_start + window_samples).min(overview.duration_samples);
+            // Allow window to extend before 0 and after duration for symmetric centering
+            let half_window = window_samples as i64 / 2;
+            let virtual_start = ph as i64 - half_window;
+            let virtual_end = virtual_start + window_samples as i64;
 
-            let start_norm = window_start as f32 / overview.duration_samples as f32;
-            let end_norm = window_end as f32 / overview.duration_samples as f32;
+            let dur = overview.duration_samples as f32;
+            let start_norm = virtual_start as f32 / dur;
+            let end_norm = virtual_end as f32 / dur;
             (start_norm, end_norm, peaks_per_stem as f32)
         } else {
             (0.0, 1.0, peaks_per_stem as f32)

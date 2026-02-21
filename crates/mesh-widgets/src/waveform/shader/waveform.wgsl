@@ -59,16 +59,59 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 // Helper functions
 // =============================================================================
 
-/// Sample min/max peak at a normalized position for a given stem.
-/// Returns vec2(min, max) where both are in [-1, 1].
-fn sample_peak(stem_idx: u32, x_norm: f32) -> vec2<f32> {
-    let pps = u32(u.view_params.z); // peaks_per_stem
+/// Read a single raw peak at integer index for a stem.
+fn raw_peak(stem_idx: u32, idx: u32) -> vec2<f32> {
+    let pps = u32(u.view_params.z);
+    let clamped = min(idx, pps - 1u);
+    let base = (stem_idx * pps + clamped) * 2u;
+    return vec2<f32>(peaks[base], peaks[base + 1u]);
+}
+
+/// Adaptive peak sampling: interpolates when zoomed in, aggregates when zoomed out.
+///
+/// `peaks_per_pixel` = how many peak samples one screen pixel covers.
+/// - < 1.5: zoomed in, linear interpolation for smooth curves
+/// - >= 1.5: zoomed out, min/max over covered range (capped at 64 iterations)
+fn sample_peak(stem_idx: u32, x_norm: f32, peaks_per_pixel: f32) -> vec2<f32> {
+    let pps = u32(u.view_params.z);
     if (pps == 0u) {
         return vec2<f32>(0.0, 0.0);
     }
-    let idx = clamp(u32(x_norm * f32(pps)), 0u, pps - 1u);
-    let base = (stem_idx * pps + idx) * 2u;
-    return vec2<f32>(peaks[base], peaks[base + 1u]);
+
+    let float_idx = x_norm * f32(pps);
+
+    if (peaks_per_pixel < 1.5) {
+        // Zoomed in: linear interpolation between adjacent peaks
+        let idx0 = clamp(u32(floor(float_idx)), 0u, pps - 1u);
+        let idx1 = min(idx0 + 1u, pps - 1u);
+        let frac = fract(float_idx);
+        let p0 = raw_peak(stem_idx, idx0);
+        let p1 = raw_peak(stem_idx, idx1);
+        return mix(p0, p1, vec2<f32>(frac));
+    }
+
+    // Zoomed out: min/max aggregation over the peaks this pixel covers
+    let half_range = peaks_per_pixel * 0.5;
+    let start_f = max(0.0, float_idx - half_range);
+    let end_f = min(f32(pps) - 1.0, float_idx + half_range);
+    let start_idx = u32(start_f);
+    let end_idx = u32(end_f);
+
+    // Limit iterations to avoid GPU stalls on very zoomed-out views
+    let range = end_idx - start_idx + 1u;
+    let step = max(1u, range / 64u);
+
+    var result_min = 1.0;
+    var result_max = -1.0;
+    var i = start_idx;
+    loop {
+        if (i > end_idx) { break; }
+        let p = raw_peak(stem_idx, i);
+        result_min = min(result_min, p.x);
+        result_max = max(result_max, p.y);
+        i += step;
+    }
+    return vec2<f32>(result_min, result_max);
 }
 
 /// Get stem color by index
@@ -252,12 +295,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let center_y = 0.5;
     let height_scale = u.view_params.y;
 
+    // How many peak samples one screen pixel covers — drives adaptive sampling
+    let peaks_per_pixel = f32(pps) * px_in_source;
+
     // Render order: Drums(1), Bass(2), Vocals(0), Other(3)
     let render_order = array<u32, 4>(1u, 2u, 0u, 3u);
 
     for (var i = 0u; i < 4u; i++) {
         let stem = render_order[i];
-        let peak = sample_peak(stem, source_x);
+        let peak = sample_peak(stem, source_x, peaks_per_pixel);
         let stem_color = get_stem_color(stem);
         let is_active = u.stem_active[stem] > 0.5;
 
