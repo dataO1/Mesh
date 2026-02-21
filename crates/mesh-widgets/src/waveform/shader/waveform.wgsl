@@ -403,20 +403,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let y_min = center_y - peak.y * height_scale * 0.5; // max peak = top
         let y_max = center_y - peak.x * height_scale * 0.5; // min peak = bottom
 
-        // Coverage-based anti-aliasing using fwidth — NO hard if-guard.
+        // Inside-only anti-aliasing using fwidth — NO hard if-guard.
         //
         // The old hard guard `if (uv.y >= y_min && uv.y <= y_max)` caused thin peaks
         // to "dance": a ~1px peak only passes the test for ONE pixel row, and sub-pixel
         // position shifts between frames cause it to jump to a different row.
         //
-        // Asymmetric smoothstep: full 1px transition inside, only 0.3px outside.
-        // The minimal outside extension prevents hard pixel jumps for thin peaks
-        // while limiting inter-stem color bleeding at envelope edges.
+        // smoothstep(0, fw, d): transition is entirely INSIDE the envelope.
+        // Outside pixels get alpha=0, so no stem color bleeds beyond its envelope.
+        // This prevents mixed-color outlines where two stems overlap.
+        // Thin sub-pixel peaks are handled by the coverage boost below.
         let d_top = uv.y - y_min;  // positive = inside envelope
         let d_bot = y_max - uv.y;  // positive = inside envelope
-        let fw_out = fw * 0.3;     // outside extension (tight to reduce outlines)
-        let aa_top = smoothstep(-fw_out, fw, d_top);
-        let aa_bot = smoothstep(-fw_out, fw, d_bot);
+        let aa_top = smoothstep(0.0, fw, d_top);
+        let aa_bot = smoothstep(0.0, fw, d_bot);
         var edge_alpha = aa_top * aa_bot;
 
         // For sub-pixel thin envelopes (< 2px), the overlapping smoothstep
