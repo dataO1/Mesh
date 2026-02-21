@@ -7,3 +7,4 @@ NarHash: sha256:1gnjvavmxx8mhr994c1qa75mm18qpg0h0jmwymc98aa0kiwh32vw
 NarSize: 43128288
 References: 7b2py1iqgrfdrm4ddwn4dk0h3g7qnypz-alsa-lib-1.2.14 92bxysqjh9wv18ybfmsikhpdngplzfz6-systemd-minimal-libs-258.2 9nia1rznvhxjpdgiqgfh3g1czvij6y7i-libxi-1.8.2 h4qhxh7vwmxgy6w05g0xsf6r1bfi9vga-gcc-15.2.0-lib nrkkl7wdkfm269im62yj4pccp315rq1g-libx11-1.8.12 sr92cpqmj2xiqak0hlwsi7g9m0c99rlz-libxcursor-1.2.3 wjxpaix0cdpww0bldvzsq2d1bjc6g62b-glibc-2.40-66
 Deriver: 5mgl4rdrv7q0635q2q68hwmygl5n2pm0-mesh-player-0.9.3.drv
+Sig: mesh-embedded:4f+0/k5Po23tNOX7pEL+DOjOXYywr8PKRLWNMstTMuhGiCyZKeYdcRwyCbxPTqQ+caON8AFEHZj7ZJw84DK8Aw==

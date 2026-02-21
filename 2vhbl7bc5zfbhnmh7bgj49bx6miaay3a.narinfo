@@ -8,3 +8,4 @@ NarSize: 762304
 References: 1m2pfwirwdq1cy28v2scw57ry5aji017-kmod-31 843ahdalwl120986c7ilk5q1c47biyap-coreutils-9.8
 Deriver: 97b9gr3d84nh35zai9l6pm5k3di9ws01-alsa-ucm-conf-1.2.14.drv
 Sig: cache.nixos.org-1:62jy/SdP5CDYDVG4me+fIkOto6p0uLL1MheY6MbwXICeHrK0CnO2PZIxlk1tvJJZ+SoxaIiAIMEH1ENBnUBDBg==
+Sig: mesh-embedded:nLX9b+o61lIIcpGs3AZ9co2ldQOJZ5Jx/o+cx0Ubr5+2crcT5uT5vKKzS/1eIg9U/X1l61mFEJ7LeSAxay9jDg==

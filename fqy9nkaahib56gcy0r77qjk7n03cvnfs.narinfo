@@ -8,3 +8,4 @@ NarSize: 1255376
 References: fqy9nkaahib56gcy0r77qjk7n03cvnfs-zstd-1.5.7 h4qhxh7vwmxgy6w05g0xsf6r1bfi9vga-gcc-15.2.0-lib wjxpaix0cdpww0bldvzsq2d1bjc6g62b-glibc-2.40-66
 Deriver: 52k9wxfj4zf90rk2nwpp1c6ga17i9is2-zstd-1.5.7.drv
 Sig: cache.nixos.org-1:htjKJdObrHGwOOn/bFAUmpAPDgU/d9FnQPn2V4XNpdjwBWLJTyfhDSzXnifBAid//Ab4CSliCTKWN9aX2j4PBw==
+Sig: mesh-embedded:yOg3Xq0w7vj2wf5xS0ZHWxwlR6llEKMxWU8/bafi0LIyAebO7OOyxdFNXKztn9NWUQrYHqD8Cra1ZPtbzEGpCg==

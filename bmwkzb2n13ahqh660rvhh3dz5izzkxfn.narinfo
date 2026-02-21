@@ -8,3 +8,4 @@ NarSize: 2517168
 References: bmwkzb2n13ahqh660rvhh3dz5izzkxfn-libxcb-1.17.0 c37419g0xk5brljzw6zk7lbzda3zsfqw-libxau-1.0.12 wjxpaix0cdpww0bldvzsq2d1bjc6g62b-glibc-2.40-66 z30zq54nbsa9gx2k8g5rj2hxggn9r0wr-libxdmcp-1.1.5
 Deriver: z32is0q51ia2b32dahds35py8bwc2f0h-libxcb-1.17.0.drv
 Sig: cache.nixos.org-1:JUxf6fzzx99M/7eF7WbW5Slkbbu7yYw7y7369XIxHsGpOGzrNco8LaQIcMewnlN/qX6k+npWO7u32IdeDMi8BA==
+Sig: mesh-embedded:Bnbw/cE9/l9WivLBBr76R1Swf9DlQ0QAL1Cw/fL9ksVZEmZd/2GNvMP0/WtlydJsyVVCI/MD6ihJzFVdiSuZBA==

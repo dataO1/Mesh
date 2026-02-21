@@ -8,3 +8,4 @@ NarSize: 2128144
 References: zm99a79bffnw4cmpwc7a5cwwn8kwc5cv-libunistring-1.4.1
 Deriver: v495mkjqmqnw48yyqfcf5cfm47kkqy6g-libunistring-1.4.1.drv
 Sig: cache.nixos.org-1:aph5QZxn0aca88WK5KjXrlxXhuSNB+4+DjeVPGg/QIZIpPG8zWXu6y+8kwrrrta3pJpbVcIlNfWtE/uQWCgCAw==
+Sig: mesh-embedded:wsuFLsQR0ZEizJHYQw3LJr2b08Le7XG7MtzeW5OD0Vl6BfM5ZpBGYEAOpEocL0fpoUaRGI84/KJVtcZ3ERriAQ==

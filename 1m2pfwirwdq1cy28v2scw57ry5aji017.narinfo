@@ -8,3 +8,4 @@ NarSize: 263408
 References: fqy9nkaahib56gcy0r77qjk7n03cvnfs-zstd-1.5.7 w54lmld8cnjwvk5nvr9xc280rmz7vi9x-xz-5.8.1 wjxpaix0cdpww0bldvzsq2d1bjc6g62b-glibc-2.40-66
 Deriver: n9m6sbd06qx80j6xr149ln1vibsg3h1d-kmod-31.drv
 Sig: cache.nixos.org-1:LfaVe0QzLJrXvcz5KSq6EIgvgSQi6LdDQSjNpZybpDM3c8ws9kGbtgf6yp9ZY9hf30tgFFZ8XzldCf6ikjb3BQ==
+Sig: mesh-embedded:x/fQgkEOM5f+0yr7E7ApdjNpskeybsVzV3mLsdWx03/qFL825enSnUxa8dFloGGP/55rU23YDYsPRCvPenvDDw==

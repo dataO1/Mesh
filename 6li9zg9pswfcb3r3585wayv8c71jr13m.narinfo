@@ -8,3 +8,4 @@ NarSize: 146064
 References: wjxpaix0cdpww0bldvzsq2d1bjc6g62b-glibc-2.40-66
 Deriver: hiwparz1s6j4rg8hy98i979mfq046h24-libcap-2.77.drv
 Sig: cache.nixos.org-1:JfBOhaFuoKOwNHRhKqnfw5Qd0dz0Kzmjtz71D1MaYSA4Ov9fx1nN6PsuQ9pfDKht+PFpu6unCyEbv8veEl1dDA==
+Sig: mesh-embedded:EwVnnB8u9+DwH7+wCpjsA/i9nCc63XUC55w+IUB0AcXix5tsR9ctIOrqHajxytSph49EDn49lj4jEka79HasAQ==

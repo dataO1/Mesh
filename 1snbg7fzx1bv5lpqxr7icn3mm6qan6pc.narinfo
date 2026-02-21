@@ -8,3 +8,4 @@ NarSize: 134880
 References: 1snbg7fzx1bv5lpqxr7icn3mm6qan6pc-attr-2.5.2 wjxpaix0cdpww0bldvzsq2d1bjc6g62b-glibc-2.40-66
 Deriver: jh9sbyhq755r0h5k18l2v7wwxgldjxnq-attr-2.5.2.drv
 Sig: cache.nixos.org-1:xWZww6/j0wNN1hX4N8wouvILTH604Fp7ODnF5HDG+S3gx9OCV8Iw0X6pCRVfMzMB+TqQOKPojlS6+3jW9cbABQ==
+Sig: mesh-embedded:HiQM2jrs9IgU4iuPj0TW3P/dsyrffSLqk7FHO97GcHUizSkNLBwE77ZIRX9OEpxsyc2Q/efzmrOu02iLMkZiDA==
