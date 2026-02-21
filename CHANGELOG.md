@@ -34,6 +34,19 @@ All notable changes to Mesh are documented in this file.
   all IRQ handlers for priority control) and `vm.swappiness=10` (keeps audio
   buffers in RAM).
 
+### Changed
+
+- **CI: Split native deps cache from Rust build cache** — Essentia, FFmpeg, and
+  TagLib (pinned C/C++ libraries that never change) now have a separate GitHub
+  Actions cache keyed on the build script hash instead of `Cargo.lock`. Previously,
+  any Rust dependency update invalidated the entire cache, forcing 10-60 minute
+  rebuilds of unchanged native libraries. The stable deps cache persists across
+  Cargo.lock changes, saving significant CI time on every release.
+- **CI: Regenerated binary cache signing key** — Replaced the cache signing key
+  pair and fixed the narinfo signing pipeline. `nix copy` and `nix store sign`
+  are now separate steps with key format validation and post-sign verification
+  to prevent silent signing failures.
+
 ---
 
 ## [0.9.2]

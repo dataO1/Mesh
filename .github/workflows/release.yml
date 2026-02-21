@@ -188,13 +188,23 @@ jobs:
         with:
           use-flakehub: false
 
-      - name: Restore build cache
+      - name: Restore native deps cache
         uses: actions/cache@v4
         with:
-          path: target/deb-build/
-          key: deb-build-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            deb-build-
+          path: |
+            target/deb-build/deps
+            target/deb-build/onnxruntime-cpu-*
+          key: deb-native-deps-${{ hashFiles('nix/apps/build-deb.nix') }}
+
+      - name: Restore Rust build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/deb-build/rustup
+            target/deb-build/cargo
+            target/deb-build/target
+          key: deb-rust-${{ hashFiles('Cargo.lock') }}
+          restore-keys: deb-rust-
 
       - name: Build .deb packages
         run: nix run .#build-deb
@@ -239,13 +249,23 @@ jobs:
         with:
           use-flakehub: false
 
-      - name: Restore build cache
+      - name: Restore native deps cache
         uses: actions/cache@v4
         with:
-          path: target/deb-build/
-          key: deb-cuda-build-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            deb-cuda-build-
+          path: |
+            target/deb-build/deps
+            target/deb-build/onnxruntime-gpu-*
+          key: deb-native-deps-${{ hashFiles('nix/apps/build-deb.nix') }}
+
+      - name: Restore Rust build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/deb-build/rustup
+            target/deb-build/cargo
+            target/deb-build/target
+          key: deb-cuda-rust-${{ hashFiles('Cargo.lock') }}
+          restore-keys: deb-cuda-rust-
 
       - name: Build CUDA .deb packages
         run: nix run .#build-deb-cuda
@@ -290,13 +310,22 @@ jobs:
         with:
           use-flakehub: false
 
-      - name: Restore build cache
+      - name: Restore native deps cache
         uses: actions/cache@v4
         with:
-          path: target/windows/
-          key: windows-build-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            windows-build-
+          path: |
+            target/windows/essentia-win
+            target/windows/essentia-host
+            target/windows/essentia-src
+            target/windows/onnxruntime-directml-*
+          key: win-native-deps-${{ hashFiles('nix/apps/build-windows.nix') }}
+
+      - name: Restore Rust build cache
+        uses: actions/cache@v4
+        with:
+          path: target/windows/x86_64-pc-windows-gnu
+          key: win-rust-${{ hashFiles('Cargo.lock') }}
+          restore-keys: win-rust-
 
       - name: Build Windows packages
         run: nix run .#build-windows
