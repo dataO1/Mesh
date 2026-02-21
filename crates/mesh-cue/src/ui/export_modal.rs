@@ -7,7 +7,7 @@ use super::app::Message;
 use super::state::export::{ExportPhase, ExportState};
 use iced::widget::{
     button, checkbox, column, container, pick_list, progress_bar, row, rule,
-    scrollable, text, Space,
+    scrollable, text, text_input, Space,
 };
 use iced::{Alignment, Element, Length};
 use mesh_core::playlist::NodeId;
@@ -172,6 +172,30 @@ fn view_device_selection(
         text("").size(1)
     };
 
+    // Device label input (filesystem label to set during export)
+    let label_value = state.device_label.clone();
+    let label_input: Element<Message> = text_input("e.g. Mesh DJ", &label_value)
+        .on_input(Message::SetExportDeviceLabel)
+        .size(14)
+        .width(Length::Fill)
+        .into();
+    let label_hint_text = if let Some(device) = state.selected_device.and_then(|i| state.devices.get(i)) {
+        match device.filesystem {
+            mesh_core::usb::FilesystemType::Fat32 => "Max 11 chars, uppercase",
+            mesh_core::usb::FilesystemType::ExFat => "Max 15 chars",
+            _ => "Max 16 chars",
+        }
+    } else {
+        ""
+    };
+    let label_row = row![
+        text("Label:").size(14),
+        label_input,
+        text(label_hint_text).size(11).color(iced::Color::from_rgb(0.5, 0.5, 0.5)),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+
     // Playlist tree with hierarchical checkboxes
     let playlists_title = text("Select Playlists to Export").size(16);
 
@@ -267,6 +291,7 @@ fn view_device_selection(
 
     column![
         device_row,
+        label_row,
         no_devices_hint,
         rule::horizontal(1),
         playlists_title,

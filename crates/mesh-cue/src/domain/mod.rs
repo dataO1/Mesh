@@ -1135,12 +1135,13 @@ impl MeshCueDomain {
     ///
     /// Progress updates delivered via `UsbMessage::ExportProgress`.
     /// Completion via `UsbMessage::ExportComplete`.
-    pub fn start_usb_export(&self, device_path: PathBuf, plan: SyncPlan, include_config: bool, export_config: Option<ExportableConfig>) {
+    pub fn start_usb_export(&self, device_path: PathBuf, plan: SyncPlan, include_config: bool, export_config: Option<ExportableConfig>, device_label: Option<String>) {
         let _ = self.usb_manager.send(UsbCommand::StartExport {
             device_path,
             plan,
             include_config,
             config: export_config,
+            device_label,
         });
     }
 

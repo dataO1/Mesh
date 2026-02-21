@@ -281,6 +281,8 @@ pub enum Message {
     ToggleExportPlaylistExpand(NodeId),
     /// Toggle whether to include config in export
     ToggleExportConfig,
+    /// Set the filesystem label to apply to the device during export
+    SetExportDeviceLabel(String),
     /// Start building sync plan
     BuildSyncPlan,
     /// Start the export process

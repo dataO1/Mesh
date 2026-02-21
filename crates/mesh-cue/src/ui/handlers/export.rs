@@ -38,6 +38,10 @@ impl MeshCueApp {
         self.export_state.selected_device = Some(idx);
         // Invalidate cached sync plan when device changes
         self.export_state.sync_plan = None;
+        // Pre-fill label with current device label
+        if let Some(device) = self.export_state.devices.get(idx) {
+            self.export_state.device_label = device.label.clone();
+        }
         // If the device isn't mounted yet, request mount
         if let Some(device) = self.export_state.devices.get(idx) {
             if device.mount_point.is_none() {
@@ -130,11 +134,17 @@ impl MeshCueApp {
 
                     // No tracks missing LUFS, proceed with export directly
                     let config = self.build_export_config();
+                    let label = if self.export_state.device_label.is_empty() {
+                        None
+                    } else {
+                        Some(self.export_state.device_label.clone())
+                    };
                     self.domain.start_usb_export(
                         device.device_path.clone(),
                         plan.clone(),
                         self.export_state.export_config,
                         config,
+                        label,
                     );
                 }
             }
@@ -317,11 +327,17 @@ impl MeshCueApp {
             if let Some(device) = self.export_state.devices.get(idx) {
                 if let Some(ref plan) = self.export_state.sync_plan {
                     let config = self.build_export_config();
+                    let label = if self.export_state.device_label.is_empty() {
+                        None
+                    } else {
+                        Some(self.export_state.device_label.clone())
+                    };
                     self.domain.start_usb_export(
                         device.device_path.clone(),
                         plan.clone(),
                         self.export_state.export_config,
                         config,
+                        label,
                     );
                 }
             }

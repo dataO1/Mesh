@@ -65,6 +65,12 @@ All notable changes to Mesh are documented in this file.
   the mapping engine converts to `SetBpm`, and the app handler calls
   `set_global_bpm_with_engine()`. The MIDI learn wizard includes a "Move the
   BPM slider" step at the end of the Browser phase across all layout variants.
+- **USB: Set filesystem label during export** — When exporting to a USB device,
+  a new "Label" text input lets you set a custom filesystem label (e.g. "Mesh DJ").
+  The label is applied before file copying using `e2label` (ext4), `fatlabel` (FAT32),
+  or `exfatlabel` (exFAT). Pre-fills with the device's current label; shows
+  filesystem-specific max length hints. Label setting is non-fatal — failure is
+  logged but doesn't abort the export.
 - **Embedded: Default config files** — Ship `midi.yaml`, `slicer-presets.yaml`,
   and `theme.yaml` to `/home/mesh/Music/mesh-collection/` via systemd tmpfiles
   `C` (copy-if-not-exists) rules, so the Orange Pi boots with working defaults

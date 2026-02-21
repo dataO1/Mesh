@@ -159,6 +159,10 @@ pub struct ExportState {
     /// Whether export is pending LUFS analysis completion
     /// When true, export will auto-start after reanalysis finishes
     pub pending_lufs_analysis: bool,
+
+    /// User-configurable filesystem label to set on the device during export
+    /// Empty string means don't change the label
+    pub device_label: String,
 }
 
 impl Default for ExportState {
@@ -176,6 +180,7 @@ impl Default for ExportState {
             sync_plan: None,
             sync_plan_computing: false,
             pending_lufs_analysis: false,
+            device_label: String::new(),
         }
     }
 }
@@ -190,6 +195,7 @@ impl ExportState {
         self.show_results = false;
         self.sync_plan = None;
         self.sync_plan_computing = false;
+        self.device_label.clear();
     }
 
     /// Get the currently selected device

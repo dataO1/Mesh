@@ -54,6 +54,8 @@ pub enum UsbCommand {
         include_config: bool,
         /// Config to export (if include_config is true)
         config: Option<ExportableConfig>,
+        /// Filesystem label to set on the device (None = don't change)
+        device_label: Option<String>,
     },
 
     /// Cancel the current export operation

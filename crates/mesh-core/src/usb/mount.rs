@@ -8,8 +8,8 @@
 //! Note: Explicit mount/unmount operations are OS-specific and typically
 //! handled by the desktop environment. We rely on auto-mount.
 
-use super::{UsbDevice, UsbError};
-use std::path::PathBuf;
+use super::{FilesystemType, UsbDevice, UsbError};
+use std::path::{Path, PathBuf};
 use sysinfo::Disks;
 
 /// Refresh device info using sysinfo
@@ -90,6 +90,111 @@ pub fn init_collection_structure(device: &UsbDevice) -> Result<PathBuf, UsbError
     }
 
     Ok(collection_root)
+}
+
+/// Resolve the actual block device path (e.g. `/dev/sda1`) from a mount point.
+///
+/// Reads `/proc/mounts` to find which block device is mounted at the given path.
+/// This is needed because `UsbDevice.device_path` is set to the mount point,
+/// not the real block device, and tools like `e2label`/`fatlabel` need `/dev/sdX`.
+#[cfg(target_os = "linux")]
+pub fn resolve_block_device(mount_point: &Path) -> Option<PathBuf> {
+    let mounts = std::fs::read_to_string("/proc/mounts").ok()?;
+    let mount_str = mount_point.to_string_lossy();
+    for line in mounts.lines() {
+        let mut parts = line.split_whitespace();
+        let dev = parts.next()?;
+        let mount = parts.next()?;
+        if mount == mount_str.as_ref() && dev.starts_with("/dev/") {
+            return Some(PathBuf::from(dev));
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn resolve_block_device(_mount_point: &Path) -> Option<PathBuf> {
+    None
+}
+
+/// Set the filesystem label on a USB device.
+///
+/// Uses the appropriate tool for each filesystem type:
+/// - ext4: `e2label` (max 16 chars)
+/// - FAT32: `fatlabel` (max 11 chars, uppercase)
+/// - exFAT: `exfatlabel` (max 15 chars)
+///
+/// Runs via `sudo` since label-setting requires root. On the embedded
+/// NixOS image the mesh user has passwordless sudo.
+#[cfg(target_os = "linux")]
+pub fn set_filesystem_label(
+    mount_point: &Path,
+    label: &str,
+    filesystem: FilesystemType,
+) -> Result<(), UsbError> {
+    let block_dev = resolve_block_device(mount_point).ok_or_else(|| {
+        UsbError::IoError(format!(
+            "Cannot resolve block device for {}",
+            mount_point.display()
+        ))
+    })?;
+    let block_dev_str = block_dev.to_string_lossy();
+
+    let (cmd, truncated) = match filesystem {
+        FilesystemType::Ext4 => {
+            let max = label.len().min(16);
+            ("e2label", label[..max].to_string())
+        }
+        FilesystemType::Fat32 => {
+            let upper = label.to_uppercase();
+            let max = upper.len().min(11);
+            ("fatlabel", upper[..max].to_string())
+        }
+        FilesystemType::ExFat => {
+            let max = label.len().min(15);
+            ("exfatlabel", label[..max].to_string())
+        }
+        FilesystemType::Unknown => {
+            return Err(UsbError::IoError(
+                "Unsupported filesystem for labeling".to_string(),
+            ));
+        }
+    };
+
+    log::info!(
+        "Setting {} label on {} to '{}'",
+        cmd,
+        block_dev_str,
+        truncated
+    );
+
+    let output = std::process::Command::new("sudo")
+        .arg(cmd)
+        .arg(block_dev_str.as_ref())
+        .arg(&truncated)
+        .output()
+        .map_err(|e| UsbError::IoError(format!("Failed to run {}: {}", cmd, e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(UsbError::IoError(format!(
+            "{} failed: {}",
+            cmd,
+            stderr.trim()
+        )));
+    }
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn set_filesystem_label(
+    _mount_point: &Path,
+    _label: &str,
+    _filesystem: FilesystemType,
+) -> Result<(), UsbError> {
+    log::warn!("Filesystem label setting not supported on this platform");
+    Ok(())
 }
 
 #[cfg(test)]

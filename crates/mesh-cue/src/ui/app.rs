@@ -446,6 +446,9 @@ impl MeshCueApp {
             Message::ToggleExportPlaylist(id) => return self.handle_toggle_export_playlist(id),
             Message::ToggleExportPlaylistExpand(id) => return self.handle_toggle_export_playlist_expand(id),
             Message::ToggleExportConfig => return self.handle_toggle_export_config(),
+            Message::SetExportDeviceLabel(label) => {
+                self.export_state.device_label = label;
+            }
             Message::BuildSyncPlan => return self.handle_build_sync_plan(),
             Message::StartExport => return self.handle_start_export(),
             Message::CancelExport => return self.handle_cancel_export(),

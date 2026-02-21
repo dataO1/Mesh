@@ -22,7 +22,7 @@
 //! ```
 
 use super::detection::{enumerate_devices, monitor_devices, DeviceEvent};
-use super::mount::{init_collection_structure, refresh_device_info};
+use super::mount::{init_collection_structure, refresh_device_info, set_filesystem_label};
 use super::storage::{CachedTrackMetadata, UsbStorage};
 use super::sync::{
     build_sync_plan, scan_local_collection_from_db, scan_usb_collection,
@@ -203,6 +203,7 @@ fn manager_thread_main(
                         plan,
                         include_config,
                         config,
+                        device_label,
                     } => {
                         // Note: ExportService runs in its own thread pool with internal cancellation.
                         // The handle_start_export call blocks while forwarding progress messages.
@@ -212,6 +213,7 @@ fn manager_thread_main(
                             plan,
                             include_config,
                             config,
+                            device_label,
                             &message_tx,
                             db_service.as_ref(),
                         );
@@ -508,6 +510,7 @@ fn handle_start_export(
     plan: SyncPlan,
     include_config: bool,
     config: Option<ExportableConfig>,
+    device_label: Option<String>,
     message_tx: &Sender<UsbMessage>,
     local_db: Option<&Arc<DatabaseService>>,
 ) {
@@ -535,6 +538,18 @@ fn handle_start_export(
     if let Err(e) = init_collection_structure(&device) {
         let _ = message_tx.send(UsbMessage::ExportError(e));
         return;
+    }
+
+    // Set filesystem label if provided
+    if let Some(ref label) = device_label {
+        if !label.is_empty() {
+            if let Some(ref mount_point) = device.mount_point {
+                match set_filesystem_label(mount_point, label, device.filesystem) {
+                    Ok(()) => log::info!("Set filesystem label to '{}'", label),
+                    Err(e) => log::warn!("Failed to set filesystem label: {}", e),
+                }
+            }
+        }
     }
 
     // Get local database reference
