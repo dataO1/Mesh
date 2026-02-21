@@ -1,23 +1,34 @@
 devices:
-- name: sb2
-  port_match: sb2
+- name: test
+  port_match: Traktor Kontrol F1
+  learned_port_name: Traktor Kontrol F1
+  device_type: hid
+  hid_product_match: Traktor Kontrol F1
+  hid_device_id: B2220F4E
   deck_target:
     type: Direct
     channel_to_deck:
-      3: 3
       1: 1
       0: 0
+      3: 3
       2: 2
-  pad_mode_source: controller
-  shift:
-    type: Note
-    channel: 0
-    note: 23
+  pad_mode_source: app
+  shift_buttons:
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: shift
+    physical_deck: 0
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: shift
+    physical_deck: 1
   mappings:
   - control:
-      type: Note
-      channel: 0
-      note: 11
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_16
     action: deck.play
     physical_deck: 0
     deck_index: null
@@ -27,9 +38,9 @@ devices:
     encoder_mode: null
     hardware_type: button
   - control:
-      type: Note
-      channel: 0
-      note: 12
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_12
     action: deck.cue_press
     physical_deck: 0
     deck_index: null
@@ -39,45 +50,36 @@ devices:
     encoder_mode: null
     hardware_type: button
   - control:
-      type: Note
-      channel: 0
-      note: 26
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_4
     action: deck.toggle_loop
-    physical_deck: 0
-    deck_index: null
+    physical_deck: null
+    deck_index: 0
     params: {}
     behavior: toggle
     shift_action: null
     encoder_mode: null
     hardware_type: button
   - control:
-      type: ControlChange
-      channel: 0
-      cc: 0
-    action: deck.loop_halve
+      protocol: hid
+      device_id: B2220F4E
+      name: encoder
+    action: side.loop_size
     physical_deck: 0
     deck_index: null
-    params: {}
-    behavior: momentary
+    params:
+      decks:
+      - 0
+      - 2
+    behavior: continuous
     shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
+    encoder_mode: relative
+    hardware_type: encoder
   - control:
-      type: ControlChange
-      channel: 0
-      cc: 0
-    action: deck.loop_double
-    physical_deck: 0
-    deck_index: null
-    params: {}
-    behavior: momentary
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
-  - control:
-      type: Note
-      channel: 0
-      note: 88
+      protocol: hid
+      device_id: B2220F4E
+      name: play_3
     action: deck.beat_jump_backward
     physical_deck: 0
     deck_index: null
@@ -87,9 +89,9 @@ devices:
     encoder_mode: null
     hardware_type: button
   - control:
-      type: Note
-      channel: 0
-      note: 63
+      protocol: hid
+      device_id: B2220F4E
+      name: play_4
     action: deck.beat_jump_forward
     physical_deck: 0
     deck_index: null
@@ -99,9 +101,9 @@ devices:
     encoder_mode: null
     hardware_type: button
   - control:
-      type: Note
-      channel: 1
-      note: 11
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_13
     action: deck.play
     physical_deck: 1
     deck_index: null
@@ -111,9 +113,9 @@ devices:
     encoder_mode: null
     hardware_type: button
   - control:
-      type: Note
-      channel: 1
-      note: 12
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_9
     action: deck.cue_press
     physical_deck: 1
     deck_index: null
@@ -123,45 +125,36 @@ devices:
     encoder_mode: null
     hardware_type: button
   - control:
-      type: Note
-      channel: 1
-      note: 26
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_1
     action: deck.toggle_loop
-    physical_deck: 1
-    deck_index: null
+    physical_deck: null
+    deck_index: 1
     params: {}
     behavior: toggle
     shift_action: null
     encoder_mode: null
     hardware_type: button
   - control:
-      type: ControlChange
-      channel: 1
-      cc: 0
-    action: deck.loop_halve
+      protocol: hid
+      device_id: E82DF2FC
+      name: encoder
+    action: side.loop_size
     physical_deck: 1
     deck_index: null
-    params: {}
-    behavior: momentary
+    params:
+      decks:
+      - 1
+      - 3
+    behavior: continuous
     shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
+    encoder_mode: relative
+    hardware_type: encoder
   - control:
-      type: ControlChange
-      channel: 1
-      cc: 0
-    action: deck.loop_double
-    physical_deck: 1
-    deck_index: null
-    params: {}
-    behavior: momentary
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
-  - control:
-      type: Note
-      channel: 1
-      note: 88
+      protocol: hid
+      device_id: E82DF2FC
+      name: play_1
     action: deck.beat_jump_backward
     physical_deck: 1
     deck_index: null
@@ -171,9 +164,9 @@ devices:
     encoder_mode: null
     hardware_type: button
   - control:
-      type: Note
-      channel: 1
-      note: 63
+      protocol: hid
+      device_id: E82DF2FC
+      name: play_2
     action: deck.beat_jump_forward
     physical_deck: 1
     deck_index: null
@@ -183,21 +176,144 @@ devices:
     encoder_mode: null
     hardware_type: button
   - control:
-      type: Note
-      channel: 0
-      note: 27
-    action: deck.hot_cue_mode
-    physical_deck: 0
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_13
+    action: deck.play
+    physical_deck: 2
     deck_index: null
+    params: {}
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_9
+    action: deck.cue_press
+    physical_deck: 2
+    deck_index: null
+    params: {}
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_1
+    action: deck.toggle_loop
+    physical_deck: null
+    deck_index: 2
     params: {}
     behavior: toggle
     shift_action: null
     encoder_mode: null
     hardware_type: button
   - control:
-      type: Note
-      channel: 7
-      note: 0
+      protocol: hid
+      device_id: B2220F4E
+      name: play_1
+    action: deck.beat_jump_backward
+    physical_deck: 2
+    deck_index: null
+    params: {}
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: play_2
+    action: deck.beat_jump_forward
+    physical_deck: 2
+    deck_index: null
+    params: {}
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_16
+    action: deck.play
+    physical_deck: 3
+    deck_index: null
+    params: {}
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_12
+    action: deck.cue_press
+    physical_deck: 3
+    deck_index: null
+    params: {}
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_4
+    action: deck.toggle_loop
+    physical_deck: null
+    deck_index: 3
+    params: {}
+    behavior: toggle
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: play_3
+    action: deck.beat_jump_backward
+    physical_deck: 3
+    deck_index: null
+    params: {}
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: play_4
+    action: deck.beat_jump_forward
+    physical_deck: 3
+    deck_index: null
+    params: {}
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: sync
+    action: deck.hot_cue_mode
+    physical_deck: 0
+    deck_index: null
+    params:
+      decks:
+      - 0
+      - 2
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_3
     action: deck.hot_cue_press
     physical_deck: 0
     deck_index: null
@@ -207,10 +323,11 @@ devices:
     shift_action: null
     encoder_mode: null
     hardware_type: button
+    mode: hot_cue
   - control:
-      type: Note
-      channel: 7
-      note: 1
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_4
     action: deck.hot_cue_press
     physical_deck: 0
     deck_index: null
@@ -220,10 +337,11 @@ devices:
     shift_action: null
     encoder_mode: null
     hardware_type: button
+    mode: hot_cue
   - control:
-      type: Note
-      channel: 7
-      note: 2
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_7
     action: deck.hot_cue_press
     physical_deck: 0
     deck_index: null
@@ -233,10 +351,11 @@ devices:
     shift_action: null
     encoder_mode: null
     hardware_type: button
+    mode: hot_cue
   - control:
-      type: Note
-      channel: 7
-      note: 3
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_8
     action: deck.hot_cue_press
     physical_deck: 0
     deck_index: null
@@ -246,86 +365,97 @@ devices:
     shift_action: null
     encoder_mode: null
     hardware_type: button
+    mode: hot_cue
   - control:
-      type: Note
-      channel: 0
-      note: 30
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_11
+    action: deck.hot_cue_press
+    physical_deck: 0
+    deck_index: null
+    params:
+      slot: 4
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: hot_cue
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_12
+    action: deck.hot_cue_press
+    physical_deck: 0
+    deck_index: null
+    params:
+      slot: 5
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: hot_cue
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_15
+    action: deck.hot_cue_press
+    physical_deck: 0
+    deck_index: null
+    params:
+      slot: 6
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: hot_cue
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_16
+    action: deck.hot_cue_press
+    physical_deck: 0
+    deck_index: null
+    params:
+      slot: 7
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: hot_cue
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: quant
     action: deck.slicer_mode
     physical_deck: 0
     deck_index: null
-    params: {}
-    behavior: toggle
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 7
-      note: 16
-    action: deck.slicer_trigger
-    physical_deck: 0
-    deck_index: null
     params:
-      pad: 0
+      decks:
+      - 0
+      - 2
     behavior: momentary
     shift_action: null
     encoder_mode: null
     hardware_type: button
   - control:
-      type: Note
-      channel: 7
-      note: 17
-    action: deck.slicer_trigger
-    physical_deck: 0
-    deck_index: null
-    params:
-      pad: 1
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 7
-      note: 18
-    action: deck.slicer_trigger
-    physical_deck: 0
-    deck_index: null
-    params:
-      pad: 2
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 7
-      note: 19
-    action: deck.slicer_trigger
-    physical_deck: 0
-    deck_index: null
-    params:
-      pad: 3
-    behavior: momentary
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 1
-      note: 27
+      protocol: hid
+      device_id: E82DF2FC
+      name: sync
     action: deck.hot_cue_mode
     physical_deck: 1
     deck_index: null
-    params: {}
-    behavior: toggle
+    params:
+      decks:
+      - 1
+      - 3
+    behavior: momentary
     shift_action: null
     encoder_mode: null
     hardware_type: button
   - control:
-      type: Note
-      channel: 8
-      note: 0
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_1
     action: deck.hot_cue_press
     physical_deck: 1
     deck_index: null
@@ -335,10 +465,11 @@ devices:
     shift_action: null
     encoder_mode: null
     hardware_type: button
+    mode: hot_cue
   - control:
-      type: Note
-      channel: 8
-      note: 1
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_2
     action: deck.hot_cue_press
     physical_deck: 1
     deck_index: null
@@ -348,10 +479,11 @@ devices:
     shift_action: null
     encoder_mode: null
     hardware_type: button
+    mode: hot_cue
   - control:
-      type: Note
-      channel: 8
-      note: 2
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_5
     action: deck.hot_cue_press
     physical_deck: 1
     deck_index: null
@@ -361,10 +493,11 @@ devices:
     shift_action: null
     encoder_mode: null
     hardware_type: button
+    mode: hot_cue
   - control:
-      type: Note
-      channel: 8
-      note: 3
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_6
     action: deck.hot_cue_press
     physical_deck: 1
     deck_index: null
@@ -374,77 +507,309 @@ devices:
     shift_action: null
     encoder_mode: null
     hardware_type: button
+    mode: hot_cue
   - control:
-      type: Note
-      channel: 1
-      note: 30
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_9
+    action: deck.hot_cue_press
+    physical_deck: 1
+    deck_index: null
+    params:
+      slot: 4
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: hot_cue
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_10
+    action: deck.hot_cue_press
+    physical_deck: 1
+    deck_index: null
+    params:
+      slot: 5
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: hot_cue
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_13
+    action: deck.hot_cue_press
+    physical_deck: 1
+    deck_index: null
+    params:
+      slot: 6
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: hot_cue
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_14
+    action: deck.hot_cue_press
+    physical_deck: 1
+    deck_index: null
+    params:
+      slot: 7
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: hot_cue
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: quant
     action: deck.slicer_mode
     physical_deck: 1
     deck_index: null
-    params: {}
-    behavior: toggle
-    shift_action: null
-    encoder_mode: null
-    hardware_type: button
-  - control:
-      type: Note
-      channel: 8
-      note: 16
-    action: deck.slicer_trigger
-    physical_deck: 1
-    deck_index: null
     params:
-      pad: 0
+      decks:
+      - 1
+      - 3
     behavior: momentary
     shift_action: null
     encoder_mode: null
     hardware_type: button
   - control:
-      type: Note
-      channel: 8
-      note: 17
-    action: deck.slicer_trigger
-    physical_deck: 1
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_1
+    action: deck.hot_cue_press
+    physical_deck: 2
     deck_index: null
     params:
-      pad: 1
+      slot: 0
     behavior: momentary
     shift_action: null
     encoder_mode: null
     hardware_type: button
+    mode: hot_cue
   - control:
-      type: Note
-      channel: 8
-      note: 18
-    action: deck.slicer_trigger
-    physical_deck: 1
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_2
+    action: deck.hot_cue_press
+    physical_deck: 2
     deck_index: null
     params:
-      pad: 2
+      slot: 1
     behavior: momentary
     shift_action: null
     encoder_mode: null
     hardware_type: button
+    mode: hot_cue
   - control:
-      type: Note
-      channel: 8
-      note: 19
-    action: deck.slicer_trigger
-    physical_deck: 1
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_5
+    action: deck.hot_cue_press
+    physical_deck: 2
     deck_index: null
     params:
-      pad: 3
+      slot: 2
     behavior: momentary
     shift_action: null
     encoder_mode: null
     hardware_type: button
+    mode: hot_cue
   - control:
-      type: Note
-      channel: 4
-      note: 73
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_6
+    action: deck.hot_cue_press
+    physical_deck: 2
+    deck_index: null
+    params:
+      slot: 3
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: hot_cue
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_9
+    action: deck.hot_cue_press
+    physical_deck: 2
+    deck_index: null
+    params:
+      slot: 4
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: hot_cue
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_10
+    action: deck.hot_cue_press
+    physical_deck: 2
+    deck_index: null
+    params:
+      slot: 5
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: hot_cue
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_13
+    action: deck.hot_cue_press
+    physical_deck: 2
+    deck_index: null
+    params:
+      slot: 6
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: hot_cue
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_14
+    action: deck.hot_cue_press
+    physical_deck: 2
+    deck_index: null
+    params:
+      slot: 7
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: hot_cue
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_3
+    action: deck.hot_cue_press
+    physical_deck: 3
+    deck_index: null
+    params:
+      slot: 0
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: hot_cue
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_4
+    action: deck.hot_cue_press
+    physical_deck: 3
+    deck_index: null
+    params:
+      slot: 1
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: hot_cue
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_7
+    action: deck.hot_cue_press
+    physical_deck: 3
+    deck_index: null
+    params:
+      slot: 2
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: hot_cue
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_8
+    action: deck.hot_cue_press
+    physical_deck: 3
+    deck_index: null
+    params:
+      slot: 3
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: hot_cue
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_11
+    action: deck.hot_cue_press
+    physical_deck: 3
+    deck_index: null
+    params:
+      slot: 4
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: hot_cue
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_12
+    action: deck.hot_cue_press
+    physical_deck: 3
+    deck_index: null
+    params:
+      slot: 5
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: hot_cue
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_15
+    action: deck.hot_cue_press
+    physical_deck: 3
+    deck_index: null
+    params:
+      slot: 6
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: hot_cue
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_16
+    action: deck.hot_cue_press
+    physical_deck: 3
+    deck_index: null
+    params:
+      slot: 7
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: hot_cue
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_7
     action: deck.stem_mute
-    physical_deck: 0
-    deck_index: null
+    physical_deck: null
+    deck_index: 0
     params:
       stem: 0
     behavior: toggle
@@ -452,12 +817,12 @@ devices:
     encoder_mode: null
     hardware_type: button
   - control:
-      type: Note
-      channel: 4
-      note: 71
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_15
     action: deck.stem_mute
-    physical_deck: 0
-    deck_index: null
+    physical_deck: null
+    deck_index: 0
     params:
       stem: 1
     behavior: toggle
@@ -465,12 +830,12 @@ devices:
     encoder_mode: null
     hardware_type: button
   - control:
-      type: Note
-      channel: 4
-      note: 72
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_11
     action: deck.stem_mute
-    physical_deck: 0
-    deck_index: null
+    physical_deck: null
+    deck_index: 0
     params:
       stem: 2
     behavior: toggle
@@ -478,25 +843,25 @@ devices:
     encoder_mode: null
     hardware_type: button
   - control:
-      type: ControlChange
-      channel: 4
-      cc: 2
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_3
     action: deck.stem_mute
-    physical_deck: 0
-    deck_index: null
+    physical_deck: null
+    deck_index: 0
     params:
       stem: 3
-    behavior: continuous
+    behavior: toggle
     shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
+    encoder_mode: null
+    hardware_type: button
   - control:
-      type: Note
-      channel: 5
-      note: 73
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_6
     action: deck.stem_mute
-    physical_deck: 1
-    deck_index: null
+    physical_deck: null
+    deck_index: 1
     params:
       stem: 0
     behavior: toggle
@@ -504,12 +869,12 @@ devices:
     encoder_mode: null
     hardware_type: button
   - control:
-      type: Note
-      channel: 5
-      note: 71
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_14
     action: deck.stem_mute
-    physical_deck: 1
-    deck_index: null
+    physical_deck: null
+    deck_index: 1
     params:
       stem: 1
     behavior: toggle
@@ -517,12 +882,12 @@ devices:
     encoder_mode: null
     hardware_type: button
   - control:
-      type: Note
-      channel: 5
-      note: 72
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_10
     action: deck.stem_mute
-    physical_deck: 1
-    deck_index: null
+    physical_deck: null
+    deck_index: 1
     params:
       stem: 2
     behavior: toggle
@@ -530,216 +895,464 @@ devices:
     encoder_mode: null
     hardware_type: button
   - control:
-      type: ControlChange
-      channel: 5
-      cc: 2
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_2
     action: deck.stem_mute
+    physical_deck: null
+    deck_index: 1
+    params:
+      stem: 3
+    behavior: toggle
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_6
+    action: deck.stem_mute
+    physical_deck: null
+    deck_index: 2
+    params:
+      stem: 0
+    behavior: toggle
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_14
+    action: deck.stem_mute
+    physical_deck: null
+    deck_index: 2
+    params:
+      stem: 1
+    behavior: toggle
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_10
+    action: deck.stem_mute
+    physical_deck: null
+    deck_index: 2
+    params:
+      stem: 2
+    behavior: toggle
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_2
+    action: deck.stem_mute
+    physical_deck: null
+    deck_index: 2
+    params:
+      stem: 3
+    behavior: toggle
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_7
+    action: deck.stem_mute
+    physical_deck: null
+    deck_index: 3
+    params:
+      stem: 0
+    behavior: toggle
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_15
+    action: deck.stem_mute
+    physical_deck: null
+    deck_index: 3
+    params:
+      stem: 1
+    behavior: toggle
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_11
+    action: deck.stem_mute
+    physical_deck: null
+    deck_index: 3
+    params:
+      stem: 2
+    behavior: toggle
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_3
+    action: deck.stem_mute
+    physical_deck: null
+    deck_index: 3
+    params:
+      stem: 3
+    behavior: toggle
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: fader_3
+    action: mixer.volume
+    physical_deck: null
+    deck_index: 0
+    params: {}
+    behavior: continuous
+    shift_action: null
+    encoder_mode: absolute
+    hardware_type: fader
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: knob_3
+    action: mixer.filter
+    physical_deck: null
+    deck_index: 0
+    params: {}
+    behavior: continuous
+    shift_action: null
+    encoder_mode: absolute
+    hardware_type: knob
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: fader_2
+    action: mixer.volume
+    physical_deck: null
+    deck_index: 1
+    params: {}
+    behavior: continuous
+    shift_action: null
+    encoder_mode: absolute
+    hardware_type: fader
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: knob_2
+    action: mixer.filter
+    physical_deck: null
+    deck_index: 1
+    params: {}
+    behavior: continuous
+    shift_action: null
+    encoder_mode: absolute
+    hardware_type: knob
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: fader_2
+    action: mixer.volume
+    physical_deck: null
+    deck_index: 2
+    params: {}
+    behavior: continuous
+    shift_action: null
+    encoder_mode: absolute
+    hardware_type: fader
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: knob_2
+    action: mixer.filter
+    physical_deck: null
+    deck_index: 2
+    params: {}
+    behavior: continuous
+    shift_action: null
+    encoder_mode: absolute
+    hardware_type: knob
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: fader_3
+    action: mixer.volume
+    physical_deck: null
+    deck_index: 3
+    params: {}
+    behavior: continuous
+    shift_action: null
+    encoder_mode: absolute
+    hardware_type: fader
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: knob_3
+    action: mixer.filter
+    physical_deck: null
+    deck_index: 3
+    params: {}
+    behavior: continuous
+    shift_action: null
+    encoder_mode: absolute
+    hardware_type: knob
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: knob_4
+    action: deck.fx_macro
+    physical_deck: 0
+    deck_index: null
+    params:
+      macro: 0
+    behavior: continuous
+    shift_action: null
+    encoder_mode: absolute
+    hardware_type: knob
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: fader_4
+    action: deck.suggestion_energy
+    physical_deck: 0
+    deck_index: null
+    params: {}
+    behavior: continuous
+    shift_action: null
+    encoder_mode: absolute
+    hardware_type: fader
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: knob_1
+    action: deck.fx_macro
     physical_deck: 1
     deck_index: null
     params:
-      stem: 3
+      macro: 0
     behavior: continuous
     shift_action: null
     encoder_mode: absolute
-    hardware_type: fader14_bit
+    hardware_type: knob
   - control:
-      type: ControlChange
-      channel: 0
-      cc: 19
-    action: mixer.volume
-    physical_deck: null
-    deck_index: 0
+      protocol: hid
+      device_id: E82DF2FC
+      name: fader_1
+    action: deck.fx_macro
+    physical_deck: 1
+    deck_index: null
+    params:
+      macro: 1
+    behavior: continuous
+    shift_action: null
+    encoder_mode: absolute
+    hardware_type: fader
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: knob_1
+    action: deck.fx_macro
+    physical_deck: 2
+    deck_index: null
+    params:
+      macro: 0
+    behavior: continuous
+    shift_action: null
+    encoder_mode: absolute
+    hardware_type: knob
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: fader_1
+    action: deck.fx_macro
+    physical_deck: 2
+    deck_index: null
+    params:
+      macro: 1
+    behavior: continuous
+    shift_action: null
+    encoder_mode: absolute
+    hardware_type: fader
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: knob_4
+    action: deck.fx_macro
+    physical_deck: 3
+    deck_index: null
+    params:
+      macro: 0
+    behavior: continuous
+    shift_action: null
+    encoder_mode: absolute
+    hardware_type: knob
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: fader_4
+    action: deck.suggestion_energy
+    physical_deck: 3
+    deck_index: null
     params: {}
     behavior: continuous
     shift_action: null
     encoder_mode: absolute
-    hardware_type: fader14_bit
+    hardware_type: fader
   - control:
-      type: ControlChange
-      channel: 0
-      cc: 4
-    action: mixer.filter
+      protocol: hid
+      device_id: E82DF2FC
+      name: knob_3
+    action: global.fx_scroll
     physical_deck: null
-    deck_index: 0
+    deck_index: null
     params: {}
     behavior: continuous
     shift_action: null
     encoder_mode: absolute
-    hardware_type: fader14_bit
+    hardware_type: knob
   - control:
-      type: ControlChange
-      channel: 0
-      cc: 7
-    action: mixer.eq_hi
-    physical_deck: null
-    deck_index: 0
-    params: {}
-    behavior: continuous
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
-  - control:
-      type: ControlChange
-      channel: 0
-      cc: 11
-    action: mixer.eq_mid
-    physical_deck: null
-    deck_index: 0
-    params: {}
-    behavior: continuous
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
-  - control:
-      type: ControlChange
-      channel: 0
-      cc: 15
-    action: mixer.eq_lo
-    physical_deck: null
-    deck_index: 0
-    params: {}
-    behavior: continuous
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
-  - control:
-      type: Note
-      channel: 0
-      note: 84
-    action: mixer.cue
-    physical_deck: null
-    deck_index: 0
-    params: {}
+      protocol: hid
+      device_id: B2220F4E
+      name: capture
+    action: side.browse_mode
+    physical_deck: 0
+    deck_index: null
+    params:
+      side: 0
     behavior: toggle
     shift_action: null
     encoder_mode: null
     hardware_type: button
   - control:
-      type: ControlChange
-      channel: 1
-      cc: 19
-    action: mixer.volume
-    physical_deck: null
-    deck_index: 1
-    params: {}
-    behavior: continuous
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
-  - control:
-      type: ControlChange
-      channel: 1
-      cc: 4
-    action: mixer.filter
-    physical_deck: null
-    deck_index: 1
-    params: {}
-    behavior: continuous
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
-  - control:
-      type: ControlChange
-      channel: 1
-      cc: 7
-    action: mixer.eq_hi
-    physical_deck: null
-    deck_index: 1
-    params: {}
-    behavior: continuous
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
-  - control:
-      type: ControlChange
-      channel: 1
-      cc: 11
-    action: mixer.eq_mid
-    physical_deck: null
-    deck_index: 1
-    params: {}
-    behavior: continuous
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
-  - control:
-      type: ControlChange
-      channel: 1
-      cc: 15
-    action: mixer.eq_lo
-    physical_deck: null
-    deck_index: 1
-    params: {}
-    behavior: continuous
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
-  - control:
-      type: Note
-      channel: 1
-      note: 84
-    action: mixer.cue
-    physical_deck: null
-    deck_index: 1
-    params: {}
+      protocol: hid
+      device_id: E82DF2FC
+      name: capture
+    action: side.browse_mode
+    physical_deck: 1
+    deck_index: null
+    params:
+      side: 1
     behavior: toggle
     shift_action: null
     encoder_mode: null
     hardware_type: button
   - control:
-      type: ControlChange
-      channel: 6
-      cc: 64
+      protocol: hid
+      device_id: B2220F4E
+      name: encoder
     action: browser.scroll
-    physical_deck: null
+    physical_deck: 0
     deck_index: null
     params: {}
     behavior: continuous
     shift_action: null
     encoder_mode: relative
     hardware_type: encoder
+    mode: browse
   - control:
-      type: Note
-      channel: 6
-      note: 65
+      protocol: hid
+      device_id: E82DF2FC
+      name: encoder
+    action: browser.scroll
+    physical_deck: 1
+    deck_index: null
+    params: {}
+    behavior: continuous
+    shift_action: null
+    encoder_mode: relative
+    hardware_type: encoder
+    mode: browse
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: encoder_push
     action: browser.select
-    physical_deck: null
+    physical_deck: 0
     deck_index: null
     params: {}
     behavior: momentary
     shift_action: browser.back
     encoder_mode: null
     hardware_type: button
+    mode: browse
   - control:
-      type: ControlChange
-      channel: 6
-      cc: 5
-    action: global.master_volume
-    physical_deck: null
+      protocol: hid
+      device_id: E82DF2FC
+      name: encoder_push
+    action: browser.select
+    physical_deck: 1
     deck_index: null
     params: {}
-    behavior: continuous
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
+    behavior: momentary
+    shift_action: browser.back
+    encoder_mode: null
+    hardware_type: button
+    mode: browse
   - control:
-      type: ControlChange
-      channel: 6
-      cc: 31
-    action: mixer.cue_mix
-    physical_deck: null
-    deck_index: null
-    params: {}
-    behavior: continuous
-    shift_action: null
-    encoder_mode: absolute
-    hardware_type: fader14_bit
-  - control:
-      type: Note
-      channel: 6
-      note: 70
+      protocol: hid
+      device_id: B2220F4E
+      name: browse
     action: deck.load_selected
-    physical_deck: 0
+    physical_deck: null
+    deck_index: 0
+    params: {}
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: size
+    action: deck.load_selected
+    physical_deck: null
+    deck_index: 1
+    params: {}
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: size
+    action: deck.load_selected
+    physical_deck: null
+    deck_index: 2
+    params: {}
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: browse
+    action: deck.load_selected
+    physical_deck: null
+    deck_index: 3
+    params: {}
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: type_btn
+    action: global.settings_toggle
+    physical_deck: null
     deck_index: null
     params: {}
     behavior: momentary
@@ -747,11 +1360,11 @@ devices:
     encoder_mode: null
     hardware_type: button
   - control:
-      type: Note
-      channel: 6
-      note: 71
-    action: deck.load_selected
-    physical_deck: 1
+      protocol: hid
+      device_id: E82DF2FC
+      name: type_btn
+    action: global.settings_toggle
+    physical_deck: null
     deck_index: null
     params: {}
     behavior: momentary
@@ -759,399 +1372,1320 @@ devices:
     encoder_mode: null
     hardware_type: button
   feedback:
+  - state: side.browse_mode
+    physical_deck: 0
+    deck_index: null
+    params: {}
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: capture
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 200
+    - 200
+    off_color:
+    - 20
+    - 20
+    - 20
+  - state: side.browse_mode
+    physical_deck: 1
+    deck_index: null
+    params: {}
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: capture
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 200
+    - 200
+    off_color:
+    - 20
+    - 20
+    - 20
   - state: deck.is_playing
     physical_deck: 0
     deck_index: null
     params: {}
     output:
-      type: Note
-      channel: 0
-      note: 11
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_16
     on_value: 127
     off_value: 0
-    layer: null
+    on_color:
+    - 0
+    - 180
+    - 0
+    off_color:
+    - 8
+    - 8
+    - 8
   - state: deck.is_cueing
     physical_deck: 0
     deck_index: null
     params: {}
     output:
-      type: Note
-      channel: 0
-      note: 12
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_12
     on_value: 127
     off_value: 0
-    layer: null
-  - state: deck.loop_active
-    physical_deck: 0
-    deck_index: null
-    params: {}
-    output:
-      type: Note
-      channel: 0
-      note: 26
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.is_playing
-    physical_deck: 1
-    deck_index: null
-    params: {}
-    output:
-      type: Note
-      channel: 1
-      note: 11
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.is_cueing
-    physical_deck: 1
-    deck_index: null
-    params: {}
-    output:
-      type: Note
-      channel: 1
-      note: 12
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.loop_active
-    physical_deck: 1
-    deck_index: null
-    params: {}
-    output:
-      type: Note
-      channel: 1
-      note: 26
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.hot_cue_mode
-    physical_deck: 0
-    deck_index: null
-    params: {}
-    output:
-      type: Note
-      channel: 0
-      note: 27
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.hot_cue_set
-    physical_deck: 0
-    deck_index: null
-    params:
-      slot: 0
-    output:
-      type: Note
-      channel: 7
-      note: 0
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.hot_cue_set
-    physical_deck: 0
-    deck_index: null
-    params:
-      slot: 1
-    output:
-      type: Note
-      channel: 7
-      note: 1
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.hot_cue_set
-    physical_deck: 0
-    deck_index: null
-    params:
-      slot: 2
-    output:
-      type: Note
-      channel: 7
-      note: 2
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.hot_cue_set
-    physical_deck: 0
-    deck_index: null
-    params:
-      slot: 3
-    output:
-      type: Note
-      channel: 7
-      note: 3
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.slicer_mode
-    physical_deck: 0
-    deck_index: null
-    params: {}
-    output:
-      type: Note
-      channel: 0
-      note: 30
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.slicer_slice_active
-    physical_deck: 0
-    deck_index: null
-    params:
-      pad: 0
-    output:
-      type: Note
-      channel: 7
-      note: 16
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.slicer_slice_active
-    physical_deck: 0
-    deck_index: null
-    params:
-      pad: 1
-    output:
-      type: Note
-      channel: 7
-      note: 17
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.slicer_slice_active
-    physical_deck: 0
-    deck_index: null
-    params:
-      pad: 2
-    output:
-      type: Note
-      channel: 7
-      note: 18
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.slicer_slice_active
-    physical_deck: 0
-    deck_index: null
-    params:
-      pad: 3
-    output:
-      type: Note
-      channel: 7
-      note: 19
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.hot_cue_mode
-    physical_deck: 1
-    deck_index: null
-    params: {}
-    output:
-      type: Note
-      channel: 1
-      note: 27
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.hot_cue_set
-    physical_deck: 1
-    deck_index: null
-    params:
-      slot: 0
-    output:
-      type: Note
-      channel: 8
-      note: 0
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.hot_cue_set
-    physical_deck: 1
-    deck_index: null
-    params:
-      slot: 1
-    output:
-      type: Note
-      channel: 8
-      note: 1
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.hot_cue_set
-    physical_deck: 1
-    deck_index: null
-    params:
-      slot: 2
-    output:
-      type: Note
-      channel: 8
-      note: 2
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.hot_cue_set
-    physical_deck: 1
-    deck_index: null
-    params:
-      slot: 3
-    output:
-      type: Note
-      channel: 8
-      note: 3
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.slicer_mode
-    physical_deck: 1
-    deck_index: null
-    params: {}
-    output:
-      type: Note
-      channel: 1
-      note: 30
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.slicer_slice_active
-    physical_deck: 1
-    deck_index: null
-    params:
-      pad: 0
-    output:
-      type: Note
-      channel: 8
-      note: 16
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.slicer_slice_active
-    physical_deck: 1
-    deck_index: null
-    params:
-      pad: 1
-    output:
-      type: Note
-      channel: 8
-      note: 17
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.slicer_slice_active
-    physical_deck: 1
-    deck_index: null
-    params:
-      pad: 2
-    output:
-      type: Note
-      channel: 8
-      note: 18
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.slicer_slice_active
-    physical_deck: 1
-    deck_index: null
-    params:
-      pad: 3
-    output:
-      type: Note
-      channel: 8
-      note: 19
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.stem_muted
-    physical_deck: 0
-    deck_index: null
-    params:
-      stem: 0
-    output:
-      type: Note
-      channel: 4
-      note: 73
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.stem_muted
-    physical_deck: 0
-    deck_index: null
-    params:
-      stem: 1
-    output:
-      type: Note
-      channel: 4
-      note: 71
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.stem_muted
-    physical_deck: 0
-    deck_index: null
-    params:
-      stem: 2
-    output:
-      type: Note
-      channel: 4
-      note: 72
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.stem_muted
-    physical_deck: 1
-    deck_index: null
-    params:
-      stem: 0
-    output:
-      type: Note
-      channel: 5
-      note: 73
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.stem_muted
-    physical_deck: 1
-    deck_index: null
-    params:
-      stem: 1
-    output:
-      type: Note
-      channel: 5
-      note: 71
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: deck.stem_muted
-    physical_deck: 1
-    deck_index: null
-    params:
-      stem: 2
-    output:
-      type: Note
-      channel: 5
-      note: 72
-    on_value: 127
-    off_value: 0
-    layer: null
-  - state: mixer.cue_enabled
+    on_color:
+    - 200
+    - 100
+    - 0
+    off_color:
+    - 8
+    - 8
+    - 8
+  - state: deck.loop_encoder
     physical_deck: null
     deck_index: 0
     params: {}
     output:
-      type: Note
-      channel: 0
-      note: 84
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_4
     on_value: 127
     off_value: 0
-    layer: null
-  - state: mixer.cue_enabled
+    alt_on_value: 127
+    on_color:
+    - 0
+    - 180
+    - 0
+    off_color:
+    - 8
+    - 8
+    - 8
+    alt_on_color:
+    - 180
+    - 0
+    - 0
+  - state: deck.is_playing
+    physical_deck: 1
+    deck_index: null
+    params: {}
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_13
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 0
+    off_color:
+    - 8
+    - 8
+    - 8
+  - state: deck.is_cueing
+    physical_deck: 1
+    deck_index: null
+    params: {}
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_9
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 100
+    - 0
+    off_color:
+    - 8
+    - 8
+    - 8
+  - state: deck.loop_encoder
     physical_deck: null
     deck_index: 1
     params: {}
     output:
-      type: Note
-      channel: 1
-      note: 84
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_1
     on_value: 127
     off_value: 0
-    layer: null
+    alt_on_value: 127
+    on_color:
+    - 0
+    - 180
+    - 0
+    off_color:
+    - 8
+    - 8
+    - 8
+    alt_on_color:
+    - 180
+    - 0
+    - 0
+  - state: deck.is_playing
+    physical_deck: 2
+    deck_index: null
+    params: {}
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_13
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 0
+    off_color:
+    - 8
+    - 8
+    - 8
+  - state: deck.is_cueing
+    physical_deck: 2
+    deck_index: null
+    params: {}
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_9
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 100
+    - 0
+    off_color:
+    - 8
+    - 8
+    - 8
+  - state: deck.loop_encoder
+    physical_deck: null
+    deck_index: 2
+    params: {}
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_1
+    on_value: 127
+    off_value: 0
+    alt_on_value: 127
+    on_color:
+    - 0
+    - 180
+    - 0
+    off_color:
+    - 8
+    - 8
+    - 8
+    alt_on_color:
+    - 180
+    - 0
+    - 0
+  - state: deck.is_playing
+    physical_deck: 3
+    deck_index: null
+    params: {}
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_16
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 0
+    off_color:
+    - 8
+    - 8
+    - 8
+  - state: deck.is_cueing
+    physical_deck: 3
+    deck_index: null
+    params: {}
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_12
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 100
+    - 0
+    off_color:
+    - 8
+    - 8
+    - 8
+  - state: deck.loop_encoder
+    physical_deck: null
+    deck_index: 3
+    params: {}
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_4
+    on_value: 127
+    off_value: 0
+    alt_on_value: 127
+    on_color:
+    - 0
+    - 180
+    - 0
+    off_color:
+    - 8
+    - 8
+    - 8
+    alt_on_color:
+    - 180
+    - 0
+    - 0
+  - state: deck.hot_cue_mode
+    physical_deck: 0
+    deck_index: null
+    params:
+      decks:
+      - 0
+      - 2
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: sync
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 100
+    - 200
+    off_color:
+    - 8
+    - 8
+    - 8
+  - state: deck.hot_cue_set
+    physical_deck: 0
+    deck_index: null
+    params:
+      slot: 0
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_3
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 0
+    deck_index: null
+    params:
+      slot: 1
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_4
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 0
+    deck_index: null
+    params:
+      slot: 2
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_7
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 0
+    deck_index: null
+    params:
+      slot: 3
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_8
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 0
+    deck_index: null
+    params:
+      slot: 4
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_11
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 0
+    deck_index: null
+    params:
+      slot: 5
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_12
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 0
+    deck_index: null
+    params:
+      slot: 6
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_15
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 0
+    deck_index: null
+    params:
+      slot: 7
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_16
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.slicer_mode
+    physical_deck: 0
+    deck_index: null
+    params:
+      decks:
+      - 0
+      - 2
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: quant
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 160
+    - 0
+    - 180
+    off_color:
+    - 8
+    - 8
+    - 8
+  - state: deck.hot_cue_mode
+    physical_deck: 1
+    deck_index: null
+    params:
+      decks:
+      - 1
+      - 3
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: sync
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 100
+    - 200
+    off_color:
+    - 8
+    - 8
+    - 8
+  - state: deck.hot_cue_set
+    physical_deck: 1
+    deck_index: null
+    params:
+      slot: 0
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_1
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 1
+    deck_index: null
+    params:
+      slot: 1
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_2
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 1
+    deck_index: null
+    params:
+      slot: 2
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_5
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 1
+    deck_index: null
+    params:
+      slot: 3
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_6
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 1
+    deck_index: null
+    params:
+      slot: 4
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_9
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 1
+    deck_index: null
+    params:
+      slot: 5
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_10
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 1
+    deck_index: null
+    params:
+      slot: 6
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_13
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 1
+    deck_index: null
+    params:
+      slot: 7
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_14
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.slicer_mode
+    physical_deck: 1
+    deck_index: null
+    params:
+      decks:
+      - 1
+      - 3
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: quant
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 160
+    - 0
+    - 180
+    off_color:
+    - 8
+    - 8
+    - 8
+  - state: deck.hot_cue_set
+    physical_deck: 2
+    deck_index: null
+    params:
+      slot: 0
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_1
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 2
+    deck_index: null
+    params:
+      slot: 1
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_2
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 2
+    deck_index: null
+    params:
+      slot: 2
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_5
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 2
+    deck_index: null
+    params:
+      slot: 3
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_6
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 2
+    deck_index: null
+    params:
+      slot: 4
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_9
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 2
+    deck_index: null
+    params:
+      slot: 5
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_10
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 2
+    deck_index: null
+    params:
+      slot: 6
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_13
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 2
+    deck_index: null
+    params:
+      slot: 7
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_14
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 3
+    deck_index: null
+    params:
+      slot: 0
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_3
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 3
+    deck_index: null
+    params:
+      slot: 1
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_4
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 3
+    deck_index: null
+    params:
+      slot: 2
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_7
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 3
+    deck_index: null
+    params:
+      slot: 3
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_8
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 3
+    deck_index: null
+    params:
+      slot: 4
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_11
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 3
+    deck_index: null
+    params:
+      slot: 5
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_12
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 3
+    deck_index: null
+    params:
+      slot: 6
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_15
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.hot_cue_set
+    physical_deck: 3
+    deck_index: null
+    params:
+      slot: 7
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_16
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 200
+    - 140
+    - 0
+    off_color:
+    - 12
+    - 12
+    - 12
+    mode: hot_cue
+  - state: deck.stem_muted
+    physical_deck: null
+    deck_index: 0
+    params:
+      stem: 0
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_7
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 127
+    - 0
+    off_color:
+    - 6
+    - 6
+    - 6
+    mode: performance
+  - state: deck.stem_muted
+    physical_deck: null
+    deck_index: 0
+    params:
+      stem: 1
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_15
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 127
+    - 0
+    off_color:
+    - 6
+    - 6
+    - 6
+    mode: performance
+  - state: deck.stem_muted
+    physical_deck: null
+    deck_index: 0
+    params:
+      stem: 2
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_11
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 127
+    - 0
+    off_color:
+    - 6
+    - 6
+    - 6
+    mode: performance
+  - state: deck.stem_muted
+    physical_deck: null
+    deck_index: 0
+    params:
+      stem: 3
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_3
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 127
+    - 0
+    off_color:
+    - 6
+    - 6
+    - 6
+    mode: performance
+  - state: deck.stem_muted
+    physical_deck: null
+    deck_index: 1
+    params:
+      stem: 0
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_6
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 127
+    - 0
+    off_color:
+    - 6
+    - 6
+    - 6
+    mode: performance
+  - state: deck.stem_muted
+    physical_deck: null
+    deck_index: 1
+    params:
+      stem: 1
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_14
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 127
+    - 0
+    off_color:
+    - 6
+    - 6
+    - 6
+    mode: performance
+  - state: deck.stem_muted
+    physical_deck: null
+    deck_index: 1
+    params:
+      stem: 2
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_10
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 127
+    - 0
+    off_color:
+    - 6
+    - 6
+    - 6
+    mode: performance
+  - state: deck.stem_muted
+    physical_deck: null
+    deck_index: 1
+    params:
+      stem: 3
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_2
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 127
+    - 0
+    off_color:
+    - 6
+    - 6
+    - 6
+    mode: performance
+  - state: deck.stem_muted
+    physical_deck: null
+    deck_index: 2
+    params:
+      stem: 0
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_6
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 127
+    - 0
+    off_color:
+    - 6
+    - 6
+    - 6
+    mode: performance
+  - state: deck.stem_muted
+    physical_deck: null
+    deck_index: 2
+    params:
+      stem: 1
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_14
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 127
+    - 0
+    off_color:
+    - 6
+    - 6
+    - 6
+    mode: performance
+  - state: deck.stem_muted
+    physical_deck: null
+    deck_index: 2
+    params:
+      stem: 2
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_10
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 127
+    - 0
+    off_color:
+    - 6
+    - 6
+    - 6
+    mode: performance
+  - state: deck.stem_muted
+    physical_deck: null
+    deck_index: 2
+    params:
+      stem: 3
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_2
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 127
+    - 0
+    off_color:
+    - 6
+    - 6
+    - 6
+    mode: performance
+  - state: deck.stem_muted
+    physical_deck: null
+    deck_index: 3
+    params:
+      stem: 0
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_7
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 127
+    - 0
+    off_color:
+    - 6
+    - 6
+    - 6
+    mode: performance
+  - state: deck.stem_muted
+    physical_deck: null
+    deck_index: 3
+    params:
+      stem: 1
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_15
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 127
+    - 0
+    off_color:
+    - 6
+    - 6
+    - 6
+    mode: performance
+  - state: deck.stem_muted
+    physical_deck: null
+    deck_index: 3
+    params:
+      stem: 2
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_11
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 127
+    - 0
+    off_color:
+    - 6
+    - 6
+    - 6
+    mode: performance
+  - state: deck.stem_muted
+    physical_deck: null
+    deck_index: 3
+    params:
+      stem: 3
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_3
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 127
+    - 0
+    off_color:
+    - 6
+    - 6
+    - 6
+    mode: performance
+  momentary_mode_buttons: true

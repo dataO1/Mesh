@@ -202,11 +202,11 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
-- [ ] the audio output of the orangepi5 (default jack headphones jack) does not
-  output any sound even though i set it as my only output in mesh-player, evaluate why this is the case (check our sd image and ), if this is a software or hardware problem. i can provide you further details if you give me diagnostic steps which i can run on the host.
-- [ ] we need to map master bpm slider in midi mapping mode. also for now map
-  this to the macrofx 2 slider of the f1, whch has decks 1 and 3 mapped to it
-  for my current mapping (under /home/data01/Music/mesh-collection/).
+
+  sudo nixos-rebuild switch --flake "github:dataO1/Mesh/v0.9.3#mesh-embedded" --no-write-lock-file
+
+- [ ] We need to ship the midi.yaml, slicer-presets.yaml and theme.yaml with the nix derivation and link it to the right spot for mesh to detect it on the orange pi.
+
 - [ ] when starting the player first, then connecting the hid and midi devices, they
   are not recognized, we already have reconnection logic (connecting then
   disconnecting hardware works well), reuse that for detecting hardware after
