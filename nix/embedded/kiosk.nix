@@ -20,7 +20,7 @@ let
       pkgs.libGL
       pkgs.vulkan-loader
     ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-    exec ${meshPlayer}/bin/mesh-player "$@"
+    exec ${pkgs.pipewire}/bin/pw-jack ${meshPlayer}/bin/mesh-player "$@"
   '';
 in
 {
