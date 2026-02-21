@@ -12,6 +12,74 @@ use std::path::PathBuf;
 use std::time::Duration;
 use sysinfo::Disks;
 
+/// Get a user-friendly label for a disk device.
+///
+/// On Linux, `sysinfo::Disk::name()` returns the kernel device name (e.g. "sda")
+/// rather than the volume label. We resolve a proper name via:
+///   1. Filesystem label from /dev/disk/by-label/ symlinks
+///   2. Hardware model name from /sys/block/{dev}/device/model
+///   3. Fallback: /dev/{name}
+///
+/// On macOS/Windows, `disk.name()` already returns the volume label,
+/// so we use it directly with a mount-point-basename fallback.
+#[cfg(target_os = "linux")]
+fn get_device_label(device_name: &str, _mount_point: &std::path::Path) -> String {
+    // Try filesystem label from /dev/disk/by-label/
+    if let Some(label) = get_fs_label(device_name) {
+        return label;
+    }
+    // Try hardware model from sysfs
+    if let Some(model) = get_device_model(device_name) {
+        return model;
+    }
+    format!("/dev/{}", device_name)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn get_device_label(device_name: &str, mount_point: &std::path::Path) -> String {
+    if !device_name.is_empty() {
+        return device_name.to_string();
+    }
+    mount_point
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "USB Drive".to_string())
+}
+
+/// Look up filesystem label via /dev/disk/by-label/ symlinks.
+///
+/// Each entry is a symlink named after the label, pointing to the device node.
+/// e.g. `/dev/disk/by-label/SANDISK` → `../../sda1`
+#[cfg(target_os = "linux")]
+fn get_fs_label(device_name: &str) -> Option<String> {
+    let by_label = std::path::Path::new("/dev/disk/by-label");
+    let entries = std::fs::read_dir(by_label).ok()?;
+    for entry in entries.flatten() {
+        if let Ok(target) = std::fs::read_link(entry.path()) {
+            let target_name = target.file_name()?.to_string_lossy().to_string();
+            if target_name == device_name {
+                return Some(entry.file_name().to_string_lossy().to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Read the hardware model name from sysfs.
+///
+/// The model is at `/sys/block/{parent_dev}/device/model`.
+/// For partitions like `sda1`, strips the trailing digits to get the parent `sda`.
+#[cfg(target_os = "linux")]
+fn get_device_model(device_name: &str) -> Option<String> {
+    // Strip partition number: sda1 → sda, sdb2 → sdb
+    // (whole-disk devices like sda are unchanged)
+    let parent = device_name.trim_end_matches(|c: char| c.is_ascii_digit());
+    let model_path = format!("/sys/block/{}/device/model", parent);
+    let model = std::fs::read_to_string(model_path).ok()?;
+    let model = model.trim().to_string();
+    if model.is_empty() { None } else { Some(model) }
+}
+
 /// Enumerate currently connected USB storage devices
 ///
 /// Returns a list of mounted removable storage devices.
@@ -20,36 +88,45 @@ pub fn enumerate_devices() -> Result<Vec<UsbDevice>, Box<dyn std::error::Error +
     let disks = Disks::new_with_refreshed_list();
     let mut devices = Vec::new();
 
+    log::debug!("Enumerating disks: {} total from sysinfo", disks.list().len());
+
     for disk in disks.list() {
+        let mount = disk.mount_point();
+        let fs_str = disk.file_system().to_string_lossy();
+        let removable = disk.is_removable();
+
+        log::debug!(
+            "  disk: {:?} mount={} fs={} removable={} total={}",
+            disk.name(), mount.display(), fs_str, removable, disk.total_space()
+        );
+
         // Only include removable drives (USB sticks, external drives)
-        if !disk.is_removable() {
+        if !removable {
             continue;
         }
 
         // Get filesystem type
-        let fs_str = disk.file_system().to_string_lossy();
         let filesystem = FilesystemType::from_str(&fs_str);
 
         // Skip unsupported filesystems
         if matches!(filesystem, FilesystemType::Unknown) {
+            log::debug!("    skipped: unsupported filesystem '{}'", fs_str);
             continue;
         }
 
         let mount_point = disk.mount_point().to_path_buf();
         let has_mesh_collection = mount_point.join("mesh-collection").exists();
 
-        // Get label - use disk name, falling back to mount point name
-        let label = {
-            let name = disk.name().to_string_lossy().to_string();
-            if name.is_empty() {
-                mount_point
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "USB Drive".to_string())
-            } else {
-                name
-            }
-        };
+        // disk.name() may return full path ("/dev/sda") or just name ("sda")
+        let raw_name = disk.name().to_string_lossy().to_string();
+        let device_name = std::path::Path::new(&raw_name)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or(raw_name);
+
+        // Get label: filesystem label → device model → /dev/sdX (Linux)
+        //            disk name → mount point basename (macOS/Windows)
+        let label = get_device_label(&device_name, &mount_point);
 
         devices.push(UsbDevice {
             // On cross-platform, we use mount_point as the identifier

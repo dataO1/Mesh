@@ -8,6 +8,12 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **USB: device label resolution** — USB sticks were showing kernel device names
+  (e.g. "/dev/sda") instead of human-readable names. On Linux, now resolves the
+  filesystem label from `/dev/disk/by-label/`, falling back to the hardware model
+  name from sysfs (e.g. "STORE N GO"), then `/dev/sdX` as last resort. macOS and
+  Windows are unaffected (sysinfo already returns proper volume labels there).
+
 - **Embedded: ES8388 audio init** — `mesh-audio-init` service was failing on every
   boot because the `Headphone` mixer control is a switch, not a volume. Replaced
   the single broken `amixer` command with a proper init script that enables the
@@ -45,6 +51,11 @@ All notable changes to Mesh are documented in this file.
   bindgen auto-injects `--target=x86_64-pc-windows-gnu` which makes clang lose
   its resource directory. Now re-exports `BINDGEN_EXTRA_CLANG_ARGS` with just
   the clang include path (no MinGW sysroot) immediately after the unset.
+- **Embedded: mesh-player logging** — Process substitution (`> >(systemd-cat ...)`)
+  doesn't survive through `pw-jack`'s exec chain, so all mesh-player log output
+  was silently lost. Replaced with a named FIFO pipe to `systemd-cat`, making
+  logs available via `journalctl -t mesh-player`. Also sets `RUST_LOG=info` by
+  default (overridable via `systemctl set-environment`).
 
 ### Added
 
