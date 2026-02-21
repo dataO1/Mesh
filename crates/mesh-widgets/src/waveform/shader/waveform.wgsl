@@ -74,10 +74,10 @@ fn raw_peak(stem_idx: u32, idx: u32) -> vec2<f32> {
 /// rather than showing every individual peak.
 fn get_subsample_target(stem_idx: u32) -> f32 {
     switch (stem_idx) {
-        case 0u: { return 2.0; }  // Vocals — moderate abstraction
-        case 1u: { return 1.5; }  // Drums — slightly more detail
+        case 0u: { return 2.5; }  // Vocals
+        case 1u: { return 2.0; }  // Drums — slightly more detail than others
         case 2u: { return 3.0; }  // Bass — most abstract
-        default: { return 2.0; }  // Other — moderate abstraction
+        default: { return 2.5; }  // Other
     }
 }
 
@@ -409,12 +409,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // to "dance": a ~1px peak only passes the test for ONE pixel row, and sub-pixel
         // position shifts between frames cause it to jump to a different row.
         //
-        // Without the guard, smoothstep naturally blends across 2-3 pixel rows.
-        // Sub-pixel movement produces smooth alpha gradients instead of binary jumps.
+        // Asymmetric smoothstep: full 1px transition inside, only 0.3px outside.
+        // The minimal outside extension prevents hard pixel jumps for thin peaks
+        // while limiting inter-stem color bleeding at envelope edges.
         let d_top = uv.y - y_min;  // positive = inside envelope
         let d_bot = y_max - uv.y;  // positive = inside envelope
-        let aa_top = smoothstep(-fw, fw, d_top);
-        let aa_bot = smoothstep(-fw, fw, d_bot);
+        let fw_out = fw * 0.3;     // outside extension (tight to reduce outlines)
+        let aa_top = smoothstep(-fw_out, fw, d_top);
+        let aa_bot = smoothstep(-fw_out, fw, d_bot);
         var edge_alpha = aa_top * aa_bot;
 
         // For sub-pixel thin envelopes (< 2px), the overlapping smoothstep
