@@ -3,25 +3,19 @@ as much as possible in mesh-core and mesh-widget and only if necessary in the ui
 
 # Features
 
-## Saved Loops
-- [ ] Loop buttons are there and styled correctly, but dont do anything (they
-  are greyed out). Wire them with deck looping capabilities: press to create a
-  new loop at the current playhead (snap to grid), loop size from beatjump
-  width. Toggle on/off. Represents one of 8 saved loops stored to file.
-
 ## Collection Browser
 - [ ] Tag editing UI: support adding, removing, and editing tags on tracks
   directly from the browser. Needs inline tag editor or context menu with
   autocomplete from existing tags (get_all_tags). Color picker optional.
-- [ ] USB tag export: ensure the track_tags relation is exported alongside
-  other metadata when exporting collections to USB sticks.
 
 ## MIDI
 - [ ] Jog wheel beat nudging for backwards compatibility with older devices
   (like SB2). Must work with current snapping system: when a user nudges by N
   samples, that offset is stored for this deck only, resets on load of a new
   track and is preserved across beat jumps, hot cue presses and
-  other seek operations so the DJ doesn't need to nudge again.
+  other seek operations so the DJ doesn't need to nudge again. We could
+  potentially map several possible midi interfaces to this: classical jog wheel,
+  +/- buttons for fine grained nudging.
 
 ## Slicer
 - [ ] Single morph knob per deck that scrolls through preset banks (up to 8
@@ -69,8 +63,6 @@ for v3 and beyond.
   reflect each DJ's mixing style, not a blended average.
 
 
-###
-
 ### Infrastructure
 
 ## DJ History & Playlists
@@ -92,13 +84,6 @@ for v3 and beyond.
   comparable loudness to input stem loudness, since processing can be very
   loud or silent.
 - [ ] Built-in native effects (beat-synced echo, flanger, phaser, gater, etc.).
-
-## Release Pipeline
-- The sd image build has the derivation hash in the name, but this should have
-  the tagged version, which triggered the build in name, like the other build
-  artifact releases. Also in the build description for the releases for the
-  debian and windows builds, cluster linux builds first, then windows build
-  (nixos is linux).
 
 ## Documentation
 - we need much better strucutred and complete documentation:
@@ -125,28 +110,16 @@ for v3 and beyond.
       reference this).
 
 # Bugs
-- [ ] Virtual deck toggle buttons need similar logic to action pad modes. On
-  DDJ-SB2, deck toggle makes deck-specific buttons use their own channel
-  (action buttons, mode switches).
-- [x] Importing tracks don't appear in collection (mesh-cue) immediately after
-  analysis. Visible as finished in status bar and written as file, but not in
-  the collection list in the file browser.
-- [x] On window resize the last canvas state is imprinted and does not go
-  away. The actual canvas still works normally.
 - [ ] When deleting a file in the file browser, select the next item (or
   previous if no next) instead of scrolling to the top ( i think this happens,
   since we index something that isnt there anymore ).
-- [ ] USB manager should invalidate DB connection, cache and notify UI to
-  return to root in file browser when a USB stick is removed.
+- [ ] USB manager should invalidate DB connection and cache and notify UI to
+  return to the hierarchy one above in file browser when a USB stick is removed.
+  Currently the user can still scroll and "load" tracks from the unexisting usb
+  stick.
 
 # Performance
 - [ ] Optimise stem storage (currently ~200-300 MB per multi-track file).
-- [ ] Real-time thread priority: set SCHED_FIFO with priority ~70 (below
-  JACK's 80) for the audio callback thread when not using JACK. On a typical
-  Linux desktop a CPU spike from another process can preempt the audio thread.
-- [ ] Watchdog / xrun detection: monitor audio callback timing. If a callback
-  takes too long, warn and adapt. Show xrun counts in diagnostics (like
-  Traktor).
 
 # Open Questions
 - [ ] B2B settings management: when multiple DJs play on the same device, each
@@ -202,13 +175,18 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
+- [ ] the audio quality on the headphone jack is not really great, is there some
+  processing on it? theres barely any bass but a lot of high end, which is
+  unusual for my headphones, i know very well. check if this is a configuration
+  issue, maybe its just the hardware quality. its also relatively noisy. does
+  the external card we plan to integrate later yield better quality, or is this
+  of similar quality?
 
-  sudo nixos-rebuild switch --flake "github:dataO1/Mesh/v0.9.3#mesh-embedded" --no-write-lock-file
-
-- [ ] We need to ship the midi.yaml, slicer-presets.yaml and theme.yaml with the nix derivation and link it to the right spot for mesh to detect it on the orange pi.
-
+- [ ] slicer mode does not work when triggered from the midi mapped f1. check 1.
+  the mapping file, 2. the mapping in the app and give me a report of why this
+  might happen. the current mapping file is in momentary mode.
 - [ ] when starting the player first, then connecting the hid and midi devices, they
-  are not recognized, we already have reconnection logic (connecting then
+  are not recognized by mesh-player, we already have reconnection logic (connecting then
   disconnecting hardware works well), reuse that for detecting hardware after
   the software launch. we know which hardware to expect from the midi mapping
   file.
@@ -216,51 +194,29 @@ for v3 and beyond.
   artist apparently) from the name parsing, we need to fix that, some examples:
   * 01 Black Sun Empire - Feed The Machine (you can check the original name in
     /home/data01/Music/mesh-collection/import/backup/)
-- [ ] loading a track from local, then trying to load tracks from  smart suggestions
-  from other sources (usb) doesnt correctly load the metadata, other suggestions
-  from local load fine. from usb loads
-  all other sources correctly.
-- [ ] We need to support custom resolutions and optionally dynamic ui based on
-  the window size, heres some information:
-  - [ ] Setting a custom resolution, such as
-2880×864 (a likely ultra-wide or specialized aspect ratio), in an Iced UI application involves configuring the window settings via winit (the underlying windowing library) in Rust.
-Here is how to implement custom resolution sizes and handle screen scaling:
-1. Setting the Window Resolution
-When setting up your application in iced::Application::new or within the Settings struct, you can define the initial window size.
-rust
 
-use iced::{Application, Settings, Window, Size};
 
-// ... inside your main or where you define settings
-let settings = Settings {
-    window: Window {
-        size: Size::new(2880.0, 864.0), // Set the desired width and height
-        position: iced::window::Position::Centered, // Optional: Center the window
-        ..Default::default()
-    },
-    ..Default::default()
-};
-
-// ... run your application
-
-2. Handling DPI and Scaling
-If you are using a high-resolution display (HiDPI), the actual pixels used might be different from the logical pixels (2880x864). Iced handles this through winit.
-
-    Logical vs Physical: The Size::new(2880.0, 864.0) typically refers to logical pixels.
-    Scaling: If you need the window to be strictly a physical 2880x864, you may need to factor in the monitor's DPI scaling, which can be retrieved via winit window handles.
-
-3. Querying Monitor Resolution (Dynamic Sizing)
-If you want to ensure the 2880x864 size fits within the user's screen or spans it, you should query the monitor's dimensions, especially to avoid issues with taskbars.
-
-    Current Solution: Use iced::window::Id and window::get_monitor_size to query the current display size.
-    Future/Draft: There is ongoing work to improve iced::window::get_monitor_size to better handle primary display checks.
-
-4. Constraints for Custom Resolutions (Wayland/Linux)
-If you are using Linux/Wayland, be aware that setting custom resolutions can sometimes be restricted by the compositor. Ensure your system recognizes the resolution via xrandr or equivalent Wayland configuration tools.
-Summary Checklist for 2880x864
-
-    Define size: Use Size::new(2880.0, 864.0).
-    Toggle Fullscreen: If this is for a screen-spanning display, ensure the window is not restricted by standard taskbar heights.
-    Use winit settings: Leverage iced::window::Settings for resizing behavior if the user changes the window size.
-
-    Make sure this is also compatible with cage! and our hardware.
+- Iced cusomization options. Interesting is the settings, search what else we
+  can set there, which might be relevant for us. Also theming is very
+  interesting, we havent looked into that yet, research how theming works with
+  iced. we should also set a title in each binary:
+     * run() -- Runs the application
+     * settings(Settings) -- Sets the iced::Settings
+     * antialiasing(bool) -- Enables/disables antialiasing
+     * default_font(Font) -- Sets the default font
+     * font(impl Into<Cow<'static, [u8]>>) -- Adds a custom font
+     * scale_factor(impl Fn(&State) -> f64) -- Custom scale factor logic
+     * window(window::Settings) -- Sets window settings
+     * centered() -- Centers the window
+     * window_size(Size) -- Sets window dimensions
+     * transparent(bool) -- Window transparency
+     * resizable(bool) -- Window resizability
+     * decorations(bool) -- Window decorations
+     * position(Position) -- Window position
+     * level(Level) -- Window level (e.g., always-on-top)
+     * exit_on_close_request(bool) -- Controls exit behavior
+     * title(impl Fn(&State) -> String) -- Dynamic title
+     * subscription(impl Fn(&State) -> Subscription<Message>) -- Subscriptions
+     * theme(impl Fn(&State) -> Theme) -- Theme function
+     * style(impl Fn(&State, &Theme) -> Color) -- Style logic
+     * executor() -- Executor type
