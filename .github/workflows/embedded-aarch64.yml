@@ -86,7 +86,7 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
             extra-substituters = https://datao1.github.io/Mesh/
-            extra-trusted-public-keys = mesh-embedded:TVnMdLIfPt4q20ulKuieSc2Rv2fcwnph/TdLh2dZuKA=
+            extra-trusted-public-keys = mesh-embedded:vLo1l3Abp0Uzcn21wR3oXvmZxZb1Z1rbk+ggTOIGmeQ=
 
       - name: Nix store cache
         if: steps.version.outputs.skip != 'true'

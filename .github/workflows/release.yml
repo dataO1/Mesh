@@ -130,7 +130,7 @@ jobs:
           \`\`\`bash
           # /etc/nix/nix.conf (or flake nixConfig)
           extra-substituters = https://datao1.github.io/Mesh/
-          extra-trusted-public-keys = mesh-embedded:TVnMdLIfPt4q20ulKuieSc2Rv2fcwnph/TdLh2dZuKA=
+          extra-trusted-public-keys = mesh-embedded:vLo1l3Abp0Uzcn21wR3oXvmZxZb1Z1rbk+ggTOIGmeQ=
 
           # Update an embedded device
           nixos-rebuild switch --flake github:${REPO}#mesh-embedded --no-write-lock-file
@@ -415,7 +415,7 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
             extra-substituters = https://datao1.github.io/Mesh/
-            extra-trusted-public-keys = mesh-embedded:TVnMdLIfPt4q20ulKuieSc2Rv2fcwnph/TdLh2dZuKA=
+            extra-trusted-public-keys = mesh-embedded:vLo1l3Abp0Uzcn21wR3oXvmZxZb1Z1rbk+ggTOIGmeQ=
 
       - name: Nix store cache
         uses: DeterminateSystems/magic-nix-cache-action@v8
@@ -425,6 +425,12 @@ jobs:
       - name: Set up signing key
         run: |
           echo "${{ secrets.NIX_CACHE_PRIV_KEY }}" > /tmp/cache-priv-key.pem
+          # Validate key format: must be "name:base64key"
+          if ! grep -qE '^[a-zA-Z0-9_.-]+:' /tmp/cache-priv-key.pem; then
+            echo "::error::NIX_CACHE_PRIV_KEY must be in format 'keyname:base64key'"
+            exit 1
+          fi
+          echo "Signing key loaded ($(wc -c < /tmp/cache-priv-key.pem) bytes)"
 
       - name: Build mesh-player
         run: |
@@ -433,20 +439,48 @@ jobs:
 
       - name: Create binary cache
         run: |
-          mkdir -p ./${{ env.CACHE_NAME }}
-          echo "Exporting store paths to binary cache..."
+          CACHE_DIR="$(pwd)/${{ env.CACHE_NAME }}"
+          CACHE_STORE="file://${CACHE_DIR}"
+          mkdir -p "${CACHE_DIR}"
 
-          nix copy --to "file://$(pwd)/${{ env.CACHE_NAME }}" \
-            --secret-key-files /tmp/cache-priv-key.pem \
-            ./result
+          echo "Copying store paths to binary cache..."
+          nix copy --to "${CACHE_STORE}" ./result
+
+          echo "Signing all paths in cache..."
+          nix store sign \
+            --store "${CACHE_STORE}" \
+            --key-file /tmp/cache-priv-key.pem \
+            --all
 
           echo ""
           echo "Cache contents:"
-          ls -lh ./${{ env.CACHE_NAME }}/
+          ls -lh "${CACHE_DIR}"/
           echo ""
-          du -sh ./${{ env.CACHE_NAME }}
+          du -sh "${CACHE_DIR}"
           echo ""
-          echo "narinfo count: $(ls ./${{ env.CACHE_NAME }}/*.narinfo 2>/dev/null | wc -l)"
+          echo "narinfo count: $(ls "${CACHE_DIR}"/*.narinfo 2>/dev/null | wc -l)"
+
+      - name: Verify cache signatures
+        run: |
+          CACHE_DIR="$(pwd)/${{ env.CACHE_NAME }}"
+          RESULT_HASH=$(nix-store -q --hash $(readlink ./result) | cut -c12-43)
+
+          echo "Checking narinfo for mesh-player..."
+          NARINFO="${CACHE_DIR}/${RESULT_HASH}.narinfo"
+          if [ ! -f "$NARINFO" ]; then
+            echo "::error::narinfo not found: ${NARINFO}"
+            exit 1
+          fi
+
+          if grep -q "^Sig:" "$NARINFO"; then
+            echo "Signature found:"
+            grep "^Sig:" "$NARINFO"
+          else
+            echo "::error::mesh-player narinfo has no signature! Check NIX_CACHE_PRIV_KEY secret."
+            echo "narinfo contents:"
+            cat "$NARINFO"
+            exit 1
+          fi
 
       - name: Generate index.html
         run: |
@@ -509,7 +543,7 @@ jobs:
             <h2>Usage</h2>
             <p>Add to <code>/etc/nix/nix.conf</code> or flake config:</p>
             <pre>extra-substituters = https://datao1.github.io/Mesh/
-          extra-trusted-public-keys = mesh-embedded:TVnMdLIfPt4q20ulKuieSc2Rv2fcwnph/TdLh2dZuKA=</pre>
+          extra-trusted-public-keys = mesh-embedded:vLo1l3Abp0Uzcn21wR3oXvmZxZb1Z1rbk+ggTOIGmeQ=</pre>
 
             <p>Update the embedded device:</p>
             <pre>nixos-rebuild switch --flake github:dataO1/Mesh/${VERSION}#mesh-embedded --no-write-lock-file</pre>
