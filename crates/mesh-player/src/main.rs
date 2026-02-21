@@ -145,11 +145,24 @@ fn main() -> iced::Result {
                 log::info!("Direct MIDI→engine dispatch enabled");
             }
 
+            // Query monitor size for auto-resolution
+            // Use oldest() to get the main window Id, then chain monitor_size query
+            let monitor_task = iced::window::oldest().then(|opt_id| {
+                if let Some(id) = opt_id {
+                    iced::window::monitor_size(id).map(Message::GotMonitorSize)
+                } else {
+                    Task::done(Message::GotMonitorSize(None))
+                }
+            });
+
             // If --midi-learn flag was passed, start MIDI learn mode (opens the drawer)
             let startup_task = if start_midi_learn {
-                Task::done(Message::MidiLearn(MidiLearnMessage::Start))
+                Task::batch([
+                    monitor_task,
+                    Task::done(Message::MidiLearn(MidiLearnMessage::Start)),
+                ])
             } else {
-                Task::none()
+                monitor_task
             };
 
             (app, startup_task)
@@ -160,7 +173,8 @@ fn main() -> iced::Result {
     .subscription(subscription)
     .theme(theme)
     .title("Mesh DJ Player")
-    .window_size(Size::new(1200.0, 800.0))
+    .antialiasing(true)
+    .window_size(Size::new(1920.0, 1080.0))
     .run();
 
     // Keep audio handle alive until we're done (it will be dropped here)

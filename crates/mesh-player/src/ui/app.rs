@@ -531,6 +531,21 @@ impl MeshApp {
             Message::SystemUpdate(update_msg) => {
                 super::handlers::system_update::handle(self, update_msg)
             }
+
+            Message::GotMonitorSize(Some(size)) => {
+                log::info!("Monitor size detected: {}x{}", size.width, size.height);
+                iced::window::oldest().then(move |opt_id| {
+                    if let Some(id) = opt_id {
+                        iced::window::resize(id, size)
+                    } else {
+                        Task::none()
+                    }
+                })
+            }
+            Message::GotMonitorSize(None) => {
+                log::warn!("Could not detect monitor size, using default window size");
+                Task::none()
+            }
         }
     }
 
@@ -1250,7 +1265,7 @@ impl MeshApp {
         };
 
         // Journal polling subscription for OTA update progress
-        let journal_poll_sub = if self.settings.update.as_ref().is_some_and(|u| u.is_installing()) {
+        let journal_poll_sub = if self.settings.is_open && self.settings.update.as_ref().is_some_and(|u| u.is_installing()) {
             time::every(std::time::Duration::from_secs(2))
                 .map(|_| Message::SystemUpdate(super::system_update::SystemUpdateMessage::PollJournal))
         } else {
@@ -1258,8 +1273,8 @@ impl MeshApp {
         };
 
         Subscription::batch([
-            // Update UI at ~60fps for smooth waveform animation
-            time::every(std::time::Duration::from_millis(16)).map(|_| Message::Tick),
+            // Update UI synced to display refresh rate (60Hz, 120Hz, etc.)
+            iced::window::frames().map(|_| Message::Tick),
             // Background track load results (delivered as messages, no polling needed)
             mpsc_subscription(self.domain.track_loader_result_receiver())
                 .map(|result| Message::TrackLoaded(TrackLoadedMsg(Arc::new(result)))),

@@ -1,0 +1,7 @@
+#!/bin/sh
+# Wrapper for mesh-cue — sets optimal GPU rendering defaults
+# Vulkan backend with low-latency Mailbox presentation mode
+# These can be overridden by setting the env vars before launching
+export WGPU_BACKEND="${WGPU_BACKEND:-vulkan}"
+export ICED_PRESENT_MODE="${ICED_PRESENT_MODE:-mailbox}"
+exec /usr/lib/mesh/mesh-cue "$@"

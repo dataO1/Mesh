@@ -6,6 +6,56 @@ All notable changes to Mesh are documented in this file.
 
 ## [0.9.3]
 
+### Performance
+
+- **Rendering: display-synced frame scheduling** — Replaced hardcoded 60Hz timer
+  (`time::every(16ms)`) with `window::frames()`, which fires at the compositor's
+  native vblank rate. Automatically adapts to 60Hz, 120Hz, or any display refresh
+  rate without code changes. Previously, 120Hz displays were capped at 60fps.
+
+- **Rendering: canvas geometry caching** — Added `canvas::Cache` to
+  `PlayerCanvasState`, eliminating per-frame reconstruction of all waveform
+  geometry (~100+ draw ops, 32 Vec allocations, 16 Path closures per frame across
+  4 decks). Cache invalidates on visual state changes (playhead, volume, stem
+  mute, loop, etc.) and skips reconstruction entirely when paused. At 120Hz this
+  prevents ~12,000 unnecessary draw operations per second during idle.
+
+- **Rendering: Mailbox present mode** — Set `ICED_PRESENT_MODE=mailbox` as
+  default across all environments (devshell, embedded kiosk, Debian/RPM packages).
+  Mailbox uses a single-frame queue (~8ms latency at 120Hz) vs Fifo's 3-frame
+  queue (~25ms). Wayland compositors guarantee tearless presentation regardless.
+
+- **Rendering: Vulkan backend** — Set `WGPU_BACKEND=vulkan` as default everywhere,
+  replacing GLES on embedded (which couldn't use Mailbox). Vulkan is required for
+  Mailbox present mode and enables `PowerPreference::HighPerformance` GPU selection.
+  On embedded, uses PanVK (Mali-G610, Vulkan 1.2+ conformant).
+
+- **Rendering: MSAAx4 antialiasing** — Enabled `.antialiasing(true)` for smooth
+  waveform line rendering. Also ensures `PowerPreference::HighPerformance` for GPU
+  adapter selection via wgpu.
+
+- **Rendering: OTA journal polling gated** — Journal polling for OTA updates now
+  only runs when the settings modal is open AND an update is installing. Previously
+  polled every frame unconditionally, adding unnecessary work to the render loop.
+
+### Changed
+
+- **Window: default size 1920x1080** — Default window size increased from 1200x800
+  to 1920x1080 (Full HD). Auto-detection via `monitor_size()` is attempted at
+  startup but returns `None` on Wayland tiling WMs (known winit limitation). On the
+  target cage kiosk, the window auto-fills the display regardless.
+
+- **Packaging: Vulkan wrapper scripts** — Debian and RPM packages now install
+  binaries to `/usr/lib/mesh/` with a thin wrapper at `/usr/bin/` that sets
+  `WGPU_BACKEND=vulkan` and `ICED_PRESENT_MODE=mailbox` before exec. Env vars
+  use `${VAR:-default}` so users can override. Previously, binaries launched with
+  no GPU backend preference, falling back to wgpu auto-detection.
+
+- **Nix: fixed Vulkan ICD discovery** — Removed broken `VK_ICD_FILENAMES` from
+  devshell that pointed to `pkgs.vulkan-loader` (which has no ICD files). The
+  Vulkan loader automatically discovers ICDs from `/run/opengl-driver/` on NixOS
+  via `hardware.graphics.enable`. The old path silently disabled ICD discovery.
+
 ### Fixed
 
 - **USB: multi-stick metadata resolution** — When multiple USB sticks were

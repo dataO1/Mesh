@@ -130,4 +130,7 @@ pub enum Message {
 
     /// System update message (OTA)
     SystemUpdate(SystemUpdateMessage),
+
+    /// Monitor size detected at startup (for auto-sizing)
+    GotMonitorSize(Option<iced::Size>),
 }

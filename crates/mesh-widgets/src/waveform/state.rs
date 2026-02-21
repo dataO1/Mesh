@@ -6,6 +6,7 @@
 
 use super::CueMarker;
 use crate::{CUE_COLORS, STEM_COLORS};
+use iced::widget::canvas::Cache;
 use iced::Color;
 use mesh_core::audio_file::{dequantize_peak, CuePoint, LoadedTrack, StemBuffers, WaveformPreview};
 use std::sync::Arc;
@@ -1070,12 +1071,15 @@ pub const DECK_HEADER_HEIGHT: f32 = 48.0;
 /// - **Overview waveform**: Full track view (35px)
 ///
 /// Grid: Deck 1=top-left, 2=top-right, 3=bottom-left, 4=bottom-right
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PlayerCanvasState {
     /// Per-deck combined state (zoomed + overview)
     pub decks: [CombinedState; 4],
     /// Per-deck playhead positions in samples
     pub playheads: [u64; 4],
+    /// Canvas geometry cache — avoids rebuilding draw ops every frame.
+    /// Cleared (invalidated) by every `set_*` method that changes visual state.
+    pub canvas_cache: Cache,
     /// Track names for each deck (displayed in header)
     track_names: [String; 4],
     /// Track keys for each deck (displayed in header, e.g. "Am", "C#m")
@@ -1166,7 +1170,13 @@ impl PlayerCanvasState {
             display_bpm: [None; 4],              // No BPM alignment initially
             vertical_layout: false,              // Horizontal layout by default
             vertical_inverted: false,
+            canvas_cache: Cache::new(),
         }
+    }
+
+    /// Invalidate the canvas geometry cache, forcing a full redraw next frame.
+    pub fn invalidate_cache(&mut self) {
+        self.canvas_cache.clear();
     }
 
     /// Set the track name for a deck (displayed in header)
@@ -1174,6 +1184,7 @@ impl PlayerCanvasState {
         if idx < 4 {
             self.track_names[idx] = name;
         }
+        self.invalidate_cache();
     }
 
     /// Get the track name for a deck
@@ -1190,6 +1201,7 @@ impl PlayerCanvasState {
         if idx < 4 {
             self.track_names[idx].clear();
         }
+        self.invalidate_cache();
     }
 
     /// Set the track key for a deck (displayed in header)
@@ -1197,6 +1209,7 @@ impl PlayerCanvasState {
         if idx < 4 {
             self.track_keys[idx] = key;
         }
+        self.invalidate_cache();
     }
 
     /// Get the track key for a deck
@@ -1213,6 +1226,7 @@ impl PlayerCanvasState {
         if idx < 4 {
             self.track_bpm[idx] = bpm;
         }
+        self.invalidate_cache();
     }
 
     /// Get the track BPM for a deck
@@ -1229,6 +1243,7 @@ impl PlayerCanvasState {
         if deck_idx < 4 && stem_idx < 4 {
             self.stem_active[deck_idx][stem_idx] = active;
         }
+        self.invalidate_cache();
     }
 
     /// Get stem active status for a deck (true = playing, false = bypassed)
@@ -1246,6 +1261,7 @@ impl PlayerCanvasState {
             self.linked_stems[deck_idx][stem_idx] = has_linked;
             self.linked_stems_active[deck_idx][stem_idx] = is_active;
         }
+        self.invalidate_cache();
     }
 
     /// Get linked stem status for a deck [stem_idx] -> (has_linked, is_active)
@@ -1262,6 +1278,7 @@ impl PlayerCanvasState {
         if idx < 4 {
             self.is_master[idx] = is_master;
         }
+        self.invalidate_cache();
     }
 
     /// Check if a deck is the master
@@ -1278,6 +1295,7 @@ impl PlayerCanvasState {
         if idx < 4 {
             self.current_transpose[idx] = semitones;
         }
+        self.invalidate_cache();
     }
 
     /// Get the current transpose for a deck
@@ -1294,6 +1312,7 @@ impl PlayerCanvasState {
         if idx < 4 {
             self.key_match_enabled[idx] = enabled;
         }
+        self.invalidate_cache();
     }
 
     /// Check if key matching is enabled for a deck
@@ -1312,6 +1331,7 @@ impl PlayerCanvasState {
         if idx < 4 {
             self.lufs_gain_db[idx] = gain_db;
         }
+        self.invalidate_cache();
     }
 
     /// Get LUFS gain compensation in dB for a deck
@@ -1328,6 +1348,7 @@ impl PlayerCanvasState {
         if idx < 4 {
             self.cue_enabled[idx] = enabled;
         }
+        self.invalidate_cache();
     }
 
     /// Get cue (headphone monitoring) enabled state for a deck
@@ -1344,6 +1365,7 @@ impl PlayerCanvasState {
         if idx < 4 {
             self.loop_length_beats[idx] = beats;
         }
+        self.invalidate_cache();
     }
 
     /// Get loop length in beats for a deck
@@ -1360,6 +1382,7 @@ impl PlayerCanvasState {
         if idx < 4 {
             self.loop_active[idx] = active;
         }
+        self.invalidate_cache();
     }
 
     /// Get loop active state for a deck
@@ -1376,6 +1399,7 @@ impl PlayerCanvasState {
         if idx < 4 {
             self.volume[idx] = volume;
         }
+        self.invalidate_cache();
     }
 
     /// Get channel volume for a deck (0.0-1.0)
@@ -1392,6 +1416,7 @@ impl PlayerCanvasState {
         if idx < 4 {
             self.display_bpm[idx] = bpm;
         }
+        self.invalidate_cache();
     }
 
     /// Get display BPM for a deck
@@ -1406,6 +1431,7 @@ impl PlayerCanvasState {
     /// Set stem colors for waveform rendering [Vocals, Drums, Bass, Other]
     pub fn set_stem_colors(&mut self, colors: [Color; 4]) {
         self.stem_colors = colors;
+        self.invalidate_cache();
     }
 
     /// Get stem colors for waveform rendering [Vocals, Drums, Bass, Other]
@@ -1416,11 +1442,13 @@ impl PlayerCanvasState {
     /// Set vertical waveform layout mode
     pub fn set_vertical_layout(&mut self, vertical: bool) {
         self.vertical_layout = vertical;
+        self.invalidate_cache();
     }
 
     /// Set vertical Y axis inversion
     pub fn set_vertical_inverted(&mut self, inverted: bool) {
         self.vertical_inverted = inverted;
+        self.invalidate_cache();
     }
 
     /// Check if vertical waveform layout is active
@@ -1452,6 +1480,7 @@ impl PlayerCanvasState {
             self.last_update_time[idx] = std::time::Instant::now();
             self.is_playing[idx] = is_playing;
         }
+        self.invalidate_cache();
     }
 
     /// Get the playhead position for a deck (in samples)

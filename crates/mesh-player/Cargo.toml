@@ -29,7 +29,9 @@ maintainer = "Mesh Team"
 section = "sound"
 priority = "optional"
 assets = [
-    ["target/release/mesh-player", "usr/bin/", "755"],
+    # Wrapper script sets WGPU_BACKEND=vulkan and ICED_PRESENT_MODE=mailbox, then execs the binary
+    ["../../packaging/mesh-player-wrapper", "usr/bin/mesh-player", "755"],
+    ["target/release/mesh-player", "usr/lib/mesh/", "755"],
     ["../../packaging/mesh-player.desktop", "usr/share/applications/", "644"],
     # udev rules for USB HID controllers (Kontrol F1 etc.) — grants user access to /dev/hidraw*
     ["../../etc/udev/99-mesh-hid.rules", "lib/udev/rules.d/", "644"],
@@ -42,7 +44,9 @@ depends = "$auto, libasound2, libvulkan1, libxkbcommon0, libwayland-client0, lib
 # === Fedora/RHEL packaging ===
 [package.metadata.generate-rpm]
 assets = [
-    { source = "target/release/mesh-player", dest = "/usr/bin/mesh-player", mode = "755" },
+    # Wrapper script sets WGPU_BACKEND=vulkan and ICED_PRESENT_MODE=mailbox, then execs the binary
+    { source = "../../packaging/mesh-player-wrapper", dest = "/usr/bin/mesh-player", mode = "755" },
+    { source = "target/release/mesh-player", dest = "/usr/lib/mesh/mesh-player", mode = "755" },
     { source = "../../packaging/mesh-player.desktop", dest = "/usr/share/applications/mesh-player.desktop", mode = "644" },
     # User should add icon: { source = "../../packaging/icons/mesh-player.png", dest = "/usr/share/icons/hicolor/256x256/apps/mesh-player.png", mode = "644" },
 ]

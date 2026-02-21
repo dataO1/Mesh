@@ -90,9 +90,10 @@ in
       program = "${meshPlayerWrapper}";
       extraArguments = [ "-d" "-s" ];
       environment = {
-        # Use GLES via Panthor (Mali-G610)
-        WGPU_BACKEND = "gl";
-        MESA_GL_VERSION_OVERRIDE = "3.1";
+        # Vulkan via PanVK (Mali-G610, conformant Vulkan 1.2+)
+        # Mailbox: low-latency tearless presentation (1-frame queue vs Fifo's 3)
+        WGPU_BACKEND = "vulkan";
+        ICED_PRESENT_MODE = "mailbox";
         WLR_NO_HARDWARE_CURSORS = "1";
       };
     };

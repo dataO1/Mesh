@@ -326,83 +326,85 @@ where
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        if self.state.is_vertical_layout() {
-            return self.draw_vertical(renderer, bounds);
-        }
+        let geometry = self.state.canvas_cache.draw(renderer, bounds.size(), |frame| {
+            if self.state.is_vertical_layout() {
+                self.draw_vertical_into(frame, bounds);
+                return;
+            }
 
-        let mut frame = Frame::new(renderer, bounds.size());
-        let width = bounds.width;
-        let cell_width = (width - DECK_GRID_GAP) / 2.0;
-        let (cell_height, zoomed_height) = cell_height_from_bounds(bounds.height);
+            let width = bounds.width;
+            let cell_width = (width - DECK_GRID_GAP) / 2.0;
+            let (cell_height, zoomed_height) = cell_height_from_bounds(bounds.height);
 
-        // =====================================================================
-        // DECK QUADRANTS (2x2 grid, each with header + zoomed + overview)
-        // =====================================================================
-        // Deck 1 = top-left, Deck 2 = top-right
-        // Deck 3 = bottom-left, Deck 4 = bottom-right
-        let grid_positions = [
-            (0.0, 0.0),                                      // Deck 1: top-left
-            (cell_width + DECK_GRID_GAP, 0.0),              // Deck 2: top-right
-            (0.0, cell_height + DECK_GRID_GAP),             // Deck 3: bottom-left
-            (cell_width + DECK_GRID_GAP, cell_height + DECK_GRID_GAP), // Deck 4: bottom-right
-        ];
+            // =====================================================================
+            // DECK QUADRANTS (2x2 grid, each with header + zoomed + overview)
+            // =====================================================================
+            // Deck 1 = top-left, Deck 2 = top-right
+            // Deck 3 = bottom-left, Deck 4 = bottom-right
+            let grid_positions = [
+                (0.0, 0.0),                                      // Deck 1: top-left
+                (cell_width + DECK_GRID_GAP, 0.0),              // Deck 2: top-right
+                (0.0, cell_height + DECK_GRID_GAP),             // Deck 3: bottom-left
+                (cell_width + DECK_GRID_GAP, cell_height + DECK_GRID_GAP), // Deck 4: bottom-right
+            ];
 
-        // Pre-compute BPM-aligned overview scales for all decks.
-        // Each D = this_track_display_dur / max_display_dur, ensuring all decks
-        // share the same time-per-pixel rate so beat grids align visually.
-        let overview_scales = compute_overview_scales(self.state);
+            // Pre-compute BPM-aligned overview scales for all decks.
+            // Each D = this_track_display_dur / max_display_dur, ensuring all decks
+            // share the same time-per-pixel rate so beat grids align visually.
+            let overview_scales = compute_overview_scales(self.state);
 
-        for (deck_idx, (x, y)) in grid_positions.iter().enumerate() {
-            // Use interpolated playhead for smooth animation
-            let playhead = self.state.interpolated_playhead(deck_idx, SAMPLE_RATE);
-            let is_master = self.state.is_master(deck_idx);
-            let track_name = self.state.track_name(deck_idx);
-            let track_key = self.state.track_key(deck_idx);
-            let stem_active = self.state.stem_active(deck_idx);
-            let transpose = self.state.transpose(deck_idx);
-            let key_match_enabled = self.state.key_match_enabled(deck_idx);
-            let (linked_stems, linked_active) = self.state.linked_stems(deck_idx);
+            for (deck_idx, (x, y)) in grid_positions.iter().enumerate() {
+                // Use interpolated playhead for smooth animation
+                let playhead = self.state.interpolated_playhead(deck_idx, SAMPLE_RATE);
+                let is_master = self.state.is_master(deck_idx);
+                let track_name = self.state.track_name(deck_idx);
+                let track_key = self.state.track_key(deck_idx);
+                let stem_active = self.state.stem_active(deck_idx);
+                let transpose = self.state.transpose(deck_idx);
+                let key_match_enabled = self.state.key_match_enabled(deck_idx);
+                let (linked_stems, linked_active) = self.state.linked_stems(deck_idx);
 
-            let lufs_gain_db = self.state.lufs_gain_db(deck_idx);
-            let track_bpm = self.state.track_bpm(deck_idx);
+                let lufs_gain_db = self.state.lufs_gain_db(deck_idx);
+                let track_bpm = self.state.track_bpm(deck_idx);
 
-            let cue_enabled = self.state.cue_enabled(deck_idx);
-            let loop_length_beats = self.state.loop_length_beats(deck_idx);
-            let loop_active = self.state.loop_active(deck_idx);
-            let volume = self.state.volume(deck_idx);
+                let cue_enabled = self.state.cue_enabled(deck_idx);
+                let loop_length_beats = self.state.loop_length_beats(deck_idx);
+                let loop_active = self.state.loop_active(deck_idx);
+                let volume = self.state.volume(deck_idx);
 
-            let mirrored = deck_idx >= 2; // Bottom row decks are mirrored
+                let mirrored = deck_idx >= 2; // Bottom row decks are mirrored
 
-            draw_deck_quadrant(
-                &mut frame,
-                &self.state.decks[deck_idx],
-                playhead,
-                *x,
-                *y,
-                cell_width,
-                zoomed_height,
-                deck_idx,
-                track_name,
-                track_key,
-                is_master,
-                cue_enabled,
-                stem_active,
-                transpose,
-                key_match_enabled,
-                self.state.stem_colors(),
-                linked_stems,
-                linked_active,
-                lufs_gain_db,
-                track_bpm,
-                overview_scales[deck_idx],
-                loop_length_beats,
-                loop_active,
-                volume,
-                mirrored,
-            );
-        }
+                draw_deck_quadrant(
+                    frame,
+                    &self.state.decks[deck_idx],
+                    playhead,
+                    *x,
+                    *y,
+                    cell_width,
+                    zoomed_height,
+                    deck_idx,
+                    track_name,
+                    track_key,
+                    is_master,
+                    cue_enabled,
+                    stem_active,
+                    transpose,
+                    key_match_enabled,
+                    self.state.stem_colors(),
+                    linked_stems,
+                    linked_active,
+                    lufs_gain_db,
+                    track_bpm,
+                    overview_scales[deck_idx],
+                    loop_length_beats,
+                    loop_active,
+                    volume,
+                    mirrored,
+                );
+            }
+        });
 
-        vec![frame.into_geometry()]
+        vec![geometry]
     }
 }
 
@@ -1762,13 +1764,12 @@ where
     SeekFn: Fn(usize, f64) -> Message,
     ZoomFn: Fn(usize, u32) -> Message,
 {
-    /// Draw the vertical layout (time flows top-to-bottom).
-    fn draw_vertical(
+    /// Draw the vertical layout into an existing frame (time flows top-to-bottom).
+    fn draw_vertical_into(
         &self,
-        renderer: &iced::Renderer,
+        frame: &mut Frame,
         bounds: Rectangle,
-    ) -> Vec<Geometry> {
-        let mut frame = Frame::new(renderer, bounds.size());
+    ) {
         let inverted = self.state.is_vertical_inverted();
         let (center_x, center_width, zoomed_col_width, _side_width) = vert_geometry(bounds.width);
         let cols = vert_column_positions(center_x, center_width, zoomed_col_width);
@@ -1796,7 +1797,7 @@ where
 
             // Draw compact header
             draw_vertical_header(
-                &mut frame,
+                frame,
                 col_x,
                 0.0,
                 zoomed_col_width,
@@ -1811,7 +1812,7 @@ where
 
             // Draw stem indicators (horizontal bars below header)
             draw_vertical_stem_indicators(
-                &mut frame,
+                frame,
                 col_x,
                 VERT_HEADER_HEIGHT,
                 zoomed_col_width,
@@ -1821,7 +1822,7 @@ where
 
             // Draw vertical zoomed waveform
             draw_vertical_zoomed(
-                &mut frame,
+                frame,
                 &self.state.decks[deck_idx].zoomed,
                 &self.state.decks[deck_idx].overview.highres_peaks,
                 &self.state.decks[deck_idx].overview.linked_highres_peaks,
@@ -1867,7 +1868,7 @@ where
             let (linked_stems, linked_active) = self.state.linked_stems(deck_idx);
 
             draw_vertical_overview(
-                &mut frame,
+                frame,
                 &self.state.decks[deck_idx].overview,
                 playhead,
                 col_x,
@@ -1883,8 +1884,6 @@ where
             );
 
         }
-
-        vec![frame.into_geometry()]
     }
 
     /// Handle mouse interaction in vertical layout.

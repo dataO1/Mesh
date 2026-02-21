@@ -424,7 +424,7 @@ pkgs.writeShellApplication {
         echo ""
         echo "    Patching rpath for portability..."
         patchelf --set-rpath "/usr/lib/mesh:/usr/lib/x86_64-linux-gnu:/usr/lib" "$CARGO_TARGET_DIR/release/mesh-cue"
-        patchelf --set-rpath "/usr/lib/x86_64-linux-gnu:/usr/lib" "$CARGO_TARGET_DIR/release/mesh-player"
+        patchelf --set-rpath "/usr/lib/mesh:/usr/lib/x86_64-linux-gnu:/usr/lib" "$CARGO_TARGET_DIR/release/mesh-player"
 
         for lib in "$CARGO_TARGET_DIR"/release/bundled/*.so*; do
           echo "    Patching: $(basename $lib)"
