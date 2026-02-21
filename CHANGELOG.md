@@ -90,10 +90,10 @@ All notable changes to Mesh are documented in this file.
 - **USB: Set filesystem label during export** — When exporting to a USB device,
   a new "Label" text input lets you set a custom filesystem label (e.g. "Mesh DJ").
   Tries `FS_IOC_SETFSLABEL` ioctl first (works on mounted ext4/btrfs/xfs, and FAT on
-  kernel 7.0+). Falls back to unmount → label tool → remount for FAT32/exFAT on older
-  kernels. Pre-fills with the device's current label; shows filesystem-specific max
-  length hints. Label setting is non-fatal — failure is logged but doesn't abort
-  the export.
+  kernel 7.0+). Falls back to udisks2 D-Bus `SetLabel` (works for regular users on
+  removable devices via polkit, no root needed). Pre-fills with the device's current
+  label; shows filesystem-specific max length hints. Label setting is non-fatal —
+  failure is logged but doesn't abort the export.
 - **Embedded: Default config files** — Ship `midi.yaml`, `slicer-presets.yaml`,
   and `theme.yaml` to `/home/mesh/Music/mesh-collection/` via systemd tmpfiles
   `C` (copy-if-not-exists) rules, so the Orange Pi boots with working defaults

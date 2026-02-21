@@ -152,6 +152,8 @@ impl ExportService {
 
             // Copy USB database to staging (sequential read from USB — fast)
             if usb_db_path.exists() {
+                let db_size = std::fs::metadata(&usb_db_path).map(|m| m.len()).unwrap_or(0);
+                log::info!("[export] USB mesh.db size: {:.1} MB", db_size as f64 / 1_048_576.0);
                 if let Err(e) = std::fs::copy(&usb_db_path, &staging_db_path) {
                     log::error!("Failed to copy USB database to staging: {}", e);
                     let _ = progress_tx.send(ExportProgress::Complete {
@@ -164,6 +166,7 @@ impl ExportService {
             }
 
             // Open staging database (temp path won't collide with USB_DB_CACHE)
+            let t_open = Instant::now();
             let staging_db = match DatabaseService::new(temp_dir.path()) {
                 Ok(db) => db,
                 Err(e) => {
@@ -177,11 +180,14 @@ impl ExportService {
                 }
             };
 
+            log::info!("[export] Phase 1 CozoDB open: {:.1}s", t_open.elapsed().as_secs_f64());
             log::info!("[export] Phase 1 (stage DB locally): {:.1}s", t_phase1.elapsed().as_secs_f64());
 
             // ================================================================
             // Phase 2: Sequential WAV copy to USB
             // ================================================================
+
+            let t_phase2 = Instant::now();
 
             // Create playlists on staging DB before track copy (parents before children)
             for info in &playlists_to_create {
@@ -242,6 +248,13 @@ impl ExportService {
                 }
             }
 
+            log::info!(
+                "[export] Phase 2 (WAV copy): {:.1}s — {} tracks copied, {} bytes",
+                t_phase2.elapsed().as_secs_f64(),
+                tracks_exported,
+                bytes_exported,
+            );
+
             // Check for cancellation after WAV copy phase
             if cancel_flag.load(Ordering::Relaxed) {
                 let _ = progress_tx.send(ExportProgress::Cancelled);
@@ -261,7 +274,10 @@ impl ExportService {
 
             let mut db_ops_completed: usize = 0;
 
+            let t_phase3 = Instant::now();
+
             // Build filename→track_id lookup for metadata-only updates
+            let t_lookup = Instant::now();
             let track_id_by_filename: HashMap<String, i64> = local_db
                 .get_all_tracks()
                 .unwrap_or_default()
@@ -271,8 +287,14 @@ impl ExportService {
                     Some((fname, t.id?))
                 })
                 .collect();
+            log::info!(
+                "[export] Phase 3 get_all_tracks lookup: {:.1}s ({} tracks)",
+                t_lookup.elapsed().as_secs_f64(),
+                track_id_by_filename.len(),
+            );
 
             // 3a: Sync track metadata for newly copied tracks
+            let t_3a = Instant::now();
             for track in &tracks_to_copy {
                 if cancel_flag.load(Ordering::Relaxed) {
                     let _ = progress_tx.send(ExportProgress::Cancelled);
@@ -307,7 +329,14 @@ impl ExportService {
                 });
             }
 
+            log::info!(
+                "[export] Phase 3a (sync copied tracks DB): {:.1}s — {} tracks",
+                t_3a.elapsed().as_secs_f64(),
+                tracks_to_copy.len(),
+            );
+
             // 3b: Metadata-only sync for tracks that don't need WAV re-copy
+            let t_3b = Instant::now();
             for filename in &tracks_to_update {
                 if cancel_flag.load(Ordering::Relaxed) {
                     let _ = progress_tx.send(ExportProgress::Cancelled);
@@ -337,6 +366,12 @@ impl ExportService {
                     total: total_db_ops,
                 });
             }
+
+            log::info!(
+                "[export] Phase 3b (metadata-only sync): {:.1}s — {} tracks",
+                t_3b.elapsed().as_secs_f64(),
+                tracks_to_update.len(),
+            );
 
             // 3c: Playlist membership operations
             let tracks_dir_rel = Path::new("_unused");
@@ -392,10 +427,20 @@ impl ExportService {
                 });
             }
 
+            log::info!(
+                "[export] Phase 3 total (DB operations): {:.1}s",
+                t_phase3.elapsed().as_secs_f64(),
+            );
+
             // 3f: Drop staging DB to flush CozoDB WAL and release file lock
             let t = Instant::now();
             drop(staging_db);
-            log::info!("[export] CozoDB WAL flush: {:.1}s", t.elapsed().as_secs_f64());
+            let staging_size = std::fs::metadata(&staging_db_path).map(|m| m.len()).unwrap_or(0);
+            log::info!(
+                "[export] CozoDB WAL flush: {:.1}s (staging DB: {:.1} MB)",
+                t.elapsed().as_secs_f64(),
+                staging_size as f64 / 1_048_576.0,
+            );
 
             // 3g: Write staging DB back to USB (single large sequential write)
             if staging_db_path.exists() {
@@ -414,6 +459,7 @@ impl ExportService {
             // ================================================================
             // Phase 4: Delete removed track files from USB
             // ================================================================
+            let t_phase4 = Instant::now();
             let tracks_dir = usb_root.join("tracks");
             for filename in &tracks_to_delete {
                 let track_path = tracks_dir.join(filename);
@@ -423,10 +469,23 @@ impl ExportService {
                     }
                 }
             }
+            if !tracks_to_delete.is_empty() {
+                log::info!(
+                    "[export] Phase 4 (delete files): {:.1}s — {} files",
+                    t_phase4.elapsed().as_secs_f64(),
+                    tracks_to_delete.len(),
+                );
+            }
 
             // ================================================================
             // Phase 5: Complete
             // ================================================================
+            log::info!(
+                "[export] TOTAL: {:.1}s — {} tracks exported, {} failed",
+                start_time.elapsed().as_secs_f64(),
+                tracks_exported,
+                failed_files.len(),
+            );
             let _ = progress_tx.send(ExportProgress::Complete {
                 duration: start_time.elapsed(),
                 tracks_exported,

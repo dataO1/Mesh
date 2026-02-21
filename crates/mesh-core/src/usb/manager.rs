@@ -544,9 +544,18 @@ fn handle_start_export(
     if let Some(ref label) = device_label {
         if !label.is_empty() {
             if let Some(ref mount_point) = device.mount_point {
+                let t = std::time::Instant::now();
                 match set_filesystem_label(mount_point, label, device.filesystem) {
-                    Ok(()) => log::info!("Set filesystem label to '{}'", label),
-                    Err(e) => log::warn!("Failed to set filesystem label: {}", e),
+                    Ok(()) => log::info!(
+                        "[export] Set filesystem label to '{}' in {:.1}s",
+                        label,
+                        t.elapsed().as_secs_f64(),
+                    ),
+                    Err(e) => log::warn!(
+                        "[export] Failed to set filesystem label ({:.1}s): {}",
+                        t.elapsed().as_secs_f64(),
+                        e,
+                    ),
                 }
             }
         }

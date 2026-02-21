@@ -122,12 +122,9 @@ pub fn resolve_block_device(_mount_point: &Path) -> Option<PathBuf> {
 /// Strategy (Linux):
 /// 1. Try `FS_IOC_SETFSLABEL` ioctl — works on mounted ext4 (kernel 5.17+),
 ///    btrfs, xfs, f2fs, and FAT (kernel 7.0+). No unmount needed.
-/// 2. If ioctl returns ENOTTY (unsupported), fall back to:
-///    unmount → label tool (e2label/fatlabel/exfatlabel) → remount.
-///
-/// FAT32/exFAT label tools write directly to the block device, bypassing the
-/// kernel's mounted filesystem driver. The kernel caches the BPB/root directory
-/// and will overwrite changes on unmount — so unmount-first is required.
+/// 2. Try udisks2 D-Bus `SetLabel` via `busctl` — works for regular users on
+///    removable devices (polkit auto-authorizes). udisks2 daemon runs as root
+///    and calls the appropriate label tool internally.
 #[cfg(target_os = "linux")]
 pub fn set_filesystem_label(
     mount_point: &Path,
@@ -163,74 +160,55 @@ pub fn set_filesystem_label(
             return Ok(());
         }
         Err(e) => {
-            log::info!("ioctl SETFSLABEL not supported ({}), falling back to label tool", e);
+            log::info!("ioctl SETFSLABEL not supported ({}), trying udisks2", e);
         }
     }
 
-    // Strategy 2: unmount → label tool → remount
+    // Strategy 2: udisks2 SetLabel via busctl (no root needed for removable devices)
     let block_dev = resolve_block_device(mount_point).ok_or_else(|| {
         UsbError::IoError(format!(
             "Cannot resolve block device for {}",
             mount_point.display()
         ))
     })?;
-    let block_dev_str = block_dev.to_string_lossy().to_string();
-    let mount_str = mount_point.to_string_lossy().to_string();
 
-    let cmd = match filesystem {
-        FilesystemType::Ext4 => "e2label",
-        FilesystemType::Fat32 => "fatlabel",
-        FilesystemType::ExFat => "exfatlabel",
-        FilesystemType::Unknown => unreachable!(),
-    };
+    // Convert /dev/sdb1 → sdb1 → D-Bus object path
+    let dev_name = block_dev
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| UsbError::IoError("Invalid block device path".to_string()))?;
+    let dbus_path = format!("/org/freedesktop/UDisks2/block_devices/{}", dev_name);
 
     log::info!(
-        "Setting label via unmount → {} → remount on {}",
-        cmd,
-        block_dev_str,
+        "Setting label to '{}' via udisks2 on {}",
+        truncated,
+        dbus_path,
     );
 
-    // Unmount
-    let output = std::process::Command::new("sudo")
-        .args(["umount", &mount_str])
+    let output = std::process::Command::new("busctl")
+        .args([
+            "call",
+            "org.freedesktop.UDisks2",
+            &dbus_path,
+            "org.freedesktop.UDisks2.Filesystem",
+            "SetLabel",
+            "sa{sv}",
+            &truncated,
+            "0",
+        ])
         .output()
-        .map_err(|e| UsbError::IoError(format!("Failed to run umount: {}", e)))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(UsbError::IoError(format!("umount failed: {}", stderr.trim())));
-    }
+        .map_err(|e| UsbError::IoError(format!("Failed to run busctl: {}", e)))?;
 
-    // Set label
-    let output = std::process::Command::new("sudo")
-        .arg(cmd)
-        .arg(&block_dev_str)
-        .arg(&truncated)
-        .output()
-        .map_err(|e| UsbError::IoError(format!("Failed to run {}: {}", cmd, e)))?;
-    let label_ok = output.status.success();
-    if !label_ok {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        log::error!("{} failed: {}", cmd, stderr.trim());
-    }
-
-    // Remount (always, even if label failed — device must be usable)
-    let output = std::process::Command::new("sudo")
-        .args(["mount", &block_dev_str, &mount_str])
-        .output()
-        .map_err(|e| UsbError::IoError(format!("Failed to run mount: {}", e)))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(UsbError::IoError(format!(
-            "remount failed after label change: {}",
-            stderr.trim()
-        )));
-    }
-
-    if label_ok {
-        log::info!("Set filesystem label to '{}' via {}", truncated, cmd);
+    if output.status.success() {
+        log::info!("Set filesystem label to '{}' via udisks2", truncated);
         Ok(())
     } else {
-        Err(UsbError::IoError(format!("{} failed on {}", cmd, block_dev_str)))
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::warn!("udisks2 SetLabel failed: {}", stderr.trim());
+        Err(UsbError::IoError(format!(
+            "Failed to set label (ioctl unsupported, udisks2 failed: {})",
+            stderr.trim()
+        )))
     }
 }
 
