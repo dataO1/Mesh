@@ -11,10 +11,10 @@ All notable changes to Mesh are documented in this file.
 - **Rendering: GPU shader waveforms** — Zoomed waveform rendering now uses a custom
   WGSL fragment shader (`waveform.wgsl`) instead of CPU-based lyon tessellation via
   iced's Canvas widget. Peak data is uploaded once at track load as a GPU storage
-  buffer (~128KB per deck). Per-frame updates require only a 384-byte uniform buffer
+  buffer (~128KB per deck). Per-frame updates require only a 400-byte uniform buffer
   write containing playhead position, stem colors, loop region, BPM grid, cue markers,
-  and volume. This eliminates ~16,000 `line_to()` calls, ~8,000 `exp()` calls (Gaussian
-  smoothing), ~100 Vec allocations (~1MB), and lyon tessellation of 32+ paths that
+  smoothing parameters, and volume. This eliminates ~16,000 `line_to()` calls, ~8,000
+  `exp()` calls, ~100 Vec allocations (~1MB), and lyon tessellation of 32+ paths that
   previously ran every frame. At 120Hz with 4 decks, this reduces CPU rendering time
   from ~12-16ms to <1ms per frame.
 
@@ -52,6 +52,16 @@ All notable changes to Mesh are documented in this file.
   hot path while preserving the canvas text rendering for deck headers (badge, track
   name, BPM, key, loop indicator, LUFS gain).
 
+- **Rendering: stable grid-aligned peak sampling** — The WGSL shader now reproduces the
+  old canvas's "STABLE RENDERING" approach: peaks are sampled at step-aligned grid points
+  anchored to the track (not the window), then linearly interpolated. This eliminates
+  "dancing peaks" caused by intersample jitter when the playhead shifts peak indices by
+  fractional amounts between frames. Per-stem subsampling via `HIGHRES_PIXELS_PER_POINT`
+  (Vocals/Drums/Other=1.0, Bass=2.5) reduces rendered detail to match the old abstract
+  look. Gaussian smoothing at each grid point uses per-stem radius multipliers
+  (Drums=0.1, Vocals=0.25, Bass=0.4, Other=0.4) to keep drums sharp while smoothing
+  bass and pad instruments.
+
 ### Fixed
 
 - **Rendering: beat grid not visible in shader** — Beat marker threshold calculations
@@ -60,6 +70,23 @@ All notable changes to Mesh are documented in this file.
   as a beat line, making them invisible). Fixed by computing `px_in_source` based on
   the view mode: `1.0/width` for overview, `(win_end - win_start)/width` for zoomed.
   Also corrected cue marker and slicer line widths with the same fix.
+
+- **Rendering: waveform-audio drift** — The shader hardcoded sample rate as 44100 Hz
+  but the audio engine runs at 48000 Hz. The 8.8% error caused ~2-3 seconds of visual
+  drift over a 4-minute track because `interpolated_playhead()` advanced too slowly
+  and BPM-based window width calculations were too narrow. Fixed by using the correct
+  engine sample rate constant.
+
+- **Rendering: incremental loading broken** — The `RegionLoaded` handler updated raw
+  peak arrays but did not rebuild the GPU `PeakBuffer`, so the shader showed stale data
+  until the full `Complete` message arrived. Now rebuilds `overview_peak_buffer` and
+  `highres_peak_buffer` after each region, restoring incremental waveform growth.
+
+- **Rendering: track edge jump** — Zoomed waveform used `u64::saturating_sub()` for
+  window positioning, clamping the window start to 0 at the track beginning. This
+  caused the playhead to visually jump off-center. Fixed with signed `i64` arithmetic
+  that allows the window to extend before the track start, with the shader rendering
+  out-of-range regions as silence.
 
 ---
 
