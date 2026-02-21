@@ -76,17 +76,17 @@ pub fn handle_browser(app: &mut MeshApp, browser_msg: CollectionBrowserMessage) 
         return app.update(Message::LoadTrack(deck_idx, path_str));
     }
 
-    // Sync domain layer with collection browser's active storage
-    // This ensures metadata is loaded from the correct database (local or USB)
+    // Sync domain layer with collection browser's active storage.
+    // Note: load_track_metadata() resolves the correct database from the track
+    // path itself, so this sync is not required for metadata correctness. But it
+    // keeps active_storage in sync for other consumers (e.g. active_collection_path).
     if let Some((usb_idx, collection_path)) = app.collection_browser.get_active_usb_info() {
-        // Browsing USB - switch domain to USB if not already
-        if !app.domain.is_browsing_usb() {
-            if let Err(e) = app.domain.switch_to_usb(usb_idx, &collection_path) {
-                log::error!("Failed to switch domain to USB: {}", e);
-            }
+        // Always call switch_to_usb — it handles same-stick no-ops internally,
+        // and we need it to fire for USB→USB switches (different sticks).
+        if let Err(e) = app.domain.switch_to_usb(usb_idx, &collection_path) {
+            log::error!("Failed to switch domain to USB: {}", e);
         }
     } else if app.domain.is_browsing_usb() {
-        // Browsing local - switch domain back if it was on USB
         app.domain.switch_to_local();
     }
 

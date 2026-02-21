@@ -38,9 +38,8 @@ use mesh_core::clap::{ClapManager, ClapPluginCategory, DiscoveredClapPlugin, Cla
 use std::collections::HashMap;
 use mesh_core::pd::{DiscoveredEffect, PdManager};
 use mesh_core::preset_loader::{PresetLoader, PresetLoadResultReceiver, MultibandBuildSpec};
-use mesh_core::usb::get_or_open_usb_database;
 use mesh_core::types::{Stem, StereoBuffer};
-use mesh_core::usb::{UsbCommand, UsbManager, UsbMessage};
+use mesh_core::usb::{find_collection_root, get_or_open_usb_database, UsbCommand, UsbManager, UsbMessage};
 use mesh_widgets::{CueMarker, OverviewState, ZoomedState, CUE_COLORS, PeaksComputer, PeaksResultReceiver};
 
 use crate::audio::CommandSender;
@@ -277,6 +276,13 @@ impl MeshDomain {
     /// Uses the centralized USB database cache - the database is typically already
     /// cached from UsbManager's preload when the device was mounted.
     pub fn switch_to_usb(&mut self, index: usize, usb_collection_path: &Path) -> Result<(), String> {
+        // Skip if already pointing at the same USB stick
+        if let StorageSource::Usb { path: ref current, .. } = self.active_storage {
+            if current == usb_collection_path {
+                return Ok(());
+            }
+        }
+
         // Get cached database or open if not cached yet
         let db = get_or_open_usb_database(usb_collection_path)
             .ok_or_else(|| format!("Failed to open USB database at {:?}", usb_collection_path))?;
@@ -342,10 +348,12 @@ impl MeshDomain {
     ///
     /// Returns TrackMetadata with stem_links properly converted (ID → path).
     pub fn load_track_metadata(&self, path: &str) -> Option<TrackMetadata> {
-        // Path-aware lookup: detect whether the path belongs to local or USB,
-        // regardless of what active_storage is set to. This is critical for
-        // cross-source suggestions where the domain may be browsing USB but
-        // the suggestion track is local (or vice versa).
+        // Path-aware lookup: detect whether the path belongs to local or USB
+        // by inspecting the path itself, NOT relying on active_storage.
+        // This is critical for:
+        // - Cross-source suggestions (suggestion from USB2 while browsing USB1)
+        // - Race conditions where active_storage hasn't switched yet
+        // - Multiple USB sticks connected simultaneously
         let p = std::path::Path::new(path);
 
         // Check if path is under the local collection root
@@ -363,16 +371,19 @@ impl MeshDomain {
             };
         }
 
-        // Check if path is under the active USB collection root
-        if let StorageSource::Usb { path: collection_root, db, .. } = &self.active_storage {
-            if p.starts_with(collection_root) {
-                let lookup_path = p.strip_prefix(collection_root)
+        // For any non-local path, resolve the correct USB database from the
+        // path itself using the centralized cache. This works regardless of
+        // which USB stick is currently "active" in the browser.
+        if let Some(collection_root) = find_collection_root(p) {
+            if let Some(db) = get_or_open_usb_database(&collection_root) {
+                let lookup_path = p.strip_prefix(&collection_root)
                     .map(|r| r.to_string_lossy().into_owned())
                     .unwrap_or_else(|_| path.to_string());
                 return match db.get_track_metadata(&lookup_path) {
                     Ok(Some(metadata)) => Some(metadata),
                     Ok(None) => {
-                        log::warn!("Track not found in USB database: {}", path);
+                        log::warn!("Track not found in USB database ({}): {}",
+                            collection_root.display(), lookup_path);
                         None
                     }
                     Err(e) => {
@@ -383,19 +394,8 @@ impl MeshDomain {
             }
         }
 
-        // Fallback: try active database with path as-is
-        let db = self.active_db();
-        match db.get_track_metadata(path) {
-            Ok(Some(metadata)) => Some(metadata),
-            Ok(None) => {
-                log::warn!("Track not found in any database: {}", path);
-                None
-            }
-            Err(e) => {
-                log::error!("Failed to load track metadata: {}", e);
-                None
-            }
-        }
+        log::warn!("Track not found in any database: {}", path);
+        None
     }
 
     /// Load track metadata, falling back to defaults if not found

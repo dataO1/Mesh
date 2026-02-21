@@ -8,6 +8,15 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **USB: multi-stick metadata resolution** — When multiple USB sticks were
+  connected, switching between playlists from different sticks could load tracks
+  with wrong metadata (missing beatgrid, default 120 BPM, no key). Root cause:
+  `load_track_metadata()` only checked the "active" USB database, ignoring other
+  mounted sticks. Now resolves the correct database from the track's path itself
+  via `find_collection_root()` + the centralized USB database cache, making
+  metadata lookup independent of which stick is currently browsed. Also fixed the
+  browser storage sync guard that prevented USB→USB switches between sticks.
+
 - **USB: device label resolution** — USB sticks were showing kernel device names
   (e.g. "/dev/sda") instead of human-readable names. On Linux, now resolves the
   filesystem label from `/dev/disk/by-label/`, falling back to the hardware model
