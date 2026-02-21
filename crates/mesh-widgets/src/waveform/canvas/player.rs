@@ -1,6 +1,10 @@
-//! PlayerCanvas - 4-deck unified waveform view
+//! PlayerCanvas - 4-deck unified waveform view (DEPRECATED)
 //!
-//! Displays all 4 decks in a single canvas with zoomed and overview waveforms.
+//! DEPRECATED: Use `waveform::shader::waveform_player_shader()` instead for
+//! GPU-accelerated rendering. This canvas-based implementation uses CPU lyon
+//! tessellation which causes frame budget overruns at 120Hz with 4 decks.
+//!
+//! Kept for fallback/debugging via `view_player_canvas_legacy()`.
 
 use super::super::state::{
     CombinedState, OverviewState, PlayerCanvasState, ZoomedState, ZoomedViewMode,

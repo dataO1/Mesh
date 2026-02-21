@@ -107,6 +107,9 @@ pub use slice_editor::{
     load_slicer_presets, save_slicer_presets, slicer_presets_path, SLICER_PRESETS_FILENAME,
 };
 
+// GPU shader waveform rendering
+pub use waveform::{PeakBuffer, WaveformAction, waveform_player_shader, waveform_shader_overview, waveform_shader_zoomed};
+
 // Slicer overlay drawing utilities
 pub use waveform::{draw_slicer_overlay, draw_slicer_overlay_zoomed};
 

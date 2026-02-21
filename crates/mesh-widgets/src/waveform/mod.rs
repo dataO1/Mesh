@@ -35,6 +35,7 @@ mod canvas;
 mod peak_computation;
 mod peaks;
 mod peaks_computer;
+pub mod shader;
 mod slicer_overlay;
 mod state;
 mod view;
@@ -67,6 +68,12 @@ pub use canvas::{
     CombinedInteraction, OverviewInteraction, PlayerInteraction, ZoomedInteraction,
     // Player canvas layout constants
     DECK_CELL_HEIGHT, DECK_GRID_GAP, DECK_INTERNAL_GAP,
+};
+
+// GPU shader waveform rendering
+pub use shader::{
+    PeakBuffer, WaveformAction,
+    waveform_player_shader, waveform_shader_overview, waveform_shader_zoomed,
 };
 
 // Slicer overlay drawing utilities (reusable across mesh-player and mesh-cue)

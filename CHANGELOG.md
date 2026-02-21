@@ -4,6 +4,48 @@ All notable changes to Mesh are documented in this file.
 
 ---
 
+## [0.9.4]
+
+### Performance
+
+- **Rendering: GPU shader waveforms** — Zoomed waveform rendering now uses a custom
+  WGSL fragment shader (`waveform.wgsl`) instead of CPU-based lyon tessellation via
+  iced's Canvas widget. Peak data is uploaded once at track load as a GPU storage
+  buffer (~128KB per deck). Per-frame updates require only a 384-byte uniform buffer
+  write containing playhead position, stem colors, loop region, BPM grid, cue markers,
+  and volume. This eliminates ~16,000 `line_to()` calls, ~8,000 `exp()` calls (Gaussian
+  smoothing), ~100 Vec allocations (~1MB), and lyon tessellation of 32+ paths that
+  previously ran every frame. At 120Hz with 4 decks, this reduces CPU rendering time
+  from ~12-16ms to <1ms per frame.
+
+- **Rendering: change-guarded cache invalidation** — All 19 `set_*` methods on
+  `PlayerCanvasState` now check `!= old_value` before calling `invalidate_cache()`.
+  Previously, every setter invalidated unconditionally — the tick handler alone
+  triggered 84 invalidations per tick (21 setters × 4 decks), making `canvas::Cache`
+  completely useless during playback. With guards, only actual value changes trigger
+  redraws (~4/tick for playing decks' playheads). Float comparisons use epsilon
+  threshold to avoid false invalidations from floating-point drift.
+
+### Added
+
+- **Waveform shader module** (`mesh-widgets/waveform/shader/`) — New GPU-accelerated
+  waveform rendering pipeline built on iced's `shader::Program` trait. Includes:
+  - `PeakBuffer`: Arc-wrapped flattened peak data for zero-copy GPU upload, with
+    `Arc::as_ptr()` change detection (zero-cost per frame, no content hashing)
+  - `WaveformPrimitive`: Per-frame primitive carrying uniforms + peak buffer reference
+  - `WaveformPipeline`: wgpu render pipeline with per-view resource caching, dynamic
+    storage buffer resizing, and two-binding layout (uniform + storage)
+  - `WaveformProgram`: iced shader widget with click-to-seek (overview) and
+    drag-to-zoom (zoomed) interaction handling
+  - Fragment shader renders all elements in one pass: background → loop region →
+    beat markers (procedural from BPM) → stem envelopes × 4 → cue markers →
+    playhead → volume dimming, with `smoothstep()` anti-aliasing
+  - `WaveformAction` enum for message-agnostic seek/zoom events
+  - View helpers: `waveform_shader_zoomed()`, `waveform_shader_overview()`,
+    `waveform_player_shader()`
+
+---
+
 ## [0.9.3]
 
 ### Performance

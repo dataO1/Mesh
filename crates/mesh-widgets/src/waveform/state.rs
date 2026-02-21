@@ -5,6 +5,7 @@
 //! level while view functions consume references to generate UI elements.
 
 use super::CueMarker;
+use super::shader::PeakBuffer;
 use crate::{CUE_COLORS, STEM_COLORS};
 use iced::widget::canvas::Cache;
 use iced::Color;
@@ -106,6 +107,11 @@ pub struct OverviewState {
     /// Calculated from: 10^((target_lufs - linked_lufs) / 20)
     /// Scales linked stem amplitude to target LUFS for consistent visual display
     pub linked_lufs_gains: [f32; 4],
+
+    /// Flattened overview peaks for GPU shader (created once at track load)
+    pub overview_peak_buffer: Option<PeakBuffer>,
+    /// Flattened high-resolution peaks for GPU shader (created once at track load)
+    pub highres_peak_buffer: Option<PeakBuffer>,
 }
 
 impl OverviewState {
@@ -132,6 +138,8 @@ impl OverviewState {
             linked_durations: [None, None, None, None],
             linked_highres_peaks: [None, None, None, None],
             linked_lufs_gains: [1.0, 1.0, 1.0, 1.0], // Unity gain (no correction)
+            overview_peak_buffer: None,
+            highres_peak_buffer: None,
         }
     }
 
@@ -145,6 +153,7 @@ impl OverviewState {
     /// Called after overview is created from preview, when stems become available.
     /// This enables stable zoomed waveform rendering without recomputation.
     pub fn set_highres_peaks(&mut self, peaks: [Vec<(f32, f32)>; 4]) {
+        self.highres_peak_buffer = PeakBuffer::from_stem_peaks(&peaks);
         self.highres_peaks = peaks;
         log::debug!(
             "Set highres_peaks: {} peaks per stem",
@@ -222,6 +231,8 @@ impl OverviewState {
             cue_markers.len()
         );
 
+        let overview_peak_buffer = PeakBuffer::from_stem_peaks(&stem_waveforms);
+
         Self {
             stem_waveforms,
             highres_peaks: [Vec::new(), Vec::new(), Vec::new(), Vec::new()], // No stems available for highres
@@ -243,6 +254,8 @@ impl OverviewState {
             linked_durations: [None, None, None, None],
             linked_highres_peaks: [None, None, None, None],
             linked_lufs_gains: [1.0, 1.0, 1.0, 1.0],
+            overview_peak_buffer,
+            highres_peak_buffer: None, // No stems available for highres yet
         }
     }
 
@@ -273,6 +286,8 @@ impl OverviewState {
             linked_durations: [None, None, None, None],
             linked_highres_peaks: [None, None, None, None],
             linked_lufs_gains: [1.0, 1.0, 1.0, 1.0],
+            overview_peak_buffer: None,
+            highres_peak_buffer: None,
         }
     }
 
@@ -311,6 +326,8 @@ impl OverviewState {
             linked_durations: [None, None, None, None],
             linked_highres_peaks: [None, None, None, None],
             linked_lufs_gains: [1.0, 1.0, 1.0, 1.0],
+            overview_peak_buffer: None,
+            highres_peak_buffer: None,
         }
     }
 
@@ -351,6 +368,10 @@ impl OverviewState {
             // Update cue markers with correct normalized positions
             self.cue_markers = Self::cue_points_to_markers(cue_points, duration_samples);
         }
+
+        // Rebuild GPU peak buffers
+        self.overview_peak_buffer = PeakBuffer::from_stem_peaks(&self.stem_waveforms);
+        self.highres_peak_buffer = PeakBuffer::from_stem_peaks(&self.highres_peaks);
 
         log::debug!(
             "Generated waveform peaks: overview={}px, highres={}px",
@@ -395,6 +416,10 @@ impl OverviewState {
             highres_peaks[0].len()
         );
 
+        // Build GPU peak buffers before moving arrays into struct
+        let overview_peak_buffer = PeakBuffer::from_stem_peaks(&stem_waveforms);
+        let highres_peak_buffer = PeakBuffer::from_stem_peaks(&highres_peaks);
+
         Self {
             stem_waveforms,
             highres_peaks,
@@ -416,6 +441,8 @@ impl OverviewState {
             linked_durations: [None, None, None, None],
             linked_highres_peaks: [None, None, None, None],
             linked_lufs_gains: [1.0, 1.0, 1.0, 1.0],
+            overview_peak_buffer,
+            highres_peak_buffer,
         }
     }
 
@@ -1181,10 +1208,10 @@ impl PlayerCanvasState {
 
     /// Set the track name for a deck (displayed in header)
     pub fn set_track_name(&mut self, idx: usize, name: String) {
-        if idx < 4 {
+        if idx < 4 && self.track_names[idx] != name {
             self.track_names[idx] = name;
+            self.invalidate_cache();
         }
-        self.invalidate_cache();
     }
 
     /// Get the track name for a deck
@@ -1198,18 +1225,18 @@ impl PlayerCanvasState {
 
     /// Clear track name when deck is unloaded
     pub fn clear_track_name(&mut self, idx: usize) {
-        if idx < 4 {
+        if idx < 4 && !self.track_names[idx].is_empty() {
             self.track_names[idx].clear();
+            self.invalidate_cache();
         }
-        self.invalidate_cache();
     }
 
     /// Set the track key for a deck (displayed in header)
     pub fn set_track_key(&mut self, idx: usize, key: String) {
-        if idx < 4 {
+        if idx < 4 && self.track_keys[idx] != key {
             self.track_keys[idx] = key;
+            self.invalidate_cache();
         }
-        self.invalidate_cache();
     }
 
     /// Get the track key for a deck
@@ -1223,10 +1250,10 @@ impl PlayerCanvasState {
 
     /// Set the track BPM for a deck (displayed in header)
     pub fn set_track_bpm(&mut self, idx: usize, bpm: Option<f64>) {
-        if idx < 4 {
+        if idx < 4 && self.track_bpm[idx] != bpm {
             self.track_bpm[idx] = bpm;
+            self.invalidate_cache();
         }
-        self.invalidate_cache();
     }
 
     /// Get the track BPM for a deck
@@ -1240,10 +1267,10 @@ impl PlayerCanvasState {
 
     /// Set stem active status for a deck (true = playing, false = bypassed)
     pub fn set_stem_active(&mut self, deck_idx: usize, stem_idx: usize, active: bool) {
-        if deck_idx < 4 && stem_idx < 4 {
+        if deck_idx < 4 && stem_idx < 4 && self.stem_active[deck_idx][stem_idx] != active {
             self.stem_active[deck_idx][stem_idx] = active;
+            self.invalidate_cache();
         }
-        self.invalidate_cache();
     }
 
     /// Get stem active status for a deck (true = playing, false = bypassed)
@@ -1257,11 +1284,14 @@ impl PlayerCanvasState {
 
     /// Set linked stem status for a deck (true = has linked stem, false = no link)
     pub fn set_linked_stem(&mut self, deck_idx: usize, stem_idx: usize, has_linked: bool, is_active: bool) {
-        if deck_idx < 4 && stem_idx < 4 {
+        if deck_idx < 4 && stem_idx < 4
+            && (self.linked_stems[deck_idx][stem_idx] != has_linked
+                || self.linked_stems_active[deck_idx][stem_idx] != is_active)
+        {
             self.linked_stems[deck_idx][stem_idx] = has_linked;
             self.linked_stems_active[deck_idx][stem_idx] = is_active;
+            self.invalidate_cache();
         }
-        self.invalidate_cache();
     }
 
     /// Get linked stem status for a deck [stem_idx] -> (has_linked, is_active)
@@ -1275,10 +1305,10 @@ impl PlayerCanvasState {
 
     /// Set whether a deck is the master (longest playing)
     pub fn set_master(&mut self, idx: usize, is_master: bool) {
-        if idx < 4 {
+        if idx < 4 && self.is_master[idx] != is_master {
             self.is_master[idx] = is_master;
+            self.invalidate_cache();
         }
-        self.invalidate_cache();
     }
 
     /// Check if a deck is the master
@@ -1292,10 +1322,10 @@ impl PlayerCanvasState {
 
     /// Set the current transpose for a deck
     pub fn set_transpose(&mut self, idx: usize, semitones: i8) {
-        if idx < 4 {
+        if idx < 4 && self.current_transpose[idx] != semitones {
             self.current_transpose[idx] = semitones;
+            self.invalidate_cache();
         }
-        self.invalidate_cache();
     }
 
     /// Get the current transpose for a deck
@@ -1309,10 +1339,10 @@ impl PlayerCanvasState {
 
     /// Set whether key matching is enabled for a deck
     pub fn set_key_match_enabled(&mut self, idx: usize, enabled: bool) {
-        if idx < 4 {
+        if idx < 4 && self.key_match_enabled[idx] != enabled {
             self.key_match_enabled[idx] = enabled;
+            self.invalidate_cache();
         }
-        self.invalidate_cache();
     }
 
     /// Check if key matching is enabled for a deck
@@ -1328,10 +1358,10 @@ impl PlayerCanvasState {
     ///
     /// Display in header: "+2.1dB" (boost) or "-3.5dB" (cut)
     pub fn set_lufs_gain_db(&mut self, idx: usize, gain_db: Option<f32>) {
-        if idx < 4 {
+        if idx < 4 && self.lufs_gain_db[idx] != gain_db {
             self.lufs_gain_db[idx] = gain_db;
+            self.invalidate_cache();
         }
-        self.invalidate_cache();
     }
 
     /// Get LUFS gain compensation in dB for a deck
@@ -1345,10 +1375,10 @@ impl PlayerCanvasState {
 
     /// Set cue (headphone monitoring) enabled state for a deck
     pub fn set_cue_enabled(&mut self, idx: usize, enabled: bool) {
-        if idx < 4 {
+        if idx < 4 && self.cue_enabled[idx] != enabled {
             self.cue_enabled[idx] = enabled;
+            self.invalidate_cache();
         }
-        self.invalidate_cache();
     }
 
     /// Get cue (headphone monitoring) enabled state for a deck
@@ -1362,10 +1392,10 @@ impl PlayerCanvasState {
 
     /// Set loop length in beats for a deck
     pub fn set_loop_length_beats(&mut self, idx: usize, beats: Option<f32>) {
-        if idx < 4 {
+        if idx < 4 && self.loop_length_beats[idx] != beats {
             self.loop_length_beats[idx] = beats;
+            self.invalidate_cache();
         }
-        self.invalidate_cache();
     }
 
     /// Get loop length in beats for a deck
@@ -1379,10 +1409,10 @@ impl PlayerCanvasState {
 
     /// Set loop active state for a deck
     pub fn set_loop_active(&mut self, idx: usize, active: bool) {
-        if idx < 4 {
+        if idx < 4 && self.loop_active[idx] != active {
             self.loop_active[idx] = active;
+            self.invalidate_cache();
         }
-        self.invalidate_cache();
     }
 
     /// Get loop active state for a deck
@@ -1396,10 +1426,10 @@ impl PlayerCanvasState {
 
     /// Set channel volume for a deck (0.0-1.0)
     pub fn set_volume(&mut self, idx: usize, volume: f32) {
-        if idx < 4 {
+        if idx < 4 && (self.volume[idx] - volume).abs() > f32::EPSILON {
             self.volume[idx] = volume;
+            self.invalidate_cache();
         }
-        self.invalidate_cache();
     }
 
     /// Get channel volume for a deck (0.0-1.0)
@@ -1413,10 +1443,10 @@ impl PlayerCanvasState {
 
     /// Set display BPM for a deck (global BPM used for overview alignment)
     pub fn set_display_bpm(&mut self, idx: usize, bpm: Option<f64>) {
-        if idx < 4 {
+        if idx < 4 && self.display_bpm[idx] != bpm {
             self.display_bpm[idx] = bpm;
+            self.invalidate_cache();
         }
-        self.invalidate_cache();
     }
 
     /// Get display BPM for a deck
@@ -1430,8 +1460,10 @@ impl PlayerCanvasState {
 
     /// Set stem colors for waveform rendering [Vocals, Drums, Bass, Other]
     pub fn set_stem_colors(&mut self, colors: [Color; 4]) {
-        self.stem_colors = colors;
-        self.invalidate_cache();
+        if self.stem_colors != colors {
+            self.stem_colors = colors;
+            self.invalidate_cache();
+        }
     }
 
     /// Get stem colors for waveform rendering [Vocals, Drums, Bass, Other]
@@ -1441,14 +1473,18 @@ impl PlayerCanvasState {
 
     /// Set vertical waveform layout mode
     pub fn set_vertical_layout(&mut self, vertical: bool) {
-        self.vertical_layout = vertical;
-        self.invalidate_cache();
+        if self.vertical_layout != vertical {
+            self.vertical_layout = vertical;
+            self.invalidate_cache();
+        }
     }
 
     /// Set vertical Y axis inversion
     pub fn set_vertical_inverted(&mut self, inverted: bool) {
-        self.vertical_inverted = inverted;
-        self.invalidate_cache();
+        if self.vertical_inverted != inverted {
+            self.vertical_inverted = inverted;
+            self.invalidate_cache();
+        }
     }
 
     /// Check if vertical waveform layout is active
@@ -1475,12 +1511,14 @@ impl PlayerCanvasState {
     ///
     /// Also records timestamp and playing state for smooth interpolation.
     pub fn set_playhead(&mut self, idx: usize, position: u64, is_playing: bool) {
-        if idx < 4 {
+        if idx < 4
+            && (self.playheads[idx] != position || self.is_playing[idx] != is_playing)
+        {
             self.playheads[idx] = position;
             self.last_update_time[idx] = std::time::Instant::now();
             self.is_playing[idx] = is_playing;
+            self.invalidate_cache();
         }
-        self.invalidate_cache();
     }
 
     /// Get the playhead position for a deck (in samples)
