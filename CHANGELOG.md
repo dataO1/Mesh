@@ -25,6 +25,14 @@ All notable changes to Mesh are documented in this file.
   from 256 to 0 (I2S codecs use DMA, not USB batch transfer, so headroom adds
   unnecessary latency). PCM5102A gets higher `priority.driver` so it becomes the
   graph clock source when connected.
+- **Embedded: Disable DP/HDMI audio sinks** — DisplayPort and HDMI audio outputs
+  were stealing the PipeWire graph driver role from the ES8388, causing JACK clients
+  to connect to the wrong device. Added WirePlumber rules to disable dp and hdmi
+  sink nodes since they're unused in kiosk mode.
+- **Embedded: pw-jack wrapper** — mesh-player uses JACK for audio I/O, but the
+  kiosk wrapper launched it directly without `pw-jack`, causing fallback to
+  CPAL/ALSA with no PipeWire integration. The wrapper now runs mesh-player via
+  `pw-jack` to route through PipeWire's JACK compatibility layer.
 
 ### Added
 
