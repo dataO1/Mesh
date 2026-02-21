@@ -158,6 +158,48 @@ pcm.mesh_cue    { type hw; card "rockchipes8388"; device 0; }
 
 PipeWire exposes both cards as sinks with runtime re-routing via `pavucontrol` or `pw-link`. Adds ~2-5ms latency.
 
+## Audio Output Quality
+
+### Master Output (PCM5102A I2S DAC) — Excellent
+
+The PCM5102A is a dedicated audio DAC with 112 dB SNR, -93 dB THD+N, and no analog output stage compromises. It connects via I2S (direct digital bus, no USB overhead) and runs from the board's 3.3V rail with its own internal voltage regulators. Audio quality is comparable to mid-range professional interfaces.
+
+### Headphone/Cue Output (ES8388 Onboard Codec) — Adequate for Cueing
+
+The ES8388 codec on the Orange Pi 5 Pro provides the 3.5mm TRRS headphone jack. While the chip itself specs 96 dB SNR and -83 dB THD+N, the board-level implementation introduces limitations:
+
+**Bass roll-off from coupling capacitors.** The headphone output is AC-coupled through small electrolytic capacitors on the PCB (typically 22µF in 0603 packages on Orange Pi boards). These form a high-pass filter with the headphone impedance: `f_c = 1 / (2π × C × Z)`. With typical 32Ω DJ headphones, the -3dB point is ~220 Hz — noticeable bass loss. Higher impedance headphones (250Ω) push this down to ~29 Hz (inaudible), but most DJ headphones are low-impedance.
+
+**Noise from shared power rail.** The ES8388's analog section shares a power domain with the RK3588S SoC, which is a high-power digital processor. Digital switching noise couples into the analog output, raising the effective noise floor above the chip's datasheet spec.
+
+**No software processing is applied.** The `mesh-audio-init` service (`audio.nix`) sets clean defaults: 3D processing disabled, mixer paths enabled, PCM volume at 85% (headroom to avoid clipping). PipeWire passes audio through without resampling at the native 48kHz rate.
+
+### ALSA Mixer Defaults (ES8388)
+
+Set by `mesh-audio-init.service` on every boot:
+
+| Control | Value | Purpose |
+|---------|-------|---------|
+| Headphone | on | Enable headphone output path |
+| hp switch | on | Route DAC to headphone amp |
+| PCM | 85% | DAC digital volume (conservative headroom) |
+| Output 1 / Output 2 | 100% | Analog output gain (max) |
+| 3D Mode | No 3D | Disable stereo enhancement DSP |
+| Left/Right Mixer | on | Enable L/R signal paths |
+
+To adjust headphone volume: `amixer -c rockchipes8388 set PCM 90%`
+To inspect all controls: `amixer -c rockchipes8388 contents`
+
+### Upgrading the Headphone Output
+
+If the ES8388 headphone quality is insufficient (bass-light, noisy), options in order of cost:
+
+1. **Use higher impedance headphones** ($0) — 150-250Ω headphones shift the coupling cap roll-off well below audible range. Most studio monitoring headphones (Beyerdynamic DT 770 250Ω, Sennheiser HD 600 300Ω) work well.
+
+2. **USB DAC dongle** (~$15) — An Apple USB-C headphone adapter (Cirrus Logic CS43131, 112 dB SNR) or similar USB dongle provides dramatically better headphone output than the onboard codec. Appears as a standard USB Audio Class device, auto-detected by ALSA.
+
+3. **Dedicated USB audio interface** (~$65+) — A Behringer UMC204HD or similar provides 4 independent channels (2 master + 2 cue) on one device, eliminating both the I2S DAC and onboard codec. This was the original plan before the I2S DAC approach proved viable. See [ARM64 Embedded Research](arm64-embedded-research.md) for interface comparison.
+
 ## Build and Deploy Architecture
 
 The embedded setup uses a zero-cost CI pipeline. No host system changes, no emulation, no paid services.

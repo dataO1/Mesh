@@ -1230,6 +1230,13 @@ The RK3588 boards use a 40-pin header that is **broadly compatible** with the Ra
 
 **Assessment**: The onboard codecs (ES8388/ES8316) are adequate for headphone cueing — 93-96 dB SNR is comparable to mid-range consumer headphone outputs and well above the noise floor of a DJ booth. They are NOT hi-fi quality but perfectly serviceable for monitoring/preview purposes. The PCM5102A at 112 dB SNR is genuinely good for a master output feeding a PA system.
 
+**Known ES8388 headphone output limitations on Orange Pi boards (Feb 2026 testing):**
+
+- **Bass roll-off**: The headphone output is AC-coupled through small electrolytic capacitors on the PCB (typically 22µF/6.3V in 0603 packages, based on OPi 4 LTS schematic — similar circuit). These form a high-pass filter with headphone impedance: `f_c = 1 / (2π × C × Z)`. With 32Ω DJ headphones, -3dB @ ~220 Hz — significant bass loss. With 250Ω studio headphones, -3dB @ ~29 Hz — inaudible. This is a board-level hardware limitation, not a codec limitation.
+- **Noise**: The ES8388's analog section shares the power domain with the RK3588S SoC. Digital switching noise from the 8-core processor couples into the analog output, raising the effective noise floor above the chip's 96 dB SNR datasheet spec. Professional audio interfaces use isolated power domains and careful analog PCB layout to avoid this.
+- **No software EQ compensation recommended**: Boosting bass in software to compensate the analog roll-off drives the codec harder into distortion/noise — the signal is already attenuated in the analog domain before reaching the jack.
+- **Upgrade path**: A USB DAC dongle (e.g., Apple USB-C adapter with Cirrus Logic CS43131, ~$15, 112 dB SNR) eliminates both issues. Higher impedance headphones (150-250Ω) mitigate the bass roll-off at zero cost.
+
 Sources: [ES8388 Datasheet](https://datasheet.lcsc.com/lcsc/1912111437_Everest-semi-Everest-Semiconductor-ES8388_C365736.pdf), [ES8316 Datasheet](http://everest-semi.com/pdf/ES8316%20PB.pdf), [PCM5102A Datasheet](https://www.ti.com/product/PCM5102A)
 
 ### I2S DAC Options
