@@ -281,37 +281,22 @@ pub fn scan_local_collection_from_db(
         }
     }
 
-    // Pre-fetch cue points, loops, and stem links for all tracks (sequential DB queries)
-    let mut cue_points_map: HashMap<i64, Vec<CuePoint>> = HashMap::new();
-    let mut loops_map: HashMap<i64, Vec<SavedLoop>> = HashMap::new();
-    let mut stem_links_map: HashMap<i64, Vec<StemLink>> = HashMap::new();
-    let mut ml_analysis_map: HashMap<i64, MlAnalysisData> = HashMap::new();
-    let mut tags_map: HashMap<i64, Vec<(String, Option<String>)>> = HashMap::new();
-    let mut audio_features_map: HashMap<i64, bool> = HashMap::new();
+    // Bulk-fetch all supplementary data in 6 queries instead of 6×N
+    let cue_points_map = CuePointQuery::get_all(db).unwrap_or_default();
+    let loops_map = SavedLoopQuery::get_all(db).unwrap_or_default();
+    let stem_links_map = StemLinkQuery::get_all(db).unwrap_or_default();
 
-    for (_, (_, track)) in &track_data {
-        if let Ok(cues) = CuePointQuery::get_for_track(db, track.id) {
-            cue_points_map.insert(track.id, cues);
-        }
-        if let Ok(loops) = SavedLoopQuery::get_for_track(db, track.id) {
-            loops_map.insert(track.id, loops);
-        }
-        if let Ok(links) = StemLinkQuery::get_for_track(db, track.id) {
-            stem_links_map.insert(track.id, links);
-        }
-        // Fetch ML analysis, tags, and audio features via DatabaseService
-        if let Some(svc) = db_service {
-            if let Ok(Some(ml)) = svc.get_ml_analysis(track.id) {
-                ml_analysis_map.insert(track.id, ml);
-            }
-            if let Ok(t) = svc.get_tags(track.id) {
-                tags_map.insert(track.id, t);
-            }
-            if let Ok(has) = SimilarityQuery::has_features(db, track.id) {
-                audio_features_map.insert(track.id, has);
-            }
-        }
-    }
+    let (ml_analysis_map, tags_map, audio_features_set) = if let Some(svc) = db_service {
+        let ml = svc.get_all_ml_analysis().unwrap_or_default();
+        let tags = svc.get_all_track_tags().unwrap_or_default();
+        let features: HashSet<i64> = SimilarityQuery::get_tracks_with_features(db)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        (ml, tags, features)
+    } else {
+        (HashMap::new(), HashMap::new(), HashSet::new())
+    };
 
     // Get file metadata for all unique tracks (parallel for speed)
     let track_list: Vec<(String, PathBuf, TrackRow)> = track_data
@@ -340,7 +325,7 @@ pub fn scan_local_collection_from_db(
             let stem_links = stem_links_map.get(&db_track.id).cloned().unwrap_or_default();
             let ml_analysis = ml_analysis_map.get(&db_track.id).cloned();
             let tags = tags_map.get(&db_track.id).cloned().unwrap_or_default();
-            let has_audio_features = audio_features_map.get(&db_track.id).copied().unwrap_or(false);
+            let has_audio_features = audio_features_set.contains(&db_track.id);
 
             Ok(TrackInfo {
                 path,
@@ -398,13 +383,23 @@ pub fn scan_usb_collection(
     // Get USB database from cache for metadata comparison
     let usb_db_service = get_or_open_usb_database(collection_root);
 
-    // Build map of filename -> metadata from USB database
+    // Build map of filename -> metadata from USB database (bulk queries)
     #[allow(clippy::type_complexity)]
     let mut db_metadata: HashMap<String, (TrackRow, Vec<CuePoint>, Vec<SavedLoop>, Vec<StemLink>,
         Option<MlAnalysisData>, Vec<(String, Option<String>)>, bool)> = HashMap::new();
     if let Some(ref db_service) = usb_db_service {
-        // Get all tracks from database
+        // Bulk-fetch all supplementary data in 6 queries instead of 6×N
         if let Ok(all_tracks) = TrackQuery::get_all(db_service.db()) {
+            let cue_map = CuePointQuery::get_all(db_service.db()).unwrap_or_default();
+            let loop_map = SavedLoopQuery::get_all(db_service.db()).unwrap_or_default();
+            let link_map = StemLinkQuery::get_all(db_service.db()).unwrap_or_default();
+            let ml_map = db_service.get_all_ml_analysis().unwrap_or_default();
+            let tag_map = db_service.get_all_track_tags().unwrap_or_default();
+            let features_set: HashSet<i64> = SimilarityQuery::get_tracks_with_features(db_service.db())
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+
             for track in all_tracks {
                 let filename = PathBuf::from(&track.path)
                     .file_name()
@@ -412,16 +407,12 @@ pub fn scan_usb_collection(
                     .unwrap_or(&track.name)
                     .to_string();
 
-                let cue_points = CuePointQuery::get_for_track(db_service.db(), track.id)
-                    .unwrap_or_default();
-                let saved_loops = SavedLoopQuery::get_for_track(db_service.db(), track.id)
-                    .unwrap_or_default();
-                let stem_links = StemLinkQuery::get_for_track(db_service.db(), track.id)
-                    .unwrap_or_default();
-                let ml_analysis = db_service.get_ml_analysis(track.id).unwrap_or(None);
-                let tags = db_service.get_tags(track.id).unwrap_or_default();
-                let has_audio_features = SimilarityQuery::has_features(db_service.db(), track.id)
-                    .unwrap_or(false);
+                let cue_points = cue_map.get(&track.id).cloned().unwrap_or_default();
+                let saved_loops = loop_map.get(&track.id).cloned().unwrap_or_default();
+                let stem_links = link_map.get(&track.id).cloned().unwrap_or_default();
+                let ml_analysis = ml_map.get(&track.id).cloned();
+                let tags = tag_map.get(&track.id).cloned().unwrap_or_default();
+                let has_audio_features = features_set.contains(&track.id);
 
                 db_metadata.insert(filename, (track, cue_points, saved_loops, stem_links,
                     ml_analysis, tags, has_audio_features));

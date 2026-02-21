@@ -5,7 +5,7 @@
 use super::schema::{TrackRow, Playlist, AudioFeatures, CuePoint, SavedLoop, StemLink};
 use super::{MeshDb, DbError};
 use cozo::{DataValue, NamedRows};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Column list for track queries (must match schema order for first_beat_sample)
 const TRACK_COLUMNS: &str = "id, path, folder_path, name, original_name, artist, bpm, original_bpm, key, duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path";
@@ -815,6 +815,21 @@ impl CuePointQuery {
         Ok(())
     }
 
+    /// Get all cue points for all tracks (bulk query for sync)
+    pub fn get_all(db: &MeshDb) -> Result<HashMap<i64, Vec<CuePoint>>, DbError> {
+        let result = db.run_query(r#"
+            ?[track_id, index, sample_position, label, color] :=
+                *cue_points{track_id, index, sample_position, label, color}
+            :order track_id, index
+        "#, BTreeMap::new())?;
+
+        let mut map: HashMap<i64, Vec<CuePoint>> = HashMap::new();
+        for cue in rows_to_cue_points(&result) {
+            map.entry(cue.track_id).or_default().push(cue);
+        }
+        Ok(map)
+    }
+
     /// Delete all cue points for a track
     pub fn delete_all_for_track(db: &MeshDb, track_id: i64) -> Result<(), DbError> {
         let mut params = BTreeMap::new();
@@ -897,6 +912,21 @@ impl SavedLoopQuery {
         Ok(())
     }
 
+    /// Get all saved loops for all tracks (bulk query for sync)
+    pub fn get_all(db: &MeshDb) -> Result<HashMap<i64, Vec<SavedLoop>>, DbError> {
+        let result = db.run_query(r#"
+            ?[track_id, index, start_sample, end_sample, label, color] :=
+                *saved_loops{track_id, index, start_sample, end_sample, label, color}
+            :order track_id, index
+        "#, BTreeMap::new())?;
+
+        let mut map: HashMap<i64, Vec<SavedLoop>> = HashMap::new();
+        for loop_ in rows_to_saved_loops(&result) {
+            map.entry(loop_.track_id).or_default().push(loop_);
+        }
+        Ok(map)
+    }
+
     /// Delete all saved loops for a track
     pub fn delete_all_for_track(db: &MeshDb, track_id: i64) -> Result<(), DbError> {
         let mut params = BTreeMap::new();
@@ -945,6 +975,21 @@ impl StemLinkQuery {
         "#, params)?;
 
         Ok(rows_to_stem_links(&result))
+    }
+
+    /// Get all stem links for all tracks (bulk query for sync)
+    pub fn get_all(db: &MeshDb) -> Result<HashMap<i64, Vec<StemLink>>, DbError> {
+        let result = db.run_query(r#"
+            ?[track_id, stem_index, source_track_id, source_stem] :=
+                *stem_links{track_id, stem_index, source_track_id, source_stem}
+            :order track_id, stem_index
+        "#, BTreeMap::new())?;
+
+        let mut map: HashMap<i64, Vec<StemLink>> = HashMap::new();
+        for link in rows_to_stem_links(&result) {
+            map.entry(link.track_id).or_default().push(link);
+        }
+        Ok(map)
     }
 
     /// Insert or update a single stem link

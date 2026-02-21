@@ -1154,6 +1154,84 @@ impl DatabaseService {
         }
     }
 
+    /// Get all ML analysis data for all tracks (bulk query for sync)
+    pub fn get_all_ml_analysis(&self) -> Result<std::collections::HashMap<i64, super::schema::MlAnalysisData>, DbError> {
+        use std::collections::HashMap;
+
+        let result = self.db.run_query(r#"
+            ?[track_id, vocal_presence, arousal, valence, top_genre, genre_scores_json, mood_scores_json, binary_moods_json,
+              danceability, approachability, reverb, timbre, tonal, mood_acoustic, mood_electronic] :=
+                *ml_analysis{track_id, vocal_presence, arousal, valence, top_genre, genre_scores_json, mood_scores_json, binary_moods_json,
+                             danceability, approachability, reverb, timbre, tonal, mood_acoustic, mood_electronic}
+        "#, BTreeMap::new())?;
+
+        let mut map = HashMap::new();
+        for row in &result.rows {
+            let tid = match row[0].get_int() {
+                Some(id) => id,
+                None => continue,
+            };
+            let vocal_presence = row[1].get_float().unwrap_or(0.0) as f32;
+            let arousal = row[2].get_float().map(|f| f as f32);
+            let valence = row[3].get_float().map(|f| f as f32);
+            let top_genre = row[4].get_str().map(|s| s.to_string());
+            let genre_scores: Vec<(String, f32)> = row[5].get_str()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
+            let mood_themes: Option<Vec<(String, f32)>> = row[6].get_str()
+                .and_then(|s| serde_json::from_str(s).ok());
+            let binary_moods: Option<Vec<(String, f32)>> = row[7].get_str()
+                .and_then(|s| serde_json::from_str(s).ok());
+            let danceability = row[8].get_float().map(|f| f as f32);
+            let approachability = row[9].get_float().map(|f| f as f32);
+            let reverb = row[10].get_float().map(|f| f as f32);
+            let timbre = row[11].get_float().map(|f| f as f32);
+            let tonal = row[12].get_float().map(|f| f as f32);
+            let mood_acoustic = row[13].get_float().map(|f| f as f32);
+            let mood_electronic = row[14].get_float().map(|f| f as f32);
+
+            map.insert(tid, super::schema::MlAnalysisData {
+                vocal_presence,
+                arousal,
+                valence,
+                top_genre,
+                genre_scores,
+                mood_themes,
+                binary_moods,
+                danceability,
+                approachability,
+                reverb,
+                timbre,
+                tonal,
+                mood_acoustic,
+                mood_electronic,
+            });
+        }
+        Ok(map)
+    }
+
+    /// Get all tags for all tracks (bulk query for sync)
+    pub fn get_all_track_tags(&self) -> Result<std::collections::HashMap<i64, Vec<(String, Option<String>)>>, DbError> {
+        use std::collections::HashMap;
+
+        let result = self.db.run_query(r#"
+            ?[track_id, label, color, sort_order] := *track_tags{track_id, label, color, sort_order}
+            :order track_id, sort_order, label
+        "#, BTreeMap::new())?;
+
+        let mut map: HashMap<i64, Vec<(String, Option<String>)>> = HashMap::new();
+        for row in &result.rows {
+            let tid = match row[0].get_int() {
+                Some(id) => id,
+                None => continue,
+            };
+            let label = row[1].get_str().unwrap_or("").to_string();
+            let color = row[2].get_str().map(|s| s.to_string());
+            map.entry(tid).or_default().push((label, color));
+        }
+        Ok(map)
+    }
+
     /// Batch-fetch arousal values for multiple tracks (for suggestion scoring)
     pub fn get_arousal_batch(&self, track_ids: &[i64]) -> Result<std::collections::HashMap<i64, f32>, DbError> {
         use std::collections::HashMap;

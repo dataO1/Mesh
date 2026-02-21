@@ -17,6 +17,13 @@ All notable changes to Mesh are documented in this file.
   metadata lookup independent of which stick is currently browsed. Also fixed the
   browser storage sync guard that prevented USB→USB switches between sticks.
 
+- **USB: sync plan performance** — "Calculating changes" in the export modal took
+  60+ seconds for a 200-track collection because supplementary metadata (cue points,
+  saved loops, stem links, ML analysis, tags, audio features) was fetched with 6
+  individual database queries per track — over 2,400 sequential round trips on USB
+  flash storage. Replaced with 6 bulk parameterless queries that fetch all rows in
+  a single pass and group by track ID in Rust, reducing scan time to ~1-2 seconds.
+
 - **USB: device label resolution** — USB sticks were showing kernel device names
   (e.g. "/dev/sda") instead of human-readable names. On Linux, now resolves the
   filesystem label from `/dev/disk/by-label/`, falling back to the hardware model
