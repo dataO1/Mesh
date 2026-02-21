@@ -379,7 +379,7 @@ where
 
         WaveformUniforms {
             bounds: [bounds.x, bounds.y, bounds.width, bounds.height],
-            view_params: [playhead, 1.0, peaks_per_stem as f32, if self.is_overview { 1.0 } else { 0.0 }],
+            view_params: [playhead, deck.zoomed.lufs_gain, peaks_per_stem as f32, if self.is_overview { 1.0 } else { 0.0 }],
             window_params: [window_start, window_end, window_total, bpm_scale],
             stem_active,
             stem_color_0: color_to_arr(colors[0]),
@@ -413,7 +413,25 @@ where
                 } else {
                     peaks_per_stem as f32
                 };
-                [pis, 0.0, 0.0, 0.0]
+                // For overview: pack the zoomed window start/end so the overview
+                // can render a highlight showing the currently visible region.
+                let (zoom_start, zoom_end) = if self.is_overview && dur_f64 > 0.0 {
+                    let zoom_bars = deck.zoomed.zoom_bars;
+                    let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
+                    let samples_per_bar = samples_per_beat * 4;
+                    let window_samples = samples_per_bar * zoom_bars as u64;
+                    let ph = self.state.interpolated_playhead(self.deck_idx, SAMPLE_RATE as u32);
+                    let half = window_samples as i64 / 2;
+                    let vs = ph as i64 - half;
+                    let ve = vs + window_samples as i64;
+                    // Clamp to [0, 1] for valid display range
+                    let s = (vs as f64 / dur_f64).max(0.0) as f32;
+                    let e = (ve as f64 / dur_f64).min(1.0) as f32;
+                    (s, e)
+                } else {
+                    (0.0, 0.0)
+                };
+                [pis, zoom_start, zoom_end, 0.0]
             },
         }
     }

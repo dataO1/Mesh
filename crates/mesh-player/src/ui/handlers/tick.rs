@@ -235,6 +235,8 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
         for i in 0..4 {
             let position = atomics[i].position();
             let is_playing = atomics[i].is_playing();
+            let timestamp_ns = atomics[i].position_timestamp_ns();
+            let playback_rate = atomics[i].playback_rate();
             let loop_active = atomics[i].loop_active();
             let loop_start = atomics[i].loop_start();
             let loop_end = atomics[i].loop_end();
@@ -242,8 +244,10 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
 
             deck_positions[i] = Some(position);
 
-            // Update playhead state for smooth interpolation
-            app.player_canvas_state.set_playhead(i, position, is_playing);
+            // Update playhead state with audio-thread timestamp for smooth interpolation
+            app.player_canvas_state.set_playhead(
+                i, position, is_playing, timestamp_ns, playback_rate,
+            );
 
             // Update master status for UI indicator
             app.player_canvas_state.set_master(i, is_master);

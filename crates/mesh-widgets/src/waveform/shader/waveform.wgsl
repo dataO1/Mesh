@@ -27,7 +27,7 @@ struct Uniforms {
     cue_color_5: vec4<f32>,
     cue_color_6: vec4<f32>,
     cue_color_7: vec4<f32>,
-    stem_smooth: vec4<f32>,  // [peak_index_scale, 0, 0, 0]
+    stem_smooth: vec4<f32>,  // [peak_index_scale, zoomed_win_start, zoomed_win_end, 0]
 }
 
 @group(0) @binding(0)
@@ -70,12 +70,10 @@ fn raw_peak(stem_idx: u32, idx: u32) -> vec2<f32> {
 
 /// Per-stem subsampling target (pixels per rendered point).
 /// Higher = more subsampling = more abstract/smooth appearance.
-/// Tuned so that at 4-8 bars visible, the waveform has an abstract look
-/// rather than showing every individual peak.
 fn get_subsample_target(stem_idx: u32) -> f32 {
     switch (stem_idx) {
         case 0u: { return 2.5; }  // Vocals
-        case 1u: { return 2.0; }  // Drums — slightly more detail than others
+        case 1u: { return 2.0; }  // Drums — slightly more detail
         case 2u: { return 3.0; }  // Bass — most abstract
         default: { return 2.5; }  // Other
     }
@@ -83,11 +81,6 @@ fn get_subsample_target(stem_idx: u32) -> f32 {
 
 /// Min/max reduction over a range of peaks.
 /// Returns vec2(min_of_mins, max_of_maxes) — the TRUE envelope.
-/// This is the mathematically correct operation for waveform display:
-/// if any peak in the range hit -0.8, the pixel must show -0.8.
-/// Unlike Gaussian averaging, min/max is monotonic — adding peaks to
-/// the range can only extend the envelope, never shrink it — so it
-/// produces rock-stable display with no "dancing" artifacts.
 fn minmax_reduce(stem_idx: u32, start: u32, end_idx: u32) -> vec2<f32> {
     let pps = u32(u.view_params.z);
     let s = min(start, pps - 1u);
@@ -111,22 +104,6 @@ fn minmax_reduce(stem_idx: u32, start: u32, end_idx: u32) -> vec2<f32> {
 }
 
 /// Stable peak sampling with grid-aligned min/max reduction.
-///
-/// Algorithm:
-/// 1. Compute step = round(subsample_target * peaks_per_pixel)
-///    peaks_per_pixel is a CPU-computed uniform (not derived from
-///    win_end - win_start in the shader), eliminating float instability.
-/// 2. Snap to step-aligned grid anchored at peak index 0.
-///    The grid never shifts relative to the track.
-/// 3. At each grid point, take TRUE min/max over the half-step range.
-///    This is correct for waveform envelopes (not averaging).
-/// 4. Linearly interpolate between the two nearest grid points.
-///    This produces the abstract "fewer points connected by lines" look
-///    matching the old canvas path rendering.
-///
-/// For overview (very zoomed out): full min/max over the pixel's range.
-/// For deep zoom: grid path with step_f=1 degenerates to linear interpolation
-/// between adjacent raw peaks — same result but no discontinuous strategy switch.
 fn sample_peak(stem_idx: u32, x_norm: f32, peaks_per_pixel: f32) -> vec2<f32> {
     let pps = u32(u.view_params.z);
     if (pps == 0u) {
@@ -134,10 +111,6 @@ fn sample_peak(stem_idx: u32, x_norm: f32, peaks_per_pixel: f32) -> vec2<f32> {
     }
 
     // peak_index_scale corrects for integer division in generate_peaks().
-    // The peaks array has `pps` entries, but each covers floor(duration/pps) samples,
-    // NOT duration/pps samples. The last bin absorbs the remainder.
-    // peak_index_scale = duration / floor(duration/pps) = the "effective pps" that
-    // correctly maps normalized position to peak index.
     let peak_index_scale = u.stem_smooth[0];
     let effective_pps = select(f32(pps), peak_index_scale, peak_index_scale > 0.0);
     let float_idx = x_norm * effective_pps;
@@ -151,29 +124,16 @@ fn sample_peak(stem_idx: u32, x_norm: f32, peaks_per_pixel: f32) -> vec2<f32> {
     }
 
     // --- Grid-aligned min/max sampling (zoomed/mid-range) ---
-    //
-    // Step size: how many peaks each rendered "point" covers.
-    // peaks_per_pixel is a stable CPU-computed uniform, so step_f is
-    // constant across all pixels and all frames at the same zoom level.
-    // This eliminates the grid restructuring that caused dancing.
     let subsample_target = get_subsample_target(stem_idx);
     let step_f = max(round(subsample_target * peaks_per_pixel), 1.0);
 
-    // Grid position: snap to multiples of step_f anchored at peak 0.
-    // As the window scrolls, only grid_frac changes (smoothly 0→1).
-    // At each grid crossing, idx_a/idx_b shift to the next pair —
-    // same as the old canvas scrolling behavior.
     let grid_pos = float_idx / step_f;
     let grid_floor = floor(grid_pos);
     let grid_frac = grid_pos - grid_floor;
 
-    // Two nearest grid-aligned peak indices
     let center_a = u32(clamp(grid_floor * step_f, 0.0, f32(pps) - 1.0));
     let center_b = u32(clamp((grid_floor + 1.0) * step_f, 0.0, f32(pps) - 1.0));
 
-    // Min/max reduction over the half-step range at each grid point.
-    // This captures the true envelope around each grid point without
-    // the averaging artifacts of Gaussian smoothing.
     let half_step = u32(step_f * 0.5);
     let p_a = minmax_reduce(
         stem_idx,
@@ -186,10 +146,6 @@ fn sample_peak(stem_idx: u32, x_norm: f32, peaks_per_pixel: f32) -> vec2<f32> {
         min(center_b + half_step, pps - 1u)
     );
 
-    // Linear interpolation between grid-aligned min/max samples.
-    // This is the shader equivalent of the canvas path connecting
-    // step-aligned points with straight lines — producing the
-    // abstract reduced-detail look.
     return mix(p_a, p_b, vec2<f32>(grid_frac));
 }
 
@@ -225,9 +181,12 @@ fn get_cue_color(idx: u32) -> vec4<f32> {
     }
 }
 
-/// Blend src over dst using premultiplied alpha
+/// Blend src over dst using straight (non-premultiplied) alpha.
 fn blend_over(dst: vec4<f32>, src: vec4<f32>) -> vec4<f32> {
-    return src + dst * (1.0 - src.a);
+    return vec4<f32>(
+        mix(dst.rgb, src.rgb, src.a),
+        src.a + dst.a * (1.0 - src.a),
+    );
 }
 
 // =============================================================================
@@ -279,8 +238,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // Compute source_x change per pixel — needed for correct line widths.
-    // Overview: one pixel = 1/width of track (or 1/(width*bpm_scale) with stretch)
-    // Zoomed: one pixel = (win_end - win_start) / width of track
     var px_in_source: f32;
     if (is_overview) {
         let bpm_scale_px = u.window_params.w;
@@ -300,13 +257,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (loop_active) {
         let loop_start = u.loop_params.x;
         let loop_end = u.loop_params.y;
-        var in_loop: bool;
-        if (is_overview) {
-            in_loop = source_x >= loop_start && source_x <= loop_end;
-        } else {
-            in_loop = source_x >= loop_start && source_x <= loop_end;
-        }
-        if (in_loop) {
+        if (source_x >= loop_start && source_x <= loop_end) {
             color = blend_over(color, vec4<f32>(0.0, 0.3, 0.0, 0.25));
         }
     }
@@ -319,15 +270,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let sl_start = u.slicer_params.x;
         let sl_end = u.slicer_params.y;
         if (source_x >= sl_start && source_x <= sl_end) {
-            // Orange tint for slicer region
             color = blend_over(color, vec4<f32>(0.4, 0.2, 0.0, 0.15));
 
-            // Slice division lines (8 slices)
             let slicer_width = sl_end - sl_start;
             if (slicer_width > 0.0) {
                 let slice_frac = (source_x - sl_start) / slicer_width * 8.0;
                 let at_division = fract(slice_frac);
-                // One pixel in fract(slice_frac) space = 8 * px_in_source / slicer_width
                 let line_width = 8.0 * px_in_source / slicer_width;
                 if (at_division < line_width || at_division > 1.0 - line_width) {
                     color = blend_over(color, vec4<f32>(1.0, 0.5, 0.0, 0.6));
@@ -337,7 +285,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // -----------------------------------------------------------------
-    // 3. Beat markers (procedural from BPM)
+    // 3. Beat markers (behind stems — subtle grid lines)
     // -----------------------------------------------------------------
     let grid_step = u.beat_params.x;
     let first_beat = u.beat_params.y;
@@ -346,18 +294,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (grid_step > 0.001) {
         let beat_phase = (source_x - first_beat) / grid_step;
 
-        // Bar lines (every beats_per_bar beats) — brighter
-        // Threshold: how many bars does 2 pixels span? = 2 * px_in_source / (grid_step * beats_per_bar)
+        // Bar lines (every beats_per_bar beats) — red downbeat
         let bar_phase = beat_phase / beats_per_bar;
         let bar_frac = fract(bar_phase);
         let bar_threshold = px_in_source * 2.0 / (grid_step * beats_per_bar);
         if (bar_frac < bar_threshold || bar_frac > 1.0 - bar_threshold) {
-            if (beat_phase > -0.5) { // Only after first beat
-                color = blend_over(color, vec4<f32>(0.4, 0.4, 0.4, 0.5));
+            if (beat_phase > -0.5) {
+                color = blend_over(color, vec4<f32>(1.0, 0.3, 0.3, 0.7));
             }
         } else {
-            // Beat lines — subtle
-            // Threshold: how many beats does 1 pixel span? = px_in_source / grid_step
+            // Beat lines — subtle gray
             let beat_frac = fract(beat_phase);
             let beat_threshold = px_in_source / grid_step;
             if (beat_frac < beat_threshold || beat_frac > 1.0 - beat_threshold) {
@@ -369,15 +315,43 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // -----------------------------------------------------------------
-    // 4. Stem envelopes (back-to-front: Drums, Bass, Vocals, Other)
+    // 4. Playhead proximity factor (used by stem brightness below)
+    // -----------------------------------------------------------------
+    // Inverse exponential: tight bright zone around playhead, rapid falloff.
+    // Only active in zoomed view — overview has no spatial playhead focus.
+    var playhead_proximity = 0.0;
+    if (!is_overview) {
+        let glow_x = clamp(abs(uv.x - 0.5) / 0.5, 0.0, 1.0);
+        playhead_proximity = exp(-5.0 * glow_x);
+    }
+
+    // -----------------------------------------------------------------
+    // 5. Overview: zoomed window indicator (highlight visible region)
+    // -----------------------------------------------------------------
+    if (is_overview) {
+        let zoom_win_start = u.stem_smooth[1];
+        let zoom_win_end = u.stem_smooth[2];
+        // Only draw if we have valid window data
+        if (zoom_win_end > zoom_win_start) {
+            var indicator_x = source_x;
+            // Apply BPM stretch to indicator position to match overview stretch
+            let bpm_scale_ind = u.window_params.w;
+            if (bpm_scale_ind > 0.01) {
+                indicator_x = source_x; // source_x already un-stretched
+            }
+            if (indicator_x >= zoom_win_start && indicator_x <= zoom_win_end) {
+                // Subtle bright tint for the visible region
+                color = blend_over(color, vec4<f32>(0.4, 0.4, 0.5, 0.12));
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // 6. Stem envelopes (back-to-front: Drums, Bass, Vocals, Other)
     // -----------------------------------------------------------------
     let center_y = 0.5;
     let height_scale = u.view_params.y;
 
-    // peaks_per_pixel: CPU-computed stable uniform for zoomed view,
-    // or derived from px_in_source for overview.
-    // Using the CPU uniform avoids float subtraction noise from
-    // (win_end - win_start) / width that caused step_f instability.
     var peaks_per_pixel: f32;
     let cpu_ppp = u.slicer_params.w;
     if (is_overview || cpu_ppp <= 0.0) {
@@ -390,7 +364,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let render_order = array<u32, 4>(1u, 2u, 0u, 3u);
 
     // Resolution-independent pixel size via screen-space derivatives.
-    // fwidth(uv.y) = how much uv.y changes per pixel — adapts to DPI & viewport.
     let fw = fwidth(uv.y);
 
     for (var i = 0u; i < 4u; i++) {
@@ -403,27 +376,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let y_min = center_y - peak.y * height_scale * 0.5; // max peak = top
         let y_max = center_y - peak.x * height_scale * 0.5; // min peak = bottom
 
-        // Inside-only anti-aliasing using fwidth — NO hard if-guard.
-        //
-        // The old hard guard `if (uv.y >= y_min && uv.y <= y_max)` caused thin peaks
-        // to "dance": a ~1px peak only passes the test for ONE pixel row, and sub-pixel
-        // position shifts between frames cause it to jump to a different row.
-        //
-        // smoothstep(0, fw, d): transition is entirely INSIDE the envelope.
-        // Outside pixels get alpha=0, so no stem color bleeds beyond its envelope.
-        // This prevents mixed-color outlines where two stems overlap.
-        // Thin sub-pixel peaks are handled by the coverage boost below.
-        let d_top = uv.y - y_min;  // positive = inside envelope
-        let d_bot = y_max - uv.y;  // positive = inside envelope
-        let aa_top = smoothstep(0.0, fw, d_top);
-        let aa_bot = smoothstep(0.0, fw, d_bot);
+        // Soft anti-aliased edge with outside glow for smooth appearance.
+        let d_top = uv.y - y_min;
+        let d_bot = y_max - uv.y;
+        let outside_ext = fw * 1.5;
+        let aa_top = smoothstep(-outside_ext, fw, d_top);
+        let aa_bot = smoothstep(-outside_ext, fw, d_bot);
         var edge_alpha = aa_top * aa_bot;
 
-        // For sub-pixel thin envelopes (< 2px), the overlapping smoothstep
-        // transitions produce very low alpha. Boost proportional to coverage,
-        // but ONLY for pixels near the envelope center — without the proximity
-        // check, `max(edge_alpha, coverage)` would override the smoothstep's
-        // spatial falloff and paint the entire column with the stem color.
+        // Sub-pixel thin envelope coverage boost
         let thickness = y_max - y_min;
         if (thickness < 2.0 * fw && thickness > 0.0) {
             let coverage = thickness / (2.0 * fw);
@@ -435,7 +396,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         if (edge_alpha > 0.005) {
             var stem_rgba: vec4<f32>;
             if (is_active) {
-                stem_rgba = vec4<f32>(stem_color.rgb, 0.85 * edge_alpha);
+                // Envelope-relative brightness modulated by playhead proximity.
+                // Near playhead: center slightly brighter, edges glow strongly.
+                // Far from playhead: normal flat brightness.
+                let env_center = (y_min + y_max) * 0.5;
+                let env_half = max((y_max - y_min) * 0.5, fw);
+                let rel_pos = clamp(abs(uv.y - env_center) / env_half, 0.0, 1.0);
+                // 0.15 base boost (center less dark) + 0.45 edge boost (edges glow)
+                let edge_boost = 1.0 + playhead_proximity * (0.15 + 0.45 * rel_pos);
+                stem_rgba = vec4<f32>(stem_color.rgb * edge_boost, 0.85 * edge_alpha);
             } else {
                 // Muted: gray with reduced opacity
                 stem_rgba = vec4<f32>(0.35, 0.35, 0.35, 0.5 * edge_alpha);
@@ -445,7 +414,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // -----------------------------------------------------------------
-    // 5. Cue markers (colored vertical lines + triangle)
+    // 7. Cue markers (colored vertical lines + triangle)
     // -----------------------------------------------------------------
     let cue_count = u32(u.cue_params.x);
     let cue_line_w = px_in_source * 2.0;
@@ -481,12 +450,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // -----------------------------------------------------------------
-    // 6. Playhead (white vertical line)
+    // 8. Playhead (white vertical line)
     // -----------------------------------------------------------------
     var ph_x: f32;
     if (is_overview) {
         ph_x = playhead;
-        // Apply BPM stretch to playhead position
         let bpm_scale = u.window_params.w;
         if (bpm_scale > 0.01) {
             ph_x = playhead * bpm_scale;
@@ -494,7 +462,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     } else {
         // Zoomed: playhead is at center
         ph_x = 0.5;
-        // Convert to UV space since we're using source_x for track-space
     }
 
     let ph_dist: f32 = abs(uv.x - ph_x);
@@ -505,7 +472,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // -----------------------------------------------------------------
-    // 7. Volume dimming (semi-transparent black overlay)
+    // 9. Volume dimming (semi-transparent black overlay)
     // -----------------------------------------------------------------
     let volume = u.beat_params.w;
     if (volume < 0.999) {

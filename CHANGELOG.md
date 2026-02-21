@@ -23,7 +23,28 @@ All notable changes to Mesh are documented in this file.
   vocals/other sit in between. Thin peaks render with proper anti-aliasing instead of
   flickering between pixel rows.
 
+- **Playhead brightness gradient** — Waveform peaks near the playhead are subtly
+  brighter, with an inverse-exponential falloff so the effect is concentrated around
+  the current position. Peak edges glow more than centers for a natural depth effect.
+
+- **Overview window indicator** — The overview waveform now highlights the region
+  currently visible in the zoomed view with a subtle overlay.
+
+- **Red downbeat markers** — Bar lines in the beat grid are now red to distinguish
+  them from regular beat lines, matching the overview waveform style.
+
+- **LUFS-normalized waveform amplitude** — All tracks are visually scaled to match
+  -9 LUFS, so quiet and loud tracks appear at the same visual amplitude in the
+  waveform display.
+
 ### Fixed
+
+- **Buttery-smooth playhead scrolling** — Playhead interpolation now uses timestamps
+  from the audio thread with playback rate compensation, eliminating the rhythmic
+  micro-stuttering caused by audio buffer quantization.
+
+- **Correct stem overlap rendering** — Fixed alpha blending from premultiplied to
+  straight alpha, eliminating the white/washed-out outlines where stems overlap.
 
 - **Waveform stays in sync with audio** — Fixed two sources of visual drift that caused
   the zoomed waveform to gradually fall out of sync with the audio over longer tracks.

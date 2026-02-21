@@ -55,9 +55,10 @@ pub struct WaveformUniforms {
     pub cue_color_5: [f32; 4],
     pub cue_color_6: [f32; 4],
     pub cue_color_7: [f32; 4],
-    /// [peak_index_scale, 0, 0, 0]
+    /// [peak_index_scale, zoomed_win_start, zoomed_win_end, 0]
     /// stem_smooth[0] = peak_index_scale: corrects for integer division
     /// in generate_peaks(). Value = duration / floor(duration / pps).
+    /// stem_smooth[1..2] = zoomed window start/end (overview only, for window indicator)
     pub stem_smooth: [f32; 4],
 }
 

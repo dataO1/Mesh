@@ -15,6 +15,13 @@ use crate::types::{
 
 use super::{LatencyCompensator, LinkedStemAtomics, StemLink, MAX_BUFFER_SIZE};
 
+/// Process-wide epoch for timestamp-based playhead interpolation.
+/// Both audio thread and UI thread measure time relative to this instant,
+/// enabling accurate cross-thread interpolation without shared Instant values.
+/// Instant::now() uses clock_gettime(CLOCK_MONOTONIC) on Linux — vDSO, RT-safe.
+pub static PROCESS_EPOCH: std::sync::LazyLock<std::time::Instant> =
+    std::sync::LazyLock::new(std::time::Instant::now);
+
 /// Number of hot cue slots per deck
 pub const HOT_CUE_SLOTS: usize = 8;
 
@@ -138,6 +145,13 @@ pub struct DeckAtomics {
     /// Track's measured LUFS (f32 stored as bits, NaN = unknown)
     /// Used by UI to compute visual-only gain scaling independently of audio target
     track_lufs: AtomicU32,
+    /// Timestamp of last position update (nanos since PROCESS_EPOCH)
+    /// Used by UI for smooth playhead interpolation between audio callbacks.
+    /// clock_gettime(CLOCK_MONOTONIC) is vDSO on Linux — RT-safe, ~20ns.
+    pub position_timestamp_ns: AtomicU64,
+    /// Current playback rate (f32 stored as bits, 1.0 = normal speed)
+    /// Accounts for time-stretching, pitch shifting, etc.
+    pub playback_rate: AtomicU32,
 }
 
 impl DeckAtomics {
@@ -158,6 +172,8 @@ impl DeckAtomics {
             lufs_gain: AtomicU32::new(1.0_f32.to_bits()), // Unity gain by default
             lufs_gain_db: AtomicU32::new(f32::NAN.to_bits()), // No gain display
             track_lufs: AtomicU32::new(f32::NAN.to_bits()), // Unknown
+            position_timestamp_ns: AtomicU64::new(0),
+            playback_rate: AtomicU32::new(1.0_f32.to_bits()), // Normal speed
         }
     }
 
@@ -165,6 +181,18 @@ impl DeckAtomics {
     #[inline]
     pub fn position(&self) -> u64 {
         self.position.load(Ordering::Relaxed)
+    }
+
+    /// Get position timestamp in nanoseconds since PROCESS_EPOCH (lock-free)
+    #[inline]
+    pub fn position_timestamp_ns(&self) -> u64 {
+        self.position_timestamp_ns.load(Ordering::Relaxed)
+    }
+
+    /// Get current playback rate (lock-free)
+    #[inline]
+    pub fn playback_rate(&self) -> f32 {
+        f32::from_bits(self.playback_rate.load(Ordering::Relaxed))
     }
 
     /// Check if playing (lock-free)
@@ -489,10 +517,18 @@ impl Deck {
         self.atomics.state.store(state_val, Ordering::Relaxed);
     }
 
-    /// Write position to atomics (internal helper)
+    /// Write position, timestamp, and playback rate to atomics.
+    /// The timestamp enables the UI to interpolate smoothly between
+    /// audio callback boundaries (typically every 5-21ms).
     #[inline]
     fn sync_position_atomic(&self) {
         self.atomics.position.store(self.position as u64, Ordering::Relaxed);
+        let now_ns = PROCESS_EPOCH.elapsed().as_nanos() as u64;
+        self.atomics.position_timestamp_ns.store(now_ns, Ordering::Relaxed);
+        self.atomics.playback_rate.store(
+            (self.stretch_ratio as f32).to_bits(),
+            Ordering::Relaxed,
+        );
     }
 
     /// Write loop state to atomics (internal helper)

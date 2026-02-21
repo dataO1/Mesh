@@ -1116,8 +1116,11 @@ pub struct PlayerCanvasState {
     /// Stem active status per deck [deck][stem] (4 decks × 4 stems)
     /// true = stem is playing, false = stem is bypassed/muted
     stem_active: [[bool; 4]; 4],
-    /// Last update timestamp for each deck (for smooth interpolation)
-    last_update_time: [std::time::Instant; 4],
+    /// Audio-thread timestamp of last position update (nanos since PROCESS_EPOCH)
+    /// Used for accurate cross-thread interpolation between audio callbacks.
+    position_timestamps_ns: [u64; 4],
+    /// Playback rate per deck (1.0 = normal, from stretch_ratio)
+    playback_rates: [f64; 4],
     /// Whether each deck is currently playing (for interpolation)
     is_playing: [bool; 4],
     /// Whether each deck is the master (longest playing, others sync to it)
@@ -1158,7 +1161,6 @@ pub struct PlayerCanvasState {
 impl PlayerCanvasState {
     /// Create a new player canvas state with 4 empty decks
     pub fn new() -> Self {
-        let now = std::time::Instant::now();
         Self {
             decks: [
                 CombinedState::new(),
@@ -1181,7 +1183,8 @@ impl PlayerCanvasState {
             ],
             track_bpm: [None; 4],        // No BPM data initially
             stem_active: [[true; 4]; 4], // All stems active by default
-            last_update_time: [now, now, now, now],
+            position_timestamps_ns: [0; 4],
+            playback_rates: [1.0; 4],
             is_playing: [false, false, false, false],
             is_master: [false, false, false, false],
             current_transpose: [0; 4],
@@ -1509,13 +1512,22 @@ impl PlayerCanvasState {
 
     /// Set the playhead position for a deck (in samples)
     ///
-    /// Also records timestamp and playing state for smooth interpolation.
-    pub fn set_playhead(&mut self, idx: usize, position: u64, is_playing: bool) {
+    /// Takes the audio-thread timestamp and playback rate for accurate
+    /// cross-thread interpolation between audio callbacks.
+    pub fn set_playhead(
+        &mut self,
+        idx: usize,
+        position: u64,
+        is_playing: bool,
+        timestamp_ns: u64,
+        playback_rate: f32,
+    ) {
         if idx < 4
             && (self.playheads[idx] != position || self.is_playing[idx] != is_playing)
         {
             self.playheads[idx] = position;
-            self.last_update_time[idx] = std::time::Instant::now();
+            self.position_timestamps_ns[idx] = timestamp_ns;
+            self.playback_rates[idx] = playback_rate as f64;
             self.is_playing[idx] = is_playing;
             self.invalidate_cache();
         }
@@ -1528,12 +1540,12 @@ impl PlayerCanvasState {
 
     /// Get interpolated playhead position for smooth rendering
     ///
-    /// When the deck is playing, this estimates the current position based on
-    /// elapsed time since the last update. This eliminates visible "chunking"
-    /// in the waveform movement caused by the UI polling rate (16ms) being
-    /// different from the audio buffer rate (5.8ms).
+    /// Uses the audio-thread timestamp and playback rate for accurate
+    /// interpolation between audio callbacks. The timestamp comes from the
+    /// same monotonic clock (PROCESS_EPOCH) on both threads, so the elapsed
+    /// time calculation is accurate regardless of audio buffer size.
     ///
-    /// Formula: `position + elapsed_time * sample_rate`
+    /// Formula: `position + elapsed_since_audio_callback * sample_rate * playback_rate`
     pub fn interpolated_playhead(&self, idx: usize, sample_rate: u32) -> u64 {
         if idx >= 4 {
             return 0;
@@ -1544,12 +1556,32 @@ impl PlayerCanvasState {
             return self.playheads[idx];
         }
 
-        // Calculate how many samples have elapsed since last update
-        let elapsed = self.last_update_time[idx].elapsed();
-        let samples_elapsed = (elapsed.as_secs_f64() * sample_rate as f64) as u64;
+        let ts_ns = self.position_timestamps_ns[idx];
+        if ts_ns == 0 {
+            // No timestamp yet (first frame) — return raw position
+            return self.playheads[idx];
+        }
 
-        // Return interpolated position, but don't exceed duration
-        self.playheads[idx].saturating_add(samples_elapsed)
+        // Elapsed time since the audio thread last updated the position
+        let now_ns = Self::process_epoch_nanos();
+        let elapsed_ns = now_ns.saturating_sub(ts_ns);
+        let elapsed_secs = elapsed_ns as f64 / 1_000_000_000.0;
+
+        // Advance by elapsed * sample_rate * playback_rate
+        let rate = self.playback_rates[idx];
+        let samples_ahead = (elapsed_secs * sample_rate as f64 * rate) as u64;
+
+        // Safety clamp: don't extrapolate more than 100ms ahead
+        let max_ahead = (sample_rate as u64) / 10;
+        self.playheads[idx].saturating_add(samples_ahead.min(max_ahead))
+    }
+
+    /// Get nanoseconds since PROCESS_EPOCH (same clock as audio thread)
+    fn process_epoch_nanos() -> u64 {
+        // LazyLock ensures the epoch is initialized on first use.
+        // Both audio thread and UI thread use the same LazyLock, so
+        // timestamps are directly comparable.
+        mesh_core::engine::PROCESS_EPOCH.elapsed().as_nanos() as u64
     }
 }
 
