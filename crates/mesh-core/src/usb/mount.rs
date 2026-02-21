@@ -119,40 +119,35 @@ pub fn resolve_block_device(_mount_point: &Path) -> Option<PathBuf> {
 
 /// Set the filesystem label on a USB device.
 ///
-/// Uses the appropriate tool for each filesystem type:
-/// - ext4: `e2label` (max 16 chars)
-/// - FAT32: `fatlabel` (max 11 chars, uppercase)
-/// - exFAT: `exfatlabel` (max 15 chars)
+/// Strategy (Linux):
+/// 1. Try `FS_IOC_SETFSLABEL` ioctl — works on mounted ext4 (kernel 5.17+),
+///    btrfs, xfs, f2fs, and FAT (kernel 7.0+). No unmount needed.
+/// 2. If ioctl returns ENOTTY (unsupported), fall back to:
+///    unmount → label tool (e2label/fatlabel/exfatlabel) → remount.
 ///
-/// Runs via `sudo` since label-setting requires root. On the embedded
-/// NixOS image the mesh user has passwordless sudo.
+/// FAT32/exFAT label tools write directly to the block device, bypassing the
+/// kernel's mounted filesystem driver. The kernel caches the BPB/root directory
+/// and will overwrite changes on unmount — so unmount-first is required.
 #[cfg(target_os = "linux")]
 pub fn set_filesystem_label(
     mount_point: &Path,
     label: &str,
     filesystem: FilesystemType,
 ) -> Result<(), UsbError> {
-    let block_dev = resolve_block_device(mount_point).ok_or_else(|| {
-        UsbError::IoError(format!(
-            "Cannot resolve block device for {}",
-            mount_point.display()
-        ))
-    })?;
-    let block_dev_str = block_dev.to_string_lossy();
-
-    let (cmd, truncated) = match filesystem {
+    // Truncate label per filesystem limits
+    let truncated = match filesystem {
         FilesystemType::Ext4 => {
             let max = label.len().min(16);
-            ("e2label", label[..max].to_string())
+            label[..max].to_string()
         }
         FilesystemType::Fat32 => {
             let upper = label.to_uppercase();
             let max = upper.len().min(11);
-            ("fatlabel", upper[..max].to_string())
+            upper[..max].to_string()
         }
         FilesystemType::ExFat => {
             let max = label.len().min(15);
-            ("exfatlabel", label[..max].to_string())
+            label[..max].to_string()
         }
         FilesystemType::Unknown => {
             return Err(UsbError::IoError(
@@ -161,30 +156,116 @@ pub fn set_filesystem_label(
         }
     };
 
+    // Strategy 1: Try FS_IOC_SETFSLABEL ioctl (works on mounted filesystems)
+    match set_label_via_ioctl(mount_point, &truncated) {
+        Ok(()) => {
+            log::info!("Set filesystem label to '{}' via ioctl", truncated);
+            return Ok(());
+        }
+        Err(e) => {
+            log::info!("ioctl SETFSLABEL not supported ({}), falling back to label tool", e);
+        }
+    }
+
+    // Strategy 2: unmount → label tool → remount
+    let block_dev = resolve_block_device(mount_point).ok_or_else(|| {
+        UsbError::IoError(format!(
+            "Cannot resolve block device for {}",
+            mount_point.display()
+        ))
+    })?;
+    let block_dev_str = block_dev.to_string_lossy().to_string();
+    let mount_str = mount_point.to_string_lossy().to_string();
+
+    let cmd = match filesystem {
+        FilesystemType::Ext4 => "e2label",
+        FilesystemType::Fat32 => "fatlabel",
+        FilesystemType::ExFat => "exfatlabel",
+        FilesystemType::Unknown => unreachable!(),
+    };
+
     log::info!(
-        "Setting {} label on {} to '{}'",
+        "Setting label via unmount → {} → remount on {}",
         cmd,
         block_dev_str,
-        truncated
     );
 
+    // Unmount
+    let output = std::process::Command::new("sudo")
+        .args(["umount", &mount_str])
+        .output()
+        .map_err(|e| UsbError::IoError(format!("Failed to run umount: {}", e)))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(UsbError::IoError(format!("umount failed: {}", stderr.trim())));
+    }
+
+    // Set label
     let output = std::process::Command::new("sudo")
         .arg(cmd)
-        .arg(block_dev_str.as_ref())
+        .arg(&block_dev_str)
         .arg(&truncated)
         .output()
         .map_err(|e| UsbError::IoError(format!("Failed to run {}: {}", cmd, e)))?;
+    let label_ok = output.status.success();
+    if !label_ok {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::error!("{} failed: {}", cmd, stderr.trim());
+    }
 
+    // Remount (always, even if label failed — device must be usable)
+    let output = std::process::Command::new("sudo")
+        .args(["mount", &block_dev_str, &mount_str])
+        .output()
+        .map_err(|e| UsbError::IoError(format!("Failed to run mount: {}", e)))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(UsbError::IoError(format!(
-            "{} failed: {}",
-            cmd,
+            "remount failed after label change: {}",
             stderr.trim()
         )));
     }
 
-    Ok(())
+    if label_ok {
+        log::info!("Set filesystem label to '{}' via {}", truncated, cmd);
+        Ok(())
+    } else {
+        Err(UsbError::IoError(format!("{} failed on {}", cmd, block_dev_str)))
+    }
+}
+
+/// Try setting a filesystem label via the `FS_IOC_SETFSLABEL` ioctl.
+///
+/// This works on mounted filesystems for ext4 (kernel 5.17+), btrfs, xfs,
+/// f2fs, and FAT/vfat (kernel 7.0+). Returns `Err` with ENOTTY if the
+/// filesystem doesn't support the ioctl.
+#[cfg(target_os = "linux")]
+fn set_label_via_ioctl(mount_point: &Path, label: &str) -> Result<(), std::io::Error> {
+    use std::os::unix::io::AsRawFd;
+
+    // FS_IOC_SETFSLABEL = _IOW(0x94, 50, char[FSLABEL_MAX])
+    // _IOW(type=0x94, nr=50, size=256) = (1<<30)|(256<<16)|(0x94<<8)|50
+    const FS_IOC_SETFSLABEL: libc::c_ulong = 0x4100_9432;
+    const FSLABEL_MAX: usize = 256;
+
+    let file = std::fs::File::open(mount_point)?;
+    let mut buf = [0u8; FSLABEL_MAX];
+    let bytes = label.as_bytes();
+    if bytes.len() >= FSLABEL_MAX {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Label too long",
+        ));
+    }
+    buf[..bytes.len()].copy_from_slice(bytes);
+    // buf is already zero-terminated since initialized to 0
+
+    let ret = unsafe { libc::ioctl(file.as_raw_fd(), FS_IOC_SETFSLABEL, buf.as_ptr()) };
+    if ret < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
