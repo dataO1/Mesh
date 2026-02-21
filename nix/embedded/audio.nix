@@ -58,26 +58,11 @@
     }
   '';
 
-  # WirePlumber: ALSA device and node configuration
-  # - DP/HDMI devices disabled entirely (not needed in kiosk mode)
-  # - ES8388 and PCM5102A tuned for low-latency audio
+  # WirePlumber: per-node ALSA tuning
+  # DP/HDMI sinks are kept alive (device.disabled breaks the ALSA monitor)
+  # but deprioritized. Actual routing is forced by jack.rules + PIPEWIRE_NODE.
   services.pipewire.wireplumber.extraConfig."99-mesh-audio" = {
     "monitor.alsa.rules" = [
-      # Disable DisplayPort and HDMI ALSA devices entirely.
-      # Matched by device.name (ALSA card level) — prevents WirePlumber
-      # from creating any sink/source nodes for these devices.
-      {
-        matches = [{ "device.name" = "~alsa_card.*dp*"; }];
-        actions.update-props = {
-          "device.disabled" = true;
-        };
-      }
-      {
-        matches = [{ "device.name" = "~alsa_card.*hdmi*"; }];
-        actions.update-props = {
-          "device.disabled" = true;
-        };
-      }
       # ES8388 onboard codec (3.5mm headphone jack)
       {
         matches = [{ "node.name" = "~alsa_output.*es8388*"; }];

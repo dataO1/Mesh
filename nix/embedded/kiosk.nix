@@ -20,8 +20,15 @@ let
       pkgs.libGL
       pkgs.vulkan-loader
     ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+    # Wait for PipeWire to enumerate the ES8388 ALSA device.
+    # Without this, mesh-player connects to Dummy-Driver on boot.
+    for i in $(seq 1 30); do
+      ${pkgs.pipewire}/bin/pw-cli list-objects Node 2>/dev/null | grep -q es8388 && break
+      sleep 0.5
+    done
+
     # Force pw-jack to route audio to the ES8388 headphone codec.
-    # PIPEWIRE_NODE filters visible ports so only es8388 is available.
     export PIPEWIRE_NODE="alsa_output.platform-es8388-sound.stereo-fallback"
     exec ${pkgs.pipewire.jack}/bin/pw-jack ${meshPlayer}/bin/mesh-player "$@"
   '';
