@@ -8,85 +8,37 @@ All notable changes to Mesh are documented in this file.
 
 ### Performance
 
-- **Rendering: GPU shader waveforms** — Zoomed waveform rendering now uses a custom
-  WGSL fragment shader (`waveform.wgsl`) instead of CPU-based lyon tessellation via
-  iced's Canvas widget. Peak data is uploaded once at track load as a GPU storage
-  buffer (~128KB per deck). Per-frame updates require only a 400-byte uniform buffer
-  write containing playhead position, stem colors, loop region, BPM grid, cue markers,
-  smoothing parameters, and volume. This eliminates ~16,000 `line_to()` calls, ~8,000
-  `exp()` calls, ~100 Vec allocations (~1MB), and lyon tessellation of 32+ paths that
-  previously ran every frame. At 120Hz with 4 decks, this reduces CPU rendering time
-  from ~12-16ms to <1ms per frame.
+- **GPU-accelerated waveforms** — Zoomed waveform rendering moved from CPU to GPU.
+  Waveform data is uploaded once when a track loads; only the playhead position and
+  display state are sent each frame. Dramatically reduces CPU usage during playback,
+  especially at high refresh rates with multiple decks.
 
-- **Rendering: change-guarded cache invalidation** — All 19 `set_*` methods on
-  `PlayerCanvasState` now check `!= old_value` before calling `invalidate_cache()`.
-  Previously, every setter invalidated unconditionally — the tick handler alone
-  triggered 84 invalidations per tick (21 setters × 4 decks), making `canvas::Cache`
-  completely useless during playback. With guards, only actual value changes trigger
-  redraws (~4/tick for playing decks' playheads). Float comparisons use epsilon
-  threshold to avoid false invalidations from floating-point drift.
+- **Smarter redraw scheduling** — Waveform display only redraws when something
+  actually changes, instead of rebuilding every frame unconditionally.
 
-### Added
+### Improved
 
-- **Waveform shader module** (`mesh-widgets/waveform/shader/`) — New GPU-accelerated
-  waveform rendering pipeline built on iced's `shader::Program` trait. Includes:
-  - `PeakBuffer`: Arc-wrapped flattened peak data for zero-copy GPU upload, with
-    `Arc::as_ptr()` change detection (zero-cost per frame, no content hashing)
-  - `WaveformPrimitive`: Per-frame primitive carrying uniforms + peak buffer reference
-  - `WaveformPipeline`: wgpu render pipeline with per-view resource caching, dynamic
-    storage buffer resizing, and two-binding layout (uniform + storage)
-  - `WaveformProgram`: iced shader widget with click-to-seek (overview) and
-    drag-to-zoom (zoomed) interaction handling
-  - Fragment shader renders all elements in one pass: background → loop region →
-    beat markers (procedural from BPM) → stem envelopes × 4 → cue markers →
-    playhead → volume dimming, with `smoothstep()` anti-aliasing
-  - `WaveformAction` enum for message-agnostic seek/zoom events
-  - View helpers: `waveform_shader_zoomed()`, `waveform_shader_overview()`,
-    `waveform_player_shader()`
-
-- **Rendering: hybrid canvas/shader composition** — The 4-deck waveform display now
-  uses a two-layer `Stack`: canvas on bottom (headers + overview waveforms) and shader
-  widgets on top (zoomed waveforms). The canvas only redraws on structural changes
-  (track load, stem mute, loop toggle), not on every playhead tick. The shader handles
-  all per-frame animation. This eliminates all CPU lyon tessellation from the playback
-  hot path while preserving the canvas text rendering for deck headers (badge, track
-  name, BPM, key, loop indicator, LUFS gain).
-
-- **Rendering: stable grid-aligned peak sampling** — The WGSL shader now reproduces the
-  old canvas's "STABLE RENDERING" approach: peaks are sampled at step-aligned grid points
-  anchored to the track (not the window), then linearly interpolated. This eliminates
-  "dancing peaks" caused by intersample jitter when the playhead shifts peak indices by
-  fractional amounts between frames. Per-stem subsampling via `HIGHRES_PIXELS_PER_POINT`
-  (Vocals/Drums/Other=1.0, Bass=2.5) reduces rendered detail to match the old abstract
-  look. Gaussian smoothing at each grid point uses per-stem radius multipliers
-  (Drums=0.1, Vocals=0.25, Bass=0.4, Other=0.4) to keep drums sharp while smoothing
-  bass and pad instruments.
+- **Smoother waveform appearance** — Waveforms now have a cleaner, more abstract look
+  with per-stem detail tuning. Bass is the smoothest, drums retain more detail, and
+  vocals/other sit in between. Thin peaks render with proper anti-aliasing instead of
+  flickering between pixel rows.
 
 ### Fixed
 
-- **Rendering: beat grid not visible in shader** — Beat marker threshold calculations
-  in the WGSL shader used UV-space pixel widths (`1.0/width`) for source-space
-  comparisons, causing thresholds to exceed 1.0 in zoomed views (every pixel matched
-  as a beat line, making them invisible). Fixed by computing `px_in_source` based on
-  the view mode: `1.0/width` for overview, `(win_end - win_start)/width` for zoomed.
-  Also corrected cue marker and slicer line widths with the same fix.
+- **Waveform stays in sync with audio** — Fixed two sources of visual drift that caused
+  the zoomed waveform to gradually fall out of sync with the audio over longer tracks.
 
-- **Rendering: waveform-audio drift** — The shader hardcoded sample rate as 44100 Hz
-  but the audio engine runs at 48000 Hz. The 8.8% error caused ~2-3 seconds of visual
-  drift over a 4-minute track because `interpolated_playhead()` advanced too slowly
-  and BPM-based window width calculations were too narrow. Fixed by using the correct
-  engine sample rate constant.
+- **Beat grid always visible** — Beat grid lines now appear for all tracks, including
+  those without detailed beat analysis (falls back to BPM-based grid).
 
-- **Rendering: incremental loading broken** — The `RegionLoaded` handler updated raw
-  peak arrays but did not rebuild the GPU `PeakBuffer`, so the shader showed stale data
-  until the full `Complete` message arrived. Now rebuilds `overview_peak_buffer` and
-  `highres_peak_buffer` after each region, restoring incremental waveform growth.
+- **Stable waveform at all zoom levels** — Waveform no longer jumps or wobbles when
+  changing zoom level or at deep zoom.
 
-- **Rendering: track edge jump** — Zoomed waveform used `u64::saturating_sub()` for
-  window positioning, clamping the window start to 0 at the track beginning. This
-  caused the playhead to visually jump off-center. Fixed with signed `i64` arithmetic
-  that allows the window to extend before the track start, with the shader rendering
-  out-of-range regions as silence.
+- **Waveform loads progressively** — Overview waveform fills in as the track loads
+  instead of appearing all at once.
+
+- **Playhead stays centered at track edges** — Zoomed waveform no longer snaps the
+  playhead off-center when near the beginning or end of a track.
 
 ---
 

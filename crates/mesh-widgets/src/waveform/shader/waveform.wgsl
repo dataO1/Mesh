@@ -27,7 +27,7 @@ struct Uniforms {
     cue_color_5: vec4<f32>,
     cue_color_6: vec4<f32>,
     cue_color_7: vec4<f32>,
-    stem_smooth: vec4<f32>,  // reserved (layout alignment)
+    stem_smooth: vec4<f32>,  // [peak_index_scale, 0, 0, 0]
 }
 
 @group(0) @binding(0)
@@ -69,11 +69,16 @@ fn raw_peak(stem_idx: u32, idx: u32) -> vec2<f32> {
 }
 
 /// Per-stem subsampling target (pixels per rendered point).
-/// Matches old canvas HIGHRES_PIXELS_PER_POINT constants.
-/// Higher = more subsampling (smoother). Bass gets 2.5 for abstract look.
+/// Higher = more subsampling = more abstract/smooth appearance.
+/// Tuned so that at 4-8 bars visible, the waveform has an abstract look
+/// rather than showing every individual peak.
 fn get_subsample_target(stem_idx: u32) -> f32 {
-    if (stem_idx == 2u) { return 2.5; } // Bass
-    return 1.0; // Vocals, Drums, Other
+    switch (stem_idx) {
+        case 0u: { return 2.0; }  // Vocals — moderate abstraction
+        case 1u: { return 1.5; }  // Drums — slightly more detail
+        case 2u: { return 3.0; }  // Bass — most abstract
+        default: { return 2.0; }  // Other — moderate abstraction
+    }
 }
 
 /// Min/max reduction over a range of peaks.
@@ -120,23 +125,22 @@ fn minmax_reduce(stem_idx: u32, start: u32, end_idx: u32) -> vec2<f32> {
 ///    matching the old canvas path rendering.
 ///
 /// For overview (very zoomed out): full min/max over the pixel's range.
-/// For deep zoom (< 2 ppp): linear interpolation between raw peaks.
+/// For deep zoom: grid path with step_f=1 degenerates to linear interpolation
+/// between adjacent raw peaks — same result but no discontinuous strategy switch.
 fn sample_peak(stem_idx: u32, x_norm: f32, peaks_per_pixel: f32) -> vec2<f32> {
     let pps = u32(u.view_params.z);
     if (pps == 0u) {
         return vec2<f32>(0.0, 0.0);
     }
 
-    let float_idx = x_norm * f32(pps);
-
-    // Deep zoom (< 2 peaks per pixel): linear interpolation for smooth
-    // sub-pixel motion. No subsampling needed — every peak is visible.
-    if (peaks_per_pixel < 2.0) {
-        let idx0 = u32(clamp(floor(float_idx), 0.0, f32(pps) - 1.0));
-        let idx1 = min(idx0 + 1u, pps - 1u);
-        let frac = fract(float_idx);
-        return mix(raw_peak(stem_idx, idx0), raw_peak(stem_idx, idx1), vec2<f32>(frac));
-    }
+    // peak_index_scale corrects for integer division in generate_peaks().
+    // The peaks array has `pps` entries, but each covers floor(duration/pps) samples,
+    // NOT duration/pps samples. The last bin absorbs the remainder.
+    // peak_index_scale = duration / floor(duration/pps) = the "effective pps" that
+    // correctly maps normalized position to peak index.
+    let peak_index_scale = u.stem_smooth[0];
+    let effective_pps = select(f32(pps), peak_index_scale, peak_index_scale > 0.0);
+    let float_idx = x_norm * effective_pps;
 
     // Overview (very zoomed out): simple min/max over pixel's range
     if (peaks_per_pixel > 40.0) {
@@ -385,6 +389,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Render order: Drums(1), Bass(2), Vocals(0), Other(3)
     let render_order = array<u32, 4>(1u, 2u, 0u, 3u);
 
+    // Resolution-independent pixel size via screen-space derivatives.
+    // fwidth(uv.y) = how much uv.y changes per pixel — adapts to DPI & viewport.
+    let fw = fwidth(uv.y);
+
     for (var i = 0u; i < 4u; i++) {
         let stem = render_order[i];
         let peak = sample_peak(stem, source_x, peaks_per_pixel);
@@ -395,14 +403,30 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let y_min = center_y - peak.y * height_scale * 0.5; // max peak = top
         let y_max = center_y - peak.x * height_scale * 0.5; // min peak = bottom
 
-        // Check if this pixel's Y falls within the envelope
-        if (uv.y >= y_min && uv.y <= y_max) {
-            // Edge anti-aliasing
-            let pixel_h = 1.0 / height;
-            let edge_top = smoothstep(y_min - pixel_h, y_min + pixel_h, uv.y);
-            let edge_bot = 1.0 - smoothstep(y_max - pixel_h, y_max + pixel_h, uv.y);
-            let edge_alpha = edge_top * edge_bot;
+        // Coverage-based anti-aliasing using fwidth — NO hard if-guard.
+        //
+        // The old hard guard `if (uv.y >= y_min && uv.y <= y_max)` caused thin peaks
+        // to "dance": a ~1px peak only passes the test for ONE pixel row, and sub-pixel
+        // position shifts between frames cause it to jump to a different row.
+        //
+        // Without the guard, smoothstep naturally blends across 2-3 pixel rows.
+        // Sub-pixel movement produces smooth alpha gradients instead of binary jumps.
+        let d_top = uv.y - y_min;  // positive = inside envelope
+        let d_bot = y_max - uv.y;  // positive = inside envelope
+        let aa_top = smoothstep(-fw, fw, d_top);
+        let aa_bot = smoothstep(-fw, fw, d_bot);
+        var edge_alpha = aa_top * aa_bot;
 
+        // For sub-pixel thin envelopes (< 2px), the overlapping smoothstep
+        // transitions produce very low alpha. Boost proportional to coverage
+        // so thin peaks remain visible rather than vanishing.
+        let thickness = y_max - y_min;
+        if (thickness < 2.0 * fw && thickness > 0.0) {
+            let coverage = thickness / (2.0 * fw);
+            edge_alpha = max(edge_alpha, coverage * 0.6);
+        }
+
+        if (edge_alpha > 0.005) {
             var stem_rgba: vec4<f32>;
             if (is_active) {
                 stem_rgba = vec4<f32>(stem_color.rgb, 0.85 * edge_alpha);

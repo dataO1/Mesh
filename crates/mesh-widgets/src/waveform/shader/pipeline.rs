@@ -55,8 +55,9 @@ pub struct WaveformUniforms {
     pub cue_color_5: [f32; 4],
     pub cue_color_6: [f32; 4],
     pub cue_color_7: [f32; 4],
-    /// Reserved (was: per-stem Gaussian smooth radius multiplier).
-    /// Kept to maintain uniform layout alignment.
+    /// [peak_index_scale, 0, 0, 0]
+    /// stem_smooth[0] = peak_index_scale: corrects for integer division
+    /// in generate_peaks(). Value = duration / floor(duration / pps).
     pub stem_smooth: [f32; 4],
 }
 

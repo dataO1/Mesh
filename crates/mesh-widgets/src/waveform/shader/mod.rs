@@ -28,11 +28,6 @@ use pipeline::{WaveformPrimitive, WaveformUniforms};
 /// Audio engine sample rate — must match mesh_core::types::SAMPLE_RATE.
 const SAMPLE_RATE: u64 = 48000;
 
-/// Per-stem Gaussian smooth radius multiplier.
-/// Index: 0=Vocals, 1=Drums, 2=Bass, 3=Other
-/// Matches the old canvas SMOOTH_RADIUS_MULTIPLIER constants.
-const SMOOTH_RADIUS_MULTIPLIER: [f32; 4] = [0.25, 0.1, 0.4, 0.4];
-
 // Layout constants matching the old canvas renderer
 /// Gap between deck cells in the 2x2 grid
 pub const DECK_GRID_GAP: f32 = 10.0;
@@ -332,16 +327,22 @@ where
         };
 
         // Beat grid parameters
-        let (grid_step, first_beat) = if !overview.beat_markers.is_empty() {
-            // Compute average beat interval from the beat markers
-            let avg_interval = if overview.beat_markers.len() > 1 {
-                let total_span = overview.beat_markers.last().unwrap() - overview.beat_markers[0];
-                total_span as f32 / (overview.beat_markers.len() - 1) as f32
-            } else {
-                0.0
-            };
+        // Prefer analyzed beat grid; fall back to procedural BPM grid
+        let (grid_step, first_beat) = if overview.beat_markers.len() > 1 {
+            // Use analyzed beat grid (normalized positions 0.0-1.0)
+            let total_span = overview.beat_markers.last().unwrap() - overview.beat_markers[0];
+            let avg_interval = total_span as f32 / (overview.beat_markers.len() - 1) as f32;
             let first = *overview.beat_markers.first().unwrap() as f32;
             (avg_interval, first)
+        } else if let Some(bpm) = self.state.track_bpm(self.deck_idx) {
+            // Fallback: procedural grid from BPM when beat_markers empty/single
+            if bpm > 0.0 && dur_f64 > 0.0 {
+                let samples_per_beat = SAMPLE_RATE as f64 * 60.0 / bpm;
+                let grid_step_norm = (samples_per_beat / dur_f64) as f32;
+                (grid_step_norm, 0.0)
+            } else {
+                (0.0, 0.0)
+            }
         } else {
             (0.0, 0.0)
         };
@@ -398,7 +399,21 @@ where
             cue_color_5: cue_colors[5],
             cue_color_6: cue_colors[6],
             cue_color_7: cue_colors[7],
-            stem_smooth: SMOOTH_RADIUS_MULTIPLIER,
+            // stem_smooth[0] = peak_index_scale: corrects for integer division in
+            // generate_peaks(). peaks_per_stem peaks don't span the full duration —
+            // the last bin absorbs remainder samples. This scale factor maps normalized
+            // source_x to the correct peak index.
+            // Formula: duration / floor(duration / pps) = effective peaks that span duration
+            stem_smooth: {
+                let pis = if peaks_per_stem > 0 && overview.duration_samples > 0 {
+                    let dur = overview.duration_samples as f64;
+                    let spc = (overview.duration_samples / peaks_per_stem as u64) as f64;
+                    if spc > 0.0 { (dur / spc) as f32 } else { peaks_per_stem as f32 }
+                } else {
+                    peaks_per_stem as f32
+                };
+                [pis, 0.0, 0.0, 0.0]
+            },
         }
     }
 }
