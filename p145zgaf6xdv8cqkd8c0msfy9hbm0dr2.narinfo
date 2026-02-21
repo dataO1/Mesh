@@ -1,0 +1,10 @@
+StorePath: /nix/store/p145zgaf6xdv8cqkd8c0msfy9hbm0dr2-mesh-player-0.9.4
+URL: nar/0xzbfnn6m0rv01as7b34d59sr5cimnfhkmi4szs7cj9jj2qnzsn9.nar.xz
+Compression: xz
+FileHash: sha256:0xzbfnn6m0rv01as7b34d59sr5cimnfhkmi4szs7cj9jj2qnzsn9
+FileSize: 10687784
+NarHash: sha256:13z2r7fxm8bv0b728n954jwlsn11scjq99g0r2z29iazcmz7lrs9
+NarSize: 43282056
+References: 7b2py1iqgrfdrm4ddwn4dk0h3g7qnypz-alsa-lib-1.2.14 92bxysqjh9wv18ybfmsikhpdngplzfz6-systemd-minimal-libs-258.2 9nia1rznvhxjpdgiqgfh3g1czvij6y7i-libxi-1.8.2 h4qhxh7vwmxgy6w05g0xsf6r1bfi9vga-gcc-15.2.0-lib nrkkl7wdkfm269im62yj4pccp315rq1g-libx11-1.8.12 sr92cpqmj2xiqak0hlwsi7g9m0c99rlz-libxcursor-1.2.3 wjxpaix0cdpww0bldvzsq2d1bjc6g62b-glibc-2.40-66
+Deriver: 7mnhyg7hbshjbrb8xhypm9crnl8db10q-mesh-player-0.9.4.drv
+Sig: mesh-embedded:x1EAA+TrKmtMD+MghzAwxgqg6C2nGpQxc+apOMbNWjBbU//e50M46lfhSiHMR5U1fsn9oZftdR59WQVKVCMRDQ==
