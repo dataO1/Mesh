@@ -58,27 +58,27 @@
     }
   '';
 
-  # WirePlumber: per-device ALSA tuning
-  # Separate rules per card with appropriate priorities.
-  # PCM5102A gets higher priority.driver so it becomes graph clock source when present.
+  # WirePlumber: ALSA device and node configuration
+  # - DP/HDMI devices disabled entirely (not needed in kiosk mode)
+  # - ES8388 and PCM5102A tuned for low-latency audio
   services.pipewire.wireplumber.extraConfig."99-mesh-audio" = {
     "monitor.alsa.rules" = [
-      # Deprioritize DisplayPort and HDMI audio — not needed in kiosk mode.
-      # priority.driver=0 ensures they never become the PipeWire graph driver.
+      # Disable DisplayPort and HDMI ALSA devices entirely.
+      # Matched by device.name (ALSA card level) — prevents WirePlumber
+      # from creating any sink/source nodes for these devices.
       {
-        matches = [{ "node.name" = "~alsa_output.*dp*"; }];
+        matches = [{ "device.name" = "~alsa_card.*dp*"; }];
         actions.update-props = {
-          "priority.driver" = 0;
-          "priority.session" = 0;
+          "device.disabled" = true;
         };
       }
       {
-        matches = [{ "node.name" = "~alsa_output.*hdmi*"; }];
+        matches = [{ "device.name" = "~alsa_card.*hdmi*"; }];
         actions.update-props = {
-          "priority.driver" = 0;
-          "priority.session" = 0;
+          "device.disabled" = true;
         };
       }
+      # ES8388 onboard codec (3.5mm headphone jack)
       {
         matches = [{ "node.name" = "~alsa_output.*es8388*"; }];
         actions.update-props = {
@@ -90,6 +90,7 @@
           "priority.session" = 10000;
         };
       }
+      # PCM5102A I2S DAC (master output to PA)
       {
         matches = [{ "node.name" = "~alsa_output.*PCM5102A*"; }];
         actions.update-props = {
@@ -99,6 +100,20 @@
           "api.alsa.headroom" = 0;
           "priority.driver" = 3000;
           "priority.session" = 3000;
+        };
+      }
+    ];
+  };
+
+  # PipeWire JACK rules: route mesh-player to the ES8388 output.
+  # priority.driver only controls clock source, NOT audio routing —
+  # JACK client routing requires an explicit target.object.
+  services.pipewire.extraConfig.jack."99-mesh-target" = {
+    "jack.rules" = [
+      {
+        matches = [{ "application.process.binary" = "mesh-player"; }];
+        actions.update-props = {
+          "target.object" = "alsa_output.platform-es8388-sound.stereo-fallback";
         };
       }
     ];
