@@ -25,14 +25,21 @@ All notable changes to Mesh are documented in this file.
   from 256 to 0 (I2S codecs use DMA, not USB batch transfer, so headroom adds
   unnecessary latency). PCM5102A gets higher `priority.driver` so it becomes the
   graph clock source when connected.
-- **Embedded: Disable DP/HDMI audio sinks** — DisplayPort and HDMI audio outputs
-  were stealing the PipeWire graph driver role from the ES8388, causing JACK clients
-  to connect to the wrong device. Added WirePlumber rules to disable dp and hdmi
-  sink nodes since they're unused in kiosk mode.
-- **Embedded: pw-jack wrapper** — mesh-player uses JACK for audio I/O, but the
-  kiosk wrapper launched it directly without `pw-jack`, causing fallback to
-  CPAL/ALSA with no PipeWire integration. The wrapper now runs mesh-player via
-  `pw-jack` to route through PipeWire's JACK compatibility layer.
+- **Embedded: JACK audio routing via pw-link** — PipeWire JACK clients with
+  `node.always-process=true` (set by the JACK layer) remain on Dummy-Driver
+  unless explicit port links exist to a real ALSA sink. `target.object`,
+  `PIPEWIRE_NODE`, and `priority.driver` all proved insufficient — they are
+  routing hints that don't force driver assignment. The kiosk wrapper now starts
+  mesh-player via `pw-jack` in the background, waits for its JACK ports to
+  register, then creates `pw-link` connections from `master_left`/`master_right`
+  to the ES8388's `playback_FL`/`playback_FR`. This reliably moves mesh-player
+  off Dummy-Driver onto the ES8388 graph driver.
+- **Embedded: WirePlumber config via environment.etc** — The NixOS
+  `services.pipewire.wireplumber.extraConfig` option silently fails to create
+  config files on NixOS 24.11 (`/etc/wireplumber/` was empty). Switched to
+  `environment.etc` for direct file creation with WirePlumber 0.5 SPA-JSON
+  format, ensuring ALSA tuning rules (`session.suspend-timeout-seconds`,
+  `api.alsa.period-size`, `priority.driver`) are actually deployed.
 
 ### Added
 
