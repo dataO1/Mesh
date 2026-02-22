@@ -69,19 +69,19 @@ fn beat_pulse_result(
 /// The F1's RGB pads have 7-bit resolution (max 0x7D = 125 per channel).
 /// Values above 125 get clamped, distorting the intended hue.
 const STEM_LED_COLORS: [[u8; 3]; 4] = [
-    [8, 120, 28],    // Vocals — dark green (→ green layer on Xone K)
-    [8, 20, 120],    // Drums — deep navy blue (→ amber layer on Xone K)
-    [120, 50, 4],    // Bass — rusty orange (→ red layer on Xone K)
+    [6, 100, 50],    // Vocals — teal-green, slightly turquoise (→ green layer on Xone K)
+    [4, 10, 90],     // Drums — deep dark navy (→ amber layer on Xone K)
+    [120, 25, 4],    // Bass — red-orange (→ red layer on Xone K)
     [90, 10, 120],   // Other — violet (→ amber layer on Xone K)
 ];
 
 /// Alternate shade shown when the linked stem is currently active.
-/// Shifted hue/brightness to visually distinguish from primary.
+/// Hue-shifted (not just dimmed) to visually distinguish from primary.
 const STEM_LED_COLORS_LINKED: [[u8; 3]; 4] = [
-    [25, 80, 60],    // Vocals — teal-green (cooler)
-    [35, 15, 80],    // Drums — deep indigo (warmer)
-    [95, 30, 20],    // Bass — dark red-brown (shifted)
-    [60, 30, 90],    // Other — muted purple (dimmer)
+    [35, 65, 20],    // Vocals — warm olive-green (shifted yellow-green)
+    [8, 25, 60],     // Drums — muted navy (stays blue family, NOT violet)
+    [80, 50, 8],     // Bass — amber-brown (shifted toward warm gold)
+    [55, 30, 85],    // Other — dusty mauve (shifted toward pink-purple)
 ];
 
 /// Hardcoded transport & mode LED colors (survive remapping).

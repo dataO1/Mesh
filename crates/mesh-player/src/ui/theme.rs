@@ -48,10 +48,10 @@ pub struct StemColors {
 impl Default for StemColors {
     fn default() -> Self {
         Self {
-            vocals: "#33CC66".to_string(), // Green
-            drums: "#CC3333".to_string(),  // Dark Red
-            bass: "#E6604D".to_string(),   // Orange-Red
-            other: "#00CCCC".to_string(),  // Cyan
+            vocals: "#26B864".to_string(), // Teal-green
+            drums: "#2840CC".to_string(),  // Navy blue
+            bass: "#D94830".to_string(),   // Red-orange
+            other: "#9926D9".to_string(),  // Violet
         }
     }
 }
@@ -88,10 +88,10 @@ fn parse_hex_color(hex: &str) -> Color {
 
 /// Default fallback stem colors (matches StemColors::default())
 pub const DEFAULT_STEM_COLORS: [Color; 4] = [
-    Color::from_rgb(0.2, 0.8, 0.4),   // Vocals - Green (#33CC66)
-    Color::from_rgb(0.8, 0.2, 0.2),   // Drums - Dark Red (#CC3333)
-    Color::from_rgb(0.9, 0.38, 0.3),  // Bass - Orange-Red (#E6604D)
-    Color::from_rgb(0.0, 0.8, 0.8),   // Other - Cyan (#00CCCC)
+    Color::from_rgb(0.15, 0.72, 0.39),  // Vocals - Teal-green (#26B864)
+    Color::from_rgb(0.16, 0.25, 0.80),  // Drums - Navy blue (#2840CC)
+    Color::from_rgb(0.85, 0.28, 0.19),  // Bass - Red-orange (#D94830)
+    Color::from_rgb(0.60, 0.15, 0.85),  // Other - Violet (#9926D9)
 ];
 
 /// Get the default theme file path
