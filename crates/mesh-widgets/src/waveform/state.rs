@@ -11,7 +11,7 @@ use iced::Color;
 use mesh_core::audio_file::{dequantize_peak, CuePoint, LoadedTrack, StemBuffers, WaveformPreview};
 use std::sync::Arc;
 
-use super::{generate_peaks, smooth_peaks_gaussian, DEFAULT_WIDTH, HIGHRES_WIDTH};
+use super::{compute_highres_width, generate_peaks, smooth_peaks_gaussian, DEFAULT_WIDTH};
 
 // =============================================================================
 // Configuration Constants
@@ -343,11 +343,16 @@ impl OverviewState {
     }
 
     /// Set stems and generate waveform data (called when audio finishes loading)
+    ///
+    /// `quality_level`: 0=Low, 1=Medium, 2=High, 3=Ultra — controls highres peak count
     pub fn set_stems(
         &mut self,
         stems: &StemBuffers,
         cue_points: &[CuePoint],
         beat_grid: &[u64],
+        bpm: f64,
+        screen_width: u32,
+        quality_level: u8,
     ) {
         let duration_samples = stems.len() as u64;
         self.duration_samples = duration_samples;
@@ -357,8 +362,8 @@ impl OverviewState {
         self.stem_waveforms = generate_peaks(stems, DEFAULT_WIDTH);
 
         // Generate high-resolution peaks for zoomed view (computed once, reused)
-        // HIGHRES_WIDTH (4000) gives ~6 peaks per bar for a 10-minute track at 128 BPM
-        self.highres_peaks = generate_peaks(stems, HIGHRES_WIDTH);
+        let highres_width = compute_highres_width(stems.len(), bpm, screen_width, quality_level);
+        self.highres_peaks = generate_peaks(stems, highres_width);
 
         // Apply Gaussian smoothing for smoother overview waveform
         for stem_idx in 0..4 {
@@ -394,14 +399,17 @@ impl OverviewState {
     }
 
     /// Create from a loaded track
-    pub fn from_track(track: &Arc<LoadedTrack>, cue_points: &[CuePoint]) -> Self {
+    ///
+    /// `quality_level`: 0=Low, 1=Medium, 2=High, 3=Ultra — controls highres peak count
+    pub fn from_track(track: &Arc<LoadedTrack>, cue_points: &[CuePoint], bpm: f64, screen_width: u32, quality_level: u8) -> Self {
         let duration_samples = track.duration_samples as u64;
 
         // Generate peak data for each stem (overview resolution)
         let mut stem_waveforms = generate_peaks(&track.stems, DEFAULT_WIDTH);
 
         // Generate high-resolution peaks for zoomed view (computed once, reused)
-        let highres_peaks = generate_peaks(&track.stems, HIGHRES_WIDTH);
+        let highres_width = compute_highres_width(track.stems.len(), bpm, screen_width, quality_level);
+        let highres_peaks = generate_peaks(&track.stems, highres_width);
 
         // Apply Gaussian smoothing for smoother overview waveform
         for stem_idx in 0..4 {
@@ -1003,6 +1011,10 @@ pub struct PlayerCanvasState {
     vertical_layout: bool,
     /// Whether the vertical Y axis is inverted (time flows bottom-to-top)
     vertical_inverted: bool,
+    /// Waveform abstraction level (0=low, 1=medium, 2=high; controls subsampling grid size)
+    pub abstraction_level: u8,
+    /// Waveform motion blur level (0=low/crisp, 1=medium, 2=high; controls smoothstep edge width)
+    pub motion_blur_level: u8,
 }
 
 impl PlayerCanvasState {
@@ -1047,6 +1059,8 @@ impl PlayerCanvasState {
             display_bpm: [None; 4],              // No BPM alignment initially
             vertical_layout: false,              // Horizontal layout by default
             vertical_inverted: false,
+            abstraction_level: 1,                // Medium abstraction by default
+            motion_blur_level: 0,                // Low (crisp) by default
         }
     }
 

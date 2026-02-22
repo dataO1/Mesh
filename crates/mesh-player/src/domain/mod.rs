@@ -558,10 +558,10 @@ impl MeshDomain {
     /// Request loading a track (non-blocking) — legacy path, bypasses skeleton.
     ///
     /// Uses the active database to load metadata, then sends to background loader.
-    pub fn request_track_load(&mut self, deck_idx: usize, path: PathBuf) -> Result<(), String> {
+    pub fn request_track_load(&mut self, deck_idx: usize, path: PathBuf, quality_level: u8, screen_width: u32) -> Result<(), String> {
         let metadata = self.load_track_metadata_or_default(path.to_str().unwrap_or_default());
         self.track_loader
-            .load(deck_idx, path, metadata)
+            .load(deck_idx, path, metadata, quality_level, screen_width)
             .map_err(|e| format!("Failed to request track load: {}", e))
     }
 
@@ -574,6 +574,8 @@ impl MeshDomain {
         &mut self,
         deck_idx: usize,
         path: PathBuf,
+        quality_level: u8,
+        screen_width: u32,
     ) -> Result<SkeletonTrackData, String> {
         let metadata = self.load_track_metadata_or_default(path.to_str().unwrap_or_default());
         let sample_rate = self.track_loader.sample_rate();
@@ -631,7 +633,7 @@ impl MeshDomain {
 
         // Send audio load request to background loader
         self.track_loader
-            .load(deck_idx, path, metadata)
+            .load(deck_idx, path, metadata, quality_level, screen_width)
             .map_err(|e| format!("Failed to request track load: {}", e))?;
 
         Ok(SkeletonTrackData {
@@ -957,6 +959,7 @@ impl MeshDomain {
         host_bpm: f64,
         host_drop_marker: u64,
         host_duration: u64,
+        quality_level: u8,
     ) -> bool {
         self.send_command(EngineCommand::LoadLinkedStem(Box::new(
             mesh_core::engine::LoadLinkedStemRequest {
@@ -966,8 +969,19 @@ impl MeshDomain {
                 host_bpm,
                 host_drop_marker,
                 host_duration,
+                quality_level,
             },
         )))
+    }
+
+    /// Set waveform quality level on the engine (for linked stem peak generation)
+    pub fn set_waveform_quality(&mut self, level: u8) {
+        self.send_command(EngineCommand::SetWaveformQuality(level));
+    }
+
+    /// Set screen width on the engine (for BPM-aware peak resolution)
+    pub fn set_screen_width(&mut self, width: u32) {
+        self.send_command(EngineCommand::SetScreenWidth(width));
     }
 
     // =========================================================================
@@ -1024,6 +1038,8 @@ impl MeshDomain {
         slicer_presets: [SlicerPreset; 8],
         slicer_buffer_bars: u32,
         loudness_config: LoudnessConfig,
+        waveform_quality_level: u8,
+        screen_width: u32,
     ) {
         // Set initial global BPM (also updates domain state)
         self.set_global_bpm_with_engine(global_bpm);
@@ -1039,6 +1055,12 @@ impl MeshDomain {
 
         // Set loudness config
         self.set_loudness_config(loudness_config);
+
+        // Set waveform quality for linked stem peak generation
+        self.set_waveform_quality(waveform_quality_level);
+
+        // Set screen width for BPM-aware peak resolution
+        self.set_screen_width(screen_width);
     }
 
     // =========================================================================

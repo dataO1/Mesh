@@ -2,7 +2,7 @@
 // loop/slicer regions, playhead, and volume dimming in a single fragment pass.
 //
 // Peak data arrives via storage buffer (uploaded once at track load).
-// Only the 384-byte uniform buffer is updated per frame.
+// Only the 400-byte uniform buffer is updated per frame.
 
 struct Uniforms {
     bounds: vec4<f32>,          // x, y, width, height (logical pixels)
@@ -30,13 +30,14 @@ struct Uniforms {
     stem_smooth: vec4<f32>,  // [peak_index_scale, zoomed_win_start, zoomed_win_end, mirror_indicators]
     linked_stems: vec4<f32>,   // 0.0/1.0 per stem (has linked stem)
     linked_active: vec4<f32>,  // 0.0/1.0 per stem (linked is currently active)
+    render_options: vec4<f32>, // [abstraction_level (1-3, 0=off), motion_blur_level (0-2), _reserved, _reserved]
 }
 
 @group(0) @binding(0)
 var<uniform> u: Uniforms;
 
 @group(0) @binding(1)
-var<storage, read> peaks: array<f32>;
+var<storage, read> peaks: array<vec2<f32>>;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -66,18 +67,31 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 fn raw_peak(stem_idx: u32, idx: u32) -> vec2<f32> {
     let pps = u32(u.view_params.z);
     let clamped = min(idx, pps - 1u);
-    let base = (stem_idx * pps + clamped) * 2u;
-    return vec2<f32>(peaks[base], peaks[base + 1u]);
+    return peaks[stem_idx * pps + clamped];
 }
 
 /// Per-stem subsampling target (pixels per rendered point).
 /// Higher = more subsampling = more abstract/smooth appearance.
+/// Reads abstraction level from render_options[0]: 1.0=Low, 2.0=Medium, 3.0=High
 fn get_subsample_target(stem_idx: u32) -> f32 {
+    let level = u.render_options[0];
+
+    // Base targets per stem (Medium level)
+    var base: f32;
     switch (stem_idx) {
-        case 0u: { return 2.5; }  // Vocals
-        case 1u: { return 2.0; }  // Drums — slightly more detail
-        case 2u: { return 3.0; }  // Bass — most abstract
-        default: { return 2.5; }  // Other
+        case 0u: { base = 2.5; }  // Vocals
+        case 1u: { base = 2.5; }  // Drums (increased from 2.0 for Medium)
+        case 2u: { base = 3.0; }  // Bass — most abstract
+        default: { base = 2.5; }  // Other
+    }
+
+    // Scale by abstraction level
+    if (level < 1.5) {
+        return base * 0.6;  // Low: ~[1.5, 1.5, 1.8, 1.5]
+    } else if (level < 2.5) {
+        return base;         // Medium: [2.5, 2.5, 3.0, 2.5]
+    } else {
+        return base * 1.6;  // High: ~[4.0, 4.0, 4.8, 4.0]
     }
 }
 
@@ -125,7 +139,17 @@ fn sample_peak(stem_idx: u32, x_norm: f32, peaks_per_pixel: f32) -> vec2<f32> {
         return minmax_reduce(stem_idx, start_idx, end_idx);
     }
 
-    // --- Grid-aligned min/max sampling (zoomed/mid-range) ---
+    // --- Raw pixel-accurate mode (abstraction level 0 = off) ---
+    // Direct 1:1 peak-to-pixel mapping: min/max reduce over the pixel's exact range.
+    let abstraction_on = u.render_options[0] > 0.5;
+    if (!abstraction_on) {
+        let half_range = max(peaks_per_pixel * 0.5, 0.5);
+        let start_idx = u32(max(0.0, float_idx - half_range));
+        let end_idx = u32(min(f32(pps) - 1.0, float_idx + half_range));
+        return minmax_reduce(stem_idx, start_idx, end_idx);
+    }
+
+    // --- Grid-aligned min/max sampling (zoomed/mid-range, subsampling on) ---
     let subsample_target = get_subsample_target(stem_idx);
     let step_f = max(round(subsample_target * peaks_per_pixel), 1.0);
 
@@ -148,7 +172,15 @@ fn sample_peak(stem_idx: u32, x_norm: f32, peaks_per_pixel: f32) -> vec2<f32> {
         min(center_b + half_step, pps - 1u)
     );
 
-    return mix(p_a, p_b, vec2<f32>(grid_frac));
+    // Hybrid max-hold / interpolation:
+    // Transient peaks (drums etc.) are preserved via max-hold to prevent
+    // thin spikes from being interpolated away between grid points.
+    // Quiet regions stay smooth via normal bilinear interpolation.
+    let interpolated = mix(p_a, p_b, vec2<f32>(grid_frac));
+    let preserved = vec2<f32>(min(p_a.x, p_b.x), max(p_a.y, p_b.y));
+    let peak_magnitude = max(abs(p_a.y), abs(p_b.y));
+    let hold_factor = smoothstep(0.05, 0.3, peak_magnitude);
+    return mix(interpolated, preserved, vec2<f32>(hold_factor));
 }
 
 /// Get stem color by index
@@ -189,6 +221,31 @@ fn blend_over(dst: vec4<f32>, src: vec4<f32>) -> vec4<f32> {
         mix(dst.rgb, src.rgb, src.a),
         src.a + dst.a * (1.0 - src.a),
     );
+}
+
+/// Motion blur multiplier for smoothstep edge width.
+/// Reads render_options[1]: 0.0=Low (crisp), 1.0=Medium, 2.0=High.
+/// Returns a multiplier for the outside_ext and inner edge widths.
+fn blur_outside_mult() -> f32 {
+    let level = u.render_options[1];
+    if (level < 0.5) {
+        return 1.5;  // Low: fw * 1.5 (current/crisp)
+    } else if (level < 1.5) {
+        return 3.0;  // Medium: fw * 3.0 (softer)
+    } else {
+        return 6.0;  // High: fw * 6.0 (very soft)
+    }
+}
+
+fn blur_inner_mult() -> f32 {
+    let level = u.render_options[1];
+    if (level < 0.5) {
+        return 1.0;  // Low: fw * 1.0 (current/crisp)
+    } else if (level < 1.5) {
+        return 1.5;  // Medium: fw * 1.5
+    } else {
+        return 2.5;  // High: fw * 2.5
+    }
 }
 
 // =============================================================================
@@ -423,9 +480,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
             let d_top_t = uv.y - top_y_min;
             let d_bot_t = top_y_max - uv.y;
-            let outside_ext_t = fw * 1.5;
-            let aa_top_t = smoothstep(-outside_ext_t, fw, d_top_t);
-            let aa_bot_t = smoothstep(-outside_ext_t, fw, d_bot_t);
+            let outside_ext_t = fw * blur_outside_mult();
+            let inner_edge_t = fw * blur_inner_mult();
+            let aa_top_t = smoothstep(-outside_ext_t, inner_edge_t, d_top_t);
+            let aa_bot_t = smoothstep(-outside_ext_t, inner_edge_t, d_bot_t);
             var edge_alpha_t = aa_top_t * aa_bot_t;
 
             let thickness_t = top_y_max - top_y_min;
@@ -453,9 +511,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
             let d_top_b = uv.y - bot_y_min;
             let d_bot_b = bot_y_max - uv.y;
-            let outside_ext_b = fw * 1.5;
-            let aa_top_b = smoothstep(-outside_ext_b, fw, d_top_b);
-            let aa_bot_b = smoothstep(-outside_ext_b, fw, d_bot_b);
+            let outside_ext_b = fw * blur_outside_mult();
+            let inner_edge_b = fw * blur_inner_mult();
+            let aa_top_b = smoothstep(-outside_ext_b, inner_edge_b, d_top_b);
+            let aa_bot_b = smoothstep(-outside_ext_b, inner_edge_b, d_bot_b);
             var edge_alpha_b = aa_top_b * aa_bot_b;
 
             let thickness_b = bot_y_max - bot_y_min;
@@ -484,9 +543,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
             let d_top_n = uv.y - top_y_min;
             let d_bot_n = top_y_max - uv.y;
-            let outside_ext_n = fw * 1.5;
-            let aa_top_n = smoothstep(-outside_ext_n, fw, d_top_n);
-            let aa_bot_n = smoothstep(-outside_ext_n, fw, d_bot_n);
+            let outside_ext_n = fw * blur_outside_mult();
+            let inner_edge_n = fw * blur_inner_mult();
+            let aa_top_n = smoothstep(-outside_ext_n, inner_edge_n, d_top_n);
+            let aa_bot_n = smoothstep(-outside_ext_n, inner_edge_n, d_bot_n);
             var edge_alpha_n = aa_top_n * aa_bot_n;
 
             let thickness_n = top_y_max - top_y_min;
@@ -522,9 +582,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
             let d_top = uv.y - y_min;
             let d_bot = y_max - uv.y;
-            let outside_ext = fw * 1.5;
-            let aa_top = smoothstep(-outside_ext, fw, d_top);
-            let aa_bot = smoothstep(-outside_ext, fw, d_bot);
+            let outside_ext = fw * blur_outside_mult();
+            let inner_edge = fw * blur_inner_mult();
+            let aa_top = smoothstep(-outside_ext, inner_edge, d_top);
+            let aa_bot = smoothstep(-outside_ext, inner_edge, d_bot);
             var edge_alpha = aa_top * aa_bot;
 
             let thickness = y_max - y_min;

@@ -1,7 +1,7 @@
 //! GPU pipeline for waveform rendering
 //!
 //! Two bindings per view:
-//! - Binding 0: Uniform buffer (WaveformUniforms, 384 bytes, updated every frame)
+//! - Binding 0: Uniform buffer (WaveformUniforms, 400 bytes, updated every frame)
 //! - Binding 1: Storage buffer (peak data, updated only on track load)
 
 use super::PeakBuffer;
@@ -14,9 +14,9 @@ use std::sync::Arc;
 // Uniform buffer layout (must match waveform.wgsl exactly)
 // =============================================================================
 
-/// Uniform data for a single waveform view, packed as 24 vec4s (384 bytes).
+/// Uniform data for a single waveform view, packed as 25 vec4s (400 bytes).
 ///
-/// This is uploaded to the GPU every frame but is only 384 bytes — trivial
+/// This is uploaded to the GPU every frame but is only 400 bytes — trivial
 /// compared to the old canvas approach that rebuilt ~1MB of geometry per frame.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -65,6 +65,8 @@ pub struct WaveformUniforms {
     pub linked_stems: [f32; 4],
     /// Linked stem active: 0.0/1.0 per stem (linked stem is currently playing)
     pub linked_active: [f32; 4],
+    /// [subsampling_enabled, _reserved, _reserved, _reserved]
+    pub render_options: [f32; 4],
 }
 
 // =============================================================================
@@ -222,11 +224,12 @@ impl shader::Primitive for WaveformPrimitive {
         };
 
         if needs_recreate {
-            // Minimum storage buffer size: 4 bytes (wgpu requires non-zero for storage buffers)
+            // Minimum storage buffer size: 8 bytes (shader declares array<vec2<f32>>,
+            // so stride is 8 — wgpu validates buffer >= one element)
             let peak_buf_size = if peak_data_len > 0 {
                 (peak_data_len * std::mem::size_of::<f32>()) as u64
             } else {
-                4 // Minimum valid storage buffer size
+                8 // Minimum: one vec2<f32> element
             };
 
             let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -272,7 +275,7 @@ impl shader::Primitive for WaveformPrimitive {
 
         let resources = pipeline.view_resources.get_mut(&self.id).unwrap();
 
-        // Upload uniforms every frame (384 bytes — trivial)
+        // Upload uniforms every frame (400 bytes — trivial)
         queue.write_buffer(
             &resources.uniform_buffer,
             0,

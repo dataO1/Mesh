@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use mesh_widgets::MultibandEditorMessage;
 
-use crate::config::{StemColorPalette, KeyScoringModel, WaveformLayout};
+use crate::config::{StemColorPalette, KeyScoringModel, WaveformAbstraction, WaveformLayout, WaveformMotionBlur, WaveformQuality};
 use crate::suggestions::SuggestedTrack;
 use super::collection_browser::CollectionBrowserMessage;
 use super::deck_view::DeckMessage;
@@ -46,6 +46,12 @@ pub enum SettingsMessage {
     UpdateKeyScoringModel(KeyScoringModel),
     /// Update draft waveform layout orientation
     UpdateWaveformLayout(WaveformLayout),
+    /// Update draft waveform quality level
+    UpdateWaveformQuality(WaveformQuality),
+    /// Update draft waveform abstraction level
+    UpdateWaveformAbstraction(WaveformAbstraction),
+    /// Update draft waveform motion blur level
+    UpdateWaveformMotionBlur(WaveformMotionBlur),
     /// Update master device index
     UpdateMasterPair(usize),
     /// Update cue device index

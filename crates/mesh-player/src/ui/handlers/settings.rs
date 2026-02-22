@@ -8,7 +8,6 @@ use iced::Task;
 use crate::config;
 use crate::ui::app::MeshApp;
 use crate::ui::handlers::browser::trigger_suggestion_query;
-use crate::config::WaveformLayout;
 use crate::ui::message::{Message, SettingsMessage};
 use crate::ui::settings::SettingsState;
 
@@ -101,6 +100,22 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             app.settings.draft_waveform_layout = layout;
             Task::none()
         }
+        UpdateWaveformQuality(quality) => {
+            app.settings.draft_waveform_quality = quality;
+            Task::none()
+        }
+        UpdateWaveformAbstraction(level) => {
+            app.settings.draft_waveform_abstraction = level;
+            // Takes effect immediately (uniform change, no reload needed)
+            app.player_canvas_state.abstraction_level = level.as_level();
+            Task::none()
+        }
+        UpdateWaveformMotionBlur(level) => {
+            app.settings.draft_waveform_motion_blur = level;
+            // Takes effect immediately (uniform change, no reload needed)
+            app.player_canvas_state.motion_blur_level = level.as_level();
+            Task::none()
+        }
         UpdateMasterPair(index) => {
             app.settings.draft_master_device = index;
             Task::none()
@@ -123,6 +138,9 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             new_config.display.show_local_collection = app.settings.draft_show_local_collection;
             new_config.display.key_scoring_model = app.settings.draft_key_scoring_model;
             new_config.display.waveform_layout = app.settings.draft_waveform_layout;
+            new_config.display.waveform_quality = app.settings.draft_waveform_quality;
+            new_config.display.waveform_abstraction = app.settings.draft_waveform_abstraction;
+            new_config.display.waveform_motion_blur = app.settings.draft_waveform_motion_blur;
             // Save global BPM from current state
             new_config.audio.global_bpm = app.domain.global_bpm();
             // Save phase sync setting
@@ -174,6 +192,12 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
                 deck.overview.set_grid_bars(app.settings.draft_grid_bars);
                 deck.zoomed.set_zoom(app.settings.draft_zoom_bars);
             }
+
+            // Apply waveform quality, abstraction, and motion blur
+            app.player_canvas_state.abstraction_level = app.settings.draft_waveform_abstraction.as_level();
+            app.player_canvas_state.motion_blur_level = app.settings.draft_waveform_motion_blur.as_level();
+            let quality_level = app.settings.draft_waveform_quality.as_level();
+            app.domain.set_waveform_quality(quality_level);
 
             // Apply local collection visibility change immediately
             app.collection_browser.set_show_local_collection(

@@ -54,6 +54,8 @@ pub struct LoadLinkedStemRequest {
     pub host_bpm: f64,
     pub host_drop_marker: u64,
     pub host_duration: u64,
+    /// Waveform quality level: 0=Low, 1=Medium, 2=High, 3=Ultra
+    pub quality_level: u8,
 }
 
 /// Commands sent from UI thread to audio thread
@@ -550,6 +552,13 @@ pub enum EngineCommand {
     /// - App starts (initial config from saved settings)
     /// - User changes auto-gain enabled or target LUFS in settings
     SetLoudnessConfig(crate::config::LoudnessConfig),
+
+    /// Set waveform quality level for linked stem peak generation
+    /// 0=Low, 1=Medium, 2=High, 3=Ultra
+    SetWaveformQuality(u8),
+
+    /// Set screen width for BPM-aware peak resolution
+    SetScreenWidth(u32),
 
     // ─────────────────────────────────────────────────────────────
     // Global

@@ -11,7 +11,7 @@ use basedrop::Shared;
 use iced::Task;
 use mesh_core::audio_file::{BeatGrid, LoadedTrack, TrackMetadata};
 use mesh_core::types::Stem;
-use mesh_widgets::{SliceEditorState, HIGHRES_WIDTH};
+use mesh_widgets::{SliceEditorState, compute_highres_width};
 use std::sync::Arc;
 
 use super::super::app::MeshCueApp;
@@ -114,25 +114,33 @@ impl MeshCueApp {
                     state.duration_samples = duration_samples;
                     state.loading_audio = false;
 
-                    // Generate waveform from loaded stems (overview)
+                    // Generate waveform from loaded stems (overview + highres)
+                    // mesh-cue uses Medium quality (level 1) by default
+                    let quality_level: u8 = 1;
+                    let bpm = state.bpm;
+                    let screen_width: u32 = 1920; // mesh-cue reference width
                     state
                         .combined_waveform
                         .overview
-                        .set_stems(&stems, &state.cue_points, &state.beat_grid);
+                        .set_stems(&stems, &state.cue_points, &state.beat_grid, bpm, screen_width, quality_level);
 
-                    // Compute high-resolution peaks for stable zoomed waveform rendering
-                    let highres_start = std::time::Instant::now();
-                    let highres_peaks = generate_peaks(&stems, HIGHRES_WIDTH);
-                    log::info!(
-                        "[PERF] mesh-cue highres peaks: {} samples → {} peaks in {:?}",
-                        duration_samples,
-                        HIGHRES_WIDTH,
-                        highres_start.elapsed()
-                    );
-                    state
-                        .combined_waveform
-                        .overview
-                        .set_highres_peaks(highres_peaks);
+                    let highres_width = compute_highres_width(duration_samples as usize, bpm, screen_width, quality_level);
+                    {
+                        let samples_per_beat = (48000.0_f64 * 60.0 / bpm) as usize;
+                        let samples_per_bar = samples_per_beat * 4;
+                        let ref_zoom = 4u32;
+                        let window_at_ref = samples_per_bar * ref_zoom as usize;
+                        let ppp_at_ref = if window_at_ref > 0 && duration_samples > 0 {
+                            highres_width as f64 * window_at_ref as f64 / (duration_samples as f64 * screen_width as f64)
+                        } else { 0.0 };
+                        log::info!(
+                            "[RENDER] mesh-cue highres: {} peaks | quality={} bpm={:.1} screen={}px | \
+                             ref_zoom={}bars → {:.2} pp/px | {}samples ({:.1}s)",
+                            highres_width, quality_level, bpm, screen_width,
+                            ref_zoom, ppp_at_ref,
+                            duration_samples, duration_samples as f64 / 48000.0,
+                        );
+                    }
 
                     // Initialize zoomed waveform with stem data
                     state.combined_waveform.zoomed.set_duration(duration_samples);

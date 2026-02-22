@@ -175,13 +175,17 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
-- [ ] we should also modify the led output, based on the stem link state. so toggle between two
-  shades of the color depending on if the normal or linked stem is active. Also
-  the led for stems that have a linked counter part should very slightly blink,
-  so the user knows they can interact.
-- [ ] Also triggering an on the fly stem link on a track should open the file
-  browser to be opened (the highlight of the selected track in the file browser should then be
-  highlighted in the stems color).
+- [ ] For better readability i want each single stem in the zoomed waveform be less transparent the
+  further we go outside of the 0 point baseline. so in the vertical middle they should be quite
+  transparent, so we can see other stems well, but on the outside (towards the
+  outline) the stem should be less transparent (as it is now), this should be
+  gradient. research if there is a mechanism for glsl that does exactly that,
+  like the smoothstep method.
+- [ ] Maybe instead of prebaking and precomputing the highres peaks we can
+  compute them on the fly from the audio buffer directly, that way we know
+  exactly how much peaks we need (based on the current)
+- [ ] when on the fly stem linking in the browser for selecting a linked track,
+  we can utilise smart suggestions better by additionally adding specific searching  parameters for the stem that is about to be linked or weighting certain markers more. for example when loading drums key is relatively irrelevant, but the energy or loudness matters more. for vocals, key is absolutely the most important, not so much energy, for bass i think the weighting can stay as is, for other too.
 - [ ] slicer presets do not get triggered from the midi mapped f1. check 1.
   the mapping file, 2. the mapping in the app and give me a report of why this
   might happen. the current mapping file is in momentary mode. also the visuals

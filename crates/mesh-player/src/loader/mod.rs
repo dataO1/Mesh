@@ -27,8 +27,8 @@ use mesh_core::audio_file::{AudioFileReader, LoadedTrack, StemBuffers, TrackMeta
 use mesh_core::engine::PreparedTrack;
 use mesh_widgets::{
     CueMarker, OverviewState, ZoomedState, CUE_COLORS,
-    allocate_empty_peaks, generate_peaks, update_peaks_for_region,
-    DEFAULT_WIDTH, HIGHRES_WIDTH,
+    allocate_empty_peaks, compute_highres_width, generate_peaks, update_peaks_for_region,
+    DEFAULT_WIDTH,
 };
 
 use self::regions::{compute_gaps, compute_priority_regions};
@@ -55,6 +55,10 @@ pub struct TrackLoadRequest {
     pub path: PathBuf,
     /// Pre-loaded metadata from the appropriate database (local or USB)
     pub metadata: TrackMetadata,
+    /// Waveform quality level: 0=Low, 1=Medium, 2=High, 3=Ultra
+    pub quality_level: u8,
+    /// Screen width in pixels (for BPM-aware peak resolution)
+    pub screen_width: u32,
 }
 
 /// Result of a background track load — sent as one or more messages per track.
@@ -170,9 +174,9 @@ impl TrackLoader {
     ///
     /// The metadata should be loaded by the domain layer from whichever database
     /// is currently active (local or USB).
-    pub fn load(&self, deck_idx: usize, path: PathBuf, metadata: TrackMetadata) -> Result<(), String> {
+    pub fn load(&self, deck_idx: usize, path: PathBuf, metadata: TrackMetadata, quality_level: u8, screen_width: u32) -> Result<(), String> {
         self.tx
-            .send(TrackLoadRequest { deck_idx, path, metadata })
+            .send(TrackLoadRequest { deck_idx, path, metadata, quality_level, screen_width })
             .map_err(|e| format!("Loader thread disconnected: {}", e))
     }
 
@@ -292,7 +296,7 @@ fn handle_full_load(
     match result {
         Ok(track) => {
             let duration_samples = track.duration_samples;
-            let (overview_state, zoomed_state) = build_waveform_states(&track);
+            let (overview_state, zoomed_state) = build_waveform_states(&track, request.quality_level, request.screen_width);
             let stems = track.stems.clone();
             let prepared = PreparedTrack::prepare(track);
 
@@ -358,8 +362,26 @@ fn handle_streaming_load(
         alloc_start.elapsed(), (frame_count * 32) as f64 / 1_000_000.0);
 
     // 2. Pre-allocate peak arrays for incremental updates
+    let bpm = metadata.bpm.unwrap_or(120.0);
+    let highres_width = compute_highres_width(frame_count, bpm, request.screen_width, request.quality_level);
+    {
+        let samples_per_beat = (48000.0_f64 * 60.0 / bpm) as usize;
+        let samples_per_bar = samples_per_beat * 4;
+        let ref_zoom = 4u32; // PEAK_REFERENCE_ZOOM_BARS
+        let window_at_ref = samples_per_bar * ref_zoom as usize;
+        let ppp_at_ref = if window_at_ref > 0 {
+            highres_width as f64 * window_at_ref as f64 / (frame_count as f64 * request.screen_width as f64)
+        } else { 0.0 };
+        log::info!(
+            "[RENDER] Highres peaks: {} peaks | quality={} bpm={:.1} screen={}px | \
+             ref_zoom={}bars → {:.2} pp/px | samples_per_bar={} | track={}samples ({:.1}s)",
+            highres_width, request.quality_level, bpm, request.screen_width,
+            ref_zoom, ppp_at_ref, samples_per_bar,
+            frame_count, frame_count as f64 / 48000.0,
+        );
+    }
     let mut overview_peaks = allocate_empty_peaks(DEFAULT_WIDTH);
-    let mut highres_peaks = allocate_empty_peaks(HIGHRES_WIDTH);
+    let mut highres_peaks = allocate_empty_peaks(highres_width);
 
     // 3. Compute priority regions around hot cues, drop marker, first beat
     let regions = compute_priority_regions(&metadata, frame_count, sample_rate);
@@ -388,7 +410,7 @@ fn handle_streaming_load(
 
         // Update peaks (cheap: ~5 ms per region)
         update_peaks_for_region(&stems, &mut overview_peaks, region.start, region.end, frame_count, DEFAULT_WIDTH);
-        update_peaks_for_region(&stems, &mut highres_peaks, region.start, region.end, frame_count, HIGHRES_WIDTH);
+        update_peaks_for_region(&stems, &mut highres_peaks, region.start, region.end, frame_count, highres_width);
 
         let is_last = i + 1 == regions.len();
         let _ = tx.send(TrackLoadResult::RegionLoaded {
@@ -428,7 +450,7 @@ fn handle_streaming_load(
 
             // Update peaks for this batch (cheap: ~5 ms)
             update_peaks_for_region(&stems, &mut overview_peaks, pos, batch_end, frame_count, DEFAULT_WIDTH);
-            update_peaks_for_region(&stems, &mut highres_peaks, pos, batch_end, frame_count, HIGHRES_WIDTH);
+            update_peaks_for_region(&stems, &mut highres_peaks, pos, batch_end, frame_count, highres_width);
 
             frames_since_clone += batch_len;
             let clone_now = frames_since_clone >= CLONE_INTERVAL_FRAMES;
@@ -476,7 +498,7 @@ fn handle_streaming_load(
         duration_seconds,
     };
 
-    let (overview_state, zoomed_state) = build_waveform_states(&track);
+    let (overview_state, zoomed_state) = build_waveform_states(&track, request.quality_level, request.screen_width);
     let prepared = PreparedTrack::prepare(track);
 
     // 7. Send complete result (single UpgradeStems to engine)
@@ -493,7 +515,7 @@ fn handle_streaming_load(
 
 /// Build overview and zoomed waveform states from a loaded track.
 /// Shared between full-load and streaming paths.
-fn build_waveform_states(track: &LoadedTrack) -> (OverviewState, ZoomedState) {
+fn build_waveform_states(track: &LoadedTrack, quality_level: u8, screen_width: u32) -> (OverviewState, ZoomedState) {
     let duration = track.duration_samples as u64;
     let bpm = track.metadata.bpm.unwrap_or(120.0);
 
@@ -534,9 +556,25 @@ fn build_waveform_states(track: &LoadedTrack) -> (OverviewState, ZoomedState) {
 
     // Compute high-resolution peaks
     let highres_start = std::time::Instant::now();
-    let highres_peaks = generate_peaks(&track.stems, HIGHRES_WIDTH);
+    let highres_width = compute_highres_width(track.stems.len(), bpm, screen_width, quality_level);
+    let highres_peaks = generate_peaks(&track.stems, highres_width);
     overview_state.set_highres_peaks(highres_peaks);
-    log::info!("[PERF] Loader: Highres peaks took {:?}", highres_start.elapsed());
+    {
+        let samples_per_beat = (48000.0_f64 * 60.0 / bpm) as usize;
+        let samples_per_bar = samples_per_beat * 4;
+        let ref_zoom = 4u32;
+        let window_at_ref = samples_per_bar * ref_zoom as usize;
+        let total = track.stems.len();
+        let ppp_at_ref = if window_at_ref > 0 && total > 0 {
+            highres_width as f64 * window_at_ref as f64 / (total as f64 * screen_width as f64)
+        } else { 0.0 };
+        log::info!(
+            "[RENDER] Final highres: {} peaks in {:?} | quality={} bpm={:.1} screen={}px | \
+             ref_zoom={}bars → {:.2} pp/px",
+            highres_width, highres_start.elapsed(), quality_level, bpm, screen_width,
+            ref_zoom, ppp_at_ref,
+        );
+    }
 
     // Pre-compute zoomed waveform state
     let mut zoomed_state = ZoomedState::from_metadata(

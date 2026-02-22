@@ -4,6 +4,49 @@ All notable changes to Mesh are documented in this file.
 
 ---
 
+## [Unreleased]
+
+### Performance
+
+- **Dynamic waveform peak resolution** — Highres peak count is now proportional to
+  actual audio length and BPM instead of a fixed 65K constant. A BPM-aware formula
+  targets a configurable peaks-per-pixel ratio at 4-bar zoom (the closest practical
+  zoom level). At Medium quality, a 5-minute 174 BPM track generates ~400K peaks
+  (6× more than before); Ultra pushes to ~7M for pixel-perfect transients. Short
+  tracks allocate proportionally less memory.
+
+- **GPU buffer vec2 packing** — Waveform peak storage changed from `array<f32>` to
+  `array<vec2<f32>>` in the WGSL shader, halving the number of buffer reads per
+  peak lookup. The CPU-side interleaved `[min, max, ...]` layout is bit-identical
+  to `vec2<f32>`, so no data conversion is needed.
+
+### Added
+
+- **Waveform quality setting** — New "Waveform Quality" option in Settings with
+  four levels (Low, Medium, High, Ultra) controlling peak buffer resolution. Low
+  matches the previous fixed behavior (~65K peaks). Medium (default) is 6× denser.
+  Ultra provides ~7M peaks for surgical zoom detail at the cost of more GPU memory.
+  Requires track reload to take effect.
+
+- **Waveform abstraction setting** — New "Waveform Abstraction" option (Low,
+  Medium, High) replacing the old binary subsampling toggle. Controls the grid-aligned
+  subsampling strength per stem in the GPU shader. Low gives near-raw peak rendering,
+  Medium (default) provides the tuned per-stem abstraction (vocals smooth, drums
+  detailed), High pushes further toward a stylized look. Takes effect immediately.
+
+- **Waveform motion blur setting** — New "Waveform Motion Blur" option (Low,
+  Medium, High) controlling the `smoothstep` edge softness in the shader. Low
+  (default) preserves crisp edges with minimal anti-aliasing. Medium and High
+  progressively soften outer and inner waveform edges for a more blended appearance.
+  Takes effect immediately.
+
+- **Render debug logging** — Added `[RENDER]` debug log entries throughout the
+  waveform pipeline: peak computation at load time (computed peaks-per-pixel at
+  reference zoom), and per-frame shader uniforms (zoom level, peak density,
+  abstraction, blur). Visible with `RUST_LOG=debug`.
+
+---
+
 ## [0.9.5]
 
 ### Improved

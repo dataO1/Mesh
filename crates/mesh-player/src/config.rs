@@ -131,6 +131,149 @@ impl WaveformLayout {
     }
 }
 
+/// Waveform peak resolution quality level
+///
+/// Controls how many peaks are generated per stem at track load time.
+/// Higher quality = more peaks = sharper transients at close zoom, but more memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaveformQuality {
+    /// ~65K peaks for 5-min track (legacy behavior)
+    Low,
+    /// ~450K peaks for 5-min track (good balance)
+    Medium,
+    /// ~1.8M peaks for 5-min track (sharp transients)
+    High,
+    /// ~7.2M peaks for 5-min track (maximum detail)
+    Ultra,
+}
+
+impl Default for WaveformQuality {
+    fn default() -> Self {
+        WaveformQuality::Medium
+    }
+}
+
+impl WaveformQuality {
+    pub const ALL: [WaveformQuality; 4] = [
+        WaveformQuality::Low,
+        WaveformQuality::Medium,
+        WaveformQuality::High,
+        WaveformQuality::Ultra,
+    ];
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            WaveformQuality::Low => "Low",
+            WaveformQuality::Medium => "Medium",
+            WaveformQuality::High => "High",
+            WaveformQuality::Ultra => "Ultra",
+        }
+    }
+
+    /// Convert to u8 quality level for mesh-widgets (avoids cross-crate type dependency)
+    pub fn as_level(&self) -> u8 {
+        match self {
+            WaveformQuality::Low => 0,
+            WaveformQuality::Medium => 1,
+            WaveformQuality::High => 2,
+            WaveformQuality::Ultra => 3,
+        }
+    }
+}
+
+/// Waveform abstraction level (controls grid-aligned subsampling intensity)
+///
+/// Higher abstraction = larger grid cells = smoother/more abstract appearance.
+/// Each level scales the per-stem subsampling targets uniformly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaveformAbstraction {
+    /// Minimal subsampling, sharpest detail
+    Low,
+    /// Balanced smoothing (default)
+    Medium,
+    /// Heavy subsampling, most abstract/smooth
+    High,
+}
+
+impl Default for WaveformAbstraction {
+    fn default() -> Self {
+        WaveformAbstraction::Medium
+    }
+}
+
+impl WaveformAbstraction {
+    pub const ALL: [WaveformAbstraction; 3] = [
+        WaveformAbstraction::Low,
+        WaveformAbstraction::Medium,
+        WaveformAbstraction::High,
+    ];
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            WaveformAbstraction::Low => "Low",
+            WaveformAbstraction::Medium => "Medium",
+            WaveformAbstraction::High => "High",
+        }
+    }
+
+    /// Convert to u8 level for shader uniforms (avoids cross-crate type dependency)
+    pub fn as_level(&self) -> u8 {
+        match self {
+            WaveformAbstraction::Low => 0,
+            WaveformAbstraction::Medium => 1,
+            WaveformAbstraction::High => 2,
+        }
+    }
+}
+
+/// Waveform motion blur level (controls smoothstep edge softness)
+///
+/// Higher blur = softer waveform edges = more motion-blur-like appearance during scroll.
+/// Controls the `smoothstep` anti-aliasing width in the fragment shader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaveformMotionBlur {
+    /// Crisp edges (default, current behavior)
+    Low,
+    /// Softer edges, subtle blur
+    Medium,
+    /// Very soft edges, pronounced blur
+    High,
+}
+
+impl Default for WaveformMotionBlur {
+    fn default() -> Self {
+        WaveformMotionBlur::Low
+    }
+}
+
+impl WaveformMotionBlur {
+    pub const ALL: [WaveformMotionBlur; 3] = [
+        WaveformMotionBlur::Low,
+        WaveformMotionBlur::Medium,
+        WaveformMotionBlur::High,
+    ];
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            WaveformMotionBlur::Low => "Low",
+            WaveformMotionBlur::Medium => "Medium",
+            WaveformMotionBlur::High => "High",
+        }
+    }
+
+    /// Convert to u8 level for shader uniforms
+    pub fn as_level(&self) -> u8 {
+        match self {
+            WaveformMotionBlur::Low => 0,
+            WaveformMotionBlur::Medium => 1,
+            WaveformMotionBlur::High => 2,
+        }
+    }
+}
+
 /// Root configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -230,6 +373,12 @@ pub struct DisplayConfig {
     pub key_scoring_model: KeyScoringModel,
     /// Waveform layout orientation (horizontal or vertical)
     pub waveform_layout: WaveformLayout,
+    /// Waveform peak resolution quality (Low/Medium/High/Ultra)
+    pub waveform_quality: WaveformQuality,
+    /// Waveform abstraction level (Low/Medium/High grid-aligned subsampling)
+    pub waveform_abstraction: WaveformAbstraction,
+    /// Waveform motion blur level (Low/Medium/High edge smoothing)
+    pub waveform_motion_blur: WaveformMotionBlur,
 }
 
 /// Loop length options in beats (matches mesh-core/deck.rs LOOP_LENGTHS)
@@ -246,6 +395,9 @@ impl Default for DisplayConfig {
             show_local_collection: false, // USB-only mode by default
             key_scoring_model: KeyScoringModel::default(), // Camelot wheel
             waveform_layout: WaveformLayout::default(),  // Horizontal
+            waveform_quality: WaveformQuality::default(), // Medium
+            waveform_abstraction: WaveformAbstraction::default(), // Medium
+            waveform_motion_blur: WaveformMotionBlur::default(), // Low (crisp)
         }
     }
 }

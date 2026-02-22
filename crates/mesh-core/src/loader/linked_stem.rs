@@ -26,8 +26,30 @@ use crate::engine::{gc::gc_handle, LinkedStemData, StemLink};
 use crate::types::{Stem, StereoBuffer};
 use crate::usb::cache as usb_cache;
 
-/// Width for high-resolution peaks (must match mesh-widgets HIGHRES_WIDTH = 65536)
-const HIGHRES_WIDTH: usize = 65536;
+/// Reference zoom level for peak resolution targeting (must match mesh_widgets::PEAK_REFERENCE_ZOOM_BARS).
+const PEAK_REFERENCE_ZOOM_BARS: u32 = 4;
+
+/// Compute highres peak width for exact peaks-per-pixel at 4-bar zoom.
+/// Must match mesh_widgets::compute_highres_width().
+fn compute_highres_width(total_samples: usize, bpm: f64, screen_width: u32, quality_level: u8) -> usize {
+    let target_ppp: usize = match quality_level {
+        0 => 1,
+        1 => 2,
+        2 => 4,
+        3 => 8,
+        _ => 2,
+    };
+    let samples_per_beat = (crate::types::SAMPLE_RATE as f64 * 60.0 / bpm) as usize;
+    let samples_per_bar = samples_per_beat * 4;
+    if samples_per_bar == 0 {
+        return 1024;
+    }
+    let ref_zoom = PEAK_REFERENCE_ZOOM_BARS as f64;
+    let raw = (target_ppp as f64 * total_samples as f64 * screen_width as f64
+        / (samples_per_bar as f64 * ref_zoom))
+        .round() as usize;
+    raw.max(1024).min(8_388_608)
+}
 
 /// Width for overview peaks
 const OVERVIEW_PEAK_WIDTH: usize = 800;
@@ -49,6 +71,10 @@ pub struct HostTrackParams {
     pub duration_samples: u64,
     /// Host track's LUFS (for gain matching)
     pub lufs: Option<f32>,
+    /// Waveform quality level: 0=Low, 1=Medium, 2=High, 3=Ultra
+    pub quality_level: u8,
+    /// Screen width in pixels (for BPM-aware peak resolution)
+    pub screen_width: u32,
 }
 
 /// Request to load a linked stem from another track
@@ -66,6 +92,10 @@ pub struct LinkedStemLoadRequest {
     pub host_drop_marker: u64,
     /// Host track's total duration in samples (for pre-aligned buffer)
     pub host_duration: u64,
+    /// Waveform quality level: 0=Low, 1=Medium, 2=High, 3=Ultra
+    pub quality_level: u8,
+    /// Screen width in pixels (for BPM-aware peak resolution)
+    pub screen_width: u32,
 }
 
 /// Result of a linked stem load
@@ -180,6 +210,8 @@ impl LinkedStemLoader {
                 host_bpm: host.bpm,
                 host_drop_marker: host_drop,
                 host_duration: host.duration_samples,
+                quality_level: host.quality_level,
+                screen_width: host.screen_width,
             };
 
             if let Err(e) = self.request_tx.send(request) {
@@ -197,6 +229,8 @@ impl LinkedStemLoader {
         host_bpm: f64,
         host_drop_marker: u64,
         host_duration: u64,
+        quality_level: u8,
+        screen_width: u32,
     ) -> Result<(), String> {
         self.request_tx
             .send(LinkedStemLoadRequest {
@@ -206,6 +240,8 @@ impl LinkedStemLoader {
                 host_bpm,
                 host_drop_marker,
                 host_duration,
+                quality_level,
+                screen_width,
             })
             .map_err(|e| format!("Loader thread disconnected: {}", e))
     }
@@ -395,7 +431,8 @@ fn handle_linked_stem_load(request: LinkedStemLoadRequest, tx: Sender<LinkedStem
 
             // Compute high-resolution peaks for stable zoomed view rendering
             let highres_start = std::time::Instant::now();
-            let highres_peaks = generate_single_stem_peaks(&aligned_buffer, HIGHRES_WIDTH);
+            let highres_width = compute_highres_width(aligned_buffer.len(), request.host_bpm, request.screen_width, request.quality_level);
+            let highres_peaks = generate_single_stem_peaks(&aligned_buffer, highres_width);
             let highres_elapsed = highres_start.elapsed();
             let total_samples = aligned_buffer.len();
             let samples_per_ms = if highres_elapsed.as_micros() > 0 {

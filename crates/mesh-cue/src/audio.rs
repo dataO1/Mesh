@@ -190,6 +190,7 @@ impl AudioState {
                 host_bpm,
                 host_drop_marker,
                 host_duration,
+                quality_level: 1, // Medium quality for mesh-cue
             },
         )));
     }

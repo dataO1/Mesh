@@ -393,6 +393,17 @@ where
             let window_span_f64 = window_samples as f64 / dur_f64;
             let ppp = (peaks_per_stem as f64 * window_span_f64 / bounds.width as f64) as f32;
 
+            log::debug!(
+                "[RENDER] deck={} zoom={}bars | bounds={:.0}x{:.0} | bpm={:.1} spb={} spbar={} | \
+                 window={}samples ({:.4}..{:.4}) | peaks_per_stem={} | pp/px={:.3} | \
+                 abstraction={} blur={}",
+                self.deck_idx, zoom_bars, bounds.width, bounds.height,
+                bpm, samples_per_beat, samples_per_bar,
+                window_samples, start_norm, end_norm,
+                peaks_per_stem, ppp,
+                self.state.abstraction_level, self.state.motion_blur_level,
+            );
+
             (start_norm, end_norm, peaks_per_stem as f32, ppp)
         } else {
             (0.0, 1.0, peaks_per_stem as f32, 0.0)
@@ -556,6 +567,12 @@ where
                     if la[3] { 1.0 } else { 0.0 },
                 ]
             },
+            render_options: [
+                self.state.abstraction_level as f32 + 1.0, // 1.0=low, 2.0=medium, 3.0=high (0.0=off/raw)
+                self.state.motion_blur_level as f32,        // 0.0=low, 1.0=medium, 2.0=high
+                0.0,
+                0.0,
+            ],
         }
     }
 }
@@ -850,6 +867,15 @@ where
             let window_span_f64 = window_samples as f64 / dur_f64;
             let ppp = (peaks_per_stem as f64 * window_span_f64 / bounds.width as f64) as f32;
 
+            log::debug!(
+                "[RENDER] single-deck zoom={}bars | bounds={:.0}x{:.0} | bpm={:.1} spbar={} | \
+                 window={}samples ({:.4}..{:.4}) | peaks_per_stem={} | pp/px={:.3}",
+                zoom_bars, bounds.width, bounds.height,
+                bpm, samples_per_bar,
+                window_samples, start_norm, end_norm,
+                peaks_per_stem, ppp,
+            );
+
             (start_norm, end_norm, peaks_per_stem as f32, ppp)
         } else {
             (0.0, 1.0, peaks_per_stem as f32, 0.0)
@@ -976,6 +1002,7 @@ where
                 if self.state.linked_active[2] { 1.0 } else { 0.0 },
                 if self.state.linked_active[3] { 1.0 } else { 0.0 },
             ],
+            render_options: [2.0, 0.0, 0.0, 0.0], // mesh-cue: medium abstraction, low blur
         }
     }
 }
@@ -1032,7 +1059,7 @@ pub fn waveform_shader_overview<'a, Message: Clone + 'a>(
 /// This layout clusters overviews towards the center gap.
 ///
 /// Zero CPU tessellation — peak data uploaded once to GPU storage buffer,
-/// only 384-byte uniform buffers updated per frame per view.
+/// only 400-byte uniform buffers updated per frame per view.
 pub fn waveform_player_shader<'a, Message: Clone + 'a>(
     state: &'a PlayerCanvasState,
     on_action: impl Fn(WaveformAction) -> Message + Clone + 'a,

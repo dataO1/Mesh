@@ -109,6 +109,8 @@ pub struct MeshApp {
     pub(crate) energy_debounce_gen: u64,
     /// Actual JACK client name (for port reconnection)
     pub(crate) audio_client_name: String,
+    /// Monitor width for BPM-aware peak resolution (default 1920, set from GotMonitorSize)
+    pub(crate) monitor_width: u32,
     /// Real output pipeline latency in samples (from CPAL/JACK timestamps)
     pub(crate) output_latency_samples: Option<Arc<AtomicU64>>,
     /// Internal effect chain latency in samples (global max)
@@ -213,6 +215,8 @@ impl MeshApp {
             config::slicer_config_to_engine_presets(&slicer_config),
             slicer_config.validated_buffer_bars(),
             config.audio.loudness.clone(),
+            config.display.waveform_quality.as_level(),
+            1920, // Default screen width, updated when GotMonitorSize fires
         );
 
         // Sync initial mixer state to engine (UI defaults to 0.0 volume,
@@ -252,6 +256,8 @@ impl MeshApp {
                 state.set_stem_colors(config.display.stem_color_palette.colors());
                 state.set_vertical_layout(config.display.waveform_layout.is_vertical());
                 state.set_vertical_inverted(config.display.waveform_layout.is_inverted());
+                state.abstraction_level = config.display.waveform_abstraction.as_level();
+                state.motion_blur_level = config.display.waveform_motion_blur.as_level();
                 state
             },
             deck_views,
@@ -287,6 +293,7 @@ impl MeshApp {
             suggestion_refresh_pending: false,
             energy_debounce_gen: 0,
             audio_client_name,
+            monitor_width: 1920,
             output_latency_samples,
             internal_latency_samples,
             audio_sample_rate: sample_rate,
@@ -349,7 +356,8 @@ impl MeshApp {
             Message::LoadTrack(deck_idx, path) => {
                 // Streaming track loading: create skeleton immediately, load audio in background
                 if deck_idx < 4 {
-                    match self.domain.create_skeleton_and_load(deck_idx, path.into()) {
+                    let quality = self.config.display.waveform_quality.as_level();
+                    match self.domain.create_skeleton_and_load(deck_idx, path.into(), quality, self.monitor_width) {
                         Ok(skeleton) => {
                             // Apply skeleton waveform (loading state with beat/cue markers)
                             self.player_canvas_state.decks[deck_idx].overview = skeleton.overview_state;
@@ -530,6 +538,8 @@ impl MeshApp {
 
             Message::GotMonitorSize(Some(size)) => {
                 log::info!("Monitor size detected: {}x{}", size.width, size.height);
+                self.monitor_width = size.width as u32;
+                self.domain.set_screen_width(self.monitor_width);
                 iced::window::oldest().then(move |opt_id| {
                     if let Some(id) = opt_id {
                         iced::window::resize(id, size)
@@ -671,7 +681,8 @@ impl MeshApp {
                 let host_duration = self.player_canvas_state.decks[deck].overview.duration_samples;
 
                 // Send command to engine via domain (single source of truth for stem loading)
-                if self.domain.load_linked_stem(deck, stem, path.clone(), host_bpm, host_drop_marker, host_duration) {
+                let quality = self.config.display.waveform_quality.as_level();
+                if self.domain.load_linked_stem(deck, stem, path.clone(), host_bpm, host_drop_marker, host_duration, quality) {
                     self.stem_link_state = StemLinkState::Loading {
                         deck,
                         stem,

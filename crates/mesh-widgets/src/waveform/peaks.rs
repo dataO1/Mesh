@@ -4,18 +4,67 @@
 //! suitable for waveform visualization at various zoom levels.
 
 use mesh_core::audio_file::{quantize_peak, StemBuffers, StemPeaks, WaveformPreview};
+use mesh_core::types::SAMPLE_RATE;
 
 /// Default display width for peak computation (overview display)
 pub const DEFAULT_WIDTH: usize = 800;
 
-/// High-resolution peaks for zoomed view (computed once at track load)
+/// Reference zoom level for peak resolution targeting.
 ///
-/// Resolution calculation:
-/// - 5-minute track = 13.2M samples at 44.1kHz
-/// - 65536 peaks = ~200 samples per peak
-/// - Good balance of detail vs memory (~2MB for 4 stems)
-/// - Power of 2 for efficient division
-pub const HIGHRES_WIDTH: usize = 65536;
+/// At this zoom level (in bars visible on screen), the target peaks-per-pixel
+/// is exactly the quality level's base value (1/2/4/8). This should match the
+/// closest practical zoom level — zooming closer than this provides oversampled
+/// (sub-pixel) resolution for anti-aliasing, while zooming out doubles ppp each step.
+pub const PEAK_REFERENCE_ZOOM_BARS: u32 = 4;
+
+/// Compute the high-resolution peak width for exact peaks-per-pixel at the
+/// reference zoom level ([`PEAK_REFERENCE_ZOOM_BARS`] = 4 bars).
+///
+/// Uses the track's original BPM and screen width to compute a peak count that
+/// gives exactly `target_ppp` peaks per pixel at 4-bar zoom. Each quality level
+/// doubles the target, and since zoom levels are powers of 2, peaks-per-pixel
+/// is always a clean integer at every zoom level:
+///
+/// - 0 (Low):    1 pp/px at 4-bar, 2 at 8-bar, 4 at 16-bar, ...
+/// - 1 (Medium): 2 pp/px at 4-bar, 4 at 8-bar, 8 at 16-bar, ...
+/// - 2 (High):   4 pp/px at 4-bar, 8 at 8-bar, 16 at 16-bar, ...
+/// - 3 (Ultra):  8 pp/px at 4-bar, 16 at 8-bar, 32 at 16-bar, ...
+///
+/// Below the reference zoom (2-bar, 1-bar), ppp goes sub-pixel (0.5, 0.25),
+/// providing oversampled data for the shader's anti-aliasing.
+///
+/// The formula matches the shader's integer-truncated `samples_per_bar` so
+/// peaks-per-pixel cancels exactly at render time.
+///
+/// Result is clamped to [1024, 8_388_608].
+pub fn compute_highres_width(
+    total_samples: usize,
+    bpm: f64,
+    screen_width: u32,
+    quality_level: u8,
+) -> usize {
+    let target_ppp: usize = match quality_level {
+        0 => 1,
+        1 => 2,
+        2 => 4,
+        3 => 8,
+        _ => 2,
+    };
+    // Match the shader's integer truncation for samples_per_bar
+    let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as usize;
+    let samples_per_bar = samples_per_beat * 4;
+    if samples_per_bar == 0 {
+        return 1024;
+    }
+    // Denominator includes reference zoom: at PEAK_REFERENCE_ZOOM_BARS bars visible,
+    // the shader window spans (samples_per_bar * ref_zoom) samples, so we divide
+    // by that to get exactly target_ppp peaks per pixel at that zoom level.
+    let ref_zoom = PEAK_REFERENCE_ZOOM_BARS as f64;
+    let raw = (target_ppp as f64 * total_samples as f64 * screen_width as f64
+        / (samples_per_bar as f64 * ref_zoom))
+        .round() as usize;
+    raw.max(1024).min(8_388_608)
+}
 
 /// Smoothing window size for peaks (moving average)
 pub const PEAK_SMOOTHING_WINDOW: usize = 3;
