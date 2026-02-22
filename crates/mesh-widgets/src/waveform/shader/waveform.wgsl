@@ -386,50 +386,112 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Resolution-independent pixel size via screen-space derivatives.
     let fw = fwidth(uv.y);
 
+    // Overview linked stem split: same grid/center, but per-stem:
+    // - Linked stems: positive peaks UP = active, positive peaks DOWN = inactive (dimmed)
+    // - Non-linked stems: normal full symmetric envelope
+    let has_any_link = (u.linked_stems[0] + u.linked_stems[1] +
+                        u.linked_stems[2] + u.linked_stems[3]) > 0.5;
+    let split_mode = is_overview && has_any_link;
+
     for (var i = 0u; i < 4u; i++) {
         let stem = render_order[i];
         let peak = sample_peak(stem, source_x, peaks_per_pixel);
         let stem_color = get_stem_color(stem);
         let is_active = u.stem_active[stem] > 0.5;
+        let has_link = u.linked_stems[stem] > 0.5;
 
-        // Peak envelope: min is negative (below center), max is positive (above center)
-        let y_min = center_y - peak.y * height_scale * 0.5; // max peak = top
-        let y_max = center_y - peak.x * height_scale * 0.5; // min peak = bottom
+        if (split_mode && has_link) {
+            // --- Linked stem: split rendering ---
+            // Top half: active stem's positive peaks going upward from center
+            let top_y = max(peak.y, 0.0);
+            let top_y_min = center_y - top_y * height_scale * 0.5;
+            let top_y_max = center_y;
 
-        // Soft anti-aliased edge with outside glow for smooth appearance.
-        let d_top = uv.y - y_min;
-        let d_bot = y_max - uv.y;
-        let outside_ext = fw * 1.5;
-        let aa_top = smoothstep(-outside_ext, fw, d_top);
-        let aa_bot = smoothstep(-outside_ext, fw, d_bot);
-        var edge_alpha = aa_top * aa_bot;
+            // Render active (top half)
+            let d_top_t = uv.y - top_y_min;
+            let d_bot_t = top_y_max - uv.y;
+            let outside_ext_t = fw * 1.5;
+            let aa_top_t = smoothstep(-outside_ext_t, fw, d_top_t);
+            let aa_bot_t = smoothstep(-outside_ext_t, fw, d_bot_t);
+            var edge_alpha_t = aa_top_t * aa_bot_t;
 
-        // Sub-pixel thin envelope coverage boost
-        let thickness = y_max - y_min;
-        if (thickness < 2.0 * fw && thickness > 0.0) {
-            let coverage = thickness / (2.0 * fw);
-            let center = (y_min + y_max) * 0.5;
-            let proximity = smoothstep(fw, 0.0, abs(uv.y - center));
-            edge_alpha = max(edge_alpha, proximity * coverage * 0.8);
-        }
-
-        if (edge_alpha > 0.005) {
-            var stem_rgba: vec4<f32>;
-            if (is_active) {
-                // Envelope-relative brightness modulated by playhead proximity.
-                // Near playhead: center slightly brighter, edges glow strongly.
-                // Far from playhead: normal flat brightness.
-                let env_center = (y_min + y_max) * 0.5;
-                let env_half = max((y_max - y_min) * 0.5, fw);
-                let rel_pos = clamp(abs(uv.y - env_center) / env_half, 0.0, 1.0);
-                // 0.15 base boost (center less dark) + 0.45 edge boost (edges glow)
-                let edge_boost = 1.0 + playhead_proximity * (0.15 + 0.45 * rel_pos);
-                stem_rgba = vec4<f32>(stem_color.rgb * edge_boost, 0.85 * edge_alpha);
-            } else {
-                // Muted: gray with reduced opacity
-                stem_rgba = vec4<f32>(0.35, 0.35, 0.35, 0.5 * edge_alpha);
+            let thickness_t = top_y_max - top_y_min;
+            if (thickness_t < 2.0 * fw && thickness_t > 0.0) {
+                let coverage = thickness_t / (2.0 * fw);
+                let cp = (top_y_min + top_y_max) * 0.5;
+                let prox = smoothstep(fw, 0.0, abs(uv.y - cp));
+                edge_alpha_t = max(edge_alpha_t, prox * coverage * 0.8);
             }
-            color = blend_over(color, stem_rgba);
+
+            if (edge_alpha_t > 0.005) {
+                var stem_rgba: vec4<f32>;
+                if (is_active) {
+                    stem_rgba = vec4<f32>(stem_color.rgb, 0.85 * edge_alpha_t);
+                } else {
+                    stem_rgba = vec4<f32>(0.35, 0.35, 0.35, 0.5 * edge_alpha_t);
+                }
+                color = blend_over(color, stem_rgba);
+            }
+
+            // Bottom half: inactive alternative's positive peaks mirrored downward
+            let alt_peak = sample_peak(stem + 4u, source_x, peaks_per_pixel);
+            let bot_y = max(alt_peak.y, 0.0);
+            let bot_y_min = center_y;
+            let bot_y_max = center_y + bot_y * height_scale * 0.5;
+
+            let d_top_b = uv.y - bot_y_min;
+            let d_bot_b = bot_y_max - uv.y;
+            let outside_ext_b = fw * 1.5;
+            let aa_top_b = smoothstep(-outside_ext_b, fw, d_top_b);
+            let aa_bot_b = smoothstep(-outside_ext_b, fw, d_bot_b);
+            var edge_alpha_b = aa_top_b * aa_bot_b;
+
+            let thickness_b = bot_y_max - bot_y_min;
+            if (thickness_b < 2.0 * fw && thickness_b > 0.0) {
+                let coverage = thickness_b / (2.0 * fw);
+                let cp = (bot_y_min + bot_y_max) * 0.5;
+                let prox = smoothstep(fw, 0.0, abs(uv.y - cp));
+                edge_alpha_b = max(edge_alpha_b, prox * coverage * 0.8);
+            }
+
+            if (edge_alpha_b > 0.005) {
+                // Dimmed: 40% brightness for inactive alternative
+                let stem_rgba = vec4<f32>(stem_color.rgb * 0.4, 0.6 * edge_alpha_b);
+                color = blend_over(color, stem_rgba);
+            }
+        } else {
+            // --- Normal: full symmetric envelope ---
+            let y_min = center_y - peak.y * height_scale * 0.5;
+            let y_max = center_y - peak.x * height_scale * 0.5;
+
+            let d_top = uv.y - y_min;
+            let d_bot = y_max - uv.y;
+            let outside_ext = fw * 1.5;
+            let aa_top = smoothstep(-outside_ext, fw, d_top);
+            let aa_bot = smoothstep(-outside_ext, fw, d_bot);
+            var edge_alpha = aa_top * aa_bot;
+
+            let thickness = y_max - y_min;
+            if (thickness < 2.0 * fw && thickness > 0.0) {
+                let coverage = thickness / (2.0 * fw);
+                let center_pt = (y_min + y_max) * 0.5;
+                let proximity = smoothstep(fw, 0.0, abs(uv.y - center_pt));
+                edge_alpha = max(edge_alpha, proximity * coverage * 0.8);
+            }
+
+            if (edge_alpha > 0.005) {
+                var stem_rgba: vec4<f32>;
+                if (is_active) {
+                    let env_center = (y_min + y_max) * 0.5;
+                    let env_half = max((y_max - y_min) * 0.5, fw);
+                    let rel_pos = clamp(abs(uv.y - env_center) / env_half, 0.0, 1.0);
+                    let edge_boost = 1.0 + playhead_proximity * (0.15 + 0.45 * rel_pos);
+                    stem_rgba = vec4<f32>(stem_color.rgb * edge_boost, 0.85 * edge_alpha);
+                } else {
+                    stem_rgba = vec4<f32>(0.35, 0.35, 0.35, 0.5 * edge_alpha);
+                }
+                color = blend_over(color, stem_rgba);
+            }
         }
     }
 

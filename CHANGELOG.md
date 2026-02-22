@@ -65,6 +65,11 @@ All notable changes to Mesh are documented in this file.
   indicator column appears next to the mute indicators. Shows full color when the linked
   stem is active, dimmed when inactive. Replaces the diamond symbols in the header.
 
+- **Linked stem waveform toggling** — Zoomed waveform now visually switches to the linked
+  stem's peaks when a linked stem is activated, matching the audio output. Overview waveform
+  shows a mirrored split: active stem peaks go upward from the center line, inactive
+  alternative peaks go downward (dimmed), so you can see both versions at a glance.
+
 ### Fixed
 
 - **Buttery-smooth playhead scrolling** — Playhead interpolation now uses timestamps
