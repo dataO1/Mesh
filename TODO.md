@@ -175,15 +175,15 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
-- [ ] The beatgrid for some tracks does not get rendered in the zoomed waveform.
-  since the bpm is loaded and the track is corrctly pitched and lufs target
-  gained as well. so its not an issue with metadata loading from the database,
+- [ ] currently the zoomed waveform is stuttery, when previewing a track via
+  cue/hot cue buttons. when i press play its perfectly normal. i can imagine the
+  peak computatoin is just reduced or something? check mesh-player, its only
+  there, not in mesh-cue.
+- [ ] Currently the stem mute indicators are missing in the zoomed waveform.
+  also we should move the linked stem indicators form the header diamonds
+  to a second stem indicator (grayed out when inactive and toggled between both)
+  next to the stem, that has a linked stem instead.
   but a rendering issue in the shader. investigate.
-- [ ] the overview waveform is currently still rendered with a canvas, i think
-  this is highly inneficient and can be written in a shader as well. this way we
-  can get rid of the tick method completely and eliminate costly 60hz
-  computations, that are not necessary anymore, we can update everything via
-  message passing and iced native mechanisms.
 - [ ] slicer mode does not work when triggered from the midi mapped f1. check 1.
   the mapping file, 2. the mapping in the app and give me a report of why this
   might happen. the current mapping file is in momentary mode.

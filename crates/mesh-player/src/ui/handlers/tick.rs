@@ -71,7 +71,7 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
     if let Some(ref atomics) = app.deck_atomics {
         for i in 0..4 {
             let position = atomics[i].position();
-            let is_playing = atomics[i].is_playing();
+            let is_playing = atomics[i].is_playing() || atomics[i].is_cueing();
             let timestamp_ns = atomics[i].position_timestamp_ns();
             let playback_rate = atomics[i].playback_rate();
             let loop_active = atomics[i].loop_active();

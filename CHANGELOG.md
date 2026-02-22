@@ -46,8 +46,13 @@ All notable changes to Mesh are documented in this file.
   tint, and the next slice boundary has a yellow accent.
 
 - **Beat grid respects density setting** — The overview waveform beat grid now follows
-  the grid density setting (4, 8, 16, or 32 bars between markers) instead of showing
-  every bar. Zoomed view shows individual beat lines as before.
+  the grid density setting (8, 16, 32, or 64 beats between red markers). Gray bar lines
+  appear between red markers to show downbeat positions. Zoomed view shows individual
+  beat lines as before.
+
+- **BPM-aligned overview waveforms** — Overview waveforms are now scaled so that beat
+  markers align across all loaded decks. The longest track (in beats) fills the full
+  width, and shorter tracks are padded proportionally.
 
 - **GPU waveforms in mesh-cue** — The track editor now uses the same GPU shader
   waveform renderer as the player, replacing the old CPU canvas rendering.
@@ -86,6 +91,12 @@ All notable changes to Mesh are documented in this file.
   display-synced frame scheduling, and fixed playhead interpolation to only reset when
   the audio position actually changes. Eliminates bursty waveform movement caused by
   audio buffer quantization.
+
+- **Beat grid visible on all track lengths** — Fixed beat grid disappearing on longer
+  tracks due to an overly aggressive rendering threshold in the GPU shader.
+
+- **Smooth cue preview waveform** — Zoomed waveform now scrolls smoothly during cue and
+  hot cue preview, matching the smoothness of normal playback.
 
 ---
 
