@@ -175,13 +175,15 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
-- [ ] the audio quality on the headphone jack is not really great, is there some
-  processing on it? theres barely any bass but a lot of high end, which is
-  unusual for my headphones, i know very well. check if this is a configuration
-  issue, maybe its just the hardware quality. its also relatively noisy. does
-  the external card we plan to integrate later yield better quality, or is this
-  of similar quality?
-
+- [ ] The beatgrid for some tracks does not get rendered in the zoomed waveform.
+  since the bpm is loaded and the track is corrctly pitched and lufs target
+  gained as well. so its not an issue with metadata loading from the database,
+  but a rendering issue in the shader. investigate.
+- [ ] the overview waveform is currently still rendered with a canvas, i think
+  this is highly inneficient and can be written in a shader as well. this way we
+  can get rid of the tick method completely and eliminate costly 60hz
+  computations, that are not necessary anymore, we can update everything via
+  message passing and iced native mechanisms.
 - [ ] slicer mode does not work when triggered from the midi mapped f1. check 1.
   the mapping file, 2. the mapping in the app and give me a report of why this
   might happen. the current mapping file is in momentary mode.
