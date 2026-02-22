@@ -7,15 +7,10 @@
 use super::CueMarker;
 use super::shader::PeakBuffer;
 use crate::{CUE_COLORS, STEM_COLORS};
-use iced::widget::canvas::Cache;
 use iced::Color;
 use mesh_core::audio_file::{dequantize_peak, CuePoint, LoadedTrack, StemBuffers, WaveformPreview};
 use std::sync::Arc;
 
-use super::peak_computation::{
-    CacheInfo, WindowInfo, compute_effective_width,
-    generate_peaks_with_padding, samples_per_bar,
-};
 use super::{generate_peaks, smooth_peaks_gaussian, DEFAULT_WIDTH, HIGHRES_WIDTH};
 
 // =============================================================================
@@ -598,21 +593,13 @@ pub enum ZoomedViewMode {
 
 /// State for zoomed waveform rendering
 ///
-/// - Cached peak data for the visible window
 /// - Zoom level and visible range calculation
 /// - Beat grid and cue markers (in sample positions)
 ///
+/// Peak data is stored on OverviewState as PeakBuffers (uploaded to GPU once at track load).
 /// Supports zoom levels from 1 to 64 bars via click+drag gesture.
 #[derive(Debug, Clone)]
 pub struct ZoomedState {
-    /// Cached peak data for visible window [stem_idx] = Vec<(min, max)>
-    pub cached_peaks: [Vec<(f32, f32)>; 4],
-    /// Start sample of cached window
-    pub cache_start: u64,
-    /// End sample of cached window
-    pub cache_end: u64,
-    /// Left padding samples in cache (for boundary centering)
-    pub cache_left_padding: u64,
     /// Current zoom level in bars (1-64)
     pub zoom_bars: u32,
     /// Zoom level saved from scrolling mode (restored when exiting FixedBuffer)
@@ -631,22 +618,14 @@ pub struct ZoomedState {
     pub loop_region: Option<(f64, f64)>,
     /// Slicer region (start, end) as normalized positions (0.0 to 1.0), None if slicer not active
     pub slicer_region: Option<(f64, f64)>,
-    /// Current playing slice index (0-7), for highlighting in visualization
+    /// Current playing slice index (0-15), for highlighting in visualization
     pub slicer_current_slice: Option<u8>,
     /// View mode (scrolling vs fixed buffer)
     pub view_mode: ZoomedViewMode,
-    /// View mode the cache was computed for (to detect mode changes)
-    cached_view_mode: ZoomedViewMode,
     /// Fixed buffer bounds in samples (for FixedBuffer mode)
     pub fixed_buffer_bounds: Option<(u64, u64)>,
     /// Drop marker position in samples (for linked stem alignment visualization)
     pub drop_marker: Option<u64>,
-    /// Linked stem cached peaks [stem_idx] - None if no linked stem for that slot
-    /// When a stem has a linked stem and is active, this provides the peaks to display
-    pub linked_cached_peaks: [Option<Vec<(f32, f32)>>; 4],
-    /// Which stems were linked-active when cached_peaks was computed
-    /// Used to detect when stem link status changes and force recompute
-    pub cached_linked_active: [bool; 4],
     /// LUFS-based gain for waveform amplitude scaling (linear multiplier)
     /// Quieter tracks are boosted to match the visual amplitude of louder tracks.
     /// 1.0 = unity (no scaling), >1.0 = boost for quiet tracks
@@ -657,10 +636,6 @@ impl ZoomedState {
     /// Create a new empty zoomed waveform state
     pub fn new() -> Self {
         Self {
-            cached_peaks: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
-            cache_start: 0,
-            cache_end: 0,
-            cache_left_padding: 0,
             zoom_bars: DEFAULT_ZOOM_BARS,
             scrolling_zoom_bars: DEFAULT_ZOOM_BARS,
             beat_grid: Vec::new(),
@@ -672,11 +647,8 @@ impl ZoomedState {
             slicer_region: None,
             slicer_current_slice: None,
             view_mode: ZoomedViewMode::Scrolling,
-            cached_view_mode: ZoomedViewMode::Scrolling,
             fixed_buffer_bounds: None,
             drop_marker: None,
-            linked_cached_peaks: [None, None, None, None],
-            cached_linked_active: [false, false, false, false],
             lufs_gain: 1.0,
         }
     }
@@ -684,10 +656,6 @@ impl ZoomedState {
     /// Create from track metadata
     pub fn from_metadata(bpm: f64, beat_grid: Vec<u64>, cue_markers: Vec<CueMarker>) -> Self {
         Self {
-            cached_peaks: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
-            cache_start: 0,
-            cache_end: 0,
-            cache_left_padding: 0,
             zoom_bars: DEFAULT_ZOOM_BARS,
             scrolling_zoom_bars: DEFAULT_ZOOM_BARS,
             beat_grid,
@@ -699,11 +667,8 @@ impl ZoomedState {
             slicer_region: None,
             slicer_current_slice: None,
             view_mode: ZoomedViewMode::Scrolling,
-            cached_view_mode: ZoomedViewMode::Scrolling,
             fixed_buffer_bounds: None,
             drop_marker: None,
-            linked_cached_peaks: [None, None, None, None],
-            cached_linked_active: [false, false, false, false],
             lufs_gain: 1.0,
         }
     }
@@ -825,42 +790,10 @@ impl ZoomedState {
             .collect();
     }
 
-    /// Samples per bar at current BPM
-    pub fn samples_per_bar(&self) -> u64 {
-        samples_per_bar(self.bpm)
-    }
-
-    /// Calculate visible window with boundary padding information
-    ///
-    /// Uses the shared `WindowInfo` type which includes:
-    /// - Actual start/end sample positions
-    /// - Left padding for centering at track boundaries
-    /// - Total window size (always consistent)
-    pub fn visible_window(&self, playhead: u64) -> WindowInfo {
-        WindowInfo::compute(
-            playhead,
-            self.zoom_bars,
-            self.bpm,
-            self.view_mode,
-            self.fixed_buffer_bounds,
-        )
-    }
-
-    /// Calculate visible range (legacy compatibility)
-    ///
-    /// Returns (start, end) tuple. For proper boundary handling with padding,
-    /// use `visible_window()` instead.
-    pub fn visible_range(&self, playhead: u64) -> (u64, u64) {
-        let window = self.visible_window(playhead);
-        (window.start, window.end)
-    }
 
     /// Set zoom level (clamped to valid range)
     pub fn set_zoom(&mut self, bars: u32) {
         self.zoom_bars = bars.clamp(MIN_ZOOM_BARS, MAX_ZOOM_BARS);
-        // Invalidate cache when zoom changes
-        self.cache_start = 0;
-        self.cache_end = 0;
     }
 
     /// Get current zoom level
@@ -868,144 +801,6 @@ impl ZoomedState {
         self.zoom_bars
     }
 
-    /// Check if cache is valid for current playhead position
-    /// Returns true if cache needs recomputation
-    ///
-    /// The `linked_active` parameter indicates which stems are currently using
-    /// linked buffers. If this differs from when the cache was computed, forces
-    /// a recompute to show the correct waveform.
-    pub fn needs_recompute(&self, playhead: u64, linked_active: &[bool; 4]) -> bool {
-        if self.cached_peaks[0].is_empty() {
-            return true;
-        }
-
-        // Force recompute if view mode changed (resolution differs between modes)
-        if self.view_mode != self.cached_view_mode {
-            return true;
-        }
-
-        // Force recompute if linked stem status changed
-        // This ensures the waveform immediately updates when user toggles a linked stem
-        if *linked_active != self.cached_linked_active {
-            return true;
-        }
-
-        // Use shared CacheInfo to check if window is still within cache
-        let window = self.visible_window(playhead);
-        let cache = CacheInfo {
-            start: self.cache_start,
-            end: self.cache_end,
-            left_padding: self.cache_left_padding,
-        };
-
-        !cache.contains_with_margin(&window)
-    }
-
-    /// Compute peaks for the visible window from stem data
-    ///
-    /// Uses shared peak_computation module for consistent handling across
-    /// foreground and background computation paths.
-    pub fn compute_peaks(&mut self, stems: &StemBuffers, playhead: u64, width: usize) {
-        log::debug!(
-            "[ZOOM-DBG] compute_peaks: playhead={}, width={}, duration_samples={}, stems.len()={}, has_track={}",
-            playhead, width, self.duration_samples, stems.len(), self.has_track
-        );
-
-        // Get window with boundary padding info
-        let window = self.visible_window(playhead);
-        log::debug!(
-            "[ZOOM-DBG] window: start={}, end={}, left_padding={}, total={}",
-            window.start, window.end, window.left_padding, window.total_samples
-        );
-
-        // Compute cache bounds using shared logic
-        let cache = CacheInfo::from_window(&window, self.view_mode);
-        self.cache_start = cache.start;
-        self.cache_end = cache.end;
-        self.cache_left_padding = cache.left_padding;
-
-        let cache_len = (cache.end - cache.start) as usize;
-        if cache_len == 0 || width == 0 || self.duration_samples == 0 {
-            log::warn!("[ZOOM-DBG] compute_peaks: EARLY RETURN - cache_len={}, width={}", cache_len, width);
-            self.cached_peaks = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
-            return;
-        }
-
-        // Use shared resolution calculation
-        let effective_width = compute_effective_width(width, self.zoom_bars, self.view_mode);
-        log::debug!(
-            "[ZOOM-DBG] resolution: view_mode={:?}, base_width={}, effective_width={}",
-            self.view_mode, width, effective_width
-        );
-
-        // Use shared peak generation with padding support
-        let cache_window = WindowInfo {
-            start: cache.start,
-            end: cache.end,
-            left_padding: cache.left_padding,
-            total_samples: cache.end - cache.start + cache.left_padding,
-        };
-        self.cached_peaks = generate_peaks_with_padding(stems, &cache_window, effective_width);
-
-        log::debug!(
-            "[ZOOM-DBG] compute_peaks: generated {} peaks per stem (cache {}..{}, padding={})",
-            self.cached_peaks[0].len(), cache.start, cache.end, cache.left_padding
-        );
-
-        // NOTE: LUFS gain is applied at render time, not here.
-        // Baking gain into cached_peaks would cause double-scaling since
-        // the renderer also applies host_lufs_gain/linked_lufs_gains.
-
-        // Apply Gaussian smoothing for smoother waveform display
-        for stem_idx in 0..4 {
-            if self.cached_peaks[stem_idx].len() >= 5 {
-                self.cached_peaks[stem_idx] = smooth_peaks_gaussian(&self.cached_peaks[stem_idx]);
-            }
-        }
-
-        // Track which view mode this cache was computed for
-        self.cached_view_mode = self.view_mode;
-    }
-
-    /// Apply peaks computed by the background PeaksComputer thread
-    ///
-    /// Updates cached_peaks, cache_start, cache_end, cache_left_padding, cached_view_mode,
-    /// and cached_linked_active.
-    pub fn apply_computed_peaks(&mut self, result: super::peaks_computer::PeaksComputeResult) {
-        self.cached_peaks = result.cached_peaks;
-        self.cache_start = result.cache_start;
-        self.cache_end = result.cache_end;
-        self.cache_left_padding = result.cache_left_padding;
-        // Track that this cache matches the current view mode
-        self.cached_view_mode = self.view_mode;
-        // Track which stems were linked-active when this cache was computed
-        self.cached_linked_active = result.linked_active;
-
-        // NOTE: LUFS gain is applied at render time, not here.
-        // Baking gain into cached_peaks would cause double-scaling since
-        // the renderer also applies host_lufs_gain/linked_lufs_gains.
-    }
-
-    /// Set linked stem cached peaks for a specific stem slot
-    ///
-    /// Called when linked stem zoomed peaks are computed.
-    pub fn set_linked_cached_peaks(&mut self, stem_idx: usize, peaks: Vec<(f32, f32)>) {
-        if stem_idx < 4 {
-            self.linked_cached_peaks[stem_idx] = Some(peaks);
-        }
-    }
-
-    /// Clear linked stem cached peaks for a specific stem slot
-    pub fn clear_linked_cached_peaks(&mut self, stem_idx: usize) {
-        if stem_idx < 4 {
-            self.linked_cached_peaks[stem_idx] = None;
-        }
-    }
-
-    /// Clear all linked stem cached peaks (when track is unloaded)
-    pub fn clear_all_linked_cached_peaks(&mut self) {
-        self.linked_cached_peaks = [None, None, None, None];
-    }
 }
 
 impl Default for ZoomedState {
@@ -1104,9 +899,6 @@ pub struct PlayerCanvasState {
     pub decks: [CombinedState; 4],
     /// Per-deck playhead positions in samples
     pub playheads: [u64; 4],
-    /// Canvas geometry cache — avoids rebuilding draw ops every frame.
-    /// Cleared (invalidated) by every `set_*` method that changes visual state.
-    pub canvas_cache: Cache,
     /// Track names for each deck (displayed in header)
     track_names: [String; 4],
     /// Track keys for each deck (displayed in header, e.g. "Am", "C#m")
@@ -1200,20 +992,13 @@ impl PlayerCanvasState {
             display_bpm: [None; 4],              // No BPM alignment initially
             vertical_layout: false,              // Horizontal layout by default
             vertical_inverted: false,
-            canvas_cache: Cache::new(),
         }
-    }
-
-    /// Invalidate the canvas geometry cache, forcing a full redraw next frame.
-    pub fn invalidate_cache(&mut self) {
-        self.canvas_cache.clear();
     }
 
     /// Set the track name for a deck (displayed in header)
     pub fn set_track_name(&mut self, idx: usize, name: String) {
         if idx < 4 && self.track_names[idx] != name {
             self.track_names[idx] = name;
-            self.invalidate_cache();
         }
     }
 
@@ -1230,7 +1015,7 @@ impl PlayerCanvasState {
     pub fn clear_track_name(&mut self, idx: usize) {
         if idx < 4 && !self.track_names[idx].is_empty() {
             self.track_names[idx].clear();
-            self.invalidate_cache();
+
         }
     }
 
@@ -1238,7 +1023,7 @@ impl PlayerCanvasState {
     pub fn set_track_key(&mut self, idx: usize, key: String) {
         if idx < 4 && self.track_keys[idx] != key {
             self.track_keys[idx] = key;
-            self.invalidate_cache();
+
         }
     }
 
@@ -1255,7 +1040,7 @@ impl PlayerCanvasState {
     pub fn set_track_bpm(&mut self, idx: usize, bpm: Option<f64>) {
         if idx < 4 && self.track_bpm[idx] != bpm {
             self.track_bpm[idx] = bpm;
-            self.invalidate_cache();
+
         }
     }
 
@@ -1272,7 +1057,7 @@ impl PlayerCanvasState {
     pub fn set_stem_active(&mut self, deck_idx: usize, stem_idx: usize, active: bool) {
         if deck_idx < 4 && stem_idx < 4 && self.stem_active[deck_idx][stem_idx] != active {
             self.stem_active[deck_idx][stem_idx] = active;
-            self.invalidate_cache();
+
         }
     }
 
@@ -1293,7 +1078,7 @@ impl PlayerCanvasState {
         {
             self.linked_stems[deck_idx][stem_idx] = has_linked;
             self.linked_stems_active[deck_idx][stem_idx] = is_active;
-            self.invalidate_cache();
+
         }
     }
 
@@ -1310,7 +1095,7 @@ impl PlayerCanvasState {
     pub fn set_master(&mut self, idx: usize, is_master: bool) {
         if idx < 4 && self.is_master[idx] != is_master {
             self.is_master[idx] = is_master;
-            self.invalidate_cache();
+
         }
     }
 
@@ -1327,7 +1112,7 @@ impl PlayerCanvasState {
     pub fn set_transpose(&mut self, idx: usize, semitones: i8) {
         if idx < 4 && self.current_transpose[idx] != semitones {
             self.current_transpose[idx] = semitones;
-            self.invalidate_cache();
+
         }
     }
 
@@ -1344,7 +1129,7 @@ impl PlayerCanvasState {
     pub fn set_key_match_enabled(&mut self, idx: usize, enabled: bool) {
         if idx < 4 && self.key_match_enabled[idx] != enabled {
             self.key_match_enabled[idx] = enabled;
-            self.invalidate_cache();
+
         }
     }
 
@@ -1363,7 +1148,7 @@ impl PlayerCanvasState {
     pub fn set_lufs_gain_db(&mut self, idx: usize, gain_db: Option<f32>) {
         if idx < 4 && self.lufs_gain_db[idx] != gain_db {
             self.lufs_gain_db[idx] = gain_db;
-            self.invalidate_cache();
+
         }
     }
 
@@ -1380,7 +1165,7 @@ impl PlayerCanvasState {
     pub fn set_cue_enabled(&mut self, idx: usize, enabled: bool) {
         if idx < 4 && self.cue_enabled[idx] != enabled {
             self.cue_enabled[idx] = enabled;
-            self.invalidate_cache();
+
         }
     }
 
@@ -1397,7 +1182,7 @@ impl PlayerCanvasState {
     pub fn set_loop_length_beats(&mut self, idx: usize, beats: Option<f32>) {
         if idx < 4 && self.loop_length_beats[idx] != beats {
             self.loop_length_beats[idx] = beats;
-            self.invalidate_cache();
+
         }
     }
 
@@ -1414,7 +1199,7 @@ impl PlayerCanvasState {
     pub fn set_loop_active(&mut self, idx: usize, active: bool) {
         if idx < 4 && self.loop_active[idx] != active {
             self.loop_active[idx] = active;
-            self.invalidate_cache();
+
         }
     }
 
@@ -1431,7 +1216,7 @@ impl PlayerCanvasState {
     pub fn set_volume(&mut self, idx: usize, volume: f32) {
         if idx < 4 && (self.volume[idx] - volume).abs() > f32::EPSILON {
             self.volume[idx] = volume;
-            self.invalidate_cache();
+
         }
     }
 
@@ -1448,7 +1233,7 @@ impl PlayerCanvasState {
     pub fn set_display_bpm(&mut self, idx: usize, bpm: Option<f64>) {
         if idx < 4 && self.display_bpm[idx] != bpm {
             self.display_bpm[idx] = bpm;
-            self.invalidate_cache();
+
         }
     }
 
@@ -1465,7 +1250,7 @@ impl PlayerCanvasState {
     pub fn set_stem_colors(&mut self, colors: [Color; 4]) {
         if self.stem_colors != colors {
             self.stem_colors = colors;
-            self.invalidate_cache();
+
         }
     }
 
@@ -1478,7 +1263,7 @@ impl PlayerCanvasState {
     pub fn set_vertical_layout(&mut self, vertical: bool) {
         if self.vertical_layout != vertical {
             self.vertical_layout = vertical;
-            self.invalidate_cache();
+
         }
     }
 
@@ -1486,7 +1271,7 @@ impl PlayerCanvasState {
     pub fn set_vertical_inverted(&mut self, inverted: bool) {
         if self.vertical_inverted != inverted {
             self.vertical_inverted = inverted;
-            self.invalidate_cache();
+
         }
     }
 
@@ -1529,7 +1314,7 @@ impl PlayerCanvasState {
             self.position_timestamps_ns[idx] = timestamp_ns;
             self.playback_rates[idx] = playback_rate as f64;
             self.is_playing[idx] = is_playing;
-            self.invalidate_cache();
+
         }
     }
 

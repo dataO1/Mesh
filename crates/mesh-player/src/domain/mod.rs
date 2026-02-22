@@ -12,7 +12,7 @@
 //! - Loads track metadata from the correct database
 //! - Coordinates track loading with the TrackLoader
 //! - Forwards commands to the audio engine
-//! - Owns services: CommandSender, TrackLoader, PeaksComputer, UsbManager
+//! - Owns services: CommandSender, TrackLoader, UsbManager
 //!
 //! ## Usage
 //!
@@ -40,7 +40,7 @@ use mesh_core::pd::{DiscoveredEffect, PdManager};
 use mesh_core::preset_loader::{PresetLoader, PresetLoadResultReceiver, MultibandBuildSpec};
 use mesh_core::types::{Stem, StereoBuffer};
 use mesh_core::usb::{find_collection_root, get_or_open_usb_database, UsbCommand, UsbManager, UsbMessage};
-use mesh_widgets::{CueMarker, OverviewState, ZoomedState, CUE_COLORS, PeaksComputer, PeaksResultReceiver};
+use mesh_widgets::{CueMarker, OverviewState, ZoomedState, CUE_COLORS};
 
 use crate::audio::CommandSender;
 use crate::loader::{TrackLoader, TrackLoadResultReceiver};
@@ -121,9 +121,6 @@ pub struct MeshDomain {
 
     /// Background track loader (avoids blocking UI/audio during loads)
     track_loader: TrackLoader,
-
-    /// Background peak computer (offloads expensive waveform peak computation)
-    peaks_computer: PeaksComputer,
 
     /// USB manager for device detection and browsing
     usb_manager: UsbManager,
@@ -231,7 +228,6 @@ impl MeshDomain {
             // Services
             command_sender,
             track_loader: TrackLoader::spawn(sample_rate),
-            peaks_computer: PeaksComputer::spawn(),
             usb_manager: UsbManager::spawn(Some(local_db)),
             linked_stem_receiver,
             pd_manager,
@@ -474,11 +470,6 @@ impl MeshDomain {
         self.track_loader.result_receiver()
     }
 
-    /// Get the peaks computer's result receiver for subscriptions
-    pub fn peaks_result_receiver(&self) -> PeaksResultReceiver {
-        self.peaks_computer.result_receiver()
-    }
-
     /// Get the USB manager's message receiver for subscriptions
     pub fn usb_message_receiver(&self) -> UsbMessageReceiver {
         self.usb_manager.message_receiver()
@@ -674,17 +665,6 @@ impl MeshDomain {
     /// Update track loader's sample rate (if audio system rate changes)
     pub fn set_track_loader_sample_rate(&self, sample_rate: u32) {
         self.track_loader.set_sample_rate(sample_rate);
-    }
-
-    // =========================================================================
-    // Peaks Computing (delegates to PeaksComputer)
-    // =========================================================================
-
-    /// Request peaks computation (non-blocking)
-    pub fn request_peaks_compute(&self, request: mesh_widgets::PeaksComputeRequest) -> Result<(), String> {
-        self.peaks_computer
-            .compute(request)
-            .map_err(|e| format!("Failed to request peaks compute: {}", e))
     }
 
     // =========================================================================

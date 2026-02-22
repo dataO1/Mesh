@@ -11,7 +11,10 @@
 //! - `WaveformProgram`: iced `shader::Program<Message>` with seek/zoom interaction
 //! - View helpers: `waveform_shader_zoomed()`, `waveform_shader_overview()`, `waveform_player_shader()`
 
+mod header;
 pub mod pipeline;
+
+pub use header::view_deck_header;
 
 use std::sync::Arc;
 
@@ -19,8 +22,11 @@ use iced::mouse;
 use iced::widget::shader;
 use iced::{Element, Length, Rectangle};
 
+use iced::Color;
+
 use super::state::{
-    PlayerCanvasState, WAVEFORM_HEIGHT,
+    CombinedState, PlayerCanvasState, ZoomedViewMode,
+    COMBINED_WAVEFORM_GAP, WAVEFORM_HEIGHT, ZOOMED_WAVEFORM_HEIGHT,
     MIN_ZOOM_BARS, MAX_ZOOM_BARS, ZOOM_PIXELS_PER_LEVEL,
 };
 use pipeline::{WaveformPrimitive, WaveformUniforms};
@@ -387,7 +393,7 @@ where
             stem_color_2: color_to_arr(colors[2]),
             stem_color_3: color_to_arr(colors[3]),
             loop_params: [loop_start, loop_end, loop_active_f, if overview.has_track { 1.0 } else { 0.0 }],
-            beat_params: [grid_step, first_beat, 4.0, volume],
+            beat_params: [grid_step, first_beat, if self.is_overview { overview.grid_bars as f32 } else { 1.0 }, volume],
             cue_params: [cue_count as f32, main_cue_pos, has_main_cue, slicer_active],
             slicer_params: [slicer_start, slicer_end, current_slice, peaks_per_pixel],
             cue_pos_0_3: cue_positions[0],
@@ -438,7 +444,407 @@ where
 }
 
 // =============================================================================
-// View helper functions
+// SingleDeckAction — user interaction events (mesh-cue)
+// =============================================================================
+
+/// Actions emitted by the single-deck shader waveform widget (used by mesh-cue).
+///
+/// Unlike `WaveformAction`, these don't carry a `deck_idx` since the widget
+/// represents a single deck. Includes scratch (vinyl scrubbing) support.
+#[derive(Debug, Clone)]
+pub enum SingleDeckAction {
+    /// User clicked overview waveform to seek (normalized position 0.0-1.0)
+    Seek(f64),
+    /// User dragged zoomed waveform vertically to change zoom level (new zoom in bars)
+    SetZoom(u32),
+    /// User started horizontal drag on zoomed waveform (vinyl touch)
+    ScratchStart,
+    /// User is dragging horizontally on zoomed waveform (normalized position 0.0-1.0)
+    ScratchMove(f64),
+    /// User released horizontal drag on zoomed waveform (vinyl release)
+    ScratchEnd,
+}
+
+// =============================================================================
+// SingleDeckProgram — shader::Program for single-deck use (mesh-cue)
+// =============================================================================
+
+/// Gesture detection state for zoomed waveform drag interaction.
+///
+/// Detects drag direction after 5px of movement, then locks to either
+/// horizontal (scratch/scrub) or vertical (zoom) for the gesture duration.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+enum SingleDeckGesture {
+    #[default]
+    None,
+    /// Drag started, waiting for 5px movement to detect direction
+    Pending,
+    /// Horizontal drag locked — vinyl scrubbing
+    Scrubbing,
+    /// Vertical drag locked — zoom adjustment
+    Zooming,
+}
+
+/// Interaction state for single-deck shader waveform.
+#[derive(Default)]
+pub struct SingleDeckInteraction {
+    gesture: SingleDeckGesture,
+    drag_start_x: Option<f32>,
+    drag_start_y: Option<f32>,
+    drag_start_zoom: u32,
+    scrub_start_ratio: f64,
+    is_seeking: bool,
+}
+
+/// Shader program for a single-deck waveform view (used by mesh-cue).
+///
+/// Unlike `WaveformProgram` which reads from `PlayerCanvasState` with a deck index,
+/// this reads directly from a `CombinedState` with an explicit playhead position.
+/// The zoomed view supports scratch gesture detection (horizontal drag = scrub,
+/// vertical drag = zoom, direction detected after 5px threshold).
+pub struct SingleDeckProgram<'a, Message, ActionFn>
+where
+    ActionFn: Fn(SingleDeckAction) -> Message,
+{
+    pub state: &'a CombinedState,
+    pub playhead: u64,
+    pub stem_colors: [Color; 4],
+    pub is_overview: bool,
+    pub view_id: u64,
+    pub on_action: ActionFn,
+}
+
+impl<'a, Message, ActionFn> shader::Program<Message> for SingleDeckProgram<'a, Message, ActionFn>
+where
+    Message: Clone + 'a,
+    ActionFn: Fn(SingleDeckAction) -> Message,
+{
+    type State = SingleDeckInteraction;
+    type Primitive = WaveformPrimitive;
+
+    fn update(
+        &self,
+        interaction: &mut Self::State,
+        event: &iced::Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<iced::widget::Action<Message>> {
+        use iced::mouse::{Button, Event as MouseEvent};
+
+        let has_track = self.state.zoomed.has_track && self.state.zoomed.duration_samples > 0;
+
+        match event {
+            iced::Event::Mouse(MouseEvent::ButtonReleased(Button::Left)) => {
+                // Handle release even if cursor is outside bounds
+                let was_scrubbing = interaction.gesture == SingleDeckGesture::Scrubbing;
+                interaction.gesture = SingleDeckGesture::None;
+                interaction.drag_start_x = None;
+                interaction.drag_start_y = None;
+                interaction.is_seeking = false;
+                if was_scrubbing && has_track {
+                    return Some(iced::widget::Action::publish(
+                        (self.on_action)(SingleDeckAction::ScratchEnd),
+                    ));
+                }
+                return None;
+            }
+            _ => {}
+        }
+
+        let cursor_pos = cursor.position_in(bounds)?;
+
+        match event {
+            iced::Event::Mouse(MouseEvent::ButtonPressed(Button::Left)) => {
+                if self.is_overview {
+                    // Overview: click-to-seek
+                    let norm_x = (cursor_pos.x / bounds.width) as f64;
+                    let norm_x = norm_x.clamp(0.0, 1.0);
+                    interaction.is_seeking = true;
+                    Some(iced::widget::Action::publish(
+                        (self.on_action)(SingleDeckAction::Seek(norm_x)),
+                    ).and_capture())
+                } else {
+                    // Zoomed: start gesture detection
+                    interaction.gesture = SingleDeckGesture::Pending;
+                    interaction.drag_start_x = Some(cursor_pos.x);
+                    interaction.drag_start_y = Some(cursor_pos.y);
+                    interaction.drag_start_zoom = self.state.zoomed.zoom_bars;
+                    if has_track {
+                        interaction.scrub_start_ratio =
+                            self.playhead as f64 / self.state.zoomed.duration_samples as f64;
+                    }
+                    None
+                }
+            }
+            iced::Event::Mouse(MouseEvent::CursorMoved { .. }) => {
+                if self.is_overview && interaction.is_seeking {
+                    // Overview: drag-to-seek
+                    let norm_x = (cursor_pos.x / bounds.width) as f64;
+                    let norm_x = norm_x.clamp(0.0, 1.0);
+                    return Some(iced::widget::Action::publish(
+                        (self.on_action)(SingleDeckAction::Seek(norm_x)),
+                    ).and_capture());
+                }
+
+                // Detect direction if pending
+                if interaction.gesture == SingleDeckGesture::Pending {
+                    if let (Some(sx), Some(sy)) = (interaction.drag_start_x, interaction.drag_start_y) {
+                        let dx = (cursor_pos.x - sx).abs();
+                        let dy = (cursor_pos.y - sy).abs();
+                        if dx > 5.0 || dy > 5.0 {
+                            if dx > dy && has_track {
+                                interaction.gesture = SingleDeckGesture::Scrubbing;
+                                return Some(iced::widget::Action::publish(
+                                    (self.on_action)(SingleDeckAction::ScratchStart),
+                                ).and_capture());
+                            } else {
+                                let zoom_enabled = self.state.zoomed.view_mode != ZoomedViewMode::FixedBuffer;
+                                if zoom_enabled {
+                                    interaction.gesture = SingleDeckGesture::Zooming;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Handle scrubbing
+                if interaction.gesture == SingleDeckGesture::Scrubbing && has_track {
+                    if let Some(sx) = interaction.drag_start_x {
+                        let delta_x = cursor_pos.x - sx;
+                        let bpm = if self.state.zoomed.bpm > 0.0 { self.state.zoomed.bpm } else { 120.0 };
+                        let samples_per_beat = (60.0 / bpm) * SAMPLE_RATE as f64;
+                        let visible_samples = samples_per_beat * 4.0 * self.state.zoomed.zoom_bars as f64;
+                        let samples_per_pixel = visible_samples / bounds.width as f64;
+                        let sample_delta = delta_x as f64 * samples_per_pixel;
+                        // Drag right = waveform moves right = playhead backward (subtract)
+                        let delta_ratio = sample_delta / self.state.zoomed.duration_samples as f64;
+                        let new_ratio = (interaction.scrub_start_ratio - delta_ratio).clamp(0.0, 1.0);
+                        return Some(iced::widget::Action::publish(
+                            (self.on_action)(SingleDeckAction::ScratchMove(new_ratio)),
+                        ).and_capture());
+                    }
+                }
+
+                // Handle zooming
+                if interaction.gesture == SingleDeckGesture::Zooming {
+                    if let Some(sy) = interaction.drag_start_y {
+                        let dy = cursor_pos.y - sy;
+                        let zoom_delta = (dy / ZOOM_PIXELS_PER_LEVEL) as i32;
+                        let new_zoom = (interaction.drag_start_zoom as i32 + zoom_delta)
+                            .clamp(MIN_ZOOM_BARS as i32, MAX_ZOOM_BARS as i32) as u32;
+                        return Some(iced::widget::Action::publish(
+                            (self.on_action)(SingleDeckAction::SetZoom(new_zoom)),
+                        ).and_capture());
+                    }
+                }
+
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn draw(
+        &self,
+        _interaction: &Self::State,
+        _cursor: mouse::Cursor,
+        bounds: Rectangle,
+    ) -> Self::Primitive {
+        let peaks = if self.is_overview {
+            self.state.overview.overview_peak_buffer.clone()
+        } else {
+            self.state.overview.highres_peak_buffer.clone()
+        };
+
+        WaveformPrimitive {
+            id: self.view_id,
+            uniforms: self.build_uniforms(bounds),
+            peaks,
+        }
+    }
+
+    fn mouse_interaction(
+        &self,
+        interaction: &Self::State,
+        _bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        if self.is_overview {
+            mouse::Interaction::Pointer
+        } else {
+            match interaction.gesture {
+                SingleDeckGesture::Scrubbing => mouse::Interaction::Grabbing,
+                SingleDeckGesture::Zooming => mouse::Interaction::ResizingVertically,
+                _ => mouse::Interaction::Grab,
+            }
+        }
+    }
+}
+
+impl<'a, Message, ActionFn> SingleDeckProgram<'a, Message, ActionFn>
+where
+    ActionFn: Fn(SingleDeckAction) -> Message,
+{
+    /// Build GPU uniforms from CombinedState fields.
+    ///
+    /// Same uniform layout as `WaveformProgram::build_uniforms()` but reads from
+    /// `CombinedState` directly instead of `PlayerCanvasState` + deck index.
+    fn build_uniforms(&self, bounds: Rectangle) -> WaveformUniforms {
+        let overview = &self.state.overview;
+        let dur_f64 = overview.duration_samples as f64;
+
+        // Playhead (direct sample position, no interpolation needed)
+        let playhead = if overview.duration_samples > 0 {
+            (self.playhead as f64 / dur_f64) as f32
+        } else {
+            0.0
+        };
+
+        let peaks_per_stem = if self.is_overview {
+            overview.overview_peak_buffer.as_ref().map_or(0, |p| p.peaks_per_stem)
+        } else {
+            overview.highres_peak_buffer.as_ref().map_or(0, |p| p.peaks_per_stem)
+        };
+
+        let bpm = if self.state.zoomed.bpm > 0.0 { self.state.zoomed.bpm } else { 120.0 };
+
+        // Window parameters for zoomed view
+        let (window_start, window_end, window_total, peaks_per_pixel) = if !self.is_overview && overview.duration_samples > 0 {
+            let zoom_bars = self.state.zoomed.zoom_bars;
+            let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
+            let samples_per_bar = samples_per_beat * 4;
+            let window_samples = samples_per_bar * zoom_bars as u64;
+
+            let half_window = window_samples as i64 / 2;
+            let virtual_start = self.playhead as i64 - half_window;
+            let virtual_end = virtual_start + window_samples as i64;
+
+            let start_norm = (virtual_start as f64 / dur_f64) as f32;
+            let end_norm = (virtual_end as f64 / dur_f64) as f32;
+
+            let window_span_f64 = window_samples as f64 / dur_f64;
+            let ppp = (peaks_per_stem as f64 * window_span_f64 / bounds.width as f64) as f32;
+
+            (start_norm, end_norm, peaks_per_stem as f32, ppp)
+        } else {
+            (0.0, 1.0, peaks_per_stem as f32, 0.0)
+        };
+
+        // No BPM stretch for single-deck (mesh-cue doesn't sync BPM)
+        let bpm_scale = 0.0f32;
+
+        // Stem active flags from CombinedState
+        let stem_active = [
+            if self.state.stem_active[0] { 1.0 } else { 0.0 },
+            if self.state.stem_active[1] { 1.0 } else { 0.0 },
+            if self.state.stem_active[2] { 1.0 } else { 0.0 },
+            if self.state.stem_active[3] { 1.0 } else { 0.0 },
+        ];
+
+        let color_to_arr = |c: Color| [c.r, c.g, c.b, c.a];
+
+        // Loop — active if loop_region is set (mesh-cue controls this directly)
+        let (loop_start, loop_end, loop_active_f) = match overview.loop_region {
+            Some((start, end)) => (start as f32, end as f32, 1.0),
+            None => (0.0, 0.0, 0.0),
+        };
+
+        // Beat grid
+        let (grid_step, first_beat) = if overview.beat_markers.len() > 1 {
+            let total_span = overview.beat_markers.last().unwrap() - overview.beat_markers[0];
+            let avg_interval = total_span as f32 / (overview.beat_markers.len() - 1) as f32;
+            let first = *overview.beat_markers.first().unwrap() as f32;
+            (avg_interval, first)
+        } else if bpm > 0.0 && dur_f64 > 0.0 {
+            let samples_per_beat = SAMPLE_RATE as f64 * 60.0 / bpm;
+            let grid_step_norm = (samples_per_beat / dur_f64) as f32;
+            (grid_step_norm, 0.0)
+        } else {
+            (0.0, 0.0)
+        };
+
+        // Volume (always 1.0 for mesh-cue)
+        let volume = 1.0f32;
+
+        // Cue markers (up to 8)
+        let mut cue_positions = [[0.0f32; 4]; 2];
+        let mut cue_colors = [[0.0f32; 4]; 8];
+        let cue_count = overview.cue_markers.len().min(8);
+        for (i, cue) in overview.cue_markers.iter().take(8).enumerate() {
+            let group = i / 4;
+            let slot = i % 4;
+            cue_positions[group][slot] = cue.position as f32;
+            cue_colors[i] = color_to_arr(cue.color);
+        }
+
+        let (main_cue_pos, has_main_cue) = match overview.cue_position {
+            Some(pos) => (pos as f32, 1.0),
+            None => (0.0, 0.0),
+        };
+
+        // Slicer parameters
+        let (slicer_start, slicer_end, slicer_active, current_slice) = match overview.slicer_region {
+            Some((start, end)) => {
+                let slice = overview.slicer_current_slice.unwrap_or(0) as f32;
+                (start as f32, end as f32, 1.0, slice)
+            }
+            None => (0.0, 0.0, 0.0, 0.0),
+        };
+
+        WaveformUniforms {
+            bounds: [bounds.x, bounds.y, bounds.width, bounds.height],
+            view_params: [playhead, self.state.zoomed.lufs_gain, peaks_per_stem as f32, if self.is_overview { 1.0 } else { 0.0 }],
+            window_params: [window_start, window_end, window_total, bpm_scale],
+            stem_active,
+            stem_color_0: color_to_arr(self.stem_colors[0]),
+            stem_color_1: color_to_arr(self.stem_colors[1]),
+            stem_color_2: color_to_arr(self.stem_colors[2]),
+            stem_color_3: color_to_arr(self.stem_colors[3]),
+            loop_params: [loop_start, loop_end, loop_active_f, if overview.has_track { 1.0 } else { 0.0 }],
+            beat_params: [grid_step, first_beat, if self.is_overview { overview.grid_bars as f32 } else { 1.0 }, volume],
+            cue_params: [cue_count as f32, main_cue_pos, has_main_cue, slicer_active],
+            slicer_params: [slicer_start, slicer_end, current_slice, peaks_per_pixel],
+            cue_pos_0_3: cue_positions[0],
+            cue_pos_4_7: cue_positions[1],
+            cue_color_0: cue_colors[0],
+            cue_color_1: cue_colors[1],
+            cue_color_2: cue_colors[2],
+            cue_color_3: cue_colors[3],
+            cue_color_4: cue_colors[4],
+            cue_color_5: cue_colors[5],
+            cue_color_6: cue_colors[6],
+            cue_color_7: cue_colors[7],
+            stem_smooth: {
+                let pis = if peaks_per_stem > 0 && overview.duration_samples > 0 {
+                    let dur = overview.duration_samples as f64;
+                    let spc = (overview.duration_samples / peaks_per_stem as u64) as f64;
+                    if spc > 0.0 { (dur / spc) as f32 } else { peaks_per_stem as f32 }
+                } else {
+                    peaks_per_stem as f32
+                };
+                // Zoom window highlight for overview
+                let (zoom_start, zoom_end) = if self.is_overview && dur_f64 > 0.0 {
+                    let zoom_bars = self.state.zoomed.zoom_bars;
+                    let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
+                    let samples_per_bar = samples_per_beat * 4;
+                    let window_samples = samples_per_bar * zoom_bars as u64;
+                    let half = window_samples as i64 / 2;
+                    let vs = self.playhead as i64 - half;
+                    let ve = vs + window_samples as i64;
+                    let s = (vs as f64 / dur_f64).max(0.0) as f32;
+                    let e = (ve as f64 / dur_f64).min(1.0) as f32;
+                    (s, e)
+                } else {
+                    (0.0, 0.0)
+                };
+                [pis, zoom_start, zoom_end, 0.0]
+            },
+        }
+    }
+}
+
+// =============================================================================
+// View helper functions — 4-deck (mesh-player)
 // =============================================================================
 
 /// Create a GPU-accelerated zoomed waveform view for a single deck.
@@ -477,74 +883,49 @@ pub fn waveform_shader_overview<'a, Message: Clone + 'a>(
     .into()
 }
 
-/// Create the full 4-deck waveform display using hybrid canvas/shader rendering.
+/// Create the full 4-deck waveform display using pure GPU shader rendering.
 ///
-/// Architecture:
-/// - **Bottom layer (Canvas)**: Headers + overview waveforms (static after track load,
-///   only invalidated by structural changes like stem mutes, track loads, etc.)
-/// - **Top layer (Shader)**: Zoomed waveforms rendered entirely on the GPU via WGSL
-///   fragment shader. Peak data uploaded once; only 384-byte uniforms per frame.
+/// Architecture: Each deck is a column of three elements:
+/// - **Zoomed waveform** (GPU shader, `Fill` height — gets all remaining space)
+/// - **Deck header** (iced widgets, fixed 48px — text, badge, indicators)
+/// - **Overview waveform** (GPU shader, fixed 81px — full track view)
 ///
-/// Composed via `Stack`: shader widgets are positioned with spacers to overlay
-/// exactly on top of the zoomed waveform areas in the canvas layout.
+/// Decks 0-1 (top row): zoomed → header → overview
+/// Decks 2-3 (bottom row, mirrored): overview → header → zoomed
+/// This layout clusters overviews towards the center gap.
 ///
-/// Layout: 2x2 grid with decks 0-1 on top (zoomed above overview) and
-/// decks 2-3 on bottom (mirrored: overview above zoomed).
+/// Zero CPU tessellation — peak data uploaded once to GPU storage buffer,
+/// only 384-byte uniform buffers updated per frame per view.
 pub fn waveform_player_shader<'a, Message: Clone + 'a>(
     state: &'a PlayerCanvasState,
     on_action: impl Fn(WaveformAction) -> Message + Clone + 'a,
 ) -> Element<'a, Message> {
-    use iced::widget::{column, row, stack, Canvas, Space};
-    use super::canvas::PlayerCanvas;
-    use super::state::DECK_HEADER_HEIGHT;
+    use iced::widget::{column, row};
 
-    // Bottom layer: canvas draws headers + overview waveforms (no zoomed)
-    let on_action_seek = on_action.clone();
-    let on_action_zoom = on_action.clone();
-    let canvas_layer: Element<'a, Message> = Canvas::new(PlayerCanvas {
-        state,
-        on_seek: move |deck, pos| on_action_seek(WaveformAction::Seek(deck, pos)),
-        on_zoom: move |deck, bars| on_action_zoom(WaveformAction::SetZoom(deck, bars)),
-        skip_zoomed: true,
-    })
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into();
-
-    // Height of the non-zoomed content per deck cell (header + gap + overview)
-    let spacer_h = DECK_HEADER_HEIGHT + DECK_INTERNAL_GAP + WAVEFORM_HEIGHT;
-
-    // Top layer: shader widgets positioned to overlay the zoomed waveform areas.
-    // Each deck column: [shader(Fill)] + [spacer(Fixed)] matching the canvas layout.
-    // Top row (non-mirrored): zoomed is above header+overview
-    // Bottom row (mirrored): header+overview is above zoomed
-    let deck_shader = |idx: usize, mirrored: bool| -> Element<'a, Message> {
+    let deck_view = |idx: usize, mirrored: bool| -> Element<'a, Message> {
         let zoomed = waveform_shader_zoomed(state, idx, on_action.clone());
+        let overview = waveform_shader_overview(state, idx, on_action.clone());
+        let header = view_deck_header(state, idx);
+
         if mirrored {
-            column![
-                Space::new().width(Length::Fill).height(Length::Fixed(spacer_h)),
-                zoomed,
-            ]
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+            // Bottom decks: overview → header → zoomed
+            column![overview, header, zoomed]
         } else {
-            column![
-                zoomed,
-                Space::new().width(Length::Fill).height(Length::Fixed(spacer_h)),
-            ]
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+            // Top decks: zoomed → header → overview
+            column![zoomed, header, overview]
         }
+        .spacing(DECK_INTERNAL_GAP)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
     };
 
-    let shader_overlay: Element<'a, Message> = column![
-        row![deck_shader(0, false), deck_shader(1, false)]
+    column![
+        row![deck_view(0, false), deck_view(1, false)]
             .spacing(DECK_GRID_GAP)
             .width(Length::Fill)
             .height(Length::Fill),
-        row![deck_shader(2, true), deck_shader(3, true)]
+        row![deck_view(2, true), deck_view(3, true)]
             .spacing(DECK_GRID_GAP)
             .width(Length::Fill)
             .height(Length::Fill),
@@ -552,10 +933,77 @@ pub fn waveform_player_shader<'a, Message: Clone + 'a>(
     .spacing(DECK_GRID_GAP)
     .width(Length::Fill)
     .height(Length::Fill)
-    .into();
+    .into()
+}
 
-    stack![canvas_layer, shader_overlay]
+// =============================================================================
+// View helper functions — single-deck (mesh-cue)
+// =============================================================================
+
+/// Create a GPU-accelerated zoomed waveform for a single deck.
+///
+/// Supports vinyl scratch gestures: horizontal drag = scrub, vertical drag = zoom.
+/// Direction is detected after 5px of movement and locked for the gesture.
+pub fn waveform_shader_single_zoomed<'a, Message: Clone + 'a>(
+    state: &'a CombinedState,
+    playhead: u64,
+    stem_colors: [Color; 4],
+    on_action: impl Fn(SingleDeckAction) -> Message + 'a,
+) -> Element<'a, Message> {
+    shader(SingleDeckProgram {
+        state,
+        playhead,
+        stem_colors,
+        is_overview: false,
+        view_id: 100, // Distinct from 4-deck view IDs (0-7)
+        on_action,
+    })
+    .width(Length::Fill)
+    .height(Length::Fixed(ZOOMED_WAVEFORM_HEIGHT))
+    .into()
+}
+
+/// Create a GPU-accelerated overview waveform for a single deck.
+pub fn waveform_shader_single_overview<'a, Message: Clone + 'a>(
+    state: &'a CombinedState,
+    playhead: u64,
+    stem_colors: [Color; 4],
+    on_action: impl Fn(SingleDeckAction) -> Message + 'a,
+) -> Element<'a, Message> {
+    shader(SingleDeckProgram {
+        state,
+        playhead,
+        stem_colors,
+        is_overview: true,
+        view_id: 101,
+        on_action,
+    })
+    .width(Length::Fill)
+    .height(Length::Fixed(WAVEFORM_HEIGHT))
+    .into()
+}
+
+/// Create a combined single-deck shader waveform (zoomed + overview in a column).
+///
+/// Replaces the canvas-based `waveform_combined()` with GPU shader rendering.
+/// Layout: zoomed (fixed height) on top, overview (fixed height) below,
+/// with `COMBINED_WAVEFORM_GAP` spacing between them.
+pub fn waveform_shader_combined<'a, Message: Clone + 'a>(
+    state: &'a CombinedState,
+    playhead: u64,
+    stem_colors: [Color; 4],
+    on_action: impl Fn(SingleDeckAction) -> Message + Clone + 'a,
+) -> Element<'a, Message> {
+    use iced::widget::column;
+
+    let zoomed = waveform_shader_single_zoomed(state, playhead, stem_colors, on_action.clone());
+    let overview = waveform_shader_single_overview(state, playhead, stem_colors, on_action);
+
+    let combined_height = ZOOMED_WAVEFORM_HEIGHT + COMBINED_WAVEFORM_GAP + WAVEFORM_HEIGHT;
+
+    column![zoomed, overview]
+        .spacing(COMBINED_WAVEFORM_GAP)
         .width(Length::Fill)
-        .height(Length::Fill)
+        .height(Length::Fixed(combined_height))
         .into()
 }

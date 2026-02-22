@@ -103,8 +103,6 @@ pub struct MeshApp {
     pub(crate) browser_visible: bool,
     /// Ticks until browser auto-hide (0 = no timer; 300 = 5s at 60Hz)
     pub(crate) browser_hide_countdown: u16,
-    /// Tick counter for frequency division (feedback throttled to 30Hz)
-    pub(crate) tick_count: u32,
     /// Whether a suggestion seed refresh is already scheduled (debounce guard)
     pub(crate) suggestion_refresh_pending: bool,
     /// Generation counter for energy direction debounce (trailing-edge: only the last timer fires)
@@ -197,7 +195,7 @@ impl MeshApp {
         };
 
         // Create domain layer with all services
-        // Domain owns: command_sender, track_loader, peaks_computer, usb_manager, linked_stem_receiver
+        // Domain owns: command_sender, track_loader, usb_manager, linked_stem_receiver
         // Domain also owns: deck_stems, deck_linked_stems, track_lufs_per_deck, global_bpm
         let mut domain = MeshDomain::new(
             db_service.clone(),
@@ -286,7 +284,6 @@ impl MeshApp {
             browse_mode_active: [false; 2],
             browser_visible: false,
             browser_hide_countdown: 0,
-            tick_count: 0,
             suggestion_refresh_pending: false,
             energy_debounce_gen: 0,
             audio_client_name,
@@ -329,10 +326,9 @@ impl MeshApp {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Tick => super::handlers::tick::handle(self),
+            Message::UpdateLeds => super::handlers::led_feedback::handle(self),
 
             Message::TrackLoaded(msg) => super::handlers::track_loading::handle_track_loaded(self, msg),
-
-            Message::PeaksComputed(result) => super::handlers::track_loading::handle_peaks_computed(self, result),
 
             Message::LinkedStemLoaded(msg) => super::handlers::track_loading::handle_linked_stem_loaded(self, msg),
 
@@ -1264,6 +1260,13 @@ impl MeshApp {
             Subscription::none()
         };
 
+        // LED feedback subscription — 30Hz timer, only when controller is connected
+        let led_sub = if self.controller.is_some() {
+            time::every(std::time::Duration::from_millis(33)).map(|_| Message::UpdateLeds)
+        } else {
+            Subscription::none()
+        };
+
         // Journal polling subscription for OTA update progress
         let journal_poll_sub = if self.settings.is_open && self.settings.update.as_ref().is_some_and(|u| u.is_installing()) {
             time::every(std::time::Duration::from_secs(2))
@@ -1278,9 +1281,6 @@ impl MeshApp {
             // Background track load results (delivered as messages, no polling needed)
             mpsc_subscription(self.domain.track_loader_result_receiver())
                 .map(|result| Message::TrackLoaded(TrackLoadedMsg(Arc::new(result)))),
-            // Background peak computation results
-            mpsc_subscription(self.domain.peaks_result_receiver())
-                .map(Message::PeaksComputed),
             // Background preset load results (MultibandHost built on loader thread)
             mpsc_subscription(self.domain.preset_loader_result_receiver())
                 .map(|result| Message::PresetLoaded(PresetLoadedMsg(
@@ -1296,6 +1296,8 @@ impl MeshApp {
             plugin_gui_sub,
             // OTA update journal polling (2s interval, only during install)
             journal_poll_sub,
+            // LED feedback evaluation (30Hz timer, only when controller connected)
+            led_sub,
         ])
     }
 

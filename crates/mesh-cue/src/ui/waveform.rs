@@ -8,7 +8,7 @@
 //! Following iced 0.14 patterns, waveform rendering is now handled by:
 //! - **State structs** in mesh_widgets: Pure data (peaks, markers, positions)
 //! - **View functions**: Take state + callbacks, return Elements
-//! - **Canvas Programs**: Handle custom rendering
+//! - **GPU Shader**: Renders waveforms via WGSL fragment shader
 //!
 //! See mesh_widgets::waveform for the full implementation.
 
@@ -30,21 +30,19 @@ pub use mesh_widgets::{
     MIN_ZOOM_BARS, MAX_ZOOM_BARS, DEFAULT_ZOOM_BARS, ZOOM_PIXELS_PER_LEVEL,
 };
 
-// Import the view function for local use
-use mesh_widgets::waveform_combined;
+use mesh_widgets::{waveform_shader_combined, SingleDeckAction};
 
-/// Create a combined waveform view element
+/// Create a combined waveform view element using GPU shader rendering.
 ///
-/// This is a convenience function that wraps the mesh_widgets view function
-/// with mesh-cue's specific Message type.
+/// This replaces the canvas-based `waveform_combined()` with GPU shader
+/// rendering via `waveform_shader_combined()`. The zoomed view supports
+/// vinyl scratch gestures (horizontal drag = scrub, vertical drag = zoom).
 pub fn view_combined_waveform(state: &CombinedWaveformView, playhead: u64) -> Element<'_, Message> {
-    waveform_combined(
-        state,
-        playhead,
-        Message::Seek,
-        Message::SetZoomBars,
-        || Message::ScratchStart,
-        Message::ScratchMove,
-        || Message::ScratchEnd,
-    )
+    waveform_shader_combined(state, playhead, STEM_COLORS, |action| match action {
+        SingleDeckAction::Seek(pos) => Message::Seek(pos),
+        SingleDeckAction::SetZoom(bars) => Message::SetZoomBars(bars),
+        SingleDeckAction::ScratchStart => Message::ScratchStart,
+        SingleDeckAction::ScratchMove(pos) => Message::ScratchMove(pos),
+        SingleDeckAction::ScratchEnd => Message::ScratchEnd,
+    })
 }

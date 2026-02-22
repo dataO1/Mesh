@@ -3,7 +3,7 @@
 //! All message types that can be dispatched in the mesh-player application.
 
 use std::sync::Arc;
-use mesh_widgets::{MultibandEditorMessage, PeaksComputeResult};
+use mesh_widgets::MultibandEditorMessage;
 
 use crate::config::{StemColorPalette, KeyScoringModel, WaveformLayout};
 use crate::suggestions::SuggestedTrack;
@@ -61,12 +61,12 @@ pub enum SettingsMessage {
 /// Messages that can be sent to the application
 #[derive(Debug, Clone)]
 pub enum Message {
-    /// Tick for periodic UI updates (waveform animation, atomics reading)
+    /// Frame-synced tick for atomic state sync (playheads, loops, stems, volume)
     Tick,
+    /// Timer-driven LED feedback evaluation (~30Hz)
+    UpdateLeds,
     /// Background track load completed
     TrackLoaded(TrackLoadedMsg),
-    /// Background peak computation completed
-    PeaksComputed(PeaksComputeResult),
     /// Background linked stem load completed
     LinkedStemLoaded(LinkedStemLoadedMsg),
     /// Background preset load completed (MultibandHost built on loader thread)

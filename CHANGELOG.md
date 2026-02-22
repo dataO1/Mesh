@@ -16,6 +16,10 @@ All notable changes to Mesh are documented in this file.
 - **Smarter redraw scheduling** — Waveform display only redraws when something
   actually changes, instead of rebuilding every frame unconditionally.
 
+- **Removed background peaks thread** — Eliminated a legacy background thread that
+  recomputed zoomed waveform peaks every tick. The GPU shader reads peak data uploaded
+  once at track load, making this thread pure overhead.
+
 ### Improved
 
 - **Smoother waveform appearance** — Waveforms now have a cleaner, more abstract look
@@ -36,6 +40,17 @@ All notable changes to Mesh are documented in this file.
 - **LUFS-normalized waveform amplitude** — All tracks are visually scaled to match
   -9 LUFS, so quiet and loud tracks appear at the same visual amplitude in the
   waveform display.
+
+- **Slicer shows 16 divisions** — Slicer overlay now correctly displays 16 slice
+  divisions instead of 8. The currently playing slice is highlighted with an orange
+  tint, and the next slice boundary has a yellow accent.
+
+- **Beat grid respects density setting** — The overview waveform beat grid now follows
+  the grid density setting (4, 8, 16, or 32 bars between markers) instead of showing
+  every bar. Zoomed view shows individual beat lines as before.
+
+- **GPU waveforms in mesh-cue** — The track editor now uses the same GPU shader
+  waveform renderer as the player, replacing the old CPU canvas rendering.
 
 ### Fixed
 
@@ -60,6 +75,17 @@ All notable changes to Mesh are documented in this file.
 
 - **Playhead stays centered at track edges** — Zoomed waveform no longer snaps the
   playhead off-center when near the beginning or end of a track.
+
+- **Overview waveform stays visible after loading** — Fixed a bug where the overview
+  waveform would appear during progressive loading but disappear once loading completed.
+
+- **Beat markers no longer too thick** — Reduced beat grid line thickness and opacity
+  for a cleaner look that doesn't obscure the waveform.
+
+- **Smooth waveform scrolling in mesh-cue** — Replaced fixed 16ms timer with
+  display-synced frame scheduling, and fixed playhead interpolation to only reset when
+  the audio position actually changes. Eliminates bursty waveform movement caused by
+  audio buffer quantization.
 
 ---
 

@@ -73,6 +73,7 @@ impl MeshCueApp {
                     loading_audio: true,
                     deck_atomics: self.audio.deck_atomics().clone(),
                     last_playhead_update: std::time::Instant::now(),
+                    last_known_position: 0,
                     slice_editor: {
                         // Load presets from dedicated file (shared with mesh-player)
                         let slicer_config =
@@ -144,11 +145,6 @@ impl MeshCueApp {
                         .combined_waveform
                         .zoomed
                         .set_zoom(self.domain.config().display.zoom_bars);
-                    state
-                        .combined_waveform
-                        .zoomed
-                        .compute_peaks(&stems, 0, 1600);
-
                     state.stems = Some(stems.clone());
 
                     // Create LoadedTrack from metadata + stems for audio engine

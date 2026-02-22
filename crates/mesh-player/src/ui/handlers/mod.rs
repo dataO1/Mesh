@@ -10,6 +10,7 @@ pub mod browser;
 pub mod track_loading;
 pub mod deck_controls;
 pub mod tick;
+pub mod led_feedback;
 pub mod multiband;
 pub mod network;
 pub mod system_update;

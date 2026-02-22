@@ -14,7 +14,7 @@ struct Uniforms {
     stem_color_2: vec4<f32>,
     stem_color_3: vec4<f32>,
     loop_params: vec4<f32>,     // loop_start, loop_end, loop_active, has_track
-    beat_params: vec4<f32>,     // grid_step_norm, first_beat_norm, beats_per_bar, volume
+    beat_params: vec4<f32>,     // grid_step_norm, first_beat_norm, grid_bars, volume
     cue_params: vec4<f32>,      // cue_count, main_cue_pos, has_main_cue, slicer_active
     slicer_params: vec4<f32>,   // slicer_start, slicer_end, current_slice, peaks_per_pixel
     cue_pos_0_3: vec4<f32>,
@@ -274,42 +274,55 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
             let slicer_width = sl_end - sl_start;
             if (slicer_width > 0.0) {
-                let slice_frac = (source_x - sl_start) / slicer_width * 8.0;
+                let slice_frac = (source_x - sl_start) / slicer_width * 16.0;
                 let at_division = fract(slice_frac);
-                let line_width = 8.0 * px_in_source / slicer_width;
+                let line_width = 16.0 * px_in_source / slicer_width;
+
+                // Current slice highlight (brighter orange overlay)
+                let current_sl = u.slicer_params.z;
+                let slice_idx = floor(slice_frac);
+                if (slice_idx == current_sl) {
+                    color = blend_over(color, vec4<f32>(1.0, 0.6, 0.0, 0.25));
+                }
+
+                // Slice division lines
                 if (at_division < line_width || at_division > 1.0 - line_width) {
-                    color = blend_over(color, vec4<f32>(1.0, 0.5, 0.0, 0.6));
+                    // Highlight divider after current slice (yellow accent)
+                    let divider_after = current_sl + 1.0;
+                    if (divider_after < 16.0 && abs(slice_idx - divider_after) < 0.5) {
+                        color = blend_over(color, vec4<f32>(1.0, 0.8, 0.2, 0.9));
+                    } else {
+                        color = blend_over(color, vec4<f32>(1.0, 0.5, 0.0, 0.6));
+                    }
                 }
             }
         }
     }
 
     // -----------------------------------------------------------------
-    // 3. Beat markers (behind stems — subtle grid lines)
+    // 3. Beat markers (grid lines)
     // -----------------------------------------------------------------
     let grid_step = u.beat_params.x;
     let first_beat = u.beat_params.y;
-    let beats_per_bar = u.beat_params.z;
+    let grid_bars = u.beat_params.z;       // overview: 4/8/16/32, zoomed: 1
+    let beats_per_bar = 4.0;
 
     if (grid_step > 0.001) {
         let beat_phase = (source_x - first_beat) / grid_step;
 
-        // Bar lines (every beats_per_bar beats) — red downbeat
-        let bar_phase = beat_phase / beats_per_bar;
-        let bar_frac = fract(bar_phase);
-        let bar_threshold = px_in_source * 2.0 / (grid_step * beats_per_bar);
-        if (bar_frac < bar_threshold || bar_frac > 1.0 - bar_threshold) {
-            if (beat_phase > -0.5) {
-                color = blend_over(color, vec4<f32>(1.0, 0.3, 0.3, 0.7));
-            }
-        } else {
-            // Beat lines — subtle gray
+        // Major grid lines — red, every (grid_bars * beats_per_bar) beats
+        let major_interval = beats_per_bar * grid_bars;
+        let major_phase = beat_phase / major_interval;
+        let major_frac = fract(major_phase);
+        let major_threshold = px_in_source / (grid_step * major_interval);
+        if ((major_frac < major_threshold || major_frac > 1.0 - major_threshold) && beat_phase > -0.5) {
+            color = blend_over(color, vec4<f32>(1.0, 0.3, 0.3, 0.5));
+        } else if (!is_overview) {
+            // Beat lines — subtle gray (zoomed view only)
             let beat_frac = fract(beat_phase);
             let beat_threshold = px_in_source / grid_step;
-            if (beat_frac < beat_threshold || beat_frac > 1.0 - beat_threshold) {
-                if (beat_phase > -0.5) {
-                    color = blend_over(color, vec4<f32>(0.3, 0.3, 0.3, 0.3));
-                }
+            if ((beat_frac < beat_threshold || beat_frac > 1.0 - beat_threshold) && beat_phase > -0.5) {
+                color = blend_over(color, vec4<f32>(0.3, 0.3, 0.3, 0.3));
             }
         }
     }

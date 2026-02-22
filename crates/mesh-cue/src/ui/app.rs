@@ -845,13 +845,14 @@ impl MeshCueApp {
                 Arc::new(std::sync::Mutex::new(Some(result)))
             )));
 
-        // Always run tick at 60fps for smooth waveform animation
-        // This matches mesh-player's approach and ensures cueing/preview states work correctly
+        // Update UI synced to display refresh rate (60Hz, 120Hz, etc.)
+        // Using window::frames() instead of time::every() eliminates bursty waveform
+        // movement — the tick fires exactly when the compositor needs a new frame.
         iced::Subscription::batch([
             keyboard_sub,
             mouse_sub,
             effects_editor_mouse_sub,
-            time::every(Duration::from_millis(16)).map(|_| Message::Tick),
+            iced::window::frames().map(|_| Message::Tick),
             linked_stem_sub,
             usb_sub,
             learning_sub,

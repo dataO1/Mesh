@@ -21,9 +21,8 @@
 //!
 //! ## View Functions
 //!
-//! - `waveform_overview`: Overview waveform with click-to-seek
-//! - `waveform_zoomed`: Zoomed detail view with drag-to-zoom
-//! - `waveform_combined`: Both views in a single canvas (iced bug #3040 workaround)
+//! - `waveform_player_shader`: 4-deck GPU shader waveforms (mesh-player)
+//! - `waveform_shader_combined`: Single-deck GPU shader zoomed + overview (mesh-cue)
 
 pub mod button_styles;
 pub mod deck_preset;
@@ -61,9 +60,6 @@ pub use waveform::{
     update_peaks_for_region, DEFAULT_WIDTH, HIGHRES_WIDTH, PEAK_SMOOTHING_WINDOW,
 };
 
-// Background peak computation
-pub use waveform::{PeaksComputer, PeaksComputeRequest, PeaksComputeResult, PeaksResultReceiver};
-
 // Waveform state structures
 pub use waveform::{
     CombinedState, CueMarker, OverviewState, PlayerCanvasState, ZoomedState, ZoomedViewMode,
@@ -72,12 +68,11 @@ pub use waveform::{
     WAVEFORM_HEIGHT, ZOOMED_WAVEFORM_HEIGHT, ZOOM_PIXELS_PER_LEVEL,
 };
 
-// Waveform view functions (idiomatic iced 0.14 pattern)
-pub use waveform::{waveform_combined, waveform_overview, waveform_player, waveform_zoomed};
-
-// Canvas interaction types for advanced usage
+// GPU shader waveform view functions
 pub use waveform::{
-    CombinedInteraction, OverviewInteraction, PlayerInteraction, ZoomedInteraction,
+    SingleDeckAction, WaveformAction, view_deck_header,
+    waveform_player_shader, waveform_shader_combined,
+    waveform_shader_single_overview, waveform_shader_single_zoomed,
 };
 
 // Tree widget for hierarchical navigation
@@ -107,11 +102,10 @@ pub use slice_editor::{
     load_slicer_presets, save_slicer_presets, slicer_presets_path, SLICER_PRESETS_FILENAME,
 };
 
-// GPU shader waveform rendering
-pub use waveform::{PeakBuffer, WaveformAction, waveform_player_shader, waveform_shader_overview, waveform_shader_zoomed};
+// GPU shader waveform rendering (additional re-exports)
+pub use waveform::{PeakBuffer, waveform_shader_overview, waveform_shader_zoomed};
 
-// Slicer overlay drawing utilities
-pub use waveform::{draw_slicer_overlay, draw_slicer_overlay_zoomed};
+// Slicer overlay — now handled by GPU shader, canvas functions removed from compilation
 
 // Subscription helpers for message-driven architecture
 pub use subscription::{mpsc_subscription, mpsc_subscription_owned};

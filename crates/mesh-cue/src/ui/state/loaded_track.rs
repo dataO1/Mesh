@@ -52,6 +52,9 @@ pub struct LoadedTrackState {
     pub deck_atomics: Arc<DeckAtomics>,
     /// Last time the playhead position was updated (for smooth interpolation)
     pub last_playhead_update: std::time::Instant,
+    /// Last known position from atomics (for change detection — only reset
+    /// interpolation clock when audio thread actually updates position)
+    pub last_known_position: u64,
     /// Slice editor state for editing slicer presets
     pub slice_editor: SliceEditorState,
 }
@@ -84,9 +87,18 @@ impl LoadedTrackState {
         base_position.saturating_add(samples_elapsed).min(self.duration_samples)
     }
 
-    /// Update the playhead timestamp (call this when position is updated from audio thread)
+    /// Update the playhead timestamp for smooth interpolation.
+    ///
+    /// Only resets the interpolation clock when the atomic position has actually
+    /// changed (i.e. the audio thread processed a new buffer). This lets the
+    /// interpolation extrapolate smoothly between audio callbacks instead of
+    /// resetting every frame.
     pub fn touch_playhead(&mut self) {
-        self.last_playhead_update = std::time::Instant::now();
+        let pos = self.deck_atomics.position();
+        if pos != self.last_known_position {
+            self.last_known_position = pos;
+            self.last_playhead_update = std::time::Instant::now();
+        }
     }
 
     /// Check if audio is currently playing
@@ -140,13 +152,9 @@ impl LoadedTrackState {
     /// Call this after any operation that changes the playhead position
     /// (Seek, Stop, BeatJump, JumpToCue, etc.) to ensure the zoomed
     /// waveform displays correctly.
-    pub fn update_zoomed_waveform_cache(&mut self, playhead: u64) {
-        // mesh-cue doesn't use linked stems, so pass all-false array
-        if self.combined_waveform.zoomed.needs_recompute(playhead, &[false; 4]) {
-            if let Some(ref stems) = self.stems {
-                self.combined_waveform.zoomed.compute_peaks(stems, playhead, 1600);
-            }
-        }
+    pub fn update_zoomed_waveform_cache(&mut self, _playhead: u64) {
+        // No-op: shader waveforms read overview.highres_peak_buffer (uploaded once at
+        // track load), not zoomed.cached_peaks. The old compute_peaks() path is dead.
     }
 }
 

@@ -2,7 +2,6 @@
 //!
 //! Handles async results from the track loading pipeline:
 //! - TrackLoaded: Main track loaded with stems and metadata
-//! - PeaksComputed: Background waveform peak computation complete
 //! - LinkedStemLoaded: Linked stem loaded from another track
 
 use std::sync::Arc;
@@ -48,7 +47,6 @@ pub fn handle_track_loaded(app: &mut MeshApp, msg: TrackLoadedMsg) -> Task<Messa
                 mesh_widgets::PeakBuffer::from_stem_peaks(&highres_peaks);
             overview.stem_waveforms = overview_peaks;
             overview.highres_peaks = highres_peaks;
-            app.player_canvas_state.invalidate_cache();
             Task::none()
         }
 
@@ -104,16 +102,6 @@ pub fn handle_track_loaded(app: &mut MeshApp, msg: TrackLoadedMsg) -> Task<Messa
             Task::none()
         }
     }
-}
-
-/// Handle peaks computed message (background waveform computation)
-pub fn handle_peaks_computed(app: &mut MeshApp, result: mesh_widgets::PeaksComputeResult) -> Task<Message> {
-    // Apply computed peaks to the appropriate deck's zoomed waveform state
-    if result.id < 4 {
-        let zoomed = &mut app.player_canvas_state.decks[result.id].zoomed;
-        zoomed.apply_computed_peaks(result);
-    }
-    Task::none()
 }
 
 /// Handle linked stem loaded message (stem from another track)

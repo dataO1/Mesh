@@ -66,18 +66,6 @@ impl MeshCueApp {
         }
 
         if let Some(ref mut state) = self.collection.loaded_track {
-            // Update zoomed waveform peaks if playhead moved outside cache
-            let pos = self.audio.position();
-            if state
-                .combined_waveform
-                .zoomed
-                .needs_recompute(pos, &state.combined_waveform.linked_active)
-            {
-                if let Some(ref stems) = state.stems {
-                    state.combined_waveform.zoomed.compute_peaks(stems, pos, 1600);
-                }
-            }
-
             // Sync slicer state from atomics for waveform overlay
             // Check all 4 stems for active slicer
             let slicer_atomics = self.audio.slicer_atomics();

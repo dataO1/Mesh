@@ -528,6 +528,8 @@ fn build_waveform_states(track: &LoadedTrack) -> (OverviewState, ZoomedState) {
     // Compute overview peaks from raw stems (consistent with incremental path)
     let overview_start = std::time::Instant::now();
     overview_state.stem_waveforms = generate_peaks(&track.stems, DEFAULT_WIDTH);
+    overview_state.overview_peak_buffer =
+        mesh_widgets::PeakBuffer::from_stem_peaks(&overview_state.stem_waveforms);
     log::info!("[PERF] Loader: Overview peaks took {:?}", overview_start.elapsed());
 
     // Compute high-resolution peaks
@@ -544,9 +546,6 @@ fn build_waveform_states(track: &LoadedTrack) -> (OverviewState, ZoomedState) {
     );
     zoomed_state.set_duration(duration);
     zoomed_state.set_drop_marker(track.metadata.drop_marker);
-
-    // Compute initial zoomed peaks
-    zoomed_state.compute_peaks(&track.stems, 0, 1600);
 
     (overview_state, zoomed_state)
 }

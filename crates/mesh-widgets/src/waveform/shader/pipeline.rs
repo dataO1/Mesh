@@ -36,7 +36,7 @@ pub struct WaveformUniforms {
     pub stem_color_3: [f32; 4],
     /// [loop_start, loop_end, loop_active, has_track]
     pub loop_params: [f32; 4],
-    /// [grid_step_norm, first_beat_norm, beats_per_bar, volume]
+    /// [grid_step_norm, first_beat_norm, grid_bars, volume]
     pub beat_params: [f32; 4],
     /// [cue_count, main_cue_pos, has_main_cue, slicer_active]
     pub cue_params: [f32; 4],

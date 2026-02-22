@@ -333,11 +333,14 @@ where
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        let geometry = self.state.canvas_cache.draw(renderer, bounds.size(), |frame| {
+        // Draw fresh each frame (no canvas::Cache — removed during shader migration).
+        // This is fine for mesh-cue's single-deck waveform where perf isn't critical.
+        let mut frame = Frame::new(renderer, bounds.size());
+        {
+            let frame = &mut frame;
             if self.state.is_vertical_layout() {
                 self.draw_vertical_into(frame, bounds);
-                return;
-            }
+            } else {
 
             let width = bounds.width;
             let cell_width = (width - DECK_GRID_GAP) / 2.0;
@@ -410,9 +413,10 @@ where
                     self.skip_zoomed,
                 );
             }
-        });
+            } // else (non-vertical layout)
+        }
 
-        vec![geometry]
+        vec![frame.into_geometry()]
     }
 }
 

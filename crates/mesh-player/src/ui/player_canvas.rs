@@ -25,15 +25,3 @@ pub fn view_player_canvas(state: &PlayerCanvasState) -> Element<'_, Message> {
     })
 }
 
-/// DEPRECATED: Canvas-based 4-deck waveform display (CPU lyon tessellation)
-///
-/// This is the old canvas renderer kept for fallback/debugging.
-/// Use `view_player_canvas()` instead, which uses GPU shader rendering.
-#[allow(dead_code)]
-pub fn view_player_canvas_legacy(state: &PlayerCanvasState) -> Element<'_, Message> {
-    mesh_widgets::waveform_player(
-        state,
-        |deck_idx, pos| Message::DeckSeek(deck_idx, pos),
-        |deck_idx, bars| Message::DeckSetZoom(deck_idx, bars),
-    )
-}
