@@ -219,7 +219,7 @@ pub struct DisplayConfig {
     pub default_loop_length_index: usize,
     /// Default zoom level for zoomed waveform (in bars)
     pub default_zoom_bars: u32,
-    /// Overview waveform grid density (4, 8, 16, or 32 bars)
+    /// Overview waveform grid density in beats (8, 16, 32, or 64)
     pub grid_bars: u32,
     /// Stem color palette for waveform display
     pub stem_color_palette: StemColorPalette,
@@ -241,7 +241,7 @@ impl Default for DisplayConfig {
         Self {
             default_loop_length_index: 2, // Default to 4 beats (index 2 in LOOP_LENGTH_OPTIONS)
             default_zoom_bars: 8,         // Default zoomed waveform to 8 bars
-            grid_bars: 8,                 // Default grid density to 8 bars
+            grid_bars: 32,                // Default grid density to 32 beats (8 bars)
             stem_color_palette: StemColorPalette::default(), // Natural palette
             show_local_collection: false, // USB-only mode by default
             key_scoring_model: KeyScoringModel::default(), // Camelot wheel
@@ -353,7 +353,7 @@ mod tests {
             display: DisplayConfig {
                 default_loop_length_index: 5, // 8 beats
                 default_zoom_bars: 4,
-                grid_bars: 16,
+                grid_bars: 64,
                 ..Default::default()
             },
             slicer: SlicerConfig {

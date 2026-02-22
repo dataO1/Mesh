@@ -66,7 +66,7 @@ impl Default for Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplayConfig {
-    /// Default beat grid density for overview waveform (4, 8, 16, or 32 bars)
+    /// Overview waveform grid density in beats (8, 16, 32, or 64)
     pub grid_bars: u32,
     /// Zoomed waveform zoom level (1-64 bars)
     pub zoom_bars: u32,
@@ -82,7 +82,7 @@ pub const LOOP_LENGTH_OPTIONS: [f32; 7] = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0];
 impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
-            grid_bars: 8,       // Default to 8 bars between grid lines
+            grid_bars: 32,      // Default: red grid line every 32 beats (8 bars)
             zoom_bars: 8,       // Default zoomed waveform to 8 bars
             global_bpm: 128.0,  // Standard house/techno BPM
             default_loop_length_index: 4,  // Default to 4 beats (index 4 in LOOP_LENGTH_OPTIONS)

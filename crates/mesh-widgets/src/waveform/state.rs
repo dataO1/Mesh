@@ -123,7 +123,7 @@ impl OverviewState {
             has_track: false,
             loading: false,
             missing_preview_message: None,
-            grid_bars: 8, // Default: show grid every 8 bars
+            grid_bars: 32, // Default: red grid line every 32 beats (8 bars)
             loop_region: None,
             slicer_region: None,
             slicer_current_slice: None,
@@ -156,9 +156,9 @@ impl OverviewState {
         );
     }
 
-    /// Set the grid density (bars between major grid lines)
-    pub fn set_grid_bars(&mut self, bars: u32) {
-        self.grid_bars = bars.clamp(4, 32);
+    /// Set the grid density (beats between major grid lines)
+    pub fn set_grid_bars(&mut self, beats: u32) {
+        self.grid_bars = beats.clamp(8, 64);
     }
 
     /// Set the loop region (normalized positions 0.0 to 1.0)
@@ -239,7 +239,7 @@ impl OverviewState {
             has_track: true,
             loading: false,
             missing_preview_message: None,
-            grid_bars: 8,
+            grid_bars: 32,
             loop_region: None,
             slicer_region: None,
             slicer_current_slice: None,
@@ -271,7 +271,7 @@ impl OverviewState {
             has_track: true,
             loading: false,
             missing_preview_message: Some(message.to_string()),
-            grid_bars: 8,
+            grid_bars: 32,
             loop_region: None,
             slicer_region: None,
             slicer_current_slice: None,
@@ -311,7 +311,7 @@ impl OverviewState {
             has_track: true,
             loading: true,
             missing_preview_message: None,
-            grid_bars: 8,
+            grid_bars: 32,
             loop_region: None,
             slicer_region: None,
             slicer_current_slice: None,
@@ -426,7 +426,7 @@ impl OverviewState {
             has_track: true,
             loading: false,
             missing_preview_message: None,
-            grid_bars: 8,
+            grid_bars: 32,
             loop_region: None,
             slicer_region: None,
             slicer_current_slice: None,

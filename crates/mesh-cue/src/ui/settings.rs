@@ -294,11 +294,11 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
     let section_title = text("Display").size(18);
 
     let subsection_title = text("Overview Grid Density").size(14);
-    let hint = text("Beat grid line spacing on the overview waveform (in bars)")
+    let hint = text("Beat grid line spacing on the overview waveform")
         .size(12);
 
-    // Grid density buttons (4, 8, 16, 32 bars)
-    let grid_sizes: [u32; 4] = [4, 8, 16, 32];
+    // Grid density buttons (8, 16, 32, 64 beats)
+    let grid_sizes: [u32; 4] = [8, 16, 32, 64];
     let grid_buttons: Vec<Element<Message>> = grid_sizes
         .iter()
         .map(|&size| {
@@ -315,7 +315,7 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
         })
         .collect();
 
-    let grid_label = text("Grid (bars):").size(14);
+    let grid_label = text("Beats:").size(14);
     let grid_row = row![
         grid_label,
         row(grid_buttons).spacing(4).align_y(Alignment::Center),

@@ -14,7 +14,7 @@ struct Uniforms {
     stem_color_2: vec4<f32>,
     stem_color_3: vec4<f32>,
     loop_params: vec4<f32>,     // loop_start, loop_end, loop_active, has_track
-    beat_params: vec4<f32>,     // grid_step_norm, first_beat_norm, grid_bars, volume
+    beat_params: vec4<f32>,     // grid_step_norm, first_beat_norm, grid_beats, volume
     cue_params: vec4<f32>,      // cue_count, main_cue_pos, has_main_cue, slicer_active
     slicer_params: vec4<f32>,   // slicer_start, slicer_end, current_slice, peaks_per_pixel
     cue_pos_0_3: vec4<f32>,
@@ -304,14 +304,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // -----------------------------------------------------------------
     let grid_step = u.beat_params.x;
     let first_beat = u.beat_params.y;
-    let grid_bars = u.beat_params.z;       // overview: 4/8/16/32, zoomed: 1
+    let grid_beats = u.beat_params.z;      // overview: 8/16/32/64, zoomed: 4
     let beats_per_bar = 4.0;
 
     if (grid_step > 0.0000001) {
         let beat_phase = (source_x - first_beat) / grid_step;
 
-        // Major grid lines — red, every (grid_bars * beats_per_bar) beats
-        let major_interval = beats_per_bar * grid_bars;
+        // Major grid lines — red, every grid_beats beats
+        let major_interval = grid_beats;
         let major_phase = beat_phase / major_interval;
         let major_frac = fract(major_phase);
         let major_threshold = px_in_source / (grid_step * major_interval);

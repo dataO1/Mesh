@@ -138,7 +138,7 @@ impl SettingsState {
             is_open: false,
             draft_loop_length_index: 2, // 4 beats (index 2 in new array)
             draft_zoom_bars: 8,
-            draft_grid_bars: 8,
+            draft_grid_bars: 32,
             draft_stem_color_palette: StemColorPalette::default(),
             draft_phase_sync: true, // Enabled by default
             draft_slicer_buffer_bars: 1, // 1 bar = 4 beats (default)
@@ -295,8 +295,8 @@ pub struct SettingsEntry {
 
 /// Zoom bar options used in both the registry and view
 pub const ZOOM_SIZES: [u32; 6] = [2, 4, 8, 16, 32, 64];
-/// Grid bar options used in both the registry and view
-pub const GRID_SIZES: [u32; 4] = [4, 8, 16, 32];
+/// Grid density options in beats — used in both the registry and view
+pub const GRID_SIZES: [u32; 4] = [8, 16, 32, 64];
 /// Slicer buffer bar options used in both the registry and view
 pub const BUFFER_SIZES: [u32; 4] = [1, 4, 8, 16];
 
@@ -347,7 +347,7 @@ pub fn build_settings_entries(state: &SettingsState) -> Vec<SettingsEntry> {
         },
         SettingsEntry {
             label: "Overview Grid Density",
-            options: GRID_SIZES.iter().map(|s| format!("{} bars", s)).collect(),
+            options: GRID_SIZES.iter().map(|s| format!("{} beats", s)).collect(),
             selected: GRID_SIZES.iter().position(|&s| s == state.draft_grid_bars).unwrap_or(1),
             on_select: |idx| SettingsMessage::UpdateGridBars(GRID_SIZES[idx.min(GRID_SIZES.len() - 1)]),
         },
@@ -669,7 +669,7 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
     let grid_hint = text("Beat grid line spacing on the overview waveform")
         .size(12);
 
-    let grid_sizes: [u32; 4] = [4, 8, 16, 32];
+    let grid_sizes: [u32; 4] = [8, 16, 32, 64];
     let grid_buttons: Vec<Element<Message>> = grid_sizes
         .iter()
         .map(|&size| {
@@ -686,7 +686,7 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
         })
         .collect();
 
-    let grid_label = text("Bars:").size(14);
+    let grid_label = text("Beats:").size(14);
     let grid_row = row![
         grid_label,
         row(grid_buttons).spacing(4).align_y(Alignment::Center),
