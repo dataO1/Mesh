@@ -300,16 +300,15 @@ where
             (0.0, 1.0, peaks_per_stem as f32, 0.0)
         };
 
-        // BPM stretch for overview
+        // BPM-aligned display fraction for overview.
+        // D = fraction of width this deck occupies when all decks share a common
+        // time axis. The longest track (in beats) gets D=1.0; shorter ones get
+        // D<1.0 with silence padding. The shader divides uv.x by D, so positions
+        // past D map to source_x > 1.0 → silence.
         let bpm_scale = if self.is_overview {
-            // Display BPM scaling: if display_bpm != track_bpm, scale the waveform
-            match (self.state.display_bpm(self.deck_idx), self.state.track_bpm(self.deck_idx)) {
-                (Some(display), Some(track)) if track > 0.0 => {
-                    let scale = display / track;
-                    if (scale - 1.0).abs() > 0.001 { scale as f32 } else { 0.0 }
-                }
-                _ => 0.0,
-            }
+            self.state.overview_display_fraction(self.deck_idx)
+                .map(|d| d as f32)
+                .unwrap_or(0.0)
         } else {
             0.0
         };

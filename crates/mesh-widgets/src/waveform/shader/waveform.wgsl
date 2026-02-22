@@ -317,11 +317,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let major_threshold = px_in_source / (grid_step * major_interval);
         if ((major_frac < major_threshold || major_frac > 1.0 - major_threshold) && beat_phase > -0.5) {
             color = blend_over(color, vec4<f32>(1.0, 0.3, 0.3, 0.5));
-        } else if (!is_overview) {
-            // Beat lines — subtle gray (zoomed view only)
-            let beat_frac = fract(beat_phase);
-            let beat_threshold = px_in_source / grid_step;
-            if ((beat_frac < beat_threshold || beat_frac > 1.0 - beat_threshold) && beat_phase > -0.5) {
+        } else {
+            // Minor lines: bar boundaries in overview, individual beats in zoomed
+            let minor_interval = select(1.0, beats_per_bar, is_overview);
+            let minor_phase = beat_phase / minor_interval;
+            let minor_frac = fract(minor_phase);
+            let minor_threshold = px_in_source / (grid_step * minor_interval);
+            if ((minor_frac < minor_threshold || minor_frac > 1.0 - minor_threshold) && beat_phase > -0.5) {
                 color = blend_over(color, vec4<f32>(0.3, 0.3, 0.3, 0.3));
             }
         }

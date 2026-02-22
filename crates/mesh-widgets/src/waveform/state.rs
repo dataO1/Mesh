@@ -1246,6 +1246,58 @@ impl PlayerCanvasState {
         }
     }
 
+    /// Compute BPM-aligned display fraction for overview rendering.
+    ///
+    /// Returns the fraction of display width this deck occupies when all loaded
+    /// decks share a common time axis scaled by BPM. The deck with the most
+    /// "beat content" (duration × BPM) gets D=1.0 and fills the full width;
+    /// shorter/slower tracks get D<1.0 with silence padding at the end.
+    ///
+    /// Formula: `D = (dur × track_bpm) / max(dur_j × track_bpm_j)`
+    ///
+    /// Returns `None` when no scaling is needed (single track, no BPM data,
+    /// or all tracks have equal beat content).
+    pub fn overview_display_fraction(&self, deck_idx: usize) -> Option<f64> {
+        if deck_idx >= 4 { return None; }
+
+        let display_bpm = self.display_bpm(deck_idx)?;
+        if display_bpm <= 0.0 { return None; }
+
+        let track_bpm = self.track_bpm(deck_idx)?;
+        if track_bpm <= 0.0 { return None; }
+
+        let dur = self.decks[deck_idx].overview.duration_samples;
+        if dur == 0 { return None; }
+
+        // Beat content for this deck
+        let my_beat_content = dur as f64 * track_bpm;
+
+        // Find max beat content across all loaded decks
+        let mut max_beat_content = my_beat_content;
+        let mut loaded_count = 0usize;
+
+        for i in 0..4 {
+            let overview = &self.decks[i].overview;
+            if overview.has_track && overview.duration_samples > 0 {
+                if let Some(tbpm) = self.track_bpm(i) {
+                    if tbpm > 0.0 {
+                        let bc = overview.duration_samples as f64 * tbpm;
+                        max_beat_content = max_beat_content.max(bc);
+                        loaded_count += 1;
+                    }
+                }
+            }
+        }
+
+        if max_beat_content <= 0.0 || loaded_count < 2 {
+            return None;
+        }
+
+        let d = my_beat_content / max_beat_content;
+        // Skip when D ≈ 1.0 (this deck is the longest, no padding needed)
+        if (d - 1.0).abs() < 0.001 { None } else { Some(d) }
+    }
+
     /// Set stem colors for waveform rendering [Vocals, Drums, Bass, Other]
     pub fn set_stem_colors(&mut self, colors: [Color; 4]) {
         if self.stem_colors != colors {
