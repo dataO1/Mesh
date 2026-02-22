@@ -27,7 +27,9 @@ struct Uniforms {
     cue_color_5: vec4<f32>,
     cue_color_6: vec4<f32>,
     cue_color_7: vec4<f32>,
-    stem_smooth: vec4<f32>,  // [peak_index_scale, zoomed_win_start, zoomed_win_end, 0]
+    stem_smooth: vec4<f32>,  // [peak_index_scale, zoomed_win_start, zoomed_win_end, mirror_indicators]
+    linked_stems: vec4<f32>,   // 0.0/1.0 per stem (has linked stem)
+    linked_active: vec4<f32>,  // 0.0/1.0 per stem (linked is currently active)
 }
 
 @group(0) @binding(0)
@@ -496,6 +498,80 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (volume < 0.999) {
         let dim_alpha = (1.0 - volume) * 0.4;
         color = blend_over(color, vec4<f32>(0.0, 0.0, 0.0, dim_alpha));
+    }
+
+    // -----------------------------------------------------------------
+    // 10. Stem indicators (zoomed view only, outer edge)
+    // -----------------------------------------------------------------
+    if (!is_overview) {
+        let width_px = u.bounds.z;
+        let indicator_w = 8.0 / width_px;
+        let gap_w = 2.0 / width_px;
+        let margin_w = 3.0 / width_px;
+        let mirrored = u.stem_smooth[3] > 0.5;  // 1.0 = left edge, 0.0 = right edge
+
+        let has_any_link = (u.linked_stems[0] + u.linked_stems[1] +
+                            u.linked_stems[2] + u.linked_stems[3]) > 0.5;
+
+        // Stem order: Other(3), Vocals(0), Bass(2), Drums(1) — top to bottom
+        let stem_order = array<i32, 4>(3, 0, 2, 1);
+        let stem_colors = array<vec4<f32>, 4>(
+            u.stem_color_0, u.stem_color_1, u.stem_color_2, u.stem_color_3
+        );
+
+        // Column positions depend on mirror direction
+        // Right-edge: mute is inner (left), link is outer (right)
+        // Left-edge:  link is outer (left), mute is inner (right)
+        var mute_start: f32;
+        var link_start: f32;
+        if (mirrored) {
+            // Left edge: link at far left, mute next
+            link_start = margin_w;
+            mute_start = select(margin_w, margin_w + indicator_w + gap_w, has_any_link);
+        } else {
+            // Right edge: mute first, link at far right
+            link_start = 1.0 - margin_w - indicator_w;
+            mute_start = select(
+                1.0 - margin_w - indicator_w,
+                1.0 - margin_w - indicator_w - gap_w - indicator_w,
+                has_any_link
+            );
+        }
+
+        let indicator_h = 1.0 / 4.0;
+        let v_gap = 1.5 / u.bounds.w;  // 1.5px vertical gap between indicators
+
+        for (var vi = 0; vi < 4; vi++) {
+            let si = stem_order[vi];
+            let y_start = f32(vi) * indicator_h + v_gap;
+            let y_end = f32(vi + 1) * indicator_h - v_gap;
+
+            if (uv.y >= y_start && uv.y < y_end) {
+                // Mute indicator
+                if (uv.x >= mute_start && uv.x < mute_start + indicator_w) {
+                    let sc = stem_colors[si];
+                    let ind_color = select(
+                        vec4<f32>(0.12, 0.12, 0.12, 0.9),
+                        vec4<f32>(sc.r * 0.5, sc.g * 0.5, sc.b * 0.5, 0.9),
+                        u.stem_active[si] > 0.5
+                    );
+                    color = blend_over(color, ind_color);
+                }
+
+                // Linked stem indicator (only for stems with a link)
+                if (has_any_link && uv.x >= link_start && uv.x < link_start + indicator_w) {
+                    if (u.linked_stems[si] > 0.5) {
+                        let sc = stem_colors[si];
+                        let link_color = select(
+                            vec4<f32>(sc.r * 0.3, sc.g * 0.3, sc.b * 0.3, 0.5),
+                            vec4<f32>(sc.r, sc.g, sc.b, 0.9),
+                            u.linked_active[si] > 0.5
+                        );
+                        color = blend_over(color, link_color);
+                    }
+                }
+            }
+        }
     }
 
     return color;

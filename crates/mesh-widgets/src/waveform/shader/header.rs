@@ -39,34 +39,8 @@ pub fn view_deck_header<'a, Message: Clone + 'a>(
     let lufs_gain_db = state.lufs_gain_db(deck_idx);
     let loop_length_beats = state.loop_length_beats(deck_idx);
     let loop_active = state.loop_active(deck_idx);
-    let stem_colors = state.stem_colors();
-    let (linked_stems, linked_active) = state.linked_stems(deck_idx);
-
     // -- Deck badge --
     let badge = view_badge(deck_idx, is_master, cue_enabled, has_track);
-
-    // -- Linked stem diamonds --
-    let has_any_links = linked_stems.iter().any(|&has| has);
-    let link_indicators: Element<'a, Message> = if has_any_links {
-        let diamonds: Vec<Element<'a, Message>> = (0..4)
-            .filter(|&i| linked_stems[i])
-            .map(|i| {
-                let base = stem_colors[i];
-                let color = if linked_active[i] {
-                    base
-                } else {
-                    Color::from_rgba(base.r * 0.5, base.g * 0.5, base.b * 0.5, 0.6)
-                };
-                // Small colored square as diamond substitute (iced text doesn't have diamond glyphs)
-                container(text("◆").size(10).color(color))
-                    .padding([0, 1])
-                    .into()
-            })
-            .collect();
-        row(diamonds).spacing(1).into()
-    } else {
-        Space::new().width(0).height(0).into()
-    };
 
     // -- Track name --
     let name_widget: Element<'a, Message> = if has_track && !track_name.is_empty() {
@@ -156,8 +130,6 @@ pub fn view_deck_header<'a, Message: Clone + 'a>(
 
     let header_content = row![
         badge,
-        Space::new().width(6),
-        link_indicators,
         Space::new().width(6),
         name_widget,
         Space::new().width(Length::Fill),

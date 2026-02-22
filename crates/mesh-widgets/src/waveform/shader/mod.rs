@@ -436,7 +436,27 @@ where
                 } else {
                     (0.0, 0.0)
                 };
-                [pis, zoom_start, zoom_end, 0.0]
+                // Mirror flag: decks 0,2 (1,3 in UI) = left edge, decks 1,3 (2,4 in UI) = right edge
+                let mirror = if self.deck_idx % 2 == 0 { 1.0 } else { 0.0 };
+                [pis, zoom_start, zoom_end, mirror]
+            },
+            linked_stems: {
+                let (ls, _) = self.state.linked_stems(self.deck_idx);
+                [
+                    if ls[0] { 1.0 } else { 0.0 },
+                    if ls[1] { 1.0 } else { 0.0 },
+                    if ls[2] { 1.0 } else { 0.0 },
+                    if ls[3] { 1.0 } else { 0.0 },
+                ]
+            },
+            linked_active: {
+                let (_, la) = self.state.linked_stems(self.deck_idx);
+                [
+                    if la[0] { 1.0 } else { 0.0 },
+                    if la[1] { 1.0 } else { 0.0 },
+                    if la[2] { 1.0 } else { 0.0 },
+                    if la[3] { 1.0 } else { 0.0 },
+                ]
             },
         }
     }
@@ -838,6 +858,18 @@ where
                 };
                 [pis, zoom_start, zoom_end, 0.0]
             },
+            linked_stems: [
+                if self.state.linked_stems[0] { 1.0 } else { 0.0 },
+                if self.state.linked_stems[1] { 1.0 } else { 0.0 },
+                if self.state.linked_stems[2] { 1.0 } else { 0.0 },
+                if self.state.linked_stems[3] { 1.0 } else { 0.0 },
+            ],
+            linked_active: [
+                if self.state.linked_active[0] { 1.0 } else { 0.0 },
+                if self.state.linked_active[1] { 1.0 } else { 0.0 },
+                if self.state.linked_active[2] { 1.0 } else { 0.0 },
+                if self.state.linked_active[3] { 1.0 } else { 0.0 },
+            ],
         }
     }
 }

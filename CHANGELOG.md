@@ -57,6 +57,14 @@ All notable changes to Mesh are documented in this file.
 - **GPU waveforms in mesh-cue** — The track editor now uses the same GPU shader
   waveform renderer as the player, replacing the old CPU canvas rendering.
 
+- **Stem mute indicators restored** — Zoomed waveform shows colored rectangles on the
+  outer edge indicating each stem's mute state (bright = active, dark = muted). Indicators
+  appear on the left edge for decks 1 and 3, right edge for decks 2 and 4.
+
+- **Linked stem indicators in waveform** — When a stem has a linked stem loaded, a second
+  indicator column appears next to the mute indicators. Shows full color when the linked
+  stem is active, dimmed when inactive. Replaces the diamond symbols in the header.
+
 ### Fixed
 
 - **Buttery-smooth playhead scrolling** — Playhead interpolation now uses timestamps

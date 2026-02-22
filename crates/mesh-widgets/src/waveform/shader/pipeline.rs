@@ -55,11 +55,16 @@ pub struct WaveformUniforms {
     pub cue_color_5: [f32; 4],
     pub cue_color_6: [f32; 4],
     pub cue_color_7: [f32; 4],
-    /// [peak_index_scale, zoomed_win_start, zoomed_win_end, 0]
+    /// [peak_index_scale, zoomed_win_start, zoomed_win_end, mirror_indicators]
     /// stem_smooth[0] = peak_index_scale: corrects for integer division
     /// in generate_peaks(). Value = duration / floor(duration / pps).
     /// stem_smooth[1..2] = zoomed window start/end (overview only, for window indicator)
+    /// stem_smooth[3] = mirror flag: 1.0 = indicators on left edge, 0.0 = right edge
     pub stem_smooth: [f32; 4],
+    /// Linked stem flags: 0.0/1.0 per stem (has a linked stem loaded)
+    pub linked_stems: [f32; 4],
+    /// Linked stem active: 0.0/1.0 per stem (linked stem is currently playing)
+    pub linked_active: [f32; 4],
 }
 
 // =============================================================================

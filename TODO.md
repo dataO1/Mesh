@@ -175,18 +175,13 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
-- [ ] currently the zoomed waveform is stuttery, when previewing a track via
-  cue/hot cue buttons. when i press play its perfectly normal. i can imagine the
-  peak computatoin is just reduced or something? check mesh-player, its only
-  there, not in mesh-cue.
-- [ ] Currently the stem mute indicators are missing in the zoomed waveform.
-  also we should move the linked stem indicators form the header diamonds
-  to a second stem indicator (grayed out when inactive and toggled between both)
-  next to the stem, that has a linked stem instead.
-  but a rendering issue in the shader. investigate.
-- [ ] slicer mode does not work when triggered from the midi mapped f1. check 1.
+- [ ] slicer presets do not get triggered from the midi mapped f1. check 1.
   the mapping file, 2. the mapping in the app and give me a report of why this
-  might happen. the current mapping file is in momentary mode.
+  might happen. the current mapping file is in momentary mode. also the visuals
+  of slicer mode with the new shader does not align with what we had with the
+  canvas before, slicer mode has a fixed window size of 16 beats and the plahead
+  moves instead of the waveform. it also seems to be not connected to the engine
+  anymore, the engine should still support slicer mode.
 - [ ] when starting the player first, then connecting the hid and midi devices, they
   are not recognized by mesh-player, we already have reconnection logic (connecting then
   disconnecting hardware works well), reuse that for detecting hardware after
@@ -196,6 +191,8 @@ for v3 and beyond.
   artist apparently) from the name parsing, we need to fix that, some examples:
   * 01 Black Sun Empire - Feed The Machine (you can check the original name in
     /home/data01/Music/mesh-collection/import/backup/)
+- [ ] Overhaul midi mapping mode to be a tree like hierarchy with some questions at each parent node to figure out the style of mapping we want, instead of a list with
+  questions at the front.
 
 
 - Iced cusomization options. Interesting is the settings, search what else we
