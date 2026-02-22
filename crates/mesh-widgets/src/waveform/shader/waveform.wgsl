@@ -307,7 +307,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let grid_bars = u.beat_params.z;       // overview: 4/8/16/32, zoomed: 1
     let beats_per_bar = 4.0;
 
-    if (grid_step > 0.001) {
+    if (grid_step > 0.0000001) {
         let beat_phase = (source_x - first_beat) / grid_step;
 
         // Major grid lines — red, every (grid_bars * beats_per_bar) beats
