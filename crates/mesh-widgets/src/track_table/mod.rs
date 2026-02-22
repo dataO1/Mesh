@@ -421,6 +421,8 @@ pub struct TrackTableState<Id: Clone + Eq + Hash> {
     pub last_mouse_position: Point,
     /// Optional override for Tags column width (default: 150px)
     pub tag_column_width: Option<f32>,
+    /// Override selection highlight color (e.g., stem color during stem link selection)
+    pub selection_color_override: Option<Color>,
 }
 
 impl<Id: Clone + Eq + Hash> Default for TrackTableState<Id> {
@@ -443,6 +445,7 @@ impl<Id: Clone + Eq + Hash> TrackTableState<Id> {
             edit_buffer: String::new(),
             last_mouse_position: Point::ORIGIN,
             tag_column_width: None,
+            selection_color_override: None,
         }
     }
 
@@ -897,6 +900,7 @@ where
     Message: Clone + 'a,
 {
     let is_selected = state.is_selected(&track.id);
+    let selection_override = state.selection_color_override;
     let id = track.id.clone();
     let id_activate = track.id.clone();
     let on_msg = on_message.clone();
@@ -923,7 +927,7 @@ where
         .style(move |theme: &Theme, status| {
             let palette = theme.extended_palette();
             let bg = if is_selected {
-                palette.primary.weak.color
+                selection_override.unwrap_or(palette.primary.weak.color)
             } else {
                 match status {
                     button::Status::Hovered => palette.background.weak.color,

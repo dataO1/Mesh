@@ -4,6 +4,24 @@ All notable changes to Mesh are documented in this file.
 
 ---
 
+## [0.9.5]
+
+### Improved
+
+- **Stem link LED feedback** — Stem mute LEDs now toggle between two color shades
+  when a linked stem is present: primary shade for the original, alternate shade for the
+  linked version. Stems with a linked counterpart pulse subtly to signal interactivity.
+
+- **Darker stem LED colors** — Redesigned stem LED colors for better contrast and F1
+  HID compatibility (7-bit, 0-125 range): dark green (vocals), deep navy (drums),
+  rusty orange (bass), violet (other).
+
+- **Auto-open browser on stem link** — Pressing shift+stem on an unlinked stem now
+  automatically opens the browser overlay and activates browse mode so the encoder
+  navigates the track list. The selected track is highlighted in the stem's color.
+
+---
+
 ## [0.9.4]
 
 ### Performance

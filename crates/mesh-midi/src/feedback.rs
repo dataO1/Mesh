@@ -65,11 +65,23 @@ fn beat_pulse_result(
 ///
 /// With 4 stems and 3 layers, Drums and Other share the amber layer on the Xone K.
 /// On HID devices all 4 get distinct RGB colors.
+/// Stem LED colors designed within 0-125 range for F1 HID compatibility.
+/// The F1's RGB pads have 7-bit resolution (max 0x7D = 125 per channel).
+/// Values above 125 get clamped, distorting the intended hue.
 const STEM_LED_COLORS: [[u8; 3]; 4] = [
-    [20, 230, 60],   // Vocals — vivid green (→ green layer on Xone K)
-    [40, 110, 240],  // Drums — vivid blue (→ amber layer on Xone K)
-    [240, 120, 20],  // Bass — vivid orange (→ red layer on Xone K)
-    [180, 50, 255],  // Other — vivid purple (→ amber layer on Xone K)
+    [8, 120, 28],    // Vocals — dark green (→ green layer on Xone K)
+    [8, 20, 120],    // Drums — deep navy blue (→ amber layer on Xone K)
+    [120, 50, 4],    // Bass — rusty orange (→ red layer on Xone K)
+    [90, 10, 120],   // Other — violet (→ amber layer on Xone K)
+];
+
+/// Alternate shade shown when the linked stem is currently active.
+/// Shifted hue/brightness to visually distinguish from primary.
+const STEM_LED_COLORS_LINKED: [[u8; 3]; 4] = [
+    [25, 80, 60],    // Vocals — teal-green (cooler)
+    [35, 15, 80],    // Drums — deep indigo (warmer)
+    [95, 30, 20],    // Bass — dark red-brown (shifted)
+    [60, 30, 90],    // Other — muted purple (dimmer)
 ];
 
 /// Hardcoded transport & mode LED colors (survive remapping).
@@ -139,6 +151,10 @@ pub struct DeckFeedbackState {
     pub key_match_enabled: bool,
     /// Which stems are muted? (bitmap, bit N = stem N is muted)
     pub stems_muted: u8,
+    /// Which stems have a linked counterpart? (bitmap, bit N = stem N has linked)
+    pub has_linked: u8,
+    /// Which linked stems are currently active? (bitmap, bit N = stem N's linked is playing)
+    pub use_linked: u8,
     /// Current action button mode
     pub action_mode: ActionMode,
     /// Current loop length in beats (for 7-segment display)
@@ -310,7 +326,9 @@ pub fn evaluate_feedback(
             }
 
             // Stem mute: per-stem color from STEM_LED_COLORS
-            // Active (unmuted) → full vivid stem color, Muted → dim version
+            // - Unmuted: primary color (or linked alternate when linked stem is active)
+            // - Muted: dim version of whichever color is current
+            // - Has linked counterpart: very subtle beat-synced pulse to hint at interactivity
             if mapping.state == "deck.stem_muted" {
                 let deck_idx = resolve_feedback_deck(mapping, deck_target);
                 let deck_state = &state.decks[deck_idx];
@@ -318,16 +336,38 @@ pub fn evaluate_feedback(
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0) as usize;
                 let is_muted = (deck_state.stems_muted & (1 << stem)) != 0;
-                let c = STEM_LED_COLORS.get(stem).copied().unwrap_or([200, 0, 0]);
-                let (value, color) = if is_muted {
-                    // Muted: dim version of stem color (÷8)
-                    let dim = [c[0] / 8, c[1] / 8, c[2] / 8];
-                    (mapping.off_value, Some(dim))
+                let has_link = (deck_state.has_linked & (1 << stem)) != 0;
+                let link_active = (deck_state.use_linked & (1 << stem)) != 0;
+
+                // Pick base color: linked shade when linked is active, primary otherwise
+                let base = if link_active {
+                    STEM_LED_COLORS_LINKED.get(stem).copied().unwrap_or([200, 0, 0])
                 } else {
-                    // Active (unmuted): full vivid stem color
-                    (mapping.on_value, Some(c))
+                    STEM_LED_COLORS.get(stem).copied().unwrap_or([200, 0, 0])
                 };
-                return Some(FeedbackResult { address, value, color });
+
+                if is_muted {
+                    // Muted: dim version (÷8) of whichever shade is current
+                    let dim = [base[0] / 8, base[1] / 8, base[2] / 8];
+                    return Some(FeedbackResult { address, value: mapping.off_value, color: Some(dim) });
+                }
+
+                if has_link {
+                    // Subtle pulse for stems with linked counterpart (5% brightness oscillation)
+                    // Much gentler than beat_pulse — just enough to hint at interactivity.
+                    // 5% of 120 (max channel) = 6 units, visible on F1's 7-bit (0-125) LEDs.
+                    let phase = (state.beat_phase * std::f32::consts::TAU).cos();
+                    let t = 0.95 + 0.05 * phase; // 0.90-1.0 range
+                    let pulsed = [
+                        (base[0] as f32 * t) as u8,
+                        (base[1] as f32 * t) as u8,
+                        (base[2] as f32 * t) as u8,
+                    ];
+                    return Some(FeedbackResult { address, value: mapping.on_value, color: Some(pulsed) });
+                }
+
+                // Unmuted, no link: steady full color
+                return Some(FeedbackResult { address, value: mapping.on_value, color: Some(base) });
             }
 
             let active = evaluate_state(mapping, state, deck_target);

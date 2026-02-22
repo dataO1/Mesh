@@ -68,6 +68,22 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
         feedback.decks[deck_idx].slip_active = app.deck_views[deck_idx].slip_enabled();
         feedback.decks[deck_idx].stems_muted = app.deck_views[deck_idx].stems_muted_bitmap();
 
+        // Linked stem state for LED color toggling + subtle pulse
+        if let Some(ref linked_atomics) = app.linked_stem_atomics {
+            let mut has_linked: u8 = 0;
+            let mut use_linked: u8 = 0;
+            for stem in 0..4 {
+                if linked_atomics[deck_idx].has_linked[stem].load(std::sync::atomic::Ordering::Relaxed) {
+                    has_linked |= 1 << stem;
+                }
+                if linked_atomics[deck_idx].use_linked[stem].load(std::sync::atomic::Ordering::Relaxed) {
+                    use_linked |= 1 << stem;
+                }
+            }
+            feedback.decks[deck_idx].has_linked = has_linked;
+            feedback.decks[deck_idx].use_linked = use_linked;
+        }
+
         // Set action mode for LED feedback
         use crate::ui::deck_view::ActionButtonMode;
         feedback.decks[deck_idx].action_mode = match app.deck_views[deck_idx].action_mode() {

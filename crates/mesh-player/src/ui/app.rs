@@ -585,6 +585,17 @@ impl MeshApp {
                         deck: deck_idx,
                         stem: stem_idx,
                     };
+                    // Auto-open browser overlay and activate browse mode so
+                    // the encoder routes to browser.scroll instead of loop size
+                    self.show_browser_overlay();
+                    let side = deck_idx % 2;
+                    self.browse_mode_active[side] = true;
+                    if let Some(ref controller) = self.controller {
+                        controller.set_browse_mode(side, true);
+                    }
+                    // Highlight selected tracks in the stem's color
+                    let stem_color = super::theme::stem_colors()[stem_idx];
+                    self.collection_browser.browser.table_state.selection_color_override = Some(stem_color);
                     self.status = format!(
                         "Select track for {} stem link (deck {})",
                         mesh_core::types::Stem::from_index(stem_idx)
@@ -602,7 +613,14 @@ impl MeshApp {
             StemLinkState::Selecting { deck, stem } => {
                 if *deck == deck_idx && *stem == stem_idx {
                     // Same deck/stem pressed again - cancel selection
+                    let side = deck_idx % 2;
                     self.stem_link_state = StemLinkState::Idle;
+                    self.hide_browser_overlay();
+                    self.browse_mode_active[side] = false;
+                    if let Some(ref controller) = self.controller {
+                        controller.set_browse_mode(side, false);
+                    }
+                    self.collection_browser.browser.table_state.selection_color_override = None;
                     self.status = "Cancelled stem link selection".to_string();
                     log::info!("Cancelled stem link selection");
                 } else {
@@ -611,6 +629,9 @@ impl MeshApp {
                         deck: deck_idx,
                         stem: stem_idx,
                     };
+                    // Update highlight to new stem's color
+                    let stem_color = super::theme::stem_colors()[stem_idx];
+                    self.collection_browser.browser.table_state.selection_color_override = Some(stem_color);
                     self.status = format!(
                         "Select track for {} stem link (deck {})",
                         mesh_core::types::Stem::from_index(stem_idx)
@@ -656,6 +677,14 @@ impl MeshApp {
                         stem,
                         path: path.clone(),
                     };
+                    // Clear stem-color highlight, hide browser, deactivate browse mode
+                    self.collection_browser.browser.table_state.selection_color_override = None;
+                    self.hide_browser_overlay();
+                    let side = deck % 2;
+                    self.browse_mode_active[side] = false;
+                    if let Some(ref controller) = self.controller {
+                        controller.set_browse_mode(side, false);
+                    }
                     self.status = format!(
                         "Loading {} stem from {}...",
                         mesh_core::types::Stem::from_index(stem)
@@ -668,6 +697,12 @@ impl MeshApp {
                 } else {
                     self.status = "Audio not connected".to_string();
                     self.stem_link_state = StemLinkState::Idle;
+                    self.collection_browser.browser.table_state.selection_color_override = None;
+                    let side = deck % 2;
+                    self.browse_mode_active[side] = false;
+                    if let Some(ref controller) = self.controller {
+                        controller.set_browse_mode(side, false);
+                    }
                 }
             } else {
                 self.status = "No track selected in browser".to_string();
