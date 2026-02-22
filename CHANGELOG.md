@@ -68,7 +68,18 @@ All notable changes to Mesh are documented in this file.
 - **Linked stem waveform toggling** — Zoomed waveform now visually switches to the linked
   stem's peaks when a linked stem is activated, matching the audio output. Overview waveform
   shows a mirrored split: active stem peaks go upward from the center line, inactive
-  alternative peaks go downward (dimmed), so you can see both versions at a glance.
+  alternative peaks go downward (dimmed), so you can see both versions at a glance. Peak
+  buffers are cached and rebuilt only when linked stem data arrives, with toggle display
+  handled entirely by GPU uniforms for instant visual response.
+
+- **Overview split rendering** — Non-linked stems in split mode now render only on the
+  top half of the overview waveform. The bottom half is reserved exclusively for linked
+  stem alternatives, giving a cleaner visual separation.
+
+- **MIDI shift+stem mute toggles linked stems** — Pressing shift + a stem mute button on
+  a MIDI controller now toggles the linked stem, matching the UI behavior. Uses a dedicated
+  `deck.stem_link` action resolved by the mapping engine, eliminating reliance on UI-side
+  shift state synchronization.
 
 ### Fixed
 

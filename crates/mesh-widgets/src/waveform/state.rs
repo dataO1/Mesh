@@ -107,6 +107,14 @@ pub struct OverviewState {
     pub overview_peak_buffer: Option<PeakBuffer>,
     /// Flattened high-resolution peaks for GPU shader (created once at track load)
     pub highres_peak_buffer: Option<PeakBuffer>,
+
+    /// Cached 8-stem overview buffer: stems 0-3 = original, stems 4-7 = linked
+    /// Rebuilt when linked overview peaks change. Shader uses linked_active uniform
+    /// to decide which stems are active vs inactive.
+    pub linked_overview_buffer: Option<PeakBuffer>,
+    /// Cached 8-stem highres buffer: stems 0-3 = original, stems 4-7 = linked
+    /// Same layout as linked_overview_buffer but at HIGHRES_WIDTH resolution.
+    pub linked_highres_buffer: Option<PeakBuffer>,
 }
 
 impl OverviewState {
@@ -135,6 +143,8 @@ impl OverviewState {
             linked_lufs_gains: [1.0, 1.0, 1.0, 1.0], // Unity gain (no correction)
             overview_peak_buffer: None,
             highres_peak_buffer: None,
+            linked_overview_buffer: None,
+            linked_highres_buffer: None,
         }
     }
 
@@ -251,6 +261,8 @@ impl OverviewState {
             linked_lufs_gains: [1.0, 1.0, 1.0, 1.0],
             overview_peak_buffer,
             highres_peak_buffer: None, // No stems available for highres yet
+            linked_overview_buffer: None,
+            linked_highres_buffer: None,
         }
     }
 
@@ -283,6 +295,8 @@ impl OverviewState {
             linked_lufs_gains: [1.0, 1.0, 1.0, 1.0],
             overview_peak_buffer: None,
             highres_peak_buffer: None,
+            linked_overview_buffer: None,
+            linked_highres_buffer: None,
         }
     }
 
@@ -323,6 +337,8 @@ impl OverviewState {
             linked_lufs_gains: [1.0, 1.0, 1.0, 1.0],
             overview_peak_buffer: None,
             highres_peak_buffer: None,
+            linked_overview_buffer: None,
+            linked_highres_buffer: None,
         }
     }
 
@@ -351,7 +367,6 @@ impl OverviewState {
             }
         }
 
-        // Note: highres_peaks are NOT smoothed - we want full detail for zoomed view
 
         // Convert beat grid to normalized positions
         if duration_samples > 0 {
@@ -367,6 +382,9 @@ impl OverviewState {
         // Rebuild GPU peak buffers
         self.overview_peak_buffer = PeakBuffer::from_stem_peaks(&self.stem_waveforms);
         self.highres_peak_buffer = PeakBuffer::from_stem_peaks(&self.highres_peaks);
+
+        // Rebuild linked buffers if any linked stems exist (original peaks changed)
+        self.rebuild_linked_buffers();
 
         log::debug!(
             "Generated waveform peaks: overview={}px, highres={}px",
@@ -392,7 +410,7 @@ impl OverviewState {
             }
         }
 
-        // Note: highres_peaks are NOT smoothed - we want full detail for zoomed view
+
 
         // Convert beat grid to normalized positions
         let beat_markers: Vec<f64> = track
@@ -438,6 +456,8 @@ impl OverviewState {
             linked_lufs_gains: [1.0, 1.0, 1.0, 1.0],
             overview_peak_buffer,
             highres_peak_buffer,
+            linked_overview_buffer: None,
+            linked_highres_buffer: None,
         }
     }
 
@@ -475,6 +495,36 @@ impl OverviewState {
             .collect()
     }
 
+    /// Rebuild cached 8-stem GPU buffers for linked stem visualization.
+    ///
+    /// Called whenever linked or original peak data changes. Produces buffers with
+    /// stems 0-3 = original, stems 4-7 = linked (LUFS-corrected). The shader uses
+    /// `linked_active` uniforms to decide which set is active vs inactive.
+    pub fn rebuild_linked_buffers(&mut self) {
+        let has_any_linked = self.linked_stem_waveforms.iter().any(|o| o.is_some());
+
+        if has_any_linked {
+            self.linked_overview_buffer = PeakBuffer::from_linked(
+                &self.stem_waveforms,
+                &self.linked_stem_waveforms,
+                &self.linked_lufs_gains,
+            );
+            self.linked_highres_buffer = PeakBuffer::from_linked(
+                &self.highres_peaks,
+                &self.linked_highres_peaks,
+                &self.linked_lufs_gains,
+            );
+            log::debug!(
+                "Rebuilt linked buffers: overview={}, highres={}",
+                self.linked_overview_buffer.as_ref().map_or(0, |b| b.data.len()),
+                self.linked_highres_buffer.as_ref().map_or(0, |b| b.data.len()),
+            );
+        } else {
+            self.linked_overview_buffer = None;
+            self.linked_highres_buffer = None;
+        }
+    }
+
     /// Set linked stem waveform peaks for a specific stem slot
     ///
     /// Called when a linked stem is loaded and its peaks are extracted from the source file.
@@ -482,6 +532,7 @@ impl OverviewState {
     pub fn set_linked_stem_peaks(&mut self, stem_idx: usize, peaks: Vec<(f32, f32)>) {
         if stem_idx < 4 {
             self.linked_stem_waveforms[stem_idx] = Some(peaks);
+            self.rebuild_linked_buffers();
         }
     }
 
@@ -491,12 +542,15 @@ impl OverviewState {
     pub fn clear_linked_stem_peaks(&mut self, stem_idx: usize) {
         if stem_idx < 4 {
             self.linked_stem_waveforms[stem_idx] = None;
+            self.rebuild_linked_buffers();
         }
     }
 
     /// Clear all linked stem peaks (when track is unloaded)
     pub fn clear_all_linked_stem_peaks(&mut self) {
         self.linked_stem_waveforms = [None, None, None, None];
+        self.linked_overview_buffer = None;
+        self.linked_highres_buffer = None;
     }
 
     /// Set linked stem high-resolution peaks for stable zoomed view rendering
@@ -506,6 +560,7 @@ impl OverviewState {
     pub fn set_linked_highres_peaks(&mut self, stem_idx: usize, peaks: Vec<(f32, f32)>) {
         if stem_idx < 4 {
             self.linked_highres_peaks[stem_idx] = Some(peaks);
+            self.rebuild_linked_buffers();
         }
     }
 

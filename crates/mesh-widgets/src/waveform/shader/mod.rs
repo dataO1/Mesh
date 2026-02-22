@@ -136,54 +136,21 @@ impl PeakBuffer {
         }
     }
 
-    /// Build a composite 4-stem buffer with linked peaks swapped in for active linked stems.
+    /// Build an 8-stem buffer with original and linked peaks side by side.
     ///
-    /// Used for the zoomed view: shows the currently active version of each stem.
-    /// When `linked_active[i]` is true, uses linked peaks (with LUFS gain correction)
-    /// instead of the original. Falls back to original if no linked peaks are available.
-    pub fn from_composite(
+    /// Layout (fixed, independent of linked_active state):
+    /// - Stems 0-3: original peaks (always)
+    /// - Stems 4-7: linked peaks where available, zero-padded otherwise
+    ///
+    /// The shader uses `linked_active` uniforms to decide which set to display
+    /// as active (top/primary) vs inactive (bottom/dimmed). This means the buffer
+    /// only needs rebuilding when peak DATA changes, not on every toggle.
+    ///
+    /// Linked peaks are resampled to match the original's peak count if needed,
+    /// and LUFS gain correction is applied during construction.
+    pub fn from_linked(
         original: &[Vec<(f32, f32)>; 4],
         linked: &[Option<Vec<(f32, f32)>>; 4],
-        linked_active: &[bool; 4],
-        lufs_gains: &[f32; 4],
-    ) -> Option<Self> {
-        if original[0].is_empty() {
-            return None;
-        }
-        let pps = original[0].len();
-        let mut data = Vec::with_capacity(pps * 4 * 2);
-
-        for stem_idx in 0..4 {
-            if linked_active[stem_idx] {
-                if let Some(linked_peaks) = &linked[stem_idx] {
-                    Self::append_stem(&mut data, linked_peaks, pps, lufs_gains[stem_idx]);
-                } else {
-                    Self::append_stem(&mut data, &original[stem_idx], pps, 1.0);
-                }
-            } else {
-                Self::append_stem(&mut data, &original[stem_idx], pps, 1.0);
-            }
-        }
-
-        Some(Self {
-            data: Arc::new(data),
-            peaks_per_stem: pps as u32,
-        })
-    }
-
-    /// Build an 8-stem split buffer for overview split view.
-    ///
-    /// Layout:
-    /// - Stems 0-3: active versions (what's currently playing per stem)
-    /// - Stems 4-7: inactive alternatives (the other version, for dimmed bottom half)
-    ///
-    /// For stems without a linked version, stems 4-7 are zero-padded (not rendered).
-    /// Linked peaks are resampled to match the original's peak count if needed.
-    pub fn from_split(
-        original: &[Vec<(f32, f32)>; 4],
-        linked: &[Option<Vec<(f32, f32)>>; 4],
-        linked_active: &[bool; 4],
-        linked_stems: &[bool; 4],
         lufs_gains: &[f32; 4],
     ) -> Option<Self> {
         if original[0].is_empty() {
@@ -192,34 +159,16 @@ impl PeakBuffer {
         let pps = original[0].len();
         let mut data = Vec::with_capacity(pps * 8 * 2);
 
-        // Stems 0-3: active versions
+        // Stems 0-3: always original
         for stem_idx in 0..4 {
-            if linked_active[stem_idx] && linked_stems[stem_idx] {
-                if let Some(linked_peaks) = &linked[stem_idx] {
-                    Self::append_stem(&mut data, linked_peaks, pps, lufs_gains[stem_idx]);
-                } else {
-                    Self::append_stem(&mut data, &original[stem_idx], pps, 1.0);
-                }
-            } else {
-                Self::append_stem(&mut data, &original[stem_idx], pps, 1.0);
-            }
+            Self::append_stem(&mut data, &original[stem_idx], pps, 1.0);
         }
 
-        // Stems 4-7: inactive alternatives
+        // Stems 4-7: linked if available, zero-padded otherwise
         for stem_idx in 0..4 {
-            if linked_stems[stem_idx] {
-                if linked_active[stem_idx] {
-                    // Currently playing linked → inactive is original
-                    Self::append_stem(&mut data, &original[stem_idx], pps, 1.0);
-                } else if let Some(linked_peaks) = &linked[stem_idx] {
-                    // Currently playing original → inactive is linked
-                    Self::append_stem(&mut data, linked_peaks, pps, lufs_gains[stem_idx]);
-                } else {
-                    // No linked peaks available, zero-pad
-                    data.extend(std::iter::repeat(0.0).take(pps * 2));
-                }
+            if let Some(linked_peaks) = &linked[stem_idx] {
+                Self::append_stem(&mut data, linked_peaks, pps, lufs_gains[stem_idx]);
             } else {
-                // No linked stem — zero-pad (won't be rendered by shader)
                 data.extend(std::iter::repeat(0.0).take(pps * 2));
             }
         }
@@ -343,35 +292,16 @@ where
         bounds: Rectangle,
     ) -> Self::Primitive {
         let deck = self.state.deck(self.deck_idx);
-        let (linked_stems_flags, linked_active_flags) = self.state.linked_stems(self.deck_idx);
 
+        // Use cached 8-stem linked buffer if available, otherwise fall back to 4-stem original.
+        // The linked buffers are rebuilt by OverviewState when peak data changes (not per-frame).
+        // The shader uses linked_active uniforms to decide which stems are shown as active.
         let peaks = if self.is_overview {
-            let has_any_link = linked_stems_flags.iter().any(|&s| s);
-            if has_any_link {
-                // 8-stem split buffer: active (0-3) + inactive alternatives (4-7)
-                PeakBuffer::from_split(
-                    &deck.overview.stem_waveforms,
-                    &deck.overview.linked_stem_waveforms,
-                    linked_active_flags,
-                    linked_stems_flags,
-                    &deck.overview.linked_lufs_gains,
-                ).or_else(|| deck.overview.overview_peak_buffer.clone())
-            } else {
-                deck.overview.overview_peak_buffer.clone()
-            }
+            deck.overview.linked_overview_buffer.clone()
+                .or_else(|| deck.overview.overview_peak_buffer.clone())
         } else {
-            let has_any_active = linked_active_flags.iter().any(|&a| a);
-            if has_any_active {
-                // Composite: swap in linked highres peaks for active linked stems
-                PeakBuffer::from_composite(
-                    &deck.overview.highres_peaks,
-                    &deck.overview.linked_highres_peaks,
-                    linked_active_flags,
-                    &deck.overview.linked_lufs_gains,
-                ).or_else(|| deck.overview.highres_peak_buffer.clone())
-            } else {
-                deck.overview.highres_peak_buffer.clone()
-            }
+            deck.overview.linked_highres_buffer.clone()
+                .or_else(|| deck.overview.highres_peak_buffer.clone())
         };
 
         WaveformPrimitive {
@@ -418,11 +348,15 @@ where
             0.0
         };
 
-        // Peaks per stem
+        // Peaks per stem — read from the actual buffer being used (linked or original)
         let peaks_per_stem = if self.is_overview {
-            overview.overview_peak_buffer.as_ref().map_or(0, |p| p.peaks_per_stem)
+            overview.linked_overview_buffer.as_ref()
+                .or(overview.overview_peak_buffer.as_ref())
+                .map_or(0, |p| p.peaks_per_stem)
         } else {
-            overview.highres_peak_buffer.as_ref().map_or(0, |p| p.peaks_per_stem)
+            overview.linked_highres_buffer.as_ref()
+                .or(overview.highres_peak_buffer.as_ref())
+                .map_or(0, |p| p.peaks_per_stem)
         };
 
         // BPM used for both window sizing and beat grid fallback.
@@ -833,31 +767,13 @@ where
         _cursor: mouse::Cursor,
         bounds: Rectangle,
     ) -> Self::Primitive {
+        // Use cached 8-stem linked buffer if available, otherwise fall back to 4-stem original.
         let peaks = if self.is_overview {
-            let has_any_link = self.state.linked_stems.iter().any(|&s| s);
-            if has_any_link {
-                PeakBuffer::from_split(
-                    &self.state.overview.stem_waveforms,
-                    &self.state.overview.linked_stem_waveforms,
-                    &self.state.linked_active,
-                    &self.state.linked_stems,
-                    &self.state.overview.linked_lufs_gains,
-                ).or_else(|| self.state.overview.overview_peak_buffer.clone())
-            } else {
-                self.state.overview.overview_peak_buffer.clone()
-            }
+            self.state.overview.linked_overview_buffer.clone()
+                .or_else(|| self.state.overview.overview_peak_buffer.clone())
         } else {
-            let has_any_active = self.state.linked_active.iter().any(|&a| a);
-            if has_any_active {
-                PeakBuffer::from_composite(
-                    &self.state.overview.highres_peaks,
-                    &self.state.overview.linked_highres_peaks,
-                    &self.state.linked_active,
-                    &self.state.overview.linked_lufs_gains,
-                ).or_else(|| self.state.overview.highres_peak_buffer.clone())
-            } else {
-                self.state.overview.highres_peak_buffer.clone()
-            }
+            self.state.overview.linked_highres_buffer.clone()
+                .or_else(|| self.state.overview.highres_peak_buffer.clone())
         };
 
         WaveformPrimitive {
@@ -904,10 +820,15 @@ where
             0.0
         };
 
+        // Peaks per stem — read from the actual buffer being used (linked or original)
         let peaks_per_stem = if self.is_overview {
-            overview.overview_peak_buffer.as_ref().map_or(0, |p| p.peaks_per_stem)
+            overview.linked_overview_buffer.as_ref()
+                .or(overview.overview_peak_buffer.as_ref())
+                .map_or(0, |p| p.peaks_per_stem)
         } else {
-            overview.highres_peak_buffer.as_ref().map_or(0, |p| p.peaks_per_stem)
+            overview.linked_highres_buffer.as_ref()
+                .or(overview.highres_peak_buffer.as_ref())
+                .map_or(0, |p| p.peaks_per_stem)
         };
 
         let bpm = if self.state.zoomed.bpm > 0.0 { self.state.zoomed.bpm } else { 120.0 };

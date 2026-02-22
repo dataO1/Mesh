@@ -807,6 +807,10 @@ impl MeshApp {
                     MidiDeckAction::ToggleStemMute { stem } => Some(DeckMessage::ToggleStemMute(stem)),
                     MidiDeckAction::ToggleStemSolo { stem } => Some(DeckMessage::ToggleStemSolo(stem)),
                     MidiDeckAction::SelectStem { stem } => Some(DeckMessage::SelectStem(stem)),
+                    MidiDeckAction::ToggleStemLink { stem } => {
+                        self.handle_shift_stem(deck, stem);
+                        None
+                    }
                     MidiDeckAction::SetEffectParam { .. } => None, // TODO: Not implemented yet
                     MidiDeckAction::SetFxMacro { macro_index, value } => {
                         Some(DeckMessage::DeckPreset(mesh_widgets::DeckPresetMessage::SetMacro { index: macro_index, value }))

@@ -147,6 +147,11 @@ pub enum DeckAction {
         /// Stem index
         stem: usize,
     },
+    /// Toggle linked stem (shift+stem mute)
+    ToggleStemLink {
+        /// Stem index (0=vocals, 1=drums, 2=bass, 3=other)
+        stem: usize,
+    },
 
     // Effects
     /// Set effect parameter value

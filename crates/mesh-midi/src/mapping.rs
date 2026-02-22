@@ -61,6 +61,7 @@ impl ActionRegistry {
             "deck.hot_cue_mode",
             "deck.slicer_reset",
             "deck.stem_mute",
+            "deck.stem_link",
             "deck.stem_solo",
             "deck.stem_select",
             "deck.slip",
@@ -676,6 +677,10 @@ impl MappingEngine {
             "deck.stem_mute" => {
                 let stem = get_param("stem").unwrap_or(0);
                 if event.value.is_press() { Some(MidiMessage::Deck { deck, action: DeckAction::ToggleStemMute { stem } }) } else { None }
+            }
+            "deck.stem_link" => {
+                let stem = get_param("stem").unwrap_or(0);
+                if event.value.is_press() { Some(MidiMessage::Deck { deck, action: DeckAction::ToggleStemLink { stem } }) } else { None }
             }
             "deck.stem_solo" => {
                 let stem = get_param("stem").unwrap_or(0);

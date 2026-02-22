@@ -813,7 +813,7 @@ devices:
     params:
       stem: 0
     behavior: toggle
-    shift_action: null
+    shift_action: deck.stem_link
     encoder_mode: null
     hardware_type: button
   - control:
@@ -826,7 +826,7 @@ devices:
     params:
       stem: 1
     behavior: toggle
-    shift_action: null
+    shift_action: deck.stem_link
     encoder_mode: null
     hardware_type: button
   - control:
@@ -839,7 +839,7 @@ devices:
     params:
       stem: 2
     behavior: toggle
-    shift_action: null
+    shift_action: deck.stem_link
     encoder_mode: null
     hardware_type: button
   - control:
@@ -852,7 +852,7 @@ devices:
     params:
       stem: 3
     behavior: toggle
-    shift_action: null
+    shift_action: deck.stem_link
     encoder_mode: null
     hardware_type: button
   - control:
@@ -865,7 +865,7 @@ devices:
     params:
       stem: 0
     behavior: toggle
-    shift_action: null
+    shift_action: deck.stem_link
     encoder_mode: null
     hardware_type: button
   - control:
@@ -878,7 +878,7 @@ devices:
     params:
       stem: 1
     behavior: toggle
-    shift_action: null
+    shift_action: deck.stem_link
     encoder_mode: null
     hardware_type: button
   - control:
@@ -891,7 +891,7 @@ devices:
     params:
       stem: 2
     behavior: toggle
-    shift_action: null
+    shift_action: deck.stem_link
     encoder_mode: null
     hardware_type: button
   - control:
@@ -904,7 +904,7 @@ devices:
     params:
       stem: 3
     behavior: toggle
-    shift_action: null
+    shift_action: deck.stem_link
     encoder_mode: null
     hardware_type: button
   - control:
@@ -917,7 +917,7 @@ devices:
     params:
       stem: 0
     behavior: toggle
-    shift_action: null
+    shift_action: deck.stem_link
     encoder_mode: null
     hardware_type: button
   - control:
@@ -930,7 +930,7 @@ devices:
     params:
       stem: 1
     behavior: toggle
-    shift_action: null
+    shift_action: deck.stem_link
     encoder_mode: null
     hardware_type: button
   - control:
@@ -943,7 +943,7 @@ devices:
     params:
       stem: 2
     behavior: toggle
-    shift_action: null
+    shift_action: deck.stem_link
     encoder_mode: null
     hardware_type: button
   - control:
@@ -956,7 +956,7 @@ devices:
     params:
       stem: 3
     behavior: toggle
-    shift_action: null
+    shift_action: deck.stem_link
     encoder_mode: null
     hardware_type: button
   - control:
@@ -969,7 +969,7 @@ devices:
     params:
       stem: 0
     behavior: toggle
-    shift_action: null
+    shift_action: deck.stem_link
     encoder_mode: null
     hardware_type: button
   - control:
@@ -982,7 +982,7 @@ devices:
     params:
       stem: 1
     behavior: toggle
-    shift_action: null
+    shift_action: deck.stem_link
     encoder_mode: null
     hardware_type: button
   - control:
@@ -995,7 +995,7 @@ devices:
     params:
       stem: 2
     behavior: toggle
-    shift_action: null
+    shift_action: deck.stem_link
     encoder_mode: null
     hardware_type: button
   - control:
@@ -1008,7 +1008,7 @@ devices:
     params:
       stem: 3
     behavior: toggle
-    shift_action: null
+    shift_action: deck.stem_link
     encoder_mode: null
     hardware_type: button
   - control:

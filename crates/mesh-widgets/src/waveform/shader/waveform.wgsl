@@ -388,26 +388,39 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Overview linked stem split: same grid/center, but per-stem:
     // - Linked stems: positive peaks UP = active, positive peaks DOWN = inactive (dimmed)
-    // - Non-linked stems: normal full symmetric envelope
+    // - Non-linked stems in split mode: top half only (bottom reserved for linked alternatives)
+    // - Normal mode (no links): full symmetric envelope
+    //
+    // Buffer layout (built by PeakBuffer::from_linked):
+    //   stems 0-3 = original peaks (always)
+    //   stems 4-7 = linked peaks (where available, zero-padded otherwise)
+    // The shader uses linked_active to decide which set goes on top (active) vs bottom.
     let has_any_link = (u.linked_stems[0] + u.linked_stems[1] +
                         u.linked_stems[2] + u.linked_stems[3]) > 0.5;
     let split_mode = is_overview && has_any_link;
 
     for (var i = 0u; i < 4u; i++) {
         let stem = render_order[i];
-        let peak = sample_peak(stem, source_x, peaks_per_pixel);
         let stem_color = get_stem_color(stem);
         let is_active = u.stem_active[stem] > 0.5;
         let has_link = u.linked_stems[stem] > 0.5;
+        let link_active = u.linked_active[stem] > 0.5;
 
         if (split_mode && has_link) {
             // --- Linked stem: split rendering ---
+            // Buffer has original at stem, linked at stem+4.
+            // linked_active determines which is on top (active) vs bottom (inactive).
+            let active_idx = select(stem, stem + 4u, link_active);
+            let inactive_idx = select(stem + 4u, stem, link_active);
+
+            let active_peak = sample_peak(active_idx, source_x, peaks_per_pixel);
+            let inactive_peak = sample_peak(inactive_idx, source_x, peaks_per_pixel);
+
             // Top half: active stem's positive peaks going upward from center
-            let top_y = max(peak.y, 0.0);
+            let top_y = max(active_peak.y, 0.0);
             let top_y_min = center_y - top_y * height_scale * 0.5;
             let top_y_max = center_y;
 
-            // Render active (top half)
             let d_top_t = uv.y - top_y_min;
             let d_bot_t = top_y_max - uv.y;
             let outside_ext_t = fw * 1.5;
@@ -434,8 +447,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             }
 
             // Bottom half: inactive alternative's positive peaks mirrored downward
-            let alt_peak = sample_peak(stem + 4u, source_x, peaks_per_pixel);
-            let bot_y = max(alt_peak.y, 0.0);
+            let bot_y = max(inactive_peak.y, 0.0);
             let bot_y_min = center_y;
             let bot_y_max = center_y + bot_y * height_scale * 0.5;
 
@@ -459,8 +471,52 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 let stem_rgba = vec4<f32>(stem_color.rgb * 0.4, 0.6 * edge_alpha_b);
                 color = blend_over(color, stem_rgba);
             }
+        } else if (split_mode) {
+            // --- Non-linked stem in split mode: top half only ---
+            // This stem has no linked alternative, so render only on the top half
+            // (positive peaks upward from center_y). The bottom half is reserved
+            // for linked stem alternatives from other stems.
+            let peak = sample_peak(stem, source_x, peaks_per_pixel);
+
+            let top_y = max(peak.y, 0.0);
+            let top_y_min = center_y - top_y * height_scale * 0.5;
+            let top_y_max = center_y;
+
+            let d_top_n = uv.y - top_y_min;
+            let d_bot_n = top_y_max - uv.y;
+            let outside_ext_n = fw * 1.5;
+            let aa_top_n = smoothstep(-outside_ext_n, fw, d_top_n);
+            let aa_bot_n = smoothstep(-outside_ext_n, fw, d_bot_n);
+            var edge_alpha_n = aa_top_n * aa_bot_n;
+
+            let thickness_n = top_y_max - top_y_min;
+            if (thickness_n < 2.0 * fw && thickness_n > 0.0) {
+                let coverage = thickness_n / (2.0 * fw);
+                let cp = (top_y_min + top_y_max) * 0.5;
+                let prox = smoothstep(fw, 0.0, abs(uv.y - cp));
+                edge_alpha_n = max(edge_alpha_n, prox * coverage * 0.8);
+            }
+
+            if (edge_alpha_n > 0.005) {
+                var stem_rgba: vec4<f32>;
+                if (is_active) {
+                    stem_rgba = vec4<f32>(stem_color.rgb, 0.85 * edge_alpha_n);
+                } else {
+                    stem_rgba = vec4<f32>(0.35, 0.35, 0.35, 0.5 * edge_alpha_n);
+                }
+                color = blend_over(color, stem_rgba);
+            }
         } else {
-            // --- Normal: full symmetric envelope ---
+            // --- Normal or zoomed linked swap ---
+            // For zoomed view with linked_active: sample from stem+4 (linked peaks)
+            // For all other cases: sample from stem (original peaks)
+            var effective_stem = stem;
+            if (!is_overview && has_link && link_active) {
+                effective_stem = stem + 4u;
+            }
+            let peak = sample_peak(effective_stem, source_x, peaks_per_pixel);
+
+            // Full symmetric envelope
             let y_min = center_y - peak.y * height_scale * 0.5;
             let y_max = center_y - peak.x * height_scale * 0.5;
 
