@@ -46,9 +46,9 @@ All notable changes to Mesh are documented in this file.
   tint, and the next slice boundary has a yellow accent.
 
 - **Beat grid respects density setting** — The overview waveform beat grid now follows
-  the grid density setting (8, 16, 32, or 64 beats between red markers). Gray bar lines
-  appear between red markers to show downbeat positions. Zoomed view shows individual
-  beat lines as before.
+  the grid density setting (8, 16, 32, or 64 beats between red markers). Each period is
+  subdivided into 4 equal parts (1 red + 3 gray) for consistent visual rhythm. Overview
+  grid lines are subtler to avoid clutter. Zoomed view shows individual beat lines.
 
 - **BPM-aligned overview waveforms** — Overview waveforms are now scaled so that beat
   markers align across all loaded decks. The longest track (in beats) fills the full
