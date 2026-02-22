@@ -40,10 +40,43 @@ All notable changes to Mesh are documented in this file.
   progressively soften outer and inner waveform edges for a more blended appearance.
   Takes effect immediately.
 
+- **Waveform depth fade setting** — New "Waveform Depth Fade" option (Off, Low,
+  Medium, High) controlling a baseline-to-edge alpha gradient on zoomed waveforms.
+  Stems become transparent near the baseline and opaque at their peaks, improving
+  readability where multiple stems overlap. An "Inverted" toggle reverses the
+  direction (opaque center, transparent edges). Takes effect immediately.
+
+- **Waveform peak width setting** — New "Waveform Peak Width" option (Off, Thin,
+  Medium, Wide) controlling the minimum pixel thickness for thin transient peaks.
+  Thin drum hits that would otherwise flicker between sub-pixel rows get expanded
+  to at least `fw × multiplier` with alpha scaled down proportionally to preserve
+  visual energy. Off disables the expansion for raw sub-pixel rendering.
+
+- **Waveform edge AA setting** — New "Waveform Edge AA" option with four
+  anti-aliasing algorithms for envelope edges: Standard (vertical-only, sharp flat
+  edges), Slope L1 (fwidth-based, smooth diagonals), Slope L2 (gradient magnitude,
+  tighter), and L2 Clamped (L2 with 3× cap to prevent extreme widening on very
+  steep edges). Default is Slope L1.
+
 - **Render debug logging** — Added `[RENDER]` debug log entries throughout the
   waveform pipeline: peak computation at load time (computed peaks-per-pixel at
   reference zoom), and per-frame shader uniforms (zoom level, peak density,
   abstraction, blur). Visible with `RUST_LOG=debug`.
+
+### Changed
+
+- **Simplified peak interpolation** — Removed the hybrid max-hold/bilinear
+  interpolation in `sample_peak()`. The old approach blended between interpolated
+  and preserved (max-hold) values based on peak magnitude, adding complexity
+  without clear visual benefit now that peak resolution is much higher. The new
+  code uses straightforward bilinear interpolation between grid points.
+
+### Fixed
+
+- **Settings MIDI navigation indices** — Fixed `next_idx` for dynamic settings
+  sections (Network, System Update, MIDI Learn) which was stuck at 13 from before
+  waveform rendering settings were added, causing index collisions during MIDI
+  encoder navigation.
 
 ---
 

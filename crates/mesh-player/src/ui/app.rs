@@ -258,6 +258,10 @@ impl MeshApp {
                 state.set_vertical_inverted(config.display.waveform_layout.is_inverted());
                 state.abstraction_level = config.display.waveform_abstraction.as_level();
                 state.motion_blur_level = config.display.waveform_motion_blur.as_level();
+                state.depth_fade_level = config.display.waveform_depth_fade.as_level();
+                state.depth_fade_inverted = config.display.waveform_depth_fade_inverted;
+                state.peak_width_mult = config.display.waveform_peak_width.as_multiplier();
+                state.edge_aa_level = config.display.waveform_edge_aa.as_level();
                 state
             },
             deck_views,

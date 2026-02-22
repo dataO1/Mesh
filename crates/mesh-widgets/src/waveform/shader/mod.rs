@@ -396,12 +396,13 @@ where
             log::debug!(
                 "[RENDER] deck={} zoom={}bars | bounds={:.0}x{:.0} | bpm={:.1} spb={} spbar={} | \
                  window={}samples ({:.4}..{:.4}) | peaks_per_stem={} | pp/px={:.3} | \
-                 abstraction={} blur={}",
+                 abstraction={} blur={} depth_fade={} inverted={}",
                 self.deck_idx, zoom_bars, bounds.width, bounds.height,
                 bpm, samples_per_beat, samples_per_bar,
                 window_samples, start_norm, end_norm,
                 peaks_per_stem, ppp,
                 self.state.abstraction_level, self.state.motion_blur_level,
+                self.state.depth_fade_level, self.state.depth_fade_inverted,
             );
 
             (start_norm, end_norm, peaks_per_stem as f32, ppp)
@@ -570,8 +571,13 @@ where
             render_options: [
                 self.state.abstraction_level as f32 + 1.0, // 1.0=low, 2.0=medium, 3.0=high (0.0=off/raw)
                 self.state.motion_blur_level as f32,        // 0.0=low, 1.0=medium, 2.0=high
-                0.0,
-                0.0,
+                self.state.depth_fade_level as f32,          // 0.0=off, 1.0=low, 2.0=medium, 3.0=high
+                if self.state.depth_fade_inverted { 1.0 } else { 0.0 },
+            ],
+            render_options_2: [
+                self.state.peak_width_mult,                  // 0.0=off, 0.75=thin, 1.5=medium, 2.5=wide
+                self.state.edge_aa_level as f32,             // 0=standard, 1=slopeL1, 2=slopeL2, 3=slopeL2Clamped
+                0.0, 0.0,
             ],
         }
     }
@@ -1002,7 +1008,8 @@ where
                 if self.state.linked_active[2] { 1.0 } else { 0.0 },
                 if self.state.linked_active[3] { 1.0 } else { 0.0 },
             ],
-            render_options: [2.0, 0.0, 0.0, 0.0], // mesh-cue: medium abstraction, low blur
+            render_options: [2.0, 0.0, 2.0, 0.0], // mesh-cue: medium abstraction, low blur, medium depth fade
+            render_options_2: [1.5, 1.0, 0.0, 0.0], // mesh-cue: medium peak width, slope L1 AA
         }
     }
 }

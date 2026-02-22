@@ -30,7 +30,8 @@ struct Uniforms {
     stem_smooth: vec4<f32>,  // [peak_index_scale, zoomed_win_start, zoomed_win_end, mirror_indicators]
     linked_stems: vec4<f32>,   // 0.0/1.0 per stem (has linked stem)
     linked_active: vec4<f32>,  // 0.0/1.0 per stem (linked is currently active)
-    render_options: vec4<f32>, // [abstraction_level (1-3, 0=off), motion_blur_level (0-2), _reserved, _reserved]
+    render_options: vec4<f32>, // [abstraction_level (1-3, 0=off), motion_blur_level (0-2), depth_fade_level (0-3, 0=off), depth_fade_inverted (0/1)]
+    render_options_2: vec4<f32>, // [peak_width_multiplier, edge_aa_algo (0-3), _reserved, _reserved]
 }
 
 @group(0) @binding(0)
@@ -172,15 +173,7 @@ fn sample_peak(stem_idx: u32, x_norm: f32, peaks_per_pixel: f32) -> vec2<f32> {
         min(center_b + half_step, pps - 1u)
     );
 
-    // Hybrid max-hold / interpolation:
-    // Transient peaks (drums etc.) are preserved via max-hold to prevent
-    // thin spikes from being interpolated away between grid points.
-    // Quiet regions stay smooth via normal bilinear interpolation.
-    let interpolated = mix(p_a, p_b, vec2<f32>(grid_frac));
-    let preserved = vec2<f32>(min(p_a.x, p_b.x), max(p_a.y, p_b.y));
-    let peak_magnitude = max(abs(p_a.y), abs(p_b.y));
-    let hold_factor = smoothstep(0.05, 0.3, peak_magnitude);
-    return mix(interpolated, preserved, vec2<f32>(hold_factor));
+    return mix(p_a, p_b, vec2<f32>(grid_frac));
 }
 
 /// Get stem color by index
@@ -246,6 +239,38 @@ fn blur_inner_mult() -> f32 {
     } else {
         return 2.5;  // High: fw * 2.5
     }
+}
+
+/// Compute depth-faded alpha for a stem pixel.
+/// `rel_pos`: 0.0 at envelope center, 1.0 at envelope edge.
+/// `max_alpha`: the flat alpha this stem would normally use (e.g. 0.85 active, 0.5 inactive).
+/// Reads render_options[2] (depth_fade_level 1-3) and render_options[3] (inverted 0/1).
+fn depth_fade_alpha(rel_pos: f32, max_alpha: f32) -> f32 {
+    let fade_level = u.render_options[2];
+
+    // Off (level 0): no depth fade, return flat alpha
+    if (fade_level < 0.5) {
+        return max_alpha;
+    }
+
+    let inverted = u.render_options[3] > 0.5;
+
+    // Min alpha at the transparent end, scaled proportionally to max_alpha
+    var min_ratio: f32;
+    if (fade_level < 1.5) {
+        min_ratio = 0.65;   // Low: 65% of max at transparent end
+    } else if (fade_level < 2.5) {
+        min_ratio = 0.35;   // Medium: 35% of max
+    } else {
+        min_ratio = 0.12;   // High: 12% of max
+    }
+
+    let min_alpha = max_alpha * min_ratio;
+    var grad = smoothstep(0.0, 0.8, rel_pos);
+    if (inverted) {
+        grad = 1.0 - grad;
+    }
+    return mix(min_alpha, max_alpha, grad);
 }
 
 // =============================================================================
@@ -577,35 +602,72 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let peak = sample_peak(effective_stem, source_x, peaks_per_pixel);
 
             // Full symmetric envelope
-            let y_min = center_y - peak.y * height_scale * 0.5;
-            let y_max = center_y - peak.x * height_scale * 0.5;
+            var env_top = center_y - peak.y * height_scale * 0.5;
+            var env_bot = center_y - peak.x * height_scale * 0.5;
 
-            let d_top = uv.y - y_min;
-            let d_bot = y_max - uv.y;
-            let outside_ext = fw * blur_outside_mult();
-            let inner_edge = fw * blur_inner_mult();
-            let aa_top = smoothstep(-outside_ext, inner_edge, d_top);
-            let aa_bot = smoothstep(-outside_ext, inner_edge, d_bot);
-            var edge_alpha = aa_top * aa_bot;
-
-            let thickness = y_max - y_min;
-            if (thickness < 2.0 * fw && thickness > 0.0) {
-                let coverage = thickness / (2.0 * fw);
-                let center_pt = (y_min + y_max) * 0.5;
-                let proximity = smoothstep(fw, 0.0, abs(uv.y - center_pt));
-                edge_alpha = max(edge_alpha, proximity * coverage * 0.8);
+            // Minimum thickness: expand sub-pixel peaks so they
+            // don't flicker as their center drifts across pixel boundaries.
+            // Alpha is scaled by the coverage ratio to preserve visual energy.
+            // peak_width_multiplier: 0.0=off, 0.75=thin, 1.5=medium, 2.5=wide
+            let peak_width_mult = u.render_options_2[0];
+            let raw_thickness = env_bot - env_top;
+            var thin_alpha_scale = 1.0;
+            if (peak_width_mult > 0.01) {
+                let min_thickness = fw * peak_width_mult;
+                if (raw_thickness > 0.0 && raw_thickness < min_thickness) {
+                    let center_pt = (env_top + env_bot) * 0.5;
+                    env_top = center_pt - min_thickness * 0.5;
+                    env_bot = center_pt + min_thickness * 0.5;
+                    thin_alpha_scale = raw_thickness / min_thickness;
+                }
             }
 
+            let d_top = uv.y - env_top;
+            let d_bot = env_bot - uv.y;
+            // Edge AA algorithm selection (render_options_2[1]):
+            // 0 = Standard (vertical-only, sharp flat edges, wobbly diagonals)
+            // 1 = Slope L1: fwidth (|dpdx| + |dpdy|), smooth diags, slightly soft
+            // 2 = Slope L2: gradient magnitude, tighter than L1
+            // 3 = Slope L2 Clamped: L2 with 3x cap to prevent extreme widening
+            let aa_algo = u32(u.render_options_2[1]);
+            var fw_top: f32;
+            var fw_bot: f32;
+            if (aa_algo == 0u) {
+                fw_top = fw;
+                fw_bot = fw;
+            } else if (aa_algo == 1u) {
+                fw_top = max(fwidth(d_top), fw);
+                fw_bot = max(fwidth(d_bot), fw);
+            } else if (aa_algo == 2u) {
+                fw_top = max(length(vec2<f32>(dpdx(d_top), dpdy(d_top))), fw);
+                fw_bot = max(length(vec2<f32>(dpdx(d_bot), dpdy(d_bot))), fw);
+            } else {
+                fw_top = clamp(length(vec2<f32>(dpdx(d_top), dpdy(d_top))), fw, fw * 3.0);
+                fw_bot = clamp(length(vec2<f32>(dpdx(d_bot), dpdy(d_bot))), fw, fw * 3.0);
+            }
+            let aa_top = smoothstep(-fw_top * blur_outside_mult(), fw_top * blur_inner_mult(), d_top);
+            let aa_bot = smoothstep(-fw_bot * blur_outside_mult(), fw_bot * blur_inner_mult(), d_bot);
+            var edge_alpha = aa_top * aa_bot * thin_alpha_scale;
+
             if (edge_alpha > 0.005) {
+                let env_center = (env_top + env_bot) * 0.5;
+                let env_half = max((env_bot - env_top) * 0.5, fw);
+                let rel_pos = clamp(abs(uv.y - env_center) / env_half, 0.0, 1.0);
+
                 var stem_rgba: vec4<f32>;
                 if (is_active) {
-                    let env_center = (y_min + y_max) * 0.5;
-                    let env_half = max((y_max - y_min) * 0.5, fw);
-                    let rel_pos = clamp(abs(uv.y - env_center) / env_half, 0.0, 1.0);
                     let edge_boost = 1.0 + playhead_proximity * (0.15 + 0.45 * rel_pos);
-                    stem_rgba = vec4<f32>(stem_color.rgb * edge_boost, 0.85 * edge_alpha);
+                    var base_alpha = 0.85;
+                    if (!is_overview) {
+                        base_alpha = depth_fade_alpha(rel_pos, 0.85);
+                    }
+                    stem_rgba = vec4<f32>(stem_color.rgb * edge_boost, base_alpha * edge_alpha);
                 } else {
-                    stem_rgba = vec4<f32>(0.35, 0.35, 0.35, 0.5 * edge_alpha);
+                    var base_alpha = 0.5;
+                    if (!is_overview) {
+                        base_alpha = depth_fade_alpha(rel_pos, 0.5);
+                    }
+                    stem_rgba = vec4<f32>(0.35, 0.35, 0.35, base_alpha * edge_alpha);
                 }
                 color = blend_over(color, stem_rgba);
             }

@@ -1,7 +1,7 @@
 //! GPU pipeline for waveform rendering
 //!
 //! Two bindings per view:
-//! - Binding 0: Uniform buffer (WaveformUniforms, 400 bytes, updated every frame)
+//! - Binding 0: Uniform buffer (WaveformUniforms, 416 bytes, updated every frame)
 //! - Binding 1: Storage buffer (peak data, updated only on track load)
 
 use super::PeakBuffer;
@@ -14,7 +14,7 @@ use std::sync::Arc;
 // Uniform buffer layout (must match waveform.wgsl exactly)
 // =============================================================================
 
-/// Uniform data for a single waveform view, packed as 25 vec4s (400 bytes).
+/// Uniform data for a single waveform view, packed as 26 vec4s (416 bytes).
 ///
 /// This is uploaded to the GPU every frame but is only 400 bytes — trivial
 /// compared to the old canvas approach that rebuilt ~1MB of geometry per frame.
@@ -65,8 +65,10 @@ pub struct WaveformUniforms {
     pub linked_stems: [f32; 4],
     /// Linked stem active: 0.0/1.0 per stem (linked stem is currently playing)
     pub linked_active: [f32; 4],
-    /// [subsampling_enabled, _reserved, _reserved, _reserved]
+    /// [abstraction_level, motion_blur_level, depth_fade_level, depth_fade_inverted]
     pub render_options: [f32; 4],
+    /// [peak_width_multiplier, edge_aa_algo (0-3), _reserved, _reserved]
+    pub render_options_2: [f32; 4],
 }
 
 // =============================================================================

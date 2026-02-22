@@ -274,6 +274,160 @@ impl WaveformMotionBlur {
     }
 }
 
+/// Waveform depth fade level (controls baseline-to-edge alpha gradient)
+///
+/// Higher = more transparent at baseline, giving better stem overlap readability.
+/// Only applies to zoomed waveform view (overview stays flat alpha).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaveformDepthFade {
+    /// No depth fade (flat alpha everywhere)
+    Off,
+    /// Subtle fade (65% → 100% of base alpha, center to edge)
+    Low,
+    /// Balanced fade (35% → 100%, default)
+    Medium,
+    /// Strong fade (12% → 100%)
+    High,
+}
+
+impl Default for WaveformDepthFade {
+    fn default() -> Self {
+        WaveformDepthFade::Medium
+    }
+}
+
+impl WaveformDepthFade {
+    pub const ALL: [WaveformDepthFade; 4] = [
+        WaveformDepthFade::Off,
+        WaveformDepthFade::Low,
+        WaveformDepthFade::Medium,
+        WaveformDepthFade::High,
+    ];
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            WaveformDepthFade::Off => "Off",
+            WaveformDepthFade::Low => "Low",
+            WaveformDepthFade::Medium => "Medium",
+            WaveformDepthFade::High => "High",
+        }
+    }
+
+    /// Convert to u8 level for shader uniforms (0=off, 1=low, 2=medium, 3=high)
+    pub fn as_level(&self) -> u8 {
+        match self {
+            WaveformDepthFade::Off => 0,
+            WaveformDepthFade::Low => 1,
+            WaveformDepthFade::Medium => 2,
+            WaveformDepthFade::High => 3,
+        }
+    }
+}
+
+/// Edge anti-aliasing algorithm for waveform envelope rendering
+///
+/// Controls how the shader computes AA width at envelope edges.
+/// Slope-aware modes widen the AA band on steep/diagonal edges to reduce wobble.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaveformEdgeAA {
+    /// Vertical-only: sharp flat edges, wobbly diagonals
+    Standard,
+    /// Slope-aware L1 norm (fwidth): smooth diagonals, slightly soft
+    SlopeL1,
+    /// Slope-aware L2 norm (gradient magnitude): tighter than L1
+    SlopeL2,
+    /// Slope-aware L2 with 3x cap: prevents extreme widening
+    SlopeL2Clamped,
+}
+
+impl Default for WaveformEdgeAA {
+    fn default() -> Self {
+        WaveformEdgeAA::SlopeL1
+    }
+}
+
+impl WaveformEdgeAA {
+    pub const ALL: [WaveformEdgeAA; 4] = [
+        WaveformEdgeAA::Standard,
+        WaveformEdgeAA::SlopeL1,
+        WaveformEdgeAA::SlopeL2,
+        WaveformEdgeAA::SlopeL2Clamped,
+    ];
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            WaveformEdgeAA::Standard => "Standard",
+            WaveformEdgeAA::SlopeL1 => "Slope L1",
+            WaveformEdgeAA::SlopeL2 => "Slope L2",
+            WaveformEdgeAA::SlopeL2Clamped => "L2 Clamped",
+        }
+    }
+
+    /// Get the shader algorithm index (0-3)
+    pub fn as_level(&self) -> u8 {
+        match self {
+            WaveformEdgeAA::Standard => 0,
+            WaveformEdgeAA::SlopeL1 => 1,
+            WaveformEdgeAA::SlopeL2 => 2,
+            WaveformEdgeAA::SlopeL2Clamped => 3,
+        }
+    }
+}
+
+/// Minimum pixel width for thin transient peaks
+///
+/// Sub-pixel peaks get expanded to at least this width (in fwidth units)
+/// with alpha scaled down proportionally. Prevents thin transients (drums)
+/// from flickering between pixel rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaveformPeakWidth {
+    /// No minimum width (sub-pixel peaks may vanish)
+    Off,
+    /// Narrow minimum (0.75 × fwidth)
+    Thin,
+    /// Standard minimum (1.5 × fwidth, default)
+    Medium,
+    /// Wide minimum (2.5 × fwidth, very visible)
+    Wide,
+}
+
+impl Default for WaveformPeakWidth {
+    fn default() -> Self {
+        WaveformPeakWidth::Medium
+    }
+}
+
+impl WaveformPeakWidth {
+    pub const ALL: [WaveformPeakWidth; 4] = [
+        WaveformPeakWidth::Off,
+        WaveformPeakWidth::Thin,
+        WaveformPeakWidth::Medium,
+        WaveformPeakWidth::Wide,
+    ];
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            WaveformPeakWidth::Off => "Off",
+            WaveformPeakWidth::Thin => "Thin",
+            WaveformPeakWidth::Medium => "Medium",
+            WaveformPeakWidth::Wide => "Wide",
+        }
+    }
+
+    /// Get the fwidth multiplier for the shader (0.0 = disabled)
+    pub fn as_multiplier(&self) -> f32 {
+        match self {
+            WaveformPeakWidth::Off => 0.0,
+            WaveformPeakWidth::Thin => 0.75,
+            WaveformPeakWidth::Medium => 1.5,
+            WaveformPeakWidth::Wide => 2.5,
+        }
+    }
+}
+
 /// Root configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -379,6 +533,14 @@ pub struct DisplayConfig {
     pub waveform_abstraction: WaveformAbstraction,
     /// Waveform motion blur level (Low/Medium/High edge smoothing)
     pub waveform_motion_blur: WaveformMotionBlur,
+    /// Waveform depth fade level (Low/Medium/High baseline-to-edge alpha gradient)
+    pub waveform_depth_fade: WaveformDepthFade,
+    /// Whether depth fade is inverted (opaque at center, transparent at edges)
+    pub waveform_depth_fade_inverted: bool,
+    /// Minimum pixel width for thin transient peaks
+    pub waveform_peak_width: WaveformPeakWidth,
+    /// Edge anti-aliasing algorithm for waveform envelope
+    pub waveform_edge_aa: WaveformEdgeAA,
 }
 
 /// Loop length options in beats (matches mesh-core/deck.rs LOOP_LENGTHS)
@@ -398,6 +560,10 @@ impl Default for DisplayConfig {
             waveform_quality: WaveformQuality::default(), // Medium
             waveform_abstraction: WaveformAbstraction::default(), // Medium
             waveform_motion_blur: WaveformMotionBlur::default(), // Low (crisp)
+            waveform_depth_fade: WaveformDepthFade::default(), // Medium
+            waveform_depth_fade_inverted: false,
+            waveform_peak_width: WaveformPeakWidth::default(), // Medium (1.5×)
+            waveform_edge_aa: WaveformEdgeAA::default(), // Slope L1
         }
     }
 }
