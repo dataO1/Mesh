@@ -175,17 +175,8 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
-- [ ] For better readability i want each single stem in the zoomed waveform be less transparent the
-  further we go outside of the 0 point baseline. so in the vertical middle they should be quite
-  transparent, so we can see other stems well, but on the outside (towards the
-  outline) the stem should be less transparent (as it is now), this should be
-  gradient. research if there is a mechanism for glsl that does exactly that,
-  like the smoothstep method.
-- [ ] Maybe instead of prebaking and precomputing the highres peaks we can
-  compute them on the fly from the audio buffer directly, that way we know
-  exactly how much peaks we need (based on the current)
 - [ ] when on the fly stem linking in the browser for selecting a linked track,
-  we can utilise smart suggestions better by additionally adding specific searching  parameters for the stem that is about to be linked or weighting certain markers more. for example when loading drums key is relatively irrelevant, but the energy or loudness matters more. for vocals, key is absolutely the most important, not so much energy, for bass i think the weighting can stay as is, for other too.
+  we can utilise smart suggestions better by additionally adding specific searching  parameters for the stem that is about to be linked or weighting certain markers more. for example when loading drums, key is relatively irrelevant, but the energy or lufs, aggression matters more. for vocals, key is absolutely the most important, bpm also a bit, not so much energy, for bass i think the weighting can stay as is, for other too. Its also possible that for linked stems same key is actually a hard requirement, or at least a very compatible key is a hard requirement and a filter for results.
 - [ ] slicer presets do not get triggered from the midi mapped f1. check 1.
   the mapping file, 2. the mapping in the app and give me a report of why this
   might happen. the current mapping file is in momentary mode. also the visuals

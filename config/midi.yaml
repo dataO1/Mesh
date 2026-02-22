@@ -1149,11 +1149,10 @@ devices:
       protocol: hid
       device_id: E82DF2FC
       name: fader_1
-    action: deck.fx_macro
-    physical_deck: 1
+    action: global.bpm
+    physical_deck: 3
     deck_index: null
-    params:
-      macro: 1
+    params: {}
     behavior: continuous
     shift_action: null
     encoder_mode: absolute
