@@ -927,10 +927,6 @@ impl MeshApp {
                     }
                     MidiGlobalAction::SettingsToggle => {
                         if self.settings.is_open {
-                            // Close: auto-save if changed, then close
-                            if self.settings.has_changes() {
-                                let _ = self.update(Message::Settings(SettingsMessage::Save));
-                            }
                             // Restore browse mode state from before settings opened
                             if let Some(ref nav) = self.settings.settings_midi_nav {
                                 let saved = nav.saved_browse_state;
@@ -940,7 +936,8 @@ impl MeshApp {
                                 }
                             }
                             self.settings.settings_midi_nav = None;
-                            let _ = self.update(Message::Settings(SettingsMessage::Close));
+                            // Close handles auto-save internally
+                            return self.update(Message::Settings(SettingsMessage::Close));
                         } else {
                             // Save current browse mode state, then force both sides active
                             // so encoders produce Browser::Scroll for settings navigation

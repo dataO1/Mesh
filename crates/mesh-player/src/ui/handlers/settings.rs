@@ -46,10 +46,16 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             Task::none()
         }
         Close => {
+            // Auto-save if any settings were changed
+            let save_task = if app.settings.has_changes() {
+                handle(app, Save)
+            } else {
+                Task::none()
+            };
             app.settings.is_open = false;
             app.settings.status.clear();
             app.settings.settings_midi_nav = None;
-            Task::none()
+            save_task
         }
         UpdateLoopLength(index) => {
             app.settings.draft_loop_length_index = index;

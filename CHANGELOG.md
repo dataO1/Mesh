@@ -98,6 +98,11 @@ All notable changes to Mesh are documented in this file.
 - **Smooth cue preview waveform** — Zoomed waveform now scrolls smoothly during cue and
   hot cue preview, matching the smoothness of normal playback.
 
+- **Settings auto-save on close** — Closing the settings panel (via UI or MIDI controller)
+  now automatically saves any changed settings to disk. Previously, changes made via MIDI
+  encoder were applied in-memory but lost on restart because the async save task was
+  discarded.
+
 ---
 
 ## [0.9.3]

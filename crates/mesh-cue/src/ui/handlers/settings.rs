@@ -21,9 +21,11 @@ impl MeshCueApp {
 
     /// Handle CloseSettings message
     pub fn handle_close_settings(&mut self) -> Task<Message> {
+        // Auto-save current draft values on close
+        let save_task = self.handle_save_settings();
         self.settings.is_open = false;
         self.settings.status.clear();
-        Task::none()
+        save_task
     }
 
     /// Handle UpdateSettingsMinTempo message
