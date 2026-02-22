@@ -40,8 +40,10 @@ use crate::timestretch::TimeStretcher;
 use crate::types::{StereoBuffer, StereoSample, NUM_STEMS, SAMPLE_RATE};
 
 /// Maximum threads to use for parallel stretching
-/// 4 threads balances performance vs CPU load - safe on modern multi-core systems
-const MAX_STRETCH_THREADS: usize = 4;
+/// Limited to 2 to leave CPU headroom for the JACK audio thread and UI.
+/// With 4 threads on a 4-core system, time stretching saturates all cores
+/// and causes JACK xruns.
+const MAX_STRETCH_THREADS: usize = 2;
 
 /// Minimum segment size for parallel stretching (in samples)
 /// Below this, single-threaded is faster due to overhead
@@ -298,6 +300,9 @@ impl StemLink {
                 let segment_ratio = ratio;
 
                 thread::spawn(move || {
+                    // Lower priority so JACK audio thread (SCHED_FIFO) preempts us
+                    #[cfg(unix)]
+                    unsafe { libc::nice(10); }
                     let mut stretcher = TimeStretcher::new_cheaper(SAMPLE_RATE);
                     let segment = StereoBuffer::from_vec(segment_data);
                     Self::pre_stretch_chunked(&mut stretcher, &segment, segment_ratio)

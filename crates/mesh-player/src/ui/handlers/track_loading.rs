@@ -184,19 +184,25 @@ pub fn handle_linked_stem_loaded(app: &mut MeshApp, msg: LinkedStemLoadedMsg) ->
                     );
             }
 
-            // Visual LUFS gain for linked stem: always target -9 LUFS for full vertical fill
-            let linked_gain = match linked_data.lufs {
-                Some(lufs) => 10.0_f32.powf((-9.0 - lufs) / 20.0),
-                None => 1.0,
+            // Visual LUFS gain for linked stem: normalize to host track's level.
+            // The shader already applies height_scale = 10^((-9 - host_lufs) / 20)
+            // uniformly to all stems (original and linked). So we only need to
+            // normalize linked→host here; the shader handles host→-9 LUFS.
+            // Using -9→linked directly would cause double correction.
+            let host_lufs = app.domain.track_lufs(deck_idx);
+            let linked_gain = match (host_lufs, linked_data.lufs) {
+                (Some(host), Some(linked)) => 10.0_f32.powf((host - linked) / 20.0),
+                _ => 1.0,
             };
             app.player_canvas_state
                 .deck_mut(deck_idx)
                 .overview
                 .set_linked_lufs_gain(stem_idx, linked_gain);
             log::info!(
-                "[LINKED] Set LUFS gain for deck {} stem {}: linked_lufs={:?}, gain={:.3} ({:+.1}dB)",
+                "[LINKED] Set visual LUFS gain for deck {} stem {}: host_lufs={:?}, linked_lufs={:?}, gain={:.3} ({:+.1}dB)",
                 deck_idx,
                 stem_idx,
+                host_lufs,
                 linked_data.lufs,
                 linked_gain,
                 20.0 * linked_gain.log10()

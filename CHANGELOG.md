@@ -20,6 +20,17 @@ All notable changes to Mesh are documented in this file.
   automatically opens the browser overlay and activates browse mode so the encoder
   navigates the track list. The selected track is highlighted in the stem's color.
 
+### Fixed
+
+- **Linked stem visual LUFS scaling** — Linked stem waveforms were double-corrected
+  for LUFS (once baked into peak buffer, once in shader). Now normalizes linked→host
+  level only; the shader handles host→-9 LUFS uniformly for both original and linked.
+
+- **JACK xruns during linked stem loading** — Time stretching for linked stems used
+  up to 4 threads, saturating all CPU cores and starving the JACK audio callback.
+  Reduced to 2 threads with lowered scheduling priority (`nice 10`) to leave headroom
+  for real-time audio processing.
+
 ---
 
 ## [0.9.4]

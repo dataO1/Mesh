@@ -2,7 +2,7 @@
 # Stem colors for waveform display
 
 stems:
-  vocals: "#33CC66"   # Green
-  drums: "#CC3333"    # Dark Red
-  bass: "#E6604D"     # Orange-Red
-  other: "#00CCCC"    # Cyan
+  vocals: "#26B864"   # Teal-green
+  drums: "#2840CC"    # Navy blue
+  bass: "#D94830"     # Red-orange
+  other: "#9926D9"    # Violet
