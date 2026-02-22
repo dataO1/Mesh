@@ -175,6 +175,13 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
+- [ ] we should also modify the led output, based on the stem link state. so toggle between two
+  shades of the color depending on if the normal or linked stem is active. Also
+  the led for stems that have a linked counter part should very slightly blink,
+  so the user knows they can interact.
+- [ ] Also triggering an on the fly stem link on a track should open the file
+  browser to be opened (the highlight of the selected track in the file browser should then be
+  highlighted in the stems color).
 - [ ] slicer presets do not get triggered from the midi mapped f1. check 1.
   the mapping file, 2. the mapping in the app and give me a report of why this
   might happen. the current mapping file is in momentary mode. also the visuals
