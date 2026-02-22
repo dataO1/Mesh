@@ -1009,7 +1009,7 @@ where
                 if self.state.linked_active[3] { 1.0 } else { 0.0 },
             ],
             render_options: [2.0, 0.0, 2.0, 0.0], // mesh-cue: medium abstraction, low blur, medium depth fade
-            render_options_2: [1.5, 1.0, 0.0, 0.0], // mesh-cue: medium peak width, slope L1 AA
+            render_options_2: [1.5, 3.0, 0.0, 0.0], // mesh-cue: medium peak width, L2 clamped AA
         }
     }
 }

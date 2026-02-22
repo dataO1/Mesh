@@ -1072,7 +1072,7 @@ impl PlayerCanvasState {
             depth_fade_level: 2,                 // Medium depth fade by default (0=off, 1=low, 2=med, 3=high)
             depth_fade_inverted: false,          // Normal: transparent center, opaque edges
             peak_width_mult: 1.5,                // Medium transient width (fw * 1.5)
-            edge_aa_level: 1,                    // Slope L1 by default
+            edge_aa_level: 3,                    // Slope L2 Clamped by default
         }
     }
 

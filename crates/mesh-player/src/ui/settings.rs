@@ -424,7 +424,7 @@ pub fn build_settings_entries(state: &SettingsState) -> Vec<SettingsEntry> {
         SettingsEntry {
             label: "Waveform Edge AA",
             options: WaveformEdgeAA::ALL.iter().map(|a| a.display_name().to_string()).collect(),
-            selected: WaveformEdgeAA::ALL.iter().position(|&a| a == state.draft_waveform_edge_aa).unwrap_or(1),
+            selected: WaveformEdgeAA::ALL.iter().position(|&a| a == state.draft_waveform_edge_aa).unwrap_or(3),
             on_select: |idx| SettingsMessage::UpdateWaveformEdgeAA(WaveformEdgeAA::ALL[idx.min(WaveformEdgeAA::ALL.len() - 1)]),
         },
         SettingsEntry {

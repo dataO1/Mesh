@@ -344,7 +344,7 @@ pub enum WaveformEdgeAA {
 
 impl Default for WaveformEdgeAA {
     fn default() -> Self {
-        WaveformEdgeAA::SlopeL1
+        WaveformEdgeAA::SlopeL2Clamped
     }
 }
 
@@ -563,7 +563,7 @@ impl Default for DisplayConfig {
             waveform_depth_fade: WaveformDepthFade::default(), // Medium
             waveform_depth_fade_inverted: false,
             waveform_peak_width: WaveformPeakWidth::default(), // Medium (1.5×)
-            waveform_edge_aa: WaveformEdgeAA::default(), // Slope L1
+            waveform_edge_aa: WaveformEdgeAA::default(), // L2 Clamped
         }
     }
 }
