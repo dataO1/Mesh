@@ -12,8 +12,9 @@
 //            motion blur branching, playhead proximity glow, fwidth() derivative,
 //            minmax_reduce loop, sample_peak branching, subsampling logic
 //
-//   REPLACED: smoothstep → linear clamp, dpdx/dpdy derivatives → analytical slope from
-//             adjacent precomputed peaks, blend_over → vec3 mix (background always opaque)
+//   REPLACED: smoothstep → linear clamp (0.75/1.5 zone), sqrt L2 → linear slope,
+//             dpdx/dpdy → per-edge slope from adjacent precomputed peaks,
+//             blend_over → vec3 mix (background always opaque)
 //
 // Uniform layout is IDENTICAL to waveform.wgsl — same WaveformUniforms struct.
 // view_params.z = view width in pixels (number of precomputed peaks per stem).
@@ -265,11 +266,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Pre-computed pixel size from CPU (exact, no fwidth derivative)
     let fw = u.render_options_2[2];
 
-    // Pre-compute AA constants (hardcoded crisp: blur_out=1.5, blur_in=1.0)
-    let fw_sq = fw * fw;
+    // AA constants — tightened linear clamp (1.5fw zone ≈ smoothstep 2.5fw crispness)
     let fw3 = fw * 3.0;
-    let fw_out = fw * 1.5;
-    let fw_range = fw * 2.5;   // blur_out + blur_in
+    let fw_muted_inv = 1.0 / (fw * 1.5); // precomputed reciprocal for muted stems
 
     let render_order = array<u32, 4>(1u, 2u, 0u, 3u);
 
@@ -295,10 +294,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let d_top = uv.y - env_top;
         let d_bot = env_bot - uv.y;
 
-        // --- Muted stem: simplified AA (no slope, basic fw) ---
+        // --- Muted stem: simplified AA (no slope, precomputed reciprocal) ---
         if (!is_active) {
-            let aa_top = clamp((d_top + fw_out) / fw_range, 0.0, 1.0);
-            let aa_bot = clamp((d_bot + fw_out) / fw_range, 0.0, 1.0);
+            let aa_top = clamp(d_top * fw_muted_inv + 0.5, 0.0, 1.0);
+            let aa_bot = clamp(d_bot * fw_muted_inv + 0.5, 0.0, 1.0);
             let ea = aa_top * aa_bot;
             if (ea > 0.005) {
                 color = mix(color, vec3<f32>(0.35), 0.5 * ea);
@@ -306,21 +305,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             continue;
         }
 
-        // --- Active stem: analytical slope-aware L2 Clamped AA ---
-        // Read adjacent precomputed peak — guaranteed L1 cache hit (sequential access).
-        // Adjacent pixel's pre-reduced peak gives the exact visual slope on screen.
-        // This replaces dpdx/dpdy CLPER instructions with a single buffer read.
+        // --- Active stem: per-edge slope-aware AA (no sqrt, no max) ---
+        // Adjacent precomputed peak gives visual slope — separate per edge so a
+        // flat top doesn't inherit a steep bottom's blur width.
         let pn = read_peak(effective_stem, min(pixel_col + 1u, width_u - 1u));
-        let st = abs(pn.y - peak.y) * half_hs;
-        let sb = abs(pn.x - peak.x) * half_hs;
-        let ms = max(st, sb);
-        let fw_aa = clamp(sqrt(ms * ms + fw_sq), fw, fw3);
+        let fw_top = clamp(abs(pn.y - peak.y) * half_hs + fw, fw, fw3);
+        let fw_bot = clamp(abs(pn.x - peak.x) * half_hs + fw, fw, fw3);
 
-        // Linear clamp AA (replaces smoothstep — visually identical at sub-pixel scale)
-        let aa_out = fw_aa * 1.5;
-        let aa_range_s = fw_aa * 2.5;
-        let aa_top = clamp((d_top + aa_out) / aa_range_s, 0.0, 1.0);
-        let aa_bot = clamp((d_bot + aa_out) / aa_range_s, 0.0, 1.0);
+        // Linear clamp AA: d/(fw*1.5) + 0.5 (0.75/1.5 = 0.5 offset)
+        let aa_top = clamp(d_top / (fw_top * 1.5) + 0.5, 0.0, 1.0);
+        let aa_bot = clamp(d_bot / (fw_bot * 1.5) + 0.5, 0.0, 1.0);
         let edge_alpha = aa_top * aa_bot;
 
         if (edge_alpha > 0.005) {
