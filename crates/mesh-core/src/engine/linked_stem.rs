@@ -39,11 +39,9 @@ use basedrop::Shared;
 use crate::timestretch::TimeStretcher;
 use crate::types::{StereoBuffer, StereoSample, NUM_STEMS, SAMPLE_RATE};
 
-/// Maximum threads to use for parallel stretching
-/// Limited to 2 to leave CPU headroom for the JACK audio thread and UI.
-/// With 4 threads on a 4-core system, time stretching saturates all cores
-/// and causes JACK xruns.
-const MAX_STRETCH_THREADS: usize = 2;
+/// Maximum threads to use for parallel stretching.
+/// Stretch threads run at nice(10) so JACK's SCHED_FIFO audio thread preempts them.
+const MAX_STRETCH_THREADS: usize = 8;
 
 /// Minimum segment size for parallel stretching (in samples)
 /// Below this, single-threaded is faster due to overhead

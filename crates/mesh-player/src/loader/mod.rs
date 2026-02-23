@@ -208,19 +208,27 @@ impl TrackLoader {
     }
 }
 
-/// The background loader thread function
+/// The background loader dispatch thread.
+///
+/// Receives load requests and dispatches each to rayon's thread pool for parallel
+/// execution. Multiple decks can load simultaneously — each load runs on its own
+/// rayon worker. Results flow back through the shared mpsc Sender.
 fn loader_thread(
     rx: Receiver<TrackLoadRequest>,
     tx: Sender<TrackLoadResult>,
     target_sample_rate: Arc<AtomicU32>,
 ) {
-    log::info!("Track loader thread started");
+    log::info!("Track loader dispatch thread started");
 
     while let Ok(request) = rx.recv() {
-        handle_track_load(request, &tx, &target_sample_rate);
+        let tx = tx.clone();
+        let rate = target_sample_rate.clone();
+        rayon::spawn(move || {
+            handle_track_load(request, tx, rate);
+        });
     }
 
-    log::info!("Track loader thread shutting down");
+    log::info!("Track loader dispatch thread shutting down");
 }
 
 /// Handle a track load request with streaming support.
@@ -232,8 +240,8 @@ fn loader_thread(
 /// blocks), sends a single Complete result.
 fn handle_track_load(
     request: TrackLoadRequest,
-    tx: &Sender<TrackLoadResult>,
-    target_sample_rate: &Arc<AtomicU32>,
+    tx: Sender<TrackLoadResult>,
+    target_sample_rate: Arc<AtomicU32>,
 ) {
     let sample_rate = target_sample_rate.load(Ordering::SeqCst);
     let deck_idx = request.deck_idx;
@@ -266,10 +274,10 @@ fn handle_track_load(
         log::info!("[LOADER] File needs resampling ({} Hz → {} Hz), using full-load path",
             reader.format().sample_rate, sample_rate);
         drop(reader); // Close the reader, load_with_metadata will open its own
-        handle_full_load(request, tx, sample_rate);
+        handle_full_load(request, &tx, sample_rate);
     } else {
         // STREAMING PATH: native rate, can read regions directly
-        handle_streaming_load(request, tx, reader, sample_rate);
+        handle_streaming_load(request, &tx, reader, sample_rate);
     }
 
     log::info!(
