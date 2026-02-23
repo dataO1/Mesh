@@ -69,8 +69,30 @@ pub fn handle_track_loaded(app: &mut MeshApp, msg: TrackLoadedMsg) -> Task<Messa
                     // Deliver stems to engine (single UpgradeStems)
                     app.domain.upgrade_loaded_stems(deck_idx, stems, duration_samples);
 
+                    // Preserve linked stem data that may have arrived from async loader
+                    // before this Complete message (race: LinkedStemLoaded can beat Complete)
+                    let old_overview = &app.player_canvas_state.decks[deck_idx].overview;
+                    let linked_waveforms = old_overview.linked_stem_waveforms.clone();
+                    let linked_drops = old_overview.linked_drop_markers;
+                    let linked_durs = old_overview.linked_durations;
+                    let linked_hr = old_overview.linked_highres_peaks.clone();
+                    let linked_gains = old_overview.linked_lufs_gains;
+
                     // Update waveform with final smoothed peaks (replaces incremental)
-                    app.player_canvas_state.decks[deck_idx].overview = overview_state;
+                    let overview = &mut app.player_canvas_state.decks[deck_idx].overview;
+                    *overview = overview_state;
+
+                    // Restore linked stem data and rebuild GPU buffers if any were present
+                    let has_linked = linked_waveforms.iter().any(|o| o.is_some());
+                    if has_linked {
+                        overview.linked_stem_waveforms = linked_waveforms;
+                        overview.linked_drop_markers = linked_drops;
+                        overview.linked_durations = linked_durs;
+                        overview.linked_highres_peaks = linked_hr;
+                        overview.linked_lufs_gains = linked_gains;
+                        overview.rebuild_linked_buffers();
+                    }
+
                     app.player_canvas_state.decks[deck_idx].zoomed = zoomed_state;
 
                     // Apply user display config
