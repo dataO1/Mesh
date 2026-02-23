@@ -10,7 +10,8 @@
 
 use crate::db::{DatabaseService, MeshDb, MlAnalysisData, PlaylistQuery, TrackRow, CuePoint, SavedLoop, StemLink, CuePointQuery, SavedLoopQuery, StemLinkQuery, TrackQuery, SimilarityQuery};
 use super::cache::get_or_open_usb_database;
-use rayon::prelude::*;
+// NOTE: No rayon here — USB drives are sequential I/O, and par_iter would
+// pollute the global rayon pool that the audio engine depends on.
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -298,25 +299,25 @@ pub fn scan_local_collection_from_db(
         (HashMap::new(), HashMap::new(), HashSet::new())
     };
 
-    // Get file metadata for all unique tracks (parallel for speed)
+    // Get file metadata for all unique tracks (sequential — local disk I/O
+    // benefits from readahead, and this avoids polluting the global rayon pool)
     let track_list: Vec<(String, PathBuf, TrackRow)> = track_data
         .into_iter()
         .map(|(filename, (path, track))| (filename, path, track))
         .collect();
     let total_files = track_list.len();
-    let progress_counter = std::sync::atomic::AtomicUsize::new(0);
-    let progress_ref = progress.as_ref();
+    let mut progress_count: usize = 0;
 
     let track_infos: Vec<Result<TrackInfo, std::io::Error>> = track_list
-        .into_par_iter()
+        .into_iter()
         .map(|(filename, path, db_track)| {
             let metadata = std::fs::metadata(&path)?;
             let mtime = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
 
             // Update progress
-            let current = progress_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            if let Some(cb) = progress_ref {
-                cb(current, total_files);
+            progress_count += 1;
+            if let Some(cb) = progress.as_ref() {
+                cb(progress_count, total_files);
             }
 
             // Get pre-fetched data
@@ -464,13 +465,13 @@ pub fn scan_usb_collection(
         }
     }
 
-    // Get file metadata for tracks (parallel for speed)
+    // Get file metadata for tracks (sequential — USB flash is sequential I/O,
+    // par_iter causes random access patterns that are slower on flash media)
     let total_files = track_paths.len();
-    let progress_counter = std::sync::atomic::AtomicUsize::new(0);
-    let progress_ref = progress.as_ref();
+    let mut progress_count: usize = 0;
 
     let track_infos: Vec<Result<TrackInfo, std::io::Error>> = track_paths
-        .into_par_iter()
+        .into_iter()
         .map(|path| {
             let filename = path
                 .file_name()
@@ -481,9 +482,9 @@ pub fn scan_usb_collection(
             let mtime = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
 
             // Update progress
-            let current = progress_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            if let Some(cb) = progress_ref {
-                cb(current, total_files);
+            progress_count += 1;
+            if let Some(cb) = progress.as_ref() {
+                cb(progress_count, total_files);
             }
 
             // Get database metadata if available

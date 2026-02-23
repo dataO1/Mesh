@@ -131,7 +131,7 @@ pub type LinkedStemResultReceiver = Arc<Mutex<Receiver<LinkedStemLoadResult>>>;
 /// Shared linked stem loader - can be used by any UI (mesh-player, mesh-cue)
 ///
 /// Handles background loading of linked stems with time-stretching and alignment.
-/// Uses rayon thread pool for parallel processing.
+/// Spawns dedicated OS threads per stem (not rayon) to avoid starving the audio engine.
 ///
 /// # Message-Driven Usage
 ///
@@ -155,7 +155,7 @@ pub struct LinkedStemLoader {
 impl LinkedStemLoader {
     /// Create a new linked stem loader
     ///
-    /// Spawns a background thread that processes load requests using rayon.
+    /// Spawns a coordinator thread that dispatches per-stem OS threads.
     pub fn new(sample_rate: u32, db_service: Arc<DatabaseService>) -> Self {
         let (request_tx, request_rx) = mpsc::channel::<LinkedStemLoadRequest>();
         let (result_tx, result_rx) = mpsc::channel::<LinkedStemLoadResult>();
@@ -271,14 +271,22 @@ fn loader_thread(
     log::info!("Linked stem loader thread started");
 
     while let Ok(request) = rx.recv() {
-        // Spawn to rayon thread pool for parallel processing
+        // Spawn a dedicated OS thread per stem load — NOT rayon::spawn.
+        // Linked stem loads are long-running (500ms-2s) and I/O-bound.
+        // Using the global rayon pool would starve the audio engine's
+        // par_iter calls which need those same 4 workers every ~5ms.
         let tx_clone = tx.clone();
         let rate = sample_rate.load(Ordering::SeqCst);
         let db = db_service.clone();
 
-        rayon::spawn(move || {
-            handle_linked_stem_load(request, tx_clone, rate, &db);
-        });
+        if let Err(e) = std::thread::Builder::new()
+            .name(format!("linked-stem-{}-{}", request.host_deck_idx, request.stem_idx))
+            .spawn(move || {
+                handle_linked_stem_load(request, tx_clone, rate, &db);
+            })
+        {
+            log::error!("Failed to spawn linked stem thread: {}", e);
+        }
     }
 
     log::info!("Linked stem loader thread exiting");
