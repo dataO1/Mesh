@@ -553,10 +553,6 @@ pub enum EngineCommand {
     /// - User changes auto-gain enabled or target LUFS in settings
     SetLoudnessConfig(crate::config::LoudnessConfig),
 
-    /// Set waveform quality level for linked stem peak generation
-    /// 0=Low, 1=Medium, 2=High, 3=Ultra
-    SetWaveformQuality(u8),
-
     /// Set screen width for BPM-aware peak resolution
     SetScreenWidth(u32),
 

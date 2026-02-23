@@ -189,7 +189,6 @@ impl PeakBuffer {
 // minmax_reduce loops, eliminating the most expensive shader path.
 
 /// Read a single raw peak (min, max) from the interleaved peak buffer.
-#[cfg(feature = "mali-shader")]
 fn cpu_raw_peak(data: &[f32], stem: u32, pps: u32, idx: u32) -> (f32, f32) {
     let clamped = idx.min(pps.saturating_sub(1));
     let offset = (stem * pps + clamped) as usize * 2;
@@ -202,7 +201,6 @@ fn cpu_raw_peak(data: &[f32], stem: u32, pps: u32, idx: u32) -> (f32, f32) {
 
 /// Min/max reduction over a range of raw peaks. Matches the shader's minmax_reduce
 /// but uses the full range (no 64-iteration cap — CPU has plenty of headroom).
-#[cfg(feature = "mali-shader")]
 fn cpu_minmax_reduce(data: &[f32], stem: u32, pps: u32, start: u32, end: u32) -> (f32, f32) {
     let s = start.min(pps.saturating_sub(1));
     let e = end.min(pps.saturating_sub(1));
@@ -218,7 +216,6 @@ fn cpu_minmax_reduce(data: &[f32], stem: u32, pps: u32, start: u32, end: u32) ->
 
 /// Per-stem subsampling target matching the shader's get_subsample_target().
 /// level: 0=Low, 1=Medium, 2=High (maps from abstraction_level u8).
-#[cfg(feature = "mali-shader")]
 fn cpu_subsample_target(stem_idx: u32, level: u8) -> f32 {
     let base = match stem_idx % 4 {
         0 => 2.5,  // Vocals
@@ -235,7 +232,6 @@ fn cpu_subsample_target(stem_idx: u32, level: u8) -> f32 {
 
 /// CPU-side peak sampling with optional grid-aligned subsampling.
 /// Mirrors the shader's sample_peak() logic exactly.
-#[cfg(feature = "mali-shader")]
 fn cpu_sample_peak(
     data: &[f32],
     stem: u32,
@@ -305,7 +301,6 @@ fn cpu_sample_peak(
 /// naturally renders this as a split view without shader changes.
 ///
 /// **Zoomed view**: Outputs all `num_stems` (including stems 4-7 for linked swap).
-#[cfg(feature = "mali-shader")]
 fn precompute_view_peaks(
     raw_data: &[f32],
     raw_pps: u32,
@@ -541,7 +536,6 @@ where
                 .or_else(|| deck.overview.highres_peak_buffer.clone())
         };
 
-        #[cfg(feature = "mali-shader")]
         let (peaks, uniforms) = {
             let mut uniforms = self.build_uniforms(bounds);
             let peaks = if let Some(raw) = &raw_peaks {
@@ -576,8 +570,6 @@ where
             (peaks, uniforms)
         };
 
-        #[cfg(not(feature = "mali-shader"))]
-        let (peaks, uniforms) = (raw_peaks, self.build_uniforms(bounds));
 
         WaveformPrimitive {
             id: self.view_id,
@@ -671,13 +663,12 @@ where
             log::debug!(
                 "[RENDER] deck={} zoom={}bars | bounds={:.0}x{:.0} | bpm={:.1} spb={} spbar={} | \
                  window={}samples ({:.4}..{:.4}) | peaks_per_stem={} | pp/px={:.3} | \
-                 abstraction={} blur={} depth_fade={} inverted={}",
+                 abstraction={}",
                 self.deck_idx, zoom_bars, bounds.width, bounds.height,
                 bpm, samples_per_beat, samples_per_bar,
                 window_samples, start_norm, end_norm,
                 peaks_per_stem, ppp,
-                self.state.abstraction_level, self.state.motion_blur_level,
-                self.state.depth_fade_level, self.state.depth_fade_inverted,
+                self.state.abstraction_level,
             );
 
             (start_norm, end_norm, peaks_per_stem as f32, ppp)
@@ -843,35 +834,15 @@ where
                     if la[3] { 1.0 } else { 0.0 },
                 ]
             },
-            render_options: {
-                #[cfg(feature = "mali-shader")]
-                { [0.0, 0.0, 0.0, 0.0] } // Mali: raw mode, no blur, no depth fade
-                #[cfg(not(feature = "mali-shader"))]
-                { [
-                    self.state.abstraction_level as f32 + 1.0,
-                    self.state.motion_blur_level as f32,
-                    self.state.depth_fade_level as f32,
-                    if self.state.depth_fade_inverted { 1.0 } else { 0.0 },
-                ] }
-            },
+            render_options: [0.0, 0.0, 0.0, 0.0],
             render_options_2: {
-                // [2] = precomputed fw (1.0/height) — used by Mali shader, ignored by desktop
                 let fw = if bounds.height > 0.0 { 1.0 / bounds.height } else { 0.001 };
-                // [3] = loading pulse: 0.0 = not loading, 0.0–1.0 = sine pulse phase
                 let loading_pulse = if overview.loading && overview.has_track {
                     (self.state.frame_count as f32 * 0.1).sin() * 0.5 + 0.5
                 } else {
                     0.0
                 };
-                #[cfg(feature = "mali-shader")]
-                { [0.0, 0.0, fw, loading_pulse] }
-                #[cfg(not(feature = "mali-shader"))]
-                { [
-                    self.state.peak_width_mult,
-                    self.state.edge_aa_level as f32,
-                    fw,
-                    loading_pulse,
-                ] }
+                [0.0, 0.0, fw, loading_pulse]
             },
         }
     }
@@ -1093,7 +1064,6 @@ where
                 .or_else(|| self.state.overview.highres_peak_buffer.clone())
         };
 
-        #[cfg(feature = "mali-shader")]
         let (peaks, uniforms) = {
             let mut uniforms = self.build_uniforms(bounds);
             let peaks = if let Some(raw) = &raw_peaks {
@@ -1127,8 +1097,6 @@ where
             (peaks, uniforms)
         };
 
-        #[cfg(not(feature = "mali-shader"))]
-        let (peaks, uniforms) = (raw_peaks, self.build_uniforms(bounds));
 
         WaveformPrimitive {
             id: self.view_id,
@@ -1339,19 +1307,10 @@ where
                 if self.state.linked_active[2] { 1.0 } else { 0.0 },
                 if self.state.linked_active[3] { 1.0 } else { 0.0 },
             ],
-            render_options: {
-                #[cfg(feature = "mali-shader")]
-                { [0.0, 0.0, 0.0, 0.0] } // Mali: raw mode, no blur, no depth fade
-                #[cfg(not(feature = "mali-shader"))]
-                { [2.0, 0.0, 2.0, 0.0] } // mesh-cue: medium abstraction, low blur, medium depth fade
-            },
+            render_options: [0.0, 0.0, 0.0, 0.0],
             render_options_2: {
                 let fw = if bounds.height > 0.0 { 1.0 / bounds.height } else { 0.001 };
-                // mesh-cue: no loading pulse (tracks load synchronously)
-                #[cfg(feature = "mali-shader")]
-                { [0.0, 0.0, fw, 0.0] }
-                #[cfg(not(feature = "mali-shader"))]
-                { [1.5, 3.0, fw, 0.0] }
+                [0.0, 0.0, fw, 0.0]
             },
         }
     }

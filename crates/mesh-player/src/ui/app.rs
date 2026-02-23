@@ -223,7 +223,6 @@ impl MeshApp {
             config::slicer_config_to_engine_presets(&slicer_config),
             slicer_config.validated_buffer_bars(),
             config.audio.loudness.clone(),
-            config.display.waveform_quality.as_level(),
             1920, // Default screen width, updated when GotMonitorSize fires
         );
 
@@ -265,11 +264,6 @@ impl MeshApp {
                 state.set_vertical_layout(config.display.waveform_layout.is_vertical());
                 state.set_vertical_inverted(config.display.waveform_layout.is_inverted());
                 state.abstraction_level = config.display.waveform_abstraction.as_level();
-                state.motion_blur_level = config.display.waveform_motion_blur.as_level();
-                state.depth_fade_level = config.display.waveform_depth_fade.as_level();
-                state.depth_fade_inverted = config.display.waveform_depth_fade_inverted;
-                state.peak_width_mult = config.display.waveform_peak_width.as_multiplier();
-                state.edge_aa_level = config.display.waveform_edge_aa.as_level();
                 state
             },
             deck_views,
@@ -372,8 +366,7 @@ impl MeshApp {
             Message::LoadTrack(deck_idx, path) => {
                 // Streaming track loading: create skeleton immediately, load audio in background
                 if deck_idx < 4 {
-                    let quality = self.config.display.waveform_quality.as_level();
-                    match self.domain.create_skeleton_and_load(deck_idx, path.into(), quality, self.monitor_width) {
+                    match self.domain.create_skeleton_and_load(deck_idx, path.into(), 0, self.monitor_width) {
                         Ok(skeleton) => {
                             // Apply skeleton waveform (loading state with beat/cue markers)
                             self.player_canvas_state.decks[deck_idx].overview = skeleton.overview_state;
@@ -706,8 +699,7 @@ impl MeshApp {
                 let host_duration = self.player_canvas_state.decks[deck].overview.duration_samples;
 
                 // Send command to engine via domain (single source of truth for stem loading)
-                let quality = self.config.display.waveform_quality.as_level();
-                if self.domain.load_linked_stem(deck, stem, path.clone(), host_bpm, host_drop_marker, host_duration, quality) {
+                if self.domain.load_linked_stem(deck, stem, path.clone(), host_bpm, host_drop_marker, host_duration, 0) {
                     self.stem_link_state = StemLinkState::Loading {
                         deck,
                         stem,

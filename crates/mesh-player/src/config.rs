@@ -131,57 +131,6 @@ impl WaveformLayout {
     }
 }
 
-/// Waveform peak resolution quality level
-///
-/// Controls how many peaks are generated per stem at track load time.
-/// Higher quality = more peaks = sharper transients at close zoom, but more memory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WaveformQuality {
-    /// ~65K peaks for 5-min track (legacy behavior)
-    Low,
-    /// ~450K peaks for 5-min track (good balance)
-    Medium,
-    /// ~1.8M peaks for 5-min track (sharp transients)
-    High,
-    /// ~7.2M peaks for 5-min track (maximum detail)
-    Ultra,
-}
-
-impl Default for WaveformQuality {
-    fn default() -> Self {
-        WaveformQuality::Medium
-    }
-}
-
-impl WaveformQuality {
-    pub const ALL: [WaveformQuality; 4] = [
-        WaveformQuality::Low,
-        WaveformQuality::Medium,
-        WaveformQuality::High,
-        WaveformQuality::Ultra,
-    ];
-
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            WaveformQuality::Low => "Low",
-            WaveformQuality::Medium => "Medium",
-            WaveformQuality::High => "High",
-            WaveformQuality::Ultra => "Ultra",
-        }
-    }
-
-    /// Convert to u8 quality level for mesh-widgets (avoids cross-crate type dependency)
-    pub fn as_level(&self) -> u8 {
-        match self {
-            WaveformQuality::Low => 0,
-            WaveformQuality::Medium => 1,
-            WaveformQuality::High => 2,
-            WaveformQuality::Ultra => 3,
-        }
-    }
-}
-
 /// Waveform abstraction level (controls grid-aligned subsampling intensity)
 ///
 /// Higher abstraction = larger grid cells = smoother/more abstract appearance.
@@ -224,206 +173,6 @@ impl WaveformAbstraction {
             WaveformAbstraction::Low => 0,
             WaveformAbstraction::Medium => 1,
             WaveformAbstraction::High => 2,
-        }
-    }
-}
-
-/// Waveform motion blur level (controls smoothstep edge softness)
-///
-/// Higher blur = softer waveform edges = more motion-blur-like appearance during scroll.
-/// Controls the `smoothstep` anti-aliasing width in the fragment shader.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WaveformMotionBlur {
-    /// Crisp edges (default, current behavior)
-    Low,
-    /// Softer edges, subtle blur
-    Medium,
-    /// Very soft edges, pronounced blur
-    High,
-}
-
-impl Default for WaveformMotionBlur {
-    fn default() -> Self {
-        WaveformMotionBlur::Low
-    }
-}
-
-impl WaveformMotionBlur {
-    pub const ALL: [WaveformMotionBlur; 3] = [
-        WaveformMotionBlur::Low,
-        WaveformMotionBlur::Medium,
-        WaveformMotionBlur::High,
-    ];
-
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            WaveformMotionBlur::Low => "Low",
-            WaveformMotionBlur::Medium => "Medium",
-            WaveformMotionBlur::High => "High",
-        }
-    }
-
-    /// Convert to u8 level for shader uniforms
-    pub fn as_level(&self) -> u8 {
-        match self {
-            WaveformMotionBlur::Low => 0,
-            WaveformMotionBlur::Medium => 1,
-            WaveformMotionBlur::High => 2,
-        }
-    }
-}
-
-/// Waveform depth fade level (controls baseline-to-edge alpha gradient)
-///
-/// Higher = more transparent at baseline, giving better stem overlap readability.
-/// Only applies to zoomed waveform view (overview stays flat alpha).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WaveformDepthFade {
-    /// No depth fade (flat alpha everywhere)
-    Off,
-    /// Subtle fade (65% → 100% of base alpha, center to edge)
-    Low,
-    /// Balanced fade (35% → 100%, default)
-    Medium,
-    /// Strong fade (12% → 100%)
-    High,
-}
-
-impl Default for WaveformDepthFade {
-    fn default() -> Self {
-        WaveformDepthFade::Medium
-    }
-}
-
-impl WaveformDepthFade {
-    pub const ALL: [WaveformDepthFade; 4] = [
-        WaveformDepthFade::Off,
-        WaveformDepthFade::Low,
-        WaveformDepthFade::Medium,
-        WaveformDepthFade::High,
-    ];
-
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            WaveformDepthFade::Off => "Off",
-            WaveformDepthFade::Low => "Low",
-            WaveformDepthFade::Medium => "Medium",
-            WaveformDepthFade::High => "High",
-        }
-    }
-
-    /// Convert to u8 level for shader uniforms (0=off, 1=low, 2=medium, 3=high)
-    pub fn as_level(&self) -> u8 {
-        match self {
-            WaveformDepthFade::Off => 0,
-            WaveformDepthFade::Low => 1,
-            WaveformDepthFade::Medium => 2,
-            WaveformDepthFade::High => 3,
-        }
-    }
-}
-
-/// Edge anti-aliasing algorithm for waveform envelope rendering
-///
-/// Controls how the shader computes AA width at envelope edges.
-/// Slope-aware modes widen the AA band on steep/diagonal edges to reduce wobble.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WaveformEdgeAA {
-    /// Vertical-only: sharp flat edges, wobbly diagonals
-    Standard,
-    /// Slope-aware L1 norm (fwidth): smooth diagonals, slightly soft
-    SlopeL1,
-    /// Slope-aware L2 norm (gradient magnitude): tighter than L1
-    SlopeL2,
-    /// Slope-aware L2 with 3x cap: prevents extreme widening
-    SlopeL2Clamped,
-}
-
-impl Default for WaveformEdgeAA {
-    fn default() -> Self {
-        WaveformEdgeAA::SlopeL2Clamped
-    }
-}
-
-impl WaveformEdgeAA {
-    pub const ALL: [WaveformEdgeAA; 4] = [
-        WaveformEdgeAA::Standard,
-        WaveformEdgeAA::SlopeL1,
-        WaveformEdgeAA::SlopeL2,
-        WaveformEdgeAA::SlopeL2Clamped,
-    ];
-
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            WaveformEdgeAA::Standard => "Standard",
-            WaveformEdgeAA::SlopeL1 => "Slope L1",
-            WaveformEdgeAA::SlopeL2 => "Slope L2",
-            WaveformEdgeAA::SlopeL2Clamped => "L2 Clamped",
-        }
-    }
-
-    /// Get the shader algorithm index (0-3)
-    pub fn as_level(&self) -> u8 {
-        match self {
-            WaveformEdgeAA::Standard => 0,
-            WaveformEdgeAA::SlopeL1 => 1,
-            WaveformEdgeAA::SlopeL2 => 2,
-            WaveformEdgeAA::SlopeL2Clamped => 3,
-        }
-    }
-}
-
-/// Minimum pixel width for thin transient peaks
-///
-/// Sub-pixel peaks get expanded to at least this width (in fwidth units)
-/// with alpha scaled down proportionally. Prevents thin transients (drums)
-/// from flickering between pixel rows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WaveformPeakWidth {
-    /// No minimum width (sub-pixel peaks may vanish)
-    Off,
-    /// Narrow minimum (0.75 × fwidth)
-    Thin,
-    /// Standard minimum (1.5 × fwidth, default)
-    Medium,
-    /// Wide minimum (2.5 × fwidth, very visible)
-    Wide,
-}
-
-impl Default for WaveformPeakWidth {
-    fn default() -> Self {
-        WaveformPeakWidth::Medium
-    }
-}
-
-impl WaveformPeakWidth {
-    pub const ALL: [WaveformPeakWidth; 4] = [
-        WaveformPeakWidth::Off,
-        WaveformPeakWidth::Thin,
-        WaveformPeakWidth::Medium,
-        WaveformPeakWidth::Wide,
-    ];
-
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            WaveformPeakWidth::Off => "Off",
-            WaveformPeakWidth::Thin => "Thin",
-            WaveformPeakWidth::Medium => "Medium",
-            WaveformPeakWidth::Wide => "Wide",
-        }
-    }
-
-    /// Get the fwidth multiplier for the shader (0.0 = disabled)
-    pub fn as_multiplier(&self) -> f32 {
-        match self {
-            WaveformPeakWidth::Off => 0.0,
-            WaveformPeakWidth::Thin => 0.75,
-            WaveformPeakWidth::Medium => 1.5,
-            WaveformPeakWidth::Wide => 2.5,
         }
     }
 }
@@ -527,20 +276,8 @@ pub struct DisplayConfig {
     pub key_scoring_model: KeyScoringModel,
     /// Waveform layout orientation (horizontal or vertical)
     pub waveform_layout: WaveformLayout,
-    /// Waveform peak resolution quality (Low/Medium/High/Ultra)
-    pub waveform_quality: WaveformQuality,
     /// Waveform abstraction level (Low/Medium/High grid-aligned subsampling)
     pub waveform_abstraction: WaveformAbstraction,
-    /// Waveform motion blur level (Low/Medium/High edge smoothing)
-    pub waveform_motion_blur: WaveformMotionBlur,
-    /// Waveform depth fade level (Low/Medium/High baseline-to-edge alpha gradient)
-    pub waveform_depth_fade: WaveformDepthFade,
-    /// Whether depth fade is inverted (opaque at center, transparent at edges)
-    pub waveform_depth_fade_inverted: bool,
-    /// Minimum pixel width for thin transient peaks
-    pub waveform_peak_width: WaveformPeakWidth,
-    /// Edge anti-aliasing algorithm for waveform envelope
-    pub waveform_edge_aa: WaveformEdgeAA,
 }
 
 /// Loop length options in beats (matches mesh-core/deck.rs LOOP_LENGTHS)
@@ -557,13 +294,7 @@ impl Default for DisplayConfig {
             show_local_collection: false, // USB-only mode by default
             key_scoring_model: KeyScoringModel::default(), // Camelot wheel
             waveform_layout: WaveformLayout::default(),  // Horizontal
-            waveform_quality: WaveformQuality::default(), // Medium
             waveform_abstraction: WaveformAbstraction::default(), // Medium
-            waveform_motion_blur: WaveformMotionBlur::default(), // Low (crisp)
-            waveform_depth_fade: WaveformDepthFade::default(), // Medium
-            waveform_depth_fade_inverted: false,
-            waveform_peak_width: WaveformPeakWidth::default(), // Medium (1.5×)
-            waveform_edge_aa: WaveformEdgeAA::default(), // L2 Clamped
         }
     }
 }

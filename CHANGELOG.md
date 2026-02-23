@@ -23,41 +23,11 @@ All notable changes to Mesh are documented in this file.
   (always visible) + link column (when any stem linked). Replaces removed
   Mali shader indicators with no GPU cost.
 
-- **Waveform quality setting** — New "Waveform Quality" option in Settings with
-  four levels (Low, Medium, High, Ultra) controlling peak buffer resolution. Low
-  matches the previous fixed behavior (~65K peaks). Medium (default) is 6× denser.
-  Ultra provides ~7M peaks for surgical zoom detail at the cost of more GPU memory.
-  Requires track reload to take effect.
-
 - **Waveform abstraction setting** — New "Waveform Abstraction" option (Low,
-  Medium, High) replacing the old binary subsampling toggle. Controls the grid-aligned
-  subsampling strength per stem in the GPU shader. Low gives near-raw peak rendering,
-  Medium (default) provides the tuned per-stem abstraction (vocals smooth, drums
-  detailed), High pushes further toward a stylized look. Takes effect immediately.
-
-- **Waveform motion blur setting** — New "Waveform Motion Blur" option (Low,
-  Medium, High) controlling the `smoothstep` edge softness in the shader. Low
-  (default) preserves crisp edges with minimal anti-aliasing. Medium and High
-  progressively soften outer and inner waveform edges for a more blended appearance.
-  Takes effect immediately.
-
-- **Waveform depth fade setting** — New "Waveform Depth Fade" option (Off, Low,
-  Medium, High) controlling a baseline-to-edge alpha gradient on zoomed waveforms.
-  Stems become transparent near the baseline and opaque at their peaks, improving
-  readability where multiple stems overlap. An "Inverted" toggle reverses the
-  direction (opaque center, transparent edges). Takes effect immediately.
-
-- **Waveform peak width setting** — New "Waveform Peak Width" option (Off, Thin,
-  Medium, Wide) controlling the minimum pixel thickness for thin transient peaks.
-  Thin drum hits that would otherwise flicker between sub-pixel rows get expanded
-  to at least `fw × multiplier` with alpha scaled down proportionally to preserve
-  visual energy. Off disables the expansion for raw sub-pixel rendering.
-
-- **Waveform edge AA setting** — New "Waveform Edge AA" option with four
-  anti-aliasing algorithms for envelope edges: Standard (vertical-only, sharp flat
-  edges), Slope L1 (fwidth-based, smooth diagonals), Slope L2 (gradient magnitude,
-  tighter), and L2 Clamped (L2 with 3× cap to prevent extreme widening on very
-  steep edges). Default is Slope L1.
+  Medium, High) controlling the grid-aligned subsampling strength per stem. Low
+  gives near-raw peak rendering, Medium (default) provides tuned per-stem
+  abstraction (vocals smooth, drums detailed), High pushes further toward a
+  stylized look. Takes effect immediately.
 
 - **Render debug logging** — Added `[RENDER]` debug log entries throughout the
   waveform pipeline: peak computation at load time (computed peaks-per-pixel at
@@ -118,10 +88,8 @@ All notable changes to Mesh are documented in this file.
 
 - **Dynamic waveform peak resolution** — Highres peak count is now proportional to
   actual audio length and BPM instead of a fixed 65K constant. A BPM-aware formula
-  targets a configurable peaks-per-pixel ratio at 4-bar zoom (the closest practical
-  zoom level). At Medium quality, a 5-minute 174 BPM track generates ~400K peaks
-  (6× more than before); Ultra pushes to ~7M for pixel-perfect transients. Short
-  tracks allocate proportionally less memory.
+  targets 1 peak per pixel at 4-bar zoom (the closest practical zoom level).
+  Short tracks allocate proportionally less memory.
 
 - **GPU buffer vec2 packing** — Waveform peak storage changed from `array<f32>` to
   `array<vec2<f32>>` in the WGSL shader, halving the number of buffer reads per
@@ -147,9 +115,8 @@ All notable changes to Mesh are documented in this file.
   linked stem data across the state replacement and rebuilds GPU buffers.
 
 - **Settings MIDI navigation indices** — Fixed `next_idx` for dynamic settings
-  sections (Network, System Update, MIDI Learn) which was stuck at 13 from before
-  waveform rendering settings were added, causing index collisions during MIDI
-  encoder navigation.
+  sections (Network, System Update, MIDI Learn) to match the actual entry count,
+  preventing index collisions during MIDI encoder navigation.
 
 - **Track drift from FLAC seek overshoot** — Symphonia's FLAC decoder seeks to
   the nearest block boundary (every 4096 samples), not the exact requested frame.
@@ -190,6 +157,28 @@ All notable changes to Mesh are documented in this file.
 
 ### Removed
 
+- **Unified waveform rendering pipeline** — Removed the dual-path GPU shader
+  architecture. The CPU-precomputed "Mali" path (1:1 peak per pixel, zero GPU
+  reduction loops) is now the only rendering pipeline for all platforms. This
+  eliminates:
+  - **Desktop shader** (`waveform.wgsl`, 834 lines) with its GPU-side
+    `minmax_reduce` loops (up to 64 iterations per pixel per stem)
+  - **`mali-shader` feature flag** from all three `Cargo.toml` files and the
+    Nix build (`mesh-player.nix`)
+  - **~18 `#[cfg]` gates** in the shader Rust code (`mod.rs`, `pipeline.rs`)
+  - **6 settings** that only affected the desktop shader: Waveform Quality,
+    Motion Blur, Depth Fade, Depth Fade Inverted, Peak Width, Edge AA — along
+    with their config enums, draft state fields, handler arms, and UI sections
+  - **5 `PlayerCanvasState` fields**: `motion_blur_level`, `depth_fade_level`,
+    `depth_fade_inverted`, `peak_width_mult`, `edge_aa_level`
+  - **Engine command** `SetWaveformQuality` and domain method
+    `set_waveform_quality()`
+  - **Unused peak functions**: `smooth_peaks()`, `smooth_peaks_gaussian_wide()`,
+    `GAUSSIAN_WEIGHTS_17`
+  - Quality level hardcoded to 0 (Low) throughout the loader pipeline
+  - Settings entry count reduced from 20 to 14, MIDI nav indices renumbered
+  - Total: **~1,550 lines deleted** across 23 files, zero new code
+
 - **WAV chunk parsers** — Removed `parse_mlop_chunk()`, `parse_mslk_chunk()`,
   `serialize_mslk_chunk()`, and `align_peaks_to_host()` — legacy WAV custom chunk
   handling no longer needed with FLAC format.
@@ -227,7 +216,8 @@ All notable changes to Mesh are documented in this file.
 - **`mali-shader` Cargo feature flag** — Enables the Mali-optimized shader and CPU
   peak precomputation. Automatically activated on aarch64 nix builds; can be enabled
   on x86 for testing with `--features mali-shader`. Propagated through mesh-player
-  and mesh-cue Cargo.toml.
+  and mesh-cue Cargo.toml. *(Removed in 0.9.7 — Mali path became the universal
+  default.)*
 
 ---
 

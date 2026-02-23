@@ -71,8 +71,6 @@ pub struct AudioEngine {
     /// Engine calculates LUFS gain when tracks are loaded
     loudness_config: LoudnessConfig,
 
-    /// Waveform quality level for linked stem peak generation (0-3)
-    waveform_quality_level: u8,
     /// Screen width for BPM-aware peak resolution (default 1920)
     screen_width: u32,
 
@@ -131,8 +129,6 @@ impl AudioEngine {
             ],
             // Loudness normalization (config sent via SetLoudnessConfig command)
             loudness_config: LoudnessConfig::default(),
-            // Waveform quality (default Medium, updated via SetWaveformQuality command)
-            waveform_quality_level: 1,
             screen_width: 1920,
             // Linked stem loader (auto-loads stems from track metadata)
             linked_stem_loader: LinkedStemLoader::new(output_sample_rate, db_service),
@@ -472,7 +468,7 @@ impl AudioEngine {
                 drop_marker,
                 duration_samples,
                 lufs: track_lufs,
-                quality_level: self.waveform_quality_level,
+                quality_level: 0,
                 screen_width: self.screen_width,
             };
             self.linked_stem_loader.load_from_metadata(&stem_links, host);
@@ -1360,9 +1356,6 @@ impl AudioEngine {
                 }
                 EngineCommand::SetPhaseSync(enabled) => {
                     self.set_phase_sync_enabled(enabled);
-                }
-                EngineCommand::SetWaveformQuality(level) => {
-                    self.waveform_quality_level = level;
                 }
                 EngineCommand::SetScreenWidth(width) => {
                     self.screen_width = width;

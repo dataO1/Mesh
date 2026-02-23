@@ -7,7 +7,7 @@ use super::midi_learn::MidiLearnMessage;
 use super::network::NetworkState;
 use super::system_update::UpdateState;
 use crate::audio::{get_available_stereo_pairs, StereoPair};
-use crate::config::{LOOP_LENGTH_OPTIONS, StemColorPalette, KeyScoringModel, WaveformAbstraction, WaveformDepthFade, WaveformEdgeAA, WaveformLayout, WaveformMotionBlur, WaveformPeakWidth, WaveformQuality};
+use crate::config::{LOOP_LENGTH_OPTIONS, StemColorPalette, KeyScoringModel, WaveformAbstraction, WaveformLayout};
 use iced::widget::{button, column, container, pick_list, row, scrollable, text, toggler, Id, Space};
 use iced::{Alignment, Color, Element, Length};
 use std::sync::LazyLock;
@@ -18,7 +18,7 @@ pub static SETTINGS_SCROLLABLE_ID: LazyLock<Id> = LazyLock::new(|| Id::new("mesh
 /// Calculate the total number of navigable settings entries.
 /// Dynamic because Network and Update sections are optional.
 pub fn settings_entry_count(state: &SettingsState) -> usize {
-    let mut count = 20; // Base entries from build_settings_entries
+    let mut count = 14; // Base entries from build_settings_entries
     if state.network.is_some() {
         count += 1; // Network section
     }
@@ -78,20 +78,8 @@ pub struct SettingsState {
     pub draft_key_scoring_model: KeyScoringModel,
     /// Draft waveform layout orientation
     pub draft_waveform_layout: WaveformLayout,
-    /// Draft waveform quality level
-    pub draft_waveform_quality: WaveformQuality,
     /// Draft waveform abstraction level
     pub draft_waveform_abstraction: WaveformAbstraction,
-    /// Draft waveform motion blur level
-    pub draft_waveform_motion_blur: WaveformMotionBlur,
-    /// Draft waveform depth fade level
-    pub draft_waveform_depth_fade: WaveformDepthFade,
-    /// Draft waveform depth fade inversion
-    pub draft_waveform_depth_fade_inverted: bool,
-    /// Draft waveform peak width (transient minimum thickness)
-    pub draft_waveform_peak_width: WaveformPeakWidth,
-    /// Draft waveform edge AA algorithm
-    pub draft_waveform_edge_aa: WaveformEdgeAA,
     /// Draft master device index (for audio routing)
     pub draft_master_device: usize,
     /// Draft cue device index (for audio routing)
@@ -130,13 +118,7 @@ impl SettingsState {
             draft_show_local_collection: config.display.show_local_collection,
             draft_key_scoring_model: config.display.key_scoring_model,
             draft_waveform_layout: config.display.waveform_layout,
-            draft_waveform_quality: config.display.waveform_quality,
             draft_waveform_abstraction: config.display.waveform_abstraction,
-            draft_waveform_motion_blur: config.display.waveform_motion_blur,
-            draft_waveform_depth_fade: config.display.waveform_depth_fade,
-            draft_waveform_depth_fade_inverted: config.display.waveform_depth_fade_inverted,
-            draft_waveform_peak_width: config.display.waveform_peak_width,
-            draft_waveform_edge_aa: config.display.waveform_edge_aa,
             draft_master_device: config.audio.outputs.master_device.unwrap_or(0),
             draft_cue_device: config.audio.outputs.cue_device.unwrap_or_else(|| {
                 if num_devices >= 2 { 1 } else { 0 }
@@ -168,13 +150,7 @@ impl SettingsState {
             draft_show_local_collection: false, // USB-only by default
             draft_key_scoring_model: KeyScoringModel::default(),
             draft_waveform_layout: WaveformLayout::default(),
-            draft_waveform_quality: WaveformQuality::default(),
             draft_waveform_abstraction: WaveformAbstraction::default(),
-            draft_waveform_motion_blur: WaveformMotionBlur::default(),
-            draft_waveform_depth_fade: WaveformDepthFade::default(),
-            draft_waveform_depth_fade_inverted: false,
-            draft_waveform_peak_width: WaveformPeakWidth::default(),
-            draft_waveform_edge_aa: WaveformEdgeAA::default(),
             draft_master_device: 0, // First device
             draft_cue_device: if num_devices >= 2 { 1 } else { 0 }, // Second device or fallback
             available_devices,
@@ -216,12 +192,7 @@ impl SettingsState {
             show_local_collection: self.draft_show_local_collection,
             key_scoring_model: self.draft_key_scoring_model,
             waveform_layout: self.draft_waveform_layout,
-            waveform_quality: self.draft_waveform_quality,
             waveform_abstraction: self.draft_waveform_abstraction,
-            waveform_motion_blur: self.draft_waveform_motion_blur,
-            waveform_depth_fade: self.draft_waveform_depth_fade,
-            waveform_depth_fade_inverted: self.draft_waveform_depth_fade_inverted,
-            waveform_peak_width: self.draft_waveform_peak_width,
             master_device: self.draft_master_device,
             cue_device: self.draft_cue_device,
         });
@@ -243,12 +214,7 @@ impl SettingsState {
                     || snap.show_local_collection != self.draft_show_local_collection
                     || snap.key_scoring_model != self.draft_key_scoring_model
                     || snap.waveform_layout != self.draft_waveform_layout
-                    || snap.waveform_quality != self.draft_waveform_quality
                     || snap.waveform_abstraction != self.draft_waveform_abstraction
-                    || snap.waveform_motion_blur != self.draft_waveform_motion_blur
-                    || snap.waveform_depth_fade != self.draft_waveform_depth_fade
-                    || snap.waveform_depth_fade_inverted != self.draft_waveform_depth_fade_inverted
-                    || snap.waveform_peak_width != self.draft_waveform_peak_width
                     || snap.master_device != self.draft_master_device
                     || snap.cue_device != self.draft_cue_device
             }
@@ -278,12 +244,7 @@ struct SettingsSnapshot {
     show_local_collection: bool,
     key_scoring_model: KeyScoringModel,
     waveform_layout: WaveformLayout,
-    waveform_quality: WaveformQuality,
     waveform_abstraction: WaveformAbstraction,
-    waveform_motion_blur: WaveformMotionBlur,
-    waveform_depth_fade: WaveformDepthFade,
-    waveform_depth_fade_inverted: bool,
-    waveform_peak_width: WaveformPeakWidth,
     master_device: usize,
     cue_device: usize,
 }
@@ -386,46 +347,10 @@ pub fn build_settings_entries(state: &SettingsState) -> Vec<SettingsEntry> {
             on_select: |idx| SettingsMessage::UpdateWaveformLayout(WaveformLayout::ALL[idx.min(WaveformLayout::ALL.len() - 1)]),
         },
         SettingsEntry {
-            label: "Waveform Quality",
-            options: WaveformQuality::ALL.iter().map(|q| q.display_name().to_string()).collect(),
-            selected: WaveformQuality::ALL.iter().position(|&q| q == state.draft_waveform_quality).unwrap_or(1),
-            on_select: |idx| SettingsMessage::UpdateWaveformQuality(WaveformQuality::ALL[idx.min(WaveformQuality::ALL.len() - 1)]),
-        },
-        SettingsEntry {
             label: "Waveform Abstraction",
             options: WaveformAbstraction::ALL.iter().map(|a| a.display_name().to_string()).collect(),
             selected: WaveformAbstraction::ALL.iter().position(|&a| a == state.draft_waveform_abstraction).unwrap_or(1),
             on_select: |idx| SettingsMessage::UpdateWaveformAbstraction(WaveformAbstraction::ALL[idx.min(WaveformAbstraction::ALL.len() - 1)]),
-        },
-        SettingsEntry {
-            label: "Waveform Motion Blur",
-            options: WaveformMotionBlur::ALL.iter().map(|b| b.display_name().to_string()).collect(),
-            selected: WaveformMotionBlur::ALL.iter().position(|&b| b == state.draft_waveform_motion_blur).unwrap_or(0),
-            on_select: |idx| SettingsMessage::UpdateWaveformMotionBlur(WaveformMotionBlur::ALL[idx.min(WaveformMotionBlur::ALL.len() - 1)]),
-        },
-        SettingsEntry {
-            label: "Waveform Depth Fade",
-            options: WaveformDepthFade::ALL.iter().map(|d| d.display_name().to_string()).collect(),
-            selected: WaveformDepthFade::ALL.iter().position(|&d| d == state.draft_waveform_depth_fade).unwrap_or(1),
-            on_select: |idx| SettingsMessage::UpdateWaveformDepthFade(WaveformDepthFade::ALL[idx.min(WaveformDepthFade::ALL.len() - 1)]),
-        },
-        SettingsEntry {
-            label: "Depth Fade Inverted",
-            options: vec!["Normal".into(), "Inverted".into()],
-            selected: if state.draft_waveform_depth_fade_inverted { 1 } else { 0 },
-            on_select: |idx| SettingsMessage::UpdateWaveformDepthFadeInverted(idx == 1),
-        },
-        SettingsEntry {
-            label: "Waveform Peak Width",
-            options: WaveformPeakWidth::ALL.iter().map(|w| w.display_name().to_string()).collect(),
-            selected: WaveformPeakWidth::ALL.iter().position(|&w| w == state.draft_waveform_peak_width).unwrap_or(2),
-            on_select: |idx| SettingsMessage::UpdateWaveformPeakWidth(WaveformPeakWidth::ALL[idx.min(WaveformPeakWidth::ALL.len() - 1)]),
-        },
-        SettingsEntry {
-            label: "Waveform Edge AA",
-            options: WaveformEdgeAA::ALL.iter().map(|a| a.display_name().to_string()).collect(),
-            selected: WaveformEdgeAA::ALL.iter().position(|&a| a == state.draft_waveform_edge_aa).unwrap_or(3),
-            on_select: |idx| SettingsMessage::UpdateWaveformEdgeAA(WaveformEdgeAA::ALL[idx.min(WaveformEdgeAA::ALL.len() - 1)]),
         },
         SettingsEntry {
             label: "Zoomed Waveform Level",
@@ -541,7 +466,7 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
     let slicer_section = view_slicer_section(state, nav);
 
     // Dynamic entry indices for network/update (base entries = indices 0..18)
-    let mut next_idx = 19usize;
+    let mut next_idx = 14usize;
 
     // Network settings section (only when nmcli available)
     let network_section: Option<Element<'_, Message>> = state.network.as_ref().map(|ns| {
@@ -721,30 +646,6 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
     let layout_row = row(layout_buttons).spacing(4).align_y(Alignment::Center);
     let layout_row = wrap_navigable(layout_row.into(), 4, nav);
 
-    // Waveform quality section
-    let quality_subsection = text("Waveform Quality").size(14);
-    let quality_hint = text("Peak resolution for zoomed waveform (reload tracks to apply)")
-        .size(12);
-
-    let quality_buttons: Vec<Element<Message>> = WaveformQuality::ALL
-        .iter()
-        .map(|&quality| {
-            let is_selected = state.draft_waveform_quality == quality;
-            let btn = button(text(quality.display_name()).size(11))
-                .on_press(Message::Settings(SettingsMessage::UpdateWaveformQuality(quality)))
-                .style(if is_selected {
-                    iced::widget::button::primary
-                } else {
-                    iced::widget::button::secondary
-                })
-                .width(Length::Fixed(70.0));
-            btn.into()
-        })
-        .collect();
-
-    let quality_row = row(quality_buttons).spacing(4).align_y(Alignment::Center);
-    let quality_row = wrap_navigable(quality_row.into(), 5, nav);
-
     // Waveform abstraction level section
     let abstraction_subsection = text("Waveform Abstraction").size(14);
     let abstraction_hint = text("Grid-aligned subsampling intensity (Low = detailed, High = smooth)")
@@ -767,118 +668,7 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
         .collect();
 
     let abstraction_row = row(abstraction_buttons).spacing(4).align_y(Alignment::Center);
-    let abstraction_row = wrap_navigable(abstraction_row.into(), 6, nav);
-
-    // Waveform motion blur section
-    let blur_subsection = text("Waveform Motion Blur").size(14);
-    let blur_hint = text("Edge smoothing intensity (Low = crisp, High = soft)")
-        .size(12);
-
-    let blur_buttons: Vec<Element<Message>> = WaveformMotionBlur::ALL
-        .iter()
-        .map(|&level| {
-            let is_selected = state.draft_waveform_motion_blur == level;
-            let btn = button(text(level.display_name()).size(11))
-                .on_press(Message::Settings(SettingsMessage::UpdateWaveformMotionBlur(level)))
-                .style(if is_selected {
-                    iced::widget::button::primary
-                } else {
-                    iced::widget::button::secondary
-                })
-                .width(Length::Fixed(70.0));
-            btn.into()
-        })
-        .collect();
-
-    let blur_row = row(blur_buttons).spacing(4).align_y(Alignment::Center);
-    let blur_row = wrap_navigable(blur_row.into(), 7, nav);
-
-    // Waveform depth fade section
-    let depth_fade_subsection = text("Waveform Depth Fade").size(14);
-    let depth_fade_hint = text("Baseline-to-edge alpha gradient (transparent center improves stem overlap readability)")
-        .size(12);
-
-    let depth_fade_buttons: Vec<Element<Message>> = WaveformDepthFade::ALL
-        .iter()
-        .map(|&level| {
-            let is_selected = state.draft_waveform_depth_fade == level;
-            let btn = button(text(level.display_name()).size(11))
-                .on_press(Message::Settings(SettingsMessage::UpdateWaveformDepthFade(level)))
-                .style(if is_selected {
-                    iced::widget::button::primary
-                } else {
-                    iced::widget::button::secondary
-                })
-                .width(Length::Fixed(70.0));
-            btn.into()
-        })
-        .collect();
-
-    let depth_fade_row = row(depth_fade_buttons).spacing(4).align_y(Alignment::Center);
-    let depth_fade_row = wrap_navigable(depth_fade_row.into(), 8, nav);
-
-    // Depth fade inversion toggle
-    let depth_fade_invert_label = text("Depth Fade Inverted").size(14);
-    let depth_fade_invert_hint = text("Swap direction: opaque at center, transparent at edges")
-        .size(12);
-    let depth_fade_invert_toggle = toggler(state.draft_waveform_depth_fade_inverted)
-        .on_toggle(|v| Message::Settings(SettingsMessage::UpdateWaveformDepthFadeInverted(v)));
-    let depth_fade_invert_row = row![
-        column![depth_fade_invert_label, depth_fade_invert_hint].spacing(4),
-        Space::new().width(Length::Fill),
-        depth_fade_invert_toggle,
-    ]
-    .spacing(10)
-    .align_y(Alignment::Center);
-    let depth_fade_invert_row = wrap_navigable(depth_fade_invert_row.into(), 9, nav);
-
-    // Waveform peak width section
-    let peak_width_subsection = text("Waveform Peak Width").size(14);
-    let peak_width_hint = text("Minimum transient thickness (Off = raw sub-pixel rendering)")
-        .size(12);
-
-    let peak_width_buttons: Vec<Element<Message>> = WaveformPeakWidth::ALL
-        .iter()
-        .map(|&width| {
-            let is_selected = state.draft_waveform_peak_width == width;
-            let btn = button(text(width.display_name()).size(11))
-                .on_press(Message::Settings(SettingsMessage::UpdateWaveformPeakWidth(width)))
-                .style(if is_selected {
-                    iced::widget::button::primary
-                } else {
-                    iced::widget::button::secondary
-                })
-                .width(Length::Fixed(70.0));
-            btn.into()
-        })
-        .collect();
-
-    let peak_width_row = row(peak_width_buttons).spacing(4).align_y(Alignment::Center);
-    let peak_width_row = wrap_navigable(peak_width_row.into(), 10, nav);
-
-    // Waveform edge AA section
-    let edge_aa_subsection = text("Waveform Edge AA").size(14);
-    let edge_aa_hint = text("Anti-aliasing for steep waveform edges (Standard = sharp, Slope = smooth diagonals)")
-        .size(12);
-
-    let edge_aa_buttons: Vec<Element<Message>> = WaveformEdgeAA::ALL
-        .iter()
-        .map(|&aa| {
-            let is_selected = state.draft_waveform_edge_aa == aa;
-            let btn = button(text(aa.display_name()).size(11))
-                .on_press(Message::Settings(SettingsMessage::UpdateWaveformEdgeAA(aa)))
-                .style(if is_selected {
-                    iced::widget::button::primary
-                } else {
-                    iced::widget::button::secondary
-                })
-                .width(Length::Fixed(85.0));
-            btn.into()
-        })
-        .collect();
-
-    let edge_aa_row = row(edge_aa_buttons).spacing(4).align_y(Alignment::Center);
-    let edge_aa_row = wrap_navigable(edge_aa_row.into(), 11, nav);
+    let abstraction_row = wrap_navigable(abstraction_row.into(), 5, nav);
 
     // Zoom level section
     let zoom_subsection = text("Default Zoomed Waveform Level").size(14);
@@ -909,7 +699,7 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
     ]
     .spacing(10)
     .align_y(Alignment::Center);
-    let zoom_row = wrap_navigable(zoom_row.into(), 12, nav);
+    let zoom_row = wrap_navigable(zoom_row.into(), 6, nav);
 
     // Grid density section
     let grid_subsection = text("Overview Grid Density").size(14);
@@ -940,7 +730,7 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
     ]
     .spacing(10)
     .align_y(Alignment::Center);
-    let grid_row = wrap_navigable(grid_row.into(), 13, nav);
+    let grid_row = wrap_navigable(grid_row.into(), 7, nav);
 
     // Stem color palette section
     let palette_subsection = text("Stem Color Palette").size(14);
@@ -964,7 +754,7 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
         .collect();
 
     let palette_row = row(palette_buttons).spacing(4).align_y(Alignment::Center);
-    let palette_row = wrap_navigable(palette_row.into(), 14, nav);
+    let palette_row = wrap_navigable(palette_row.into(), 8, nav);
 
     // Browser settings
     let browser_subsection = text("Browser").size(14);
@@ -980,7 +770,7 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
     ]
     .spacing(10)
     .align_y(Alignment::Center);
-    let local_collection_row = wrap_navigable(local_collection_row.into(), 15, nav);
+    let local_collection_row = wrap_navigable(local_collection_row.into(), 9, nav);
 
     // Key scoring model section
     let key_model_subsection = text("Key Matching").size(14);
@@ -1004,7 +794,7 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
         .collect();
 
     let model_row = row(model_buttons).spacing(4).align_y(Alignment::Center);
-    let model_row = wrap_navigable(model_row.into(), 16, nav);
+    let model_row = wrap_navigable(model_row.into(), 10, nav);
 
     container(
         column![
@@ -1013,30 +803,9 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
             layout_hint,
             layout_row,
             Space::new().height(10),
-            quality_subsection,
-            quality_hint,
-            quality_row,
-            Space::new().height(10),
             abstraction_subsection,
             abstraction_hint,
             abstraction_row,
-            Space::new().height(10),
-            blur_subsection,
-            blur_hint,
-            blur_row,
-            Space::new().height(10),
-            depth_fade_subsection,
-            depth_fade_hint,
-            depth_fade_row,
-            depth_fade_invert_row,
-            Space::new().height(10),
-            peak_width_subsection,
-            peak_width_hint,
-            peak_width_row,
-            Space::new().height(10),
-            edge_aa_subsection,
-            edge_aa_hint,
-            edge_aa_row,
             Space::new().height(10),
             zoom_subsection,
             zoom_hint,
@@ -1081,7 +850,7 @@ fn view_loudness_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidi
     ]
     .spacing(10)
     .align_y(Alignment::Center);
-    let auto_gain_row = wrap_navigable(auto_gain_row.into(), 17, nav);
+    let auto_gain_row = wrap_navigable(auto_gain_row.into(), 11, nav);
 
     // Target LUFS section
     let target_subsection = text("Target Loudness").size(14);
@@ -1113,7 +882,7 @@ fn view_loudness_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidi
     ]
     .spacing(10)
     .align_y(Alignment::Center);
-    let target_row = wrap_navigable(target_row.into(), 18, nav);
+    let target_row = wrap_navigable(target_row.into(), 12, nav);
 
     // Current preset description
     let preset_desc = text(lufs_preset_name(state.draft_target_lufs_index)).size(12);
@@ -1168,7 +937,7 @@ fn view_slicer_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiNa
     ]
     .spacing(10)
     .align_y(Alignment::Center);
-    let buffer_row = wrap_navigable(buffer_row.into(), 19, nav);
+    let buffer_row = wrap_navigable(buffer_row.into(), 13, nav);
 
     // Note about preset editing
     let preset_hint = text("Edit slicer presets and per-stem patterns in mesh-cue")

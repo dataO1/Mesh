@@ -2,7 +2,7 @@
 //!
 //! Two bindings per view:
 //! - Binding 0: Uniform buffer (WaveformUniforms, 416 bytes, updated every frame)
-//! - Binding 1: Storage buffer (peak data, updated on track load; every frame with mali-shader)
+//! - Binding 1: Storage buffer (peak data, updated every frame with CPU-precomputed peaks)
 
 use super::PeakBuffer;
 use iced::widget::shader;
@@ -118,12 +118,7 @@ pub struct WaveformPipeline {
 
 impl shader::Pipeline for WaveformPipeline {
     fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        // Use hyper-optimized Mali shader when mali-shader feature is enabled
-        // (for Orange Pi 5, etc.), and the full-featured shader otherwise.
-        #[cfg(feature = "mali-shader")]
         let shader_source = include_str!("waveform_mali.wgsl");
-        #[cfg(not(feature = "mali-shader"))]
-        let shader_source = include_str!("waveform.wgsl");
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Waveform Shader"),
@@ -291,15 +286,10 @@ impl shader::Primitive for WaveformPrimitive {
             bytemuck::bytes_of(&self.uniforms),
         );
 
-        // Upload peak data when it changes.
-        // Desktop path: Arc pointer comparison (peaks set once per track load).
-        // Mali-shader path: peaks are CPU-precomputed every frame, and the old Arc
-        // is freed before the new one is allocated — the allocator can reuse the
-        // same heap address (ABA problem), so always upload in that mode.
-        #[cfg(feature = "mali-shader")]
+        // Peaks are CPU-precomputed every frame, and the old Arc is freed before
+        // the new one is allocated — the allocator can reuse the same heap address
+        // (ABA problem), so always upload.
         let peak_changed = true;
-        #[cfg(not(feature = "mali-shader"))]
-        let peak_changed = peak_ptr != resources.last_peak_ptr;
 
         if peak_changed {
             if let Some(peaks) = &self.peaks {

@@ -115,8 +115,8 @@ impl MeshCueApp {
                     state.loading_audio = false;
 
                     // Generate waveform from loaded stems (overview + highres)
-                    // mesh-cue uses Medium quality (level 1) by default
-                    let quality_level: u8 = 1;
+                    // Low quality — CPU precompute handles all zoom levels
+                    let quality_level: u8 = 0;
                     let bpm = state.bpm;
                     let screen_width: u32 = 1920; // mesh-cue reference width
                     state

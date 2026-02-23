@@ -938,11 +938,6 @@ impl MeshDomain {
         )))
     }
 
-    /// Set waveform quality level on the engine (for linked stem peak generation)
-    pub fn set_waveform_quality(&mut self, level: u8) {
-        self.send_command(EngineCommand::SetWaveformQuality(level));
-    }
-
     /// Set screen width on the engine (for BPM-aware peak resolution)
     pub fn set_screen_width(&mut self, width: u32) {
         self.send_command(EngineCommand::SetScreenWidth(width));
@@ -1002,7 +997,6 @@ impl MeshDomain {
         slicer_presets: [SlicerPreset; 8],
         slicer_buffer_bars: u32,
         loudness_config: LoudnessConfig,
-        waveform_quality_level: u8,
         screen_width: u32,
     ) {
         // Set initial global BPM (also updates domain state)
@@ -1019,9 +1013,6 @@ impl MeshDomain {
 
         // Set loudness config
         self.set_loudness_config(loudness_config);
-
-        // Set waveform quality for linked stem peak generation
-        self.set_waveform_quality(waveform_quality_level);
 
         // Set screen width for BPM-aware peak resolution
         self.set_screen_width(screen_width);

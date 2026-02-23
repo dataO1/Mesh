@@ -941,16 +941,6 @@ pub struct PlayerCanvasState {
     vertical_inverted: bool,
     /// Waveform abstraction level (0=low, 1=medium, 2=high; controls subsampling grid size)
     pub abstraction_level: u8,
-    /// Waveform motion blur level (0=low/crisp, 1=medium, 2=high; controls smoothstep edge width)
-    pub motion_blur_level: u8,
-    /// Waveform depth fade level (0=low, 1=medium, 2=high; controls baseline-to-edge alpha gradient)
-    pub depth_fade_level: u8,
-    /// Whether depth fade is inverted (opaque at center, transparent at edges)
-    pub depth_fade_inverted: bool,
-    /// Minimum pixel width multiplier for thin transient peaks (0.0 = disabled, 1.5 = default)
-    pub peak_width_mult: f32,
-    /// Edge AA algorithm (0=Standard, 1=SlopeL1, 2=SlopeL2, 3=SlopeL2Clamped)
-    pub edge_aa_level: u8,
     /// Monotonic frame counter incremented every tick (vsync), used for loading pulse animation
     pub frame_count: u32,
 }
@@ -998,11 +988,6 @@ impl PlayerCanvasState {
             vertical_layout: false,              // Horizontal layout by default
             vertical_inverted: false,
             abstraction_level: 1,                // Medium abstraction by default
-            motion_blur_level: 0,                // Low (crisp) by default
-            depth_fade_level: 2,                 // Medium depth fade by default (0=off, 1=low, 2=med, 3=high)
-            depth_fade_inverted: false,          // Normal: transparent center, opaque edges
-            peak_width_mult: 1.5,                // Medium transient width (fw * 1.5)
-            edge_aa_level: 3,                    // Slope L2 Clamped by default
             frame_count: 0,
         }
     }

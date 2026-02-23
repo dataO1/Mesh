@@ -100,44 +100,10 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             app.settings.draft_waveform_layout = layout;
             Task::none()
         }
-        UpdateWaveformQuality(quality) => {
-            app.settings.draft_waveform_quality = quality;
-            Task::none()
-        }
         UpdateWaveformAbstraction(level) => {
             app.settings.draft_waveform_abstraction = level;
             // Takes effect immediately (uniform change, no reload needed)
             app.player_canvas_state.abstraction_level = level.as_level();
-            Task::none()
-        }
-        UpdateWaveformMotionBlur(level) => {
-            app.settings.draft_waveform_motion_blur = level;
-            // Takes effect immediately (uniform change, no reload needed)
-            app.player_canvas_state.motion_blur_level = level.as_level();
-            Task::none()
-        }
-        UpdateWaveformDepthFade(level) => {
-            app.settings.draft_waveform_depth_fade = level;
-            // Takes effect immediately (uniform change, no reload needed)
-            app.player_canvas_state.depth_fade_level = level.as_level();
-            Task::none()
-        }
-        UpdateWaveformDepthFadeInverted(inverted) => {
-            app.settings.draft_waveform_depth_fade_inverted = inverted;
-            // Takes effect immediately (uniform change, no reload needed)
-            app.player_canvas_state.depth_fade_inverted = inverted;
-            Task::none()
-        }
-        UpdateWaveformPeakWidth(width) => {
-            app.settings.draft_waveform_peak_width = width;
-            // Takes effect immediately (uniform change, no reload needed)
-            app.player_canvas_state.peak_width_mult = width.as_multiplier();
-            Task::none()
-        }
-        UpdateWaveformEdgeAA(aa) => {
-            app.settings.draft_waveform_edge_aa = aa;
-            // Takes effect immediately (uniform change, no reload needed)
-            app.player_canvas_state.edge_aa_level = aa.as_level();
             Task::none()
         }
         UpdateMasterPair(index) => {
@@ -162,13 +128,7 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             new_config.display.show_local_collection = app.settings.draft_show_local_collection;
             new_config.display.key_scoring_model = app.settings.draft_key_scoring_model;
             new_config.display.waveform_layout = app.settings.draft_waveform_layout;
-            new_config.display.waveform_quality = app.settings.draft_waveform_quality;
             new_config.display.waveform_abstraction = app.settings.draft_waveform_abstraction;
-            new_config.display.waveform_motion_blur = app.settings.draft_waveform_motion_blur;
-            new_config.display.waveform_depth_fade = app.settings.draft_waveform_depth_fade;
-            new_config.display.waveform_depth_fade_inverted = app.settings.draft_waveform_depth_fade_inverted;
-            new_config.display.waveform_peak_width = app.settings.draft_waveform_peak_width;
-            new_config.display.waveform_edge_aa = app.settings.draft_waveform_edge_aa;
             // Save global BPM from current state
             new_config.audio.global_bpm = app.domain.global_bpm();
             // Save phase sync setting
@@ -221,14 +181,8 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
                 deck.zoomed.set_zoom(app.settings.draft_zoom_bars);
             }
 
-            // Apply waveform quality, abstraction, motion blur, and depth fade
+            // Apply waveform abstraction level
             app.player_canvas_state.abstraction_level = app.settings.draft_waveform_abstraction.as_level();
-            app.player_canvas_state.motion_blur_level = app.settings.draft_waveform_motion_blur.as_level();
-            app.player_canvas_state.depth_fade_level = app.settings.draft_waveform_depth_fade.as_level();
-            app.player_canvas_state.depth_fade_inverted = app.settings.draft_waveform_depth_fade_inverted;
-            app.player_canvas_state.peak_width_mult = app.settings.draft_waveform_peak_width.as_multiplier();
-            let quality_level = app.settings.draft_waveform_quality.as_level();
-            app.domain.set_waveform_quality(quality_level);
 
             // Apply local collection visibility change immediately
             app.collection_browser.set_show_local_collection(
