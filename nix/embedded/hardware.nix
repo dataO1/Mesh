@@ -31,7 +31,13 @@
   # Debug: switch to tty2 (Ctrl+Alt+F2) or use journalctl -b
   boot.consoleLogLevel = 0;
   boot.initrd.verbose = false;
-  boot.kernel.sysctl."kernel.printk" = "0 0 0 0";
+  boot.kernel.sysctl = {
+    "kernel.printk" = "0 0 0 0";
+    "vm.swappiness" = 1;                          # Keep audio buffers in RAM (was 10)
+    "kernel.sched_rt_runtime_us" = -1;             # Allow RT threads 100% CPU (no 95% throttle)
+    "kernel.sched_latency_ns" = 4000000;           # 4ms CFS latency (from 6ms default)
+    "kernel.sched_min_granularity_ns" = 500000;    # 0.5ms CFS granularity (from 0.75ms)
+  };
   boot.kernelParams = [
     "quiet"
     "loglevel=0"
@@ -42,10 +48,42 @@
     "vt.global_cursor_default=0"
     "logo.nologo"
     "threadirqs"
+    # RT audio optimizations: isolate A55 cores (0-3) from kernel overhead
+    "transparent_hugepage=never"   # Disable THP compaction (latency spikes)
+    "irqaffinity=4-7"             # Default IRQs to A76 cores (off audio cluster)
+    "rcu_nocbs=0-3"               # Offload RCU callbacks from A55 audio cores
+    "rcu_nocb_poll"                # Kthread polls for RCU (no IPI wakeup)
+    "nohz_full=0-3"               # Tickless on A55 (no scheduler tick when single task)
+    "skew_tick=1"                  # Offset timer ticks across cores (reduce lock contention)
+    "nosoftlockup"                 # Disable soft lockup detector (avoids jitter)
+    "nowatchdog"                   # Disable watchdog timer on audio cores
   ];
 
-  # Low swappiness: keep audio buffers in RAM
-  boot.kernel.sysctl."vm.swappiness" = 10;
+  # Disable irqbalance — conflicts with manual IRQ pinning (see audio.nix)
+  services.irqbalance.enable = false;
+
+  # Pin system services to A76 cores (keep off A55 audio cluster)
+  systemd.services.NetworkManager.serviceConfig.CPUAffinity = "4-7";
+  systemd.services.systemd-journald.serviceConfig.CPUAffinity = "4-7";
+
+  # Disable deep CPU idle states on A55 audio cores (0-3)
+  # C-state wakeup can take 200µs-2ms, stealing from the 5.33ms audio budget
+  systemd.services.mesh-cpu-idle = {
+    description = "Disable deep CPU idle states on A55 audio cores";
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+      ExecStart = pkgs.writeShellScript "disable-cpu-idle" ''
+        for cpu in 0 1 2 3; do
+          for state in /sys/devices/system/cpu/cpu$cpu/cpuidle/state*/disable; do
+            echo 1 > "$state" 2>/dev/null
+          done
+        done
+        echo "Disabled deep idle states on CPUs 0-3 (A55 audio cluster)"
+      '';
+    };
+  };
 
   # Don't wait for network or udev settle during boot
   systemd.services.systemd-udev-settle.enable = false;
@@ -58,6 +96,9 @@
   services.udisks2.enable = true;
 
   services.udev.extraRules = ''
+    # BFQ I/O scheduler for USB storage (better for mixed read workloads during track loading)
+    ACTION=="add|change", KERNEL=="sd[a-z]", SUBSYSTEM=="block", ATTR{queue/scheduler}="bfq"
+
     # Auto-mount USB storage to /media/<label> (or /media/<devname> if unlabeled)
     SUBSYSTEMS=="usb", SUBSYSTEM=="block", ACTION=="add", ENV{ID_FS_USAGE}=="filesystem", \
       RUN+="${pkgs.writeShellScript "usb-automount" ''

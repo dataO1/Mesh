@@ -98,12 +98,13 @@ in
       };
     };
 
-    # Crash restart + pin to A76 big cores (cores 4-7)
+    # Crash restart + allow all cores (app manages per-thread affinity internally:
+    # audio RT + UI → A55 cores 0-3, background loading → A76 cores 4-7)
     systemd.services."cage-tty1" = {
       serviceConfig = {
         Restart = "always";
         RestartSec = 2;
-        CPUAffinity = "4-7";
+        CPUAffinity = "0-7";
       };
     };
 

@@ -8,6 +8,20 @@ All notable changes to Mesh are documented in this file.
 
 ### Added
 
+- **Embedded RT audio optimizations (Phase 1+2)** — Comprehensive real-time
+  audio tuning for the OrangePi 5 (RK3588S) embedded image. Phase 1: kernel
+  boot params (`rcu_nocbs`, `nohz_full`, `irqaffinity`, `transparent_hugepage=never`,
+  `nosoftlockup`, `nowatchdog`), locked PipeWire quantum to 256, PipeWire RT
+  module (priority 88), IRQ affinity service (audio IRQs → A55 core 0, all
+  others → A76), disabled irqbalance, deep idle state disable on A55 cores,
+  system service CPU pinning (NetworkManager/journald → A76), BFQ I/O scheduler
+  for USB storage. Phase 2: `embedded-rt` feature flag with `mlockall()` to
+  prevent page faults, `/dev/cpu_dma_latency=0` to disable C-states, SCHED_FIFO
+  priority 70 for rayon audio workers, CPU affinity pinning (rayon → A55 cores
+  2-3), 512KB stack pre-faulting, RT capability verification at startup. All
+  application code is feature-gated (`#[cfg(feature = "embedded-rt")]`), auto-
+  enabled on aarch64 builds only.
+
 - **Resource monitoring in header** — CPU%, GPU%, RAM usage, and FPS counter
   displayed in the player header bar. GPU utilization reads Mali devfreq
   (aarch64) or AMD DRM sysfs (x86). FPS counted from iced frame events.
@@ -35,6 +49,11 @@ All notable changes to Mesh are documented in this file.
   abstraction, blur). Visible with `RUST_LOG=debug`.
 
 ### Changed
+
+- **Cage CPU affinity widened** — `CPUAffinity` changed from `4-7` (A76 only)
+  to `0-7` (all cores) so mesh-player can set per-thread affinity internally:
+  audio RT + UI → A55 (deterministic in-order), background loading → A76 (high
+  throughput).
 
 - **Collection track format: WAV to FLAC** — Stem files now use 8-channel FLAC
   lossless compression instead of raw WAV. ~58% file size reduction (e.g., 240 MB

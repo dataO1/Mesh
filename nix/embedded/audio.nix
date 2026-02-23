@@ -26,13 +26,26 @@
     jack.enable = true;
 
     # Low-latency clock: 256 samples @ 48kHz = 5.33ms per period
+    # Quantum locked to 256 — no adaptive sizing, no client overrides
     extraConfig.pipewire."92-low-latency" = {
       "context.properties" = {
         "default.clock.rate" = 48000;
         "default.clock.quantum" = 256;
-        "default.clock.min-quantum" = 64;
-        "default.clock.max-quantum" = 1024;
+        "default.clock.min-quantum" = 256;    # Lock quantum (was 64)
+        "default.clock.max-quantum" = 256;    # Lock quantum (was 1024)
+        "default.clock.force-quantum" = 256;  # Override client requests
       };
+      "context.modules" = [
+        {
+          name = "libpipewire-module-rt";
+          args = {
+            "nice.level" = -15;
+            "rt.prio" = 88;         # High RT priority for PipeWire data thread
+            "rt.time.soft" = -1;     # No soft RT time limit
+            "rt.time.hard" = -1;     # No hard RT time limit
+          };
+        }
+      ];
     };
   };
 
@@ -76,6 +89,9 @@
             audio.rate = 48000
             api.alsa.period-size = 256
             api.alsa.headroom = 0
+            api.alsa.disable-batch = true
+            node.always-process = true
+            resample.quality = 0
             priority.driver = 10000
             priority.session = 10000
           }
@@ -93,6 +109,9 @@
             audio.rate = 48000
             api.alsa.period-size = 256
             api.alsa.headroom = 0
+            api.alsa.disable-batch = true
+            node.always-process = true
+            resample.quality = 0
             priority.driver = 3000
             priority.session = 3000
           }
@@ -100,6 +119,36 @@
       }
     ]
   '';
+
+  # Pin audio IRQs to A55 audio core (CPU 0), move all others to A76 (4-7)
+  # Reduces jitter from non-audio IRQ contention on the audio processing cores
+  systemd.services.mesh-irq-affinity = {
+    description = "Pin audio IRQs to A55 audio core, move others to A76";
+    after = [ "sound.target" "mesh-audio-init.service" ];
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = pkgs.writeShellScript "mesh-irq-affinity" ''
+        for irqdir in /proc/irq/*/; do
+          irq=$(basename "$irqdir")
+          [ "$irq" = "default_smp_affinity" ] && continue
+          actions=$(cat "$irqdir/actions" 2>/dev/null || echo "")
+          case "$actions" in
+            *i2s*|*es8388*|*rockchip-i2s*|*dma*)
+              # Audio IRQs -> CPU 0 (A55, dedicated audio core)
+              echo 01 > "$irqdir/smp_affinity" 2>/dev/null
+              echo "Pinned IRQ $irq ($actions) to CPU 0 (A55)"
+              ;;
+            *)
+              # Everything else -> A76 cores 4-7
+              echo f0 > "$irqdir/smp_affinity" 2>/dev/null
+              ;;
+          esac
+        done
+        echo f0 > /proc/irq/default_smp_affinity
+      '';
+    };
+  };
 
   # Initialize ES8388 mixer on boot: enable headphone path, set volumes,
   # disable 3D processing for faithful audio reproduction

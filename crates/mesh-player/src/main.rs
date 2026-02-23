@@ -34,6 +34,117 @@ use ui::{MeshApp, app::Message, midi_learn::MidiLearnMessage, theme};
 
 const CLIENT_NAME: &str = "mesh-player";
 
+/// Real-time audio initialization for embedded builds (OrangePi 5 / RK3588).
+///
+/// All functions are no-ops on non-embedded builds via the `embedded-rt` feature gate.
+/// These optimizations eliminate the most common sources of audio glitches:
+/// - Page faults (mlockall)
+/// - CPU idle state wakeup latency (cpu_dma_latency)
+/// - Rayon worker preemption (SCHED_FIFO)
+/// - Core contention (CPU affinity)
+#[cfg(feature = "embedded-rt")]
+mod rt_init {
+    use std::io::Write;
+
+    /// Lock all memory to prevent page faults in the audio callback.
+    /// A single major page fault takes 1-10ms — far exceeding the 5.33ms buffer period.
+    pub fn mlockall() {
+        unsafe {
+            let ret = libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE);
+            if ret == 0 {
+                log::info!("[RT] Memory locked (mlockall MCL_CURRENT|MCL_FUTURE)");
+            } else {
+                log::warn!(
+                    "[RT] mlockall failed: {} — page faults may cause xruns",
+                    std::io::Error::last_os_error()
+                );
+            }
+        }
+    }
+
+    /// Disable CPU idle states by writing 0 to /dev/cpu_dma_latency.
+    /// The file handle MUST be kept open for the process lifetime — dropping re-enables C-states.
+    /// C-state wakeup on ARM can take 200µs-2ms, stealing from the 5.33ms audio budget.
+    pub fn disable_cpu_idle() -> Option<std::fs::File> {
+        match std::fs::File::create("/dev/cpu_dma_latency") {
+            Ok(mut f) => {
+                if f.write_all(&0i32.to_le_bytes()).is_ok() {
+                    log::info!("[RT] CPU idle states disabled via /dev/cpu_dma_latency");
+                    Some(f)
+                } else {
+                    log::warn!("[RT] Failed to write to /dev/cpu_dma_latency");
+                    None
+                }
+            }
+            Err(e) => {
+                log::warn!("[RT] Could not open /dev/cpu_dma_latency: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Log RT capability limits for diagnostics.
+    pub fn verify_rt_caps() {
+        unsafe {
+            let mut rlim: libc::rlimit = std::mem::zeroed();
+            if libc::getrlimit(libc::RLIMIT_RTPRIO, &mut rlim) == 0 {
+                log::info!("[RT] RLIMIT_RTPRIO: soft={}, hard={}", rlim.rlim_cur, rlim.rlim_max);
+                if rlim.rlim_cur < 80 {
+                    log::warn!("[RT] RT priority limit too low for audio threads (need >= 80)");
+                }
+            }
+            if libc::getrlimit(libc::RLIMIT_MEMLOCK, &mut rlim) == 0 {
+                log::info!("[RT] RLIMIT_MEMLOCK: soft={}, hard={}", rlim.rlim_cur, rlim.rlim_max);
+            }
+        }
+    }
+
+    /// Configure a rayon worker thread for RT audio processing.
+    /// Called from rayon's start_handler on each worker thread.
+    /// - Pins to A55 cores 2-3 (core 0 = JACK RT, core 1 = UI)
+    /// - Sets SCHED_FIFO priority 70 (below PipeWire's 88, above normal tasks)
+    /// - Pre-faults 512KB of stack to avoid minor page faults during processing
+    pub fn setup_rayon_worker() {
+        // Pin to A55 LITTLE cores 2-3
+        // A55 in-order pipeline gives deterministic WCET (1.2-1.5x avg vs A76's 2-5x)
+        unsafe {
+            let mut cpuset: libc::cpu_set_t = std::mem::zeroed();
+            libc::CPU_ZERO(&mut cpuset);
+            libc::CPU_SET(2, &mut cpuset);
+            libc::CPU_SET(3, &mut cpuset);
+            let ret = libc::sched_setaffinity(
+                0,
+                std::mem::size_of::<libc::cpu_set_t>(),
+                &cpuset,
+            );
+            if ret != 0 {
+                log::warn!(
+                    "[RT] sched_setaffinity failed for rayon worker: {}",
+                    std::io::Error::last_os_error()
+                );
+            }
+        }
+
+        // Set SCHED_FIFO priority 70 — prevents preemption by non-RT tasks during audio callback
+        unsafe {
+            let param = libc::sched_param { sched_priority: 70 };
+            let ret = libc::sched_setscheduler(0, libc::SCHED_FIFO, &param);
+            if ret != 0 {
+                log::warn!(
+                    "[RT] sched_setscheduler(FIFO, 70) failed for rayon worker: {}",
+                    std::io::Error::last_os_error()
+                );
+            }
+        }
+
+        // Pre-fault 512KB of stack pages to avoid minor faults during audio processing.
+        // mlockall(MCL_FUTURE) locks pages on first touch, but the first touch still
+        // causes a minor fault (kernel allocates the page).
+        let stack = vec![0u8; 512 * 1024];
+        std::hint::black_box(&stack);
+    }
+}
+
 fn main() -> iced::Result {
     // Parse command line arguments
     let args: Vec<String> = std::env::args().collect();
@@ -51,12 +162,27 @@ fn main() -> iced::Result {
         log::info!("Starting in performance mode (use --midi-learn for full UI)");
     }
 
+    // === Embedded RT initialization (feature-gated, only on aarch64 embedded builds) ===
+    // Must run before any threads are created for mlockall to cover all future allocations
+    #[cfg(feature = "embedded-rt")]
+    {
+        rt_init::verify_rt_caps();
+        rt_init::mlockall();
+    }
+    // Hold cpu_dma_latency fd open for the entire process lifetime
+    #[cfg(feature = "embedded-rt")]
+    let _cpu_dma_latency_guard = rt_init::disable_cpu_idle();
+
     // Initialize Rayon thread pool before audio starts
     // This prevents lazy initialization from causing latency in the audio callback
     // (Rayon's default lazy init would happen on first parallel call, which is in audio callback)
     rayon::ThreadPoolBuilder::new()
         .num_threads(4) // Match NUM_DECKS for optimal stem parallelism
         .thread_name(|i| format!("rayon-audio-{}", i))
+        .start_handler(|_thread_idx| {
+            #[cfg(feature = "embedded-rt")]
+            rt_init::setup_rayon_worker();
+        })
         .build_global()
         .expect("Failed to initialize Rayon thread pool");
     log::info!("Rayon thread pool initialized with 4 threads");

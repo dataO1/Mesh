@@ -107,7 +107,10 @@ in pkgs.rustPlatform.buildRustPackage {
   '';
 
   # Only build mesh-player (no mesh-cue)
-  cargoBuildFlags = [ "-p" "mesh-player" ];
+  # Enable embedded-rt on aarch64 for RT audio optimizations (mlockall, CPU affinity, SCHED_FIFO)
+  cargoBuildFlags = [ "-p" "mesh-player" ]
+    ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isAarch64
+      [ "--features" "embedded-rt" ];
   # Skip tests — cargo test tries to compile the full workspace (including
   # mesh-cue/ort-sys which downloads ONNX binaries, blocked by the sandbox)
   doCheck = false;
