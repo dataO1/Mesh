@@ -18,6 +18,11 @@ All notable changes to Mesh are documented in this file.
   half). Precomputed on CPU into the existing 4-stem buffer with signed
   min/max encoding — no shader changes or GPU upload increase needed.
 
+- **Canvas stem mute & link indicators** — Zero-GPU stem status indicators
+  rendered as iced container widgets beside the zoomed waveform. Mute column
+  (always visible) + link column (when any stem linked). Replaces removed
+  Mali shader indicators with no GPU cost.
+
 ### Fixed
 
 - **Prelinked stems missing from waveform** — Linked stems loaded asynchronously
@@ -27,6 +32,13 @@ All notable changes to Mesh are documented in this file.
   linked stem data across the state replacement and rebuilds GPU buffers.
 
 ### Performance
+
+- **Parallel track loading** — Track loader now dispatches each load request to
+  rayon's thread pool instead of processing sequentially on a single thread.
+  All 4 decks load simultaneously when loading tracks in parallel.
+
+- **Linked stem stretch threads** — `MAX_STRETCH_THREADS` increased from 2 to 8.
+  Pre-stretching runs at nice(10) priority so JACK audio thread preempts safely.
 
 - **Dynamic waveform peak resolution** — Highres peak count is now proportional to
   actual audio length and BPM instead of a fixed 65K constant. A BPM-aware formula
