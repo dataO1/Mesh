@@ -294,17 +294,18 @@ fn handle_linked_stem_load(request: LinkedStemLoadRequest, tx: Sender<LinkedStem
 
     let total_start = std::time::Instant::now();
 
-    // LoadedTrack::load_to uses resolve_track_metadata internally, which
-    // handles USB vs local path resolution automatically — no manual
-    // branching needed here.
-    let load_result = LoadedTrack::load_to(&request.source_path, db_service, sample_rate);
+    // Load only the requested stem — allocates ~150 MB instead of ~600 MB.
+    // resolve_track_metadata handles USB vs local path resolution automatically.
+    let stem = Stem::ALL.get(request.stem_idx).copied().unwrap_or(Stem::Vocals);
+    let load_result = LoadedTrack::load_single_stem_to(
+        &request.source_path, stem, db_service, sample_rate,
+    );
 
     match load_result {
-        Ok(source_track) => {
-            // Get source track metadata
-            let source_bpm = source_track.metadata.bpm.unwrap_or(120.0);
-            let source_drop_marker = source_track.metadata.drop_marker.unwrap_or(0);
-            let source_lufs = source_track.metadata.lufs;
+        Ok(stem_load) => {
+            let source_bpm = stem_load.metadata.bpm.unwrap_or(120.0);
+            let source_drop_marker = stem_load.metadata.drop_marker.unwrap_or(0);
+            let source_lufs = stem_load.metadata.lufs;
             let track_name = request
                 .source_path
                 .file_stem()
@@ -312,15 +313,8 @@ fn handle_linked_stem_load(request: LinkedStemLoadRequest, tx: Sender<LinkedStem
                 .unwrap_or("Unknown")
                 .to_string();
 
-            // Extract the requested stem
-            let stem = Stem::ALL.get(request.stem_idx).copied().unwrap_or(Stem::Vocals);
-            let stem_buffer = source_track.stems.get(stem);
-
-            // Convert stem slice to StereoBuffer for pre-stretching
-            let mut source_buffer = StereoBuffer::silence(stem_buffer.len());
-            source_buffer
-                .as_mut_slice()
-                .copy_from_slice(stem_buffer.as_slice());
+            // The buffer is already the single stem — no extraction/copy needed
+            let source_buffer = stem_load.buffer;
 
             // Pre-stretch to host BPM
             let stretch_start = std::time::Instant::now();

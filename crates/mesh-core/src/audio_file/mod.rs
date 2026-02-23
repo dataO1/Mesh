@@ -1046,6 +1046,104 @@ impl AudioFileReader {
         Ok(stems)
     }
 
+    /// Read a single stem from the FLAC file, discarding all other channels.
+    ///
+    /// This allocates only 1 `StereoBuffer` (~150 MB for a 5-min track) instead
+    /// of 4 (~600 MB), and only writes the 2 channels belonging to the requested
+    /// stem during decode. The other 6 channels are decoded (FLAC interleaves
+    /// them) but immediately discarded.
+    ///
+    /// If the file needs resampling, only the single stem is resampled.
+    pub fn read_single_stem_to(
+        &self,
+        stem: crate::types::Stem,
+        target_sample_rate: u32,
+    ) -> Result<StereoBuffer, AudioFileError> {
+        use std::time::Instant;
+        use symphonia::core::audio::SampleBuffer;
+
+        let frame_count = self.total_frames as usize;
+        let ch_offset = stem as usize * 2; // Vocals=0, Drums=2, Bass=4, Other=6
+
+        let alloc_start = Instant::now();
+        let mut buffer = StereoBuffer::silence(frame_count);
+        log::debug!(
+            "    [PERF] Allocated single stem {:?} in {:?} ({} frames)",
+            stem, alloc_start.elapsed(), frame_count
+        );
+
+        let decode_start = Instant::now();
+        let (mut format_reader, mut decoder, track_id) = self.create_decoder()?;
+
+        let mut write_pos = 0usize;
+        let mut sample_buf: Option<SampleBuffer<f32>> = None;
+
+        loop {
+            let packet = match format_reader.next_packet() {
+                Ok(p) => p,
+                Err(symphonia::core::errors::Error::IoError(e))
+                    if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(e) => return Err(AudioFileError::IoError(format!("Decode error: {}", e))),
+            };
+
+            if packet.track_id() != track_id {
+                continue;
+            }
+
+            let decoded = decoder.decode(&packet)
+                .map_err(|e| AudioFileError::IoError(format!("Packet decode error: {}", e)))?;
+
+            if sample_buf.is_none() {
+                let spec = *decoded.spec();
+                let duration = decoded.capacity() as u64;
+                sample_buf = Some(SampleBuffer::new(duration, spec));
+            }
+
+            if let Some(ref mut buf) = sample_buf {
+                buf.copy_interleaved_ref(decoded);
+                let samples = buf.samples();
+                let ch = 8;
+                let packet_frames = samples.len() / ch;
+
+                let frames_to_write = packet_frames.min(frame_count.saturating_sub(write_pos));
+                let slice = buffer.as_mut_slice();
+                for j in 0..frames_to_write {
+                    let base = j * ch + ch_offset;
+                    slice[write_pos + j] = StereoSample::new(samples[base], samples[base + 1]);
+                }
+                write_pos += frames_to_write;
+            }
+        }
+
+        let decode_elapsed = decode_start.elapsed();
+        let raw_bytes = frame_count * 8 * 2;
+        log::info!(
+            "    [PERF] Single-stem FLAC decode ({:?}): {:?} ({:.1} MB decoded, {:.1} MB/s effective)",
+            stem, decode_elapsed,
+            raw_bytes as f64 / 1_000_000.0,
+            if decode_elapsed.as_secs_f64() > 0.0 {
+                (raw_bytes as f64 / 1_000_000.0) / decode_elapsed.as_secs_f64()
+            } else { 0.0 }
+        );
+
+        // Resample single stem if needed
+        if self.format.sample_rate != target_sample_rate {
+            log::info!(
+                "    Resampling single stem {:?} from {} Hz to {} Hz",
+                stem, self.format.sample_rate, target_sample_rate
+            );
+            let ratio = target_sample_rate as f64 / self.format.sample_rate as f64;
+            let output_len = (frame_count as f64 * ratio).ceil() as usize;
+            let mut resampled = StereoBuffer::silence(output_len);
+            resample_stereo_buffer(
+                &buffer, &mut resampled, self.format.sample_rate, target_sample_rate,
+            )?;
+            return Ok(resampled);
+        }
+
+        Ok(buffer)
+    }
+
     /// Check whether this file needs resampling to match the target rate.
     pub fn needs_resampling(&self, target_rate: u32) -> bool {
         self.format.sample_rate != target_rate
@@ -1236,6 +1334,20 @@ impl AudioFileReader {
 }
 
 
+/// Result of loading a single stem from a track file.
+///
+/// Much lighter than [`LoadedTrack`] — only allocates 1 stem buffer (~150 MB)
+/// instead of 4 (~600 MB). Used by the linked stem loader which only needs
+/// one stem from the source track.
+pub struct SingleStemLoad {
+    /// The decoded stem audio (stereo)
+    pub buffer: StereoBuffer,
+    /// Track metadata (BPM, key, cue points, drop marker, etc.)
+    pub metadata: TrackMetadata,
+    /// Duration in samples (capped at metadata duration to exclude FLAC padding)
+    pub duration_samples: usize,
+}
+
 /// A fully loaded track ready for playback
 ///
 /// Contains all audio data in memory plus metadata for DJ functionality.
@@ -1399,6 +1511,72 @@ impl LoadedTrack {
     pub fn load_stems_to<P: AsRef<Path>>(path: P, target_sample_rate: u32) -> Result<StemBuffers, AudioFileError> {
         let reader = AudioFileReader::open(path.as_ref())?;
         reader.read_all_stems_to(target_sample_rate)
+    }
+
+    /// Load a single stem from a track file with automatic metadata resolution.
+    ///
+    /// This is the preferred entry point for linked stem loading. It only
+    /// allocates and decodes the requested stem, using ~75% less memory than
+    /// [`load_to`] which decodes all 4 stems.
+    ///
+    /// Metadata is resolved automatically via [`resolve_track_metadata`].
+    pub fn load_single_stem_to<P: AsRef<Path>>(
+        path: P,
+        stem: crate::types::Stem,
+        local_db: &crate::db::DatabaseService,
+        target_sample_rate: u32,
+    ) -> Result<SingleStemLoad, AudioFileError> {
+        use std::time::Instant;
+
+        let path_ref = path.as_ref();
+        let total_start = Instant::now();
+
+        let meta_start = Instant::now();
+        let mut metadata = resolve_track_metadata(path_ref, local_db);
+        log::info!("  [PERF] Metadata loaded from DB in {:?}", meta_start.elapsed());
+
+        log::info!(
+            "[PERF] Loading single stem {:?} from {:?} (target rate: {} Hz)",
+            stem, path_ref, target_sample_rate
+        );
+
+        let open_start = Instant::now();
+        let reader = AudioFileReader::open(path_ref)?;
+        log::info!("  [PERF] File opened in {:?}", open_start.elapsed());
+
+        let source_sample_rate = reader.format().sample_rate;
+
+        let stem_start = Instant::now();
+        let buffer = reader.read_single_stem_to(stem, target_sample_rate)?;
+        log::info!(
+            "  [PERF] Single stem decoded in {:?} ({} frames, {:.1} MB)",
+            stem_start.elapsed(),
+            buffer.len(),
+            (buffer.len() * 8) as f64 / 1_000_000.0 // 2 channels × 4 bytes
+        );
+
+        // Cap at metadata-derived duration (FLAC padding)
+        let metadata_frames = metadata.duration_seconds
+            .map(|d| (d * target_sample_rate as f64).round() as usize);
+        let duration_samples = if let Some(mf) = metadata_frames {
+            buffer.len().min(mf)
+        } else {
+            buffer.len()
+        };
+
+        // Scale metadata sample positions if resampled
+        if source_sample_rate != target_sample_rate {
+            metadata.scale_sample_positions(source_sample_rate, target_sample_rate);
+            metadata.regenerate_beat_grid(duration_samples as u64, target_sample_rate);
+        }
+
+        log::info!("[PERF] Total single-stem load: {:?}", total_start.elapsed());
+
+        Ok(SingleStemLoad {
+            buffer,
+            metadata,
+            duration_samples,
+        })
     }
 
     /// Get the BPM of the track (or a default if not set)
