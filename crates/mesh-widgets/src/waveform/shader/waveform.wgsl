@@ -290,10 +290,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Background
     var color = vec4<f32>(0.08, 0.08, 0.08, 1.0);
 
-    // No track loaded — just show dark background
-    if (has_track < 0.5 || pps == 0u) {
+    // No track at all — dark background
+    if (has_track < 0.5) {
         return color;
     }
+
+    // Loading pulse: > 0 while audio is loading, 0 when peaks have arrived
+    let loading_pulse = u.render_options_2[3];
 
     // Map UV to track-space x coordinate
     var source_x: f32;
@@ -450,7 +453,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // -----------------------------------------------------------------
     // 6. Stem envelopes (back-to-front: Drums, Bass, Vocals, Other)
+    //    Only rendered when peak data is available (pps > 0)
     // -----------------------------------------------------------------
+    if (pps > 0u) {
     let center_y = 0.5;
     let height_scale = u.view_params.y;
 
@@ -673,6 +678,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             }
         }
     }
+    } // end if (pps > 0u) — stem envelopes
 
     // -----------------------------------------------------------------
     // 7. Cue markers (colored vertical lines + triangle)
@@ -739,6 +745,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (volume < 0.999) {
         let dim_alpha = (1.0 - volume) * 0.4;
         color = blend_over(color, vec4<f32>(0.0, 0.0, 0.0, dim_alpha));
+    }
+
+    // -----------------------------------------------------------------
+    // 9b. Loading pulse (pulsing brightness while audio loads)
+    // -----------------------------------------------------------------
+    if (loading_pulse > 0.001) {
+        let pulse_alpha = loading_pulse * 0.07;
+        color = blend_over(color, vec4<f32>(1.0, 1.0, 1.0, pulse_alpha));
     }
 
     // -----------------------------------------------------------------

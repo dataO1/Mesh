@@ -857,14 +857,20 @@ where
             render_options_2: {
                 // [2] = precomputed fw (1.0/height) — used by Mali shader, ignored by desktop
                 let fw = if bounds.height > 0.0 { 1.0 / bounds.height } else { 0.001 };
+                // [3] = loading pulse: 0.0 = not loading, 0.0–1.0 = sine pulse phase
+                let loading_pulse = if overview.loading && overview.has_track {
+                    (self.state.frame_count as f32 * 0.1).sin() * 0.5 + 0.5
+                } else {
+                    0.0
+                };
                 #[cfg(feature = "mali-shader")]
-                { [0.0, 0.0, fw, 0.0] } // Mali: no peak width, AA handled analytically
+                { [0.0, 0.0, fw, loading_pulse] }
                 #[cfg(not(feature = "mali-shader"))]
                 { [
                     self.state.peak_width_mult,
                     self.state.edge_aa_level as f32,
                     fw,
-                    0.0,
+                    loading_pulse,
                 ] }
             },
         }
@@ -1341,10 +1347,11 @@ where
             },
             render_options_2: {
                 let fw = if bounds.height > 0.0 { 1.0 / bounds.height } else { 0.001 };
+                // mesh-cue: no loading pulse (tracks load synchronously)
                 #[cfg(feature = "mali-shader")]
-                { [0.0, 0.0, fw, 0.0] } // Mali: no peak width, AA handled analytically
+                { [0.0, 0.0, fw, 0.0] }
                 #[cfg(not(feature = "mali-shader"))]
-                { [1.5, 3.0, fw, 0.0] } // mesh-cue: medium peak width, L2 clamped AA
+                { [1.5, 3.0, fw, 0.0] }
             },
         }
     }

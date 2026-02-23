@@ -42,6 +42,9 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
         app.fps_last_second = std::time::Instant::now();
     }
 
+    // Advance waveform frame counter (used for loading pulse animation)
+    app.player_canvas_state.tick();
+
     // Poll MIDI input (non-blocking)
     // MIDI messages are processed at 60fps, providing ~16ms latency
     // Collect first to release borrow before calling handle_midi_message

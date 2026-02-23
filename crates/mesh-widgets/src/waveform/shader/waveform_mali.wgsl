@@ -138,9 +138,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Background — vec3, no alpha tracking needed
     var color = vec3<f32>(0.08, 0.08, 0.08);
 
-    if (has_track < 0.5 || pps == 0u) {
+    // No track at all — dark background
+    if (has_track < 0.5) {
         return vec4<f32>(color, 1.0);
     }
+
+    // Loading pulse: > 0 while audio is loading, 0 when peaks have arrived
+    let loading_pulse = u.render_options_2[3];
 
     // -----------------------------------------------------------------
     // Map UV to source_x (needed for beat grid, cues, loop regions)
@@ -258,7 +262,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // -----------------------------------------------------------------
     // Stem envelopes — CPU-precomputed peak reads
+    //   Only rendered when peak data is available (pps > 0)
     // -----------------------------------------------------------------
+    if (pps > 0u) {
     let center_y = 0.5;
     let height_scale = u.view_params.y;
     let half_hs = height_scale * 0.5;
@@ -322,6 +328,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             color = mix(color, sc.rgb, 0.85 * edge_alpha);
         }
     }
+    } // end if (pps > 0u) — stem envelopes
 
     // -----------------------------------------------------------------
     // Cue markers (linear AA, no smoothstep)
@@ -385,6 +392,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (volume < 0.999) {
         let dim = (1.0 - volume) * 0.4;
         color = color * (1.0 - dim);
+    }
+
+    // Loading pulse (pulsing brightness while audio loads)
+    if (loading_pulse > 0.001) {
+        color = mix(color, vec3<f32>(1.0), loading_pulse * 0.07);
     }
 
     return vec4<f32>(color, 1.0);

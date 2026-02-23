@@ -85,6 +85,13 @@ All notable changes to Mesh are documented in this file.
 
 ### Performance
 
+- **Instant grid render on track load** — Beat grid, cue markers, loop regions,
+  playhead, and stem indicators now render immediately when a track is loaded,
+  instead of waiting for peak data to arrive from the background loader. The
+  shader's early-exit guard was split so only stem envelope rendering (which
+  genuinely needs peak data) is gated behind peak availability. A pulsing
+  brightness overlay signals that audio is still loading and interaction is ready.
+
 - **Parallel priority region decode** — Priority regions (around cue points) are
   now decoded in parallel via `std::thread::scope`. Each thread creates its own
   decoder from the shared `Arc<[u8]>` buffer. Results are merged sequentially

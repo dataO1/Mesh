@@ -61,6 +61,11 @@ pkgs.mkShell {
     # Rust environment
     export RUST_BACKTRACE=1
 
+    # Override extreme release optimizations for faster dev builds
+    # (lto=true + codegen-units=1 in Cargo.toml is great for distribution but painful for iteration)
+    export CARGO_PROFILE_RELEASE_LTO=thin
+    export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+
     # Logging: only show mesh-* crate logs at info level, filter out noisy dependencies
     export RUST_LOG="warn,mesh_core=debug,mesh_cue=debug,mesh_player=debug"
 

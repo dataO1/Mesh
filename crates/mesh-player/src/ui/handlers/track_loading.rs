@@ -47,6 +47,8 @@ pub fn handle_track_loaded(app: &mut MeshApp, msg: TrackLoadedMsg) -> Task<Messa
                 mesh_widgets::PeakBuffer::from_stem_peaks(&highres_peaks);
             overview.stem_waveforms = overview_peaks;
             overview.highres_peaks = highres_peaks;
+            // First audio data arrived — stop loading pulse (user can play now)
+            overview.loading = false;
             Task::none()
         }
 

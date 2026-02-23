@@ -951,6 +951,8 @@ pub struct PlayerCanvasState {
     pub peak_width_mult: f32,
     /// Edge AA algorithm (0=Standard, 1=SlopeL1, 2=SlopeL2, 3=SlopeL2Clamped)
     pub edge_aa_level: u8,
+    /// Monotonic frame counter incremented every tick (vsync), used for loading pulse animation
+    pub frame_count: u32,
 }
 
 impl PlayerCanvasState {
@@ -1001,7 +1003,13 @@ impl PlayerCanvasState {
             depth_fade_inverted: false,          // Normal: transparent center, opaque edges
             peak_width_mult: 1.5,                // Medium transient width (fw * 1.5)
             edge_aa_level: 3,                    // Slope L2 Clamped by default
+            frame_count: 0,
         }
+    }
+
+    /// Advance the frame counter (call once per tick/vsync)
+    pub fn tick(&mut self) {
+        self.frame_count = self.frame_count.wrapping_add(1);
     }
 
     /// Set the track name for a deck (displayed in header)
