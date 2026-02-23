@@ -13,6 +13,11 @@ All notable changes to Mesh are documented in this file.
   (aarch64) or AMD DRM sysfs (x86). FPS counted from iced frame events.
   Polls at 500ms intervals via `ResourceMonitor` in mesh-core (reusable by mesh-cue).
 
+- **Mali linked stem split view** — Overview waveforms on the Mali shader path
+  now show linked stems as a split view (active stem top half, inactive bottom
+  half). Precomputed on CPU into the existing 4-stem buffer with signed
+  min/max encoding — no shader changes or GPU upload increase needed.
+
 ### Performance
 
 - **Dynamic waveform peak resolution** — Highres peak count is now proportional to

@@ -297,6 +297,14 @@ fn cpu_sample_peak(
 /// The result is a PeakBuffer with `peaks_per_stem = width`, ready for direct
 /// buffer reads by the Mali shader. This eliminates ALL minmax_reduce loops from
 /// the GPU and guarantees the 1:1 peak-per-pixel invariant at every zoom level.
+///
+/// **Overview split-view**: When a stem has a linked alternative, the peaks are
+/// folded into an asymmetric envelope: `max` = active stem's positive peak (top),
+/// `min` = negated inactive stem's positive peak (bottom). The shader's existing
+/// `env_top = center_y - peak.y * half_hs` / `env_bot = center_y - peak.x * half_hs`
+/// naturally renders this as a split view without shader changes.
+///
+/// **Zoomed view**: Outputs all `num_stems` (including stems 4-7 for linked swap).
 #[cfg(feature = "mali-shader")]
 fn precompute_view_peaks(
     raw_data: &[f32],
@@ -309,6 +317,8 @@ fn precompute_view_peaks(
     window_end: f32,
     peak_index_scale: f32,
     abstraction_level: u8,
+    linked_stems: &[f32; 4],
+    linked_active: &[f32; 4],
 ) -> PeakBuffer {
     let effective_pps = if peak_index_scale > 0.0 {
         peak_index_scale
@@ -328,9 +338,25 @@ fn precompute_view_peaks(
     };
     let peaks_per_pixel = effective_pps * px_in_source;
 
-    let mut data = Vec::with_capacity((width as usize) * (num_stems as usize) * 2);
+    // Overview with linked stems: fold into 4 stems (split view).
+    // Zoomed: output all num_stems (shader swaps via effective_stem = stem + 4).
+    let output_stems = if is_overview { 4.min(num_stems) } else { num_stems };
 
-    for stem in 0..num_stems {
+    // Check if ANY stem has a linked pair (determines whether non-linked overview stems
+    // should use positive-only top half for visual consistency, or full symmetric waveform).
+    let any_linked = is_overview && (0..4.min(num_stems)).any(|s|
+        (s + 4) < num_stems && linked_stems[s as usize] > 0.5
+    );
+
+    let mut data = Vec::with_capacity((width as usize) * (output_stems as usize) * 2);
+
+    for stem in 0..output_stems {
+        // Overview split: does this stem have a linked alternative in the raw buffer?
+        let has_link = is_overview
+            && stem < 4
+            && (stem + 4) < num_stems
+            && linked_stems[stem as usize] > 0.5;
+
         for pixel in 0..width {
             let uv_x = (pixel as f32 + 0.5) / width as f32;
 
@@ -347,17 +373,41 @@ fn precompute_view_peaks(
             }
 
             let float_idx = source_x * effective_pps;
-            let (mn, mx) = cpu_sample_peak(
-                raw_data,
-                stem,
-                raw_pps,
-                float_idx,
-                peaks_per_pixel,
-                abstraction_level,
-                effective_pps,
-            );
-            data.push(mn);
-            data.push(mx);
+
+            if has_link {
+                // Split view: active stem → top (positive), inactive → bottom (negative)
+                let link_active = linked_active[stem as usize] > 0.5;
+                let active_stem = if link_active { stem + 4 } else { stem };
+                let inactive_stem = if link_active { stem } else { stem + 4 };
+
+                let (_, active_mx) = cpu_sample_peak(
+                    raw_data, active_stem, raw_pps,
+                    float_idx, peaks_per_pixel, abstraction_level, effective_pps,
+                );
+                let (_, inactive_mx) = cpu_sample_peak(
+                    raw_data, inactive_stem, raw_pps,
+                    float_idx, peaks_per_pixel, abstraction_level, effective_pps,
+                );
+
+                // min = negated inactive positive (renders downward from center)
+                // max = active positive (renders upward from center)
+                data.push(-inactive_mx.max(0.0));
+                data.push(active_mx.max(0.0));
+            } else {
+                let (mn, mx) = cpu_sample_peak(
+                    raw_data, stem, raw_pps,
+                    float_idx, peaks_per_pixel, abstraction_level, effective_pps,
+                );
+                if any_linked && stem < 4 {
+                    // Non-linked overview stem in deck with linked pairs:
+                    // positive-only top half for visual consistency with split stems
+                    data.push(0.0);
+                    data.push(mx.max(0.0));
+                } else {
+                    data.push(mn);
+                    data.push(mx);
+                }
+            }
         }
     }
 
@@ -509,6 +559,8 @@ where
                         uniforms.window_params[1],  // window_end
                         uniforms.stem_smooth[0],    // peak_index_scale
                         self.state.abstraction_level,
+                        &uniforms.linked_stems,
+                        &uniforms.linked_active,
                     );
                     // Override uniforms for precomputed mode
                     uniforms.view_params[2] = width as f32;  // pps = view width
@@ -1053,6 +1105,8 @@ where
                         uniforms.window_params[1],  // window_end
                         uniforms.stem_smooth[0],    // peak_index_scale
                         1,                          // Medium abstraction (hardcoded for mesh-cue)
+                        &uniforms.linked_stems,
+                        &uniforms.linked_active,
                     );
                     uniforms.view_params[2] = width as f32;
                     uniforms.slicer_params[3] = 1.0;
