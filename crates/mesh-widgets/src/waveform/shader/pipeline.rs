@@ -2,7 +2,7 @@
 //!
 //! Two bindings per view:
 //! - Binding 0: Uniform buffer (WaveformUniforms, 416 bytes, updated every frame)
-//! - Binding 1: Storage buffer (peak data, updated only on track load)
+//! - Binding 1: Storage buffer (peak data, updated on track load; every frame with mali-shader)
 
 use super::PeakBuffer;
 use iced::widget::shader;
@@ -291,8 +291,17 @@ impl shader::Primitive for WaveformPrimitive {
             bytemuck::bytes_of(&self.uniforms),
         );
 
-        // Upload peak data only when it changes (Arc pointer comparison)
-        if peak_ptr != resources.last_peak_ptr {
+        // Upload peak data when it changes.
+        // Desktop path: Arc pointer comparison (peaks set once per track load).
+        // Mali-shader path: peaks are CPU-precomputed every frame, and the old Arc
+        // is freed before the new one is allocated — the allocator can reuse the
+        // same heap address (ABA problem), so always upload in that mode.
+        #[cfg(feature = "mali-shader")]
+        let peak_changed = true;
+        #[cfg(not(feature = "mali-shader"))]
+        let peak_changed = peak_ptr != resources.last_peak_ptr;
+
+        if peak_changed {
             if let Some(peaks) = &self.peaks {
                 queue.write_buffer(
                     &resources.peak_buffer,
