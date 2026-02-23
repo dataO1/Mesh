@@ -89,6 +89,9 @@ pub enum TrackLoadResult {
         stems: Shared<StemBuffers>,
         duration_samples: usize,
         path: PathBuf,
+        /// When true, peaks were computed incrementally via RegionLoaded messages —
+        /// skip overview/zoomed state replacement and redundant UpgradeStems.
+        incremental: bool,
     },
     /// Error during loading
     Error {
@@ -314,6 +317,7 @@ fn handle_full_load(
                 stems,
                 duration_samples,
                 path,
+                incremental: false,
             });
         }
         Err(e) => {
@@ -346,7 +350,18 @@ fn handle_streaming_load(
     let path = request.path.clone();
     let metadata = request.metadata;
 
-    let frame_count = reader.frame_count() as usize;
+    let file_frames = reader.frame_count() as usize;
+    // DB-sourced duration is authoritative — FLAC header may include block-size padding
+    let metadata_frames = metadata.duration_seconds
+        .map(|d| (d * sample_rate as f64).round() as usize)
+        .unwrap_or(file_frames);
+    let frame_count = file_frames.min(metadata_frames);
+    if file_frames != frame_count {
+        log::info!(
+            "[LOADER] Capping frame_count: file={} → metadata={} (delta={})",
+            file_frames, frame_count, file_frames - frame_count
+        );
+    }
 
     log::info!(
         "[LOADER] Streaming load: deck={}, frames={}, bpm={:?}, cues={}, path={:?}",
@@ -520,7 +535,7 @@ fn handle_streaming_load(
     log::info!("[PERF] Loader: Parallel gap regions took {:?} ({} regions, {} threads)",
         gap_start.elapsed(), gaps.len(), gaps.len());
 
-    // 6. Build final waveform states from complete stems
+    // 6. Send finalization — peaks already computed incrementally, skip build_waveform_states()
     let final_stems = Shared::new(&mesh_core::engine::gc::gc_handle(), stems);
 
     let duration_samples = frame_count;
@@ -532,19 +547,17 @@ fn handle_streaming_load(
         duration_samples,
         duration_seconds,
     };
-
-    let (overview_state, zoomed_state) = build_waveform_states(&track, request.quality_level, request.screen_width);
     let prepared = PreparedTrack::prepare(track);
 
-    // 7. Send complete result (single UpgradeStems to engine)
     let _ = tx.send(TrackLoadResult::Complete {
         deck_idx,
         result: Ok(prepared),
-        overview_state,
-        zoomed_state,
+        overview_state: OverviewState::default(),
+        zoomed_state: ZoomedState::default(),
         stems: final_stems,
         duration_samples,
         path,
+        incremental: true,
     });
 }
 

@@ -188,15 +188,19 @@ impl BeatGrid {
             return Self::new();
         }
 
-        let samples_per_beat = (sample_rate as f64 * 60.0 / bpm) as u64;
-        if samples_per_beat == 0 {
+        let samples_per_beat = sample_rate as f64 * 60.0 / bpm;
+        if samples_per_beat <= 0.0 {
             return Self::new();
         }
 
-        let num_beats = ((duration_samples.saturating_sub(first_beat_sample)) / samples_per_beat) as usize;
+        let num_beats = ((duration_samples.saturating_sub(first_beat_sample)) as f64 / samples_per_beat) as usize;
 
+        // Use f64 accumulation to prevent truncation drift.
+        // Integer cast of samples_per_beat loses the fractional part (e.g. 16551.724 → 16551
+        // at 174 BPM), which accumulates to ~7.5ms over 500 beats. Computing each position
+        // from the f64 formula limits error to ±0.5 samples regardless of beat count.
         let beats: Vec<u64> = (0..=num_beats)
-            .map(|i| first_beat_sample + (i as u64 * samples_per_beat))
+            .map(|i| (first_beat_sample as f64 + i as f64 * samples_per_beat).round() as u64)
             .collect();
 
         Self {
@@ -1077,15 +1081,32 @@ impl AudioFileReader {
 
         let (mut format_reader, mut decoder, track_id) = self.create_decoder()?;
 
-        // Seek to the start frame
+        // Seek to the start frame.
+        // Symphonia seeks to the nearest sync point (FLAC frame boundary), which
+        // may be before our target. We must skip the leading frames ourselves —
+        // the decoder does NOT trim automatically.
+        let mut skip_frames = 0usize;
         if file_start > 0 {
-            format_reader.seek(
+            let seeked = format_reader.seek(
                 symphonia::core::formats::SeekMode::Accurate,
                 SeekTo::TimeStamp {
                     ts: file_start as u64,
                     track_id,
                 },
             ).map_err(|e| AudioFileError::IoError(format!("Seek failed: {}", e)))?;
+
+            if seeked.actual_ts < seeked.required_ts {
+                skip_frames = (seeked.required_ts - seeked.actual_ts) as usize;
+                log::debug!(
+                    "decode_region: skipping {} leading frames (seeked to {} for target {})",
+                    skip_frames, seeked.actual_ts, seeked.required_ts
+                );
+            } else if seeked.actual_ts > seeked.required_ts {
+                log::warn!(
+                    "decode_region: seek overshot forward actual={} required={}",
+                    seeked.actual_ts, seeked.required_ts
+                );
+            }
         }
 
         let mut stems = StemBuffers::with_length(count);
@@ -1118,10 +1139,21 @@ impl AudioFileReader {
                 let samples = buf.samples();
                 let ch = 8;
                 let packet_frames = samples.len() / ch;
-                let frames_to_write = packet_frames.min(count - frames_written);
+
+                // Skip leading frames from seek overshoot (sync point before target)
+                let offset = if skip_frames > 0 {
+                    let to_skip = skip_frames.min(packet_frames);
+                    skip_frames -= to_skip;
+                    to_skip
+                } else {
+                    0
+                };
+
+                let available = packet_frames - offset;
+                let frames_to_write = available.min(count - frames_written);
 
                 for j in 0..frames_to_write {
-                    let base = j * ch;
+                    let base = (offset + j) * ch;
                     let i = frames_written + j;
                     stems.vocals.as_mut_slice()[i] = StereoSample::new(samples[base], samples[base + 1]);
                     stems.drums.as_mut_slice()[i] = StereoSample::new(samples[base + 2], samples[base + 3]);
@@ -1263,8 +1295,15 @@ impl LoadedTrack {
             (stems.len() * 32) as f64 / 1_000_000.0 // 8 channels × 4 bytes per f32
         );
 
-        let duration_samples = stems.len();
-        let duration_seconds = stems.duration_seconds();
+        // Cap at metadata-derived duration — FLAC header may include block-size padding
+        let metadata_frames = metadata.duration_seconds
+            .map(|d| (d * target_sample_rate as f64).round() as usize);
+        let duration_samples = if let Some(mf) = metadata_frames {
+            stems.len().min(mf)
+        } else {
+            stems.len()
+        };
+        let duration_seconds = duration_samples as f64 / target_sample_rate as f64;
 
         // If audio was resampled, scale all metadata sample positions to match
         // This ensures cue points, beat grid, loops, and drop markers remain accurate
