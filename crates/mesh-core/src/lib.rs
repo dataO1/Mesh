@@ -85,5 +85,6 @@ pub mod db;
 pub mod services;
 pub mod export;
 pub mod preset_loader;
+pub mod resource_monitor;
 
 pub use types::*;

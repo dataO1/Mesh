@@ -147,4 +147,7 @@ pub enum Message {
 
     /// Monitor size detected at startup (for auto-sizing)
     GotMonitorSize(Option<iced::Size>),
+
+    /// Periodic resource stats refresh (CPU%, GPU%, RAM)
+    RefreshResourceStats,
 }

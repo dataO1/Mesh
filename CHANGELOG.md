@@ -6,6 +6,13 @@ All notable changes to Mesh are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Resource monitoring in header** — CPU%, GPU%, RAM usage, and FPS counter
+  displayed in the player header bar. GPU utilization reads Mali devfreq
+  (aarch64) or AMD DRM sysfs (x86). FPS counted from iced frame events.
+  Polls at 500ms intervals via `ResourceMonitor` in mesh-core (reusable by mesh-cue).
+
 ### Performance
 
 - **Dynamic waveform peak resolution** — Highres peak count is now proportional to

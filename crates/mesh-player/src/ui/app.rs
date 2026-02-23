@@ -119,6 +119,14 @@ pub struct MeshApp {
     pub(crate) audio_sample_rate: u32,
     /// On-screen keyboard state (shared widget from mesh-widgets)
     pub(crate) keyboard: KeyboardState,
+    /// System resource monitor (CPU%, GPU%, RAM)
+    pub(crate) resource_monitor: mesh_core::resource_monitor::ResourceMonitor,
+    /// FPS frame counter (incremented each tick, reset every second)
+    pub(crate) fps_frame_count: u32,
+    /// Displayed FPS value (updated once per second)
+    pub(crate) fps_display: u32,
+    /// Timestamp of last FPS display update
+    pub(crate) fps_last_second: std::time::Instant,
 }
 
 // Message enum moved to message.rs
@@ -302,6 +310,10 @@ impl MeshApp {
             internal_latency_samples,
             audio_sample_rate: sample_rate,
             keyboard: KeyboardState::new(),
+            resource_monitor: mesh_core::resource_monitor::ResourceMonitor::new(),
+            fps_frame_count: 0,
+            fps_display: 0,
+            fps_last_second: std::time::Instant::now(),
         }
     }
 
@@ -554,6 +566,11 @@ impl MeshApp {
             }
             Message::GotMonitorSize(None) => {
                 log::warn!("Could not detect monitor size, using default window size");
+                Task::none()
+            }
+
+            Message::RefreshResourceStats => {
+                self.resource_monitor.refresh();
                 Task::none()
             }
         }
@@ -1318,6 +1335,10 @@ impl MeshApp {
             Subscription::none()
         };
 
+        // Resource monitoring subscription (CPU%, GPU%, RAM — 500ms interval)
+        let resource_sub = time::every(std::time::Duration::from_millis(500))
+            .map(|_| Message::RefreshResourceStats);
+
         // Journal polling subscription for OTA update progress
         let journal_poll_sub = if self.settings.is_open && self.settings.update.as_ref().is_some_and(|u| u.is_installing()) {
             time::every(std::time::Duration::from_secs(2))
@@ -1349,6 +1370,8 @@ impl MeshApp {
             journal_poll_sub,
             // LED feedback evaluation (30Hz timer, only when controller connected)
             led_sub,
+            // System resource monitoring (CPU%, GPU%, RAM — 500ms)
+            resource_sub,
         ])
     }
 
@@ -1660,6 +1683,22 @@ impl MeshApp {
             text("").into()
         };
 
+        // Resource stats: CPU | GPU | RAM | FPS (compact, gray, matching latency style)
+        let rm = &self.resource_monitor;
+        let mut stats_parts: Vec<String> = vec![
+            format!("CPU {:.0}%", rm.cpu_percent),
+        ];
+        if let Some(gpu) = rm.gpu_percent {
+            stats_parts.push(format!("GPU {}%", gpu));
+        }
+        stats_parts.push(format!("RAM {:.1}/{:.0}G", rm.ram_used_gb, rm.ram_total_gb));
+        if self.fps_display > 0 {
+            stats_parts.push(format!("{}fps", self.fps_display));
+        }
+        let stats_label = text(stats_parts.join(" | "))
+            .size(11)
+            .color(Color::from_rgb(0.5, 0.5, 0.5));
+
         row![
             title,
             Space::new().width(Fill),
@@ -1668,6 +1707,7 @@ impl MeshApp {
             Space::new().width(20),
             fx_element,
             Space::new().width(Fill),
+            stats_label,
             connection_status,
             latency_label,
             settings_btn,

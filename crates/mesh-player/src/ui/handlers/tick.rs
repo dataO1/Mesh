@@ -34,6 +34,14 @@ use crate::ui::message::Message;
 /// **WARNING**: This is a hot path. Read the module-level docs before adding code here.
 /// Prefer event-driven message passing for anything that doesn't need per-frame updates.
 pub fn handle(app: &mut MeshApp) -> Task<Message> {
+    // FPS counter: increment each frame, update display value once per second
+    app.fps_frame_count += 1;
+    if app.fps_last_second.elapsed() >= std::time::Duration::from_secs(1) {
+        app.fps_display = app.fps_frame_count;
+        app.fps_frame_count = 0;
+        app.fps_last_second = std::time::Instant::now();
+    }
+
     // Poll MIDI input (non-blocking)
     // MIDI messages are processed at 60fps, providing ~16ms latency
     // Collect first to release borrow before calling handle_midi_message
