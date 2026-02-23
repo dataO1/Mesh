@@ -435,7 +435,73 @@ impl From<crate::db::Track> for TrackMetadata {
     }
 }
 
+/// Resolve track metadata from the correct database for a given file path.
+///
+/// This is the **single source of truth** for metadata resolution. All code
+/// that needs track metadata from a database should use this function instead
+/// of calling `db.get_track_by_path()` directly.
+///
+/// # Path resolution strategy
+///
+/// 1. Try the local database with the full absolute path (fast hit for local
+///    tracks, no-op miss for USB tracks since they're not in the local DB).
+/// 2. If not found, check whether the path is under a USB `mesh-collection/`
+///    directory. If so, open (or cache) that USB's database and query with the
+///    collection-root prefix stripped (USB databases store relative paths).
+/// 3. If no record is found in any database, returns `TrackMetadata::default()`.
+///
+/// This order avoids opening duplicate connections to the local mesh.db
+/// (whose path also contains `mesh-collection`).
+pub fn resolve_track_metadata(path: &Path, local_db: &crate::db::DatabaseService) -> TrackMetadata {
+    use crate::usb::{find_collection_root, get_or_open_usb_database};
 
+    // 1. Try local database with the full path.
+    //    For local tracks this is the fast path. For USB tracks this will
+    //    return None (the track simply doesn't exist in the local DB).
+    let path_str = path.to_string_lossy().into_owned();
+    match local_db.get_track_metadata(&path_str) {
+        Ok(Some(metadata)) => return metadata,
+        Ok(None) => {}
+        Err(e) => {
+            log::warn!("[RESOLVE] Local DB error for {}: {}", path_str, e);
+        }
+    }
+
+    // 2. Try USB database: find the collection root, strip it from the path,
+    //    and query with the relative path that USB databases expect.
+    if let Some(collection_root) = find_collection_root(path) {
+        if let Some(usb_db) = get_or_open_usb_database(&collection_root) {
+            let lookup_path = path.strip_prefix(&collection_root)
+                .map(|r| r.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| path_str.clone());
+
+            match usb_db.get_track_metadata(&lookup_path) {
+                Ok(Some(metadata)) => {
+                    log::info!(
+                        "[RESOLVE] Found metadata in USB DB ({}) for: {}",
+                        collection_root.display(), lookup_path
+                    );
+                    return metadata;
+                }
+                Ok(None) => {
+                    log::warn!(
+                        "[RESOLVE] Track not in USB DB ({}): {}",
+                        collection_root.display(), lookup_path
+                    );
+                }
+                Err(e) => {
+                    log::error!(
+                        "[RESOLVE] USB DB error ({}): {}",
+                        collection_root.display(), e
+                    );
+                }
+            }
+        }
+    }
+
+    log::warn!("[RESOLVE] Track not found in any database: {}, using defaults", path_str);
+    TrackMetadata::default()
+}
 
 /// Stem audio buffers extracted from a file
 #[derive(Debug, Clone)]
@@ -1227,31 +1293,19 @@ impl LoadedTrack {
     ///
     /// # Arguments
     /// * `path` - Path to the audio file
-    /// * `db` - Database service for loading metadata
+    /// * `local_db` - Local database service (fallback when path isn't on USB)
     /// * `target_sample_rate` - Target sample rate (from the audio backend)
     ///
-    /// This allows loading tracks to match whatever sample rate the audio system is running at.
-    /// Metadata (BPM, key, cue points, etc.) is loaded from the database.
-    /// Waveform preview is loaded from the WAV file's wvfm chunk.
-    pub fn load_to<P: AsRef<Path>>(path: P, db: &crate::db::DatabaseService, target_sample_rate: u32) -> Result<Self, AudioFileError> {
+    /// Metadata is resolved automatically via [`resolve_track_metadata`], which
+    /// handles both local and USB paths transparently. Callers never need to
+    /// worry about which database to query or how to normalize paths.
+    pub fn load_to<P: AsRef<Path>>(path: P, local_db: &crate::db::DatabaseService, target_sample_rate: u32) -> Result<Self, AudioFileError> {
         use std::time::Instant;
 
         let path_ref = path.as_ref();
         let meta_start = Instant::now();
-        let path_str = path_ref.to_string_lossy().to_string();
 
-        // Load metadata from database
-        let metadata: TrackMetadata = match db.get_track_by_path(&path_str) {
-            Ok(Some(track)) => track.into(),
-            Ok(None) => {
-                log::warn!("Track not found in database: {}, using default metadata", path_str);
-                TrackMetadata::default()
-            }
-            Err(e) => {
-                log::warn!("Failed to load metadata from database: {}, using default", e);
-                TrackMetadata::default()
-            }
-        };
+        let metadata = resolve_track_metadata(path_ref, local_db);
         log::info!("  [PERF] Metadata loaded from DB in {:?}", meta_start.elapsed());
 
         // Delegate to load_with_metadata

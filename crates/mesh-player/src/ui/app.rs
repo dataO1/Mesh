@@ -686,8 +686,12 @@ impl MeshApp {
         if let StemLinkState::Selecting { deck, stem } = self.stem_link_state.clone() {
             // Get selected track path from browser
             if let Some(path) = self.collection_browser.get_selected_track_path().cloned() {
-                // Get host deck's BPM, drop marker, and duration
-                let host_bpm = self.domain.global_bpm();
+                // Get host deck's native track BPM (not global/master BPM).
+                // The engine stretches the entire deck (host + linked stems) from
+                // track_bpm → global_bpm, so linked stems must be pre-stretched to
+                // the track's native tempo, not the global tempo.
+                let host_bpm = self.player_canvas_state.track_bpm(deck)
+                    .unwrap_or_else(|| self.domain.global_bpm());
                 // Get host track's drop marker from LinkedStemAtomics (set when track loads)
                 let host_drop_marker = self
                     .linked_stem_atomics

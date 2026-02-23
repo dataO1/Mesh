@@ -24,7 +24,7 @@ use crate::audio_file::{LoadedTrack, StemLinkReference};
 use crate::db::DatabaseService;
 use crate::engine::{gc::gc_handle, LinkedStemData, StemLink};
 use crate::types::{Stem, StereoBuffer};
-use crate::usb::cache as usb_cache;
+
 
 /// Reference zoom level for peak resolution targeting (must match mesh_widgets::PEAK_REFERENCE_ZOOM_BARS).
 const PEAK_REFERENCE_ZOOM_BARS: u32 = 4;
@@ -294,30 +294,10 @@ fn handle_linked_stem_load(request: LinkedStemLoadRequest, tx: Sender<LinkedStem
 
     let total_start = std::time::Instant::now();
 
-    // Determine which database to use based on path
-    // USB paths are typically under /run/media/, /media/, or /mnt/
-    let load_result = if is_usb_path(&request.source_path) {
-        // Try to load metadata from USB's database
-        match get_usb_database_for_path(&request.source_path) {
-            Some(usb_db) => {
-                log::info!(
-                    "[LINKED] Using USB database for linked stem from {:?}",
-                    request.source_path
-                );
-                LoadedTrack::load_to(&request.source_path, &usb_db, sample_rate)
-            }
-            None => {
-                log::warn!(
-                    "[LINKED] Could not find USB database for {:?}, using local",
-                    request.source_path
-                );
-                LoadedTrack::load_to(&request.source_path, db_service, sample_rate)
-            }
-        }
-    } else {
-        // Local path - use local database
-        LoadedTrack::load_to(&request.source_path, db_service, sample_rate)
-    };
+    // LoadedTrack::load_to uses resolve_track_metadata internally, which
+    // handles USB vs local path resolution automatically — no manual
+    // branching needed here.
+    let load_result = LoadedTrack::load_to(&request.source_path, db_service, sample_rate);
 
     match load_result {
         Ok(source_track) => {
@@ -550,22 +530,3 @@ fn align_buffer_to_host(
     aligned
 }
 
-/// Check if a path appears to be on a USB device
-///
-/// Uses common Linux mount point patterns for removable media.
-fn is_usb_path(path: &std::path::Path) -> bool {
-    if let Some(path_str) = path.to_str() {
-        path_str.starts_with("/run/media/")
-            || path_str.starts_with("/media/")
-            || path_str.starts_with("/mnt/")
-    } else {
-        false
-    }
-}
-
-/// Get the DatabaseService for a USB path
-///
-/// Delegates to the centralized USB cache in the usb module.
-fn get_usb_database_for_path(path: &std::path::Path) -> Option<Arc<DatabaseService>> {
-    usb_cache::get_usb_database_for_path(path)
-}

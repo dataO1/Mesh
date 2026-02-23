@@ -39,7 +39,7 @@ use std::collections::HashMap;
 use mesh_core::pd::{DiscoveredEffect, PdManager};
 use mesh_core::preset_loader::{PresetLoader, PresetLoadResultReceiver, MultibandBuildSpec};
 use mesh_core::types::{Stem, StereoBuffer};
-use mesh_core::usb::{find_collection_root, get_or_open_usb_database, UsbCommand, UsbManager, UsbMessage};
+use mesh_core::usb::{get_or_open_usb_database, UsbCommand, UsbManager, UsbMessage};
 use mesh_widgets::{CueMarker, OverviewState, ZoomedState, CUE_COLORS};
 
 use crate::audio::CommandSender;
@@ -337,66 +337,30 @@ impl MeshDomain {
     // Track Metadata
     // =========================================================================
 
-    /// Load track metadata from the active database
+    /// Load track metadata from the correct database for any path.
     ///
-    /// This is the primary method for getting metadata before loading a track.
-    /// It automatically uses the correct database based on active storage.
+    /// Delegates to [`mesh_core::audio_file::resolve_track_metadata`], the
+    /// single source of truth for path-aware DB resolution. Handles local
+    /// paths, USB paths, cross-source suggestions, and multiple USB sticks
+    /// transparently.
     ///
-    /// Returns TrackMetadata with stem_links properly converted (ID → path).
+    /// Returns `None` only when metadata resolves to a default (no DB record).
     pub fn load_track_metadata(&self, path: &str) -> Option<TrackMetadata> {
-        // Path-aware lookup: detect whether the path belongs to local or USB
-        // by inspecting the path itself, NOT relying on active_storage.
-        // This is critical for:
-        // - Cross-source suggestions (suggestion from USB2 while browsing USB1)
-        // - Race conditions where active_storage hasn't switched yet
-        // - Multiple USB sticks connected simultaneously
         let p = std::path::Path::new(path);
-
-        // Check if path is under the local collection root
-        if p.starts_with(&self.local_collection_path) {
-            return match self.local_db.get_track_metadata(path) {
-                Ok(Some(metadata)) => Some(metadata),
-                Ok(None) => {
-                    log::warn!("Track not found in local database: {}", path);
-                    None
-                }
-                Err(e) => {
-                    log::error!("Failed to load track metadata from local DB: {}", e);
-                    None
-                }
-            };
+        let metadata = mesh_core::audio_file::resolve_track_metadata(p, &self.local_db);
+        // Return None when the resolver fell back to defaults (no BPM means
+        // no DB record was found — real imported tracks always have BPM).
+        if metadata.bpm.is_none() {
+            None
+        } else {
+            Some(metadata)
         }
-
-        // For any non-local path, resolve the correct USB database from the
-        // path itself using the centralized cache. This works regardless of
-        // which USB stick is currently "active" in the browser.
-        if let Some(collection_root) = find_collection_root(p) {
-            if let Some(db) = get_or_open_usb_database(&collection_root) {
-                let lookup_path = p.strip_prefix(&collection_root)
-                    .map(|r| r.to_string_lossy().into_owned())
-                    .unwrap_or_else(|_| path.to_string());
-                return match db.get_track_metadata(&lookup_path) {
-                    Ok(Some(metadata)) => Some(metadata),
-                    Ok(None) => {
-                        log::warn!("Track not found in USB database ({}): {}",
-                            collection_root.display(), lookup_path);
-                        None
-                    }
-                    Err(e) => {
-                        log::error!("Failed to load track metadata from USB DB: {}", e);
-                        None
-                    }
-                };
-            }
-        }
-
-        log::warn!("Track not found in any database: {}", path);
-        None
     }
 
     /// Load track metadata, falling back to defaults if not found
     pub fn load_track_metadata_or_default(&self, path: &str) -> TrackMetadata {
-        self.load_track_metadata(path).unwrap_or_default()
+        let p = std::path::Path::new(path);
+        mesh_core::audio_file::resolve_track_metadata(p, &self.local_db)
     }
 
     // =========================================================================

@@ -175,6 +175,10 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
+- [ ] mesh cue export to usb stick stuck at syncing stem and slicer presets
+  for at least 2-3 minutes. i dont think this is a performance issue, but rather
+  waiting for something, thats not fulfilled (like sudo permissions or
+  something, we had a similar bug earlier)
 - [ ] in a recent commit we reduced the max stretch threads for stem
   loading/peak computaiton, we can return that back to 8, so that each track and
   a linked stem can load in parallel, the cpu usage is absolutely not the
