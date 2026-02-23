@@ -34,18 +34,14 @@
         "default.clock.min-quantum" = 256;    # Lock quantum (was 64)
         "default.clock.max-quantum" = 256;    # Lock quantum (was 1024)
         "default.clock.force-quantum" = 256;  # Override client requests
+        # RT module settings (read by the default-loaded libpipewire-module-rt)
+        # NOTE: Do NOT use context.modules here — SPA JSON arrays in fragments
+        # REPLACE the base config's module list, breaking ALSA/JACK/protocol support
+        "nice.level" = -15;
+        "rt.prio" = 88;         # High RT priority for PipeWire data thread
+        "rt.time.soft" = -1;     # No soft RT time limit
+        "rt.time.hard" = -1;     # No hard RT time limit
       };
-      "context.modules" = [
-        {
-          name = "libpipewire-module-rt";
-          args = {
-            "nice.level" = -15;
-            "rt.prio" = 88;         # High RT priority for PipeWire data thread
-            "rt.time.soft" = -1;     # No soft RT time limit
-            "rt.time.hard" = -1;     # No hard RT time limit
-          };
-        }
-      ];
     };
   };
 
