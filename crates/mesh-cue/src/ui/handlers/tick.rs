@@ -23,12 +23,7 @@ impl MeshCueApp {
     pub fn handle_tick(&mut self) -> Task<Message> {
         // Update UI from audio engine state (atomics)
         if let Some(ref mut state) = self.collection.loaded_track {
-            // Use interpolated playhead for smooth overview marker movement
-            let pos = state.interpolated_playhead_position();
-
             if state.duration_samples > 0 {
-                let normalized = pos as f64 / state.duration_samples as f64;
-                state.combined_waveform.overview.set_position(normalized);
 
                 // Update loop region overlay (green overlay when loop is active)
                 if state.is_loop_active() {

@@ -1080,7 +1080,7 @@ where
                         uniforms.window_params[0],  // window_start
                         uniforms.window_params[1],  // window_end
                         uniforms.stem_smooth[0],    // peak_index_scale
-                        1,                          // Medium abstraction (hardcoded for mesh-cue)
+                        2,                          // High abstraction (mesh-cue)
                         &uniforms.linked_stems,
                         &uniforms.linked_active,
                     );

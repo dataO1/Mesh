@@ -148,14 +148,9 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
                 app.player_canvas_state.set_stem_active(i, stem_idx, is_active);
             }
 
-            // Update position and loop display in waveform
+            // Update loop display in waveform
             let duration = app.player_canvas_state.decks[i].overview.duration_samples;
             if duration > 0 {
-                let pos_normalized = position as f64 / duration as f64;
-                app.player_canvas_state.decks[i]
-                    .overview
-                    .set_position(pos_normalized);
-
                 if loop_active {
                     let start = loop_start as f64 / duration as f64;
                     let end = loop_end as f64 / duration as f64;
