@@ -1414,12 +1414,23 @@ pub fn waveform_player_shader<'a, Message: Clone + 'a>(
         let overview = waveform_shader_overview(state, idx, on_action.clone());
         let header = view_deck_header(state, idx);
 
+        // Wrap zoomed waveform with stem indicators on inner edge
+        let indicators = view_stem_indicators(state, idx);
+        let is_left_column = idx % 2 == 0;
+        let zoomed_with_indicators: Element<'a, Message> = if is_left_column {
+            // Left column (decks 0, 2): indicators on right (inner edge)
+            row![zoomed, indicators].width(Length::Fill).height(Length::Fill).into()
+        } else {
+            // Right column (decks 1, 3): indicators on left (inner edge)
+            row![indicators, zoomed].width(Length::Fill).height(Length::Fill).into()
+        };
+
         if mirrored {
             // Bottom decks: overview → header → zoomed
-            column![overview, header, zoomed]
+            column![overview, header, zoomed_with_indicators]
         } else {
             // Top decks: zoomed → header → overview
-            column![zoomed, header, overview]
+            column![zoomed_with_indicators, header, overview]
         }
         .spacing(DECK_INTERNAL_GAP)
         .width(Length::Fill)
@@ -1441,6 +1452,124 @@ pub fn waveform_player_shader<'a, Message: Clone + 'a>(
     .width(Length::Fill)
     .height(Length::Fill)
     .into()
+}
+
+// =============================================================================
+// Stem indicators — zero-GPU canvas overlays
+// =============================================================================
+
+/// Stem indicator display order: Other, Vocals, Bass, Drums (top to bottom).
+/// Matches the shader's back-to-front stem render order so the visual positions
+/// correspond to the waveform layers.
+const STEM_INDICATOR_ORDER: [usize; 4] = [3, 0, 2, 1];
+
+/// Width of each indicator column in pixels.
+const STEM_INDICATOR_WIDTH: f32 = 10.0;
+
+/// Gap between indicator rows (pixels).
+const STEM_INDICATOR_GAP: f32 = 2.0;
+
+/// Gap between mute and link indicator columns (pixels).
+const STEM_INDICATOR_COL_GAP: f32 = 2.0;
+
+/// Build a column of stem mute indicators (and optional link indicators) for one deck.
+///
+/// Renders as a thin vertical strip of colored rectangles beside the zoomed waveform.
+/// Each rectangle represents one stem: half-brightness stem color when active,
+/// dark gray (0.12) when muted. When any stem has a linked alternative, a second
+/// column appears showing link status: full stem color when the linked version is
+/// active, dim (30% brightness) when inactive.
+///
+/// Zero GPU cost — pure iced container widgets with background colors.
+fn view_stem_indicators<'a, Message: Clone + 'a>(
+    state: &'a PlayerCanvasState,
+    deck_idx: usize,
+) -> Element<'a, Message> {
+    use iced::widget::{column, container, row, Space};
+    use iced::Background;
+
+    let stem_active = state.stem_active(deck_idx);
+    let stem_colors = state.stem_colors();
+    let (linked_stems, linked_active) = state.linked_stems(deck_idx);
+    let has_any_link = linked_stems.iter().any(|&v| v);
+
+    // Build mute indicator column (always present)
+    let mut mute_col_items: Vec<Element<'a, Message>> = Vec::with_capacity(7);
+    for (i, &stem_idx) in STEM_INDICATOR_ORDER.iter().enumerate() {
+        if i > 0 {
+            mute_col_items.push(Space::new().height(STEM_INDICATOR_GAP).into());
+        }
+        let color = stem_colors[stem_idx];
+        let indicator_color = if stem_active[stem_idx] {
+            Color::from_rgb(color.r * 0.5, color.g * 0.5, color.b * 0.5)
+        } else {
+            Color::from_rgb(0.12, 0.12, 0.12)
+        };
+        mute_col_items.push(
+            container(Space::new())
+                .width(STEM_INDICATOR_WIDTH)
+                .height(Length::Fill)
+                .style(move |_theme: &iced::Theme| container::Style {
+                    background: Some(Background::Color(indicator_color)),
+                    ..Default::default()
+                })
+                .into(),
+        );
+    }
+    let mute_col: Element<'a, Message> = column(mute_col_items)
+        .width(STEM_INDICATOR_WIDTH)
+        .height(Length::Fill)
+        .into();
+
+    if !has_any_link {
+        return mute_col;
+    }
+
+    // Build link indicator column (only when any stem has a linked version)
+    let mut link_col_items: Vec<Element<'a, Message>> = Vec::with_capacity(7);
+    for (i, &stem_idx) in STEM_INDICATOR_ORDER.iter().enumerate() {
+        if i > 0 {
+            link_col_items.push(Space::new().height(STEM_INDICATOR_GAP).into());
+        }
+        let color = stem_colors[stem_idx];
+        let indicator_color = if linked_stems[stem_idx] {
+            if linked_active[stem_idx] {
+                Color::from_rgba(color.r, color.g, color.b, 0.9)
+            } else {
+                Color::from_rgba(color.r * 0.3, color.g * 0.3, color.b * 0.3, 0.5)
+            }
+        } else {
+            Color::TRANSPARENT
+        };
+        link_col_items.push(
+            container(Space::new())
+                .width(STEM_INDICATOR_WIDTH)
+                .height(Length::Fill)
+                .style(move |_theme: &iced::Theme| container::Style {
+                    background: Some(Background::Color(indicator_color)),
+                    ..Default::default()
+                })
+                .into(),
+        );
+    }
+    let link_col: Element<'a, Message> = column(link_col_items)
+        .width(STEM_INDICATOR_WIDTH)
+        .height(Length::Fill)
+        .into();
+
+    // Mute column on inner side, link column on outer side
+    let is_left_column = deck_idx % 2 == 0;
+    if is_left_column {
+        // Left deck: [shader ... mute | gap | link]
+        row![mute_col, Space::new().width(STEM_INDICATOR_COL_GAP), link_col]
+            .height(Length::Fill)
+            .into()
+    } else {
+        // Right deck: [link | gap | mute ... shader]
+        row![link_col, Space::new().width(STEM_INDICATOR_COL_GAP), mute_col]
+            .height(Length::Fill)
+            .into()
+    }
 }
 
 // =============================================================================
