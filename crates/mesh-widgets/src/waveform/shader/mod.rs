@@ -181,6 +181,193 @@ impl PeakBuffer {
 }
 
 // =============================================================================
+// CPU peak precomputation for aarch64 (Mali GPU optimization)
+// =============================================================================
+//
+// On aarch64, peaks are pre-reduced on the CPU to guarantee 1:1 peak-per-pixel
+// at ALL zoom levels. The GPU shader then does simple buffer reads instead of
+// minmax_reduce loops, eliminating the most expensive shader path.
+
+/// Read a single raw peak (min, max) from the interleaved peak buffer.
+#[cfg(feature = "mali-shader")]
+fn cpu_raw_peak(data: &[f32], stem: u32, pps: u32, idx: u32) -> (f32, f32) {
+    let clamped = idx.min(pps.saturating_sub(1));
+    let offset = (stem * pps + clamped) as usize * 2;
+    if offset + 1 < data.len() {
+        (data[offset], data[offset + 1])
+    } else {
+        (0.0, 0.0)
+    }
+}
+
+/// Min/max reduction over a range of raw peaks. Matches the shader's minmax_reduce
+/// but uses the full range (no 64-iteration cap — CPU has plenty of headroom).
+#[cfg(feature = "mali-shader")]
+fn cpu_minmax_reduce(data: &[f32], stem: u32, pps: u32, start: u32, end: u32) -> (f32, f32) {
+    let s = start.min(pps.saturating_sub(1));
+    let e = end.min(pps.saturating_sub(1));
+    let mut mn = 1.0f32;
+    let mut mx = -1.0f32;
+    for i in s..=e {
+        let (min_v, max_v) = cpu_raw_peak(data, stem, pps, i);
+        mn = mn.min(min_v);
+        mx = mx.max(max_v);
+    }
+    (mn, mx)
+}
+
+/// Per-stem subsampling target matching the shader's get_subsample_target().
+/// level: 0=Low, 1=Medium, 2=High (maps from abstraction_level u8).
+#[cfg(feature = "mali-shader")]
+fn cpu_subsample_target(stem_idx: u32, level: u8) -> f32 {
+    let base = match stem_idx % 4 {
+        0 => 2.5,  // Vocals
+        1 => 2.5,  // Drums
+        2 => 3.0,  // Bass — most abstract
+        _ => 2.5,  // Other
+    };
+    match level {
+        0 => base * 0.6,  // Low
+        1 => base,        // Medium
+        _ => base * 1.6,  // High
+    }
+}
+
+/// CPU-side peak sampling with optional grid-aligned subsampling.
+/// Mirrors the shader's sample_peak() logic exactly.
+#[cfg(feature = "mali-shader")]
+fn cpu_sample_peak(
+    data: &[f32],
+    stem: u32,
+    pps: u32,
+    float_idx: f32,
+    peaks_per_pixel: f32,
+    abstraction_level: u8,
+    effective_pps: f32,
+) -> (f32, f32) {
+    if pps == 0 {
+        return (0.0, 0.0);
+    }
+
+    // Overview far out: simple min/max over pixel's range
+    if peaks_per_pixel > 40.0 {
+        let half_range = peaks_per_pixel * 0.5;
+        let start = (float_idx - half_range).max(0.0) as u32;
+        let end = (float_idx + half_range).min(effective_pps - 1.0) as u32;
+        return cpu_minmax_reduce(data, stem, pps, start, end);
+    }
+
+    // Raw mode: direct min/max over pixel's exact range
+    let half_range = (peaks_per_pixel * 0.5).max(0.5);
+    let start = (float_idx - half_range).max(0.0) as u32;
+    let end = (float_idx + half_range).min(effective_pps - 1.0) as u32;
+
+    // With abstraction: grid-aligned subsampling with interpolation
+    let subsample_target = cpu_subsample_target(stem, abstraction_level);
+    let step_f = (subsample_target * peaks_per_pixel).round().max(1.0);
+
+    let grid_pos = float_idx / step_f;
+    let grid_floor = grid_pos.floor();
+    let grid_frac = grid_pos - grid_floor;
+
+    let center_a = (grid_floor * step_f).clamp(0.0, effective_pps - 1.0) as u32;
+    let center_b = ((grid_floor + 1.0) * step_f).clamp(0.0, effective_pps - 1.0) as u32;
+    let half_step = (step_f * 0.5) as u32;
+
+    let p_a = cpu_minmax_reduce(
+        data, stem, pps,
+        center_a.saturating_sub(half_step),
+        (center_a + half_step).min(pps.saturating_sub(1)),
+    );
+    let p_b = cpu_minmax_reduce(
+        data, stem, pps,
+        center_b.saturating_sub(half_step),
+        (center_b + half_step).min(pps.saturating_sub(1)),
+    );
+
+    // Linear interpolation between grid points
+    (
+        p_a.0 + (p_b.0 - p_a.0) * grid_frac,
+        p_a.1 + (p_b.1 - p_a.1) * grid_frac,
+    )
+}
+
+/// Precompute one (min, max) peak per pixel column per stem for the current view.
+///
+/// The result is a PeakBuffer with `peaks_per_stem = width`, ready for direct
+/// buffer reads by the Mali shader. This eliminates ALL minmax_reduce loops from
+/// the GPU and guarantees the 1:1 peak-per-pixel invariant at every zoom level.
+#[cfg(feature = "mali-shader")]
+fn precompute_view_peaks(
+    raw_data: &[f32],
+    raw_pps: u32,
+    num_stems: u32,
+    width: u32,
+    is_overview: bool,
+    bpm_scale: f32,
+    window_start: f32,
+    window_end: f32,
+    peak_index_scale: f32,
+    abstraction_level: u8,
+) -> PeakBuffer {
+    let effective_pps = if peak_index_scale > 0.0 {
+        peak_index_scale
+    } else {
+        raw_pps as f32
+    };
+
+    // Compute peaks_per_pixel (same formula as the shader)
+    let px_in_source = if is_overview {
+        if bpm_scale > 0.01 {
+            1.0 / (width as f32 * bpm_scale)
+        } else {
+            1.0 / width as f32
+        }
+    } else {
+        (window_end - window_start) / width as f32
+    };
+    let peaks_per_pixel = effective_pps * px_in_source;
+
+    let mut data = Vec::with_capacity((width as usize) * (num_stems as usize) * 2);
+
+    for stem in 0..num_stems {
+        for pixel in 0..width {
+            let uv_x = (pixel as f32 + 0.5) / width as f32;
+
+            let source_x = if is_overview {
+                if bpm_scale > 0.01 { uv_x / bpm_scale } else { uv_x }
+            } else {
+                window_start + uv_x * (window_end - window_start)
+            };
+
+            if source_x < 0.0 || source_x > 1.0 {
+                data.push(0.0);
+                data.push(0.0);
+                continue;
+            }
+
+            let float_idx = source_x * effective_pps;
+            let (mn, mx) = cpu_sample_peak(
+                raw_data,
+                stem,
+                raw_pps,
+                float_idx,
+                peaks_per_pixel,
+                abstraction_level,
+                effective_pps,
+            );
+            data.push(mn);
+            data.push(mx);
+        }
+    }
+
+    PeakBuffer {
+        data: Arc::new(data),
+        peaks_per_stem: width,
+    }
+}
+
+// =============================================================================
 // WaveformAction — user interaction events
 // =============================================================================
 
@@ -296,7 +483,7 @@ where
         // Use cached 8-stem linked buffer if available, otherwise fall back to 4-stem original.
         // The linked buffers are rebuilt by OverviewState when peak data changes (not per-frame).
         // The shader uses linked_active uniforms to decide which stems are shown as active.
-        let peaks = if self.is_overview {
+        let raw_peaks = if self.is_overview {
             deck.overview.linked_overview_buffer.clone()
                 .or_else(|| deck.overview.overview_peak_buffer.clone())
         } else {
@@ -304,9 +491,45 @@ where
                 .or_else(|| deck.overview.highres_peak_buffer.clone())
         };
 
+        #[cfg(feature = "mali-shader")]
+        let (peaks, uniforms) = {
+            let mut uniforms = self.build_uniforms(bounds);
+            let peaks = if let Some(raw) = &raw_peaks {
+                let width = bounds.width as u32;
+                if width > 0 && raw.peaks_per_stem > 0 {
+                    let num_stems = raw.data.len() as u32 / (raw.peaks_per_stem * 2);
+                    let precomputed = precompute_view_peaks(
+                        &raw.data,
+                        raw.peaks_per_stem,
+                        num_stems,
+                        width,
+                        self.is_overview,
+                        uniforms.window_params[3],  // bpm_scale
+                        uniforms.window_params[0],  // window_start
+                        uniforms.window_params[1],  // window_end
+                        uniforms.stem_smooth[0],    // peak_index_scale
+                        self.state.abstraction_level,
+                    );
+                    // Override uniforms for precomputed mode
+                    uniforms.view_params[2] = width as f32;  // pps = view width
+                    uniforms.slicer_params[3] = 1.0;         // peaks_per_pixel = 1.0
+                    uniforms.stem_smooth[0] = 0.0;           // no peak_index_scale correction
+                    Some(precomputed)
+                } else {
+                    raw_peaks
+                }
+            } else {
+                None
+            };
+            (peaks, uniforms)
+        };
+
+        #[cfg(not(feature = "mali-shader"))]
+        let (peaks, uniforms) = (raw_peaks, self.build_uniforms(bounds));
+
         WaveformPrimitive {
             id: self.view_id,
-            uniforms: self.build_uniforms(bounds),
+            uniforms,
             peaks,
         }
     }
@@ -568,17 +791,30 @@ where
                     if la[3] { 1.0 } else { 0.0 },
                 ]
             },
-            render_options: [
-                self.state.abstraction_level as f32 + 1.0, // 1.0=low, 2.0=medium, 3.0=high (0.0=off/raw)
-                self.state.motion_blur_level as f32,        // 0.0=low, 1.0=medium, 2.0=high
-                self.state.depth_fade_level as f32,          // 0.0=off, 1.0=low, 2.0=medium, 3.0=high
-                if self.state.depth_fade_inverted { 1.0 } else { 0.0 },
-            ],
-            render_options_2: [
-                self.state.peak_width_mult,                  // 0.0=off, 0.75=thin, 1.5=medium, 2.5=wide
-                self.state.edge_aa_level as f32,             // 0=standard, 1=slopeL1, 2=slopeL2, 3=slopeL2Clamped
-                0.0, 0.0,
-            ],
+            render_options: {
+                #[cfg(feature = "mali-shader")]
+                { [0.0, 0.0, 0.0, 0.0] } // Mali: raw mode, no blur, no depth fade
+                #[cfg(not(feature = "mali-shader"))]
+                { [
+                    self.state.abstraction_level as f32 + 1.0,
+                    self.state.motion_blur_level as f32,
+                    self.state.depth_fade_level as f32,
+                    if self.state.depth_fade_inverted { 1.0 } else { 0.0 },
+                ] }
+            },
+            render_options_2: {
+                // [2] = precomputed fw (1.0/height) — used by Mali shader, ignored by desktop
+                let fw = if bounds.height > 0.0 { 1.0 / bounds.height } else { 0.001 };
+                #[cfg(feature = "mali-shader")]
+                { [0.0, 0.0, fw, 0.0] } // Mali: no peak width, AA handled analytically
+                #[cfg(not(feature = "mali-shader"))]
+                { [
+                    self.state.peak_width_mult,
+                    self.state.edge_aa_level as f32,
+                    fw,
+                    0.0,
+                ] }
+            },
         }
     }
 }
@@ -791,7 +1027,7 @@ where
         bounds: Rectangle,
     ) -> Self::Primitive {
         // Use cached 8-stem linked buffer if available, otherwise fall back to 4-stem original.
-        let peaks = if self.is_overview {
+        let raw_peaks = if self.is_overview {
             self.state.overview.linked_overview_buffer.clone()
                 .or_else(|| self.state.overview.overview_peak_buffer.clone())
         } else {
@@ -799,9 +1035,44 @@ where
                 .or_else(|| self.state.overview.highres_peak_buffer.clone())
         };
 
+        #[cfg(feature = "mali-shader")]
+        let (peaks, uniforms) = {
+            let mut uniforms = self.build_uniforms(bounds);
+            let peaks = if let Some(raw) = &raw_peaks {
+                let width = bounds.width as u32;
+                if width > 0 && raw.peaks_per_stem > 0 {
+                    let num_stems = raw.data.len() as u32 / (raw.peaks_per_stem * 2);
+                    let precomputed = precompute_view_peaks(
+                        &raw.data,
+                        raw.peaks_per_stem,
+                        num_stems,
+                        width,
+                        self.is_overview,
+                        uniforms.window_params[3],  // bpm_scale
+                        uniforms.window_params[0],  // window_start
+                        uniforms.window_params[1],  // window_end
+                        uniforms.stem_smooth[0],    // peak_index_scale
+                        1,                          // Medium abstraction (hardcoded for mesh-cue)
+                    );
+                    uniforms.view_params[2] = width as f32;
+                    uniforms.slicer_params[3] = 1.0;
+                    uniforms.stem_smooth[0] = 0.0;
+                    Some(precomputed)
+                } else {
+                    raw_peaks
+                }
+            } else {
+                None
+            };
+            (peaks, uniforms)
+        };
+
+        #[cfg(not(feature = "mali-shader"))]
+        let (peaks, uniforms) = (raw_peaks, self.build_uniforms(bounds));
+
         WaveformPrimitive {
             id: self.view_id,
-            uniforms: self.build_uniforms(bounds),
+            uniforms,
             peaks,
         }
     }
@@ -1008,8 +1279,19 @@ where
                 if self.state.linked_active[2] { 1.0 } else { 0.0 },
                 if self.state.linked_active[3] { 1.0 } else { 0.0 },
             ],
-            render_options: [2.0, 0.0, 2.0, 0.0], // mesh-cue: medium abstraction, low blur, medium depth fade
-            render_options_2: [1.5, 3.0, 0.0, 0.0], // mesh-cue: medium peak width, L2 clamped AA
+            render_options: {
+                #[cfg(feature = "mali-shader")]
+                { [0.0, 0.0, 0.0, 0.0] } // Mali: raw mode, no blur, no depth fade
+                #[cfg(not(feature = "mali-shader"))]
+                { [2.0, 0.0, 2.0, 0.0] } // mesh-cue: medium abstraction, low blur, medium depth fade
+            },
+            render_options_2: {
+                let fw = if bounds.height > 0.0 { 1.0 / bounds.height } else { 0.001 };
+                #[cfg(feature = "mali-shader")]
+                { [0.0, 0.0, fw, 0.0] } // Mali: no peak width, AA handled analytically
+                #[cfg(not(feature = "mali-shader"))]
+                { [1.5, 3.0, fw, 0.0] } // mesh-cue: medium peak width, L2 clamped AA
+            },
         }
     }
 }

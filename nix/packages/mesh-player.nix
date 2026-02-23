@@ -97,7 +97,10 @@ in pkgs.rustPlatform.buildRustPackage {
   '';
 
   # Only build mesh-player (no mesh-cue)
-  cargoBuildFlags = [ "-p" "mesh-player" ];
+  # On aarch64 (Mali GPU), enable the hyper-optimized waveform shader with
+  # CPU-precomputed peaks — eliminates GPU minmax_reduce loops.
+  cargoBuildFlags = [ "-p" "mesh-player" ]
+    ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isAarch64 [ "--features" "mali-shader" ];
 
   # Skip tests — cargo test tries to compile the full workspace (including
   # mesh-cue/ort-sys which downloads ONNX binaries, blocked by the sandbox)

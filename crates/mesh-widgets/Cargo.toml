@@ -6,6 +6,11 @@ authors.workspace = true
 license.workspace = true
 description = "Shared UI widgets for mesh audio applications"
 
+[features]
+## Use the hyper-optimized Mali waveform shader with CPU-precomputed peaks.
+## Enable on aarch64 production builds; also works on x86 for testing.
+mali-shader = []
+
 [dependencies]
 iced.workspace = true
 mesh-core = { workspace = true, default-features = false }

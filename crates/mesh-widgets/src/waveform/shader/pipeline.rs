@@ -118,9 +118,16 @@ pub struct WaveformPipeline {
 
 impl shader::Pipeline for WaveformPipeline {
     fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+        // Use hyper-optimized Mali shader when mali-shader feature is enabled
+        // (for Orange Pi 5, etc.), and the full-featured shader otherwise.
+        #[cfg(feature = "mali-shader")]
+        let shader_source = include_str!("waveform_mali.wgsl");
+        #[cfg(not(feature = "mali-shader"))]
+        let shader_source = include_str!("waveform.wgsl");
+
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Waveform Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("waveform.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
 
         // Two bindings: uniform (0) + storage (1)
@@ -302,6 +309,13 @@ impl shader::Primitive for WaveformPrimitive {
         pipeline: &Self::Pipeline,
         render_pass: &mut wgpu::RenderPass<'_>,
     ) -> bool {
+        // Skip draw call entirely for unloaded decks — avoids TBDR tile binning
+        // overhead on Mali. The shader has its own early return, but skipping the
+        // draw call saves the GPU from dispatching fragments at all.
+        if self.uniforms.loop_params[3] < 0.5 {
+            return true;
+        }
+
         let Some(resources) = pipeline.view_resources.get(&self.id) else {
             return true;
         };

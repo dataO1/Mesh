@@ -80,6 +80,37 @@ All notable changes to Mesh are documented in this file.
 
 ---
 
+## [0.9.6]
+
+### Performance
+
+- **Mali GPU hyper-optimized waveform shader** — New `waveform_mali.wgsl` shader
+  variant for Mali Valhall GPUs (Orange Pi 5 / RK3588). Reduces per-pixel ALU cost
+  from ~1,320 to ~200 ops by removing depth fade, peak width expansion, stem
+  indicators, playhead glow, motion blur branching, and `fwidth()` derivative calls.
+  Replaces `smoothstep` with linear clamp AA and `dpdx`/`dpdy` derivatives with
+  analytical slope estimation from adjacent peaks.
+
+- **CPU-precomputed waveform peaks** — On Mali builds, peak subsampling (grid-aligned
+  min/max reduction) is computed on the CPU instead of the GPU. Each pixel column gets
+  exactly one precomputed (min, max) pair per stem, guaranteeing the 1:1 peak-per-pixel
+  invariant at ALL zoom levels (not just 4-bar). This eliminates the `minmax_reduce`
+  loop from the shader entirely — the GPU does a single buffer read per stem per pixel.
+  CPU cost is ~0.6ms/frame on an A76 core; upload cost is ~40KB per view.
+
+- **Draw call skip for empty decks** — Unloaded decks now skip the GPU draw call
+  entirely (checked via `has_track` uniform), avoiding TBDR tile binning overhead on
+  Mali's tiled renderer.
+
+### Added
+
+- **`mali-shader` Cargo feature flag** — Enables the Mali-optimized shader and CPU
+  peak precomputation. Automatically activated on aarch64 nix builds; can be enabled
+  on x86 for testing with `--features mali-shader`. Propagated through mesh-player
+  and mesh-cue Cargo.toml.
+
+---
+
 ## [0.9.5]
 
 ### Improved

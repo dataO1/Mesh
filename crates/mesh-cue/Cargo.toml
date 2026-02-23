@@ -109,6 +109,8 @@ jack-backend = ["mesh-core/jack-backend"]
 pd-effects = ["mesh-core/pd-effects"]
 # Enable charon-audio separation backend (pure Rust alternative to ORT)
 charon-backend = ["dep:charon-audio"]
+# Hyper-optimized Mali waveform shader with CPU-precomputed peaks
+mali-shader = ["mesh-widgets/mali-shader"]
 
 # GPU acceleration for stem separation (ONNX Runtime execution providers)
 # These are compile-time features - enable the one matching your hardware
