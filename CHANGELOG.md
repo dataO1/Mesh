@@ -18,6 +18,14 @@ All notable changes to Mesh are documented in this file.
   half). Precomputed on CPU into the existing 4-stem buffer with signed
   min/max encoding — no shader changes or GPU upload increase needed.
 
+### Fixed
+
+- **Prelinked stems missing from waveform** — Linked stems loaded asynchronously
+  (prelinked in track metadata) were not shown in overview or zoomed waveforms.
+  `TrackLoadResult::Complete` was replacing the entire `OverviewState`, discarding
+  linked stem peaks that arrived earlier from the async loader. Fix preserves
+  linked stem data across the state replacement and rebuilds GPU buffers.
+
 ### Performance
 
 - **Dynamic waveform peak resolution** — Highres peak count is now proportional to
