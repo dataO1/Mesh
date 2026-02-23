@@ -50,11 +50,6 @@ pub struct LoadedTrackState {
     /// Atomics for reading deck state from audio engine (position, play state, loop state)
     /// These are cloned from AudioState when track is loaded
     pub deck_atomics: Arc<DeckAtomics>,
-    /// Last time the playhead position was updated (for smooth interpolation)
-    pub last_playhead_update: std::time::Instant,
-    /// Last known position from atomics (for change detection — only reset
-    /// interpolation clock when audio thread actually updates position)
-    pub last_known_position: u64,
     /// Slice editor state for editing slicer presets
     pub slice_editor: SliceEditorState,
 }
@@ -67,10 +62,11 @@ impl LoadedTrackState {
 
     /// Get interpolated playhead position for smooth waveform rendering
     ///
-    /// When playing, this estimates the current position based on elapsed time
-    /// since the last update. This eliminates visible "chunking" in waveform
-    /// movement caused by the UI polling rate (16ms) being different from
-    /// the audio buffer rate (5.8ms).
+    /// Uses the audio-thread timestamp from `PROCESS_EPOCH` and playback rate
+    /// for accurate interpolation between audio callbacks. This is the same
+    /// technique used by mesh-player's `PlayerCanvasState::interpolated_playhead()`.
+    ///
+    /// Formula: `position + elapsed_since_audio_callback × sample_rate × playback_rate`
     pub fn interpolated_playhead_position(&self) -> u64 {
         let base_position = self.playhead_position();
 
@@ -79,26 +75,25 @@ impl LoadedTrackState {
             return base_position;
         }
 
-        // Calculate samples elapsed since last update
-        let elapsed = self.last_playhead_update.elapsed();
-        let samples_elapsed = (elapsed.as_secs_f64() * mesh_core::types::SAMPLE_RATE as f64) as u64;
-
-        // Return interpolated position (clamped to duration)
-        base_position.saturating_add(samples_elapsed).min(self.duration_samples)
-    }
-
-    /// Update the playhead timestamp for smooth interpolation.
-    ///
-    /// Only resets the interpolation clock when the atomic position has actually
-    /// changed (i.e. the audio thread processed a new buffer). This lets the
-    /// interpolation extrapolate smoothly between audio callbacks instead of
-    /// resetting every frame.
-    pub fn touch_playhead(&mut self) {
-        let pos = self.deck_atomics.position();
-        if pos != self.last_known_position {
-            self.last_known_position = pos;
-            self.last_playhead_update = std::time::Instant::now();
+        let ts_ns = self.deck_atomics.position_timestamp_ns();
+        if ts_ns == 0 {
+            return base_position;
         }
+
+        // Elapsed time since the audio thread last wrote the position
+        let now_ns = mesh_core::engine::PROCESS_EPOCH.elapsed().as_nanos() as u64;
+        let elapsed_ns = now_ns.saturating_sub(ts_ns);
+        let elapsed_secs = elapsed_ns as f64 / 1_000_000_000.0;
+
+        // Advance by elapsed × sample_rate × playback_rate
+        let rate = self.deck_atomics.playback_rate() as f64;
+        let samples_ahead = (elapsed_secs * mesh_core::types::SAMPLE_RATE as f64 * rate) as u64;
+
+        // Safety clamp: don't extrapolate more than 100ms ahead
+        let max_ahead = (mesh_core::types::SAMPLE_RATE as u64) / 10;
+        base_position
+            .saturating_add(samples_ahead.min(max_ahead))
+            .min(self.duration_samples)
     }
 
     /// Check if audio is currently playing

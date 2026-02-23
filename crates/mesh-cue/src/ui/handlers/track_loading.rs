@@ -72,8 +72,6 @@ impl MeshCueApp {
                     combined_waveform,
                     loading_audio: true,
                     deck_atomics: self.audio.deck_atomics().clone(),
-                    last_playhead_update: std::time::Instant::now(),
-                    last_known_position: 0,
                     slice_editor: {
                         // Load presets from dedicated file (shared with mesh-player)
                         let slicer_config =

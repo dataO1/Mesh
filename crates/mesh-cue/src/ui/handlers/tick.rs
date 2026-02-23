@@ -23,9 +23,8 @@ impl MeshCueApp {
     pub fn handle_tick(&mut self) -> Task<Message> {
         // Update UI from audio engine state (atomics)
         if let Some(ref mut state) = self.collection.loaded_track {
-            let pos = self.audio.position();
-            // Update playhead timestamp for smooth interpolation
-            state.touch_playhead();
+            // Use interpolated playhead for smooth overview marker movement
+            let pos = state.interpolated_playhead_position();
 
             if state.duration_samples > 0 {
                 let normalized = pos as f64 / state.duration_samples as f64;
