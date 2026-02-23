@@ -368,10 +368,14 @@ impl MeshCueApp {
             let playhead = state.playhead_position();
             let samples_per_beat =
                 (mesh_core::types::SAMPLE_RATE as f64 * 60.0 / state.bpm) as u64;
+            let samples_per_bar = samples_per_beat * 4;
 
             // Calculate first beat position at start of file such that
-            // a beat aligns with the playhead: first_beat = playhead % samples_per_beat
-            let first_beat = playhead % samples_per_beat;
+            // a downbeat (bar boundary) aligns with the playhead.
+            // Using samples_per_bar ensures the playhead lands on beat 0
+            // of a bar, not beat 1/2/3 — the shader draws red lines every
+            // 4 beats from beat_markers[0].
+            let first_beat = playhead % samples_per_bar;
 
             log::debug!(
                 "Aligning beat grid: playhead {} -> first_beat {} (BPM: {:.2}, samples_per_beat: {})",
