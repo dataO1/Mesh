@@ -5,7 +5,7 @@
 # errors because libpd is statically linked into the binary.
 
 [target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "link-args=-Wl,--export-dynamic", "-C", "target-cpu=native"]
+rustflags = ["-C", "link-args=-Wl,--export-dynamic"]
 
 [target.aarch64-unknown-linux-gnu]
-rustflags = ["-C", "link-args=-Wl,--export-dynamic", "-C", "target-cpu=native"]
+rustflags = ["-C", "link-args=-Wl,--export-dynamic"]
