@@ -210,9 +210,10 @@ impl TrackLoader {
 
 /// The background loader dispatch thread.
 ///
-/// Receives load requests and dispatches each to rayon's thread pool for parallel
-/// execution. Multiple decks can load simultaneously — each load runs on its own
-/// rayon worker. Results flow back through the shared mpsc Sender.
+/// Receives load requests and spawns a dedicated thread per load for parallel
+/// execution. Uses std::thread (not rayon) because track loads are long-running
+/// and I/O-bound — rayon workers would be pinned for minutes, starving the
+/// audio engine's par_iter and other short rayon tasks.
 fn loader_thread(
     rx: Receiver<TrackLoadRequest>,
     tx: Sender<TrackLoadResult>,
@@ -223,9 +224,15 @@ fn loader_thread(
     while let Ok(request) = rx.recv() {
         let tx = tx.clone();
         let rate = target_sample_rate.clone();
-        rayon::spawn(move || {
-            handle_track_load(request, tx, rate);
-        });
+        let deck_idx = request.deck_idx;
+        if let Err(e) = thread::Builder::new()
+            .name(format!("track-load-{}", deck_idx))
+            .spawn(move || {
+                handle_track_load(request, tx, rate);
+            })
+        {
+            log::error!("Failed to spawn load thread: {}", e);
+        }
     }
 
     log::info!("Track loader dispatch thread shutting down");
