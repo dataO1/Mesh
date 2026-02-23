@@ -151,6 +151,43 @@ All notable changes to Mesh are documented in this file.
   waveform rendering settings were added, causing index collisions during MIDI
   encoder navigation.
 
+- **Track drift from FLAC seek overshoot** — Symphonia's FLAC decoder seeks to
+  the nearest block boundary (every 4096 samples), not the exact requested frame.
+  Parallel region decoding did not account for this, leaving up to 4095 extra
+  leading samples per region. Over multiple seeks this caused audible sync drift.
+  The decoder loop now skips leading frames based on the `SeekedTo` return value.
+
+- **Beat grid integer truncation** — `regenerate_with_rate()` cast
+  `samples_per_beat` to `u64`, truncating the fractional part. At 174 BPM this
+  accumulated ~7.5 ms drift over 500 beats. Replaced with f64 accumulation and
+  per-beat rounding (max error ±0.5 samples, never accumulates).
+
+- **FLAC padding inflating duration** — The FLAC encoder pads to block-size
+  boundaries, inflating `total_samples` in the stream header by up to 4095
+  samples. `frame_count` and `duration_samples` are now capped at the
+  metadata-derived duration from the database.
+
+- **USB linked stem metadata lookup** — Linking a stem from a USB track (e.g.
+  via smart suggestions from another USB stick) silently fell back to 120 BPM
+  defaults because `LoadedTrack::load_to()` passed absolute paths to USB
+  databases that store relative paths. Introduced `resolve_track_metadata()` as
+  the single source of truth for path-aware DB resolution: tries local DB first,
+  then detects USB collection roots, strips the prefix, and queries the correct
+  USB database. The linked stem loader and domain layer now delegate to this
+  function instead of duplicating path resolution logic.
+
+- **Linked stem BPM source** — `confirm_stem_link_selection()` used the
+  global master BPM instead of the host deck's native track BPM for
+  time-stretching linked stems. This caused incorrect stretch ratios when the
+  master tempo differed from the host track's original BPM.
+
+- **Redundant Complete re-decode** — The streaming loader's `Complete` path
+  redundantly re-computed all waveform peaks (~200 ms) and replaced the
+  incrementally-built overview state, requiring a fragile linked-stem
+  preservation hack. `Complete` now carries an `incremental` flag; when true
+  (streaming path), the handler skips state replacement and redundant stem
+  upgrades.
+
 ### Removed
 
 - **WAV chunk parsers** — Removed `parse_mlop_chunk()`, `parse_mslk_chunk()`,
