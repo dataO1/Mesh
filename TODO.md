@@ -175,7 +175,12 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
-- [ ] is there a less resource intesive method of showing stem mute indiccators in the mali path? ideally something that requires no gpu resources.
+- [ ] in a recent commit we reduced the max stretch threads for stem
+  loading/peak computaiton, we can return that back to 8, so that each track and
+  a linked stem can load in parallel, the cpu usage is absolutely not the
+  bottleneck. currently only a single track can load, when i load tracks into 4
+  decks parallel, is this the only reason? search deeper. give me an analysis,
+  then we decide on what to do.
 - [ ] Process pinnin on the orangepi 5, realtime audio headers etc.
 - [ ] when on the fly stem linking in the browser for selecting a linked track,
   we can utilise smart suggestions better by additionally adding specific searching  parameters for the stem that is about to be linked or weighting certain markers more. for example when loading drums, key is relatively irrelevant, but the energy or lufs, aggression matters more. for vocals, key is absolutely the most important, bpm also a bit, not so much energy, for bass i think the weighting can stay as is, for other too. Its also possible that for linked stems same key is actually a hard requirement, or at least a very compatible key is a hard requirement and a filter for results.
