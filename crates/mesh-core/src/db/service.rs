@@ -13,7 +13,7 @@
 //! let db = DatabaseService::new("~/Music/mesh-collection")?;
 //!
 //! // Load a track with all metadata
-//! if let Some(track) = db.get_track_by_path("/path/to/track.wav")? {
+//! if let Some(track) = db.get_track_by_path("/path/to/track.flac")? {
 //!     println!("BPM: {:?}, Hot cues: {}", track.bpm, track.cue_points.len());
 //! }
 //!
@@ -71,7 +71,7 @@ pub struct MlScores {
 /// # Example
 /// ```ignore
 /// // Load a track with all metadata
-/// let track = db.get_track_by_path("/path/to/track.wav")?;
+/// let track = db.get_track_by_path("/path/to/track.flac")?;
 ///
 /// // Access all data in one place
 /// println!("BPM: {:?}, Hot cues: {}", track.bpm, track.cue_points.len());
@@ -358,7 +358,7 @@ impl DatabaseService {
     ///
     /// # Example
     /// ```ignore
-    /// let mut track = Track::new("/path/to/track.wav", "My Track");
+    /// let mut track = Track::new("/path/to/track.flac", "My Track");
     /// track.bpm = Some(128.0);
     /// track.cue_points.push(CuePoint { ... });
     ///
@@ -1340,7 +1340,7 @@ mod tests {
         std::fs::create_dir_all(&tracks_dir).unwrap();
 
         // Create a dummy file
-        let track_path = tracks_dir.join("test.wav");
+        let track_path = tracks_dir.join("test.flac");
         std::fs::write(&track_path, b"dummy").unwrap();
 
         let service = DatabaseService::new(temp.path()).unwrap();
@@ -1398,7 +1398,7 @@ mod tests {
                 let tracks_dir = tracks_dir.clone();
 
                 thread::spawn(move || {
-                    let track_path = tracks_dir.join(format!("track_{}.wav", i));
+                    let track_path = tracks_dir.join(format!("track_{}.flac", i));
                     std::fs::write(&track_path, b"dummy").unwrap();
 
                     let mut track = Track::new(track_path, format!("Track {}", i));
@@ -1427,7 +1427,7 @@ mod tests {
         let tracks_dir = temp.path().join("tracks");
         std::fs::create_dir_all(&tracks_dir).unwrap();
 
-        let track_path = tracks_dir.join("test.wav");
+        let track_path = tracks_dir.join("test.flac");
         std::fs::write(&track_path, b"dummy").unwrap();
 
         let service = DatabaseService::new(temp.path()).unwrap();

@@ -46,7 +46,7 @@ pub fn reanalyze_track(
     log::info!("reanalyze_track: Beats analysis on {:?}", path);
 
     // Load audio from existing file
-    let mut reader = AudioFileReader::open(path)
+    let reader = AudioFileReader::open(path)
         .with_context(|| format!("Failed to open file: {:?}", path))?;
 
     let file_sample_rate = reader.format().sample_rate;
@@ -445,7 +445,7 @@ fn reanalyze_metadata_track(
     // Step 2: Essentia subprocess for LUFS and/or Key
     if options.needs_essentia() {
         const ESSENTIA_RATE: u32 = 44100;
-        let mut reader = AudioFileReader::open(path)
+        let reader = AudioFileReader::open(path)
             .with_context(|| format!("Failed to open file: {:?}", path))?;
         let stems = reader
             .read_all_stems_to(ESSENTIA_RATE)
@@ -484,7 +484,7 @@ fn reanalyze_metadata_track(
     // Step 3: ML features (Tags) — ort is thread-safe, no subprocess needed
     if options.tags {
         if let Some(ml_arc) = ml_analyzer {
-            let mut reader = AudioFileReader::open(path)
+            let reader = AudioFileReader::open(path)
                 .with_context(|| format!("Failed to open file: {:?}", path))?;
             let stems = reader
                 .read_all_stems()

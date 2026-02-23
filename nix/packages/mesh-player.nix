@@ -18,8 +18,11 @@ let
         baseName = baseNameOf path;
       in
       type == "directory" ||
+      # Cargo files (including .cargo/config.toml for rustflags)
       baseName == "Cargo.toml" ||
       baseName == "Cargo.lock" ||
+      baseName == "config.toml" ||
+      # Rust source files + compile-time includes (WGSL shaders)
       pkgs.lib.hasSuffix ".rs" baseName ||
       pkgs.lib.hasSuffix ".wgsl" baseName;
   };
@@ -70,6 +73,13 @@ in pkgs.rustPlatform.buildRustPackage {
   PKG_CONFIG_PATH = "${common.essentia}/lib/pkgconfig";
   USE_TENSORFLOW = "0";
   CPLUS_INCLUDE_PATH = "${pkgs.eigen}/include/eigen3";
+
+  # Performance: override target-cpu for cross-compilation (RK3588 = Cortex-A76)
+  # .cargo/config.toml has target-cpu=native which works for native builds
+  # but for cross-compilation we must specify the actual target CPU
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS =
+    pkgs.lib.optionalString (pkgs.stdenv.buildPlatform != pkgs.stdenv.hostPlatform)
+      "-C link-args=-Wl,--export-dynamic -C target-cpu=cortex-a76";
 
   # Recreate patched crates from crates.io sources.
   # [patch.crates-io] in Cargo.toml redirects these to patches/, so they're

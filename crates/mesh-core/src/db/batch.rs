@@ -275,7 +275,7 @@ mod tests {
         db.run_script(
             r#"
             ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key, duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] <- [[
-                1, "/test/track.wav", "/test", "Test Track", "", null, 120.0, 120.0, "Am", 180.0, null, null, null, 0, 0, 0, null
+                1, "/test/track.flac", "/test", "Test Track", "", null, 120.0, 120.0, "Am", 180.0, null, null, null, 0, 0, 0, null
             ]]
             :put tracks {id => path, folder_path, name, original_name, artist, bpm, original_bpm, key, duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
         "#,
@@ -314,7 +314,7 @@ mod tests {
         db.run_script(
             r#"
             ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key, duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] <- [[
-                1, "/test/track.wav", "/test", "Test Track", "", null, 120.0, 120.0, "Am", 180.0, null, null, null, 0, 0, 0, null
+                1, "/test/track.flac", "/test", "Test Track", "", null, 120.0, 120.0, "Am", 180.0, null, null, null, 0, 0, 0, null
             ]]
             :put tracks {id => path, folder_path, name, original_name, artist, bpm, original_bpm, key, duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
         "#,
@@ -349,7 +349,7 @@ mod tests {
         db.run_script(
             r#"
             ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key, duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] <- [[
-                1, "/test/track.wav", "/test", "Test Track", "", null, 120.0, 120.0, "Am", 180.0, null, null, null, 0, 0, 0, null
+                1, "/test/track.flac", "/test", "Test Track", "", null, 120.0, 120.0, "Am", 180.0, null, null, null, 0, 0, 0, null
             ]]
             :put tracks {id => path, folder_path, name, original_name, artist, bpm, original_bpm, key, duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
         "#,

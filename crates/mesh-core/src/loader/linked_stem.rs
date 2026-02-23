@@ -405,29 +405,13 @@ fn handle_linked_stem_load(request: LinkedStemLoadRequest, tx: Sender<LinkedStem
 
             let linked_duration = aligned_buffer.len() as u64;
 
-            // Extract overview peaks from source track's wvfm chunk (if available)
-            let overview_peaks = source_track
-                .metadata
-                .waveform_preview
-                .as_ref()
-                .map(|preview| {
-                    let raw_peaks = preview.extract_stem_peaks(request.stem_idx);
-                    align_peaks_to_host(
-                        &raw_peaks,
-                        stretched_len,
-                        request.host_duration as usize,
-                        request.host_drop_marker,
-                        stretched_drop_marker,
-                    )
-                });
-
-            if overview_peaks.is_some() {
-                log::debug!(
-                    "[LINKED] Extracted {} overview peaks for linked stem {} from source wvfm",
-                    overview_peaks.as_ref().map(|p| p.len()).unwrap_or(0),
-                    request.stem_idx
-                );
-            }
+            // Compute overview peaks from the already-aligned buffer
+            let overview_peaks = Some(generate_single_stem_peaks(&aligned_buffer, OVERVIEW_PEAK_WIDTH));
+            log::debug!(
+                "[LINKED] Computed {} overview peaks for linked stem {} from aligned buffer",
+                OVERVIEW_PEAK_WIDTH,
+                request.stem_idx
+            );
 
             // Compute high-resolution peaks for stable zoomed view rendering
             let highres_start = std::time::Instant::now();
@@ -530,39 +514,6 @@ fn generate_single_stem_peaks(buffer: &StereoBuffer, width: usize) -> Vec<(f32, 
             (min, max)
         })
         .collect()
-}
-
-/// Align overview peaks to the host timeline using drop marker alignment
-fn align_peaks_to_host(
-    peaks: &[(f32, f32)],
-    stretched_duration: usize,
-    host_duration: usize,
-    host_drop_marker: u64,
-    stretched_drop_marker: u64,
-) -> Vec<(f32, f32)> {
-    let offset = host_drop_marker as i64 - stretched_drop_marker as i64;
-
-    let mut aligned_peaks = vec![(0.0f32, 0.0f32); OVERVIEW_PEAK_WIDTH];
-
-    for i in 0..OVERVIEW_PEAK_WIDTH {
-        // Host position in samples for this peak index
-        let host_sample = (i as f64 / OVERVIEW_PEAK_WIDTH as f64) * host_duration as f64;
-
-        // Map to linked buffer position (inverse of audio alignment)
-        let linked_sample = host_sample - offset as f64;
-
-        if linked_sample >= 0.0 && (linked_sample as usize) < stretched_duration {
-            // Find corresponding peak index in source peaks
-            let linked_peak_idx =
-                ((linked_sample / stretched_duration as f64) * peaks.len() as f64) as usize;
-            if linked_peak_idx < peaks.len() {
-                aligned_peaks[i] = peaks[linked_peak_idx];
-            }
-        }
-        // else: stays at (0.0, 0.0) - silence region
-    }
-
-    aligned_peaks
 }
 
 /// Align a stretched buffer to the host timeline using drop marker alignment

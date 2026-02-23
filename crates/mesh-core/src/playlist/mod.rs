@@ -12,7 +12,7 @@ pub use database::DatabaseStorage;
 use std::path::PathBuf;
 
 /// Unique identifier for a node in the playlist tree.
-/// Uses path-like strings (e.g., "tracks/subfolder/track.wav", "playlists/Live Set/Opening")
+/// Uses path-like strings (e.g., "tracks/subfolder/track.flac", "playlists/Live Set/Opening")
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NodeId(pub String);
 
@@ -286,13 +286,13 @@ mod tests {
         let subfolder = tracks.child("subfolder");
         assert_eq!(subfolder.as_str(), "tracks/subfolder");
 
-        let track = subfolder.child("song.wav");
-        assert_eq!(track.as_str(), "tracks/subfolder/song.wav");
+        let track = subfolder.child("song.flac");
+        assert_eq!(track.as_str(), "tracks/subfolder/song.flac");
     }
 
     #[test]
     fn test_node_id_parent() {
-        let node = NodeId("tracks/subfolder/song.wav".to_string());
+        let node = NodeId("tracks/subfolder/song.flac".to_string());
         let parent = node.parent().unwrap();
         assert_eq!(parent.as_str(), "tracks/subfolder");
 
@@ -304,8 +304,8 @@ mod tests {
 
     #[test]
     fn test_node_id_name() {
-        let node = NodeId("tracks/subfolder/song.wav".to_string());
-        assert_eq!(node.name(), "song.wav");
+        let node = NodeId("tracks/subfolder/song.flac".to_string());
+        assert_eq!(node.name(), "song.flac");
 
         let tracks = NodeId::tracks();
         assert_eq!(tracks.name(), "tracks");
@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn test_node_id_location() {
-        let track = NodeId("tracks/subfolder/song.wav".to_string());
+        let track = NodeId("tracks/subfolder/song.flac".to_string());
         assert!(track.is_in_tracks());
         assert!(!track.is_in_playlists());
 

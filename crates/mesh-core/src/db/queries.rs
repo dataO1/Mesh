@@ -1160,7 +1160,7 @@ mod tests {
 
         let track = TrackRow {
             id: 1,
-            path: "/music/track1.wav".to_string(),
+            path: "/music/track1.flac".to_string(),
             folder_path: "/music".to_string(),
             name: "Test Track".to_string(),
             original_name: String::new(),

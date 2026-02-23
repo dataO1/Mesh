@@ -411,7 +411,7 @@ mod tests {
     #[test]
     fn test_exporting_phase_status() {
         let phase = ExportPhase::Exporting {
-            current_track: "test.wav".to_string(),
+            current_track: "test.flac".to_string(),
             tracks_complete: 3,
             bytes_complete: 1000,
             total_tracks: 10,

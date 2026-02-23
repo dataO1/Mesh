@@ -27,6 +27,7 @@ rayon.workspace = true
 basedrop = "0.1"  # RT-safe deferred deallocation for audio
 bytemuck = { version = "1.21", features = ["derive"] }
 rubato = "0.16"   # High-quality sample rate conversion
+symphonia = { version = "0.5", features = ["flac"] }  # FLAC audio decoding
 log = "0.4"
 thiserror.workspace = true
 

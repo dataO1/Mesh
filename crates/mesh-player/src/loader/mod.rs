@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread::{self, JoinHandle};
 
 use basedrop::Shared;
-use mesh_core::audio_file::{AudioFileReader, LoadedTrack, StemBuffers, TrackMetadata, read_waveform_preview_from_file};
+use mesh_core::audio_file::{AudioFileReader, LoadedTrack, StemBuffers, TrackMetadata};
 use mesh_core::engine::PreparedTrack;
 use mesh_widgets::{
     CueMarker, OverviewState, ZoomedState, CUE_COLORS,
@@ -33,15 +33,6 @@ use mesh_widgets::{
 
 use self::regions::{compute_gaps, compute_priority_regions};
 
-/// Number of frames per visual batch (peak-only updates).
-/// ~15 seconds of audio at 48 kHz → smooth waveform growth.
-/// Peak snapshots are ~2 MB each — negligible cost.
-const VISUAL_BATCH_FRAMES: usize = 750_000;
-
-/// Number of frames between stem buffer clones (playback updates).
-/// ~100 seconds of audio at 48 kHz → ~3 clones for a 5-minute track.
-/// Each clone copies the full ~460 MB buffer (~100 ms).
-const CLONE_INTERVAL_FRAMES: usize = 4_800_000;
 
 /// Request to load a track in the background
 ///
@@ -348,19 +339,12 @@ fn handle_full_load(
 fn handle_streaming_load(
     request: TrackLoadRequest,
     tx: &Sender<TrackLoadResult>,
-    mut reader: AudioFileReader,
+    reader: AudioFileReader,
     sample_rate: u32,
 ) {
     let deck_idx = request.deck_idx;
     let path = request.path.clone();
-    let mut metadata = request.metadata;
-
-    // Read waveform preview from file (separate chunk, not in data)
-    match read_waveform_preview_from_file(&path) {
-        Ok(Some(waveform)) => metadata.waveform_preview = Some(waveform),
-        Ok(None) => {}
-        Err(e) => log::warn!("Failed to read waveform preview: {}", e),
-    }
+    let metadata = request.metadata;
 
     let frame_count = reader.frame_count() as usize;
 
@@ -410,27 +394,58 @@ fn handle_streaming_load(
         gaps.len()
     );
 
-    // 4. Read ALL priority regions: peak-only visual updates per region,
-    //    single expensive stem clone after all regions are read.
+    // 4. PARALLEL priority region decode using std::thread::scope.
+    //    Each thread creates its own decoder from Arc<[u8]> and decodes into
+    //    a local StemBuffers — no shared mutable state. Results are merged
+    //    sequentially after all threads complete.
+    //    Uses OS threads (not rayon) to avoid starving the audio engine's rayon pool.
     let priority_start = std::time::Instant::now();
-    for (i, region) in regions.iter().enumerate() {
-        if let Err(e) = reader.read_region_into(&mut stems, region.start, region.start, region.len()) {
-            log::error!("Failed to read priority region: {}", e);
+
+    // Phase A: Parallel decode — each region decoded independently
+    let region_results: Vec<Result<StemBuffers, String>> = if regions.is_empty() {
+        Vec::new()
+    } else {
+        std::thread::scope(|s| {
+            let handles: Vec<_> = regions.iter().enumerate().map(|(i, region)| {
+                let reader_ref = &reader;
+                s.spawn(move || {
+                    let len = region.len();
+                    let start = std::time::Instant::now();
+                    let result = reader_ref.decode_region(region.start, len)
+                        .map_err(|e| format!("Priority region {} decode failed: {}", i, e));
+                    log::info!("[PERF] Loader: Priority region {} ({} frames from {}) decoded in {:?}",
+                        i, len, region.start, start.elapsed());
+                    result
+                })
+            }).collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        })
+    };
+
+    // Check for errors before merging
+    for result in &region_results {
+        if let Err(e) = result {
+            log::error!("Failed to decode priority region: {}", e);
             let _ = tx.send(TrackLoadResult::Error {
                 deck_idx,
-                error: format!("Failed to read priority region: {}", e),
+                error: e.clone(),
             });
             return;
         }
+    }
 
-        // Update peaks (cheap: ~5 ms per region)
+    // Phase B: Sequential merge + peak updates + messages
+    for (i, (region, result)) in regions.iter().zip(region_results.into_iter()).enumerate() {
+        let local = result.unwrap();
+        stems.copy_region_from(&local, region.start, region.len());
+        drop(local); // Free region buffer immediately
+
         update_peaks_for_region(&stems, &mut overview_peaks, region.start, region.end, frame_count, DEFAULT_WIDTH);
         update_peaks_for_region(&stems, &mut highres_peaks, region.start, region.end, frame_count, highres_width);
 
         let is_last = i + 1 == regions.len();
         let _ = tx.send(TrackLoadResult::RegionLoaded {
             deck_idx,
-            // Clone stems only on the last priority region (all regions playable)
             stems: if is_last {
                 Some(Shared::new(&mesh_core::engine::gc::gc_handle(), stems.clone()))
             } else {
@@ -442,53 +457,57 @@ fn handle_streaming_load(
             path: path.clone(),
         });
     }
-    log::info!("[PERF] Loader: Priority regions read took {:?}", priority_start.elapsed());
+    log::info!("[PERF] Loader: Parallel priority regions took {:?} ({} regions, {} threads)",
+        priority_start.elapsed(), regions.len(), regions.len());
 
-    // 5. Read remaining gaps: visual-only updates every VISUAL_BATCH_FRAMES,
-    //    stem clones every CLONE_INTERVAL_FRAMES.
+    // 5. PARALLEL gap decode — each gap region decoded independently.
+    //    Same pattern as priority regions: parallel decode, sequential merge.
     let gap_start = std::time::Instant::now();
-    let mut frames_since_clone: usize = 0;
-    for gap in &gaps {
-        let mut pos = gap.start;
-        while pos < gap.end {
-            let batch_end = (pos + VISUAL_BATCH_FRAMES).min(gap.end);
-            let batch_len = batch_end - pos;
 
-            if let Err(e) = reader.read_region_into(&mut stems, pos, pos, batch_len) {
-                log::error!("Failed to read gap batch: {}", e);
-                let _ = tx.send(TrackLoadResult::Error {
-                    deck_idx,
-                    error: format!("Failed to read gap batch: {}", e),
-                });
-                return;
-            }
+    let gap_results: Vec<Result<StemBuffers, String>> = if gaps.is_empty() {
+        Vec::new()
+    } else {
+        std::thread::scope(|s| {
+            let handles: Vec<_> = gaps.iter().enumerate().map(|(i, gap)| {
+                let reader_ref = &reader;
+                s.spawn(move || {
+                    let len = gap.len();
+                    let start = std::time::Instant::now();
+                    let result = reader_ref.decode_region(gap.start, len)
+                        .map_err(|e| format!("Gap region {} decode failed: {}", i, e));
+                    log::info!("[PERF] Loader: Gap region {} ({} frames from {}) decoded in {:?}",
+                        i, len, gap.start, start.elapsed());
+                    result
+                })
+            }).collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        })
+    };
 
-            // Update peaks for this batch (cheap: ~5 ms)
-            update_peaks_for_region(&stems, &mut overview_peaks, pos, batch_end, frame_count, DEFAULT_WIDTH);
-            update_peaks_for_region(&stems, &mut highres_peaks, pos, batch_end, frame_count, highres_width);
-
-            frames_since_clone += batch_len;
-            let clone_now = frames_since_clone >= CLONE_INTERVAL_FRAMES;
-
-            let _ = tx.send(TrackLoadResult::RegionLoaded {
+    // Check for errors
+    for result in &gap_results {
+        if let Err(e) = result {
+            log::error!("Failed to decode gap region: {}", e);
+            let _ = tx.send(TrackLoadResult::Error {
                 deck_idx,
-                stems: if clone_now {
-                    frames_since_clone = 0;
-                    Some(Shared::new(&mesh_core::engine::gc::gc_handle(), stems.clone()))
-                } else {
-                    None
-                },
-                duration_samples: frame_count,
-                overview_peaks: overview_peaks.clone(),
-                highres_peaks: highres_peaks.clone(),
-                path: path.clone(),
+                error: e.clone(),
             });
-
-            pos = batch_end;
+            return;
         }
     }
-    // Clone any remaining uncloned frames so all gap audio is playable before Complete
-    if frames_since_clone > 0 {
+
+    // Sequential merge + peak updates
+    for (gap, result) in gaps.iter().zip(gap_results.into_iter()) {
+        let local = result.unwrap();
+        stems.copy_region_from(&local, gap.start, gap.len());
+        drop(local);
+
+        update_peaks_for_region(&stems, &mut overview_peaks, gap.start, gap.end, frame_count, DEFAULT_WIDTH);
+        update_peaks_for_region(&stems, &mut highres_peaks, gap.start, gap.end, frame_count, highres_width);
+    }
+
+    // Send final gap update with stem clone (all audio now decoded)
+    if !gaps.is_empty() {
         let _ = tx.send(TrackLoadResult::RegionLoaded {
             deck_idx,
             stems: Some(Shared::new(&mesh_core::engine::gc::gc_handle(), stems.clone())),
@@ -498,7 +517,8 @@ fn handle_streaming_load(
             path: path.clone(),
         });
     }
-    log::info!("[PERF] Loader: Gap regions read took {:?}", gap_start.elapsed());
+    log::info!("[PERF] Loader: Parallel gap regions took {:?} ({} regions, {} threads)",
+        gap_start.elapsed(), gaps.len(), gaps.len());
 
     // 6. Build final waveform states from complete stems
     let final_stems = Shared::new(&mesh_core::engine::gc::gc_handle(), stems);
@@ -555,9 +575,7 @@ fn build_waveform_states(track: &LoadedTrack, quality_level: u8, screen_width: u
         .collect();
 
     // Build overview from metadata (beat markers, cue markers, drop marker)
-    // then compute peaks from raw stems. We avoid from_preview() here because
-    // stored previews may have LUFS gain baked in, causing a visual "pop" when
-    // replacing the incrementally-built raw peaks.
+    // then compute peaks from raw stems.
     let mut overview_state = OverviewState::from_metadata(&track.metadata, duration);
     overview_state.set_drop_marker(track.metadata.drop_marker);
     overview_state.loading = false;

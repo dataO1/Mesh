@@ -18,7 +18,7 @@ use std::time::Duration;
 pub struct WatchServiceConfig {
     /// Debounce duration for file events
     pub debounce_duration: Duration,
-    /// File extensions to watch (e.g., ["wav", "WAV"])
+    /// File extensions to watch (e.g., ["flac", "FLAC"])
     pub extensions: Vec<String>,
 }
 
@@ -26,7 +26,7 @@ impl Default for WatchServiceConfig {
     fn default() -> Self {
         Self {
             debounce_duration: Duration::from_millis(500),
-            extensions: vec!["wav".to_string(), "WAV".to_string()],
+            extensions: vec!["flac".to_string(), "FLAC".to_string()],
         }
     }
 }

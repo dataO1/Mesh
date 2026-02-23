@@ -32,7 +32,7 @@
 
 use crate::analysis::{analyze_audio, fit_bpm_to_range, generate_beat_grid, AnalysisResult};
 use crate::config::{BeatDetectionBackend, BpmConfig, BpmSource, LoudnessConfig};
-use crate::export::export_stem_file_with_gain;
+use crate::export::export_stem_file;
 use crate::import::StemImporter;
 use crate::ml_analysis::{self, BeatThisAnalyzer, MlAnalyzer};
 use crate::separation::{SeparationConfig, SeparationService};
@@ -760,17 +760,13 @@ fn process_single_track(
     // Export to temp file first (export handles resampling from source_sample_rate to SAMPLE_RATE)
     let temp_dir = std::env::temp_dir();
     let sanitized_name = sanitize_filename(&base_name);
-    let temp_path = temp_dir.join(format!("{}.wav", sanitized_name));
+    let temp_path = temp_dir.join(format!("{}.flac", sanitized_name));
 
     // RAII guard ensures temp file cleanup on any exit path (early return, panic, or normal)
     let _temp_guard = TempFileGuard::new(temp_path.clone());
 
-    // Calculate waveform gain from LUFS for loudness-normalized preview
-    // The new LoudnessConfig API handles Option<f32> directly and returns 1.0 if None
-    let waveform_gain = config.loudness_config.calculate_gain_linear(analysis.lufs);
-
     // Export audio only - all metadata (BPM, key, cues, loops) is stored in the database
-    if let Err(e) = export_stem_file_with_gain(&temp_path, &buffers, source_sample_rate, waveform_gain) {
+    if let Err(e) = export_stem_file(&temp_path, &buffers, source_sample_rate) {
         return TrackImportResult {
             base_name,
             success: false,
@@ -790,7 +786,7 @@ fn process_single_track(
         };
     }
 
-    let final_path = tracks_dir.join(format!("{}.wav", sanitized_name));
+    let final_path = tracks_dir.join(format!("{}.flac", sanitized_name));
 
     // Copy from temp to collection (fs::rename might fail across filesystems)
     // Temp file cleanup is handled by _temp_guard on drop

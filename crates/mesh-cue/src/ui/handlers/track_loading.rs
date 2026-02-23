@@ -18,7 +18,7 @@ use super::super::app::MeshCueApp;
 use super::super::message::Message;
 use super::super::state::{LinkedStemLoadedMsg, LoadedTrackState, StemsLoadResult};
 use super::super::waveform::{
-    generate_peaks, CombinedWaveformView, WaveformView, ZoomedWaveformView,
+    CombinedWaveformView, WaveformView, ZoomedWaveformView,
 };
 
 impl MeshCueApp {
@@ -173,7 +173,6 @@ impl MeshCueApp {
                             },
                             cue_points: state.cue_points.clone(),
                             saved_loops: state.saved_loops.clone(),
-                            waveform_preview: None, // Using live-generated waveform
                             drop_marker: state.drop_marker,
                             stem_links: state.stem_links.clone(),
                             lufs: None, // LUFS read from track, passed to Deck separately

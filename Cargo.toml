@@ -49,7 +49,7 @@ opt-level = 1
 # Use RUSTFLAGS="--remap-path-prefix=/nix/store=nix" to remove Nix paths
 [profile.release]
 strip = "symbols"      # Strip debug symbols
-lto = "thin"           # Link-Time Optimization for smaller binaries
+lto = true             # Full LTO for maximum cross-crate optimization
 panic = "abort"        # Smaller binary, no unwinding overhead
 codegen-units = 1      # Better optimization, slower compile
 

@@ -194,7 +194,8 @@ pkgs.writeShellApplication {
         export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc
 
         # Statically link MinGW runtime (libstdc++, libgcc, pthreads) for standalone .exe
-        export RUSTFLAGS="-C link-args=-static-libgcc -C link-args=-static-libstdc++ -C link-args=-Wl,-Bstatic -C link-args=-lpthread -C link-args=-Wl,-Bdynamic"
+        # target-cpu=native uses the build host SIMD extensions (AVX2 etc.) for x86_64→x86_64
+        export RUSTFLAGS="-C target-cpu=native -C link-args=-static-libgcc -C link-args=-static-libstdc++ -C link-args=-Wl,-Bstatic -C link-args=-lpthread -C link-args=-Wl,-Bdynamic"
 
         # Cross-compilation vars for autotools/cmake
         export CC=x86_64-w64-mingw32-gcc

@@ -56,9 +56,8 @@ pub use knob::{
 // Peak generation utilities
 pub use waveform::{
     allocate_empty_peaks, compute_highres_width, generate_peaks, generate_peaks_for_range,
-    generate_waveform_preview, generate_waveform_preview_with_gain, smooth_peaks,
-    smooth_peaks_gaussian, update_peaks_for_region, DEFAULT_WIDTH, PEAK_REFERENCE_ZOOM_BARS,
-    PEAK_SMOOTHING_WINDOW,
+    smooth_peaks, smooth_peaks_gaussian, update_peaks_for_region, DEFAULT_WIDTH,
+    PEAK_REFERENCE_ZOOM_BARS, PEAK_SMOOTHING_WINDOW,
 };
 
 // Waveform state structures

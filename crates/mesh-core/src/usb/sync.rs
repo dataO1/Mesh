@@ -21,7 +21,7 @@ use walkdir::WalkDir;
 pub struct TrackInfo {
     /// Absolute path to the file
     pub path: PathBuf,
-    /// Filename only (e.g., "track.wav")
+    /// Filename only (e.g., "track.flac")
     pub filename: String,
     /// File size in bytes
     pub size: u64,
@@ -49,7 +49,7 @@ pub struct TrackInfo {
 pub struct PlaylistTrack {
     /// Playlist qualified name (e.g., "My Set" for root, "Live Sets/Opening" for nested)
     pub playlist: String,
-    /// Track filename (e.g., "track.wav")
+    /// Track filename (e.g., "track.flac")
     pub track_filename: String,
 }
 
@@ -80,7 +80,7 @@ pub struct CollectionState {
 pub struct TrackCopy {
     /// Source path (local)
     pub source: PathBuf,
-    /// Destination path (relative to USB collection root, e.g., "tracks/file.wav")
+    /// Destination path (relative to USB collection root, e.g., "tracks/file.flac")
     pub destination: PathBuf,
     /// File size in bytes
     pub size: u64,
@@ -973,15 +973,15 @@ mod tests {
     fn test_sync_plan_summary() {
         let plan = SyncPlan {
             tracks_to_copy: vec![TrackCopy {
-                source: PathBuf::from("/tmp/test.wav"),
-                destination: PathBuf::from("tracks/test.wav"),
+                source: PathBuf::from("/tmp/test.flac"),
+                destination: PathBuf::from("tracks/test.flac"),
                 size: 10_000_000,
             }],
             tracks_to_update: vec![],
             tracks_to_delete: vec![],
             playlist_tracks_to_add: vec![PlaylistTrack {
                 playlist: "My Playlist".to_string(),
-                track_filename: "test.wav".to_string(),
+                track_filename: "test.flac".to_string(),
             }],
             playlist_tracks_to_remove: vec![],
             playlists_to_create: vec![PlaylistExportInfo {
@@ -1011,8 +1011,8 @@ mod tests {
     fn test_build_sync_plan_new_track() {
         let mut local = CollectionState::default();
         local.tracks.insert(
-            "test.wav".to_string(),
-            test_track_info("/tmp/test.wav", "test.wav", 1000, SystemTime::now()),
+            "test.flac".to_string(),
+            test_track_info("/tmp/test.flac", "test.flac", 1000, SystemTime::now()),
         );
 
         let usb = CollectionState::default();
@@ -1025,13 +1025,13 @@ mod tests {
     #[test]
     fn test_build_sync_plan_unchanged_track() {
         let mtime = SystemTime::now();
-        let track = test_track_info("/tmp/test.wav", "test.wav", 1000, mtime);
+        let track = test_track_info("/tmp/test.flac", "test.flac", 1000, mtime);
 
         let mut local = CollectionState::default();
-        local.tracks.insert("test.wav".to_string(), track.clone());
+        local.tracks.insert("test.flac".to_string(), track.clone());
 
         let mut usb = CollectionState::default();
-        usb.tracks.insert("test.wav".to_string(), track);
+        usb.tracks.insert("test.flac".to_string(), track);
 
         let plan = build_sync_plan(&local, &usb);
         assert!(plan.tracks_to_copy.is_empty());
@@ -1043,14 +1043,14 @@ mod tests {
 
         let mut local = CollectionState::default();
         local.tracks.insert(
-            "test.wav".to_string(),
-            test_track_info("/tmp/test.wav", "test.wav", 2000, mtime),
+            "test.flac".to_string(),
+            test_track_info("/tmp/test.flac", "test.flac", 2000, mtime),
         );
 
         let mut usb = CollectionState::default();
         usb.tracks.insert(
-            "test.wav".to_string(),
-            test_track_info("/usb/test.wav", "test.wav", 1000, mtime),
+            "test.flac".to_string(),
+            test_track_info("/usb/test.flac", "test.flac", 1000, mtime),
         );
 
         let plan = build_sync_plan(&local, &usb);
@@ -1066,14 +1066,14 @@ mod tests {
 
         let mut local = CollectionState::default();
         local.tracks.insert(
-            "test.wav".to_string(),
-            test_track_info("/tmp/test.wav", "test.wav", 1000, new_mtime),
+            "test.flac".to_string(),
+            test_track_info("/tmp/test.flac", "test.flac", 1000, new_mtime),
         );
 
         let mut usb = CollectionState::default();
         usb.tracks.insert(
-            "test.wav".to_string(),
-            test_track_info("/usb/test.wav", "test.wav", 1000, old_mtime),
+            "test.flac".to_string(),
+            test_track_info("/usb/test.flac", "test.flac", 1000, old_mtime),
         );
 
         let plan = build_sync_plan(&local, &usb);
@@ -1084,16 +1084,16 @@ mod tests {
     fn test_build_sync_plan_metadata_only_update() {
         let mtime = SystemTime::now();
 
-        let mut local_track = test_track_info("/tmp/test.wav", "test.wav", 1000, mtime);
+        let mut local_track = test_track_info("/tmp/test.flac", "test.flac", 1000, mtime);
         local_track.tags = vec![("Techno".to_string(), Some("#3b82f6".to_string()))];
 
-        let usb_track = test_track_info("/usb/test.wav", "test.wav", 1000, mtime);
+        let usb_track = test_track_info("/usb/test.flac", "test.flac", 1000, mtime);
 
         let mut local = CollectionState::default();
-        local.tracks.insert("test.wav".to_string(), local_track);
+        local.tracks.insert("test.flac".to_string(), local_track);
 
         let mut usb = CollectionState::default();
-        usb.tracks.insert("test.wav".to_string(), usb_track);
+        usb.tracks.insert("test.flac".to_string(), usb_track);
 
         let plan = build_sync_plan(&local, &usb);
         assert!(plan.tracks_to_copy.is_empty(), "Should not trigger WAV copy");

@@ -435,7 +435,7 @@ mod tests {
         // Insert a track
         let track = Track {
             id: Some(42),
-            path: PathBuf::from("/music/test.wav"),
+            path: PathBuf::from("/music/test.flac"),
             folder_path: "/music".to_string(),
             name: "Test Track".to_string(),
             original_name: String::new(),

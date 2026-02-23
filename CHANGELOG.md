@@ -4,7 +4,7 @@ All notable changes to Mesh are documented in this file.
 
 ---
 
-## [Unreleased]
+## [0.9.7]
 
 ### Added
 
@@ -22,37 +22,6 @@ All notable changes to Mesh are documented in this file.
   rendered as iced container widgets beside the zoomed waveform. Mute column
   (always visible) + link column (when any stem linked). Replaces removed
   Mali shader indicators with no GPU cost.
-
-### Fixed
-
-- **Prelinked stems missing from waveform** — Linked stems loaded asynchronously
-  (prelinked in track metadata) were not shown in overview or zoomed waveforms.
-  `TrackLoadResult::Complete` was replacing the entire `OverviewState`, discarding
-  linked stem peaks that arrived earlier from the async loader. Fix preserves
-  linked stem data across the state replacement and rebuilds GPU buffers.
-
-### Performance
-
-- **Parallel track loading** — Track loader now dispatches each load request to
-  rayon's thread pool instead of processing sequentially on a single thread.
-  All 4 decks load simultaneously when loading tracks in parallel.
-
-- **Linked stem stretch threads** — `MAX_STRETCH_THREADS` increased from 2 to 8.
-  Pre-stretching runs at nice(10) priority so JACK audio thread preempts safely.
-
-- **Dynamic waveform peak resolution** — Highres peak count is now proportional to
-  actual audio length and BPM instead of a fixed 65K constant. A BPM-aware formula
-  targets a configurable peaks-per-pixel ratio at 4-bar zoom (the closest practical
-  zoom level). At Medium quality, a 5-minute 174 BPM track generates ~400K peaks
-  (6× more than before); Ultra pushes to ~7M for pixel-perfect transients. Short
-  tracks allocate proportionally less memory.
-
-- **GPU buffer vec2 packing** — Waveform peak storage changed from `array<f32>` to
-  `array<vec2<f32>>` in the WGSL shader, halving the number of buffer reads per
-  peak lookup. The CPU-side interleaved `[min, max, ...]` layout is bit-identical
-  to `vec2<f32>`, so no data conversion is needed.
-
-### Added
 
 - **Waveform quality setting** — New "Waveform Quality" option in Settings with
   four levels (Low, Medium, High, Ultra) controlling peak buffer resolution. Low
@@ -97,18 +66,93 @@ All notable changes to Mesh are documented in this file.
 
 ### Changed
 
+- **Collection track format: WAV to FLAC** — Stem files now use 8-channel FLAC
+  lossless compression instead of raw WAV. ~58% file size reduction (e.g., 240 MB
+  WAV → 104 MB FLAC) with zero audio quality loss. Encoding via `flacenc` crate,
+  decoding via symphonia. Existing collections must reimport tracks (delete
+  `tracks/` folder and reimport).
+
+- **In-memory audio file reader** — `AudioFileReader` now reads the entire file
+  into memory (`Arc<[u8]>`) on open, then creates independent symphonia decoders
+  per region from the shared buffer. All I/O happens once at open; subsequent
+  region reads are pure CPU decode with no file system access.
+
 - **Simplified peak interpolation** — Removed the hybrid max-hold/bilinear
   interpolation in `sample_peak()`. The old approach blended between interpolated
   and preserved (max-hold) values based on peak magnitude, adding complexity
   without clear visual benefit now that peak resolution is much higher. The new
   code uses straightforward bilinear interpolation between grid points.
 
+### Performance
+
+- **Parallel priority region decode** — Priority regions (around cue points) are
+  now decoded in parallel via `std::thread::scope`. Each thread creates its own
+  decoder from the shared `Arc<[u8]>` buffer. Results are merged sequentially
+  after all threads complete. First playable audio arrives ~3x faster.
+
+- **Parallel gap decode** — Non-priority gap regions are also decoded in parallel,
+  removing the old sequential sub-batching loop. Combined with priority parallelism,
+  total decode time drops from ~4s to ~1.5s on 4+ cores.
+
+- **Full LTO for release builds** — Changed from thin LTO to full LTO
+  (`lto = true`) for maximum cross-crate optimization in release binaries.
+
+- **Native CPU targeting** — Added `target-cpu=native` to RUSTFLAGS for all build
+  targets (NixOS, deb container, Windows cross-compile). Enables host-specific
+  SIMD extensions (AVX2, SSE4.2, NEON) for decode and analysis hot paths. Aarch64
+  cross-compilation uses `cortex-a76` (RK3588) instead of native.
+
+- **Parallel track loading** — Track loader now dispatches each load request to
+  rayon's thread pool instead of processing sequentially on a single thread.
+  All 4 decks load simultaneously when loading tracks in parallel.
+
+- **Linked stem stretch threads** — `MAX_STRETCH_THREADS` increased from 2 to 8.
+  Pre-stretching runs at nice(10) priority so JACK audio thread preempts safely.
+
+- **Dynamic waveform peak resolution** — Highres peak count is now proportional to
+  actual audio length and BPM instead of a fixed 65K constant. A BPM-aware formula
+  targets a configurable peaks-per-pixel ratio at 4-bar zoom (the closest practical
+  zoom level). At Medium quality, a 5-minute 174 BPM track generates ~400K peaks
+  (6× more than before); Ultra pushes to ~7M for pixel-perfect transients. Short
+  tracks allocate proportionally less memory.
+
+- **GPU buffer vec2 packing** — Waveform peak storage changed from `array<f32>` to
+  `array<vec2<f32>>` in the WGSL shader, halving the number of buffer reads per
+  peak lookup. The CPU-side interleaved `[min, max, ...]` layout is bit-identical
+  to `vec2<f32>`, so no data conversion is needed.
+
 ### Fixed
+
+- **FLAC block-size padding** — Work around flacenc-rs#242 where
+  `encode_with_fixed_block_size()` produces malformed final frames when sample
+  count is not a multiple of the block size (default 4096). Samples are now padded
+  to the next block-size boundary with silence before encoding.
+
+- **Nix build missing .cargo/config.toml** — The Nix source filter excluded
+  `.cargo/config.toml`, meaning NixOS builds never received `--export-dynamic`
+  (needed for PD externals) or `target-cpu=native`. Added `config.toml` to the
+  filter for both `mesh-build.nix` and `mesh-player.nix`.
+
+- **Prelinked stems missing from waveform** — Linked stems loaded asynchronously
+  (prelinked in track metadata) were not shown in overview or zoomed waveforms.
+  `TrackLoadResult::Complete` was replacing the entire `OverviewState`, discarding
+  linked stem peaks that arrived earlier from the async loader. Fix preserves
+  linked stem data across the state replacement and rebuilds GPU buffers.
 
 - **Settings MIDI navigation indices** — Fixed `next_idx` for dynamic settings
   sections (Network, System Update, MIDI Learn) which was stuck at 13 from before
   waveform rendering settings were added, causing index collisions during MIDI
   encoder navigation.
+
+### Removed
+
+- **WAV chunk parsers** — Removed `parse_mlop_chunk()`, `parse_mslk_chunk()`,
+  `serialize_mslk_chunk()`, and `align_peaks_to_host()` — legacy WAV custom chunk
+  handling no longer needed with FLAC format.
+
+- **Waveform preview from file** — Removed `WaveformPreview`, `from_preview()`,
+  and `read_waveform_preview_from_file()`. Waveform peaks are now computed from
+  decoded audio during the streaming load, not read from embedded file chunks.
 
 ---
 

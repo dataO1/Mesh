@@ -94,6 +94,7 @@ charon-audio = { version = "0.1.0", optional = true }  # Alternative separation 
 ndarray = "0.17"  # Array operations for audio processing (ort requires 0.17.x)
 ureq = "2.9"  # HTTP client for model downloads
 hound = "3.5"  # WAV file handling for temp stems
+flacenc = "0.5"  # FLAC encoding for collection export
 symphonia = { version = "0.5", features = ["all"] }  # Audio decoding
 lofty = "0.22"  # Audio tag reading (ID3v2, Vorbis, MP4, FLAC, WAV RIFF)
 regex = "1"     # Filename pattern matching

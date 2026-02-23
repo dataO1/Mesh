@@ -1,21 +1,17 @@
-//! RF64/BWF audio file handling
+//! Audio file handling (FLAC lossless)
 //!
-//! This module handles reading 8-channel WAV/RF64 files containing stem-separated
+//! This module handles reading 8-channel FLAC files containing stem-separated
 //! audio (Vocals, Drums, Bass, Other as stereo pairs).
 //!
 //! Supports automatic resampling of legacy 44.1kHz files to 48kHz.
 
-use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::Cursor;
 use std::path::Path;
+use std::sync::Arc;
 
 use rubato::{FftFixedInOut, Resampler};
 
 use crate::types::{StereoBuffer, StereoSample, Stem, SAMPLE_RATE};
-
-/// Maximum file size for standard WAV (4GB - 8 bytes for RIFF header)
-#[allow(dead_code)]
-const WAV_MAX_SIZE: u64 = 0xFFFF_FFFF - 8;
 
 /// Expected channel count for stem files (4 stereo stems)
 pub const STEM_CHANNEL_COUNT: u16 = 8;
@@ -261,8 +257,6 @@ pub struct TrackMetadata {
     pub cue_points: Vec<CuePoint>,
     /// Saved loops (up to 8)
     pub saved_loops: Vec<SavedLoop>,
-    /// Pre-computed waveform preview (from wvfm chunk)
-    pub waveform_preview: Option<WaveformPreview>,
     /// Drop marker for structural alignment (sample position)
     ///
     /// Used for linked stems: when swapping stems between tracks,
@@ -429,7 +423,6 @@ impl From<crate::db::Track> for TrackMetadata {
             beat_grid,
             cue_points: track.cue_points.into_iter().map(Into::into).collect(),
             saved_loops: track.saved_loops.into_iter().map(Into::into).collect(),
-            waveform_preview: None, // No longer stored in WAV files
             drop_marker: track.drop_marker.map(|d| d as u64),
             // Stem links are NOT included here because StemLink has track_id references
             // that require database lookups. The engine handles stem link loading separately.
@@ -438,469 +431,6 @@ impl From<crate::db::Track> for TrackMetadata {
     }
 }
 
-/// Quantized waveform peaks for a single stem
-///
-/// Values are quantized from f32 [-1.0, 1.0] to u8 [0, 255] for compact storage.
-/// Use `quantize_peak()` and `dequantize_peak()` for conversion.
-#[derive(Debug, Clone, Default)]
-pub struct StemPeaks {
-    /// Quantized minimum values (0-255, maps to -1.0 to 1.0)
-    pub min: Vec<u8>,
-    /// Quantized maximum values (0-255, maps to -1.0 to 1.0)
-    pub max: Vec<u8>,
-}
-
-impl StemPeaks {
-    /// Create empty stem peaks
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Create stem peaks with given capacity
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            min: Vec::with_capacity(capacity),
-            max: Vec::with_capacity(capacity),
-        }
-    }
-}
-
-/// Pre-computed waveform preview stored in WAV file
-///
-/// This stores quantized min/max peaks for each stem at a fixed resolution (e.g., 800 pixels),
-/// allowing instant waveform display without recomputing from audio samples.
-///
-/// # Format
-/// Stored in a custom `wvfm` chunk in the WAV file:
-/// - Version: 1 byte
-/// - Width: 2 bytes (u16 LE)
-/// - Stems: 1 byte (always 4)
-/// - Reserved: 1 byte
-/// - Data: For each stem, width×2 bytes (min array then max array)
-#[derive(Debug, Clone)]
-pub struct WaveformPreview {
-    /// Width in pixels (number of peak pairs per stem)
-    pub width: u16,
-    /// Peaks for each stem [Vocals, Drums, Bass, Other]
-    pub stems: [StemPeaks; 4],
-}
-
-impl Default for WaveformPreview {
-    fn default() -> Self {
-        Self {
-            width: 0,
-            stems: Default::default(),
-        }
-    }
-}
-
-impl WaveformPreview {
-    /// Standard preview width (matches display resolution)
-    pub const STANDARD_WIDTH: u16 = 800;
-
-    /// Create an empty waveform preview
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Check if the preview has data
-    pub fn is_empty(&self) -> bool {
-        self.width == 0 || self.stems[0].min.is_empty()
-    }
-
-    /// Extract a single stem's peaks, dequantized to f32
-    ///
-    /// Used for linked stem visualization - extract just the stem we need
-    /// from the source track's pre-computed waveform preview.
-    ///
-    /// Returns a Vec of (min, max) pairs ready for rendering.
-    /// Returns empty Vec if stem_idx is out of range.
-    pub fn extract_stem_peaks(&self, stem_idx: usize) -> Vec<(f32, f32)> {
-        if stem_idx >= 4 {
-            return Vec::new();
-        }
-        let stem = &self.stems[stem_idx];
-        stem.min
-            .iter()
-            .zip(stem.max.iter())
-            .map(|(&min, &max)| (dequantize_peak(min), dequantize_peak(max)))
-            .collect()
-    }
-}
-
-/// Quantize a peak value from f32 [-1.0, 1.0] to u8 [0, 255]
-pub fn quantize_peak(value: f32) -> u8 {
-    ((value.clamp(-1.0, 1.0) + 1.0) * 127.5) as u8
-}
-
-/// Dequantize a peak value from u8 [0, 255] to f32 [-1.0, 1.0]
-pub fn dequantize_peak(byte: u8) -> f32 {
-    (byte as f32 / 127.5) - 1.0
-}
-
-/// Parse a wvfm chunk into a WaveformPreview
-///
-/// # Format
-/// - [0]     Version: u8 (1)
-/// - [1-2]   Width: u16 LE
-/// - [3]     Stems: u8 (4)
-/// - [4]     Reserved: u8
-/// - [5..]   Data: For each stem, width×2 bytes (min array then max array)
-pub fn parse_wvfm_chunk(data: &[u8]) -> Result<WaveformPreview, AudioFileError> {
-    const HEADER_SIZE: usize = 5;
-
-    if data.len() < HEADER_SIZE {
-        return Err(AudioFileError::Corrupted("wvfm chunk too small".into()));
-    }
-
-    let version = data[0];
-    if version != 1 {
-        return Err(AudioFileError::InvalidFormat(
-            format!("Unsupported wvfm version: {}", version)
-        ));
-    }
-
-    let width = u16::from_le_bytes([data[1], data[2]]);
-    let num_stems = data[3];
-
-    if num_stems != 4 {
-        return Err(AudioFileError::InvalidFormat(
-            format!("Expected 4 stems, found {}", num_stems)
-        ));
-    }
-
-    // Expected data size: 4 stems × width × 2 (min + max arrays)
-    let expected_data_size = HEADER_SIZE + (4 * width as usize * 2);
-    if data.len() < expected_data_size {
-        return Err(AudioFileError::Corrupted(
-            format!("wvfm chunk truncated: expected {} bytes, found {}", expected_data_size, data.len())
-        ));
-    }
-
-    let mut preview = WaveformPreview {
-        width,
-        stems: Default::default(),
-    };
-
-    // Parse each stem's data
-    let mut offset = HEADER_SIZE;
-    for stem in &mut preview.stems {
-        // Read min array
-        stem.min = data[offset..offset + width as usize].to_vec();
-        offset += width as usize;
-
-        // Read max array
-        stem.max = data[offset..offset + width as usize].to_vec();
-        offset += width as usize;
-    }
-
-    Ok(preview)
-}
-
-/// Serialize a WaveformPreview to bytes for storage in wvfm chunk
-///
-/// Returns the raw bytes (without chunk ID and size header - caller adds those)
-pub fn serialize_wvfm_chunk(preview: &WaveformPreview) -> Vec<u8> {
-    const HEADER_SIZE: usize = 5;
-    let data_size = 4 * preview.width as usize * 2;
-    let mut bytes = Vec::with_capacity(HEADER_SIZE + data_size);
-
-    // Header
-    bytes.push(1); // Version
-    bytes.extend_from_slice(&preview.width.to_le_bytes()); // Width
-    bytes.push(4); // Stems (always 4)
-    bytes.push(0); // Reserved
-
-    // Data: for each stem, write min array then max array
-    for stem in &preview.stems {
-        bytes.extend_from_slice(&stem.min);
-        bytes.extend_from_slice(&stem.max);
-    }
-
-    bytes
-}
-
-/// Read only the waveform preview from a WAV file
-///
-/// This efficiently scans the file for the `wvfm` chunk without loading
-/// audio data, making it suitable for quick waveform display updates.
-///
-/// Returns `Ok(None)` if the file has no wvfm chunk (not an error).
-pub fn read_waveform_preview_from_file<P: AsRef<Path>>(path: P) -> Result<Option<WaveformPreview>, AudioFileError> {
-    let file = File::open(path.as_ref())
-        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-    let mut reader = BufReader::new(file);
-
-    // Read RIFF/RF64 header
-    let mut riff_id = [0u8; 4];
-    reader.read_exact(&mut riff_id)
-        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-    let is_rf64 = match &riff_id {
-        b"RIFF" => false,
-        b"RF64" => true,
-        _ => return Err(AudioFileError::InvalidFormat("Not a RIFF/RF64 file".into())),
-    };
-
-    // Skip file size (4 bytes)
-    reader.seek(SeekFrom::Current(4))
-        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-    // Read WAVE identifier
-    let mut wave_id = [0u8; 4];
-    reader.read_exact(&mut wave_id)
-        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-    if &wave_id != b"WAVE" {
-        return Err(AudioFileError::InvalidFormat("Not a WAVE file".into()));
-    }
-
-    // For RF64, skip ds64 chunk if present
-    if is_rf64 {
-        let mut chunk_id = [0u8; 4];
-        if reader.read_exact(&mut chunk_id).is_ok() && &chunk_id == b"ds64" {
-            let mut chunk_size = [0u8; 4];
-            reader.read_exact(&mut chunk_size)
-                .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-            let chunk_size = u32::from_le_bytes(chunk_size);
-            reader.seek(SeekFrom::Current(chunk_size as i64))
-                .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-        } else {
-            // Seek back if not ds64
-            reader.seek(SeekFrom::Current(-4))
-                .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-        }
-    }
-
-    // Scan chunks looking for wvfm
-    loop {
-        let mut chunk_id = [0u8; 4];
-        if reader.read_exact(&mut chunk_id).is_err() {
-            break; // End of file
-        }
-
-        let mut chunk_size_bytes = [0u8; 4];
-        reader.read_exact(&mut chunk_size_bytes)
-            .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-        let chunk_size = u32::from_le_bytes(chunk_size_bytes);
-
-        if &chunk_id == b"wvfm" {
-            // Found wvfm chunk - read and parse it
-            let mut wvfm_data = vec![0u8; chunk_size as usize];
-            reader.read_exact(&mut wvfm_data)
-                .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-            return Ok(Some(parse_wvfm_chunk(&wvfm_data)?));
-        }
-
-        // Skip this chunk
-        reader.seek(SeekFrom::Current(chunk_size as i64))
-            .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-        // Pad to word boundary
-        if chunk_size % 2 != 0 {
-            reader.seek(SeekFrom::Current(1))
-                .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-        }
-    }
-
-    // No wvfm chunk found
-    Ok(None)
-}
-
-/// Parse a mlop (mesh loops) chunk into a Vec<SavedLoop>
-///
-/// Format:
-/// - num_loops (4 bytes, u32 LE)
-/// - For each loop:
-///   - index (1 byte)
-///   - start_sample (8 bytes, u64 LE)
-///   - end_sample (8 bytes, u64 LE)
-///   - label_len (2 bytes, u16 LE)
-///   - label (label_len bytes, UTF-8)
-///   - color_len (2 bytes, u16 LE)
-///   - color (color_len bytes, UTF-8, or empty if 0)
-pub fn parse_mlop_chunk(data: &[u8]) -> Result<Vec<SavedLoop>, AudioFileError> {
-    if data.len() < 4 {
-        return Err(AudioFileError::Corrupted("mlop chunk too small".into()));
-    }
-
-    let num_loops = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
-    let mut loops = Vec::with_capacity(num_loops);
-    let mut pos = 4;
-
-    for _ in 0..num_loops {
-        // index (1 byte)
-        if pos >= data.len() {
-            break;
-        }
-        let index = data[pos];
-        pos += 1;
-
-        // start_sample (8 bytes)
-        if pos + 8 > data.len() {
-            break;
-        }
-        let start_sample = u64::from_le_bytes([
-            data[pos], data[pos + 1], data[pos + 2], data[pos + 3],
-            data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7],
-        ]);
-        pos += 8;
-
-        // end_sample (8 bytes)
-        if pos + 8 > data.len() {
-            break;
-        }
-        let end_sample = u64::from_le_bytes([
-            data[pos], data[pos + 1], data[pos + 2], data[pos + 3],
-            data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7],
-        ]);
-        pos += 8;
-
-        // label_len (2 bytes)
-        if pos + 2 > data.len() {
-            break;
-        }
-        let label_len = u16::from_le_bytes([data[pos], data[pos + 1]]) as usize;
-        pos += 2;
-
-        // label
-        if pos + label_len > data.len() {
-            break;
-        }
-        let label = String::from_utf8_lossy(&data[pos..pos + label_len]).to_string();
-        pos += label_len;
-
-        // color_len (2 bytes)
-        if pos + 2 > data.len() {
-            break;
-        }
-        let color_len = u16::from_le_bytes([data[pos], data[pos + 1]]) as usize;
-        pos += 2;
-
-        // color
-        let color = if color_len > 0 && pos + color_len <= data.len() {
-            let c = String::from_utf8_lossy(&data[pos..pos + color_len]).to_string();
-            pos += color_len;
-            Some(c)
-        } else {
-            None
-        };
-
-        loops.push(SavedLoop {
-            index,
-            start_sample,
-            end_sample,
-            label,
-            color,
-        });
-    }
-
-    Ok(loops)
-}
-
-/// Parse a mslk (mesh stem links) chunk into a Vec<StemLinkReference>
-///
-/// Format:
-/// - version (1 byte, currently 1)
-/// - num_links (1 byte)
-/// - For each link:
-///   - stem_index (1 byte, 0=Vocals, 1=Drums, 2=Bass, 3=Other)
-///   - source_stem (1 byte)
-///   - source_drop_marker (8 bytes, u64 LE)
-///   - path_len (2 bytes, u16 LE)
-///   - path (path_len bytes, UTF-8)
-pub fn parse_mslk_chunk(data: &[u8]) -> Result<Vec<StemLinkReference>, AudioFileError> {
-    if data.len() < 2 {
-        return Err(AudioFileError::Corrupted("mslk chunk too small".into()));
-    }
-
-    let version = data[0];
-    if version != 1 {
-        return Err(AudioFileError::Corrupted(format!("Unknown mslk version: {}", version)));
-    }
-
-    let num_links = data[1] as usize;
-    let mut links = Vec::with_capacity(num_links);
-    let mut pos = 2;
-
-    for _ in 0..num_links {
-        // stem_index (1 byte)
-        if pos >= data.len() {
-            break;
-        }
-        let stem_index = data[pos];
-        pos += 1;
-
-        // source_stem (1 byte)
-        if pos >= data.len() {
-            break;
-        }
-        let source_stem = data[pos];
-        pos += 1;
-
-        // source_drop_marker (8 bytes)
-        if pos + 8 > data.len() {
-            break;
-        }
-        let source_drop_marker = u64::from_le_bytes([
-            data[pos], data[pos + 1], data[pos + 2], data[pos + 3],
-            data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7],
-        ]);
-        pos += 8;
-
-        // path_len (2 bytes)
-        if pos + 2 > data.len() {
-            break;
-        }
-        let path_len = u16::from_le_bytes([data[pos], data[pos + 1]]) as usize;
-        pos += 2;
-
-        // path
-        if pos + path_len > data.len() {
-            break;
-        }
-        let path_str = String::from_utf8_lossy(&data[pos..pos + path_len]).to_string();
-        let source_path = std::path::PathBuf::from(path_str);
-        pos += path_len;
-
-        links.push(StemLinkReference {
-            stem_index,
-            source_path,
-            source_stem,
-            source_drop_marker,
-        });
-    }
-
-    Ok(links)
-}
-
-/// Serialize stem links to bytes for storage in mslk chunk
-///
-/// Returns the raw bytes (without chunk ID and size header - caller adds those)
-pub fn serialize_mslk_chunk(links: &[StemLinkReference]) -> Vec<u8> {
-    let mut bytes = Vec::new();
-
-    // Version
-    bytes.push(1);
-
-    // Number of links (max 255)
-    bytes.push(links.len().min(255) as u8);
-
-    // Each link
-    for link in links.iter().take(255) {
-        bytes.push(link.stem_index);
-        bytes.push(link.source_stem);
-        bytes.extend_from_slice(&link.source_drop_marker.to_le_bytes());
-
-        let path_str = link.source_path.to_string_lossy();
-        let path_bytes = path_str.as_bytes();
-        let path_len = path_bytes.len().min(65535) as u16;
-        bytes.extend_from_slice(&path_len.to_le_bytes());
-        bytes.extend_from_slice(&path_bytes[..path_len as usize]);
-    }
-
-    bytes
-}
 
 
 /// Stem audio buffers extracted from a file
@@ -987,6 +517,21 @@ impl StemBuffers {
             Stem::Bass => &mut self.bass,
             Stem::Other => &mut self.other,
         }
+    }
+
+    /// Copy `count` frames from `src` (starting at offset 0) into `self` at `dst_offset`.
+    ///
+    /// Used after parallel decoding to merge per-region results into the main buffer.
+    /// Panics if `dst_offset + count > self.len()` or `count > src.len()`.
+    pub fn copy_region_from(&mut self, src: &StemBuffers, dst_offset: usize, count: usize) {
+        self.vocals.as_mut_slice()[dst_offset..dst_offset + count]
+            .copy_from_slice(&src.vocals.as_slice()[..count]);
+        self.drums.as_mut_slice()[dst_offset..dst_offset + count]
+            .copy_from_slice(&src.drums.as_slice()[..count]);
+        self.bass.as_mut_slice()[dst_offset..dst_offset + count]
+            .copy_from_slice(&src.bass.as_slice()[..count]);
+        self.other.as_mut_slice()[dst_offset..dst_offset + count]
+            .copy_from_slice(&src.other.as_slice()[..count]);
     }
 
     /// Get duration in seconds at the standard sample rate
@@ -1178,172 +723,143 @@ pub fn resample_mono_audio(
     Ok(output)
 }
 
-/// WAV/RF64 file reader
+/// FLAC audio file reader
+///
+/// Reads the entire file into memory on open, then uses symphonia for
+/// seeking and decoding. This allows USB I/O to happen once upfront,
+/// with all subsequent region reads being pure CPU decode.
 pub struct AudioFileReader {
-    reader: BufReader<File>,
     format: AudioFormat,
-    data_offset: u64,
-    data_size: u64,
-    /// True if file is RF64 (supports >4GB files)
-    #[allow(dead_code)]
-    is_rf64: bool,
+    /// Entire file contents in memory (shared via Arc for region reads)
+    data: Arc<[u8]>,
+    /// Total number of sample frames
+    total_frames: u64,
 }
 
 impl AudioFileReader {
     /// Open an audio file for reading
+    ///
+    /// Reads the entire file into memory and probes with symphonia to extract
+    /// format information. All I/O happens here — subsequent reads are CPU-only.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, AudioFileError> {
-        let file = File::open(path.as_ref())
+        use std::time::Instant;
+        use symphonia::core::codecs::CODEC_TYPE_NULL;
+        use symphonia::core::formats::FormatOptions;
+        use symphonia::core::io::MediaSourceStream;
+        use symphonia::core::meta::MetadataOptions;
+        use symphonia::core::probe::Hint;
+
+        let path_ref = path.as_ref();
+        let read_start = Instant::now();
+
+        // Read entire file into memory (single sequential I/O)
+        let file_bytes = std::fs::read(path_ref)
             .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-        let mut reader = BufReader::new(file);
+        let file_size = file_bytes.len();
+        let data: Arc<[u8]> = file_bytes.into();
 
-        // Read RIFF/RF64 header
-        let mut riff_id = [0u8; 4];
-        reader.read_exact(&mut riff_id)
-            .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+        log::info!(
+            "    [PERF] File read into memory: {:?} ({:.1} MB)",
+            read_start.elapsed(),
+            file_size as f64 / 1_000_000.0
+        );
 
-        let is_rf64 = match &riff_id {
-            b"RIFF" => false,
-            b"RF64" => true,
-            _ => return Err(AudioFileError::InvalidFormat("Not a RIFF/RF64 file".into())),
-        };
+        // Probe with symphonia to get format info
+        let cursor = Cursor::new(Arc::clone(&data));
+        let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
 
-        // Read file size (placeholder for RF64)
-        let mut size_bytes = [0u8; 4];
-        reader.read_exact(&mut size_bytes)
-            .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-        // Read WAVE identifier
-        let mut wave_id = [0u8; 4];
-        reader.read_exact(&mut wave_id)
-            .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-        if &wave_id != b"WAVE" {
-            return Err(AudioFileError::InvalidFormat("Not a WAVE file".into()));
+        let mut hint = Hint::new();
+        if let Some(ext) = path_ref.extension().and_then(|e| e.to_str()) {
+            hint.with_extension(ext);
         }
 
-        // For RF64, read the ds64 chunk first to get actual sizes
-        let mut actual_data_size: Option<u64> = None;
-        if is_rf64 {
-            // ds64 chunk should be first after WAVE
-            let mut chunk_id = [0u8; 4];
-            reader.read_exact(&mut chunk_id)
-                .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+        let probed = symphonia::default::get_probe()
+            .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+            .map_err(|e| AudioFileError::InvalidFormat(format!("Probe failed: {}", e)))?;
 
-            if &chunk_id == b"ds64" {
-                let mut chunk_size = [0u8; 4];
-                reader.read_exact(&mut chunk_size)
-                    .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-                let chunk_size = u32::from_le_bytes(chunk_size);
+        let track = probed.format.tracks()
+            .iter()
+            .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+            .ok_or_else(|| AudioFileError::InvalidFormat("No audio track found".into()))?;
 
-                // Read ds64 content
-                let mut ds64_data = vec![0u8; chunk_size as usize];
-                reader.read_exact(&mut ds64_data)
-                    .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+        let codec_params = &track.codec_params;
 
-                if ds64_data.len() >= 16 {
-                    // Skip riff_size (8 bytes), read data_size (8 bytes)
-                    let data_size_bytes: [u8; 8] = ds64_data[8..16].try_into().unwrap();
-                    actual_data_size = Some(u64::from_le_bytes(data_size_bytes));
-                }
-            } else {
-                // Seek back if not ds64
-                reader.seek(SeekFrom::Current(-4))
-                    .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-            }
-        }
+        let channels = codec_params.channels
+            .map(|c| c.count() as u16)
+            .unwrap_or(8);
 
-        // Find fmt and data chunks
-        let mut format: Option<AudioFormat> = None;
-        let mut data_offset: Option<u64> = None;
-        let mut data_size: Option<u64> = actual_data_size;
+        let sample_rate = codec_params.sample_rate
+            .ok_or_else(|| AudioFileError::InvalidFormat("Unknown sample rate".into()))?;
 
-        loop {
-            let mut chunk_id = [0u8; 4];
-            if reader.read_exact(&mut chunk_id).is_err() {
-                break;
-            }
+        let bits_per_sample = codec_params.bits_per_sample.unwrap_or(16) as u16;
 
-            let mut chunk_size_bytes = [0u8; 4];
-            reader.read_exact(&mut chunk_size_bytes)
-                .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-            let chunk_size = u32::from_le_bytes(chunk_size_bytes);
+        let total_frames = codec_params.n_frames
+            .ok_or_else(|| AudioFileError::InvalidFormat("Unknown frame count".into()))?;
 
-            match &chunk_id {
-                b"fmt " => {
-                    format = Some(Self::read_fmt_chunk(&mut reader, chunk_size)?);
-                }
-                b"data" => {
-                    data_offset = Some(reader.stream_position()
-                        .map_err(|e| AudioFileError::IoError(e.to_string()))?);
+        let block_align = channels * (bits_per_sample / 8);
 
-                    // For standard WAV, use chunk size; for RF64, we already have it
-                    if data_size.is_none() {
-                        data_size = Some(chunk_size as u64);
-                    }
-
-                    // Skip past data to continue parsing (for metadata chunks)
-                    let skip_size = if is_rf64 && actual_data_size.is_some() {
-                        actual_data_size.unwrap()
-                    } else {
-                        chunk_size as u64
-                    };
-                    reader.seek(SeekFrom::Current(skip_size as i64))
-                        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-                }
-                _ => {
-                    // Skip unknown chunks
-                    reader.seek(SeekFrom::Current(chunk_size as i64))
-                        .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-                }
-            }
-
-            // Pad to word boundary
-            if chunk_size % 2 != 0 {
-                reader.seek(SeekFrom::Current(1))
-                    .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-            }
-        }
-
-        let format = format.ok_or(AudioFileError::MissingChunk("fmt"))?;
-        let data_offset = data_offset.ok_or(AudioFileError::MissingChunk("data"))?;
-        let data_size = data_size.ok_or(AudioFileError::MissingChunk("data"))?;
-
-        // Validate format
-        format.is_compatible()?;
-
-        Ok(Self {
-            reader,
-            format,
-            data_offset,
-            data_size,
-            is_rf64,
-        })
-    }
-
-    /// Read the fmt chunk
-    fn read_fmt_chunk(reader: &mut BufReader<File>, size: u32) -> Result<AudioFormat, AudioFileError> {
-        if size < 16 {
-            return Err(AudioFileError::Corrupted("fmt chunk too small".into()));
-        }
-
-        let mut fmt_data = vec![0u8; size as usize];
-        reader.read_exact(&mut fmt_data)
-            .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-        let format_tag = u16::from_le_bytes([fmt_data[0], fmt_data[1]]);
-        let channels = u16::from_le_bytes([fmt_data[2], fmt_data[3]]);
-        let sample_rate = u32::from_le_bytes([fmt_data[4], fmt_data[5], fmt_data[6], fmt_data[7]]);
-        let _byte_rate = u32::from_le_bytes([fmt_data[8], fmt_data[9], fmt_data[10], fmt_data[11]]);
-        let block_align = u16::from_le_bytes([fmt_data[12], fmt_data[13]]);
-        let bits_per_sample = u16::from_le_bytes([fmt_data[14], fmt_data[15]]);
-
-        Ok(AudioFormat {
-            format_tag,
+        let format = AudioFormat {
             channels,
             sample_rate,
             bits_per_sample,
             block_align,
-        })
+            format_tag: 1, // PCM equivalent
+        };
+
+        // Validate channel count
+        if channels != STEM_CHANNEL_COUNT {
+            return Err(AudioFileError::WrongChannelCount {
+                expected: STEM_CHANNEL_COUNT,
+                found: channels,
+            });
+        }
+
+        log::info!(
+            "    [PERF] Format: {}ch {}Hz {}bit, {} frames ({:.1}s)",
+            channels, sample_rate, bits_per_sample, total_frames,
+            total_frames as f64 / sample_rate as f64
+        );
+
+        Ok(Self { format, data, total_frames })
+    }
+
+    /// Create a new symphonia decoder from the in-memory data
+    ///
+    /// Each call creates a fresh decoder with its own Cursor — allowing
+    /// independent seek positions for parallel or sequential region reads.
+    fn create_decoder(&self) -> Result<(
+        Box<dyn symphonia::core::formats::FormatReader>,
+        Box<dyn symphonia::core::codecs::Decoder>,
+        u32, // track_id
+    ), AudioFileError> {
+        use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+        use symphonia::core::formats::FormatOptions;
+        use symphonia::core::io::MediaSourceStream;
+        use symphonia::core::meta::MetadataOptions;
+        use symphonia::core::probe::Hint;
+
+        let cursor = Cursor::new(Arc::clone(&self.data));
+        let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
+
+        let mut hint = Hint::new();
+        hint.with_extension("flac");
+
+        let probed = symphonia::default::get_probe()
+            .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+            .map_err(|e| AudioFileError::InvalidFormat(format!("Probe failed: {}", e)))?;
+
+        let track = probed.format.tracks()
+            .iter()
+            .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+            .ok_or_else(|| AudioFileError::InvalidFormat("No audio track found".into()))?;
+
+        let track_id = track.id;
+
+        let decoder = symphonia::default::get_codecs()
+            .make(&track.codec_params, &DecoderOptions::default())
+            .map_err(|e| AudioFileError::InvalidFormat(format!("Decoder init failed: {}", e)))?;
+
+        Ok((probed.format, decoder, track_id))
     }
 
     /// Get the audio format
@@ -1353,33 +869,31 @@ impl AudioFileReader {
 
     /// Get the number of sample frames in the file
     pub fn frame_count(&self) -> u64 {
-        self.data_size / self.format.block_align as u64
+        self.total_frames
     }
 
     /// Get the duration in seconds
     pub fn duration_seconds(&self) -> f64 {
-        self.frame_count() as f64 / self.format.sample_rate as f64
+        self.total_frames as f64 / self.format.sample_rate as f64
     }
 
     /// Read all audio data into stem buffers
     ///
     /// This uses the default target sample rate (SAMPLE_RATE constant, 48kHz).
     /// For sample-rate-aware loading, use `read_all_stems_to(target_rate)` instead.
-    pub fn read_all_stems(&mut self) -> Result<StemBuffers, AudioFileError> {
+    pub fn read_all_stems(&self) -> Result<StemBuffers, AudioFileError> {
         self.read_all_stems_to(SAMPLE_RATE)
     }
 
     /// Read all audio data into stem buffers, resampling to target rate
     ///
-    /// # Arguments
-    /// * `target_sample_rate` - The target sample rate (from the audio backend)
-    ///
-    /// This allows loading tracks to match whatever sample rate the audio system is running at.
-    /// If the file's sample rate differs from target, audio is automatically resampled.
-    pub fn read_all_stems_to(&mut self, target_sample_rate: u32) -> Result<StemBuffers, AudioFileError> {
+    /// Decodes the full FLAC stream sequentially, deinterleaving 8 channels
+    /// into 4 stereo stem buffers. Resamples if the file rate differs from target.
+    pub fn read_all_stems_to(&self, target_sample_rate: u32) -> Result<StemBuffers, AudioFileError> {
         use std::time::Instant;
+        use symphonia::core::audio::SampleBuffer;
 
-        let frame_count = self.frame_count() as usize;
+        let frame_count = self.total_frames as usize;
 
         // Allocation timing
         let alloc_start = Instant::now();
@@ -1390,41 +904,66 @@ impl AudioFileReader {
             frame_count
         );
 
-        // Seek timing
-        let seek_start = Instant::now();
-        self.reader.seek(SeekFrom::Start(self.data_offset))
-            .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-        log::debug!("    [PERF] Seek to data: {:?}", seek_start.elapsed());
+        // Decode timing
+        let decode_start = Instant::now();
+        let (mut format_reader, mut decoder, track_id) = self.create_decoder()?;
 
-        // Read timing
-        let read_start = Instant::now();
-        match self.format.bits_per_sample {
-            16 => self.read_16bit_samples(&mut stems, frame_count)?,
-            24 => self.read_24bit_samples(&mut stems, frame_count)?,
-            32 => {
-                if self.format.format_tag == 3 {
-                    self.read_32bit_float_samples(&mut stems, frame_count)?;
-                } else {
-                    self.read_32bit_int_samples(&mut stems, frame_count)?;
-                }
+        let mut write_pos = 0usize;
+        let mut sample_buf: Option<SampleBuffer<f32>> = None;
+
+        loop {
+            let packet = match format_reader.next_packet() {
+                Ok(p) => p,
+                Err(symphonia::core::errors::Error::IoError(e))
+                    if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(e) => return Err(AudioFileError::IoError(format!("Decode error: {}", e))),
+            };
+
+            if packet.track_id() != track_id {
+                continue;
             }
-            _ => return Err(AudioFileError::UnsupportedBitDepth(self.format.bits_per_sample)),
+
+            let decoded = decoder.decode(&packet)
+                .map_err(|e| AudioFileError::IoError(format!("Packet decode error: {}", e)))?;
+
+            // Initialize sample buffer on first decode
+            if sample_buf.is_none() {
+                let spec = *decoded.spec();
+                let duration = decoded.capacity() as u64;
+                sample_buf = Some(SampleBuffer::new(duration, spec));
+            }
+
+            if let Some(ref mut buf) = sample_buf {
+                buf.copy_interleaved_ref(decoded);
+                let samples = buf.samples();
+                let ch = 8;
+                let packet_frames = samples.len() / ch;
+
+                let frames_to_write = packet_frames.min(frame_count.saturating_sub(write_pos));
+                for j in 0..frames_to_write {
+                    let base = j * ch;
+                    let i = write_pos + j;
+                    stems.vocals.as_mut_slice()[i] = StereoSample::new(samples[base], samples[base + 1]);
+                    stems.drums.as_mut_slice()[i] = StereoSample::new(samples[base + 2], samples[base + 3]);
+                    stems.bass.as_mut_slice()[i] = StereoSample::new(samples[base + 4], samples[base + 5]);
+                    stems.other.as_mut_slice()[i] = StereoSample::new(samples[base + 6], samples[base + 7]);
+                }
+                write_pos += frames_to_write;
+            }
         }
-        let read_elapsed = read_start.elapsed();
-        let bytes_read = frame_count * 8 * (self.format.bits_per_sample as usize / 8);
-        let throughput_mb_s = if read_elapsed.as_secs_f64() > 0.0 {
-            (bytes_read as f64 / 1_000_000.0) / read_elapsed.as_secs_f64()
-        } else {
-            0.0
-        };
+
+        let decode_elapsed = decode_start.elapsed();
+        let raw_bytes = frame_count * 8 * 2; // 8 channels × 2 bytes (16-bit)
         log::info!(
-            "    [PERF] Audio read: {:?} ({:.1} MB, {:.1} MB/s)",
-            read_elapsed,
-            bytes_read as f64 / 1_000_000.0,
-            throughput_mb_s
+            "    [PERF] FLAC decode: {:?} ({:.1} MB decoded, {:.1} MB/s effective)",
+            decode_elapsed,
+            raw_bytes as f64 / 1_000_000.0,
+            if decode_elapsed.as_secs_f64() > 0.0 {
+                (raw_bytes as f64 / 1_000_000.0) / decode_elapsed.as_secs_f64()
+            } else { 0.0 }
         );
 
-        // Resample if file sample rate differs from target rate (e.g., 48kHz -> 44.1kHz)
+        // Resample if file sample rate differs from target rate
         if self.format.sample_rate != target_sample_rate {
             log::info!(
                 "    File sample rate ({} Hz) differs from target rate ({} Hz), resampling...",
@@ -1437,236 +976,164 @@ impl AudioFileReader {
         Ok(stems)
     }
 
-    /// Read 16-bit samples using chunked I/O for better performance
-    ///
-    /// Reads data in 1MB chunks instead of per-frame to reduce syscall overhead.
-    fn read_16bit_samples(&mut self, stems: &mut StemBuffers, frame_count: usize) -> Result<(), AudioFileError> {
-        self.read_16bit_region(stems, 0, frame_count)
-    }
-
-    /// Read 24-bit samples using chunked I/O for better performance
-    fn read_24bit_samples(&mut self, stems: &mut StemBuffers, frame_count: usize) -> Result<(), AudioFileError> {
-        self.read_24bit_region(stems, 0, frame_count)
-    }
-
-    /// Read 32-bit float samples using chunked I/O for better performance
-    fn read_32bit_float_samples(&mut self, stems: &mut StemBuffers, frame_count: usize) -> Result<(), AudioFileError> {
-        self.read_32bit_float_region(stems, 0, frame_count)
-    }
-
-    /// Read 32-bit integer samples using chunked I/O for better performance
-    fn read_32bit_int_samples(&mut self, stems: &mut StemBuffers, frame_count: usize) -> Result<(), AudioFileError> {
-        self.read_32bit_int_region(stems, 0, frame_count)
-    }
-
     /// Check whether this file needs resampling to match the target rate.
     pub fn needs_resampling(&self, target_rate: u32) -> bool {
         self.format.sample_rate != target_rate
     }
 
-    /// Read a region of samples from the file into pre-allocated stems.
+    /// Read a region of samples from the FLAC file into pre-allocated stems.
     ///
-    /// Seeks to `file_start` in the data chunk and reads `count` frames,
-    /// writing into `stems` at offset `buffer_start`. Handles 16/24/32-bit.
+    /// Creates a new decoder, seeks to `file_start` frame, and decodes `count`
+    /// frames into `stems` at offset `buffer_start`. All I/O is against in-memory
+    /// data (no disk reads).
     ///
     /// Precondition: `buffer_start + count <= stems.len()`
     pub fn read_region_into(
-        &mut self,
+        &self,
         stems: &mut StemBuffers,
         file_start: usize,
         buffer_start: usize,
         count: usize,
     ) -> Result<(), AudioFileError> {
-        // Seek to the correct position within the data chunk
-        let byte_offset = self.data_offset
-            + (file_start as u64) * self.format.block_align as u64;
-        self.reader.seek(SeekFrom::Start(byte_offset))
-            .map_err(|e| AudioFileError::IoError(e.to_string()))?;
+        use symphonia::core::audio::SampleBuffer;
+        use symphonia::core::formats::SeekTo;
 
-        match self.format.bits_per_sample {
-            16 => self.read_16bit_region(stems, buffer_start, count),
-            24 => self.read_24bit_region(stems, buffer_start, count),
-            32 => {
-                if self.format.format_tag == 3 {
-                    self.read_32bit_float_region(stems, buffer_start, count)
-                } else {
-                    self.read_32bit_int_region(stems, buffer_start, count)
+        let (mut format_reader, mut decoder, track_id) = self.create_decoder()?;
+
+        // Seek to the start frame (if not at beginning)
+        if file_start > 0 {
+            format_reader.seek(
+                symphonia::core::formats::SeekMode::Accurate,
+                SeekTo::TimeStamp {
+                    ts: file_start as u64,
+                    track_id,
+                },
+            ).map_err(|e| AudioFileError::IoError(format!("Seek failed: {}", e)))?;
+        }
+
+        // Decode `count` frames
+        let mut frames_written = 0usize;
+        let mut sample_buf: Option<SampleBuffer<f32>> = None;
+
+        while frames_written < count {
+            let packet = match format_reader.next_packet() {
+                Ok(p) => p,
+                Err(symphonia::core::errors::Error::IoError(e))
+                    if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(e) => return Err(AudioFileError::IoError(format!("Decode error: {}", e))),
+            };
+
+            if packet.track_id() != track_id {
+                continue;
+            }
+
+            let decoded = decoder.decode(&packet)
+                .map_err(|e| AudioFileError::IoError(format!("Packet decode error: {}", e)))?;
+
+            if sample_buf.is_none() {
+                let spec = *decoded.spec();
+                let duration = decoded.capacity() as u64;
+                sample_buf = Some(SampleBuffer::new(duration, spec));
+            }
+
+            if let Some(ref mut buf) = sample_buf {
+                buf.copy_interleaved_ref(decoded);
+                let samples = buf.samples();
+                let ch = 8;
+                let packet_frames = samples.len() / ch;
+                let frames_to_write = packet_frames.min(count - frames_written);
+
+                for j in 0..frames_to_write {
+                    let base = j * ch;
+                    let i = buffer_start + frames_written + j;
+                    stems.vocals.as_mut_slice()[i] = StereoSample::new(samples[base], samples[base + 1]);
+                    stems.drums.as_mut_slice()[i] = StereoSample::new(samples[base + 2], samples[base + 3]);
+                    stems.bass.as_mut_slice()[i] = StereoSample::new(samples[base + 4], samples[base + 5]);
+                    stems.other.as_mut_slice()[i] = StereoSample::new(samples[base + 6], samples[base + 7]);
                 }
+
+                frames_written += frames_to_write;
             }
-            _ => Err(AudioFileError::UnsupportedBitDepth(self.format.bits_per_sample)),
-        }
-    }
-
-    /// Read 16-bit samples into stems at the given buffer offset.
-    fn read_16bit_region(&mut self, stems: &mut StemBuffers, buffer_start: usize, frame_count: usize) -> Result<(), AudioFileError> {
-        const BYTES_PER_FRAME: usize = 16; // 8 channels * 2 bytes
-        const CHUNK_FRAMES: usize = 65536; // 64K frames = 1MB chunks
-        const SCALE: f32 = 1.0 / 32768.0;
-
-        let mut chunk_buffer = vec![0u8; CHUNK_FRAMES * BYTES_PER_FRAME];
-
-        let mut frames_read = 0;
-        while frames_read < frame_count {
-            let frames_this_chunk = CHUNK_FRAMES.min(frame_count - frames_read);
-            let bytes_to_read = frames_this_chunk * BYTES_PER_FRAME;
-
-            self.reader.read_exact(&mut chunk_buffer[..bytes_to_read])
-                .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-            for j in 0..frames_this_chunk {
-                let offset = j * BYTES_PER_FRAME;
-                let i = buffer_start + frames_read + j;
-
-                let vocals_l = i16::from_le_bytes([chunk_buffer[offset], chunk_buffer[offset + 1]]) as f32 * SCALE;
-                let vocals_r = i16::from_le_bytes([chunk_buffer[offset + 2], chunk_buffer[offset + 3]]) as f32 * SCALE;
-                let drums_l = i16::from_le_bytes([chunk_buffer[offset + 4], chunk_buffer[offset + 5]]) as f32 * SCALE;
-                let drums_r = i16::from_le_bytes([chunk_buffer[offset + 6], chunk_buffer[offset + 7]]) as f32 * SCALE;
-                let bass_l = i16::from_le_bytes([chunk_buffer[offset + 8], chunk_buffer[offset + 9]]) as f32 * SCALE;
-                let bass_r = i16::from_le_bytes([chunk_buffer[offset + 10], chunk_buffer[offset + 11]]) as f32 * SCALE;
-                let other_l = i16::from_le_bytes([chunk_buffer[offset + 12], chunk_buffer[offset + 13]]) as f32 * SCALE;
-                let other_r = i16::from_le_bytes([chunk_buffer[offset + 14], chunk_buffer[offset + 15]]) as f32 * SCALE;
-
-                stems.vocals.as_mut_slice()[i] = StereoSample::new(vocals_l, vocals_r);
-                stems.drums.as_mut_slice()[i] = StereoSample::new(drums_l, drums_r);
-                stems.bass.as_mut_slice()[i] = StereoSample::new(bass_l, bass_r);
-                stems.other.as_mut_slice()[i] = StereoSample::new(other_l, other_r);
-            }
-
-            frames_read += frames_this_chunk;
         }
 
         Ok(())
     }
 
-    /// Read 24-bit samples into stems at the given buffer offset.
-    fn read_24bit_region(&mut self, stems: &mut StemBuffers, buffer_start: usize, frame_count: usize) -> Result<(), AudioFileError> {
-        const BYTES_PER_FRAME: usize = 24; // 8 channels * 3 bytes
-        const CHUNK_FRAMES: usize = 43008; // ~1MB chunks (43008 * 24 = 1,032,192 bytes)
-        const SCALE: f32 = 1.0 / 8388608.0; // 2^23
+    /// Decode a region of the FLAC file into a new owned StemBuffers.
+    ///
+    /// Creates a fresh decoder, seeks to `file_start`, and decodes `count` frames
+    /// into a newly allocated StemBuffers of length `count`. Returns owned data
+    /// suitable for parallel decoding — each thread gets its own buffer with no
+    /// shared mutable state.
+    ///
+    /// This is the parallel-friendly counterpart to `read_region_into()`.
+    pub fn decode_region(
+        &self,
+        file_start: usize,
+        count: usize,
+    ) -> Result<StemBuffers, AudioFileError> {
+        use symphonia::core::audio::SampleBuffer;
+        use symphonia::core::formats::SeekTo;
 
-        let mut chunk_buffer = vec![0u8; CHUNK_FRAMES * BYTES_PER_FRAME];
+        let (mut format_reader, mut decoder, track_id) = self.create_decoder()?;
 
-        let to_i32 = |b: &[u8]| -> i32 {
-            let val = (b[0] as i32) | ((b[1] as i32) << 8) | ((b[2] as i32) << 16);
-            if val & 0x800000 != 0 {
-                val | !0xFFFFFF // Sign extend
-            } else {
-                val
-            }
-        };
-
-        let mut frames_read = 0;
-        while frames_read < frame_count {
-            let frames_this_chunk = CHUNK_FRAMES.min(frame_count - frames_read);
-            let bytes_to_read = frames_this_chunk * BYTES_PER_FRAME;
-
-            self.reader.read_exact(&mut chunk_buffer[..bytes_to_read])
-                .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-            for j in 0..frames_this_chunk {
-                let offset = j * BYTES_PER_FRAME;
-                let i = buffer_start + frames_read + j;
-
-                let vocals_l = to_i32(&chunk_buffer[offset..offset + 3]) as f32 * SCALE;
-                let vocals_r = to_i32(&chunk_buffer[offset + 3..offset + 6]) as f32 * SCALE;
-                let drums_l = to_i32(&chunk_buffer[offset + 6..offset + 9]) as f32 * SCALE;
-                let drums_r = to_i32(&chunk_buffer[offset + 9..offset + 12]) as f32 * SCALE;
-                let bass_l = to_i32(&chunk_buffer[offset + 12..offset + 15]) as f32 * SCALE;
-                let bass_r = to_i32(&chunk_buffer[offset + 15..offset + 18]) as f32 * SCALE;
-                let other_l = to_i32(&chunk_buffer[offset + 18..offset + 21]) as f32 * SCALE;
-                let other_r = to_i32(&chunk_buffer[offset + 21..offset + 24]) as f32 * SCALE;
-
-                stems.vocals.as_mut_slice()[i] = StereoSample::new(vocals_l, vocals_r);
-                stems.drums.as_mut_slice()[i] = StereoSample::new(drums_l, drums_r);
-                stems.bass.as_mut_slice()[i] = StereoSample::new(bass_l, bass_r);
-                stems.other.as_mut_slice()[i] = StereoSample::new(other_l, other_r);
-            }
-
-            frames_read += frames_this_chunk;
+        // Seek to the start frame
+        if file_start > 0 {
+            format_reader.seek(
+                symphonia::core::formats::SeekMode::Accurate,
+                SeekTo::TimeStamp {
+                    ts: file_start as u64,
+                    track_id,
+                },
+            ).map_err(|e| AudioFileError::IoError(format!("Seek failed: {}", e)))?;
         }
 
-        Ok(())
-    }
+        let mut stems = StemBuffers::with_length(count);
+        let mut frames_written = 0usize;
+        let mut sample_buf: Option<SampleBuffer<f32>> = None;
 
-    /// Read 32-bit float samples into stems at the given buffer offset.
-    fn read_32bit_float_region(&mut self, stems: &mut StemBuffers, buffer_start: usize, frame_count: usize) -> Result<(), AudioFileError> {
-        const BYTES_PER_FRAME: usize = 32; // 8 channels * 4 bytes
-        const CHUNK_FRAMES: usize = 32768; // 1MB chunks (32768 * 32 = 1,048,576 bytes)
+        while frames_written < count {
+            let packet = match format_reader.next_packet() {
+                Ok(p) => p,
+                Err(symphonia::core::errors::Error::IoError(e))
+                    if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(e) => return Err(AudioFileError::IoError(format!("Decode error: {}", e))),
+            };
 
-        let mut chunk_buffer = vec![0u8; CHUNK_FRAMES * BYTES_PER_FRAME];
-
-        let mut frames_read = 0;
-        while frames_read < frame_count {
-            let frames_this_chunk = CHUNK_FRAMES.min(frame_count - frames_read);
-            let bytes_to_read = frames_this_chunk * BYTES_PER_FRAME;
-
-            self.reader.read_exact(&mut chunk_buffer[..bytes_to_read])
-                .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-            for j in 0..frames_this_chunk {
-                let offset = j * BYTES_PER_FRAME;
-                let i = buffer_start + frames_read + j;
-
-                let vocals_l = f32::from_le_bytes([chunk_buffer[offset], chunk_buffer[offset + 1], chunk_buffer[offset + 2], chunk_buffer[offset + 3]]);
-                let vocals_r = f32::from_le_bytes([chunk_buffer[offset + 4], chunk_buffer[offset + 5], chunk_buffer[offset + 6], chunk_buffer[offset + 7]]);
-                let drums_l = f32::from_le_bytes([chunk_buffer[offset + 8], chunk_buffer[offset + 9], chunk_buffer[offset + 10], chunk_buffer[offset + 11]]);
-                let drums_r = f32::from_le_bytes([chunk_buffer[offset + 12], chunk_buffer[offset + 13], chunk_buffer[offset + 14], chunk_buffer[offset + 15]]);
-                let bass_l = f32::from_le_bytes([chunk_buffer[offset + 16], chunk_buffer[offset + 17], chunk_buffer[offset + 18], chunk_buffer[offset + 19]]);
-                let bass_r = f32::from_le_bytes([chunk_buffer[offset + 20], chunk_buffer[offset + 21], chunk_buffer[offset + 22], chunk_buffer[offset + 23]]);
-                let other_l = f32::from_le_bytes([chunk_buffer[offset + 24], chunk_buffer[offset + 25], chunk_buffer[offset + 26], chunk_buffer[offset + 27]]);
-                let other_r = f32::from_le_bytes([chunk_buffer[offset + 28], chunk_buffer[offset + 29], chunk_buffer[offset + 30], chunk_buffer[offset + 31]]);
-
-                stems.vocals.as_mut_slice()[i] = StereoSample::new(vocals_l, vocals_r);
-                stems.drums.as_mut_slice()[i] = StereoSample::new(drums_l, drums_r);
-                stems.bass.as_mut_slice()[i] = StereoSample::new(bass_l, bass_r);
-                stems.other.as_mut_slice()[i] = StereoSample::new(other_l, other_r);
+            if packet.track_id() != track_id {
+                continue;
             }
 
-            frames_read += frames_this_chunk;
-        }
+            let decoded = decoder.decode(&packet)
+                .map_err(|e| AudioFileError::IoError(format!("Packet decode error: {}", e)))?;
 
-        Ok(())
-    }
-
-    /// Read 32-bit integer samples into stems at the given buffer offset.
-    fn read_32bit_int_region(&mut self, stems: &mut StemBuffers, buffer_start: usize, frame_count: usize) -> Result<(), AudioFileError> {
-        const BYTES_PER_FRAME: usize = 32; // 8 channels * 4 bytes
-        const CHUNK_FRAMES: usize = 32768; // 1MB chunks (32768 * 32 = 1,048,576 bytes)
-        const SCALE: f32 = 1.0 / 2147483648.0; // 2^31
-
-        let mut chunk_buffer = vec![0u8; CHUNK_FRAMES * BYTES_PER_FRAME];
-
-        let mut frames_read = 0;
-        while frames_read < frame_count {
-            let frames_this_chunk = CHUNK_FRAMES.min(frame_count - frames_read);
-            let bytes_to_read = frames_this_chunk * BYTES_PER_FRAME;
-
-            self.reader.read_exact(&mut chunk_buffer[..bytes_to_read])
-                .map_err(|e| AudioFileError::IoError(e.to_string()))?;
-
-            for j in 0..frames_this_chunk {
-                let offset = j * BYTES_PER_FRAME;
-                let i = buffer_start + frames_read + j;
-
-                let vocals_l = i32::from_le_bytes([chunk_buffer[offset], chunk_buffer[offset + 1], chunk_buffer[offset + 2], chunk_buffer[offset + 3]]) as f32 * SCALE;
-                let vocals_r = i32::from_le_bytes([chunk_buffer[offset + 4], chunk_buffer[offset + 5], chunk_buffer[offset + 6], chunk_buffer[offset + 7]]) as f32 * SCALE;
-                let drums_l = i32::from_le_bytes([chunk_buffer[offset + 8], chunk_buffer[offset + 9], chunk_buffer[offset + 10], chunk_buffer[offset + 11]]) as f32 * SCALE;
-                let drums_r = i32::from_le_bytes([chunk_buffer[offset + 12], chunk_buffer[offset + 13], chunk_buffer[offset + 14], chunk_buffer[offset + 15]]) as f32 * SCALE;
-                let bass_l = i32::from_le_bytes([chunk_buffer[offset + 16], chunk_buffer[offset + 17], chunk_buffer[offset + 18], chunk_buffer[offset + 19]]) as f32 * SCALE;
-                let bass_r = i32::from_le_bytes([chunk_buffer[offset + 20], chunk_buffer[offset + 21], chunk_buffer[offset + 22], chunk_buffer[offset + 23]]) as f32 * SCALE;
-                let other_l = i32::from_le_bytes([chunk_buffer[offset + 24], chunk_buffer[offset + 25], chunk_buffer[offset + 26], chunk_buffer[offset + 27]]) as f32 * SCALE;
-                let other_r = i32::from_le_bytes([chunk_buffer[offset + 28], chunk_buffer[offset + 29], chunk_buffer[offset + 30], chunk_buffer[offset + 31]]) as f32 * SCALE;
-
-                stems.vocals.as_mut_slice()[i] = StereoSample::new(vocals_l, vocals_r);
-                stems.drums.as_mut_slice()[i] = StereoSample::new(drums_l, drums_r);
-                stems.bass.as_mut_slice()[i] = StereoSample::new(bass_l, bass_r);
-                stems.other.as_mut_slice()[i] = StereoSample::new(other_l, other_r);
+            if sample_buf.is_none() {
+                let spec = *decoded.spec();
+                let duration = decoded.capacity() as u64;
+                sample_buf = Some(SampleBuffer::new(duration, spec));
             }
 
-            frames_read += frames_this_chunk;
+            if let Some(ref mut buf) = sample_buf {
+                buf.copy_interleaved_ref(decoded);
+                let samples = buf.samples();
+                let ch = 8;
+                let packet_frames = samples.len() / ch;
+                let frames_to_write = packet_frames.min(count - frames_written);
+
+                for j in 0..frames_to_write {
+                    let base = j * ch;
+                    let i = frames_written + j;
+                    stems.vocals.as_mut_slice()[i] = StereoSample::new(samples[base], samples[base + 1]);
+                    stems.drums.as_mut_slice()[i] = StereoSample::new(samples[base + 2], samples[base + 3]);
+                    stems.bass.as_mut_slice()[i] = StereoSample::new(samples[base + 4], samples[base + 5]);
+                    stems.other.as_mut_slice()[i] = StereoSample::new(samples[base + 6], samples[base + 7]);
+                }
+
+                frames_written += frames_to_write;
+            }
         }
 
-        Ok(())
+        Ok(stems)
     }
 }
 
@@ -1768,7 +1235,6 @@ impl LoadedTrack {
     ///
     /// This is the core loading function that doesn't depend on any database.
     /// The caller is responsible for loading metadata from the appropriate source.
-    /// Waveform preview is loaded from the WAV file's wvfm chunk.
     pub fn load_with_metadata<P: AsRef<Path>>(
         path: P,
         mut metadata: TrackMetadata,
@@ -1780,24 +1246,9 @@ impl LoadedTrack {
         let total_start = Instant::now();
         log::info!("[PERF] Loading track: {:?} (target rate: {} Hz)", path_ref, target_sample_rate);
 
-        // Load waveform preview from WAV file (stored in wvfm chunk)
-        let wvfm_start = Instant::now();
-        match read_waveform_preview_from_file(path_ref) {
-            Ok(Some(waveform)) => {
-                metadata.waveform_preview = Some(waveform);
-                log::info!("  [PERF] Waveform preview loaded from WAV in {:?}", wvfm_start.elapsed());
-            }
-            Ok(None) => {
-                log::debug!("  No wvfm chunk found in {:?}", path_ref);
-            }
-            Err(e) => {
-                log::warn!("  Failed to read waveform preview: {}", e);
-            }
-        }
-
-        // Load the audio data
+        // Load the audio data (reads entire file into memory, then decodes)
         let open_start = Instant::now();
-        let mut reader = AudioFileReader::open(path_ref)?;
+        let reader = AudioFileReader::open(path_ref)?;
         log::info!("  [PERF] File opened in {:?}", open_start.elapsed());
 
         // Get the source sample rate before reading (for metadata conversion)
@@ -1853,7 +1304,7 @@ impl LoadedTrack {
     ///
     /// This allows loading tracks to match whatever sample rate the audio system is running at.
     pub fn load_stems_to<P: AsRef<Path>>(path: P, target_sample_rate: u32) -> Result<StemBuffers, AudioFileError> {
-        let mut reader = AudioFileReader::open(path.as_ref())?;
+        let reader = AudioFileReader::open(path.as_ref())?;
         reader.read_all_stems_to(target_sample_rate)
     }
 
@@ -1977,51 +1428,4 @@ mod tests {
         assert_eq!(stems.drums.len(), 100);
     }
 
-    #[test]
-    fn test_mslk_chunk_roundtrip() {
-        use std::path::PathBuf;
-
-        // Create stem links
-        let original = vec![
-            StemLinkReference {
-                stem_index: 0, // Vocals
-                source_path: PathBuf::from("/music/linked_track.wav"),
-                source_stem: 1, // Drums from source
-                source_drop_marker: 1234567,
-            },
-            StemLinkReference {
-                stem_index: 2, // Bass
-                source_path: PathBuf::from("/music/another_track.wav"),
-                source_stem: 2, // Bass from source
-                source_drop_marker: 9876543,
-            },
-        ];
-
-        // Serialize to bytes
-        let bytes = serialize_mslk_chunk(&original);
-
-        // Parse back
-        let parsed = parse_mslk_chunk(&bytes).expect("Failed to parse mslk chunk");
-
-        // Verify roundtrip
-        assert_eq!(parsed.len(), 2);
-
-        assert_eq!(parsed[0].stem_index, 0);
-        assert_eq!(parsed[0].source_path, PathBuf::from("/music/linked_track.wav"));
-        assert_eq!(parsed[0].source_stem, 1);
-        assert_eq!(parsed[0].source_drop_marker, 1234567);
-
-        assert_eq!(parsed[1].stem_index, 2);
-        assert_eq!(parsed[1].source_path, PathBuf::from("/music/another_track.wav"));
-        assert_eq!(parsed[1].source_stem, 2);
-        assert_eq!(parsed[1].source_drop_marker, 9876543);
-    }
-
-    #[test]
-    fn test_mslk_chunk_empty() {
-        let empty: Vec<StemLinkReference> = Vec::new();
-        let bytes = serialize_mslk_chunk(&empty);
-        let parsed = parse_mslk_chunk(&bytes).expect("Failed to parse empty mslk chunk");
-        assert!(parsed.is_empty());
-    }
 }

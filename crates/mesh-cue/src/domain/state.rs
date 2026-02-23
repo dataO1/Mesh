@@ -244,7 +244,7 @@ mod tests {
     #[test]
     fn test_nearest_beat() {
         let state = LoadedTrackState {
-            path: PathBuf::from("/test.wav"),
+            path: PathBuf::from("/test.flac"),
             track_id: Some(1),
             name: "Test".to_string(),
             artist: None,

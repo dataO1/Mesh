@@ -8,7 +8,7 @@ use super::CueMarker;
 use super::shader::PeakBuffer;
 use crate::{CUE_COLORS, STEM_COLORS};
 use iced::Color;
-use mesh_core::audio_file::{dequantize_peak, CuePoint, LoadedTrack, StemBuffers, WaveformPreview};
+use mesh_core::audio_file::{CuePoint, LoadedTrack, StemBuffers};
 use std::sync::Arc;
 
 use super::{compute_highres_width, generate_peaks, smooth_peaks_gaussian, DEFAULT_WIDTH};
@@ -192,78 +192,6 @@ impl OverviewState {
     /// Pass `None` to clear the drop marker.
     pub fn set_drop_marker(&mut self, position: Option<u64>) {
         self.drop_marker = position;
-    }
-
-    /// Create from a cached waveform preview
-    ///
-    /// This provides instant waveform display without recomputing from stems.
-    pub fn from_preview(
-        preview: &WaveformPreview,
-        beat_grid: &[u64],
-        cue_points: &[CuePoint],
-        duration_samples: u64,
-    ) -> Self {
-        // Dequantize the preview data back to f32 peaks
-        let mut stem_waveforms: [Vec<(f32, f32)>; 4] =
-            [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
-
-        for (stem_idx, stem_peaks) in preview.stems.iter().enumerate() {
-            let peaks: Vec<(f32, f32)> = stem_peaks
-                .min
-                .iter()
-                .zip(stem_peaks.max.iter())
-                .map(|(&min, &max)| (dequantize_peak(min), dequantize_peak(max)))
-                .collect();
-            stem_waveforms[stem_idx] = peaks;
-        }
-
-        // Convert beat grid to normalized positions
-        let beat_markers: Vec<f64> = if duration_samples > 0 {
-            beat_grid
-                .iter()
-                .map(|&pos| pos as f64 / duration_samples as f64)
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        // Convert cue points to markers
-        let cue_markers = Self::cue_points_to_markers(cue_points, duration_samples);
-
-        log::debug!(
-            "Created OverviewState from preview: {} peaks, {} cue markers",
-            stem_waveforms[0].len(),
-            cue_markers.len()
-        );
-
-        let overview_peak_buffer = PeakBuffer::from_stem_peaks(&stem_waveforms);
-
-        Self {
-            stem_waveforms,
-            highres_peaks: [Vec::new(), Vec::new(), Vec::new(), Vec::new()], // No stems available for highres
-            position: 0.0,
-            cue_position: None,
-            beat_markers,
-            cue_markers,
-            duration_samples,
-            has_track: true,
-            loading: false,
-            missing_preview_message: None,
-            grid_bars: 32,
-            loop_region: None,
-            slicer_region: None,
-            slicer_current_slice: None,
-            drop_marker: None,
-            linked_stem_waveforms: [None, None, None, None],
-            linked_drop_markers: [None, None, None, None],
-            linked_durations: [None, None, None, None],
-            linked_highres_peaks: [None, None, None, None],
-            linked_lufs_gains: [1.0, 1.0, 1.0, 1.0],
-            overview_peak_buffer,
-            highres_peak_buffer: None, // No stems available for highres yet
-            linked_overview_buffer: None,
-            linked_highres_buffer: None,
-        }
     }
 
     /// Create an empty state with a message explaining why data is missing

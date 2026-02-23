@@ -16,9 +16,10 @@ let
       in
       # Always include directories (filter will recurse into them)
       type == "directory" ||
-      # Cargo files
+      # Cargo files (including .cargo/config.toml for rustflags)
       baseName == "Cargo.toml" ||
       baseName == "Cargo.lock" ||
+      baseName == "config.toml" ||
       # Rust source files + compile-time includes (WGSL shaders)
       pkgs.lib.hasSuffix ".rs" baseName ||
       pkgs.lib.hasSuffix ".wgsl" baseName;

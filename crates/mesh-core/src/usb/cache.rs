@@ -149,12 +149,12 @@ mod tests {
     #[test]
     fn test_find_collection_root() {
         // Should find mesh-collection in path
-        let path = Path::new("/run/media/user/USB/mesh-collection/tracks/song.wav");
+        let path = Path::new("/run/media/user/USB/mesh-collection/tracks/song.flac");
         let root = find_collection_root(path);
         assert_eq!(root, Some(PathBuf::from("/run/media/user/USB/mesh-collection")));
 
         // Should return None for paths without mesh-collection
-        let path = Path::new("/home/user/Music/song.wav");
+        let path = Path::new("/home/user/Music/song.flac");
         assert!(find_collection_root(path).is_none());
     }
 }
