@@ -8,7 +8,7 @@
 //! Plus a DROP button for setting the drop marker (used for linked stem alignment).
 
 use super::app::{LoadedTrackState, Message};
-use iced::widget::{button, column, container, mouse_area, row, text};
+use iced::widget::{button, column, container, mouse_area, row, text, Space};
 use iced::{Alignment, Color, Element, Length, Theme};
 use mesh_core::types::SAMPLE_RATE;
 use mesh_widgets::CUE_COLORS;
@@ -19,24 +19,30 @@ const DROP_MARKER_COLOR: Color = Color::from_rgb(1.0, 0.5, 0.0);
 
 /// Render the hot cue buttons (single row of 8 action buttons + DROP button)
 pub fn view(state: &LoadedTrackState) -> Element<'_, Message> {
-    // Create all 8 hot cue buttons
-    let mut buttons: Vec<Element<Message>> = (0..8)
+    // 8 hot cue buttons (no DROP in this row)
+    let cue_buttons: Vec<Element<Message>> = (0..8)
         .map(|i| {
             let cue = state.cue_points.iter().find(|c| c.index == i as u8);
             create_hot_cue_button(i, cue)
         })
         .collect();
+    let hot_cue_row = row(cue_buttons).spacing(8).align_y(Alignment::Center);
 
-    // Add DROP button at the end
-    buttons.push(create_drop_marker_button(state.drop_marker));
+    // DROP button on the left — same width container as transport (120px)
+    let drop_btn = create_drop_marker_button(state.drop_marker);
+    let drop_container = container(drop_btn)
+        .padding([0, 8])  // Match transport horizontal padding
+        .width(Length::Fixed(120.0))
+        .center_x(Length::Fixed(120.0));
 
-    let hot_cue_row = row(buttons).spacing(8).align_y(Alignment::Center);
+    // Right spacer: stem column (50px) + spacing (6px) = 56px
+    let cue_row = row![drop_container, hot_cue_row, Space::new().width(56.0)]
+        .spacing(6)
+        .align_y(Alignment::Center);
 
-    // No vertical padding - cue buttons should be directly under waveforms
-    container(hot_cue_row)
-        .padding([0, 10])  // [vertical, horizontal] - no top/bottom padding
+    container(cue_row)
+        .padding(0)
         .width(Length::Fill)
-        .center_x(Length::Fill)
         .into()
 }
 
@@ -50,7 +56,7 @@ fn create_drop_marker_button(drop_marker: Option<u64>) -> Element<'static, Messa
     };
 
     let btn = button(text(label_text).size(11).center())
-        .width(Length::Fixed(60.0)) // Fixed width for DROP button
+        .width(Length::Fixed(104.0)) // Fixed width for DROP button
         .height(Length::Fixed(44.0));
 
     if drop_marker.is_some() {
@@ -235,7 +241,7 @@ pub fn view_stem_links_column(
         .collect();
 
     column(buttons)
-        .spacing(0)
+        .spacing(2)
         .width(Length::Fixed(50.0))
         .height(Length::Fixed(total_height))
         .into()
