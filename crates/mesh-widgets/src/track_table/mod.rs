@@ -833,7 +833,7 @@ where
             });
             return container(pill)
                 .width(state.column_width(column))
-                .center_x(Length::Fill)
+                .center_x(Length::Shrink)
                 .into();
         }
         return container(text(""))
