@@ -55,6 +55,26 @@ All notable changes to Mesh are documented in this file.
   redundant stem loading, BPM/key analysis, ML inference, and FLAC re-export.
   Applies to both pre-separated stem import and mixed-audio separation paths.
 
+- **Volume dim applied to overview waveform** — The WGSL shader volume-dim overlay
+  darkened both the zoomed and overview waveforms when deck volume was lowered.
+  Added `!is_overview` guard so only the zoomed waveform dims; the overview stays
+  at full brightness for navigation clarity.
+
+- **Cue panel layout misaligned with transport/stems** — The DROP button sat at the
+  right end of the hot cue row with 10px padding, misaligning with the transport
+  column above. Moved DROP to a 120px container on the left (matching transport
+  width), 8 hot cue buttons fill the center, and a 56px right spacer aligns with
+  the stem column. Stem link buttons now have 2px vertical spacing.
+
+### Added
+
+- **D key sets drop marker** — Pressing `D` sets or moves the drop marker to the
+  current playhead position. `Shift+D` clears it. Configurable via `keybindings.yaml`.
+
+- **Parallel stem loading in mesh-cue** — Track audio loading now decodes FLAC
+  stems across 4 threads using `decode_region()`, merging into a single buffer.
+  Falls back to sequential decode for short files or tracks needing resampling.
+
 ### Changed
 
 - **Deck header text sizing** — Increased all header text sizes to better fill
