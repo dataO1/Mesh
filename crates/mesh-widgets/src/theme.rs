@@ -241,23 +241,25 @@ pub fn find_theme<'a>(themes: &'a [MeshTheme], name: &str) -> &'a MeshTheme {
 
 /// The hardcoded fallback theme (used when no themes can be loaded)
 ///
-/// Based on the "Mesh" theme (ex-High Contrast) — maximum hue separation.
+/// Deep indigo-black background with cyan-blue accent, inspired by
+/// professional DJ hardware (Pioneer CDJ/Denon screens). The purple
+/// undertone makes warm stem colors (orange, magenta) pop.
 pub fn fallback_theme() -> MeshTheme {
     MeshTheme {
         name: "Mesh".to_string(),
         ui: UiColors {
-            background: Color::from_rgb(0.11, 0.11, 0.13),
-            text: Color::from_rgb(0.90, 0.90, 0.90),
-            accent: Color::from_rgb(0.30, 0.90, 0.40),
-            success: Color::from_rgb(0.30, 0.80, 0.40),
-            warning: Color::from_rgb(0.90, 0.70, 0.20),
-            danger: Color::from_rgb(0.85, 0.30, 0.25),
+            background: hex("#16141F"), // Deep indigo-black
+            text: hex("#E0DDE8"),       // Warm off-white (slight lavender)
+            accent: hex("#47B5FF"),     // Electric cyan-blue
+            success: hex("#5EEAA0"),    // Soft mint green
+            warning: hex("#F0C060"),    // Warm amber gold
+            danger: hex("#E85C6F"),     // Coral-red
         },
         stems: [
-            Color::from_rgb(0.30, 0.90, 0.40), // Vocals - Bright Green
-            Color::from_rgb(0.20, 0.60, 0.90), // Drums - Sky Blue
-            Color::from_rgb(0.90, 0.50, 0.10), // Bass - Orange
-            Color::from_rgb(0.80, 0.30, 0.80), // Other - Magenta
+            hex("#4DE8B0"), // Vocals - Teal-mint
+            hex("#6090F0"), // Drums - Periwinkle
+            hex("#F09040"), // Bass - Warm orange
+            hex("#D060D0"), // Other - Magenta
         ],
     }
 }
@@ -266,72 +268,76 @@ pub fn fallback_theme() -> MeshTheme {
 pub fn default_themes() -> Vec<MeshTheme> {
     vec![
         fallback_theme(),
+        // Catppuccin Mocha — soothing pastels on blue-tinted dark background.
+        // Community-standard palette (github.com/catppuccin) with WCAG AAA contrast.
         MeshTheme {
-            name: "Natural".to_string(),
+            name: "Catppuccin".to_string(),
             ui: UiColors {
-                background: Color::from_rgb(0.11, 0.11, 0.13),
-                text: Color::from_rgb(0.90, 0.90, 0.90),
-                accent: Color::from_rgb(0.45, 0.80, 0.55),
-                success: Color::from_rgb(0.30, 0.80, 0.40),
-                warning: Color::from_rgb(0.90, 0.70, 0.20),
-                danger: Color::from_rgb(0.85, 0.30, 0.25),
+                background: hex("#1E1E2E"), // Base
+                text: hex("#CDD6F4"),       // Text (cool white)
+                accent: hex("#CBA6F7"),     // Mauve
+                success: hex("#A6E3A1"),    // Green
+                warning: hex("#F9E2AF"),    // Yellow
+                danger: hex("#F38BA8"),     // Red (soft coral)
             },
             stems: [
-                Color::from_rgb(0.45, 0.80, 0.55), // Vocals - Sage Green
-                Color::from_rgb(0.40, 0.60, 0.75), // Drums - Steel Blue
-                Color::from_rgb(0.75, 0.55, 0.35), // Bass - Bronze
-                Color::from_rgb(0.70, 0.60, 0.85), // Other - Lavender
+                hex("#A6E3A1"), // Vocals - Catppuccin Green
+                hex("#89B4FA"), // Drums - Catppuccin Blue
+                hex("#FAB387"), // Bass - Catppuccin Peach
+                hex("#CBA6F7"), // Other - Catppuccin Mauve
             ],
         },
+        // Rosé Pine Moon — minimalist, editorial palette with purple-blue undertones.
+        // "Soho vibes" aesthetic (rosepinetheme.com), curated to just 6 accent colors.
         MeshTheme {
-            name: "Cool-Warm".to_string(),
+            name: "Rosé Pine".to_string(),
             ui: UiColors {
-                background: Color::from_rgb(0.11, 0.11, 0.13),
-                text: Color::from_rgb(0.90, 0.90, 0.90),
-                accent: Color::from_rgb(0.20, 0.85, 0.50),
-                success: Color::from_rgb(0.30, 0.80, 0.40),
-                warning: Color::from_rgb(0.90, 0.70, 0.20),
-                danger: Color::from_rgb(0.85, 0.30, 0.25),
+                background: hex("#232136"), // Base
+                text: hex("#E0DEF4"),       // Text
+                accent: hex("#C4A7E7"),     // Iris
+                success: hex("#9CCFD8"),    // Foam (teal)
+                warning: hex("#F6C177"),    // Gold
+                danger: hex("#EB6F92"),     // Love (coral-pink)
             },
             stems: [
-                Color::from_rgb(0.20, 0.85, 0.50), // Vocals - Green
-                Color::from_rgb(0.30, 0.50, 0.90), // Drums - Blue
-                Color::from_rgb(0.60, 0.30, 0.80), // Bass - Purple
-                Color::from_rgb(0.95, 0.70, 0.20), // Other - Gold
+                hex("#9CCFD8"), // Vocals - Foam (teal)
+                hex("#EA9A97"), // Drums - Rose (warm pink)
+                hex("#F6C177"), // Bass - Gold (amber)
+                hex("#C4A7E7"), // Other - Iris (purple)
             ],
         },
         MeshTheme {
             name: "Synthwave".to_string(),
             ui: UiColors {
-                background: Color::from_rgb(0.10, 0.06, 0.15),
-                text: Color::from_rgb(0.94, 0.90, 1.00),
-                accent: Color::from_rgb(0.30, 0.70, 0.95),
-                success: Color::from_rgb(0.40, 0.95, 0.60),
-                warning: Color::from_rgb(0.95, 0.85, 0.30),
-                danger: Color::from_rgb(0.95, 0.40, 0.70),
+                background: hex("#1A1025"), // Deep violet-black
+                text: hex("#F0E6FF"),       // Pale lavender white
+                accent: hex("#4DB3F2"),     // Neon blue
+                success: hex("#66F299"),    // Neon green
+                warning: hex("#F2D94D"),    // Electric yellow
+                danger: hex("#F266B3"),     // Hot pink
             },
             stems: [
-                Color::from_rgb(0.40, 0.95, 0.60), // Vocals - Mint
-                Color::from_rgb(0.30, 0.70, 0.95), // Drums - Electric Blue
-                Color::from_rgb(0.95, 0.40, 0.70), // Bass - Hot Pink
-                Color::from_rgb(0.95, 0.85, 0.30), // Other - Yellow
+                hex("#66F299"), // Vocals - Neon mint
+                hex("#4DB3F2"), // Drums - Electric blue
+                hex("#F266B3"), // Bass - Hot pink
+                hex("#F2D94D"), // Other - Electric yellow
             ],
         },
         MeshTheme {
             name: "Gruvbox".to_string(),
             ui: UiColors {
-                background: Color::from_rgb(0.16, 0.16, 0.16),
-                text: Color::from_rgb(0.92, 0.86, 0.70),
-                accent: Color::from_rgb(0.85, 0.65, 0.13),
-                success: Color::from_rgb(0.72, 0.73, 0.15),
-                warning: Color::from_rgb(0.99, 0.50, 0.10),
-                danger: Color::from_rgb(0.80, 0.14, 0.11),
+                background: hex("#282828"), // Gruvbox bg0
+                text: hex("#EBDBB2"),       // Gruvbox fg
+                accent: hex("#D79921"),     // Gruvbox yellow
+                success: hex("#B8BB26"),    // Gruvbox green
+                warning: hex("#FE8019"),    // Gruvbox orange
+                danger: hex("#CC241D"),     // Gruvbox red
             },
             stems: [
-                Color::from_rgb(0.72, 0.73, 0.15), // Vocals - Gruvbox Green
-                Color::from_rgb(0.99, 0.50, 0.10), // Drums - Gruvbox Orange
-                Color::from_rgb(0.83, 0.53, 0.61), // Bass - Gruvbox Purple
-                Color::from_rgb(0.56, 0.75, 0.49), // Other - Gruvbox Aqua
+                hex("#B8BB26"), // Vocals - Gruvbox green
+                hex("#FE8019"), // Drums - Gruvbox orange
+                hex("#D3869B"), // Bass - Gruvbox purple (light)
+                hex("#8EC07C"), // Other - Gruvbox aqua
             ],
         },
     ]
@@ -343,44 +349,31 @@ pub fn default_themes() -> Vec<MeshTheme> {
 pub mod stem_palettes {
     use iced::Color;
 
-    pub const NATURAL: [Color; 4] = [
-        Color::from_rgb(0.45, 0.8, 0.55),
-        Color::from_rgb(0.4, 0.6, 0.75),
-        Color::from_rgb(0.75, 0.55, 0.35),
-        Color::from_rgb(0.7, 0.6, 0.85),
-    ];
-
-    pub const COOL_WARM: [Color; 4] = [
-        Color::from_rgb(0.2, 0.85, 0.5),
-        Color::from_rgb(0.3, 0.5, 0.9),
-        Color::from_rgb(0.6, 0.3, 0.8),
-        Color::from_rgb(0.95, 0.7, 0.2),
-    ];
-
-    pub const HIGH_CONTRAST: [Color; 4] = [
-        Color::from_rgb(0.3, 0.9, 0.4),
-        Color::from_rgb(0.2, 0.6, 0.9),
-        Color::from_rgb(0.9, 0.5, 0.1),
-        Color::from_rgb(0.8, 0.3, 0.8),
+    /// Mesh default: teal-mint, periwinkle, orange, magenta
+    pub const MESH: [Color; 4] = [
+        Color::from_rgb(0.302, 0.910, 0.690), // #4DE8B0
+        Color::from_rgb(0.376, 0.565, 0.941), // #6090F0
+        Color::from_rgb(0.941, 0.565, 0.251), // #F09040
+        Color::from_rgb(0.816, 0.376, 0.816), // #D060D0
     ];
 
     pub const SYNTHWAVE: [Color; 4] = [
-        Color::from_rgb(0.4, 0.95, 0.6),
-        Color::from_rgb(0.3, 0.7, 0.95),
-        Color::from_rgb(0.95, 0.4, 0.7),
-        Color::from_rgb(0.95, 0.85, 0.3),
+        Color::from_rgb(0.40, 0.95, 0.60),
+        Color::from_rgb(0.30, 0.70, 0.95),
+        Color::from_rgb(0.95, 0.40, 0.70),
+        Color::from_rgb(0.95, 0.85, 0.30),
     ];
 
     pub const GRUVBOX: [Color; 4] = [
-        Color::from_rgb(0.72, 0.73, 0.15),
-        Color::from_rgb(0.99, 0.50, 0.10),
-        Color::from_rgb(0.83, 0.53, 0.61),
-        Color::from_rgb(0.56, 0.75, 0.49),
+        Color::from_rgb(0.722, 0.733, 0.149),
+        Color::from_rgb(0.996, 0.502, 0.098),
+        Color::from_rgb(0.827, 0.537, 0.608),
+        Color::from_rgb(0.557, 0.753, 0.486),
     ];
 }
 
-/// Default stem colors (Natural palette — legacy, prefer MeshTheme)
-pub const STEM_COLORS: [Color; 4] = stem_palettes::NATURAL;
+/// Default stem colors (Mesh palette — legacy, prefer MeshTheme)
+pub const STEM_COLORS: [Color; 4] = stem_palettes::MESH;
 
 /// Cue point colors (8 distinct colors for 8 hot cue buttons)
 pub const CUE_COLORS: [Color; 8] = [

@@ -10,10 +10,12 @@ All notable changes to Mesh are documented in this file.
 
 - **YAML-based theme system** — Themes are now defined in `theme.yaml` in the collection
   folder. Each theme specifies a full iced UI palette (background, text, accent, success,
-  warning, danger) plus 4 stem waveform colors. Ships with 5 built-in themes: Mesh,
-  Natural, Cool-Warm, Synthwave, and Gruvbox. The file is auto-created on first launch.
-  Users can add custom themes by editing the YAML. Both mesh-player and mesh-cue load
-  themes dynamically and offer a theme picker in settings. Replaces the hardcoded
+  warning, danger) plus 4 stem waveform colors. Ships with 5 built-in themes: Mesh
+  (indigo-black with cyan-blue accent), Catppuccin Mocha (pastel on dark blue), Rosé Pine
+  Moon (editorial purple-blue), Synthwave (neon retro), and Gruvbox (warm earthy). The
+  file is auto-created on first launch and old-format files are auto-migrated. Users can
+  add custom themes by editing the YAML. Both mesh-player and mesh-cue load themes
+  dynamically and offer a theme picker in settings. Replaces the hardcoded
   `StemColorPalette` enum and legacy `theme.rs` OnceLock system.
 
 - **Window minimum size** — mesh-player enforces 1280×720 and mesh-cue enforces 960×600
