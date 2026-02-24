@@ -6,6 +6,13 @@ All notable changes to Mesh are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Hot cue count column in track browser** — New narrow "Q" column between # and Name
+  shows an orange pill with the number of hot cues set per track, letting DJs see at a
+  glance which tracks are prepared. Empty cell when no cues are set. Sortable. Works in
+  both mesh-cue and mesh-player, including USB browsing.
+
 ### Fixed
 
 - **Scratch playhead drifts forward instead of following mouse** — During waveform
