@@ -105,9 +105,12 @@ All notable changes to Mesh are documented in this file.
 - **D key sets drop marker** — Pressing `D` sets or moves the drop marker to the
   current playhead position. `Shift+D` clears it. Configurable via `keybindings.yaml`.
 
-- **Parallel stem loading in mesh-cue** — Track audio loading now decodes FLAC
-  stems across 4 threads using `decode_region()`, merging into a single buffer.
-  Falls back to sequential decode for short files or tracks needing resampling.
+- **Progressive track loading** — Both mesh-cue and mesh-player now use a
+  work-stealing thread pool (4 workers) that prioritises hot cue regions first,
+  then fills the remaining audio in ~10-second chunks. Waveforms visibly grow
+  as each chunk completes. Hot cue areas are playable within the first few
+  hundred milliseconds; the rest of the track loads progressively in the
+  background without blocking the UI.
 
 ### Changed
 
