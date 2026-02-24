@@ -121,6 +121,11 @@ impl MeshCueApp {
             return self.update(Message::AlignBeatGridToPlayhead);
         }
 
+        // Set/update drop marker (ignore repeat)
+        if !repeat && bindings.set_drop_marker.iter().any(|b| b == &key_str) {
+            return self.update(Message::SetDropMarker);
+        }
+
         // Increase/decrease loop length (also affects beat jump size, ignore repeat)
         if !repeat && bindings.increase_jump_size.iter().any(|b| b == &key_str) {
             if self.collection.loaded_track.is_some() {

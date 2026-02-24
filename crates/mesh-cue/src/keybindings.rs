@@ -44,6 +44,8 @@ pub struct EditingKeybindings {
     pub decrease_jump_size: Vec<String>,
     /// Main cue button (CDJ-style: set/return to cue point)
     pub cue_button: Vec<String>,
+    /// Set/update drop marker at current playhead (Shift to clear)
+    pub set_drop_marker: Vec<String>,
     /// Hot cue buttons (1-8)
     pub hot_cue_1: Vec<String>,
     pub hot_cue_2: Vec<String>,
@@ -76,6 +78,7 @@ impl Default for EditingKeybindings {
             increase_jump_size: vec!["Up".into()],
             decrease_jump_size: vec!["Down".into()],
             cue_button: vec!["c".into()],
+            set_drop_marker: vec!["d".into()],
             hot_cue_1: vec!["1".into()],
             hot_cue_2: vec!["2".into()],
             hot_cue_3: vec!["3".into()],
