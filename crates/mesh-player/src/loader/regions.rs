@@ -1,8 +1,7 @@
 //! Priority region planning for streaming track loading.
 //!
-//! Computes which sample ranges to load first (around hot cues, drop markers,
-//! and the track start) so the DJ can play from entry points while the
-//! rest of the audio loads in the background.
+//! Computes which sample ranges to load first (around hot cues) so the DJ
+//! can play from entry points while the rest of the audio loads progressively.
 
 use mesh_core::audio_file::TrackMetadata;
 
@@ -20,11 +19,15 @@ impl LoadRegion {
     }
 }
 
+/// Maximum frames per gap sub-chunk. Large gaps are split into chunks of
+/// this size so the work-stealing pool produces a steady stream of UI
+/// updates instead of a few large bursts.
+const GAP_CHUNK_FRAMES: usize = 480_000; // ~10 seconds at 48 kHz
+
 /// Compute priority load regions from track metadata.
 ///
-/// Collects first_beat + all hot cue positions + drop marker, creates
-/// `[point - 64*spb, point + 64*spb]` regions, merges overlapping, and
-/// sorts by file position for sequential I/O.
+/// Only hot cue positions are prioritised. Creates `[cue - 32*spb, cue + 32*spb]`
+/// regions (64 beats total), merges overlapping, and sorts by file position.
 pub fn compute_priority_regions(
     metadata: &TrackMetadata,
     duration_samples: usize,
@@ -32,25 +35,17 @@ pub fn compute_priority_regions(
 ) -> Vec<LoadRegion> {
     let bpm = metadata.bpm.unwrap_or(120.0);
     let spb = (sample_rate as f64 * 60.0 / bpm) as usize;
-    let margin = 64 * spb;
+    let margin = 32 * spb; // 32 beats each side = 64 beats total
 
-    let mut points: Vec<usize> = Vec::new();
+    // Only hot cue positions — track start and drop marker load with gaps
+    let points: Vec<usize> = metadata
+        .cue_points
+        .iter()
+        .map(|cue| cue.sample_position as usize)
+        .collect();
 
-    // Always include the start of the track (first beat or position 0)
-    if let Some(fb) = metadata.beat_grid.first_beat_sample {
-        points.push(fb as usize);
-    } else {
-        points.push(0);
-    }
-
-    // Include all hot cue positions
-    for cue in &metadata.cue_points {
-        points.push(cue.sample_position as usize);
-    }
-
-    // Include drop marker if set
-    if let Some(dm) = metadata.drop_marker {
-        points.push(dm as usize);
+    if points.is_empty() {
+        return Vec::new();
     }
 
     // Create regions around each point, clamp to track bounds
@@ -79,26 +74,33 @@ pub fn compute_priority_regions(
     merged
 }
 
-/// Compute gap regions (everything NOT covered by priority regions).
-///
-/// These are loaded after priority regions are sent to the engine.
+/// Compute gap regions (everything NOT covered by priority regions),
+/// split into sub-chunks of at most `GAP_CHUNK_FRAMES` for granular
+/// progressive loading.
 pub fn compute_gaps(priority: &[LoadRegion], duration_samples: usize) -> Vec<LoadRegion> {
     let mut gaps = Vec::new();
     let mut pos = 0;
     for r in priority {
         if pos < r.start {
-            gaps.push(LoadRegion {
-                start: pos,
-                end: r.start,
-            });
+            split_into_chunks(pos, r.start, &mut gaps);
         }
         pos = r.end;
     }
     if pos < duration_samples {
-        gaps.push(LoadRegion {
-            start: pos,
-            end: duration_samples,
-        });
+        split_into_chunks(pos, duration_samples, &mut gaps);
     }
     gaps
+}
+
+/// Split a range [start, end) into sub-chunks of at most GAP_CHUNK_FRAMES.
+fn split_into_chunks(start: usize, end: usize, out: &mut Vec<LoadRegion>) {
+    let mut pos = start;
+    while pos < end {
+        let chunk_end = (pos + GAP_CHUNK_FRAMES).min(end);
+        out.push(LoadRegion {
+            start: pos,
+            end: chunk_end,
+        });
+        pos = chunk_end;
+    }
 }
