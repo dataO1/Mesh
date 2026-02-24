@@ -702,6 +702,7 @@ impl ControllerManager {
         if self.last_hid_health_check.elapsed() >= std::time::Duration::from_secs(2) {
             self.last_hid_health_check = Instant::now();
             self.check_hid_health();
+            self.check_new_devices();
         }
 
         let mut messages = Vec::new();
@@ -929,6 +930,51 @@ impl ControllerManager {
         // Restart feedback worker if any device reconnected and we had one before
         if any_reconnected && self.feedback_worker.is_some() {
             self.start_feedback_worker();
+        }
+    }
+
+    /// Attempt to connect devices from config that aren't connected yet.
+    ///
+    /// This handles the case where hardware is plugged in AFTER the app starts.
+    /// Called every 2 seconds alongside check_hid_health().
+    fn check_new_devices(&mut self) {
+        // Check if any config profiles have unconnected MIDI ports
+        let expected_midi = self.config.devices.iter().any(|p| {
+            p.mappings.iter().any(|m| matches!(&m.control, ControlAddress::Midi(_)))
+        });
+        let has_midi = !self.midi_devices.is_empty();
+
+        if expected_midi && !has_midi {
+            if let Err(e) = self.try_connect_all_midi(self.capture_raw) {
+                log::debug!("Hotplug: MIDI scan failed: {}", e);
+            }
+            if !self.midi_devices.is_empty() {
+                log::info!("Hotplug: MIDI device(s) connected after startup");
+                self.start_feedback_worker();
+            }
+        }
+
+        // Check if any config profiles expect HID devices
+        let expected_hid = self.config.devices.iter().any(|p| {
+            p.hid_device_id.is_some() || p.hid_product_match.is_some()
+        });
+        let has_all_hid = if expected_hid {
+            // Count expected HID profiles vs connected HID devices
+            let expected_count = self.config.devices.iter()
+                .filter(|p| p.hid_device_id.is_some() || p.hid_product_match.is_some())
+                .count();
+            self.hid_devices.len() >= expected_count
+        } else {
+            true
+        };
+
+        if expected_hid && !has_all_hid && self.pending_hid_reconnect.is_empty() {
+            let before = self.hid_devices.len();
+            self.try_connect_all_hid();
+            if self.hid_devices.len() > before {
+                log::info!("Hotplug: HID device(s) connected after startup");
+                self.start_feedback_worker();
+            }
         }
     }
 
