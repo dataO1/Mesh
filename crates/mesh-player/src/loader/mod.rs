@@ -19,7 +19,7 @@ pub mod regions;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 
 use basedrop::Shared;
@@ -33,6 +33,9 @@ use mesh_widgets::{
 
 use self::regions::{compute_gaps, compute_priority_regions};
 
+/// Number of parallel decode workers. Capped to avoid overloading the CPU
+/// while still maximising I/O throughput for in-memory FLAC/WAV decoding.
+const DECODE_WORKERS: usize = 4;
 
 /// Request to load a track in the background
 ///
@@ -409,136 +412,120 @@ fn handle_streaming_load(
         gaps.len()
     );
 
-    // 4. PARALLEL priority region decode using std::thread::scope.
-    //    Each thread creates its own decoder from Arc<[u8]> and decodes into
-    //    a local StemBuffers — no shared mutable state. Results are merged
-    //    sequentially after all threads complete.
-    //    Uses OS threads (not rayon) to avoid starving the audio engine's rayon pool.
-    let priority_start = std::time::Instant::now();
+    // 4. Build unified work queue: priority regions first, then gap regions.
+    //    Workers pull from this queue using an atomic index, so priority
+    //    regions are always decoded first. As each decode finishes, the
+    //    result is sent to the merge channel for immediate UI update.
+    let num_priority = regions.len();
+    let all_regions: Vec<&regions::LoadRegion> =
+        regions.iter().chain(gaps.iter()).collect();
+    let total_regions = all_regions.len();
 
-    // Phase A: Parallel decode — each region decoded independently
-    let region_results: Vec<Result<StemBuffers, String>> = if regions.is_empty() {
-        Vec::new()
+    if total_regions == 0 {
+        log::info!("[LOADER] No regions to decode (empty track?)");
     } else {
+        let decode_start_time = std::time::Instant::now();
+        let work_index = Arc::new(AtomicUsize::new(0));
+        let num_workers = DECODE_WORKERS.min(total_regions);
+
+        // Channel for decoded results: (region_index, decoded_buffer)
+        let (decode_tx, decode_rx) =
+            std::sync::mpsc::channel::<(usize, Result<StemBuffers, String>)>();
+
+        // Spawn parallel decode workers inside a thread scope.
+        // Workers claim tasks atomically; priority regions are at indices 0..num_priority.
         std::thread::scope(|s| {
-            let handles: Vec<_> = regions.iter().enumerate().map(|(i, region)| {
+            for _worker in 0..num_workers {
+                let idx = work_index.clone();
+                let dtx = decode_tx.clone();
                 let reader_ref = &reader;
+                let regions_ref = &all_regions;
+
                 s.spawn(move || {
-                    let len = region.len();
-                    let start = std::time::Instant::now();
-                    let result = reader_ref.decode_region(region.start, len)
-                        .map_err(|e| format!("Priority region {} decode failed: {}", i, e));
-                    log::info!("[PERF] Loader: Priority region {} ({} frames from {}) decoded in {:?}",
-                        i, len, region.start, start.elapsed());
-                    result
-                })
-            }).collect();
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
-        })
-    };
+                    loop {
+                        let i = idx.fetch_add(1, Ordering::SeqCst);
+                        if i >= total_regions {
+                            break;
+                        }
+                        let region = regions_ref[i];
+                        let len = region.len();
+                        let t = std::time::Instant::now();
+                        let result = reader_ref.decode_region(region.start, len)
+                            .map_err(|e| format!("Region {} decode failed: {}", i, e));
+                        let kind = if i < num_priority { "Priority" } else { "Gap" };
+                        log::info!(
+                            "[PERF] Loader: {} region {} ({} frames from {}) decoded in {:?}",
+                            kind, i, len, region.start, t.elapsed()
+                        );
+                        let _ = dtx.send((i, result));
+                    }
+                });
+            }
+            // Drop our copy so decode_rx closes when all workers finish
+            drop(decode_tx);
 
-    // Check for errors before merging
-    for result in &region_results {
-        if let Err(e) = result {
-            log::error!("Failed to decode priority region: {}", e);
-            let _ = tx.send(TrackLoadResult::Error {
-                deck_idx,
-                error: e.clone(),
-            });
-            return;
-        }
-    }
+            // Merge thread: receive decoded regions as they complete,
+            // merge into stems buffer, update peaks, send UI messages.
+            let mut priority_merged = 0usize;
+            let mut total_merged = 0usize;
 
-    // Phase B: Sequential merge + peak updates + messages
-    for (i, (region, result)) in regions.iter().zip(region_results.into_iter()).enumerate() {
-        let local = result.unwrap();
-        stems.copy_region_from(&local, region.start, region.len());
-        drop(local); // Free region buffer immediately
+            for (i, result) in decode_rx.iter() {
+                let local = match result {
+                    Ok(buf) => buf,
+                    Err(e) => {
+                        log::error!("Decode failed: {}", e);
+                        let _ = tx.send(TrackLoadResult::Error { deck_idx, error: e });
+                        return;
+                    }
+                };
 
-        update_peaks_for_region(&stems, &mut overview_peaks, region.start, region.end, frame_count, DEFAULT_WIDTH);
-        update_peaks_for_region(&stems, &mut highres_peaks, region.start, region.end, frame_count, highres_width);
+                let region = all_regions[i];
+                stems.copy_region_from(&local, region.start, region.len());
+                drop(local);
 
-        let is_last = i + 1 == regions.len();
-        let _ = tx.send(TrackLoadResult::RegionLoaded {
-            deck_idx,
-            stems: if is_last {
-                Some(Shared::new(&mesh_core::engine::gc::gc_handle(), stems.clone()))
-            } else {
-                None
-            },
-            duration_samples: frame_count,
-            overview_peaks: overview_peaks.clone(),
-            highres_peaks: highres_peaks.clone(),
-            path: path.clone(),
+                update_peaks_for_region(&stems, &mut overview_peaks, region.start, region.end, frame_count, DEFAULT_WIDTH);
+                update_peaks_for_region(&stems, &mut highres_peaks, region.start, region.end, frame_count, highres_width);
+
+                let is_priority = i < num_priority;
+                if is_priority {
+                    priority_merged += 1;
+                }
+                total_merged += 1;
+
+                // Include a playable stems snapshot when:
+                // - All priority regions have been merged (first interaction point)
+                // - All regions are done (final audio upgrade)
+                let all_priority_done = priority_merged == num_priority;
+                let all_done = total_merged == total_regions;
+                let send_stems = (is_priority && all_priority_done) || all_done;
+
+                let _ = tx.send(TrackLoadResult::RegionLoaded {
+                    deck_idx,
+                    stems: if send_stems {
+                        Some(Shared::new(&mesh_core::engine::gc::gc_handle(), stems.clone()))
+                    } else {
+                        None
+                    },
+                    duration_samples: frame_count,
+                    overview_peaks: overview_peaks.clone(),
+                    highres_peaks: highres_peaks.clone(),
+                    path: path.clone(),
+                });
+
+                if all_priority_done && is_priority {
+                    log::info!(
+                        "[PERF] Loader: All {} priority regions merged at {:?}",
+                        num_priority, decode_start_time.elapsed()
+                    );
+                }
+            }
+
+            log::info!(
+                "[PERF] Loader: All {} regions decoded+merged in {:?} ({} workers)",
+                total_regions, decode_start_time.elapsed(), num_workers
+            );
         });
     }
-    log::info!("[PERF] Loader: Parallel priority regions took {:?} ({} regions, {} threads)",
-        priority_start.elapsed(), regions.len(), regions.len());
-
-    // 5. PARALLEL gap decode — each gap region decoded independently.
-    //    Same pattern as priority regions: parallel decode, sequential merge.
-    let gap_start = std::time::Instant::now();
-
-    let gap_results: Vec<Result<StemBuffers, String>> = if gaps.is_empty() {
-        Vec::new()
-    } else {
-        std::thread::scope(|s| {
-            let handles: Vec<_> = gaps.iter().enumerate().map(|(i, gap)| {
-                let reader_ref = &reader;
-                s.spawn(move || {
-                    let len = gap.len();
-                    let start = std::time::Instant::now();
-                    let result = reader_ref.decode_region(gap.start, len)
-                        .map_err(|e| format!("Gap region {} decode failed: {}", i, e));
-                    log::info!("[PERF] Loader: Gap region {} ({} frames from {}) decoded in {:?}",
-                        i, len, gap.start, start.elapsed());
-                    result
-                })
-            }).collect();
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
-        })
-    };
-
-    // Check for errors
-    for result in &gap_results {
-        if let Err(e) = result {
-            log::error!("Failed to decode gap region: {}", e);
-            let _ = tx.send(TrackLoadResult::Error {
-                deck_idx,
-                error: e.clone(),
-            });
-            return;
-        }
-    }
-
-    // Sequential merge + peak updates — send visual update after each gap
-    let gap_count = gaps.len();
-    for (i, (gap, result)) in gaps.iter().zip(gap_results.into_iter()).enumerate() {
-        let local = result.unwrap();
-        stems.copy_region_from(&local, gap.start, gap.len());
-        drop(local);
-
-        update_peaks_for_region(&stems, &mut overview_peaks, gap.start, gap.end, frame_count, DEFAULT_WIDTH);
-        update_peaks_for_region(&stems, &mut highres_peaks, gap.start, gap.end, frame_count, highres_width);
-
-        // Send incremental peak update so waveform fills progressively.
-        // Last gap includes stem clone for final audio upgrade.
-        let is_last = i + 1 == gap_count;
-        let _ = tx.send(TrackLoadResult::RegionLoaded {
-            deck_idx,
-            stems: if is_last {
-                Some(Shared::new(&mesh_core::engine::gc::gc_handle(), stems.clone()))
-            } else {
-                None
-            },
-            duration_samples: frame_count,
-            overview_peaks: overview_peaks.clone(),
-            highres_peaks: highres_peaks.clone(),
-            path: path.clone(),
-        });
-    }
-    log::info!("[PERF] Loader: Parallel gap regions took {:?} ({} regions, {} threads)",
-        gap_start.elapsed(), gaps.len(), gaps.len());
 
     // 6. Send finalization — peaks already computed incrementally, skip build_waveform_states()
     let final_stems = Shared::new(&mesh_core::engine::gc::gc_handle(), stems);
