@@ -160,6 +160,7 @@ impl MeshCueApp {
                         path: state.path.clone(),
                         stems: stems.clone(),
                         metadata: TrackMetadata {
+                            name: None,
                             artist: None,
                             bpm: Some(state.bpm),
                             original_bpm: Some(state.bpm),

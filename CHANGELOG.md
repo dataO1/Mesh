@@ -4,6 +4,40 @@ All notable changes to Mesh are documented in this file.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **USB export stuck on preset sync** — `copy_dir_all()` was missing `sync_all()`
+  after each file copy, leaving preset YAML data in kernel page cache instead of
+  flushing to USB flash media. Subsequent phases would block 2-3 minutes waiting
+  for implicit writeback. Now explicitly fsyncs each file, matching the existing
+  `copy_large_file()` pattern used for WAV track copies.
+
+- **Duplicate track import** — Batch import now detects tracks that already exist
+  in the collection (by checking the output FLAC path) and skips them, avoiding
+  redundant stem loading, BPM/key analysis, ML inference, and FLAC re-export.
+  Applies to both pre-separated stem import and mixed-audio separation paths.
+
+### Changed
+
+- **Deck header text sizing** — Increased all header text sizes to better fill
+  the 48px header height: track name 20→24, BPM/loop/LUFS 16→20, key 18→22,
+  badge number 22→26. Badge now fills full header height (was 38px with 10px
+  gap). Added more horizontal spacing (12→18px) between right-side info items.
+
+- **Track display name format** — Deck headers and waveform overlays now show
+  `{Artist} - {Name}` from parsed metadata instead of raw filenames. Falls back
+  to filename without extension when metadata is unavailable. Added `name` field
+  to `TrackMetadata` and `display_name()` method to `LoadedTrack`.
+
+- **Waveform zoom-out subsampling** — Changed resolution scaling curve from
+  linear to quadratic and lowered minimum resolution from 256 to 128 pixels.
+  Reduces visual jitter at maximum zoom-out (64 bars) while preserving detail
+  at moderate zoom levels.
+
+---
+
 ## [0.9.7]
 
 ### Added

@@ -175,10 +175,6 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
-- [ ] I think we need even more extreme subsampling for the closest zoom level (only for the last zoom level). adjust this both for player and cue (they share it).
-- [ ] currently its possible to import the same track twice, its then duplicated
-  in the mesh-cue, but only one can be edited (they are linked same in the db i
-  think)
 - [ ] we can save even more gpu power by making the overview waveform a canvas
   again (we already have some working deprecated code for that reuse it), but
   render high refresh needed parts in the shader (only the playhead position).
@@ -186,12 +182,6 @@ for v3 and beyond.
   example stem linked, stem toggle, hot cue added, track load) etc. this way we
   dont need to recompute the overview waveform canvas regularly, saving a ton of
   cpu/gpu, only the playhead needs to be rendered in the shader.
-- [ ] mesh cue export to usb stick stuck at syncing stem and slicer presets
-  for at least 2-3 minutes. i dont think this is a performance issue, but rather
-  waiting for something, thats not fulfilled (like sudo permissions or
-  something, we had a similar bug earlier)
-- [ ] to optimise threads we should support Process pinnin on the orangepi 5 (use the worse performaning 4 cores
-  exlusively for the audio backend, the 4 better cores for everything else), realtime audio settings in the OS etc. Research which other optimisations for interruption free audio for realtime processing mixing/dj applications could be applied, make a full report, i will then decide what to implement. this needs to be build target dependent, so only for the ci build of the embedded system (nix derivation) this should be used (also since some changes might need os changes). first research, report potential measures we could take, then we decide what to implement.
 - [ ] when on the fly stem linking in the browser for selecting a linked track,
   we can utilise smart suggestions better by additionally adding specific searching  parameters for the stem that is about to be linked or weighting certain markers more. for example when loading drums, key is relatively irrelevant, but the energy or lufs, aggression matters more. for vocals, key is absolutely the most important, bpm also a bit, not so much energy, for bass i think the weighting can stay as is, for other too. Its also possible that for linked stems same key is actually a hard requirement, or at least a very compatible key is a hard requirement and a filter for results.
 - [ ] slicer presets do not get triggered from the midi mapped f1. check 1.

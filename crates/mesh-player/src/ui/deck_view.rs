@@ -50,7 +50,7 @@ pub struct DeckView {
     track_bpm: f64,
     /// First beat sample position (for beat phase calculation)
     first_beat_sample: u64,
-    /// Track filename
+    /// Track display name ("{Artist} - {Name}")
     track_name: String,
     /// Last loaded track name (to detect changes)
     last_loaded_track: String,
@@ -225,7 +225,7 @@ impl DeckView {
         if let Some(track) = deck.track() {
             self.track_bpm = track.bpm();
             self.first_beat_sample = track.metadata.beat_grid.first_beat_sample.unwrap_or(0);
-            self.track_name = track.filename().to_string();
+            self.track_name = track.display_name();
             self.duration_samples = track.duration_samples as u64;
             self.last_loaded_track = self.track_name.clone();
         } else {

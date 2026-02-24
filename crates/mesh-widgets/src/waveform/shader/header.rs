@@ -13,9 +13,9 @@ use super::super::state::{PlayerCanvasState, DECK_HEADER_HEIGHT};
 /// Header background color
 const HEADER_BG: Color = Color::from_rgb(0.10, 0.10, 0.12);
 
-/// Badge dimensions
+/// Badge dimensions (full header height for no dead space)
 const BADGE_WIDTH: f32 = 48.0;
-const BADGE_HEIGHT: f32 = 38.0;
+const BADGE_HEIGHT: f32 = DECK_HEADER_HEIGHT;
 
 /// Create the deck header widget for one deck.
 ///
@@ -45,12 +45,12 @@ pub fn view_deck_header<'a, Message: Clone + 'a>(
     // -- Track name --
     let name_widget: Element<'a, Message> = if has_track && !track_name.is_empty() {
         text(track_name)
-            .size(20)
+            .size(24)
             .color(Color::from_rgb(0.75, 0.75, 0.75))
             .into()
     } else {
         text("No track")
-            .size(18)
+            .size(22)
             .color(Color::from_rgb(0.4, 0.4, 0.4))
             .into()
     };
@@ -63,7 +63,7 @@ pub fn view_deck_header<'a, Message: Clone + 'a>(
         if let Some(bpm) = track_bpm {
             right_items.push(
                 text(format!("{:.1}", bpm))
-                    .size(16)
+                    .size(20)
                     .color(Color::from_rgb(0.7, 0.7, 0.8))
                     .into(),
             );
@@ -83,7 +83,7 @@ pub fn view_deck_header<'a, Message: Clone + 'a>(
             } else {
                 Color::from_rgb(0.5, 0.5, 0.5)
             };
-            right_items.push(text(loop_text).size(16).color(loop_color).into());
+            right_items.push(text(loop_text).size(20).color(loop_color).into());
         }
     }
 
@@ -102,7 +102,7 @@ pub fn view_deck_header<'a, Message: Clone + 'a>(
             } else {
                 Color::from_rgb(0.9, 0.7, 0.5) // Orange for cut
             };
-            right_items.push(text(gain_text).size(16).color(gain_color).into());
+            right_items.push(text(gain_text).size(20).color(gain_color).into());
         }
     }
 
@@ -122,11 +122,11 @@ pub fn view_deck_header<'a, Message: Clone + 'a>(
                 Color::from_rgb(0.9, 0.7, 0.5),
             )
         };
-        right_items.push(text(key_display).size(18).color(key_color).into());
+        right_items.push(text(key_display).size(22).color(key_color).into());
     }
 
     // Compose the header row
-    let right_section: Element<'a, Message> = row(right_items).spacing(12).into();
+    let right_section: Element<'a, Message> = row(right_items).spacing(18).into();
 
     let header_content = row![
         badge,
@@ -184,7 +184,7 @@ fn view_badge<'a, Message: Clone + 'a>(
     };
 
     let badge_text = text(deck_num)
-        .size(22)
+        .size(26)
         .color(text_color)
         .align_x(iced::Alignment::Center)
         .align_y(iced::Alignment::Center);

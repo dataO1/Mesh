@@ -240,6 +240,8 @@ impl Default for BeatGrid {
 /// Metadata extracted from bext and cue chunks
 #[derive(Debug, Clone, Default)]
 pub struct TrackMetadata {
+    /// Track name (parsed from filename during import)
+    pub name: Option<String>,
     /// Artist name
     pub artist: Option<String>,
     /// BPM of the track
@@ -418,6 +420,7 @@ impl From<crate::db::Track> for TrackMetadata {
         };
 
         Self {
+            name: Some(track.name.clone()),
             artist: track.artist.clone(),
             bpm: track.bpm,
             original_bpm: track.original_bpm,
@@ -1595,6 +1598,22 @@ impl LoadedTrack {
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("Unknown")
+    }
+
+    /// Get a formatted display name using parsed metadata
+    ///
+    /// Returns "{Artist} - {Name}" when both are available, "{Name}" when
+    /// only name is set, or falls back to the filename without extension.
+    pub fn display_name(&self) -> String {
+        let name = self.metadata.name.as_deref().unwrap_or_else(|| {
+            self.path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Unknown")
+        });
+        match self.metadata.artist.as_deref() {
+            Some(artist) if !artist.is_empty() => format!("{} - {}", artist, name),
+            _ => name.to_string(),
+        }
     }
 
     /// Get a cue point by index

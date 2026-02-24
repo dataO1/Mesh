@@ -542,6 +542,22 @@ fn process_single_track(
         };
     }
 
+    // Check if this track already exists in the collection (skip duplicates)
+    let sanitized_for_check = sanitize_filename(&base_name);
+    let final_check_path = config.collection_path.join("tracks").join(format!("{}.flac", sanitized_for_check));
+    if final_check_path.exists() {
+        log::info!(
+            "process_single_track: '{}' already exists in collection, skipping duplicate import",
+            base_name
+        );
+        return TrackImportResult {
+            base_name,
+            success: false,
+            error: Some("Track already exists in collection".to_string()),
+            output_path: None,
+        };
+    }
+
     // Set up the importer
     let mut importer = StemImporter::new();
     importer.set_vocals(group.vocals.as_ref().unwrap());
@@ -1105,6 +1121,22 @@ fn process_mixed_track(
 ) -> TrackImportResult {
     let base_name = file.base_name.clone();
     log::info!("process_mixed_track: Separating '{}'", base_name);
+
+    // Check if this track already exists in the collection (skip duplicates)
+    let sanitized_check = sanitize_filename(&base_name);
+    let final_check_path = config.collection_path.join("tracks").join(format!("{}.flac", sanitized_check));
+    if final_check_path.exists() {
+        log::info!(
+            "process_mixed_track: '{}' already exists in collection, skipping duplicate import",
+            base_name
+        );
+        return TrackImportResult {
+            base_name,
+            success: false,
+            error: Some("Track already exists in collection".to_string()),
+            output_path: None,
+        };
+    }
 
     // Get separation config
     let sep_config = match &config.separation_config {

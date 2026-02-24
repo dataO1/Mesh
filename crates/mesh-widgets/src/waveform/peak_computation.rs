@@ -200,20 +200,22 @@ impl CacheInfo {
 pub fn compute_effective_width(base_width: usize, zoom_bars: u32, view_mode: ZoomedViewMode) -> usize {
     match view_mode {
         ZoomedViewMode::Scrolling => {
-            // Linear resolution scaling based on zoom level:
+            // Resolution scaling based on zoom level with quadratic falloff:
             // - 1 bar (very zoomed in): 1280 pixels
-            // - 64 bars (very zoomed out): 256 pixels
-            // Fewer peaks when zoomed out = less overlapping lines = less jiggling
+            // - 64 bars (very zoomed out): 128 pixels
+            // Quadratic curve drops resolution more aggressively at high zoom-out
+            // levels where visual jiggling from overlapping lines is most noticeable
             const MAX_RES: f64 = 1280.0;
-            const MIN_RES: f64 = 256.0;
+            const MIN_RES: f64 = 128.0;
             const MIN_ZOOM: f64 = 1.0;
             const MAX_ZOOM: f64 = 64.0;
 
-            // Linear interpolation: lerp from MAX_RES to MIN_RES as zoom goes 1→64
+            // Quadratic interpolation: lerp from MAX_RES to MIN_RES as zoom goes 1→64
+            // t^2 keeps resolution high at moderate zoom, drops sharply at max zoom
             let t = ((zoom_bars as f64) - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM);
             let t = t.clamp(0.0, 1.0);
-            let effective = MAX_RES - t * (MAX_RES - MIN_RES);
-            (effective as usize).max(256)
+            let effective = MAX_RES - (t * t) * (MAX_RES - MIN_RES);
+            (effective as usize).max(128)
         }
         ZoomedViewMode::FixedBuffer => {
             // Slicer mode: use 80% of base width

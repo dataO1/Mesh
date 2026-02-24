@@ -120,8 +120,11 @@ impl ExportService {
                     }
                 }
                 if slicer_src.exists() {
-                    if let Err(e) = std::fs::copy(&slicer_src, &usb_root.join("slicer-presets.yaml")) {
+                    let slicer_dst = usb_root.join("slicer-presets.yaml");
+                    if let Err(e) = std::fs::copy(&slicer_src, &slicer_dst) {
                         log::warn!("Failed to copy slicer presets: {}", e);
+                    } else if let Ok(f) = std::fs::File::open(&slicer_dst) {
+                        let _ = f.sync_all();
                     }
                 }
                 log::info!("[export] Phase 0 (presets to USB): {:.1}s", t.elapsed().as_secs_f64());
@@ -564,6 +567,10 @@ fn add_track_to_playlist(
 }
 
 /// Recursively copy a directory of files (used for preset directories)
+///
+/// Each file is fsynced after copy to ensure data reaches the USB flash media.
+/// Without fsync, data stays in the kernel page cache and subsequent phases
+/// may block waiting for the filesystem to become consistent.
 fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -574,6 +581,10 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
             copy_dir_all(&entry.path(), &dest_path)?;
         } else {
             std::fs::copy(entry.path(), &dest_path)?;
+            // Sync to physical media (critical for USB flash drives)
+            if let Ok(f) = std::fs::File::open(&dest_path) {
+                let _ = f.sync_all();
+            }
         }
     }
     Ok(())

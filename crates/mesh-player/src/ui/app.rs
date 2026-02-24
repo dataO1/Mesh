@@ -380,12 +380,9 @@ impl MeshApp {
 
                             // Set track info from skeleton metadata
                             let track = &skeleton.prepared.track;
-                            let filename = track.path.file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("Unknown")
-                                .to_string();
+                            let display_name = track.display_name();
 
-                            self.player_canvas_state.set_track_name(deck_idx, filename.clone());
+                            self.player_canvas_state.set_track_name(deck_idx, display_name);
                             self.player_canvas_state.set_track_key(
                                 deck_idx,
                                 track.metadata.key.clone().unwrap_or_default(),
