@@ -14,6 +14,17 @@ All notable changes to Mesh are documented in this file.
   bare space-separated track numbers when a UVR5 prefix was present, avoiding false
   positives on legitimate names like "808 State".
 
+- **Browser jumps to top after deleting a track** — `handle_confirm_delete()` called
+  `clear_selection()` after refreshing the track list, leaving no selection and resetting
+  scroll to the top. Now captures the selected index before deletion and re-selects the
+  neighbor at that position (clamped to list bounds) after refresh.
+
+- **USB stick removal leaves stale browser state** — `remove_usb_device()` checked
+  `active_usb_idx` after `retain()` had already removed the device, so the check always
+  failed and the browser never cleared. Fixed ordering to check before removal. Also
+  wires up the existing `clear_usb_database()` function which was implemented but never
+  called on disconnect.
+
 - **MIDI/HID devices not detected when connected after launch** — Device enumeration
   only ran at startup. Added `check_new_devices()` to the existing 2-second poll loop,
   scanning for expected-but-unconnected devices from `midi.yaml`. Reuses the existing
