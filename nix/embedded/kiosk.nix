@@ -88,7 +88,11 @@ in
       enable = true;
       user = "mesh";
       program = "${meshPlayerWrapper}";
-      extraArguments = [ "-d" "-s" ];
+      # -d: use DRM backend directly (no libseat)
+      # -s: allow VT switching (Ctrl+Alt+F2 for debug tty)
+      # -m last: single output only — "extend" (default) creates a combined
+      #   surface (e.g. 3840x1080) that exceeds Mali G610's max texture dim (2048)
+      extraArguments = [ "-d" "-s" "-m" "last" ];
       environment = {
         # Vulkan via PanVK (Mali-G610, conformant Vulkan 1.2+)
         # Mailbox: low-latency tearless presentation (1-frame queue vs Fifo's 3)
