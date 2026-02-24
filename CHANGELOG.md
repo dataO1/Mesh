@@ -26,6 +26,14 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Encoder scroll wraps to top on duplicate track IDs** — When the same track appeared
+  at multiple positions in a playlist, the encoder scroll handler used `.position()` to
+  reverse-lookup the selected ID, always finding the first occurrence. Scrolling past the
+  second copy jumped back to the first. Now tracks position directly via a stored index.
+
+- **Cue count pill stretches to fill column width** — The orange hot cue pill expanded to
+  the full 28px column instead of staying compact. Fixed by using `Shrink` centering.
+
 - **Scratch playhead drifts forward instead of following mouse** — During waveform
   scratching the playhead visually drifted ahead of the mouse cursor because the
   UI's inter-frame interpolation kept extrapolating forward at normal playback rate.
