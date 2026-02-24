@@ -42,7 +42,7 @@ fn main() {
         .iter()
         .map(|t| {
             serde_json::json!({
-                "name": t.name,
+                "name": t.title,
                 "artist": t.artist,
                 "path": t.path.to_string_lossy(),
                 "bpm": t.bpm,

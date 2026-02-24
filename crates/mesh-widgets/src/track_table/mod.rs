@@ -268,8 +268,8 @@ impl TrackColumn {
 pub struct TrackRow<Id: Clone> {
     /// Unique identifier for this track
     pub id: Id,
-    /// Track name (usually filename without extension)
-    pub name: String,
+    /// Track title (usually filename without extension)
+    pub title: String,
     /// Order in playlist/collection (1-based for display as #)
     pub order: i32,
     /// Artist name if known
@@ -290,10 +290,10 @@ pub struct TrackRow<Id: Clone> {
 
 impl<Id: Clone> TrackRow<Id> {
     /// Create a new track row with order
-    pub fn new(id: Id, name: impl Into<String>, order: i32) -> Self {
+    pub fn new(id: Id, title: impl Into<String>, order: i32) -> Self {
         Self {
             id,
-            name: name.into(),
+            title: title.into(),
             order,
             artist: None,
             bpm: None,
@@ -400,7 +400,7 @@ pub fn compare_tracks_by_column<Id: Clone>(
     match column {
         TrackColumn::Order => a.order.cmp(&b.order),
         TrackColumn::Cues => a.cue_count.cmp(&b.cue_count),
-        TrackColumn::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        TrackColumn::Name => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
         TrackColumn::Artist => {
             let a_artist = a.artist.as_deref().unwrap_or("");
             let b_artist = b.artist.as_deref().unwrap_or("");
@@ -706,7 +706,7 @@ where
         .iter()
         .filter(|t| {
             state.search_query.is_empty()
-                || t.name
+                || t.title
                     .to_lowercase()
                     .contains(&state.search_query.to_lowercase())
         })
@@ -905,7 +905,7 @@ where
     let display_value = match column {
         TrackColumn::Order => track.order.to_string(),
         TrackColumn::Cues => unreachable!(), // handled above
-        TrackColumn::Name => track.name.clone(),
+        TrackColumn::Name => track.title.clone(),
         TrackColumn::Tags => unreachable!(), // handled above
         TrackColumn::Artist => track.artist.clone().unwrap_or_else(|| "-".to_string()),
         TrackColumn::Bpm => track.format_bpm(),

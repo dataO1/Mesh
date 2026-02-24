@@ -267,7 +267,7 @@ pub fn scan_local_collection_from_db(
             let filename = path
                 .file_name()
                 .and_then(|n| n.to_str())
-                .unwrap_or(&track.name)
+                .unwrap_or(&track.title)
                 .to_string();
 
             // Keep track data for metadata comparison (use first occurrence if duplicate filename)
@@ -405,7 +405,7 @@ pub fn scan_usb_collection(
                 let filename = PathBuf::from(&track.path)
                     .file_name()
                     .and_then(|n| n.to_str())
-                    .unwrap_or(&track.name)
+                    .unwrap_or(&track.title)
                     .to_string();
 
                 let cue_points = cue_map.get(&track.id).cloned().unwrap_or_default();
@@ -452,7 +452,7 @@ pub fn scan_usb_collection(
                         let filename = PathBuf::from(&track.path)
                             .file_name()
                             .and_then(|n| n.to_str())
-                            .unwrap_or(&track.name)
+                            .unwrap_or(&track.title)
                             .to_string();
 
                         state.playlist_tracks.insert(PlaylistTrack {

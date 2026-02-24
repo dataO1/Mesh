@@ -198,7 +198,7 @@ pub fn handle_suggestions_ready(
 
                 let mut row = TrackRow::new(
                     node_id.clone(),
-                    track.name.clone(),
+                    track.title.clone(),
                     i as i32,
                 );
                 if let Some(ref artist) = track.artist {

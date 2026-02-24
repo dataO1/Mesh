@@ -227,9 +227,9 @@ impl QueryService {
 
         // Query for BPM-compatible tracks
         let query = format!(r#"
-            ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+            ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
               duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
-                *tracks{{id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                *tracks{{id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                         duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}},
                 id != $current_id,
                 is_not_null(bpm),
@@ -257,7 +257,7 @@ impl QueryService {
                     id: Some(row.get(0)?.get_int()?),
                     path: PathBuf::from(row.get(1)?.get_str()?),
                     folder_path: row.get(2)?.get_str()?.to_string(),
-                    name: row.get(3)?.get_str()?.to_string(),
+                    title: row.get(3)?.get_str()?.to_string(),
                     original_name: row.get(4)?.get_str().unwrap_or("").to_string(),
                     artist: row.get(5)?.get_str().map(|s| s.to_string()),
                     bpm: row.get(6)?.get_float(),
@@ -437,7 +437,7 @@ mod tests {
             id: Some(42),
             path: PathBuf::from("/music/test.flac"),
             folder_path: "/music".to_string(),
-            name: "Test Track".to_string(),
+            title: "Test Track".to_string(),
             original_name: String::new(),
             artist: Some("Test Artist".to_string()),
             bpm: Some(128.0),
@@ -470,7 +470,7 @@ mod tests {
 
         // Get track back
         let retrieved = client.get_track(42).unwrap().unwrap();
-        assert_eq!(retrieved.name, "Test Track");
+        assert_eq!(retrieved.title, "Test Track");
 
         // Cleanup
         client.shutdown().unwrap();

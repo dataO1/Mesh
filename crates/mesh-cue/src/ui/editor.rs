@@ -53,11 +53,7 @@ pub fn view(state: &LoadedTrackState, stem_link_selection: Option<usize>, stem_c
 
 /// Header with track info and editable BPM/key
 fn view_header(state: &LoadedTrackState) -> Element<'_, Message> {
-    let track_name = state
-        .path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| String::from("Unknown Track"));
+    let track_name = &state.title;
 
     let title = text(track_name).size(20);
 

@@ -143,8 +143,8 @@ impl PlaylistNode {
 pub struct TrackInfo {
     /// Node ID in the tree
     pub id: NodeId,
-    /// Display name (filename without extension)
-    pub name: String,
+    /// Track title (parsed from filename or embedded tags)
+    pub title: String,
     /// Path to the actual audio file
     pub path: PathBuf,
     /// Order in playlist/collection (1-based for display)

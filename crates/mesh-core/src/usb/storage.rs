@@ -170,7 +170,7 @@ impl UsbStorage {
                     let filename = PathBuf::from(&track.path)
                         .file_name()
                         .and_then(|n| n.to_str())
-                        .unwrap_or(&track.name)
+                        .unwrap_or(&track.title)
                         .to_string();
 
                     let track_id = playlist_id.child(&filename);
@@ -179,7 +179,7 @@ impl UsbStorage {
                     self.nodes.insert(track_id.clone(), PlaylistNode {
                         id: track_id.clone(),
                         kind: NodeKind::Track,
-                        name: track.name.clone(),
+                        name: track.title.clone(),
                         children: Vec::new(),
                         track_path: Some(track_path),
                     });
@@ -288,29 +288,15 @@ impl PlaylistStorage for UsbStorage {
                 let filename = PathBuf::from(&track.path)
                     .file_name()
                     .and_then(|n| n.to_str())
-                    .unwrap_or(&track.name)
+                    .unwrap_or(&track.title)
                     .to_string();
 
                 let track_path = self.collection_root.join("tracks").join(&filename);
                 let track_id = folder_id.child(&filename);
 
-                // Strip "Artist - " prefix from display name when artist is present
-                // (DB stores combined "Artist - Title" in name field)
-                let display_name = match &track.artist {
-                    Some(artist) if !artist.is_empty() => {
-                        let prefix = format!("{} - ", artist);
-                        if track.name.starts_with(&prefix) {
-                            track.name[prefix.len()..].to_string()
-                        } else {
-                            track.name.clone()
-                        }
-                    }
-                    _ => track.name.clone(),
-                };
-
                 TrackInfo {
                     id: track_id,
-                    name: display_name,
+                    title: track.title.clone(),
                     path: track_path,
                     order: (i + 1) as i32, // 1-based for display
                     artist: track.artist,

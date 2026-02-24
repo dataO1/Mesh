@@ -318,7 +318,6 @@ impl ExportService {
                     usb_track.id = None;
                     usb_track.path = track.destination.clone();
                     usb_track.folder_path = "tracks".to_string();
-                    usb_track.name = filename.trim_end_matches(".flac").to_string();
 
                     if let Err(e) = staging_db.sync_track_atomic(&usb_track, &local_db, source_track_id) {
                         log::warn!("DB sync failed for {}: {}", filename, e);
@@ -356,7 +355,6 @@ impl ExportService {
                     usb_track.id = None;
                     usb_track.path = PathBuf::from(format!("tracks/{}", filename));
                     usb_track.folder_path = "tracks".to_string();
-                    usb_track.name = filename.trim_end_matches(".flac").to_string();
 
                     if let Err(e) = staging_db.sync_track_atomic(&usb_track, &local_db, source_id) {
                         log::warn!("Metadata sync failed for {}: {}", filename, e);

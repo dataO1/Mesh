@@ -21,8 +21,8 @@ use tags::read_embedded_tags;
 /// Resolved metadata ready for track creation
 #[derive(Debug, Clone)]
 pub struct ResolvedMetadata {
-    /// Display name: "Artist - Title" or just "Title"
-    pub name: String,
+    /// Track title (normalized)
+    pub title: String,
     /// Extracted artist (normalized), if found
     pub artist: Option<String>,
 }
@@ -63,13 +63,7 @@ pub fn resolve_metadata(
     let artist = raw_artist.map(|a| filename::normalize_artist_public(&a));
     let title = filename::normalize_title_public(&raw_title);
 
-    // Construct display name
-    let name = match &artist {
-        Some(a) => format!("{} - {}", a, title),
-        None => title.clone(),
-    };
-
-    ResolvedMetadata { name, artist }
+    ResolvedMetadata { title, artist }
 }
 
 /// Load the set of known artist names from the database.

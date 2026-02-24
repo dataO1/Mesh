@@ -84,8 +84,8 @@ pub struct Track {
     pub path: PathBuf,
     /// Folder path relative to collection root
     pub folder_path: String,
-    /// Track display name
-    pub name: String,
+    /// Track title (parsed from filename or embedded tags)
+    pub title: String,
     /// Original filename before metadata parsing (for re-analysis)
     pub original_name: String,
     /// Artist name
@@ -126,12 +126,12 @@ pub struct Track {
 
 impl Track {
     /// Create a new track with minimal required data
-    pub fn new(path: impl Into<PathBuf>, name: impl Into<String>) -> Self {
+    pub fn new(path: impl Into<PathBuf>, title: impl Into<String>) -> Self {
         Self {
             id: None,
             path: path.into(),
             folder_path: String::new(),
-            name: name.into(),
+            title: title.into(),
             original_name: String::new(),
             artist: None,
             bpm: None,
@@ -162,7 +162,7 @@ impl Track {
             id: Some(row.id),
             path: PathBuf::from(&row.path),
             folder_path: row.folder_path,
-            name: row.name,
+            title: row.title,
             original_name: row.original_name,
             artist: row.artist,
             bpm: row.bpm,
@@ -200,7 +200,7 @@ impl Track {
             id,
             path: self.path.to_string_lossy().to_string(),
             folder_path,
-            name: self.name.clone(),
+            title: self.title.clone(),
             original_name: self.original_name.clone(),
             artist: self.artist.clone(),
             bpm: self.bpm,
@@ -214,6 +214,14 @@ impl Track {
             file_mtime: self.file_mtime,
             file_size: self.file_size,
             waveform_path: self.waveform_path.clone(),
+        }
+    }
+
+    /// Get formatted display name: "Artist - Title" or just "Title"
+    pub fn display_name(&self) -> String {
+        match &self.artist {
+            Some(a) if !a.is_empty() => format!("{} - {}", a, self.title),
+            _ => self.title.clone(),
         }
     }
 }
@@ -381,8 +389,8 @@ impl DatabaseService {
         let track_id = row.id;
 
         log::info!(
-            "DatabaseService::save_track: name='{}' path='{}' id={}",
-            track.name,
+            "DatabaseService::save_track: title='{}' path='{}' id={}",
+            track.title,
             track.path.display(),
             track_id
         );
@@ -448,8 +456,8 @@ impl DatabaseService {
         let track_id = row.id;
 
         log::debug!(
-            "sync_track_atomic: name='{}' path='{}' id={} source_id={}",
-            track.name,
+            "sync_track_atomic: title='{}' path='{}' id={} source_id={}",
+            track.title,
             track.path.display(),
             track_id,
             source_track_id
@@ -1394,7 +1402,7 @@ mod tests {
 
         // Retrieve and verify
         let loaded = service.get_track(track_id).unwrap().unwrap();
-        assert_eq!(loaded.name, "Test Track");
+        assert_eq!(loaded.title, "Test Track");
         assert_eq!(loaded.artist, Some("Artist".to_string()));
         assert_eq!(loaded.bpm, Some(120.0));
         assert_eq!(loaded.cue_points.len(), 1);

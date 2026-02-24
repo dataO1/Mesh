@@ -23,7 +23,7 @@ pub struct TrackRow {
     pub id: i64,
     pub path: String,
     pub folder_path: String,
-    pub name: String,
+    pub title: String,
     pub original_name: String,
     pub artist: Option<String>,
     pub bpm: Option<f64>,
@@ -451,7 +451,7 @@ fn create_tracks_relation(db: &DbInstance) -> Result<(), DbError> {
             id: Int =>
             path: String,
             folder_path: String,
-            name: String,
+            title: String,
             original_name: String default '',
             artist: String?,
             bpm: Float?,
@@ -641,24 +641,30 @@ fn migrate_tracks_if_needed(db: &DbInstance) -> Result<(), DbError> {
         })
     };
 
-    if has_column("original_name") {
-        return Ok(()); // Already migrated
+    if has_column("original_name") && has_column("title") {
+        return Ok(()); // Fully migrated (both original_name and name→title done)
     }
 
-    log::info!("Migrating 'tracks' schema: adding 'original_name' column");
+    if has_column("original_name") && !has_column("title") {
+        // Has original_name but still uses "name" — needs name→title rename
+        return migrate_tracks_name_to_title(db);
+    }
+
+    // Doesn't have original_name at all — oldest schema, add original_name AND rename name→title
+    log::info!("Migrating 'tracks' schema: adding 'original_name' + renaming 'name' → 'title'");
 
     // Count rows in old relation for verification
     let old_count = count_relation(db, "tracks")?;
     log::info!("Migration: {} tracks to migrate", old_count);
 
-    // Step 1: Create staging relation with the new schema
+    // Step 1: Create staging relation with the final schema (title + original_name)
     db.run_script(
         r#"
         {:create _tracks_new {
             id: Int =>
             path: String,
             folder_path: String,
-            name: String,
+            title: String,
             original_name: String default '',
             artist: String?,
             bpm: Float?,
@@ -678,18 +684,19 @@ fn migrate_tracks_if_needed(db: &DbInstance) -> Result<(), DbError> {
         cozo::ScriptMutability::Mutable,
     ).map_err(|e| DbError::Schema(format!("Failed to create staging relation: {}", e)))?;
 
-    // Step 2: Copy all data from old tracks → staging, defaulting original_name to ''
+    // Step 2: Copy all data from old tracks → staging, mapping name→title and defaulting original_name
     if old_count > 0 {
         db.run_script(
             r#"
-            ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+            ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
               duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample,
               file_mtime, file_size, waveform_path] :=
                 *tracks{id, path, folder_path, name, artist, bpm, original_bpm, key,
                         duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample,
                         file_mtime, file_size, waveform_path},
+                title = name,
                 original_name = ''
-            :put _tracks_new {id => path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+            :put _tracks_new {id => path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                               duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample,
                               file_mtime, file_size, waveform_path}
             "#,
@@ -722,6 +729,89 @@ fn migrate_tracks_if_needed(db: &DbInstance) -> Result<(), DbError> {
     let _ = db.run_script("::remove _tracks_old", Default::default(), cozo::ScriptMutability::Mutable);
 
     log::info!("Tracks migration complete — {} tracks migrated successfully", staging_count);
+    Ok(())
+}
+
+/// Migrate tracks schema: rename 'name' column to 'title'
+///
+/// For databases that already have 'original_name' but still use the old 'name' column.
+/// The data is copied as-is (existing "Artist - Title" values stay unchanged for backward compat).
+fn migrate_tracks_name_to_title(db: &DbInstance) -> Result<(), DbError> {
+    log::info!("Migrating 'tracks' schema: renaming 'name' → 'title'");
+
+    let old_count = count_relation(db, "tracks")?;
+    log::info!("Migration: {} tracks to migrate", old_count);
+
+    // Step 1: Create staging relation with 'title' instead of 'name'
+    db.run_script(
+        r#"
+        {:create _tracks_new {
+            id: Int =>
+            path: String,
+            folder_path: String,
+            title: String,
+            original_name: String default '',
+            artist: String?,
+            bpm: Float?,
+            original_bpm: Float?,
+            key: String?,
+            duration_seconds: Float,
+            lufs: Float?,
+            integrated_lufs: Float?,
+            drop_marker: Int?,
+            first_beat_sample: Int default 0,
+            file_mtime: Int,
+            file_size: Int,
+            waveform_path: String?
+        }}
+        "#,
+        Default::default(),
+        cozo::ScriptMutability::Mutable,
+    ).map_err(|e| DbError::Schema(format!("Failed to create staging relation: {}", e)))?;
+
+    // Step 2: Copy data, mapping name → title
+    if old_count > 0 {
+        db.run_script(
+            r#"
+            ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
+              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample,
+              file_mtime, file_size, waveform_path] :=
+                *tracks{id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                        duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample,
+                        file_mtime, file_size, waveform_path},
+                title = name
+            :put _tracks_new {id => path, folder_path, title, original_name, artist, bpm, original_bpm, key,
+                              duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample,
+                              file_mtime, file_size, waveform_path}
+            "#,
+            Default::default(),
+            cozo::ScriptMutability::Mutable,
+        ).map_err(|e| DbError::Schema(format!("Failed to copy tracks to staging: {}", e)))?;
+    }
+
+    // Step 3: Verify row count
+    let staging_count = count_relation(db, "_tracks_new")?;
+    if staging_count != old_count {
+        let _ = db.run_script("::remove _tracks_new", Default::default(), cozo::ScriptMutability::Mutable);
+        return Err(DbError::Schema(format!(
+            "Migration verification failed: expected {} tracks in staging, got {}. Old data preserved.",
+            old_count, staging_count
+        )));
+    }
+
+    log::info!("Migration: staging verified ({} tracks), performing atomic swap", staging_count);
+
+    // Step 4: Atomic swap
+    db.run_script(
+        "::rename tracks -> _tracks_old, _tracks_new -> tracks",
+        Default::default(),
+        cozo::ScriptMutability::Mutable,
+    ).map_err(|e| DbError::Schema(format!("Atomic rename failed: {}", e)))?;
+
+    // Step 5: Drop old relation
+    let _ = db.run_script("::remove _tracks_old", Default::default(), cozo::ScriptMutability::Mutable);
+
+    log::info!("Tracks name→title migration complete — {} tracks migrated", staging_count);
     Ok(())
 }
 

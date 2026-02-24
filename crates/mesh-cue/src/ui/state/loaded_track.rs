@@ -17,6 +17,8 @@ use crate::ui::waveform::CombinedWaveformView;
 pub struct LoadedTrackState {
     /// Path to the track file
     pub path: PathBuf,
+    /// Track display title
+    pub title: String,
     /// Loaded audio data (wrapped in Arc for efficient cloning in messages)
     /// None while audio is loading asynchronously
     pub track: Option<Arc<LoadedTrack>>,

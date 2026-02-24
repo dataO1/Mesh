@@ -56,10 +56,10 @@ fn main() {
 
     let mut count = 0;
     for t in &rows {
-        let name = if t.name.len() > 48 {
-            format!("{}…", &t.name[..47])
+        let name = if t.title.len() > 48 {
+            format!("{}…", &t.title[..47])
         } else {
-            t.name.clone()
+            t.title.clone()
         };
 
         let drop_str = t.lufs.map(|v| format!("{:.1}", v)).unwrap_or_else(|| "—".into());

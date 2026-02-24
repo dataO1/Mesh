@@ -427,16 +427,16 @@ fn reanalyze_metadata_track(
         let original = &track.original_name;
         if !original.is_empty() {
             let resolved = crate::metadata::resolve_metadata(None, original, known_artists);
-            if let Err(e) = db.update_track_field(track_id, "name", &resolved.name) {
-                log::error!("reanalyze_metadata_track: Failed to update name: {:?}", e);
+            if let Err(e) = db.update_track_field(track_id, "title", &resolved.title) {
+                log::error!("reanalyze_metadata_track: Failed to update title: {:?}", e);
             }
             if let Some(ref artist) = resolved.artist {
                 if let Err(e) = db.update_track_field(track_id, "artist", artist) {
                     log::error!("reanalyze_metadata_track: Failed to update artist: {:?}", e);
                 }
             }
-            log::info!("reanalyze_metadata_track: Re-parsed name='{}', artist={:?}",
-                resolved.name, resolved.artist);
+            log::info!("reanalyze_metadata_track: Re-parsed title='{}', artist={:?}",
+                resolved.title, resolved.artist);
         } else {
             log::info!("reanalyze_metadata_track: No original_name stored, skipping name re-parse");
         }

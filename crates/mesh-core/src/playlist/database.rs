@@ -27,27 +27,10 @@ impl DatabaseStorage {
     }
 
     /// Convert database Track to TrackInfo
-    ///
-    /// The DB `name` field stores "Artist - Title" (combined). Since Artist
-    /// has its own column, we strip the "Artist - " prefix from the display
-    /// name to avoid redundancy.
     fn track_to_info(track: &crate::db::Track, folder_id: &NodeId, order: i32) -> TrackInfo {
-        // Strip "Artist - " prefix from name when artist is known
-        let display_name = match &track.artist {
-            Some(artist) if !artist.is_empty() => {
-                let prefix = format!("{} - ", artist);
-                if track.name.starts_with(&prefix) {
-                    track.name[prefix.len()..].to_string()
-                } else {
-                    track.name.clone()
-                }
-            }
-            _ => track.name.clone(),
-        };
-
         TrackInfo {
-            id: NodeId(format!("{}/{}", folder_id.0, track.name)),
-            name: display_name,
+            id: NodeId(format!("{}/{}", folder_id.0, track.title)),
+            title: track.title.clone(),
             path: PathBuf::from(&track.path),
             order,
             artist: track.artist.clone(),
@@ -177,12 +160,12 @@ impl PlaylistStorage for DatabaseStorage {
             let folder_path = id.parent().map(|p| p.0.clone()).unwrap_or_else(|| "tracks".to_string());
 
             let tracks = TrackQuery::get_by_folder(self.service.db(), &folder_path).ok()?;
-            let track = tracks.iter().find(|t| t.name == track_name)?;
+            let track = tracks.iter().find(|t| t.title == track_name)?;
 
             return Some(PlaylistNode {
                 id: id.clone(),
                 kind: NodeKind::Track,
-                name: track.name.clone(),
+                name: track.title.clone(),
                 children: Vec::new(),
                 track_path: Some(PathBuf::from(&track.path)),
             });
@@ -216,12 +199,12 @@ impl PlaylistStorage for DatabaseStorage {
             let playlist_db_id = self.get_playlist_db_id(&parent).ok()?;
             let tracks = PlaylistQuery::get_tracks(self.service.db(), playlist_db_id).ok()?;
             let track_name = id.name();
-            let track = tracks.iter().find(|t| t.name == track_name)?;
+            let track = tracks.iter().find(|t| t.title == track_name)?;
 
             return Some(PlaylistNode {
                 id: id.clone(),
                 kind: NodeKind::Track,
-                name: track.name.clone(),
+                name: track.title.clone(),
                 children: Vec::new(),
                 track_path: Some(PathBuf::from(&track.path)),
             });
@@ -262,8 +245,8 @@ impl PlaylistStorage for DatabaseStorage {
                             return tracks.iter()
                                 .enumerate()
                                 .map(|(i, track)| TrackInfo {
-                                    id: NodeId(format!("{}/{}", folder_id.0, track.name)),
-                                    name: track.name.clone(),
+                                    id: NodeId(format!("{}/{}", folder_id.0, track.title)),
+                                    title: track.title.clone(),
                                     path: PathBuf::from(&track.path),
                                     order: (i + 1) as i32, // 1-based for display
                                     artist: track.artist.clone(),
@@ -410,7 +393,7 @@ impl PlaylistStorage for DatabaseStorage {
 
         let track_name = track_id.name();
         let track = tracks.iter()
-            .find(|t| t.name == track_name)
+            .find(|t| t.title == track_name)
             .ok_or_else(|| PlaylistError::NotFound(track_id.0.clone()))?;
 
         // Remove track-playlist association
@@ -442,7 +425,7 @@ impl PlaylistStorage for DatabaseStorage {
 
         let track_name = track_id.name();
         let track = tracks.iter()
-            .find(|t| t.name == track_name)
+            .find(|t| t.title == track_name)
             .ok_or_else(|| PlaylistError::NotFound(track_id.0.clone()))?;
 
         let track_db_id = track.id;
@@ -478,7 +461,7 @@ impl PlaylistStorage for DatabaseStorage {
 
         let track_name = track_id.name();
         let track = tracks.iter()
-            .find(|t| t.name == track_name)
+            .find(|t| t.title == track_name)
             .ok_or_else(|| PlaylistError::NotFound(track_id.0.clone()))?;
 
         let path = PathBuf::from(&track.path);

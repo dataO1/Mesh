@@ -75,8 +75,15 @@ impl MeshCueApp {
                 // Set drop marker on zoomed view (overview gets it from from_metadata)
                 combined_waveform.zoomed.set_drop_marker(metadata.drop_marker);
 
+                let title = metadata.title.clone().unwrap_or_else(|| {
+                    path.file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| String::from("Unknown Track"))
+                });
+
                 self.collection.loaded_track = Some(LoadedTrackState {
                     path: path.clone(),
+                    title,
                     track: None,
                     stems: None,
                     cue_points,
@@ -205,7 +212,7 @@ impl MeshCueApp {
                             path: state.path.clone(),
                             stems: stems.clone(),
                             metadata: TrackMetadata {
-                                name: None,
+                                title: None,
                                 artist: None,
                                 bpm: Some(state.bpm),
                                 original_bpm: Some(state.bpm),
@@ -325,7 +332,7 @@ impl MeshCueApp {
                         path: state.path.clone(),
                         stems: stems.clone(),
                         metadata: TrackMetadata {
-                            name: None,
+                            title: None,
                             artist: None,
                             bpm: Some(state.bpm),
                             original_bpm: Some(state.bpm),

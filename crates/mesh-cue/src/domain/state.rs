@@ -24,8 +24,8 @@ pub struct LoadedTrackState {
     /// Database track ID (if loaded from database)
     pub track_id: Option<i64>,
 
-    /// Track display name
-    pub name: String,
+    /// Track display title
+    pub title: String,
 
     /// Artist name
     pub artist: Option<String>,
@@ -112,7 +112,7 @@ impl LoadedTrackState {
         Self {
             path: track.path.clone(),
             track_id: track.id,
-            name: track.name.clone(),
+            title: track.title.clone(),
             artist: track.artist.clone(),
             bpm,
             original_bpm: track.original_bpm.unwrap_or(bpm),
@@ -246,7 +246,7 @@ mod tests {
         let state = LoadedTrackState {
             path: PathBuf::from("/test.flac"),
             track_id: Some(1),
-            name: "Test".to_string(),
+            title: "Test".to_string(),
             artist: None,
             bpm: 120.0,
             original_bpm: 120.0,

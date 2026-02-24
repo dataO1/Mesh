@@ -8,7 +8,7 @@ use cozo::{DataValue, NamedRows};
 use std::collections::{BTreeMap, HashMap};
 
 /// Column list for track queries (must match schema order for first_beat_sample)
-const TRACK_COLUMNS: &str = "id, path, folder_path, name, original_name, artist, bpm, original_bpm, key, duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path";
+const TRACK_COLUMNS: &str = "id, path, folder_path, title, original_name, artist, bpm, original_bpm, key, duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path";
 
 // ============================================================================
 // Track Queries
@@ -26,12 +26,12 @@ impl TrackQuery {
         params.insert("folder".to_string(), DataValue::Str(folder_path.into()));
 
         let result = db.run_query(r#"
-            ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+            ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
               duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
-                *tracks{id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                *tracks{id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                         duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                 folder_path = $folder
-            :order name
+            :order title
         "#, params)?;
 
         let tracks = rows_to_tracks(&result);
@@ -45,9 +45,9 @@ impl TrackQuery {
         params.insert("id".to_string(), DataValue::from(track_id));
 
         let result = db.run_query(r#"
-            ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+            ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
               duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
-                *tracks{id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                *tracks{id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                         duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                 id = $id
         "#, params)?;
@@ -70,9 +70,9 @@ impl TrackQuery {
         );
 
         let result = db.run_query(r#"
-            ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+            ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
               duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
-                *tracks{id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                *tracks{id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                         duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                 id in $ids
         "#, params)?;
@@ -86,9 +86,9 @@ impl TrackQuery {
         params.insert("path".to_string(), DataValue::Str(path.into()));
 
         let result = db.run_query(r#"
-            ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+            ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
               duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
-                *tracks{id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                *tracks{id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                         duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                 path = $path
         "#, params)?;
@@ -102,9 +102,9 @@ impl TrackQuery {
         params.insert("filename".to_string(), DataValue::Str(filename.into()));
 
         let result = db.run_query(r#"
-            ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+            ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
               duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
-                *tracks{id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                *tracks{id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                         duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                 ends_with(path, $filename)
             :limit 1
@@ -116,17 +116,17 @@ impl TrackQuery {
     /// Get all tracks in the database
     pub fn get_all(db: &MeshDb) -> Result<Vec<TrackRow>, DbError> {
         let result = db.run_query(r#"
-            ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+            ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
               duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
-                *tracks{id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                *tracks{id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                         duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
-            :order name
+            :order title
         "#, BTreeMap::new())?;
 
         Ok(rows_to_tracks(&result))
     }
 
-    /// Search tracks by name or artist
+    /// Search tracks by title or artist
     pub fn search(db: &MeshDb, query: &str, limit: usize) -> Result<Vec<TrackRow>, DbError> {
         let mut params = BTreeMap::new();
         let query_lower = query.to_lowercase();
@@ -134,14 +134,14 @@ impl TrackQuery {
         params.insert("limit".to_string(), DataValue::from(limit as i64));
 
         let result = db.run_query(r#"
-            ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+            ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
               duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
-                *tracks{id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                *tracks{id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                         duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
-                (lowercase(name) ~ $query or
+                (lowercase(title) ~ $query or
                  (is_not_null(artist) and lowercase(artist) ~ $query))
             :limit $limit
-            :order name
+            :order title
         "#, params)?;
 
         Ok(rows_to_tracks(&result))
@@ -153,7 +153,7 @@ impl TrackQuery {
         params.insert("id".to_string(), DataValue::from(track.id));
         params.insert("path".to_string(), DataValue::Str(track.path.clone().into()));
         params.insert("folder_path".to_string(), DataValue::Str(track.folder_path.clone().into()));
-        params.insert("name".to_string(), DataValue::Str(track.name.clone().into()));
+        params.insert("title".to_string(), DataValue::Str(track.title.clone().into()));
         params.insert("original_name".to_string(), DataValue::Str(track.original_name.clone().into()));
         params.insert("artist".to_string(), track.artist.as_ref().map(|s| DataValue::Str(s.clone().into())).unwrap_or(DataValue::Null));
         params.insert("bpm".to_string(), track.bpm.map(DataValue::from).unwrap_or(DataValue::Null));
@@ -169,12 +169,12 @@ impl TrackQuery {
         params.insert("waveform_path".to_string(), track.waveform_path.as_ref().map(|s| DataValue::Str(s.clone().into())).unwrap_or(DataValue::Null));
 
         db.run_script(r#"
-            ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+            ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
               duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] <- [[
-                $id, $path, $folder_path, $name, $original_name, $artist, $bpm, $original_bpm, $key,
+                $id, $path, $folder_path, $title, $original_name, $artist, $bpm, $original_bpm, $key,
                 $duration_seconds, $lufs, $integrated_lufs, $drop_marker, $first_beat_sample, $file_mtime, $file_size, $waveform_path
             ]]
-            :put tracks {id => path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+            :put tracks {id => path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                          duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
         "#, params)?;
 
@@ -196,7 +196,7 @@ impl TrackQuery {
 
     /// Update a single field of a track by ID
     ///
-    /// Supported fields: name, artist, bpm, original_bpm, key, lufs, integrated_lufs, drop_marker, first_beat_sample
+    /// Supported fields: title, artist, bpm, original_bpm, key, lufs, integrated_lufs, drop_marker, first_beat_sample
     /// For string fields, pass the string value directly.
     /// For numeric fields, parse to the appropriate type first.
     pub fn update_field(db: &MeshDb, track_id: i64, field: &str, value: &str) -> Result<(), DbError> {
@@ -209,13 +209,13 @@ impl TrackQuery {
                 let val = if value.is_empty() { DataValue::Null } else { DataValue::Str(value.into()) };
                 params.insert("value".to_string(), val);
                 r#"
-                    ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                    ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                       duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
-                        *tracks{id, path, folder_path, name, original_name, bpm, original_bpm, key,
+                        *tracks{id, path, folder_path, title, original_name, bpm, original_bpm, key,
                                 duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                         id = $id,
                         artist = $value
-                    :put tracks {id => path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                    :put tracks {id => path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                                  duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
                 "#
             }
@@ -223,13 +223,13 @@ impl TrackQuery {
                 let val: f64 = value.parse().map_err(|_| DbError::Query(format!("Invalid BPM value: {}", value)))?;
                 params.insert("value".to_string(), DataValue::from(val));
                 r#"
-                    ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                    ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                       duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
-                        *tracks{id, path, folder_path, name, original_name, artist, original_bpm, key,
+                        *tracks{id, path, folder_path, title, original_name, artist, original_bpm, key,
                                 duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                         id = $id,
                         bpm = $value
-                    :put tracks {id => path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                    :put tracks {id => path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                                  duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
                 "#
             }
@@ -237,13 +237,13 @@ impl TrackQuery {
                 let val: f64 = value.parse().map_err(|_| DbError::Query(format!("Invalid original_bpm value: {}", value)))?;
                 params.insert("value".to_string(), DataValue::from(val));
                 r#"
-                    ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                    ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                       duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
-                        *tracks{id, path, folder_path, name, original_name, artist, bpm, key,
+                        *tracks{id, path, folder_path, title, original_name, artist, bpm, key,
                                 duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                         id = $id,
                         original_bpm = $value
-                    :put tracks {id => path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                    :put tracks {id => path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                                  duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
                 "#
             }
@@ -251,13 +251,13 @@ impl TrackQuery {
                 let val = if value.is_empty() { DataValue::Null } else { DataValue::Str(value.into()) };
                 params.insert("value".to_string(), val);
                 r#"
-                    ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                    ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                       duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
-                        *tracks{id, path, folder_path, name, original_name, artist, bpm, original_bpm,
+                        *tracks{id, path, folder_path, title, original_name, artist, bpm, original_bpm,
                                 duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                         id = $id,
                         key = $value
-                    :put tracks {id => path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                    :put tracks {id => path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                                  duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
                 "#
             }
@@ -265,13 +265,13 @@ impl TrackQuery {
                 let val: f64 = value.parse().map_err(|_| DbError::Query(format!("Invalid LUFS value: {}", value)))?;
                 params.insert("value".to_string(), DataValue::from(val));
                 r#"
-                    ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                    ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                       duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
-                        *tracks{id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                        *tracks{id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                                 duration_seconds, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                         id = $id,
                         lufs = $value
-                    :put tracks {id => path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                    :put tracks {id => path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                                  duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
                 "#
             }
@@ -279,13 +279,13 @@ impl TrackQuery {
                 let val: f64 = value.parse().map_err(|_| DbError::Query(format!("Invalid integrated_lufs value: {}", value)))?;
                 params.insert("value".to_string(), DataValue::from(val));
                 r#"
-                    ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                    ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                       duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
-                        *tracks{id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                        *tracks{id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                                 duration_seconds, lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                         id = $id,
                         integrated_lufs = $value
-                    :put tracks {id => path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                    :put tracks {id => path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                                  duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
                 "#
             }
@@ -293,13 +293,13 @@ impl TrackQuery {
                 let val: i64 = value.parse().map_err(|_| DbError::Query(format!("Invalid drop_marker value: {}", value)))?;
                 params.insert("value".to_string(), DataValue::from(val));
                 r#"
-                    ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                    ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                       duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
-                        *tracks{id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                        *tracks{id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                                 duration_seconds, lufs, integrated_lufs, first_beat_sample, file_mtime, file_size, waveform_path},
                         id = $id,
                         drop_marker = $value
-                    :put tracks {id => path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                    :put tracks {id => path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                                  duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
                 "#
             }
@@ -307,27 +307,27 @@ impl TrackQuery {
                 let val: i64 = value.parse().map_err(|_| DbError::Query(format!("Invalid first_beat_sample value: {}", value)))?;
                 params.insert("value".to_string(), DataValue::from(val));
                 r#"
-                    ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                    ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                       duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
-                        *tracks{id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                        *tracks{id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                                 duration_seconds, lufs, integrated_lufs, drop_marker, file_mtime, file_size, waveform_path},
                         id = $id,
                         first_beat_sample = $value
-                    :put tracks {id => path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                    :put tracks {id => path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                                  duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
                 "#
             }
-            "name" => {
+            "title" => {
                 let val = if value.is_empty() { DataValue::Null } else { DataValue::Str(value.into()) };
                 params.insert("value".to_string(), val);
                 r#"
-                    ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                    ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                       duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                         *tracks{id, path, folder_path, original_name, artist, bpm, original_bpm, key,
                                 duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                         id = $id,
-                        name = $value
-                    :put tracks {id => path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                        title = $value
+                    :put tracks {id => path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                                  duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
                 "#
             }
@@ -436,10 +436,10 @@ impl PlaylistQuery {
 
         // Note: sort_order must be in output columns to use :order in CozoDB
         let result = db.run_query(r#"
-            ?[track_id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+            ?[track_id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
               duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path, sort_order] :=
                 *playlist_tracks{playlist_id: pid, track_id, sort_order},
-                *tracks{id: track_id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                *tracks{id: track_id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                         duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path},
                 pid = $playlist_id
             :order sort_order
@@ -649,12 +649,12 @@ impl SimilarityQuery {
 
         // First get the embedding for the query track, then search using HNSW
         let result = db.run_query(r#"
-            ?[track_id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+            ?[track_id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
               duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path, dist] :=
                 *audio_features{track_id: $track_id, vec: query_vec},
                 ~audio_features:similarity_index{track_id | query: query_vec, k: $k, ef: $ef, bind_distance: dist},
                 track_id != $track_id,
-                *tracks{id: track_id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                *tracks{id: track_id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                         duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
             :order dist
         "#, params)?;
@@ -675,10 +675,10 @@ impl SimilarityQuery {
         params.insert("ef".to_string(), DataValue::from(k.max(50)));
 
         let result = db.run_query(r#"
-            ?[track_id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+            ?[track_id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
               duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path, dist] :=
                 ~audio_features:similarity_index{track_id | query: vec($query_vec), k: $k, ef: $ef, bind_distance: dist},
-                *tracks{id: track_id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                *tracks{id: track_id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                         duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
             :order dist
         "#, params)?;
@@ -693,10 +693,10 @@ impl SimilarityQuery {
         params.insert("limit".to_string(), DataValue::from(limit as i64));
 
         let result = db.run_query(r#"
-            ?[id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+            ?[id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
               duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path] :=
                 *harmonic_match{from_track: $track_id, to_track: id},
-                *tracks{id, path, folder_path, name, original_name, artist, bpm, original_bpm, key,
+                *tracks{id, path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                         duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path}
             :limit $limit
         "#, params)?;
@@ -1084,7 +1084,7 @@ fn rows_to_tracks(result: &NamedRows) -> Vec<TrackRow> {
             id: row.get(0)?.get_int()?,
             path: row.get(1)?.get_str()?.to_string(),
             folder_path: row.get(2)?.get_str()?.to_string(),
-            name: row.get(3)?.get_str()?.to_string(),
+            title: row.get(3)?.get_str()?.to_string(),
             original_name: row.get(4)?.get_str().unwrap_or("").to_string(),
             artist: row.get(5)?.get_str().map(|s| s.to_string()),
             bpm: row.get(6)?.get_float(),
@@ -1108,7 +1108,7 @@ fn rows_to_tracks_with_distance(result: &NamedRows) -> Vec<(TrackRow, f32)> {
             id: row.get(0)?.get_int()?,
             path: row.get(1)?.get_str()?.to_string(),
             folder_path: row.get(2)?.get_str()?.to_string(),
-            name: row.get(3)?.get_str()?.to_string(),
+            title: row.get(3)?.get_str()?.to_string(),
             original_name: row.get(4)?.get_str().unwrap_or("").to_string(),
             artist: row.get(5)?.get_str().map(|s| s.to_string()),
             bpm: row.get(6)?.get_float(),
@@ -1162,7 +1162,7 @@ mod tests {
             id: 1,
             path: "/music/track1.flac".to_string(),
             folder_path: "/music".to_string(),
-            name: "Test Track".to_string(),
+            title: "Test Track".to_string(),
             original_name: String::new(),
             artist: Some("Test Artist".to_string()),
             bpm: Some(128.0),
@@ -1183,7 +1183,7 @@ mod tests {
 
         // Read back
         let retrieved = TrackQuery::get_by_id(&db, 1).unwrap().unwrap();
-        assert_eq!(retrieved.name, "Test Track");
+        assert_eq!(retrieved.title, "Test Track");
         assert_eq!(retrieved.artist, Some("Test Artist".to_string()));
 
         // Count
