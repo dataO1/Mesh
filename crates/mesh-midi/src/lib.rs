@@ -159,8 +159,8 @@ pub struct ControllerManager {
     feedback_worker: Option<feedback_worker::FeedbackWorker>,
     /// HID devices pending reconnection after I/O thread exit
     pending_hid_reconnect: Vec<PendingHidReconnect>,
-    /// Last time HID health was checked (throttled to every 2s)
-    last_hid_health_check: Instant,
+    /// Last time device health/hotplug was checked (throttled to every 2s)
+    last_device_check: Instant,
     /// Whether raw event capture is enabled (for learn mode)
     capture_raw: bool,
     /// Optional direct dispatch to audio engine (shared with MIDI callbacks)
@@ -252,7 +252,7 @@ impl ControllerManager {
             hid_event_tx: Some(hid_tx),
             feedback_worker: None,
             pending_hid_reconnect: Vec::new(),
-            last_hid_health_check: Instant::now(),
+            last_device_check: Instant::now(),
             capture_raw,
             direct_dispatch: None,
         };
@@ -286,7 +286,7 @@ impl ControllerManager {
             hid_event_tx: Some(hid_tx),
             feedback_worker: None,
             pending_hid_reconnect: Vec::new(),
-            last_hid_health_check: Instant::now(),
+            last_device_check: Instant::now(),
             capture_raw: true,
             direct_dispatch: None,
         };
@@ -699,8 +699,8 @@ impl ControllerManager {
     /// Also checks HID device health every 2 seconds and attempts reconnection.
     pub fn drain(&mut self) -> Vec<MidiEvent> {
         // Throttled HID health check (every 2 seconds)
-        if self.last_hid_health_check.elapsed() >= std::time::Duration::from_secs(2) {
-            self.last_hid_health_check = Instant::now();
+        if self.last_device_check.elapsed() >= std::time::Duration::from_secs(2) {
+            self.last_device_check = Instant::now();
             self.check_hid_health();
             self.check_new_devices();
         }
