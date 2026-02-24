@@ -8,6 +8,12 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Scratch playhead drifts forward instead of following mouse** — During waveform
+  scratching the playhead visually drifted ahead of the mouse cursor because the
+  UI's inter-frame interpolation kept extrapolating forward at normal playback rate.
+  Now sets playback rate to zero while scratch is active so the playhead tracks the
+  mouse position exactly.
+
 - **Track name parsing: number prefix leaking into artist** — Filenames with UVR5
   playlist+track-number prefixes (e.g., `1_01 Black Sun Empire - Feed the Machine`)
   left the track number in the artist field. Added a compound strip that only removes
