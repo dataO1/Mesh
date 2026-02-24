@@ -525,10 +525,9 @@ impl Deck {
         self.atomics.position.store(self.position as u64, Ordering::Relaxed);
         let now_ns = PROCESS_EPOCH.elapsed().as_nanos() as u64;
         self.atomics.position_timestamp_ns.store(now_ns, Ordering::Relaxed);
-        self.atomics.playback_rate.store(
-            (self.stretch_ratio as f32).to_bits(),
-            Ordering::Relaxed,
-        );
+        // Zero rate during scratch so UI interpolation doesn't add forward drift
+        let rate = if self.scratch.active { 0.0_f32 } else { self.stretch_ratio as f32 };
+        self.atomics.playback_rate.store(rate.to_bits(), Ordering::Relaxed);
     }
 
     /// Write loop state to atomics (internal helper)
