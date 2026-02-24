@@ -8,6 +8,17 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Track name parsing: number prefix leaking into artist** — Filenames with UVR5
+  playlist+track-number prefixes (e.g., `1_01 Black Sun Empire - Feed the Machine`)
+  left the track number in the artist field. Added a compound strip that only removes
+  bare space-separated track numbers when a UVR5 prefix was present, avoiding false
+  positives on legitimate names like "808 State".
+
+- **MIDI/HID devices not detected when connected after launch** — Device enumeration
+  only ran at startup. Added `check_new_devices()` to the existing 2-second poll loop,
+  scanning for expected-but-unconnected devices from `midi.yaml`. Reuses the existing
+  `try_connect_all_midi`/`try_connect_all_hid` which skip already-connected devices.
+
 - **Slicer preset trigger uses wrong preset index** — `SlicerTrigger` handler checked
   which stems had patterns using the globally-selected editor preset instead of the
   preset corresponding to the pressed pad. Now uses `button_idx` directly, matching
