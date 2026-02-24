@@ -959,6 +959,33 @@ impl DatabaseService {
         Ok(map)
     }
 
+    /// Get hot cue counts for multiple tracks in one query (avoids N+1)
+    pub fn get_cue_counts_batch(&self, track_ids: &[i64]) -> Result<std::collections::HashMap<i64, u8>, DbError> {
+        use std::collections::HashMap;
+
+        if track_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let id_values: Vec<DataValue> = track_ids.iter().map(|&id| DataValue::from(id)).collect();
+        let mut params = BTreeMap::new();
+        params.insert("ids".to_string(), DataValue::List(id_values));
+
+        let result = self.db.run_query(r#"
+            ?[track_id, count(index)] := *cue_points{track_id, index}, track_id in $ids
+        "#, params)?;
+
+        let mut map = HashMap::new();
+        for row in &result.rows {
+            let tid = row[0].get_int().unwrap_or(0);
+            let count = row[1].get_int().unwrap_or(0) as u8;
+            if count > 0 {
+                map.insert(tid, count);
+            }
+        }
+        Ok(map)
+    }
+
     /// Add a tag to a track (upsert — if label exists, updates color)
     pub fn add_tag(&self, track_id: i64, label: &str, color: Option<&str>) -> Result<(), DbError> {
         let mut params = BTreeMap::new();

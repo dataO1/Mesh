@@ -275,9 +275,10 @@ impl PlaylistStorage for UsbStorage {
             return Vec::new();
         };
 
-        // Batch-load tags for all tracks in this playlist
+        // Batch-load tags and cue counts for all tracks in this playlist
         let track_db_ids: Vec<i64> = tracks.iter().map(|t| t.id).collect();
         let tags_map = db_service.get_tags_batch(&track_db_ids).unwrap_or_default();
+        let cue_counts = db_service.get_cue_counts_batch(&track_db_ids).unwrap_or_default();
 
         // Tracks are already ordered by sort_order from DB, use enumerate for display order
         tracks
@@ -304,6 +305,7 @@ impl PlaylistStorage for UsbStorage {
                     duration: Some(track.duration_seconds),
                     lufs: track.lufs,
                     tags: tags_map.get(&track.id).cloned().unwrap_or_default(),
+                    cue_count: cue_counts.get(&track.id).copied().unwrap_or(0),
                 }
             })
             .collect()

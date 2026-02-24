@@ -161,6 +161,8 @@ pub struct TrackInfo {
     pub lufs: Option<f32>,
     /// User-defined tags as (label, optional_hex_color) pairs
     pub tags: Vec<(String, Option<String>)>,
+    /// Number of hot cue points set (0 = hide in browser)
+    pub cue_count: u8,
 }
 
 impl TrackInfo {

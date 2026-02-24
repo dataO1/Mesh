@@ -39,6 +39,7 @@ impl DatabaseStorage {
             duration: Some(track.duration_seconds),
             lufs: track.lufs,
             tags: Vec::new(),
+            cue_count: 0,
         }
     }
 
@@ -235,9 +236,10 @@ impl PlaylistStorage for DatabaseStorage {
                         Ok(tracks) => {
                             log::debug!("get_tracks: found {} tracks in playlist", tracks.len());
 
-                            // Batch-load tags for all playlist tracks
+                            // Batch-load tags and cue counts for all playlist tracks
                             let track_ids: Vec<i64> = tracks.iter().map(|t| t.id).collect();
                             let tags_map = self.service.get_tags_batch(&track_ids).unwrap_or_default();
+                            let cue_counts = self.service.get_cue_counts_batch(&track_ids).unwrap_or_default();
 
                             // Tracks are already ordered by sort_order from DB, use enumerate for display order
                             return tracks.iter()
@@ -253,6 +255,7 @@ impl PlaylistStorage for DatabaseStorage {
                                     duration: Some(track.duration_seconds),
                                     lufs: track.lufs,
                                     tags: tags_map.get(&track.id).cloned().unwrap_or_default(),
+                                    cue_count: cue_counts.get(&track.id).copied().unwrap_or(0),
                                 })
                                 .collect();
                         }
@@ -277,9 +280,10 @@ impl PlaylistStorage for DatabaseStorage {
             }
         };
 
-        // Batch-load tags for all tracks in this folder
+        // Batch-load tags and cue counts for all tracks in this folder
         let track_ids: Vec<i64> = tracks.iter().filter_map(|t| t.id).collect();
         let tags_map = self.service.get_tags_batch(&track_ids).unwrap_or_default();
+        let cue_counts = self.service.get_cue_counts_batch(&track_ids).unwrap_or_default();
 
         // Use enumerate for collection tracks - order represents import order
         tracks.iter()
@@ -288,6 +292,7 @@ impl PlaylistStorage for DatabaseStorage {
                 let mut info = Self::track_to_info(track, folder_id, (i + 1) as i32);
                 if let Some(id) = track.id {
                     info.tags = tags_map.get(&id).cloned().unwrap_or_default();
+                    info.cue_count = cue_counts.get(&id).copied().unwrap_or(0);
                 }
                 info
             })

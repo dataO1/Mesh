@@ -162,6 +162,8 @@ pub struct SelectModifiers {
 pub enum TrackColumn {
     /// Order in playlist/collection (#)
     Order,
+    /// Number of hot cue points set
+    Cues,
     /// Track name
     Name,
     /// Tags (user-defined + suggestion reasons)
@@ -183,6 +185,7 @@ impl TrackColumn {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Order => "#",
+            Self::Cues => "Q",
             Self::Name => "Name",
             Self::Tags => "Tags",
             Self::Artist => "Artist",
@@ -202,6 +205,7 @@ impl TrackColumn {
     pub fn width(&self) -> Length {
         match self {
             Self::Order => Length::Fixed(35.0),
+            Self::Cues => Length::Fixed(28.0),
             Self::Name => Length::Fill,
             Self::Tags => Length::Fixed(150.0),
             Self::Artist => Length::Fixed(120.0),
@@ -216,6 +220,7 @@ impl TrackColumn {
     pub fn all() -> &'static [TrackColumn] {
         &[
             TrackColumn::Order,
+            TrackColumn::Cues,
             TrackColumn::Name,
             TrackColumn::Tags,
             TrackColumn::Artist,
@@ -248,6 +253,8 @@ pub struct TrackRow<Id: Clone> {
     pub lufs: Option<f32>,
     /// Tags to display (user-defined + suggestion reason)
     pub tags: Vec<TrackTag>,
+    /// Number of hot cue points set (0 = hide in browser)
+    pub cue_count: u8,
 }
 
 impl<Id: Clone> TrackRow<Id> {
@@ -263,7 +270,14 @@ impl<Id: Clone> TrackRow<Id> {
             duration: None,
             lufs: None,
             tags: Vec::new(),
+            cue_count: 0,
         }
+    }
+
+    /// Set the hot cue count
+    pub fn with_cue_count(mut self, count: u8) -> Self {
+        self.cue_count = count;
+        self
     }
 
     /// Set the artist name
@@ -354,6 +368,7 @@ pub fn compare_tracks_by_column<Id: Clone>(
 
     match column {
         TrackColumn::Order => a.order.cmp(&b.order),
+        TrackColumn::Cues => a.cue_count.cmp(&b.cue_count),
         TrackColumn::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
         TrackColumn::Artist => {
             let a_artist = a.artist.as_deref().unwrap_or("");
@@ -801,6 +816,31 @@ where
     Id: Clone + PartialEq + Eq + Hash + 'a,
     Message: Clone + 'a,
 {
+    // Cues column renders as centered orange pill (or empty if zero)
+    if column == TrackColumn::Cues {
+        if track.cue_count > 0 {
+            let pill = container(
+                text(track.cue_count.to_string())
+                    .size(10)
+                    .wrapping(iced::widget::text::Wrapping::None)
+            )
+            .padding(Padding::from([2, 5]))
+            .style(|_theme: &Theme| container::Style {
+                background: Some(Background::Color(Color::from_rgb8(235, 145, 50))),
+                border: Border { radius: 3.0.into(), ..Default::default() },
+                text_color: Some(Color::WHITE),
+                ..Default::default()
+            });
+            return container(pill)
+                .width(state.column_width(column))
+                .center_x(Length::Fill)
+                .into();
+        }
+        return container(text(""))
+            .width(state.column_width(column))
+            .into();
+    }
+
     // Tags column renders as colored pills — handle before the text-based path
     if column == TrackColumn::Tags {
         let pills: Vec<Element<'a, Message>> = track.tags.iter().map(|tag| {
@@ -831,6 +871,7 @@ where
     // Get the display value for this cell
     let display_value = match column {
         TrackColumn::Order => track.order.to_string(),
+        TrackColumn::Cues => unreachable!(), // handled above
         TrackColumn::Name => track.name.clone(),
         TrackColumn::Tags => unreachable!(), // handled above
         TrackColumn::Artist => track.artist.clone().unwrap_or_else(|| "-".to_string()),
