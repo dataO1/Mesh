@@ -389,7 +389,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Volume dimming
     // -----------------------------------------------------------------
     let volume = u.beat_params.w;
-    if (volume < 0.999) {
+    if (!is_overview && volume < 0.999) {
         let dim = (1.0 - volume) * 0.4;
         color = color * (1.0 - dim);
     }
