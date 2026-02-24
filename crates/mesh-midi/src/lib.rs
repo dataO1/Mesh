@@ -161,6 +161,8 @@ pub struct ControllerManager {
     pending_hid_reconnect: Vec<PendingHidReconnect>,
     /// Last time HID health was checked (throttled to every 2s)
     last_hid_health_check: Instant,
+    /// Whether raw event capture is enabled (for learn mode)
+    capture_raw: bool,
     /// Optional direct dispatch to audio engine (shared with MIDI callbacks)
     direct_dispatch: Option<Arc<dyn DirectDispatch>>,
 }
@@ -251,6 +253,7 @@ impl ControllerManager {
             feedback_worker: None,
             pending_hid_reconnect: Vec::new(),
             last_hid_health_check: Instant::now(),
+            capture_raw,
             direct_dispatch: None,
         };
 
@@ -284,6 +287,7 @@ impl ControllerManager {
             feedback_worker: None,
             pending_hid_reconnect: Vec::new(),
             last_hid_health_check: Instant::now(),
+            capture_raw: true,
             direct_dispatch: None,
         };
 
