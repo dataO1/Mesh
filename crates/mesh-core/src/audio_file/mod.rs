@@ -1516,6 +1516,85 @@ impl LoadedTrack {
         reader.read_all_stems_to(target_sample_rate)
     }
 
+    /// Load stems with parallel region decoding (up to 4 threads).
+    ///
+    /// Splits the file into equal regions and decodes each in parallel using
+    /// `AudioFileReader::decode_region()`. Falls back to sequential decode if
+    /// the file needs resampling or is very short (< 2 seconds).
+    ///
+    /// Uses the default system sample rate (48kHz).
+    pub fn load_stems_parallel<P: AsRef<Path>>(path: P) -> Result<StemBuffers, AudioFileError> {
+        Self::load_stems_parallel_to(path, SAMPLE_RATE)
+    }
+
+    /// Load stems with parallel region decoding, resampling to target sample rate.
+    ///
+    /// For native-rate files, splits into N regions and decodes in parallel.
+    /// For files needing resampling, falls back to sequential (rubato needs
+    /// contiguous blocks).
+    pub fn load_stems_parallel_to<P: AsRef<Path>>(
+        path: P,
+        target_sample_rate: u32,
+    ) -> Result<StemBuffers, AudioFileError> {
+        let reader = AudioFileReader::open(path.as_ref())?;
+
+        if reader.needs_resampling(target_sample_rate) {
+            return reader.read_all_stems_to(target_sample_rate);
+        }
+
+        let frame_count = reader.frame_count() as usize;
+        // Need at least 1s per region to be worthwhile
+        let num_threads = 4usize.min(frame_count / 48000);
+        if num_threads <= 1 {
+            return reader.read_all_stems_to(target_sample_rate);
+        }
+
+        log::info!(
+            "[PERF] Parallel stem load: {} frames across {} threads",
+            frame_count, num_threads
+        );
+        let par_start = std::time::Instant::now();
+
+        let region_size = frame_count / num_threads;
+        let mut regions: Vec<StemBuffers> = Vec::with_capacity(num_threads);
+
+        std::thread::scope(|s| {
+            let handles: Vec<_> = (0..num_threads)
+                .map(|i| {
+                    let start = i * region_size;
+                    let count = if i == num_threads - 1 {
+                        frame_count - start
+                    } else {
+                        region_size
+                    };
+                    let r = &reader;
+                    s.spawn(move || r.decode_region(start, count))
+                })
+                .collect();
+
+            for handle in handles {
+                regions.push(handle.join().expect("decode thread panicked")?);
+            }
+            Ok::<(), AudioFileError>(())
+        })?;
+
+        // Merge decoded regions into a single contiguous buffer
+        let mut stems = StemBuffers::with_length(frame_count);
+        let mut offset = 0;
+        for region in &regions {
+            let len = region.len();
+            stems.copy_region_from(region, offset, len);
+            offset += len;
+        }
+
+        log::info!(
+            "[PERF] Parallel stem load complete: {:?} ({} threads)",
+            par_start.elapsed(), num_threads
+        );
+
+        Ok(stems)
+    }
+
     /// Load a single stem from a track file with automatic metadata resolution.
     ///
     /// This is the preferred entry point for linked stem loading. It only

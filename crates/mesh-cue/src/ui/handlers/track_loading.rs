@@ -85,7 +85,7 @@ impl MeshCueApp {
                 // Phase 2: Load audio stems in background (slow, ~3s)
                 Task::perform(
                     async move {
-                        LoadedTrack::load_stems(&path)
+                        LoadedTrack::load_stems_parallel(&path)
                             .map(|stems| Shared::new(&mesh_core::engine::gc::gc_handle(), stems))
                             .map_err(|e| e.to_string())
                     },
