@@ -33,6 +33,11 @@ pub struct ParsedFilename {
 static RE_UVR5_PREFIX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\d+_").unwrap());
 
+/// Bare track number followed by space only (no separator): `01 `, `05 `
+/// Only used after stripping a UVR5 prefix — never standalone (avoids eating "808 State").
+static RE_BARE_TRACK_NUMBER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{1,2}\s+").unwrap());
+
 /// Track number prefix: `01 - `, `A1 - `, `03.`, `1)`, etc.
 static RE_TRACK_NUMBER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[A-Z]?\d{1,2}\s*[-.)]\s*").unwrap());
@@ -59,10 +64,20 @@ pub fn parse_filename(filename: &str, known_artists: &HashSet<String>) -> Parsed
     let mut s = filename.to_string();
 
     // Step 1: Strip UVR5 prefix (e.g., `56_Artist - Title` → `Artist - Title`)
+    let had_uvr5 = RE_UVR5_PREFIX.is_match(&s);
     s = RE_UVR5_PREFIX.replace(&s, "").to_string();
 
     // Step 2: Strip track number prefix (e.g., `01 - `, `A1 - `, `03.`)
+    let before_track = s.clone();
     s = RE_TRACK_NUMBER.replace(&s, "").to_string();
+
+    // Step 2b: If we stripped a UVR5 prefix but the separator-based track regex didn't
+    // match, try a bare track number (space-only, e.g., `01 Artist`). This is safe
+    // because the UVR5 prefix confirms this is a playlist export, not something like
+    // "808 State" where the leading digits are part of the artist name.
+    if had_uvr5 && s == before_track {
+        s = RE_BARE_TRACK_NUMBER.replace(&s, "").to_string();
+    }
 
     // Step 3: Normalize separators → standard ` - `
     s = s.replace(" – ", " - ");  // en dash
@@ -356,5 +371,39 @@ mod tests {
         assert_eq!(r.artist.as_deref(), Some("Unknown"));
         assert_eq!(r.title, "Arrakis - Remix");
         assert_eq!(r.confidence, ParseConfidence::Medium);
+    }
+
+    // ── UVR5 + space-only track number ──────────────────────────────────
+
+    #[test]
+    fn uvr5_with_space_only_track_number() {
+        // Pattern: "1_01 Artist - Title" — the "01" is separated by space only
+        let r = parse_filename("1_01 Black Sun Empire - Feed the Machine", &empty_known());
+        assert_eq!(r.artist.as_deref(), Some("Black Sun Empire"));
+        assert_eq!(r.title, "Feed the Machine");
+        assert_eq!(r.confidence, ParseConfidence::High);
+    }
+
+    #[test]
+    fn uvr5_with_space_only_track_number_two_digit_prefix() {
+        let r = parse_filename("12_05 Pendulum - Tarantula", &empty_known());
+        assert_eq!(r.artist.as_deref(), Some("Pendulum"));
+        assert_eq!(r.title, "Tarantula");
+    }
+
+    #[test]
+    fn plain_number_space_artist_not_stripped() {
+        // "01 Artist - Title" without UVR5 prefix should NOT strip the "01"
+        // because it could be legitimate (e.g., "808 State")
+        let r = parse_filename("01 Black Sun Empire - Feed the Machine", &empty_known());
+        assert_eq!(r.artist.as_deref(), Some("01 Black Sun Empire"));
+    }
+
+    #[test]
+    fn uvr5_no_track_number_still_works() {
+        // Existing pattern: "10_Artist - Title" (no space-separated track number)
+        let r = parse_filename("10_Black Sun Empire - Drizzle", &empty_known());
+        assert_eq!(r.artist.as_deref(), Some("Black Sun Empire"));
+        assert_eq!(r.title, "Drizzle");
     }
 }
