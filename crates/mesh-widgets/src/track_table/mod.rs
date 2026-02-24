@@ -237,9 +237,9 @@ impl TrackColumn {
         match self {
             Self::Order => Length::Fixed(35.0),
             Self::Cues => Length::Fixed(28.0),
-            Self::Name => Length::Fill,
-            Self::Tags => Length::Fixed(150.0),
-            Self::Artist => Length::Fixed(120.0),
+            Self::Name => Length::Fixed(300.0),
+            Self::Artist => Length::Fixed(180.0),
+            Self::Tags => Length::Fill,
             Self::Bpm => Length::Fixed(60.0),
             Self::Key => Length::Fixed(50.0),
             Self::Duration => Length::Fixed(70.0),
@@ -253,8 +253,8 @@ impl TrackColumn {
             TrackColumn::Order,
             TrackColumn::Cues,
             TrackColumn::Name,
-            TrackColumn::Tags,
             TrackColumn::Artist,
+            TrackColumn::Tags,
             TrackColumn::Bpm,
             TrackColumn::Key,
             TrackColumn::Lufs,
@@ -465,8 +465,6 @@ pub struct TrackTableState<Id: Clone + Eq + Hash> {
     pub edit_buffer: String,
     /// Last known mouse position (for context menu placement)
     pub last_mouse_position: Point,
-    /// Optional override for Tags column width (default: 150px)
-    pub tag_column_width: Option<f32>,
     /// Override selection highlight color (e.g., stem color during stem link selection)
     pub selection_color_override: Option<Color>,
     /// Override pill background color for Cues column (derived from theme stem colors)
@@ -496,20 +494,14 @@ impl<Id: Clone + Eq + Hash> TrackTableState<Id> {
             editing: None,
             edit_buffer: String::new(),
             last_mouse_position: Point::ORIGIN,
-            tag_column_width: None,
             selection_color_override: None,
             pill_color: None,
             tag_category_colors: None,
         }
     }
 
-    /// Get the width for a column, respecting tag_column_width override
+    /// Get the width for a column
     pub fn column_width(&self, column: TrackColumn) -> Length {
-        if column == TrackColumn::Tags {
-            if let Some(w) = self.tag_column_width {
-                return Length::Fixed(w);
-            }
-        }
         column.width()
     }
 

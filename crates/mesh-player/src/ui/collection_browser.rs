@@ -121,8 +121,7 @@ impl CollectionBrowserState {
             .map(|s| build_tree_nodes(s.as_ref()))
             .unwrap_or_default();
 
-        let mut browser = PlaylistBrowserState::new();
-        browser.table_state.tag_column_width = Some(300.0);
+        let browser = PlaylistBrowserState::new();
 
         Self {
             collection_path,

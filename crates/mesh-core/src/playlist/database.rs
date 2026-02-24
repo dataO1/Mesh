@@ -27,10 +27,27 @@ impl DatabaseStorage {
     }
 
     /// Convert database Track to TrackInfo
+    ///
+    /// The DB `name` field stores "Artist - Title" (combined). Since Artist
+    /// has its own column, we strip the "Artist - " prefix from the display
+    /// name to avoid redundancy.
     fn track_to_info(track: &crate::db::Track, folder_id: &NodeId, order: i32) -> TrackInfo {
+        // Strip "Artist - " prefix from name when artist is known
+        let display_name = match &track.artist {
+            Some(artist) if !artist.is_empty() => {
+                let prefix = format!("{} - ", artist);
+                if track.name.starts_with(&prefix) {
+                    track.name[prefix.len()..].to_string()
+                } else {
+                    track.name.clone()
+                }
+            }
+            _ => track.name.clone(),
+        };
+
         TrackInfo {
             id: NodeId(format!("{}/{}", folder_id.0, track.name)),
-            name: track.name.clone(),
+            name: display_name,
             path: PathBuf::from(&track.path),
             order,
             artist: track.artist.clone(),

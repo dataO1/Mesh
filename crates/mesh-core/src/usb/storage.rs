@@ -294,9 +294,23 @@ impl PlaylistStorage for UsbStorage {
                 let track_path = self.collection_root.join("tracks").join(&filename);
                 let track_id = folder_id.child(&filename);
 
+                // Strip "Artist - " prefix from display name when artist is present
+                // (DB stores combined "Artist - Title" in name field)
+                let display_name = match &track.artist {
+                    Some(artist) if !artist.is_empty() => {
+                        let prefix = format!("{} - ", artist);
+                        if track.name.starts_with(&prefix) {
+                            track.name[prefix.len()..].to_string()
+                        } else {
+                            track.name.clone()
+                        }
+                    }
+                    _ => track.name.clone(),
+                };
+
                 TrackInfo {
                     id: track_id,
-                    name: track.name,
+                    name: display_name,
                     path: track_path,
                     order: (i + 1) as i32, // 1-based for display
                     artist: track.artist,
