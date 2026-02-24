@@ -91,6 +91,10 @@ pub struct MeshCueApp {
     pub(crate) effect_picker: super::effect_picker::EffectPickerState,
     /// Plugin GUI manager for CLAP parameter learning
     pub(crate) plugin_gui_manager: super::plugin_gui::PluginGuiManager,
+    /// Loaded themes from theme.yaml
+    pub(crate) themes: Vec<mesh_widgets::theme::MeshTheme>,
+    /// Active iced theme (rebuilt when theme selection changes)
+    pub(crate) iced_theme: iced::Theme,
 }
 
 /// Extract the playlists subtree from the tree nodes for the export modal
@@ -126,11 +130,17 @@ impl MeshCueApp {
         let keybindings = keybindings::load_keybindings(&keybindings_path);
         log::info!("Loaded keybindings from {:?}", keybindings_path);
 
-        let settings = SettingsState::from_config(&config);
+        let mut settings = SettingsState::from_config(&config);
 
         // Initialize collection state first (needed for collection_root)
         let mut collection_state = CollectionState::default();
         let collection_root = collection_state.collection_path.clone();
+
+        // Load themes from shared theme.yaml
+        let themes = mesh_widgets::theme::load_themes(&collection_root.join("theme.yaml"));
+        let active_theme = mesh_widgets::theme::find_theme(&themes, &config.display.theme);
+        let iced_theme = active_theme.iced_theme();
+        settings.available_theme_names = themes.iter().map(|t| t.name.clone()).collect();
 
         // ═══════════════════════════════════════════════════════════════════════
         // Initialize Domain Layer
@@ -201,6 +211,8 @@ impl MeshCueApp {
             slicer_editor: super::slicer_editor::SlicerEditorState::new(),
             effect_picker: super::effect_picker::EffectPickerState::new(),
             plugin_gui_manager: super::plugin_gui::PluginGuiManager::new(),
+            themes,
+            iced_theme,
         };
 
         // Initial collection scan and playlist refresh
@@ -383,6 +395,7 @@ impl MeshCueApp {
             Message::UpdateSettingsSeparationModel(model) => return self.handle_update_settings_separation_model(model),
             Message::UpdateSettingsSeparationShifts(shifts) => return self.handle_update_settings_separation_shifts(shifts),
             Message::RefreshAudioDevices => return self.handle_refresh_audio_devices(),
+            Message::UpdateSettingsTheme(name) => return self.handle_update_settings_theme(name),
             Message::SaveSettings => return self.handle_save_settings(),
             Message::SaveSettingsComplete(result) => return self.handle_save_settings_complete(result),
             // Keyboard input (delegated to handlers/keyboard.rs)
@@ -762,7 +775,7 @@ impl MeshCueApp {
 
     /// Application theme
     pub fn theme(&self) -> Theme {
-        Theme::Dark
+        self.iced_theme.clone()
     }
 
     /// Subscription for periodic UI updates and keyboard/mouse events

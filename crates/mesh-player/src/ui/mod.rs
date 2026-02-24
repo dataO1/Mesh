@@ -15,6 +15,5 @@ pub mod mixer_view;
 pub mod player_canvas;
 pub mod settings;
 pub mod state;
-pub mod theme;
 
 pub use app::MeshApp;

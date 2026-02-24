@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use mesh_widgets::MultibandEditorMessage;
 
-use crate::config::{StemColorPalette, KeyScoringModel, WaveformAbstraction, WaveformLayout};
+use crate::config::{KeyScoringModel, WaveformAbstraction, WaveformLayout};
 use crate::suggestions::SuggestedTrack;
 use super::collection_browser::CollectionBrowserMessage;
 use super::deck_view::DeckMessage;
@@ -30,8 +30,10 @@ pub enum SettingsMessage {
     UpdateZoomBars(u32),
     /// Update draft grid bars
     UpdateGridBars(u32),
-    /// Update draft stem color palette
-    UpdateStemColorPalette(StemColorPalette),
+    /// Update draft theme (by name from theme.yaml)
+    UpdateTheme(String),
+    /// Update draft theme by index (for MIDI navigation — index into available theme names)
+    UpdateThemeIndex(usize),
     /// Update draft phase sync setting
     UpdatePhaseSync(bool),
     /// Update draft slicer buffer bars

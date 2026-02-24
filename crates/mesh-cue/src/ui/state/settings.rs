@@ -43,6 +43,11 @@ pub struct SettingsState {
     // ── Beat Detection Settings ────────────────────────────────────────────
     /// Draft beat detection backend (Simple = Essentia, Advanced = Beat This!)
     pub draft_beat_detection: BeatDetectionBackend,
+    // ── Theme Settings ────────────────────────────────────────────────────
+    /// Draft theme name (from theme.yaml)
+    pub draft_theme: String,
+    /// Available theme names (populated when settings open)
+    pub available_theme_names: Vec<String>,
 }
 
 impl SettingsState {
@@ -68,6 +73,9 @@ impl SettingsState {
             draft_separation_shifts: config.analysis.separation.shifts,
             // Beat detection
             draft_beat_detection: config.analysis.bpm.backend,
+            // Theme
+            draft_theme: config.display.theme.clone(),
+            available_theme_names: Vec::new(),
         }
     }
 

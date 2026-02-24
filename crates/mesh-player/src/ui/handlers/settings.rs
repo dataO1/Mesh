@@ -21,6 +21,7 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             let network = app.settings.network.take();
             let update = app.settings.update.take();
             app.settings = SettingsState::from_config(&app.config);
+            app.settings.available_theme_names = app.themes.iter().map(|t| t.name.clone()).collect();
             // Preserve stateful sections across reopen (avoid re-detecting nmcli/NixOS)
             app.settings.network = network;
             app.settings.update = update;
@@ -68,8 +69,14 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             app.settings.draft_grid_bars = bars;
             Task::none()
         }
-        UpdateStemColorPalette(palette) => {
-            app.settings.draft_stem_color_palette = palette;
+        UpdateTheme(name) => {
+            app.settings.draft_theme = name;
+            Task::none()
+        }
+        UpdateThemeIndex(idx) => {
+            if let Some(name) = app.settings.available_theme_names.get(idx) {
+                app.settings.draft_theme = name.clone();
+            }
             Task::none()
         }
         UpdatePhaseSync(enabled) => {
@@ -124,7 +131,7 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             new_config.display.default_loop_length_index = app.settings.draft_loop_length_index;
             new_config.display.default_zoom_bars = app.settings.draft_zoom_bars;
             new_config.display.grid_bars = app.settings.draft_grid_bars;
-            new_config.display.stem_color_palette = app.settings.draft_stem_color_palette;
+            new_config.display.theme = app.settings.draft_theme.clone();
             new_config.display.show_local_collection = app.settings.draft_show_local_collection;
             new_config.display.key_scoring_model = app.settings.draft_key_scoring_model;
             new_config.display.waveform_layout = app.settings.draft_waveform_layout;
@@ -162,10 +169,10 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
                 }
             }
 
-            // Apply stem color palette to waveform display immediately
-            app.player_canvas_state.set_stem_colors(
-                app.settings.draft_stem_color_palette.colors()
-            );
+            // Apply theme colors to waveform display and iced theme immediately
+            let active_theme = mesh_widgets::theme::find_theme(&app.themes, &app.settings.draft_theme);
+            app.player_canvas_state.set_stem_colors(active_theme.stem_colors());
+            app.iced_theme = active_theme.iced_theme();
 
             // Apply waveform layout immediately
             app.player_canvas_state.set_vertical_layout(

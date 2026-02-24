@@ -156,6 +156,8 @@ pub enum Message {
     UpdateSettingsOutputPair(usize),
     /// Update scratch interpolation method
     UpdateSettingsScratchInterpolation(mesh_core::engine::InterpolationMethod),
+    /// Update draft theme selection (by name from theme.yaml)
+    UpdateSettingsTheme(String),
     /// Update separation backend type
     UpdateSettingsSeparationBackend(BackendType),
     /// Update separation model type

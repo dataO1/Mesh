@@ -356,6 +356,29 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
     .spacing(10)
     .align_y(Alignment::Center);
 
+    // Theme selection section
+    let theme_title = text("Theme").size(14);
+    let theme_hint = text("Color scheme for UI and waveform visualization")
+        .size(12);
+
+    let theme_buttons: Vec<Element<Message>> = state.available_theme_names
+        .iter()
+        .map(|name| {
+            let is_selected = state.draft_theme == *name;
+            let btn = button(text(name.as_str()).size(11))
+                .on_press(Message::UpdateSettingsTheme(name.clone()))
+                .style(if is_selected {
+                    iced::widget::button::primary
+                } else {
+                    iced::widget::button::secondary
+                })
+                .width(Length::Fixed(80.0));
+            btn.into()
+        })
+        .collect();
+
+    let theme_row = row(theme_buttons).spacing(4).align_y(Alignment::Center);
+
     container(
         column![
             section_title,
@@ -366,6 +389,10 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
             slicer_title,
             slicer_hint,
             slicer_row,
+            Space::new().height(10),
+            theme_title,
+            theme_hint,
+            theme_row,
         ]
         .spacing(10),
     )

@@ -13,6 +13,7 @@ impl MeshCueApp {
     pub fn handle_open_settings(&mut self) -> Task<Message> {
         // Reset draft values from current config
         self.settings = SettingsState::from_config(self.domain.config());
+        self.settings.available_theme_names = self.themes.iter().map(|t| t.name.clone()).collect();
         self.settings.is_open = true;
         // Refresh available audio devices
         self.settings.refresh_audio_devices();
@@ -126,6 +127,12 @@ impl MeshCueApp {
         Task::none()
     }
 
+    /// Handle UpdateSettingsTheme message
+    pub fn handle_update_settings_theme(&mut self, name: String) -> Task<Message> {
+        self.settings.draft_theme = name;
+        Task::none()
+    }
+
     /// Handle UpdateSettingsSeparationShifts message
     pub fn handle_update_settings_separation_shifts(&mut self, shifts: u8) -> Task<Message> {
         self.settings.draft_separation_shifts = shifts.clamp(1, 5);
@@ -157,8 +164,9 @@ impl MeshCueApp {
             // Update track name format
             config.track_name_format = self.settings.draft_track_name_format.clone();
 
-            // Update display settings (grid bars)
+            // Update display settings (grid bars, theme)
             config.display.grid_bars = self.settings.draft_grid_bars;
+            config.display.theme = self.settings.draft_theme.clone();
 
             // Update slicer buffer bars
             config.slicer.buffer_bars = self.settings.draft_slicer_buffer_bars;
@@ -179,6 +187,10 @@ impl MeshCueApp {
             self.settings.draft_max_tempo = config.analysis.bpm.max_tempo.to_string();
             self.settings.draft_parallel_processes = config.analysis.parallel_processes.to_string();
         }
+
+        // Apply theme immediately
+        let active_theme = mesh_widgets::theme::find_theme(&self.themes, &self.settings.draft_theme);
+        self.iced_theme = active_theme.iced_theme();
 
         // Apply scratch interpolation to audio engine immediately
         self.audio.set_scratch_interpolation(self.settings.draft_scratch_interpolation);

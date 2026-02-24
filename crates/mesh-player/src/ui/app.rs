@@ -71,6 +71,10 @@ pub struct MeshApp {
     pub(crate) status: String,
     /// Configuration
     pub(crate) config: Arc<PlayerConfig>,
+    /// Loaded themes from theme.yaml
+    pub(crate) themes: Vec<mesh_widgets::theme::MeshTheme>,
+    /// Active iced theme (rebuilt when theme selection changes)
+    pub(crate) iced_theme: iced::Theme,
     /// Path to config file
     pub(crate) config_path: PathBuf,
     /// Settings modal state
@@ -160,8 +164,12 @@ impl MeshApp {
     ) -> Self {
         // Load configuration
         let config_path = config::default_config_path();
-        let config = Arc::new(config::load_config(&config_path));
-        let settings = SettingsState::from_config(&config);
+        let config: Arc<config::PlayerConfig> = Arc::new(config::load_config(&config_path));
+        let themes = mesh_widgets::theme::load_themes(&config.collection_path.join("theme.yaml"));
+        let active = mesh_widgets::theme::find_theme(&themes, &config.display.theme);
+        let iced_theme = active.iced_theme();
+        let mut settings = SettingsState::from_config(&config);
+        settings.available_theme_names = themes.iter().map(|t| t.name.clone()).collect();
 
         let audio_connected = command_sender.is_some();
 
@@ -260,7 +268,7 @@ impl MeshApp {
             clip_hold_frames: 0,
             player_canvas_state: {
                 let mut state = PlayerCanvasState::new();
-                state.set_stem_colors(config.display.stem_color_palette.colors());
+                state.set_stem_colors(active.stem_colors());
                 state.set_vertical_layout(config.display.waveform_layout.is_vertical());
                 state.set_vertical_inverted(config.display.waveform_layout.is_inverted());
                 state.abstraction_level = config.display.waveform_abstraction.as_level();
@@ -281,6 +289,8 @@ impl MeshApp {
                 state
             },
             config,
+            themes,
+            iced_theme,
             config_path,
             settings,
             controller,
@@ -615,7 +625,7 @@ impl MeshApp {
                         controller.set_browse_mode(side, true);
                     }
                     // Highlight selected tracks in the stem's color
-                    let stem_color = super::theme::stem_colors()[stem_idx];
+                    let stem_color = mesh_widgets::theme::find_theme(&self.themes, &self.config.display.theme).stems[stem_idx];
                     self.collection_browser.browser.table_state.selection_color_override = Some(stem_color);
                     self.status = format!(
                         "Select track for {} stem link (deck {})",
@@ -651,7 +661,7 @@ impl MeshApp {
                         stem: stem_idx,
                     };
                     // Update highlight to new stem's color
-                    let stem_color = super::theme::stem_colors()[stem_idx];
+                    let stem_color = mesh_widgets::theme::find_theme(&self.themes, &self.config.display.theme).stems[stem_idx];
                     self.collection_browser.browser.table_state.selection_color_override = Some(stem_color);
                     self.status = format!(
                         "Select track for {} stem link (deck {})",
@@ -1798,7 +1808,7 @@ impl MeshApp {
 
     /// Get the theme
     pub fn theme(&self) -> Theme {
-        Theme::Dark
+        self.iced_theme.clone()
     }
 }
 

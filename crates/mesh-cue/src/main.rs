@@ -29,7 +29,13 @@ fn main() -> iced::Result {
 
     iced::application(MeshCueApp::new, MeshCueApp::update, MeshCueApp::view)
         .title(title)
-        .window_size(iced::Size::new(1200.0, 800.0))
+        .window(iced::window::Settings {
+            size: iced::Size::new(1200.0, 800.0),
+            min_size: Some(iced::Size::new(960.0, 600.0)),
+            ..Default::default()
+        })
+        // TODO: Custom font — .font(include_bytes!("path.ttf")) + .default_font(Font { family: Family::Name("X"), .. })
+        // TODO: Window icon — window::Settings { icon: Some(window::icon::from_rgba(data, w, h).unwrap()), .. }
         .theme(MeshCueApp::theme)
         .subscription(MeshCueApp::subscription)
         .run()

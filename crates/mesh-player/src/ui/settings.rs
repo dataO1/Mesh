@@ -7,7 +7,7 @@ use super::midi_learn::MidiLearnMessage;
 use super::network::NetworkState;
 use super::system_update::UpdateState;
 use crate::audio::{get_available_stereo_pairs, StereoPair};
-use crate::config::{LOOP_LENGTH_OPTIONS, StemColorPalette, KeyScoringModel, WaveformAbstraction, WaveformLayout};
+use crate::config::{LOOP_LENGTH_OPTIONS, KeyScoringModel, WaveformAbstraction, WaveformLayout};
 use iced::widget::{button, column, container, pick_list, row, scrollable, text, toggler, Id, Space};
 use iced::{Alignment, Color, Element, Length};
 use std::sync::LazyLock;
@@ -62,8 +62,10 @@ pub struct SettingsState {
     pub draft_zoom_bars: u32,
     /// Draft grid bars
     pub draft_grid_bars: u32,
-    /// Draft stem color palette
-    pub draft_stem_color_palette: StemColorPalette,
+    /// Draft theme name (from theme.yaml)
+    pub draft_theme: String,
+    /// Available theme names (populated when settings open)
+    pub available_theme_names: Vec<String>,
     /// Draft phase sync enabled
     pub draft_phase_sync: bool,
     /// Draft slicer buffer bars (1, 4, 8, or 16)
@@ -110,7 +112,8 @@ impl SettingsState {
             draft_loop_length_index: config.display.default_loop_length_index,
             draft_zoom_bars: config.display.default_zoom_bars,
             draft_grid_bars: config.display.grid_bars,
-            draft_stem_color_palette: config.display.stem_color_palette,
+            draft_theme: config.display.theme.clone(),
+            available_theme_names: Vec::new(), // Populated by caller
             draft_phase_sync: config.audio.phase_sync,
             draft_slicer_buffer_bars: config.slicer.buffer_bars,
             draft_auto_gain_enabled: config.audio.loudness.auto_gain_enabled,
@@ -142,7 +145,8 @@ impl SettingsState {
             draft_loop_length_index: 2, // 4 beats (index 2 in new array)
             draft_zoom_bars: 8,
             draft_grid_bars: 32,
-            draft_stem_color_palette: StemColorPalette::default(),
+            draft_theme: "Mesh".to_string(),
+            available_theme_names: Vec::new(),
             draft_phase_sync: true, // Enabled by default
             draft_slicer_buffer_bars: 1, // 1 bar = 4 beats (default)
             draft_auto_gain_enabled: true, // Auto-gain on by default
@@ -184,7 +188,7 @@ impl SettingsState {
             loop_length_index: self.draft_loop_length_index,
             zoom_bars: self.draft_zoom_bars,
             grid_bars: self.draft_grid_bars,
-            stem_color_palette: self.draft_stem_color_palette,
+            theme: self.draft_theme.clone(),
             phase_sync: self.draft_phase_sync,
             slicer_buffer_bars: self.draft_slicer_buffer_bars,
             auto_gain_enabled: self.draft_auto_gain_enabled,
@@ -206,7 +210,7 @@ impl SettingsState {
                 snap.loop_length_index != self.draft_loop_length_index
                     || snap.zoom_bars != self.draft_zoom_bars
                     || snap.grid_bars != self.draft_grid_bars
-                    || snap.stem_color_palette != self.draft_stem_color_palette
+                    || snap.theme != self.draft_theme
                     || snap.phase_sync != self.draft_phase_sync
                     || snap.slicer_buffer_bars != self.draft_slicer_buffer_bars
                     || snap.auto_gain_enabled != self.draft_auto_gain_enabled
@@ -236,7 +240,7 @@ struct SettingsSnapshot {
     loop_length_index: usize,
     zoom_bars: u32,
     grid_bars: u32,
-    stem_color_palette: StemColorPalette,
+    theme: String,
     phase_sync: bool,
     slicer_buffer_bars: u32,
     auto_gain_enabled: bool,
@@ -365,10 +369,10 @@ pub fn build_settings_entries(state: &SettingsState) -> Vec<SettingsEntry> {
             on_select: |idx| SettingsMessage::UpdateGridBars(GRID_SIZES[idx.min(GRID_SIZES.len() - 1)]),
         },
         SettingsEntry {
-            label: "Stem Color Palette",
-            options: StemColorPalette::ALL.iter().map(|p| p.display_name().to_string()).collect(),
-            selected: StemColorPalette::ALL.iter().position(|&p| p == state.draft_stem_color_palette).unwrap_or(0),
-            on_select: |idx| SettingsMessage::UpdateStemColorPalette(StemColorPalette::ALL[idx.min(StemColorPalette::ALL.len() - 1)]),
+            label: "Theme",
+            options: state.available_theme_names.clone(),
+            selected: state.available_theme_names.iter().position(|n| *n == state.draft_theme).unwrap_or(0),
+            on_select: |idx| SettingsMessage::UpdateThemeIndex(idx),
         },
         SettingsEntry {
             label: "Show Local Collection",
@@ -732,23 +736,23 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
     .align_y(Alignment::Center);
     let grid_row = wrap_navigable(grid_row.into(), 7, nav);
 
-    // Stem color palette section
-    let palette_subsection = text("Stem Color Palette").size(14);
-    let palette_hint = text("Color scheme for waveform stem visualization")
+    // Theme section
+    let palette_subsection = text("Theme").size(14);
+    let palette_hint = text("Color scheme for UI and waveform visualization")
         .size(12);
 
-    let palette_buttons: Vec<Element<Message>> = StemColorPalette::ALL
+    let palette_buttons: Vec<Element<Message>> = state.available_theme_names
         .iter()
-        .map(|&palette| {
-            let is_selected = state.draft_stem_color_palette == palette;
-            let btn = button(text(palette.display_name()).size(11))
-                .on_press(Message::Settings(SettingsMessage::UpdateStemColorPalette(palette)))
+        .map(|name| {
+            let is_selected = state.draft_theme == *name;
+            let btn = button(text(name.as_str()).size(11))
+                .on_press(Message::Settings(SettingsMessage::UpdateTheme(name.clone())))
                 .style(if is_selected {
                     iced::widget::button::primary
                 } else {
                     iced::widget::button::secondary
                 })
-                .width(Length::Fixed(75.0));
+                .width(Length::Fixed(80.0));
             btn.into()
         })
         .collect();

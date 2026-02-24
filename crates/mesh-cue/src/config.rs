@@ -74,6 +74,8 @@ pub struct DisplayConfig {
     pub global_bpm: f64,
     /// Default loop length index (0-6 maps to 0.25, 0.5, 1, 2, 4, 8, 16 beats)
     pub default_loop_length_index: usize,
+    /// Active theme name (references a theme from theme.yaml)
+    pub theme: String,
 }
 
 /// Loop length options in beats
@@ -86,6 +88,7 @@ impl Default for DisplayConfig {
             zoom_bars: 8,       // Default zoomed waveform to 8 bars
             global_bpm: 128.0,  // Standard house/techno BPM
             default_loop_length_index: 4,  // Default to 4 beats (index 4 in LOOP_LENGTH_OPTIONS)
+            theme: "Mesh".to_string(),
         }
     }
 }

@@ -120,7 +120,7 @@ impl CollectionBrowserState {
             .unwrap_or_default();
 
         let mut browser = PlaylistBrowserState::new();
-        browser.table_state.tag_column_width = Some(300.0);
+        browser.table_state.tag_column_width = Some(272.0);
 
         Self {
             collection_path,

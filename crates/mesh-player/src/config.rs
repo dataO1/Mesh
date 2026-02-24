@@ -3,69 +3,11 @@
 //! Configuration is stored as YAML in the mesh collection folder.
 //! Default location: ~/Music/mesh-collection/player-config.yaml
 
-use iced::Color;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 // Re-export shared config utilities from mesh-core
-pub use mesh_core::config::{
-    default_collection_path, load_config, save_config, LoudnessConfig,
-};
-
-/// Stem color palette selection
-///
-/// Maps to predefined palettes in mesh-widgets/src/theme.rs
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StemColorPalette {
-    /// Natural/Organic - soft, muted tones for extended viewing comfort
-    #[default]
-    Natural,
-    /// Cool-to-Warm Depth - uses color temperature for natural depth perception
-    CoolWarm,
-    /// High Contrast - maximum hue separation for clarity
-    HighContrast,
-    /// Synthwave - modern DJ aesthetic with neon-inspired colors
-    Synthwave,
-    /// Gruvbox - retro warm palette with earthy, vintage tones
-    Gruvbox,
-}
-
-impl StemColorPalette {
-    /// Get all available palettes for UI selection
-    pub const ALL: [StemColorPalette; 5] = [
-        StemColorPalette::Natural,
-        StemColorPalette::CoolWarm,
-        StemColorPalette::HighContrast,
-        StemColorPalette::Synthwave,
-        StemColorPalette::Gruvbox,
-    ];
-
-    /// Get the display name for this palette
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            StemColorPalette::Natural => "Natural",
-            StemColorPalette::CoolWarm => "Cool-Warm",
-            StemColorPalette::HighContrast => "High Contrast",
-            StemColorPalette::Synthwave => "Synthwave",
-            StemColorPalette::Gruvbox => "Gruvbox",
-        }
-    }
-
-    /// Get the color array for this palette
-    ///
-    /// Order: [Vocals, Drums, Bass, Other]
-    pub fn colors(&self) -> [Color; 4] {
-        use mesh_widgets::theme::stem_palettes;
-        match self {
-            StemColorPalette::Natural => stem_palettes::NATURAL,
-            StemColorPalette::CoolWarm => stem_palettes::COOL_WARM,
-            StemColorPalette::HighContrast => stem_palettes::HIGH_CONTRAST,
-            StemColorPalette::Synthwave => stem_palettes::SYNTHWAVE,
-            StemColorPalette::Gruvbox => stem_palettes::GRUVBOX,
-        }
-    }
-}
+pub use mesh_core::config::{load_config, save_config, LoudnessConfig};
 
 /// Key scoring model for harmonic compatibility
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -267,8 +209,8 @@ pub struct DisplayConfig {
     pub default_zoom_bars: u32,
     /// Overview waveform grid density in beats (8, 16, 32, or 64)
     pub grid_bars: u32,
-    /// Stem color palette for waveform display
-    pub stem_color_palette: StemColorPalette,
+    /// Active theme name (references a theme from theme.yaml)
+    pub theme: String,
     /// Show local collection in browser (default: false for USB-only mode)
     /// When false, only USB devices appear in the collection browser
     pub show_local_collection: bool,
@@ -290,7 +232,7 @@ impl Default for DisplayConfig {
             default_loop_length_index: 2, // Default to 4 beats (index 2 in LOOP_LENGTH_OPTIONS)
             default_zoom_bars: 8,         // Default zoomed waveform to 8 bars
             grid_bars: 32,                // Default grid density to 32 beats (8 bars)
-            stem_color_palette: StemColorPalette::default(), // Natural palette
+            theme: "Mesh".to_string(), // Default theme (from theme.yaml)
             show_local_collection: false, // USB-only mode by default
             key_scoring_model: KeyScoringModel::default(), // Camelot wheel
             waveform_layout: WaveformLayout::default(),  // Horizontal

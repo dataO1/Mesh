@@ -30,7 +30,7 @@ use iced::{Size, Task};
 
 use audio::start_audio_system;
 use mesh_core::db::DatabaseService;
-use ui::{MeshApp, app::Message, midi_learn::MidiLearnMessage, theme};
+use ui::{MeshApp, app::Message, midi_learn::MidiLearnMessage};
 
 const CLIENT_NAME: &str = "mesh-player";
 
@@ -224,9 +224,6 @@ fn main() -> iced::Result {
     println!();
     println!("Starting Mesh DJ Player GUI...");
 
-    // Initialize theme from ~/Music/mesh-collection/theme.yaml
-    theme::init_theme();
-
     // Wrap resources in cells so the boot closure can be Fn (required by iced)
     // The boot function is only called once, but iced requires Fn for API consistency
     let db_service_cell = std::cell::RefCell::new(Some(db_service));
@@ -300,7 +297,13 @@ fn main() -> iced::Result {
     .theme(theme)
     .title("Mesh DJ Player")
     .antialiasing(true)
-    .window_size(Size::new(1920.0, 1080.0))
+    .window(iced::window::Settings {
+        size: Size::new(1920.0, 1080.0),
+        min_size: Some(Size::new(1280.0, 720.0)),
+        ..Default::default()
+    })
+    // TODO: Custom font — .font(include_bytes!("path.ttf")) + .default_font(Font { family: Family::Name("X"), .. })
+    // TODO: Window icon — window::Settings { icon: Some(window::icon::from_rgba(data, w, h).unwrap()), .. }
     .run();
 
     // Keep audio handle alive until we're done (it will be dropped here)
