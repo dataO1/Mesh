@@ -60,6 +60,8 @@ pub struct CollectionBrowserState {
     energy_direction: f32,
     /// Last set of active seed paths used for suggestions (for change detection)
     last_seed_paths: Vec<String>,
+    /// Current encoder scroll index (avoids ambiguous ID→index lookup with duplicates)
+    scroll_index: Option<usize>,
 }
 
 /// Messages from the collection browser
@@ -120,7 +122,7 @@ impl CollectionBrowserState {
             .unwrap_or_default();
 
         let mut browser = PlaylistBrowserState::new();
-        browser.table_state.tag_column_width = Some(272.0);
+        browser.table_state.tag_column_width = Some(300.0);
 
         Self {
             collection_path,
@@ -139,6 +141,7 @@ impl CollectionBrowserState {
             suggestion_loading: false,
             energy_direction: 0.5,
             last_seed_paths: Vec::new(),
+            scroll_index: None,
         }
     }
 
@@ -174,6 +177,7 @@ impl CollectionBrowserState {
         if was_browsing {
             self.active_usb_idx = None;
             self.tracks.clear();
+            self.scroll_index = None;
             self.selected_track_path = None;
             self.browser.current_folder = None;
             self.browser.table_state.clear_selection();
@@ -219,6 +223,7 @@ impl CollectionBrowserState {
                 // Clear tracks if we were browsing local collection
                 if self.active_usb_idx.is_none() {
                     self.tracks.clear();
+                    self.scroll_index = None;
                     self.selected_track_path = None;
                     self.browser.current_folder = None;
                 }
@@ -337,6 +342,7 @@ impl CollectionBrowserState {
                                         }
                                     }
                                     // Clear track selection when folder changes
+                                    self.scroll_index = None;
                                     self.selected_track_path = None;
                                 }
                             }
@@ -368,6 +374,9 @@ impl CollectionBrowserState {
                             TrackTableMessage::Select(track_id) => {
                                 // mesh-player uses simple single-selection (no Shift/Ctrl)
                                 self.browser.table_state.select(track_id.clone());
+                                // Sync scroll index from clicked position
+                                let active = self.active_track_list();
+                                self.scroll_index = active.iter().position(|t| &t.id == track_id);
                                 // Update selected track path for load buttons
                                 self.selected_track_path = self.get_track_path(track_id);
                             }
@@ -404,6 +413,7 @@ impl CollectionBrowserState {
                     self.tree_nodes = build_tree_nodes(storage.as_ref());
                     if let Some(ref folder) = self.browser.current_folder {
                         self.tracks = get_tracks_for_folder(storage.as_ref(), folder);
+                        self.scroll_index = None;
                     }
                 }
                 None
@@ -422,19 +432,9 @@ impl CollectionBrowserState {
                     return None;
                 }
 
-                // Find current selection index
-                let current_idx = self
-                    .browser
-                    .table_state
-                    .selected
-                    .iter()
-                    .next()
-                    .and_then(|selected| {
-                        active_tracks
-                            .iter()
-                            .position(|t| &t.id == selected)
-                    })
-                    .unwrap_or(0);
+                // Use stored scroll index to avoid ambiguous ID→index lookup
+                // (duplicate track IDs would cause .position() to find the wrong one)
+                let current_idx = self.scroll_index.unwrap_or(0);
 
                 // Calculate new index with clamping
                 let new_idx = if delta > 0 {
@@ -443,8 +443,9 @@ impl CollectionBrowserState {
                     current_idx.saturating_sub((-delta) as usize)
                 };
 
-                // Select the new track
+                // Select the new track and remember the index
                 if let Some(track) = active_tracks.get(new_idx) {
+                    self.scroll_index = Some(new_idx);
                     self.browser.table_state.select(track.id.clone());
                     self.selected_track_path = self.get_track_path(&track.id);
                 }
@@ -494,6 +495,7 @@ impl CollectionBrowserState {
                 if !self.tracks.is_empty() {
                     // Currently viewing a playlist's tracks - go back to folder view
                     self.tracks.clear();
+                    self.scroll_index = None;
                     self.selected_track_path = None;
                     self.browser.table_state.clear_selection();
                     // Keep current_folder and tree selection so user can see where they were
@@ -571,7 +573,9 @@ impl CollectionBrowserState {
         }
 
         // Select first track if any
+        self.scroll_index = None;
         if let Some(first) = self.tracks.first() {
+            self.scroll_index = Some(0);
             self.browser.table_state.select(first.id.clone());
             self.selected_track_path = self.get_track_path(&first.id);
             log::info!("load_tracks_for_folder: selected first track, path = {:?}", self.selected_track_path);
@@ -625,6 +629,13 @@ impl CollectionBrowserState {
     /// Get the currently selected track index (for auto-scroll)
     /// Returns None if no track is selected or tracks list is empty
     pub fn get_selected_index(&self) -> Option<usize> {
+        // Prefer stored scroll index (avoids duplicate ID ambiguity)
+        if let Some(idx) = self.scroll_index {
+            if idx < self.active_track_list().len() {
+                return Some(idx);
+            }
+        }
+        // Fallback: search by ID (for mouse-click selections)
         let active_tracks = self.active_track_list();
         self.browser
             .table_state
@@ -975,7 +986,9 @@ impl CollectionBrowserState {
         self.suggestion_loading = false;
 
         // Auto-select first suggestion
+        self.scroll_index = None;
         if let Some(first) = self.suggestion_tracks.first() {
+            self.scroll_index = Some(0);
             self.browser.table_state.select(first.id.clone());
             self.selected_track_path = self.suggestion_paths.get(&first.id).cloned();
         }
@@ -986,6 +999,7 @@ impl CollectionBrowserState {
         self.suggestion_tracks.clear();
         self.suggestion_paths.clear();
         self.suggestion_loading = false;
+        self.scroll_index = None;
     }
 
     /// Get the last active seed paths (for change detection in tick)
