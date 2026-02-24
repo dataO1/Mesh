@@ -161,17 +161,32 @@ impl CollectionBrowserState {
     /// Remove a disconnected USB device
     pub fn remove_usb_device(&mut self, device_path: &PathBuf) {
         log::info!("USB device disconnected: {:?}", device_path);
+
+        // Check if we're currently browsing this device BEFORE removing it
+        let was_browsing = self.active_usb_idx
+            .and_then(|idx| self.usb_devices.get(idx))
+            .map(|d| &d.device_path == device_path)
+            .unwrap_or(false);
+
         self.usb_devices.retain(|d| &d.device_path != device_path);
         self.usb_storages.retain(|(path, _)| path != device_path);
 
-        // If we were browsing this device, switch back to local
+        if was_browsing {
+            self.active_usb_idx = None;
+            self.tracks.clear();
+            self.selected_track_path = None;
+            self.browser.current_folder = None;
+            self.browser.table_state.clear_selection();
+        }
+
+        // Fix active_usb_idx if it's now out of bounds (another device was removed
+        // before the active one, shifting indices)
         if let Some(idx) = self.active_usb_idx {
-            if self.usb_devices.get(idx).map(|d| &d.device_path) == Some(device_path) {
+            if idx >= self.usb_devices.len() {
                 self.active_usb_idx = None;
-                self.tracks.clear();
-                self.selected_track_path = None;
             }
         }
+
         self.rebuild_tree();
     }
 

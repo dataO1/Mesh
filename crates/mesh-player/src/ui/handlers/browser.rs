@@ -136,6 +136,10 @@ pub fn handle_usb(app: &mut MeshApp, usb_msg: UsbMsg) -> Task<Message> {
             app.status = format!("USB: {} connected", device.label);
         }
         UsbMsg::DeviceDisconnected { device_path } => {
+            // Clear cached database for this USB device
+            let collection_root = device_path.join("mesh-collection");
+            mesh_core::usb::cache::clear_usb_database(&collection_root);
+
             app.collection_browser.remove_usb_device(&device_path);
             app.status = "USB: Device disconnected".to_string();
         }
