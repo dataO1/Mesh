@@ -191,6 +191,8 @@ impl MeshCueApp {
         // Apply theme immediately
         let active_theme = mesh_widgets::theme::find_theme(&self.themes, &self.settings.draft_theme);
         self.iced_theme = active_theme.iced_theme();
+        self.collection.browser_left.table_state.pill_color = Some(active_theme.stems[2]);
+        self.collection.browser_right.table_state.pill_color = Some(active_theme.stems[2]);
 
         // Apply scratch interpolation to audio engine immediately
         self.audio.set_scratch_interpolation(self.settings.draft_scratch_interpolation);

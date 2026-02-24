@@ -438,6 +438,8 @@ pub struct TrackTableState<Id: Clone + Eq + Hash> {
     pub tag_column_width: Option<f32>,
     /// Override selection highlight color (e.g., stem color during stem link selection)
     pub selection_color_override: Option<Color>,
+    /// Override pill background color for Cues column (derived from theme stem colors)
+    pub pill_color: Option<Color>,
 }
 
 impl<Id: Clone + Eq + Hash> Default for TrackTableState<Id> {
@@ -461,6 +463,7 @@ impl<Id: Clone + Eq + Hash> TrackTableState<Id> {
             last_mouse_position: Point::ORIGIN,
             tag_column_width: None,
             selection_color_override: None,
+            pill_color: None,
         }
     }
 
@@ -816,17 +819,18 @@ where
     Id: Clone + PartialEq + Eq + Hash + 'a,
     Message: Clone + 'a,
 {
-    // Cues column renders as centered orange pill (or empty if zero)
+    // Cues column renders as centered pill (color from theme or fallback orange)
     if column == TrackColumn::Cues {
         if track.cue_count > 0 {
+            let pill_bg = state.pill_color.unwrap_or(Color::from_rgb8(235, 145, 50));
             let pill = container(
                 text(track.cue_count.to_string())
                     .size(10)
                     .wrapping(iced::widget::text::Wrapping::None)
             )
             .padding(Padding::from([2, 5]))
-            .style(|_theme: &Theme| container::Style {
-                background: Some(Background::Color(Color::from_rgb8(235, 145, 50))),
+            .style(move |_theme: &Theme| container::Style {
+                background: Some(Background::Color(pill_bg)),
                 border: Border { radius: 3.0.into(), ..Default::default() },
                 text_color: Some(Color::WHITE),
                 ..Default::default()

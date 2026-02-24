@@ -173,6 +173,7 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             let active_theme = mesh_widgets::theme::find_theme(&app.themes, &app.settings.draft_theme);
             app.player_canvas_state.set_stem_colors(active_theme.stem_colors());
             app.iced_theme = active_theme.iced_theme();
+            app.collection_browser.browser.table_state.pill_color = Some(active_theme.stems[2]);
 
             // Apply waveform layout immediately
             app.player_canvas_state.set_vertical_layout(

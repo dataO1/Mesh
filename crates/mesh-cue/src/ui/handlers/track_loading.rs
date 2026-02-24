@@ -1,38 +1,40 @@
 //! Track loading message handlers
 //!
-//! Handles the two-phase track loading process:
+//! Handles progressive track loading with region-based streaming:
 //! 1. TrackMetadataLoaded - Fast metadata from database, shows UI immediately
-//! 2. TrackStemsLoaded - Slow audio loading (~3s), enables playback
+//! 2. CueTrackLoaded(RegionLoaded) - Incremental peak updates as regions load
+//! 3. CueTrackLoaded(Complete) - All audio loaded, finalize state
 //!
 //! Also handles:
 //! - LinkedStemLoaded - When a linked stem finishes loading
+//! - TrackStemsLoaded - Legacy fallback (kept for safety)
 
-use basedrop::Shared;
 use iced::Task;
 use mesh_core::audio_file::{BeatGrid, LoadedTrack, TrackMetadata};
-use mesh_core::types::Stem;
-use mesh_widgets::{SliceEditorState, compute_highres_width};
+use mesh_core::types::{Stem, SAMPLE_RATE};
+use mesh_widgets::SliceEditorState;
 use std::sync::Arc;
 
 use super::super::app::MeshCueApp;
 use super::super::message::Message;
-use super::super::state::{LinkedStemLoadedMsg, LoadedTrackState, StemsLoadResult};
+use super::super::state::{CueTrackLoadedMsg, LinkedStemLoadedMsg, LoadedTrackState, StemsLoadResult};
 use super::super::waveform::{
     CombinedWaveformView, WaveformView, ZoomedWaveformView,
 };
+use crate::loader::CueTrackLoadResult;
 
 impl MeshCueApp {
     /// Handle TrackMetadataLoaded message
     ///
     /// Phase 1 of track loading: metadata loaded from database.
-    /// Shows UI immediately while audio loads in background.
+    /// Shows UI immediately while audio loads progressively in background.
     pub fn handle_track_metadata_loaded(
         &mut self,
         result: Result<(std::path::PathBuf, TrackMetadata), String>,
     ) -> Task<Message> {
         match result {
             Ok((path, metadata)) => {
-                log::info!("TrackMetadataLoaded: Showing UI, starting audio load");
+                log::info!("TrackMetadataLoaded: Showing UI, starting progressive audio load");
                 let bpm = metadata.bpm.unwrap_or(120.0);
                 let key = metadata.key.clone().unwrap_or_else(|| "?".to_string());
                 let cue_points = metadata.cue_points.clone();
@@ -67,7 +69,7 @@ impl MeshCueApp {
                     drop_marker: metadata.drop_marker,
                     lufs: metadata.lufs,
                     stem_links: metadata.stem_links.clone(),
-                    duration_samples: 0, // Will be set when audio loads
+                    duration_samples: 0, // Will be set when first audio arrives
                     modified: false,
                     combined_waveform,
                     loading_audio: true,
@@ -82,15 +84,14 @@ impl MeshCueApp {
                     },
                 });
 
-                // Phase 2: Load audio stems in background (slow, ~3s)
-                Task::perform(
-                    async move {
-                        LoadedTrack::load_stems_parallel(&path)
-                            .map(|stems| Shared::new(&mesh_core::engine::gc::gc_handle(), stems))
-                            .map_err(|e| e.to_string())
-                    },
-                    |result| Message::TrackStemsLoaded(StemsLoadResult(result)),
-                )
+                // Phase 2: Send request to background loader for progressive loading
+                // The loader reads priority regions first (hot cues, drop, first beat)
+                // then fills gaps — sending incremental peak updates as it goes.
+                if let Err(e) = self.track_loader.load(path, metadata) {
+                    log::error!("Failed to send track load request: {}", e);
+                }
+
+                Task::none()
             }
             Err(e) => {
                 log::error!("Failed to load track metadata: {}", e);
@@ -99,49 +100,53 @@ impl MeshCueApp {
         }
     }
 
-    /// Handle TrackStemsLoaded message
+    /// Handle CueTrackLoaded message (progressive loading results)
     ///
-    /// Phase 2 of track loading: audio stems loaded from disk.
-    /// Enables playback and generates waveform visualization.
-    pub fn handle_track_stems_loaded(&mut self, result: StemsLoadResult) -> Task<Message> {
-        match result.0 {
-            Ok(stems) => {
-                log::info!("TrackStemsLoaded: Audio ready, generating waveform");
-                if let Some(ref mut state) = self.collection.loaded_track {
-                    let duration_samples = stems.len() as u64;
-                    state.duration_samples = duration_samples;
-                    state.loading_audio = false;
+    /// Processes incremental region loads and final completion from CueTrackLoader.
+    pub fn handle_cue_track_loaded(&mut self, msg: CueTrackLoadedMsg) -> Task<Message> {
+        // Extract the result from Arc wrapper
+        let result = match Arc::try_unwrap(msg.0) {
+            Ok(r) => r,
+            Err(arc) => {
+                // Arc still shared (e.g. subscription held a ref) — clone the inner value
+                // This shouldn't normally happen with mpsc_subscription
+                log::debug!("CueTrackLoadResult Arc still shared, using ref");
+                return self.handle_cue_track_result(&*arc);
+            }
+        };
 
-                    // Generate waveform from loaded stems (overview + highres)
-                    // Low quality — CPU precompute handles all zoom levels
-                    let quality_level: u8 = 0;
-                    let bpm = state.bpm;
-                    let screen_width: u32 = 1920; // mesh-cue reference width
-                    state
-                        .combined_waveform
-                        .overview
-                        .set_stems(&stems, &state.cue_points, &state.beat_grid, bpm, screen_width, quality_level);
+        self.handle_cue_track_result(&result)
+    }
 
-                    let highres_width = compute_highres_width(duration_samples as usize, bpm, screen_width, quality_level);
-                    {
-                        let samples_per_beat = (48000.0_f64 * 60.0 / bpm) as usize;
-                        let samples_per_bar = samples_per_beat * 4;
-                        let ref_zoom = 4u32;
-                        let window_at_ref = samples_per_bar * ref_zoom as usize;
-                        let ppp_at_ref = if window_at_ref > 0 && duration_samples > 0 {
-                            highres_width as f64 * window_at_ref as f64 / (duration_samples as f64 * screen_width as f64)
-                        } else { 0.0 };
-                        log::info!(
-                            "[RENDER] mesh-cue highres: {} peaks | quality={} bpm={:.1} screen={}px | \
-                             ref_zoom={}bars → {:.2} pp/px | {}samples ({:.1}s)",
-                            highres_width, quality_level, bpm, screen_width,
-                            ref_zoom, ppp_at_ref,
-                            duration_samples, duration_samples as f64 / 48000.0,
-                        );
-                    }
+    fn handle_cue_track_result(&mut self, result: &CueTrackLoadResult) -> Task<Message> {
+        match result {
+            CueTrackLoadResult::RegionLoaded {
+                stems,
+                duration_samples,
+                overview_peaks,
+                highres_peaks,
+                path,
+            } => {
+                // Stale check: ensure this result is for the currently loaded track
+                let is_current = self
+                    .collection
+                    .loaded_track
+                    .as_ref()
+                    .map_or(false, |t| t.path == *path);
+                if !is_current {
+                    log::debug!("Discarding stale RegionLoaded for {:?}", path.file_name());
+                    return Task::none();
+                }
 
-                    // Initialize zoomed waveform with stem data
-                    state.combined_waveform.zoomed.set_duration(duration_samples);
+                let state = self.collection.loaded_track.as_mut().unwrap();
+                let duration = *duration_samples;
+
+                // Update duration if not yet set
+                if state.duration_samples == 0 && duration > 0 {
+                    state.duration_samples = duration as u64;
+
+                    // Initialize zoomed waveform with duration
+                    state.combined_waveform.zoomed.set_duration(duration as u64);
                     state
                         .combined_waveform
                         .zoomed
@@ -151,11 +156,153 @@ impl MeshCueApp {
                         .combined_waveform
                         .zoomed
                         .set_zoom(self.domain.config().display.zoom_bars);
+                }
+
+                // Update overview waveform peaks (visual growth effect)
+                // Rebuild GPU peak buffers so the shader reflects incremental loading
+                state.combined_waveform.overview.overview_peak_buffer =
+                    mesh_widgets::PeakBuffer::from_stem_peaks(overview_peaks);
+                state.combined_waveform.overview.highres_peak_buffer =
+                    mesh_widgets::PeakBuffer::from_stem_peaks(highres_peaks);
+                state.combined_waveform.overview.stem_waveforms = overview_peaks.clone();
+                state.combined_waveform.overview.highres_peaks = highres_peaks.clone();
+                state.combined_waveform.overview.duration_samples = duration as u64;
+                // First audio data arrived — stop loading pulse
+                state.combined_waveform.overview.loading = false;
+
+                // Upgrade engine stems if this message carries a playable buffer snapshot
+                if let Some(ref stems) = stems {
+                    // First playable stems → set up engine with full track metadata
+                    if state.stems.is_none() {
+                        log::info!("First playable stems received — setting up audio engine");
+
+                        // Resume audio stream
+                        if let Some(ref handle) = self.audio_handle {
+                            handle.play();
+                        }
+
+                        // Create LoadedTrack for initial engine load
+                        let duration_seconds = duration as f64 / SAMPLE_RATE as f64;
+                        let loaded_track = LoadedTrack {
+                            path: state.path.clone(),
+                            stems: stems.clone(),
+                            metadata: TrackMetadata {
+                                name: None,
+                                artist: None,
+                                bpm: Some(state.bpm),
+                                original_bpm: Some(state.bpm),
+                                key: Some(state.key.clone()),
+                                duration_seconds: Some(duration_seconds),
+                                beat_grid: BeatGrid {
+                                    beats: state.beat_grid.clone(),
+                                    first_beat_sample: state.beat_grid.first().copied(),
+                                },
+                                cue_points: state.cue_points.clone(),
+                                saved_loops: state.saved_loops.clone(),
+                                drop_marker: state.drop_marker,
+                                stem_links: state.stem_links.clone(),
+                                lufs: None,
+                            },
+                            duration_samples: duration,
+                            duration_seconds,
+                        };
+
+                        self.audio.load_track(loaded_track);
+                        self.audio.set_global_bpm(state.bpm);
+                        self.audio
+                            .set_loop_length_index(self.domain.config().display.default_loop_length_index);
+                    } else {
+                        // Subsequent stems upgrade — just swap the buffer
+                        self.audio.upgrade_stems(stems.clone(), duration);
+                    }
+
+                    state.stems = Some(stems.clone());
+                    state.loading_audio = false;
+                }
+
+                Task::none()
+            }
+
+            CueTrackLoadResult::Complete {
+                stems,
+                duration_samples,
+                path,
+            } => {
+                // Stale check
+                let is_current = self
+                    .collection
+                    .loaded_track
+                    .as_ref()
+                    .map_or(false, |t| t.path == *path);
+                if !is_current {
+                    log::info!("Discarding stale Complete for {:?}", path.file_name());
+                    return Task::none();
+                }
+
+                let state = self.collection.loaded_track.as_mut().unwrap();
+
+                // Final stems upgrade
+                self.audio.upgrade_stems(stems.clone(), *duration_samples);
+                state.stems = Some(stems.clone());
+                state.loading_audio = false;
+                state.duration_samples = *duration_samples as u64;
+
+                log::info!(
+                    "Track loading complete: {:?} ({} samples)",
+                    path.file_name().unwrap_or_default(),
+                    duration_samples
+                );
+
+                Task::none()
+            }
+
+            CueTrackLoadResult::Error { error } => {
+                log::error!("Progressive track load failed: {}", error);
+                if let Some(ref mut state) = self.collection.loaded_track {
+                    state.loading_audio = false;
+                }
+                Task::none()
+            }
+        }
+    }
+
+    /// Handle TrackStemsLoaded message (legacy fallback)
+    ///
+    /// This is the old single-shot loading path. Kept for safety but no longer
+    /// used in the normal flow — CueTrackLoaded handles progressive loading.
+    pub fn handle_track_stems_loaded(&mut self, result: StemsLoadResult) -> Task<Message> {
+        match result.0 {
+            Ok(stems) => {
+                log::info!("TrackStemsLoaded (legacy): Audio ready, generating waveform");
+                if let Some(ref mut state) = self.collection.loaded_track {
+                    let duration_samples = stems.len() as u64;
+                    state.duration_samples = duration_samples;
+                    state.loading_audio = false;
+
+                    // Generate waveform from loaded stems (overview + highres)
+                    let quality_level: u8 = 0;
+                    let bpm = state.bpm;
+                    let screen_width: u32 = 1920;
+                    state
+                        .combined_waveform
+                        .overview
+                        .set_stems(&stems, &state.cue_points, &state.beat_grid, bpm, screen_width, quality_level);
+
+                    // Initialize zoomed waveform with stem data
+                    state.combined_waveform.zoomed.set_duration(duration_samples);
+                    state
+                        .combined_waveform
+                        .zoomed
+                        .update_cue_markers(&state.cue_points);
+                    state
+                        .combined_waveform
+                        .zoomed
+                        .set_zoom(self.domain.config().display.zoom_bars);
                     state.stems = Some(stems.clone());
 
                     // Create LoadedTrack from metadata + stems for audio engine
                     let duration_seconds =
-                        duration_samples as f64 / mesh_core::types::SAMPLE_RATE as f64;
+                        duration_samples as f64 / SAMPLE_RATE as f64;
                     let loaded_track = LoadedTrack {
                         path: state.path.clone(),
                         stems: stems.clone(),
@@ -174,25 +321,20 @@ impl MeshCueApp {
                             saved_loops: state.saved_loops.clone(),
                             drop_marker: state.drop_marker,
                             stem_links: state.stem_links.clone(),
-                            lufs: None, // LUFS read from track, passed to Deck separately
+                            lufs: None,
                         },
                         duration_samples: duration_samples as usize,
                         duration_seconds,
                     };
 
-                    // Resume audio stream (may have been paused at startup or during batch ops)
                     if let Some(ref handle) = self.audio_handle {
                         handle.play();
                     }
 
-                    // Load track into audio engine (creates PreparedTrack internally)
                     self.audio.load_track(loaded_track);
-                    // Set global BPM to track's BPM for original-speed playback (no time-stretching)
                     self.audio.set_global_bpm(state.bpm);
-                    // Set default loop length from config
                     self.audio
                         .set_loop_length_index(self.domain.config().display.default_loop_length_index);
-                    // Linked stems are auto-loaded by engine from track metadata
                 }
             }
             Err(e) => {
@@ -243,7 +385,6 @@ impl MeshCueApp {
                     }
 
                     // Calculate and set LUFS gain for linked stem waveform
-                    // This matches what mesh-player does to ensure visual consistency
                     let linked_gain = self
                         .domain
                         .config()

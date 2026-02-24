@@ -16,7 +16,7 @@ use crate::config::{BackendType, BeatDetectionBackend, BpmSource, ModelType};
 use mesh_core::usb::UsbMessage;
 use mesh_widgets::MultibandEditorMessage;
 use super::context_menu::ContextMenuKind;
-use super::state::{BrowserSide, ImportMode, LinkedStemLoadedMsg, PresetLoadedMsg, StemsLoadResult, View};
+use super::state::{BrowserSide, CueTrackLoadedMsg, ImportMode, LinkedStemLoadedMsg, PresetLoadedMsg, StemsLoadResult, View};
 
 /// Application messages
 #[derive(Debug, Clone)]
@@ -359,6 +359,10 @@ pub enum Message {
     // Plugin GUI Learning Mode
     /// Poll for parameter learning changes
     PluginGuiTick,
+
+    // Background Track Loading (progressive / region-based)
+    /// Incremental or final track load result from CueTrackLoader
+    CueTrackLoaded(CueTrackLoadedMsg),
 
     // Background Preset Loading
     /// Background preset load completed (MultibandHost built on loader thread)

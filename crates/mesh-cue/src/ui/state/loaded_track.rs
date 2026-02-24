@@ -197,6 +197,29 @@ impl std::fmt::Debug for LinkedStemLoadedMsg {
     }
 }
 
+/// Wrapper for CueTrackLoadResult enabling use in Message enum.
+///
+/// Uses Arc because CueTrackLoadResult contains Shared<StemBuffers> which
+/// requires manual Debug impl. Arc provides cheap cloning for the message pipeline.
+#[derive(Clone)]
+pub struct CueTrackLoadedMsg(pub Arc<crate::loader::CueTrackLoadResult>);
+
+impl std::fmt::Debug for CueTrackLoadedMsg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &*self.0 {
+            crate::loader::CueTrackLoadResult::RegionLoaded { duration_samples, .. } => {
+                write!(f, "CueTrackLoadedMsg(RegionLoaded({} samples))", duration_samples)
+            }
+            crate::loader::CueTrackLoadResult::Complete { duration_samples, .. } => {
+                write!(f, "CueTrackLoadedMsg(Complete({} samples))", duration_samples)
+            }
+            crate::loader::CueTrackLoadResult::Error { error } => {
+                write!(f, "CueTrackLoadedMsg(Error({}))", error)
+            }
+        }
+    }
+}
+
 /// Wrapper for PresetLoadResult enabling use in Message enum.
 ///
 /// Uses `Arc<Mutex<Option<T>>>` because `MultibandHost` contains `Box<dyn Effect>`

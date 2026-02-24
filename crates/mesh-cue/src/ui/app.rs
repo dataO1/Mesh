@@ -18,7 +18,7 @@ use std::sync::Arc;
 // Re-export extracted modules for use by other UI modules
 pub use super::message::Message;
 pub use super::state::{
-    BrowserSide, CollectionState, DragState, ExportPhase, ExportState,
+    BrowserSide, CollectionState, CueTrackLoadedMsg, DragState, ExportPhase, ExportState,
     ImportPhase, ImportState, LinkedStemLoadedMsg, LoadedTrackState,
     PendingDragState, PresetLoadedMsg, ReanalysisState, SettingsState, StemsLoadResult, View,
     DRAG_THRESHOLD,
@@ -95,6 +95,8 @@ pub struct MeshCueApp {
     pub(crate) themes: Vec<mesh_widgets::theme::MeshTheme>,
     /// Active iced theme (rebuilt when theme selection changes)
     pub(crate) iced_theme: iced::Theme,
+    /// Background track loader for progressive loading
+    pub(crate) track_loader: crate::loader::CueTrackLoader,
 }
 
 /// Extract the playlists subtree from the tree nodes for the export modal
@@ -163,6 +165,10 @@ impl MeshCueApp {
         collection_state.browser_right.tree_state.expand(NodeId::tracks());
         collection_state.browser_right.tree_state.expand(NodeId::playlists());
 
+        // Set pill color from theme stem colors
+        collection_state.browser_left.table_state.pill_color = Some(active_theme.stems[2]);
+        collection_state.browser_right.table_state.pill_color = Some(active_theme.stems[2]);
+
         // Set left browser to show tracks (collection) by default
         collection_state.browser_left.set_current_folder(NodeId::tracks());
         // Convert domain tracks to UI format
@@ -213,6 +219,7 @@ impl MeshCueApp {
             plugin_gui_manager: super::plugin_gui::PluginGuiManager::new(),
             themes,
             iced_theme,
+            track_loader: crate::loader::CueTrackLoader::spawn(),
         };
 
         // Initial collection scan and playlist refresh
@@ -305,6 +312,7 @@ impl MeshCueApp {
             // Track loading (delegated to handlers/track_loading.rs)
             Message::TrackMetadataLoaded(result) => return self.handle_track_metadata_loaded(result),
             Message::TrackStemsLoaded(result) => return self.handle_track_stems_loaded(result),
+            Message::CueTrackLoaded(msg) => return self.handle_cue_track_loaded(msg),
             Message::LinkedStemLoaded(msg) => return self.handle_linked_stem_loaded(msg),
 
             // Collection: Editor (delegated to handlers/editing.rs)
@@ -841,8 +849,13 @@ impl MeshCueApp {
         };
 
         // USB manager subscription (event-driven device detection and export progress)
-        let usb_sub = mpsc_subscription(self.domain.usb_message_receiver())
-            .map(Message::UsbMessage);
+        // Only poll when the export modal is open to avoid unnecessary USB enumeration
+        let usb_sub = if self.export_state.is_open {
+            mpsc_subscription(self.domain.usb_message_receiver())
+                .map(Message::UsbMessage)
+        } else {
+            iced::Subscription::none()
+        };
 
         // Plugin GUI learning mode polling subscription
         // Only active when in learning mode (polls at ~20Hz for responsive learning)
@@ -851,6 +864,10 @@ impl MeshCueApp {
         } else {
             iced::Subscription::none()
         };
+
+        // Progressive track load results (region-based streaming)
+        let track_load_sub = mpsc_subscription(self.track_loader.result_receiver())
+            .map(|result| Message::CueTrackLoaded(CueTrackLoadedMsg(Arc::new(result))));
 
         // Background preset load results (MultibandHost built on loader thread)
         let preset_load_sub = mpsc_subscription(self.domain.preset_loader_result_receiver())
@@ -869,6 +886,7 @@ impl MeshCueApp {
             linked_stem_sub,
             usb_sub,
             learning_sub,
+            track_load_sub,
             preset_load_sub,
         ])
     }

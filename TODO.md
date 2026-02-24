@@ -9,7 +9,7 @@ as much as possible in mesh-core and mesh-widget and only if necessary in the ui
   autocomplete from existing tags (get_all_tags). Color picker optional.
 
 ## MIDI
-- [ ] Jog wheel beat nudging for backwards compatibility with older devices
+- [ ] optional: Jog wheel beat nudging for backwards compatibility with older devices
   (like SB2). Must work with current snapping system: when a user nudges by N
   samples, that offset is stored for this deck only, resets on load of a new
   track and is preserved across beat jumps, hot cue presses and
@@ -18,11 +18,11 @@ as much as possible in mesh-core and mesh-widget and only if necessary in the ui
   +/- buttons for fine grained nudging.
 
 ## Slicer
-- [ ] Single morph knob per deck that scrolls through preset banks (up to 8
+- [ ] optional: Single morph knob per deck that scrolls through preset banks (up to 8
   presets per bank).
 
 ## B2B Mode
-- i would like to support a b2b mode, where 2 people with mesh systems, can
+- big future update, after v1.0.0: i would like to support a b2b mode, where 2 people with mesh systems, can
   connect their 2 systems together via ethernet lan cable, the system recognizes
   this and automatically goes into b2b mode, where each of their system shows
   the info of the other deck (waveforms). this means that each dj has their own
@@ -59,7 +59,7 @@ for v3 and beyond.
   (played < 30 seconds) could receive a soft penalty in future sessions,
   especially when paired with the same seed tracks.
 - [ ] **DJ profile divergence**: when multiple DJs use the same collection
-  (B2B, shared USB), per-DJ history should be kept separate so suggestions
+  (B2B, shared USB), per-DJ history(per usb stick) should be kept separate so suggestions
   reflect each DJ's mixing style, not a blended average.
 
 
@@ -70,19 +70,12 @@ for v3 and beyond.
   Initially used to update graph-based relations for track exploration, later
   for full set reconstruction.
 - [ ] Improved playlist features using graph DB and vector features:
-  - [ ] Similarity search for tracks or stems (smart dynamic playlist matching
-    vibe of currently running track or a single stem).
-  - [ ] Dynamic smart playlists based on Camelot key with energy options
-    (lower / keep / raise energy).
-  - [ ] Database backup (without wav files, just DB).
+- [ ] Database backup (without wav files, just DB, so hot cues, markers,
+  analysis data etc.).
 
 ## Audio Processing
 - [ ] Live peak meter per channel and master channel.
 - [ ] Set recording master output.
-- [ ] Real-time short-term LUFS normalisation per stem (no latency) using
-  essentia, ebur128 or lufs crate. Goal: stems after FX processing should be
-  comparable loudness to input stem loudness, since processing can be very
-  loud or silent.
 - [ ] Built-in native effects (beat-synced echo, flanger, phaser, gater, etc.).
 
 ## Documentation
@@ -110,16 +103,15 @@ for v3 and beyond.
       reference this).
 
 # Bugs
-- [ ] When deleting a file in the file browser, select the next item (or
-  previous if no next) instead of scrolling to the top ( i think this happens,
-  since we index something that isnt there anymore ).
-- [ ] USB manager should invalidate DB connection and cache and notify UI to
-  return to the hierarchy one above in file browser when a USB stick is removed.
-  Currently the user can still scroll and "load" tracks from the unexisting usb
-  stick.
 
 # Performance
-- [ ] Optimise stem storage (currently ~200-300 MB per multi-track file).
+- [ ] potential GPU performance optimisation: we can save even more gpu power by making the overview waveform a canvas
+  again (we already have some working deprecated code for that reuse it), but
+  render high refresh needed parts in the shader (only the playhead position).
+  everything else can then use smart messaging and only update on change (for
+  example stem linked, stem toggle, hot cue added, track load) etc. this way we
+  dont need to recompute the overview waveform canvas regularly, saving a ton of
+  cpu/gpu, only the playhead needs to be rendered in the shader.
 
 # Open Questions
 - [ ] B2B settings management: when multiple DJs play on the same device, each
@@ -149,6 +141,22 @@ for v3 and beyond.
   we need to be able to be backwards compatible (not yet, but we should pave the
   way for this possibility, by adding a versioning system for the schema/db version)
 
+# MIDI/HID Mapping
+- [ ] Overhaul midi mapping mode to be a  structured tree like hierarchy where the mappings are structured into logical units (action buttons, deck controls, mixer controls etc) with some questions at each logical group to figure out the style of mapping we want(do we have 2 or 4 decks, physical, virtual or momentary mode etc), instead of a list with
+  questions at the front. The midi mapping guide needs to be controllable by
+  just the browse encoder and its press. parent nodes should be collapsed per
+  default unless we click on them, then we enter the child nodes. answering a
+  questions or doing a mapping should jump to the next one (if its the last
+  question/mapping in this parent node, jump to first leaf note in parent and
+  unfold everything for it visually).
+- [ ] The first mapping should be the encoder scroll then encoder press, so the user can interactively scroll through the steps of the mapping with just the MIDI/HID device and can decide which controls they want to remap, only those should be overwritten in the config file!.
+- [ ] Before writing anything to the file we need a verification window, that
+  shows all mappings that would be updated (just the control name, so the user
+  can see what they are about to update). this can be "Save"d or "Cancel"d, all
+  browsable via the browse encoder. For this to work we need to load existing
+  mappings even for midi learn mode, so existing browse rotate + press already
+  work without needing to remap.
+
 # UPDATE LIFECYCLE
 - [ ] connecting to wifi should first check if we already have credentials
   stored (via networkmanager) and just reconnect then, since we wont need a
@@ -176,51 +184,16 @@ for v3 and beyond.
 
 # OTHER
 - [ ] sometimes the smart suggestion system is stuck and doesnt give new
-  results, analyse why, dont fix yet.
-- [ ] we can save even more gpu power by making the overview waveform a canvas
-  again (we already have some working deprecated code for that reuse it), but
-  render high refresh needed parts in the shader (only the playhead position).
-  everything else can then use smart messaging and only update on change (for
-  example stem linked, stem toggle, hot cue added, track load) etc. this way we
-  dont need to recompute the overview waveform canvas regularly, saving a ton of
-  cpu/gpu, only the playhead needs to be rendered in the shader.
+  results, analyse why, give me a report, we will decide together how to fix.
 - [ ] when on the fly stem linking in the browser for selecting a linked track,
-  we can utilise smart suggestions better by additionally adding specific searching  parameters for the stem that is about to be linked or weighting certain markers more. for example when loading drums, key is relatively irrelevant, but the energy or lufs, aggression matters more. for vocals, key is absolutely the most important, bpm also a bit, not so much energy, for bass i think the weighting can stay as is, for other too. Its also possible that for linked stems same key is actually a hard requirement, or at least a very compatible key is a hard requirement and a filter for results.
-- [ ] when starting the player first, then connecting the hid and midi devices, they
-  are not recognized by mesh-player, we already have reconnection logic (connecting then
-  disconnecting hardware works well), reuse that for detecting hardware after
-  the software launch. we know which hardware to expect from the midi mapping
-  file.
-- [ ] some tracks still have some numbers in front of the name (as part of the
-  artist apparently) from the name parsing, we need to fix that, some examples:
-  * 01 Black Sun Empire - Feed The Machine (you can check the original name in
-    /home/data01/Music/mesh-collection/import/backup/)
-- [ ] Overhaul midi mapping mode to be a tree like hierarchy with some questions at each parent node to figure out the style of mapping we want, instead of a list with
-  questions at the front.
-
-
-- Iced cusomization options. Interesting is the settings, search what else we
-  can set there, which might be relevant for us. Also theming is very
-  interesting, we havent looked into that yet, research how theming works with
-  iced. we should also set a title in each binary:
-     * run() -- Runs the application
-     * settings(Settings) -- Sets the iced::Settings
-     * antialiasing(bool) -- Enables/disables antialiasing
-     * default_font(Font) -- Sets the default font
-     * font(impl Into<Cow<'static, [u8]>>) -- Adds a custom font
-     * scale_factor(impl Fn(&State) -> f64) -- Custom scale factor logic
-     * window(window::Settings) -- Sets window settings
-     * centered() -- Centers the window
-     * window_size(Size) -- Sets window dimensions
-     * transparent(bool) -- Window transparency
-     * resizable(bool) -- Window resizability
-     * decorations(bool) -- Window decorations
-     * position(Position) -- Window position
-     * level(Level) -- Window level (e.g., always-on-top)
-     * exit_on_close_request(bool) -- Controls exit behavior
-     * title(impl Fn(&State) -> String) -- Dynamic title
-     * subscription(impl Fn(&State) -> Subscription<Message>) -- Subscriptions
-     * theme(impl Fn(&State) -> Theme) -- Theme function
-     * style(impl Fn(&State, &Theme) -> Color) -- Style logic
-     * executor() -- Executor type
-
+  we can utilise smart suggestions better by additionally adding specific search parameters for the stem that is about to be linked or weighting certain markers more. for example when linking drums, key is relatively irrelevant, but the energy or lufs, aggression and other metrics matters more. for vocals, key is absolutely the most important, bpm also a bit, not so much energy, for bass i think the weighting can stay as is, for other too. Its also possible that for linked stems(other than drums) very compatible key is actually a hard requirement,  and a filter for results.
+- [ ] Some iced configs we can still improve
+  ┌──────────────────────────────┬────────────┬──────────────────────────────────────────────────┐
+  │           Feature            │ Relevance  │                      Notes                       │
+  ├──────────────────────────────┼────────────┼──────────────────────────────────────────────────┤
+  │ Custom fonts                 │ Medium     │ Consistent typography across platforms           │
+  ├──────────────────────────────┼────────────┼──────────────────────────────────────────────────┤
+  │ Window icon                  │ Low-Medium │ Branding in taskbar/title bar                    │
+  ├──────────────────────────────┼────────────┼──────────────────────────────────────────────────┤
+  │ exit_on_close_request(false) │ Low        │ "Unsaved changes" dialog (more for mesh-cue)     │
+  └──────────────────────────────┴────────────┴──────────────────────────────────────────────────┘

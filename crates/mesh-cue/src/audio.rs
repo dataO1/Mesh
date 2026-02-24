@@ -277,6 +277,19 @@ impl AudioState {
         });
     }
 
+    /// Upgrade loaded stems in the engine (for progressive loading)
+    ///
+    /// Sends an UpgradeStems command so the engine replaces its stem buffer
+    /// with a newer snapshot that has more audio decoded. This allows
+    /// playback from regions that have been loaded while the rest fills in.
+    pub fn upgrade_stems(&mut self, stems: basedrop::Shared<mesh_core::audio_file::StemBuffers>, duration_samples: usize) {
+        self.send(EngineCommand::UpgradeStems {
+            deck: PREVIEW_DECK,
+            stems,
+            duration_samples,
+        });
+    }
+
     /// Unload current track
     pub fn unload_track(&mut self) {
         self.send(EngineCommand::UnloadTrack { deck: PREVIEW_DECK });

@@ -310,7 +310,10 @@ impl MeshCueApp {
                 self.export_state.is_open = true;
             }
             UsbMsg::ExportPresetsCopied => {
-                self.export_state.phase = ExportPhase::CopyingPresets;
+                // Don't transition phase — presets are already copied at this point.
+                // Staying in Exporting ensures subsequent TrackStarted/TrackComplete
+                // messages can update progress correctly.
+                log::info!("Presets copied to USB");
             }
             UsbMsg::ExportCancelled => {
                 self.export_state.phase = ExportPhase::SelectDevice;

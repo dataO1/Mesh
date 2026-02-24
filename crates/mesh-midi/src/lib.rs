@@ -958,17 +958,17 @@ impl ControllerManager {
         let expected_hid = self.config.devices.iter().any(|p| {
             p.hid_device_id.is_some() || p.hid_product_match.is_some()
         });
-        let has_all_hid = if expected_hid {
-            // Count expected HID profiles vs connected HID devices
-            let expected_count = self.config.devices.iter()
-                .filter(|p| p.hid_device_id.is_some() || p.hid_product_match.is_some())
-                .count();
-            self.hid_devices.len() >= expected_count
+        // Enumerate available HID devices and check if any are not yet connected.
+        // This correctly handles multiple physical devices sharing one config profile
+        // (e.g. two F1 controllers matched by hid_product_match).
+        let has_unconnected_hid = if expected_hid {
+            let available = hid::enumerate_devices();
+            available.iter().any(|info| !self.hid_devices.contains_key(&info.path))
         } else {
-            true
+            false
         };
 
-        if expected_hid && !has_all_hid && self.pending_hid_reconnect.is_empty() {
+        if has_unconnected_hid && self.pending_hid_reconnect.is_empty() {
             let before = self.hid_devices.len();
             self.try_connect_all_hid();
             if self.hid_devices.len() > before {

@@ -35,13 +35,13 @@ pub fn view(state: &LoadedTrackState) -> Element<'_, Message> {
         .width(Length::Fixed(120.0))
         .center_x(Length::Fixed(120.0));
 
-    // Right spacer: stem column (50px) + spacing (6px) = 56px
-    let cue_row = row![drop_container, hot_cue_row, Space::new().width(56.0)]
+    // Right spacer: match stem column width (50px) — row spacing(6) handles the gap
+    let cue_row = row![drop_container, hot_cue_row, Space::new().width(50.0)]
         .spacing(6)
         .align_y(Alignment::Center);
 
     container(cue_row)
-        .padding(0)
+        .padding(iced::Padding::default().top(4))
         .width(Length::Fill)
         .into()
 }
@@ -267,7 +267,13 @@ fn create_stem_link_button_vertical(
         stem_name.to_string()
     };
 
-    let btn = button(text(label_text).size(10).center())
+    let label = container(text(label_text).size(10).center())
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill);
+
+    let btn = button(label)
         .width(Length::Fill)
         .height(Length::Fixed(height));
 

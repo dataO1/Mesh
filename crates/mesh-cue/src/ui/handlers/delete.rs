@@ -129,13 +129,16 @@ impl MeshCueApp {
                 tracks: &[mesh_widgets::track_table::TrackRow<NodeId>],
                 old_idx: Option<usize>,
             ) {
-                table_state.clear_selection();
                 if let Some(idx) = old_idx {
                     let clamped = idx.min(tracks.len().saturating_sub(1));
                     if let Some(track) = tracks.get(clamped) {
+                        // select() already clears old selection internally
                         table_state.select(track.id.clone());
+                        return;
                     }
                 }
+                // Only clear selection when no valid track to select (empty list or no prior selection)
+                table_state.clear_selection();
             }
             select_at_index(
                 &mut self.collection.browser_left.table_state,

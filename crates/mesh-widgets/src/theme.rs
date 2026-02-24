@@ -335,9 +335,9 @@ pub fn default_themes() -> Vec<MeshTheme> {
             },
             stems: [
                 hex("#B8BB26"), // Vocals - Gruvbox green
-                hex("#FE8019"), // Drums - Gruvbox orange
-                hex("#D3869B"), // Bass - Gruvbox purple (light)
-                hex("#8EC07C"), // Other - Gruvbox aqua
+                hex("#83A598"), // Drums - Gruvbox blue
+                hex("#FE8019"), // Bass - Gruvbox orange
+                hex("#D3869B"), // Other - Gruvbox pink
             ],
         },
     ]

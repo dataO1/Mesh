@@ -276,11 +276,15 @@ impl MeshApp {
             },
             deck_views,
             mixer_view: MixerView::new(),
-            collection_browser: CollectionBrowserState::new(
-                config.collection_path.clone(),
-                db_service.clone(),
-                config.display.show_local_collection,
-            ),
+            collection_browser: {
+                let mut cb = CollectionBrowserState::new(
+                    config.collection_path.clone(),
+                    db_service.clone(),
+                    config.display.show_local_collection,
+                );
+                cb.browser.table_state.pill_color = Some(active.stems[2]);
+                cb
+            },
             status: if audio_connected { "Audio connected (lock-free)".to_string() } else { "No audio".to_string() },
             slice_editor: {
                 // Apply presets to slice editor (reusing already-loaded config)
