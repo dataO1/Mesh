@@ -374,7 +374,7 @@ pub fn scan_usb_collection(
             .max_depth(1)
             .into_iter()
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("wav"))
+            .filter(|e| matches!(e.path().extension().and_then(|x| x.to_str()), Some("wav" | "flac")))
             .map(|e| e.path().to_path_buf())
             .collect()
     } else {
