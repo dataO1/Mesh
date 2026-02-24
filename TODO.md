@@ -175,9 +175,6 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
-- [ ] the loop marker in the shader is not visible enough, make it a bit lighter
-  green, so its better visible, just a bit. also in the overview waveform also
-  highlight the loop and slicer regions, when active in the respective color.
 - [ ] sometimes the smart suggestion system is stuck and doesnt give new
   results, analyse why, dont fix yet.
 - [ ] we can save even more gpu power by making the overview waveform a canvas

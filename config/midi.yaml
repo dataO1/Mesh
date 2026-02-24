@@ -582,6 +582,454 @@ devices:
   - control:
       protocol: hid
       device_id: B2220F4E
+      name: grid_3
+    action: deck.slicer_trigger
+    physical_deck: 0
+    deck_index: null
+    params:
+      pad: 0
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_4
+    action: deck.slicer_trigger
+    physical_deck: 0
+    deck_index: null
+    params:
+      pad: 1
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_7
+    action: deck.slicer_trigger
+    physical_deck: 0
+    deck_index: null
+    params:
+      pad: 2
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_8
+    action: deck.slicer_trigger
+    physical_deck: 0
+    deck_index: null
+    params:
+      pad: 3
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_11
+    action: deck.slicer_trigger
+    physical_deck: 0
+    deck_index: null
+    params:
+      pad: 4
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_12
+    action: deck.slicer_trigger
+    physical_deck: 0
+    deck_index: null
+    params:
+      pad: 5
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_15
+    action: deck.slicer_trigger
+    physical_deck: 0
+    deck_index: null
+    params:
+      pad: 6
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_16
+    action: deck.slicer_trigger
+    physical_deck: 0
+    deck_index: null
+    params:
+      pad: 7
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_1
+    action: deck.slicer_trigger
+    physical_deck: 1
+    deck_index: null
+    params:
+      pad: 0
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_2
+    action: deck.slicer_trigger
+    physical_deck: 1
+    deck_index: null
+    params:
+      pad: 1
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_5
+    action: deck.slicer_trigger
+    physical_deck: 1
+    deck_index: null
+    params:
+      pad: 2
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_6
+    action: deck.slicer_trigger
+    physical_deck: 1
+    deck_index: null
+    params:
+      pad: 3
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_9
+    action: deck.slicer_trigger
+    physical_deck: 1
+    deck_index: null
+    params:
+      pad: 4
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_10
+    action: deck.slicer_trigger
+    physical_deck: 1
+    deck_index: null
+    params:
+      pad: 5
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_13
+    action: deck.slicer_trigger
+    physical_deck: 1
+    deck_index: null
+    params:
+      pad: 6
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_14
+    action: deck.slicer_trigger
+    physical_deck: 1
+    deck_index: null
+    params:
+      pad: 7
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_1
+    action: deck.slicer_trigger
+    physical_deck: 2
+    deck_index: null
+    params:
+      pad: 0
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_2
+    action: deck.slicer_trigger
+    physical_deck: 2
+    deck_index: null
+    params:
+      pad: 1
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_5
+    action: deck.slicer_trigger
+    physical_deck: 2
+    deck_index: null
+    params:
+      pad: 2
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_6
+    action: deck.slicer_trigger
+    physical_deck: 2
+    deck_index: null
+    params:
+      pad: 3
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_9
+    action: deck.slicer_trigger
+    physical_deck: 2
+    deck_index: null
+    params:
+      pad: 4
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_10
+    action: deck.slicer_trigger
+    physical_deck: 2
+    deck_index: null
+    params:
+      pad: 5
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_13
+    action: deck.slicer_trigger
+    physical_deck: 2
+    deck_index: null
+    params:
+      pad: 6
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_14
+    action: deck.slicer_trigger
+    physical_deck: 2
+    deck_index: null
+    params:
+      pad: 7
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_3
+    action: deck.slicer_trigger
+    physical_deck: 3
+    deck_index: null
+    params:
+      pad: 0
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_4
+    action: deck.slicer_trigger
+    physical_deck: 3
+    deck_index: null
+    params:
+      pad: 1
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_7
+    action: deck.slicer_trigger
+    physical_deck: 3
+    deck_index: null
+    params:
+      pad: 2
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_8
+    action: deck.slicer_trigger
+    physical_deck: 3
+    deck_index: null
+    params:
+      pad: 3
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_11
+    action: deck.slicer_trigger
+    physical_deck: 3
+    deck_index: null
+    params:
+      pad: 4
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_12
+    action: deck.slicer_trigger
+    physical_deck: 3
+    deck_index: null
+    params:
+      pad: 5
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_15
+    action: deck.slicer_trigger
+    physical_deck: 3
+    deck_index: null
+    params:
+      pad: 6
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_16
+    action: deck.slicer_trigger
+    physical_deck: 3
+    deck_index: null
+    params:
+      pad: 7
+    behavior: momentary
+    shift_action: null
+    encoder_mode: null
+    hardware_type: button
+    mode: slicer
+  - control:
+      protocol: hid
+      device_id: B2220F4E
       name: grid_1
     action: deck.hot_cue_press
     physical_deck: 2
@@ -2047,6 +2495,646 @@ devices:
     - 8
     - 8
     - 8
+  - state: deck.slicer_slice_active
+    physical_deck: 0
+    deck_index: null
+    params:
+      pad: 0
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_3
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 0
+    deck_index: null
+    params:
+      pad: 1
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_4
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 0
+    deck_index: null
+    params:
+      pad: 2
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_7
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 0
+    deck_index: null
+    params:
+      pad: 3
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_8
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 0
+    deck_index: null
+    params:
+      pad: 4
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_11
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 0
+    deck_index: null
+    params:
+      pad: 5
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_12
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 0
+    deck_index: null
+    params:
+      pad: 6
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_15
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 0
+    deck_index: null
+    params:
+      pad: 7
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_16
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 1
+    deck_index: null
+    params:
+      pad: 0
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_1
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 1
+    deck_index: null
+    params:
+      pad: 1
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_2
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 1
+    deck_index: null
+    params:
+      pad: 2
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_5
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 1
+    deck_index: null
+    params:
+      pad: 3
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_6
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 1
+    deck_index: null
+    params:
+      pad: 4
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_9
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 1
+    deck_index: null
+    params:
+      pad: 5
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_10
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 1
+    deck_index: null
+    params:
+      pad: 6
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_13
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 1
+    deck_index: null
+    params:
+      pad: 7
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_14
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 2
+    deck_index: null
+    params:
+      pad: 0
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_1
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 2
+    deck_index: null
+    params:
+      pad: 1
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_2
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 2
+    deck_index: null
+    params:
+      pad: 2
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_5
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 2
+    deck_index: null
+    params:
+      pad: 3
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_6
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 2
+    deck_index: null
+    params:
+      pad: 4
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_9
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 2
+    deck_index: null
+    params:
+      pad: 5
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_10
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 2
+    deck_index: null
+    params:
+      pad: 6
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_13
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 2
+    deck_index: null
+    params:
+      pad: 7
+    output:
+      protocol: hid
+      device_id: B2220F4E
+      name: grid_14
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 3
+    deck_index: null
+    params:
+      pad: 0
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_3
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 3
+    deck_index: null
+    params:
+      pad: 1
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_4
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 3
+    deck_index: null
+    params:
+      pad: 2
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_7
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 3
+    deck_index: null
+    params:
+      pad: 3
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_8
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 3
+    deck_index: null
+    params:
+      pad: 4
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_11
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 3
+    deck_index: null
+    params:
+      pad: 5
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_12
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 3
+    deck_index: null
+    params:
+      pad: 6
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_15
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
+  - state: deck.slicer_slice_active
+    physical_deck: 3
+    deck_index: null
+    params:
+      pad: 7
+    output:
+      protocol: hid
+      device_id: E82DF2FC
+      name: grid_16
+    on_value: 127
+    off_value: 0
+    on_color:
+    - 0
+    - 180
+    - 180
+    off_color:
+    - 8
+    - 20
+    - 20
+    mode: slicer
   - state: deck.hot_cue_set
     physical_deck: 2
     deck_index: null

@@ -188,7 +188,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let ls = u.loop_params.x;
         let le = u.loop_params.y;
         if (source_x >= ls && source_x <= le) {
-            color = mix(color, vec3<f32>(0.0, 0.3, 0.0), 0.25);
+            color = mix(color, vec3<f32>(0.1, 0.5, 0.1), 0.3);
         }
     }
 
