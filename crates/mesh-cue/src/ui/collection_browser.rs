@@ -60,7 +60,7 @@ fn view_browser_header() -> Element<'static, Message> {
 /// Track editor (top section)
 fn view_editor(state: &CollectionState, stem_link_selection: Option<usize>) -> Element<'_, Message> {
     if let Some(ref loaded) = state.loaded_track {
-        editor::view(loaded, stem_link_selection)
+        editor::view(loaded, stem_link_selection, state.stem_colors)
     } else {
         container(
             column![

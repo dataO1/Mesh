@@ -25,7 +25,7 @@ pub use super::state::{
 };
 pub use super::utils::{
     build_tree_nodes, get_tracks_for_folder, nudge_beat_grid, regenerate_beat_grid,
-    snap_to_nearest_beat, tracks_to_rows, update_waveform_beat_grid, BEAT_GRID_NUDGE_SAMPLES,
+    snap_to_nearest_beat, update_waveform_beat_grid, BEAT_GRID_NUDGE_SAMPLES,
 };
 
 // State types imported from super::state
@@ -165,16 +165,15 @@ impl MeshCueApp {
         collection_state.browser_right.tree_state.expand(NodeId::tracks());
         collection_state.browser_right.tree_state.expand(NodeId::playlists());
 
-        // Set pill color from theme stem colors
+        // Set pill color and stem colors from theme
         collection_state.browser_left.table_state.pill_color = Some(active_theme.stems[2]);
         collection_state.browser_right.table_state.pill_color = Some(active_theme.stems[2]);
+        collection_state.stem_colors = active_theme.stems;
 
         // Set left browser to show tracks (collection) by default
         collection_state.browser_left.set_current_folder(NodeId::tracks());
-        // Convert domain tracks to UI format
-        if let Ok(tracks) = domain.get_tracks_for_node(&NodeId::tracks()) {
-            collection_state.left_tracks = tracks_to_rows(&tracks);
-        }
+        // Load tracks via PlaylistStorage path (includes cue counts + tags)
+        collection_state.left_tracks = domain.get_tracks_for_display(&NodeId::tracks());
 
         // Start audio system for preview (lock-free architecture)
         // Domain owns the db_service internally

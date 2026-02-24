@@ -439,6 +439,11 @@ impl MeshDomain {
         self.usb_manager.message_receiver()
     }
 
+    /// Pause or resume USB device monitoring
+    pub fn set_usb_monitor_paused(&self, paused: bool) {
+        self.usb_manager.set_monitor_paused(paused);
+    }
+
     /// Get the linked stem result receiver for subscriptions
     ///
     /// Returns None if audio engine is not connected (offline mode).

@@ -21,7 +21,7 @@
 //!        UI Thread (via subscription)
 //! ```
 
-use super::detection::{enumerate_devices, monitor_devices, DeviceEvent};
+use super::detection::{enumerate_devices, monitor_devices_with_paused, DeviceEvent};
 use super::mount::{init_collection_structure, refresh_device_info, set_filesystem_label};
 use super::storage::{CachedTrackMetadata, UsbStorage};
 use super::sync::{
@@ -37,6 +37,7 @@ use crate::playlist::NodeId;
 pub use super::message::{UsbCommand, UsbMessage};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -58,6 +59,8 @@ pub struct UsbManager {
     /// Stored to keep Arc alive - actual usage is via clone passed to manager thread
     #[allow(dead_code)]
     db_service: Option<Arc<DatabaseService>>,
+    /// When true, the monitor thread skips device enumeration polling
+    monitor_paused: Arc<AtomicBool>,
 }
 
 impl UsbManager {
@@ -75,6 +78,10 @@ impl UsbManager {
         // Clone message_tx for the udev monitor thread
         let monitor_message_tx = message_tx.clone();
 
+        // Pause flag: when true, monitor thread skips enumeration
+        let monitor_paused = Arc::new(AtomicBool::new(true));
+        let monitor_paused_clone = Arc::clone(&monitor_paused);
+
         // Clone db_service for the manager thread
         let thread_db_service = db_service.clone();
 
@@ -90,7 +97,7 @@ impl UsbManager {
         let monitor_handle = thread::Builder::new()
             .name("usb-monitor".to_string())
             .spawn(move || {
-                udev_monitor_thread(monitor_message_tx);
+                udev_monitor_thread(monitor_message_tx, monitor_paused_clone);
             })
             .expect("Failed to spawn USB monitor thread");
 
@@ -100,6 +107,7 @@ impl UsbManager {
             _thread_handle: thread_handle,
             _monitor_handle: monitor_handle,
             db_service,
+            monitor_paused,
         }
     }
 
@@ -139,6 +147,15 @@ impl UsbManager {
     /// Shutdown the manager
     pub fn shutdown(&self) {
         let _ = self.send(UsbCommand::Shutdown);
+    }
+
+    /// Pause or resume USB device monitoring
+    ///
+    /// When paused, the monitor thread stops polling for device changes,
+    /// eliminating unnecessary sysfs/D-Bus reads when the export modal is closed.
+    pub fn set_monitor_paused(&self, paused: bool) {
+        self.monitor_paused.store(paused, Ordering::Relaxed);
+        log::debug!("USB monitor {}", if paused { "paused" } else { "resumed" });
     }
 }
 
@@ -729,10 +746,10 @@ fn handle_preload_metadata(tracks_dir: PathBuf, device_path: PathBuf, tx: Sender
 }
 
 /// udev monitor thread function
-fn udev_monitor_thread(message_tx: Sender<UsbMessage>) {
-    log::info!("USB udev monitor thread started");
+fn udev_monitor_thread(message_tx: Sender<UsbMessage>, paused: Arc<AtomicBool>) {
+    log::info!("USB udev monitor thread started (paused by default)");
 
-    let result = monitor_devices(|event| {
+    let result = monitor_devices_with_paused(Duration::from_secs(2), &paused, &mut |event| {
         match event {
             DeviceEvent::Added(device) => {
                 let _ = message_tx.send(UsbMessage::DeviceConnected(device));

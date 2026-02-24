@@ -193,6 +193,7 @@ impl MeshCueApp {
         self.iced_theme = active_theme.iced_theme();
         self.collection.browser_left.table_state.pill_color = Some(active_theme.stems[2]);
         self.collection.browser_right.table_state.pill_color = Some(active_theme.stems[2]);
+        self.collection.stem_colors = active_theme.stems;
 
         // Apply scratch interpolation to audio engine immediately
         self.audio.set_scratch_interpolation(self.settings.draft_scratch_interpolation);

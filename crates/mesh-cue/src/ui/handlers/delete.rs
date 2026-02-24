@@ -4,6 +4,7 @@
 
 use iced::Task;
 use mesh_core::playlist::NodeId;
+use mesh_widgets::track_table::scroll_to_centered_selection;
 use super::super::app::MeshCueApp;
 use super::super::delete_modal::DeleteTarget;
 use super::super::message::Message;
@@ -60,14 +61,44 @@ impl MeshCueApp {
         };
 
         log::info!("Showing delete confirmation for {:?}", target);
+
+        // Capture the selected track index BEFORE showing modal.
+        // Showing the modal changes the view tree, which causes iced to reset
+        // the scrollable widget state. We snap back after the rebuild.
+        let selected_index = self.collection.browser_left.table_state.selected
+            .iter()
+            .next()
+            .and_then(|id| self.collection.left_tracks.iter().position(|t| &t.id == id));
+        let total_items = self.collection.left_tracks.len();
+
         self.delete_state.show(target);
-        Task::none()
+
+        // Restore scroll position after view tree rebuild
+        if let Some(idx) = selected_index {
+            // Use 400px as approximate visible height (will center well enough)
+            scroll_to_centered_selection(idx, total_items, 400.0)
+        } else {
+            Task::none()
+        }
     }
 
     /// Handle CancelDelete message
     pub fn handle_cancel_delete(&mut self) -> Task<Message> {
+        // Capture scroll position before closing modal (view tree change resets scrollable)
+        let selected_index = self.collection.browser_left.table_state.selected
+            .iter()
+            .next()
+            .and_then(|id| self.collection.left_tracks.iter().position(|t| &t.id == id));
+        let total_items = self.collection.left_tracks.len();
+
         self.delete_state.cancel();
-        Task::none()
+
+        // Restore scroll position
+        if let Some(idx) = selected_index {
+            scroll_to_centered_selection(idx, total_items, 400.0)
+        } else {
+            Task::none()
+        }
     }
 
     /// Handle ConfirmDelete message
@@ -160,6 +191,13 @@ impl MeshCueApp {
     pub fn handle_request_delete_by_id(&mut self, track_id: NodeId) -> Task<Message> {
         self.context_menu_state.close();
 
+        // Capture scroll position before modal changes view tree
+        let selected_index = self.collection.browser_left.table_state.selected
+            .iter()
+            .next()
+            .and_then(|id| self.collection.left_tracks.iter().position(|t| &t.id == id));
+        let total_items = self.collection.left_tracks.len();
+
         // Determine if track is in collection or playlist
         if track_id.is_in_tracks() {
             // Collection track - permanent deletion
@@ -185,7 +223,13 @@ impl MeshCueApp {
                 track_ids: vec![track_id],
             });
         }
-        Task::none()
+
+        // Restore scroll position after view tree rebuild
+        if let Some(idx) = selected_index {
+            scroll_to_centered_selection(idx, total_items, 400.0)
+        } else {
+            Task::none()
+        }
     }
 
     /// Handle RequestDeletePlaylist message (from context menu)

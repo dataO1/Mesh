@@ -40,20 +40,31 @@ impl MeshCueApp {
                 let cue_points = metadata.cue_points.clone();
                 let beat_grid = metadata.beat_grid.beats.clone();
 
+                // Compute duration from metadata (available from DB) so markers render immediately
+                let duration_samples = metadata.duration_seconds
+                    .map(|d| (d * SAMPLE_RATE as f64) as u64)
+                    .unwrap_or(0);
+
                 // Create combined waveform view (both zoomed + overview in single canvas)
                 let mut combined_waveform = CombinedWaveformView::new();
-                // Initialize overview with beat markers from metadata
-                combined_waveform.overview = WaveformView::from_metadata(&metadata, 0);
+                // Initialize overview with beat markers from metadata — pass real duration
+                // so beat grid and cue markers compute their normalized positions correctly
+                combined_waveform.overview = WaveformView::from_metadata(&metadata, duration_samples);
+                // Beat grid and cue markers are ready — don't show loading pulse
+                combined_waveform.overview.loading = false;
                 // Apply grid density from config
                 combined_waveform
                     .overview
                     .set_grid_bars(self.domain.config().display.grid_bars);
-                // Initialize zoomed view (peaks will be computed when stems load)
+                // Initialize zoomed view with duration so cue markers render immediately
                 combined_waveform.zoomed = ZoomedWaveformView::from_metadata(
                     bpm,
                     beat_grid.clone(),
-                    Vec::new(), // Cue markers will be added after duration is known
+                    Vec::new(), // Will be populated below
                 );
+                combined_waveform.zoomed.set_duration(duration_samples);
+                combined_waveform.zoomed.update_cue_markers(&cue_points);
+                combined_waveform.zoomed.set_zoom(self.domain.config().display.zoom_bars);
                 // Set drop marker on zoomed view (overview gets it from from_metadata)
                 combined_waveform.zoomed.set_drop_marker(metadata.drop_marker);
 
@@ -69,7 +80,7 @@ impl MeshCueApp {
                     drop_marker: metadata.drop_marker,
                     lufs: metadata.lufs,
                     stem_links: metadata.stem_links.clone(),
-                    duration_samples: 0, // Will be set when first audio arrives
+                    duration_samples, // From metadata — will be refined when audio arrives
                     modified: false,
                     combined_waveform,
                     loading_audio: true,

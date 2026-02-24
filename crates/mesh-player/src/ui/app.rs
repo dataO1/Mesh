@@ -234,6 +234,9 @@ impl MeshApp {
             1920, // Default screen width, updated when GotMonitorSize fires
         );
 
+        // mesh-player always needs USB hotplug detection (performance mode)
+        domain.set_usb_monitor_paused(false);
+
         // Sync initial mixer state to engine (UI defaults to 0.0 volume,
         // engine defaults to 1.0 — must agree to avoid fader jump on first move)
         for ch in 0..4 {

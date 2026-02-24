@@ -36,8 +36,8 @@ use mesh_widgets::{waveform_shader_combined, SingleDeckAction};
 /// This replaces the canvas-based `waveform_combined()` with GPU shader
 /// rendering via `waveform_shader_combined()`. The zoomed view supports
 /// vinyl scratch gestures (horizontal drag = scrub, vertical drag = zoom).
-pub fn view_combined_waveform(state: &CombinedWaveformView, playhead: u64) -> Element<'_, Message> {
-    waveform_shader_combined(state, playhead, STEM_COLORS, |action| match action {
+pub fn view_combined_waveform(state: &CombinedWaveformView, playhead: u64, stem_colors: [iced::Color; 4]) -> Element<'_, Message> {
+    waveform_shader_combined(state, playhead, stem_colors, |action| match action {
         SingleDeckAction::Seek(pos) => Message::Seek(pos),
         SingleDeckAction::SetZoom(bars) => Message::SetZoomBars(bars),
         SingleDeckAction::ScratchStart => Message::ScratchStart,

@@ -4,7 +4,7 @@
 //! Database service and playlist storage are owned by the domain layer.
 
 use std::path::PathBuf;
-use iced::Point;
+use iced::{Color, Point};
 use mesh_core::playlist::NodeId;
 use mesh_widgets::{PlaylistBrowserState, TrackRow, TreeNode};
 
@@ -119,6 +119,8 @@ pub struct CollectionState {
     pub pending_drag: Option<PendingDragState>,
     /// Which browser the mouse is currently hovering over (during drag)
     pub drag_hover_browser: Option<BrowserSide>,
+    /// Active theme stem colors (for waveform rendering)
+    pub stem_colors: [Color; 4],
 }
 
 impl std::fmt::Debug for CollectionState {
@@ -194,6 +196,7 @@ impl Default for CollectionState {
             dragging_track: None,
             pending_drag: None,
             drag_hover_browser: None,
+            stem_colors: mesh_widgets::STEM_COLORS,
         }
     }
 }

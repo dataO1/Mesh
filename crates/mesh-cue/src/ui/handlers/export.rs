@@ -17,6 +17,8 @@ impl MeshCueApp {
     pub fn handle_open_export(&mut self) -> Task<Message> {
         log::info!("Opening USB export modal");
         self.export_state.is_open = true;
+        // Resume USB device monitoring (was paused while modal was closed)
+        self.domain.set_usb_monitor_paused(false);
         // Don't reset if export is in progress — re-opening should show current progress
         if !self.export_state.phase.is_exporting() {
             self.export_state.reset();
@@ -30,6 +32,8 @@ impl MeshCueApp {
     pub fn handle_close_export(&mut self) -> Task<Message> {
         // Just close the modal - don't cancel export in progress
         self.export_state.is_open = false;
+        // Pause USB device monitoring to stop unnecessary polling
+        self.domain.set_usb_monitor_paused(true);
         Task::none()
     }
 

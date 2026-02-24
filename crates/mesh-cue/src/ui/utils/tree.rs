@@ -2,7 +2,6 @@
 //!
 //! Functions for building tree nodes and getting tracks from playlist storage.
 
-use crate::domain::DomainTrack;
 use mesh_core::playlist::{NodeId, NodeKind, PlaylistNode, PlaylistStorage};
 use mesh_widgets::{parse_hex_color, tag_sort_priority, TrackRow, TrackTag, TreeIcon, TreeNode};
 
@@ -84,36 +83,6 @@ pub fn get_tracks_for_folder(storage: &dyn PlaylistStorage, folder_id: &NodeId) 
                     tag
                 }).collect();
                 row = row.with_tags(tags);
-            }
-            row
-        })
-        .collect()
-}
-
-/// Convert domain Tracks to UI TrackRow items
-///
-/// Used when querying tracks directly from the domain layer (which returns DomainTrack objects)
-/// instead of through PlaylistStorage (which returns TrackInfo).
-pub fn tracks_to_rows(tracks: &[DomainTrack]) -> Vec<TrackRow<NodeId>> {
-    tracks
-        .iter()
-        .enumerate()
-        .map(|(i, track)| {
-            // Create NodeId from track path for UI identification
-            let node_id = NodeId::tracks().child(&track.path.to_string_lossy());
-            let mut row = TrackRow::new(node_id, &track.name, (i + 1) as i32);
-            if let Some(ref artist) = track.artist {
-                row = row.with_artist(artist);
-            }
-            if let Some(bpm) = track.bpm {
-                row = row.with_bpm(bpm);
-            }
-            if let Some(ref key) = track.key {
-                row = row.with_key(key);
-            }
-            row = row.with_duration(track.duration_seconds);
-            if let Some(lufs) = track.lufs {
-                row = row.with_lufs(lufs);
             }
             row
         })

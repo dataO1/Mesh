@@ -221,6 +221,74 @@ where
     }
 }
 
+/// Monitor for USB device events with a pause flag
+///
+/// When `paused` is true, the thread sleeps but skips the expensive
+/// `enumerate_devices()` call. This avoids unnecessary sysfs/D-Bus polling
+/// when the export modal is not open.
+pub fn monitor_devices_with_paused<F>(
+    poll_interval: Duration,
+    paused: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    callback: &mut F,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    F: FnMut(DeviceEvent) + Send,
+{
+    let mut known_devices: HashSet<PathBuf> = enumerate_devices()
+        .ok()
+        .map(|devices| {
+            devices
+                .into_iter()
+                .map(|d| d.mount_point.unwrap_or(d.device_path))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    log::info!(
+        "USB monitor started with {} initial devices",
+        known_devices.len()
+    );
+
+    loop {
+        std::thread::sleep(poll_interval);
+
+        // Skip enumeration when paused (export modal closed)
+        if paused.load(std::sync::atomic::Ordering::Relaxed) {
+            continue;
+        }
+
+        let current_devices = match enumerate_devices() {
+            Ok(devices) => devices,
+            Err(e) => {
+                log::warn!("Failed to enumerate USB devices: {}", e);
+                continue;
+            }
+        };
+
+        let current_paths: HashSet<PathBuf> = current_devices
+            .iter()
+            .map(|d| d.mount_point.clone().unwrap_or(d.device_path.clone()))
+            .collect();
+
+        for device in &current_devices {
+            let path = device.mount_point.clone().unwrap_or(device.device_path.clone());
+            if !known_devices.contains(&path) {
+                log::info!("USB device connected: {}", device.label);
+                callback(DeviceEvent::Added(device.clone()));
+            }
+        }
+
+        for path in &known_devices {
+            if !current_paths.contains(path) {
+                log::info!("USB device disconnected: {}", path.display());
+                callback(DeviceEvent::Removed(path.clone()));
+            }
+        }
+
+        known_devices = current_paths;
+    }
+}
+
 /// Device event for hot-plug monitoring
 #[derive(Debug, Clone)]
 pub enum DeviceEvent {

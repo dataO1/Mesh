@@ -1090,6 +1090,14 @@ impl MeshCueDomain {
         self.usb_manager.refresh_devices();
     }
 
+    /// Pause or resume USB device monitoring
+    ///
+    /// Call with `false` when opening the export modal (to start polling),
+    /// and `true` when closing it (to stop polling).
+    pub fn set_usb_monitor_paused(&self, paused: bool) {
+        self.usb_manager.set_monitor_paused(paused);
+    }
+
     /// Get USB message receiver for subscriptions
     ///
     /// Use this with `mpsc_subscription` to receive USB events in the UI.
