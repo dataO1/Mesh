@@ -187,8 +187,13 @@ pub fn load_themes(path: &Path) -> Vec<MeshTheme> {
                 themes
             }
             Err(e) => {
-                log::warn!("Failed to parse theme file: {}, using defaults", e);
-                default_themes()
+                log::warn!("Failed to parse theme file: {}", e);
+                log::info!("Migrating old theme.yaml to new format with default themes");
+                let defaults = default_themes();
+                if let Err(e) = save_themes(&defaults, path) {
+                    log::warn!("Failed to write migrated theme file: {}", e);
+                }
+                defaults
             }
         },
         Err(e) => {
