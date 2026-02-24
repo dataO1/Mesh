@@ -3,6 +3,7 @@
 //! Functions for nudging, regenerating, and snapping to beat grids.
 
 use crate::ui::state::LoadedTrackState;
+use mesh_core::audio_file::BeatGrid;
 
 /// Nudge amount in samples (~2.5ms at 48kHz for fine-grained control)
 pub const BEAT_GRID_NUDGE_SAMPLES: i64 = 120;
@@ -20,9 +21,9 @@ pub fn nudge_beat_grid(state: &mut LoadedTrackState, delta_samples: i64) {
         return;
     }
 
-    // Calculate samples per bar (4 beats)
-    let samples_per_beat = (SAMPLE_RATE_F64 * 60.0 / state.bpm) as i64;
-    let samples_per_bar = samples_per_beat * 4;
+    // Use f64 for samples-per-bar to avoid truncation in wrapping bounds
+    let samples_per_beat_f64 = SAMPLE_RATE_F64 * 60.0 / state.bpm;
+    let samples_per_bar = (samples_per_beat_f64 * 4.0).round() as i64;
 
     // Get current first beat
     let first_beat = state.beat_grid[0] as i64;
@@ -51,22 +52,13 @@ pub fn nudge_beat_grid(state: &mut LoadedTrackState, delta_samples: i64) {
     state.modified = true;
 }
 
-/// Regenerate beat grid from a first beat position, BPM, and track duration
+/// Regenerate beat grid from a first beat position, BPM, and track duration.
+///
+/// Delegates to mesh-core's `BeatGrid::regenerate()` which uses f64 accumulation
+/// to prevent truncation drift (±0.5 samples max error vs cumulative drift with
+/// integer accumulation).
 pub fn regenerate_beat_grid(first_beat: u64, bpm: f64, duration_samples: u64) -> Vec<u64> {
-    if bpm <= 0.0 || duration_samples == 0 {
-        return Vec::new();
-    }
-
-    let samples_per_beat = (SAMPLE_RATE_F64 * 60.0 / bpm) as u64;
-    let mut beats = Vec::new();
-    let mut pos = first_beat;
-
-    while pos < duration_samples {
-        beats.push(pos);
-        pos += samples_per_beat;
-    }
-
-    beats
+    BeatGrid::regenerate(first_beat, bpm, duration_samples).beats
 }
 
 /// Update waveform beat grid markers after grid modification

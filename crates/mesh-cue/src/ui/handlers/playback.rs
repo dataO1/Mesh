@@ -39,7 +39,7 @@ impl MeshCueApp {
     /// Handle Seek message
     pub fn handle_seek(&mut self, position: f64) -> Task<Message> {
         if let Some(ref mut state) = self.collection.loaded_track {
-            let seek_pos = (position * state.duration_samples as f64) as u64;
+            let seek_pos = (position * state.duration_samples as f64).round() as u64;
             self.audio.seek(seek_pos);
             state.combined_waveform.overview.set_position(position);
             state.update_zoomed_waveform_cache(seek_pos);
@@ -58,7 +58,7 @@ impl MeshCueApp {
     /// Handle ScratchMove message (update scratch position)
     pub fn handle_scratch_move(&mut self, position: f64) -> Task<Message> {
         if let Some(ref mut state) = self.collection.loaded_track {
-            let scratch_pos = (position * state.duration_samples as f64) as u64;
+            let scratch_pos = (position * state.duration_samples as f64).round() as u64;
             self.audio.scratch_move(scratch_pos);
             state.combined_waveform.overview.set_position(position);
             state.update_zoomed_waveform_cache(scratch_pos);

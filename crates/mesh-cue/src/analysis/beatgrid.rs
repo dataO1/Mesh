@@ -75,7 +75,6 @@ pub fn generate_beat_grid(
 
     // Calculate samples per beat at the system rate (48kHz)
     let samples_per_beat_f64 = SAMPLE_RATE as f64 * 60.0 / bpm;
-    let samples_per_beat = samples_per_beat_f64 as u64;
 
     // Compute the phase anchor using energy-filtered circular median
     let first_beat_sample = if beat_ticks.len() >= MIN_TICKS_FOR_MEDIAN && !samples.is_empty() {
@@ -83,25 +82,25 @@ pub fn generate_beat_grid(
     } else {
         // Fallback: use first tick directly (old behavior)
         let first_beat = beat_ticks[0];
-        (first_beat * SAMPLE_RATE as f64) as u64
+        (first_beat * SAMPLE_RATE as f64).round() as u64
     };
 
-    // Generate uniform grid from the phase anchor
+    // Generate uniform grid using f64 accumulation (via mesh-core) to prevent drift
     let num_beats = if first_beat_sample < duration_samples {
-        ((duration_samples - first_beat_sample) / samples_per_beat) as usize
+        ((duration_samples - first_beat_sample) as f64 / samples_per_beat_f64) as usize
     } else {
         0
     };
 
     log::info!(
-        "generate_beat_grid: first_beat_sample={}, samples_per_beat={}, num_beats={}",
+        "generate_beat_grid: first_beat_sample={}, samples_per_beat={:.2}, num_beats={}",
         first_beat_sample,
-        samples_per_beat,
+        samples_per_beat_f64,
         num_beats
     );
 
     (0..=num_beats)
-        .map(|i| first_beat_sample + (i as u64 * samples_per_beat))
+        .map(|i| (first_beat_sample as f64 + i as f64 * samples_per_beat_f64).round() as u64)
         .collect()
 }
 
@@ -335,12 +334,7 @@ pub fn adjust_grid_start(grid: &[u64], offset_samples: i64) -> Vec<u64> {
 
 /// Regenerate beat grid with new BPM (user override)
 pub fn regenerate_grid(first_beat_sample: u64, bpm: f64, duration_samples: u64) -> Vec<u64> {
-    let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
-    let num_beats = ((duration_samples - first_beat_sample) / samples_per_beat) as usize;
-
-    (0..=num_beats)
-        .map(|i| first_beat_sample + (i as u64 * samples_per_beat))
-        .collect()
+    mesh_core::audio_file::BeatGrid::regenerate(first_beat_sample, bpm, duration_samples).beats
 }
 
 #[cfg(test)]

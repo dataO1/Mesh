@@ -362,8 +362,9 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
     let existing = get_existing_relations(db)?;
     log::debug!("Existing relations: {:?}", existing);
 
-    // Clean up stale temp relations from previous migration approaches
-    for stale in &["_tracks_backup", "_tracks_new", "_tracks_old"] {
+    // Clean up stale temp relations from interrupted migrations.
+    // Avoid underscore-prefixed names — CozoDB treats them as session-scoped.
+    for stale in &["tracks_staging", "tracks_old"] {
         if existing.contains(*stale) {
             log::warn!("Found stale '{}' from interrupted migration, removing", stale);
             let _ = db.run_script(
@@ -620,15 +621,15 @@ fn migrate_ml_analysis_if_needed(db: &DbInstance) -> Result<(), DbError> {
 ///
 /// CozoDB doesn't support ALTER TABLE. We use `::rename` for an atomic swap:
 ///
-/// 1. Create `_tracks_new` with the target schema
-/// 2. Copy all rows from `tracks` → `_tracks_new` (with defaults for new columns)
+/// 1. Create `tracks_staging` with the target schema
+/// 2. Copy all rows from `tracks` → `tracks_staging` (with defaults for new columns)
 /// 3. Verify row count matches
-/// 4. Atomic swap: `::rename tracks -> _tracks_old, _tracks_new -> tracks`
-/// 5. Drop `_tracks_old`
+/// 4. Atomic swap: `::rename tracks -> tracks_old, tracks_staging -> tracks`
+/// 5. Drop `tracks_old`
 ///
 /// The `::rename` in step 4 is atomic — `tracks` always exists with valid data.
-/// Crash before step 4: old `tracks` is untouched, `_tracks_new` is cleaned up
-/// on next startup. Crash after step 4: `tracks` has new schema, `_tracks_old`
+/// Crash before step 4: old `tracks` is untouched, `tracks_staging` is cleaned up
+/// on next startup. Crash after step 4: `tracks` has new schema, `tracks_old`
 /// is cleaned up on next startup.
 fn migrate_tracks_if_needed(db: &DbInstance) -> Result<(), DbError> {
     let result = db
@@ -660,7 +661,7 @@ fn migrate_tracks_if_needed(db: &DbInstance) -> Result<(), DbError> {
     // Step 1: Create staging relation with the final schema (title + original_name)
     db.run_script(
         r#"
-        {:create _tracks_new {
+        {:create tracks_staging {
             id: Int =>
             path: String,
             folder_path: String,
@@ -696,7 +697,7 @@ fn migrate_tracks_if_needed(db: &DbInstance) -> Result<(), DbError> {
                         file_mtime, file_size, waveform_path},
                 title = name,
                 original_name = ''
-            :put _tracks_new {id => path, folder_path, title, original_name, artist, bpm, original_bpm, key,
+            :put tracks_staging {id => path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                               duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample,
                               file_mtime, file_size, waveform_path}
             "#,
@@ -706,10 +707,10 @@ fn migrate_tracks_if_needed(db: &DbInstance) -> Result<(), DbError> {
     }
 
     // Step 3: Verify staging has all rows before touching old data
-    let staging_count = count_relation(db, "_tracks_new")?;
+    let staging_count = count_relation(db, "tracks_staging")?;
     if staging_count != old_count {
         // Abort — drop staging, keep old tracks intact
-        let _ = db.run_script("::remove _tracks_new", Default::default(), cozo::ScriptMutability::Mutable);
+        let _ = db.run_script("::remove tracks_staging", Default::default(), cozo::ScriptMutability::Mutable);
         return Err(DbError::Schema(format!(
             "Migration verification failed: expected {} tracks in staging, got {}. Old data preserved.",
             old_count, staging_count
@@ -720,13 +721,13 @@ fn migrate_tracks_if_needed(db: &DbInstance) -> Result<(), DbError> {
 
     // Step 4: Atomic swap — tracks always exists with valid data
     db.run_script(
-        "::rename tracks -> _tracks_old, _tracks_new -> tracks",
+        "::rename tracks -> tracks_old, tracks_staging -> tracks",
         Default::default(),
         cozo::ScriptMutability::Mutable,
     ).map_err(|e| DbError::Schema(format!("Atomic rename failed: {}", e)))?;
 
     // Step 5: Drop old relation (safe — tracks already points to new data)
-    let _ = db.run_script("::remove _tracks_old", Default::default(), cozo::ScriptMutability::Mutable);
+    let _ = db.run_script("::remove tracks_old", Default::default(), cozo::ScriptMutability::Mutable);
 
     log::info!("Tracks migration complete — {} tracks migrated successfully", staging_count);
     Ok(())
@@ -745,7 +746,7 @@ fn migrate_tracks_name_to_title(db: &DbInstance) -> Result<(), DbError> {
     // Step 1: Create staging relation with 'title' instead of 'name'
     db.run_script(
         r#"
-        {:create _tracks_new {
+        {:create tracks_staging {
             id: Int =>
             path: String,
             folder_path: String,
@@ -780,7 +781,7 @@ fn migrate_tracks_name_to_title(db: &DbInstance) -> Result<(), DbError> {
                         duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample,
                         file_mtime, file_size, waveform_path},
                 title = name
-            :put _tracks_new {id => path, folder_path, title, original_name, artist, bpm, original_bpm, key,
+            :put tracks_staging {id => path, folder_path, title, original_name, artist, bpm, original_bpm, key,
                               duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample,
                               file_mtime, file_size, waveform_path}
             "#,
@@ -790,9 +791,9 @@ fn migrate_tracks_name_to_title(db: &DbInstance) -> Result<(), DbError> {
     }
 
     // Step 3: Verify row count
-    let staging_count = count_relation(db, "_tracks_new")?;
+    let staging_count = count_relation(db, "tracks_staging")?;
     if staging_count != old_count {
-        let _ = db.run_script("::remove _tracks_new", Default::default(), cozo::ScriptMutability::Mutable);
+        let _ = db.run_script("::remove tracks_staging", Default::default(), cozo::ScriptMutability::Mutable);
         return Err(DbError::Schema(format!(
             "Migration verification failed: expected {} tracks in staging, got {}. Old data preserved.",
             old_count, staging_count
@@ -803,13 +804,13 @@ fn migrate_tracks_name_to_title(db: &DbInstance) -> Result<(), DbError> {
 
     // Step 4: Atomic swap
     db.run_script(
-        "::rename tracks -> _tracks_old, _tracks_new -> tracks",
+        "::rename tracks -> tracks_old, tracks_staging -> tracks",
         Default::default(),
         cozo::ScriptMutability::Mutable,
     ).map_err(|e| DbError::Schema(format!("Atomic rename failed: {}", e)))?;
 
     // Step 5: Drop old relation
-    let _ = db.run_script("::remove _tracks_old", Default::default(), cozo::ScriptMutability::Mutable);
+    let _ = db.run_script("::remove tracks_old", Default::default(), cozo::ScriptMutability::Mutable);
 
     log::info!("Tracks name→title migration complete — {} tracks migrated", staging_count);
     Ok(())

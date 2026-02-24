@@ -4,7 +4,7 @@
 //! separated from UI concerns like waveform rendering.
 
 use std::path::PathBuf;
-use mesh_core::audio_file::{CuePoint, SavedLoop, StemLinkReference};
+use mesh_core::audio_file::{BeatGrid, CuePoint, SavedLoop, StemLinkReference};
 use mesh_core::db::Track as DbTrack;
 use mesh_core::types::SAMPLE_RATE;
 
@@ -201,30 +201,26 @@ impl LoadedTrackState {
     }
 }
 
-/// Generate beat grid from BPM and first beat position
+/// Generate beat grid from BPM and first beat position.
+///
+/// Walks backward from `first_beat_sample` to find the effective grid start
+/// (for tracks that start mid-beat), then delegates to mesh-core's
+/// `BeatGrid::regenerate()` which uses f64 accumulation to prevent drift.
 fn generate_beat_grid(bpm: f64, first_beat_sample: u64, duration_samples: u64) -> Vec<u64> {
-    if bpm <= 0.0 {
+    if bpm <= 0.0 || duration_samples == 0 {
         return Vec::new();
     }
 
-    let samples_per_beat = (SAMPLE_RATE as f64 * 60.0) / bpm;
-    let estimated_beats = (duration_samples as f64 / samples_per_beat) as usize + 10;
+    let samples_per_beat = SAMPLE_RATE as f64 * 60.0 / bpm;
 
-    let mut grid = Vec::with_capacity(estimated_beats);
-
-    // Generate beats before first beat (for tracks that start mid-beat)
-    let mut sample = first_beat_sample;
-    while sample > samples_per_beat as u64 {
-        sample -= samples_per_beat as u64;
+    // Walk backward from first_beat_sample to find effective start (f64 to avoid truncation)
+    let mut start = first_beat_sample as f64;
+    while start > samples_per_beat {
+        start -= samples_per_beat;
     }
+    let effective_first_beat = start.round() as u64;
 
-    // Generate all beats
-    while sample < duration_samples {
-        grid.push(sample);
-        sample += samples_per_beat as u64;
-    }
-
-    grid
+    BeatGrid::regenerate(effective_first_beat, bpm, duration_samples).beats
 }
 
 #[cfg(test)]

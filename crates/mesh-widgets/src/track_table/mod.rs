@@ -195,7 +195,7 @@ pub enum TrackColumn {
     Order,
     /// Number of hot cue points set
     Cues,
-    /// Track name
+    /// Track title
     Name,
     /// Tags (user-defined + suggestion reasons)
     Tags,
@@ -217,7 +217,7 @@ impl TrackColumn {
         match self {
             Self::Order => "#",
             Self::Cues => "Q",
-            Self::Name => "Name",
+            Self::Name => "Title",
             Self::Tags => "Tags",
             Self::Artist => "Artist",
             Self::Bpm => "BPM",
@@ -237,8 +237,8 @@ impl TrackColumn {
         match self {
             Self::Order => Length::Fixed(35.0),
             Self::Cues => Length::Fixed(28.0),
-            Self::Name => Length::Fixed(300.0),
-            Self::Artist => Length::Fixed(180.0),
+            Self::Name => Length::Fixed(225.0),
+            Self::Artist => Length::Fixed(135.0),
             Self::Tags => Length::Fill,
             Self::Bpm => Length::Fixed(60.0),
             Self::Key => Length::Fixed(50.0),
@@ -473,6 +473,8 @@ pub struct TrackTableState<Id: Clone + Eq + Hash> {
     /// [0] = genre (replaces blues), [1] = characteristic (replaces teal),
     /// [2] = mood (replaces purple), [3] = vocal/score (replaces green/pink)
     pub tag_category_colors: Option<[Color; 4]>,
+    /// Override width for the Name/Title column (default uses TrackColumn::width())
+    pub name_column_width: Option<Length>,
 }
 
 impl<Id: Clone + Eq + Hash> Default for TrackTableState<Id> {
@@ -497,11 +499,17 @@ impl<Id: Clone + Eq + Hash> TrackTableState<Id> {
             selection_color_override: None,
             pill_color: None,
             tag_category_colors: None,
+            name_column_width: None,
         }
     }
 
     /// Get the width for a column
     pub fn column_width(&self, column: TrackColumn) -> Length {
+        if column == TrackColumn::Name {
+            if let Some(w) = self.name_column_width {
+                return w;
+            }
+        }
         column.width()
     }
 
@@ -792,7 +800,7 @@ where
         .collect();
 
     row(headers)
-        .spacing(1)
+        .spacing(4)
         .padding(Padding::from([6, 8]))
         .into()
 }
@@ -865,7 +873,7 @@ where
             });
             return container(pill)
                 .width(state.column_width(column))
-                .center_x(Length::Shrink)
+                .align_x(iced::Alignment::Center)
                 .into();
         }
         return container(text(""))
@@ -990,7 +998,7 @@ where
         .collect();
 
     let row_content = row(cells)
-        .spacing(1)
+        .spacing(4)
         .padding(Padding::from([4, 8]));
 
     // Button is used for visual styling only - no .on_press()

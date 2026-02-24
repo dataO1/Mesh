@@ -169,8 +169,10 @@ impl MeshCueApp {
         let tag_cats = [active_theme.stems[1], active_theme.stems[0], active_theme.stems[3], active_theme.stems[2]];
         collection_state.browser_left.table_state.pill_color = Some(active_theme.stems[1]);
         collection_state.browser_left.table_state.tag_category_colors = Some(tag_cats);
+        collection_state.browser_left.table_state.name_column_width = Some(iced::Length::Fixed(150.0));
         collection_state.browser_right.table_state.pill_color = Some(active_theme.stems[1]);
         collection_state.browser_right.table_state.tag_category_colors = Some(tag_cats);
+        collection_state.browser_right.table_state.name_column_width = Some(iced::Length::Fixed(150.0));
         collection_state.stem_colors = active_theme.stems;
 
         // Set left browser to show tracks (collection) by default

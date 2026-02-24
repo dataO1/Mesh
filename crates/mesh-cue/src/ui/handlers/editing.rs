@@ -28,12 +28,12 @@ impl MeshCueApp {
                 // Find the index of the beat nearest to the playhead
                 let (anchor_idx, anchor_pos) = find_nearest_beat_with_index(&state.beat_grid, playhead);
 
-                // Calculate new samples per beat
-                let new_samples_per_beat = (mesh_core::types::SAMPLE_RATE as f64 * 60.0 / bpm) as i64;
+                // Calculate new samples per beat (f64 to avoid truncation drift)
+                let new_spb_f64 = mesh_core::types::SAMPLE_RATE as f64 * 60.0 / bpm;
 
                 // Calculate new first beat position, keeping anchor beat fixed
                 // new_first_beat = anchor_pos - (anchor_idx * new_samples_per_beat)
-                let new_first_beat = (anchor_pos as i64 - (anchor_idx as i64 * new_samples_per_beat)).max(0) as u64;
+                let new_first_beat = (anchor_pos as f64 - anchor_idx as f64 * new_spb_f64).round().max(0.0) as u64;
 
                 log::debug!(
                     "BPM change {:.2} → {:.2}: anchor beat {} at {} (playhead {}), new first beat {}",
@@ -366,9 +366,8 @@ impl MeshCueApp {
             }
 
             let playhead = state.playhead_position();
-            let samples_per_beat =
-                (mesh_core::types::SAMPLE_RATE as f64 * 60.0 / state.bpm) as u64;
-            let samples_per_bar = samples_per_beat * 4;
+            let spb_f64 = mesh_core::types::SAMPLE_RATE as f64 * 60.0 / state.bpm;
+            let samples_per_bar = (spb_f64 * 4.0).round() as u64;
 
             // Calculate first beat position at start of file such that
             // a downbeat (bar boundary) aligns with the playhead.
@@ -378,8 +377,8 @@ impl MeshCueApp {
             let first_beat = playhead % samples_per_bar;
 
             log::debug!(
-                "Aligning beat grid: playhead {} -> first_beat {} (BPM: {:.2}, samples_per_beat: {})",
-                playhead, first_beat, state.bpm, samples_per_beat
+                "Aligning beat grid: playhead {} -> first_beat {} (BPM: {:.2}, samples_per_beat: {:.2})",
+                playhead, first_beat, state.bpm, spb_f64
             );
 
             // Regenerate beat grid starting from the calculated first beat
