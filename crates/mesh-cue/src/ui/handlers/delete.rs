@@ -75,6 +75,12 @@ impl MeshCueApp {
         if let Some(ref target) = self.delete_state.target {
             log::info!("Executing delete: {:?}", target);
 
+            // Capture selected indices before deletion so we can re-select neighbors
+            let left_idx = self.collection.browser_left.table_state.last_selected.as_ref()
+                .and_then(|id| self.collection.left_tracks.iter().position(|t| &t.id == id));
+            let right_idx = self.collection.browser_right.table_state.last_selected.as_ref()
+                .and_then(|id| self.collection.right_tracks.iter().position(|t| &t.id == id));
+
             match target {
                 DeleteTarget::PlaylistTracks { track_ids, .. } => {
                     // Remove tracks from playlist (not from collection)
@@ -117,9 +123,30 @@ impl MeshCueApp {
                 }
             }
 
-            // Clear selection after delete
-            self.collection.browser_left.table_state.clear_selection();
-            self.collection.browser_right.table_state.clear_selection();
+            // Select nearest neighbor after deletion (instead of clearing to nothing)
+            fn select_at_index(
+                table_state: &mut mesh_widgets::track_table::TrackTableState<NodeId>,
+                tracks: &[mesh_widgets::track_table::TrackRow<NodeId>],
+                old_idx: Option<usize>,
+            ) {
+                table_state.clear_selection();
+                if let Some(idx) = old_idx {
+                    let clamped = idx.min(tracks.len().saturating_sub(1));
+                    if let Some(track) = tracks.get(clamped) {
+                        table_state.select(track.id.clone());
+                    }
+                }
+            }
+            select_at_index(
+                &mut self.collection.browser_left.table_state,
+                &self.collection.left_tracks,
+                left_idx,
+            );
+            select_at_index(
+                &mut self.collection.browser_right.table_state,
+                &self.collection.right_tracks,
+                right_idx,
+            );
         }
 
         self.delete_state.complete();
