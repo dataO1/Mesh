@@ -8,6 +8,20 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Slicer preset trigger uses wrong preset index** — `SlicerTrigger` handler checked
+  which stems had patterns using the globally-selected editor preset instead of the
+  preset corresponding to the pressed pad. Now uses `button_idx` directly, matching
+  the index sent to the audio engine.
+
+- **Slicer waveform not fixed in shader** — `build_uniforms()` always centered the
+  zoomed window on the playhead, ignoring `FixedBuffer` view mode. In slicer mode
+  the window now locks to the slicer buffer bounds so the waveform stays fixed and
+  the playhead moves left-to-right across it.
+
+- **Slicer LED feedback param mismatch** — `deck.slicer_slice_active` feedback looked
+  for a `"slice"` parameter but the MIDI learn system generates `"pad"`. Fixed to
+  match.
+
 - **USB export stuck on preset sync** — `copy_dir_all()` was missing `sync_all()`
   after each file copy, leaving preset YAML data in kernel page cache instead of
   flushing to USB flash media. Subsequent phases would block 2-3 minutes waiting

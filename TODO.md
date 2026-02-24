@@ -175,6 +175,11 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
+- [ ] the loop marker in the shader is not visible enough, make it a bit lighter
+  green, so its better visible, just a bit. also in the overview waveform also
+  highlight the loop and slicer regions, when active in the respective color.
+- [ ] sometimes the smart suggestion system is stuck and doesnt give new
+  results, analyse why, dont fix yet.
 - [ ] we can save even more gpu power by making the overview waveform a canvas
   again (we already have some working deprecated code for that reuse it), but
   render high refresh needed parts in the shader (only the playhead position).
@@ -184,13 +189,6 @@ for v3 and beyond.
   cpu/gpu, only the playhead needs to be rendered in the shader.
 - [ ] when on the fly stem linking in the browser for selecting a linked track,
   we can utilise smart suggestions better by additionally adding specific searching  parameters for the stem that is about to be linked or weighting certain markers more. for example when loading drums, key is relatively irrelevant, but the energy or lufs, aggression matters more. for vocals, key is absolutely the most important, bpm also a bit, not so much energy, for bass i think the weighting can stay as is, for other too. Its also possible that for linked stems same key is actually a hard requirement, or at least a very compatible key is a hard requirement and a filter for results.
-- [ ] slicer presets do not get triggered from the midi mapped f1. check 1.
-  the mapping file, 2. the mapping in the app and give me a report of why this
-  might happen. the current mapping file is in momentary mode. also the visuals
-  of slicer mode with the new shader does not align with what we had with the
-  canvas before, slicer mode has a fixed window size of 16 beats and the plahead
-  moves instead of the waveform. it also seems to be not connected to the engine
-  anymore, the engine should still support slicer mode.
 - [ ] when starting the player first, then connecting the hid and midi devices, they
   are not recognized by mesh-player, we already have reconnection logic (connecting then
   disconnecting hardware works well), reuse that for detecting hardware after

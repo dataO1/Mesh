@@ -639,16 +639,32 @@ where
         // in f64, NOT as (end_norm - start_norm) which would lose precision from
         // two independent f32 casts. This keeps peaks_per_pixel stable across frames.
         let (window_start, window_end, window_total, peaks_per_pixel) = if !self.is_overview && overview.duration_samples > 0 {
-            let zoom_bars = deck.zoomed.zoom_bars;
-            let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
-            let samples_per_bar = samples_per_beat * 4;
-            let window_samples = samples_per_bar * zoom_bars as u64;
-            let ph = self.state.interpolated_playhead(self.deck_idx, SAMPLE_RATE as u32);
-
-            // Allow window to extend before 0 and after duration for symmetric centering
-            let half_window = window_samples as i64 / 2;
-            let virtual_start = ph as i64 - half_window;
-            let virtual_end = virtual_start + window_samples as i64;
+            // In FixedBuffer mode (slicer), lock window to the slicer buffer bounds
+            // instead of centering on the playhead.
+            let (virtual_start, virtual_end, window_samples) = if deck.zoomed.view_mode == ZoomedViewMode::FixedBuffer {
+                if let Some((buf_start, buf_end)) = deck.zoomed.fixed_buffer_bounds {
+                    let ws = buf_end.saturating_sub(buf_start);
+                    (buf_start as i64, buf_end as i64, ws)
+                } else {
+                    // Fallback: use zoom_bars centered on playhead
+                    let zoom_bars = deck.zoomed.zoom_bars;
+                    let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
+                    let samples_per_bar = samples_per_beat * 4;
+                    let ws = samples_per_bar * zoom_bars as u64;
+                    let ph = self.state.interpolated_playhead(self.deck_idx, SAMPLE_RATE as u32);
+                    let half = ws as i64 / 2;
+                    (ph as i64 - half, ph as i64 - half + ws as i64, ws)
+                }
+            } else {
+                let zoom_bars = deck.zoomed.zoom_bars;
+                let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
+                let samples_per_bar = samples_per_beat * 4;
+                let ws = samples_per_bar * zoom_bars as u64;
+                let ph = self.state.interpolated_playhead(self.deck_idx, SAMPLE_RATE as u32);
+                // Allow window to extend before 0 and after duration for symmetric centering
+                let half = ws as i64 / 2;
+                (ph as i64 - half, ph as i64 - half + ws as i64, ws)
+            };
 
             // Normalize in f64 before casting to f32 — avoids precision loss
             let start_norm = (virtual_start as f64 / dur_f64) as f32;
@@ -661,11 +677,11 @@ where
             let ppp = (peaks_per_stem as f64 * window_span_f64 / bounds.width as f64) as f32;
 
             log::debug!(
-                "[RENDER] deck={} zoom={}bars | bounds={:.0}x{:.0} | bpm={:.1} spb={} spbar={} | \
+                "[RENDER] deck={} mode={:?} | bounds={:.0}x{:.0} | bpm={:.1} | \
                  window={}samples ({:.4}..{:.4}) | peaks_per_stem={} | pp/px={:.3} | \
                  abstraction={}",
-                self.deck_idx, zoom_bars, bounds.width, bounds.height,
-                bpm, samples_per_beat, samples_per_bar,
+                self.deck_idx, deck.zoomed.view_mode, bounds.width, bounds.height,
+                bpm,
                 window_samples, start_norm, end_norm,
                 peaks_per_stem, ppp,
                 self.state.abstraction_level,
@@ -1157,14 +1173,27 @@ where
 
         // Window parameters for zoomed view
         let (window_start, window_end, window_total, peaks_per_pixel) = if !self.is_overview && overview.duration_samples > 0 {
-            let zoom_bars = self.state.zoomed.zoom_bars;
-            let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
-            let samples_per_bar = samples_per_beat * 4;
-            let window_samples = samples_per_bar * zoom_bars as u64;
-
-            let half_window = window_samples as i64 / 2;
-            let virtual_start = self.playhead as i64 - half_window;
-            let virtual_end = virtual_start + window_samples as i64;
+            // In FixedBuffer mode (slicer), lock window to the slicer buffer bounds
+            let (virtual_start, virtual_end, window_samples) = if self.state.zoomed.view_mode == ZoomedViewMode::FixedBuffer {
+                if let Some((buf_start, buf_end)) = self.state.zoomed.fixed_buffer_bounds {
+                    let ws = buf_end.saturating_sub(buf_start);
+                    (buf_start as i64, buf_end as i64, ws)
+                } else {
+                    let zoom_bars = self.state.zoomed.zoom_bars;
+                    let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
+                    let samples_per_bar = samples_per_beat * 4;
+                    let ws = samples_per_bar * zoom_bars as u64;
+                    let half = ws as i64 / 2;
+                    (self.playhead as i64 - half, self.playhead as i64 - half + ws as i64, ws)
+                }
+            } else {
+                let zoom_bars = self.state.zoomed.zoom_bars;
+                let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
+                let samples_per_bar = samples_per_beat * 4;
+                let ws = samples_per_bar * zoom_bars as u64;
+                let half = ws as i64 / 2;
+                (self.playhead as i64 - half, self.playhead as i64 - half + ws as i64, ws)
+            };
 
             let start_norm = (virtual_start as f64 / dur_f64) as f32;
             let end_norm = (virtual_end as f64 / dur_f64) as f32;
@@ -1173,10 +1202,10 @@ where
             let ppp = (peaks_per_stem as f64 * window_span_f64 / bounds.width as f64) as f32;
 
             log::debug!(
-                "[RENDER] single-deck zoom={}bars | bounds={:.0}x{:.0} | bpm={:.1} spbar={} | \
+                "[RENDER] single-deck mode={:?} | bounds={:.0}x{:.0} | bpm={:.1} | \
                  window={}samples ({:.4}..{:.4}) | peaks_per_stem={} | pp/px={:.3}",
-                zoom_bars, bounds.width, bounds.height,
-                bpm, samples_per_bar,
+                self.state.zoomed.view_mode, bounds.width, bounds.height,
+                bpm,
                 window_samples, start_norm, end_norm,
                 peaks_per_stem, ppp,
             );

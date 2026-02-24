@@ -309,7 +309,7 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
                 app.deck_views[deck_idx].set_slicer_selected_preset(button_idx);
             }
 
-            let preset = &app.slice_editor.presets[app.slice_editor.selected_preset];
+            let preset = &app.slice_editor.presets[button_idx];
             for (idx, &stem) in stems.iter().enumerate() {
                 if preset.stems[idx].is_some() {
                     app.domain.slicer_button_action(deck_idx, stem, button_idx, shift_held);

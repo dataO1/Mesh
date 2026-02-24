@@ -420,7 +420,7 @@ fn evaluate_state(
         "deck.slicer_slice_active" => {
             let slice = mapping
                 .params
-                .get("slice")
+                .get("pad")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as u8;
             deck_state.slicer_active && deck_state.slicer_current_slice == slice
