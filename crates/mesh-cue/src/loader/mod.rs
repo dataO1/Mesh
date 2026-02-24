@@ -342,8 +342,9 @@ fn handle_track_load(request: CueTrackLoadRequest, tx: &Sender<CueTrackLoadResul
         }
     }
 
-    // Sequential merge + peak updates
-    for (gap, result) in gaps.iter().zip(gap_results.into_iter()) {
+    // Sequential merge + peak updates — send visual update after each gap
+    let gap_count = gaps.len();
+    for (i, (gap, result)) in gaps.iter().zip(gap_results.into_iter()).enumerate() {
         let local = result.unwrap();
         stems.copy_region_from(&local, gap.start, gap.len());
         drop(local);
@@ -364,15 +365,19 @@ fn handle_track_load(request: CueTrackLoadRequest, tx: &Sender<CueTrackLoadResul
             frame_count,
             highres_width,
         );
-    }
 
-    // Send final gap update with stem clone (all audio now decoded)
-    if !gaps.is_empty() {
+        // Send incremental peak update so waveform fills progressively.
+        // Last gap includes stem clone for final audio upgrade.
+        let is_last = i + 1 == gap_count;
         let _ = tx.send(CueTrackLoadResult::RegionLoaded {
-            stems: Some(Shared::new(
-                &mesh_core::engine::gc::gc_handle(),
-                stems.clone(),
-            )),
+            stems: if is_last {
+                Some(Shared::new(
+                    &mesh_core::engine::gc::gc_handle(),
+                    stems.clone(),
+                ))
+            } else {
+                None
+            },
             duration_samples: frame_count,
             overview_peaks: overview_peaks.clone(),
             highres_peaks: highres_peaks.clone(),

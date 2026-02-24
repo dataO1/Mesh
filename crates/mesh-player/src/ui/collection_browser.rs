@@ -887,6 +887,9 @@ impl CollectionBrowserState {
                         if let Some(lufs) = info.lufs {
                             row = row.with_lufs(lufs);
                         }
+                        if info.cue_count > 0 {
+                            row = row.with_cue_count(info.cue_count);
+                        }
                         if !info.tags.is_empty() {
                             let mut sorted_tags = info.tags.clone();
                             sorted_tags.sort_by_key(|(_, color)| {

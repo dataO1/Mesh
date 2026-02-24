@@ -59,6 +59,37 @@ pub fn tag_sort_priority(color: Option<&str>) -> u8 {
     }
 }
 
+/// Resolve a tag's display color, mapping ML category colors to theme equivalents.
+///
+/// If `category_colors` is set, known ML hex colors are replaced with theme-derived
+/// colors. Unknown/custom colors pass through unchanged.
+fn resolve_tag_color(tag_color: Option<Color>, category_colors: Option<[Color; 4]>) -> Color {
+    let color = match tag_color {
+        Some(c) => c,
+        None => return Color::from_rgb8(80, 80, 80),
+    };
+    let cats = match category_colors {
+        Some(c) => c,
+        None => return color,
+    };
+    // Match by RGB bytes to identify ML tag categories
+    let r = (color.r * 255.0).round() as u8;
+    let g = (color.g * 255.0).round() as u8;
+    let b = (color.b * 255.0).round() as u8;
+    match (r, g, b) {
+        // Genre blues → cats[0]
+        (37, 99, 235) | (59, 130, 246) | (96, 165, 250) => cats[0],
+        // Characteristic teal → cats[1]
+        (13, 148, 136) => cats[1],
+        // Mood purple → cats[2]
+        (139, 92, 246) => cats[2],
+        // Vocal green / binary mood pink → cats[3]
+        (45, 138, 78) | (236, 72, 153) => cats[3],
+        // Score-based suggestion colors + custom — keep as-is
+        _ => color,
+    }
+}
+
 /// Parse a "#RRGGBB" hex string into an iced Color.
 /// Returns None on invalid input.
 pub fn parse_hex_color(hex: &str) -> Option<Color> {
@@ -440,6 +471,10 @@ pub struct TrackTableState<Id: Clone + Eq + Hash> {
     pub selection_color_override: Option<Color>,
     /// Override pill background color for Cues column (derived from theme stem colors)
     pub pill_color: Option<Color>,
+    /// Theme-derived colors for ML tag categories:
+    /// [0] = genre (replaces blues), [1] = characteristic (replaces teal),
+    /// [2] = mood (replaces purple), [3] = vocal/score (replaces green/pink)
+    pub tag_category_colors: Option<[Color; 4]>,
 }
 
 impl<Id: Clone + Eq + Hash> Default for TrackTableState<Id> {
@@ -464,6 +499,7 @@ impl<Id: Clone + Eq + Hash> TrackTableState<Id> {
             tag_column_width: None,
             selection_color_override: None,
             pill_color: None,
+            tag_category_colors: None,
         }
     }
 
@@ -847,8 +883,9 @@ where
 
     // Tags column renders as colored pills — handle before the text-based path
     if column == TrackColumn::Tags {
+        let cat_colors = state.tag_category_colors;
         let pills: Vec<Element<'a, Message>> = track.tags.iter().map(|tag| {
-            let bg = tag.color.unwrap_or(Color::from_rgb8(80, 80, 80));
+            let bg = resolve_tag_color(tag.color, cat_colors);
             container(
                 text(&tag.label)
                     .size(10)

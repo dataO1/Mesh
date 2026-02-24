@@ -35,6 +35,13 @@ impl MeshCueApp {
         match result {
             Ok((path, metadata)) => {
                 log::info!("TrackMetadataLoaded: Showing UI, starting progressive audio load");
+
+                // Immediately invalidate the old audio buffer so the user can't
+                // play/jump on the previous track while the new one loads
+                self.audio.unload_track();
+                if let Some(ref handle) = self.audio_handle {
+                    handle.pause();
+                }
                 let bpm = metadata.bpm.unwrap_or(120.0);
                 let key = metadata.key.clone().unwrap_or_else(|| "?".to_string());
                 let cue_points = metadata.cue_points.clone();

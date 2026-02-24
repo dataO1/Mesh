@@ -184,7 +184,19 @@ impl MeshCueApp {
         }
 
         self.delete_state.complete();
-        Task::none()
+
+        // Scroll to newly selected track after deletion + modal close
+        // (closing the modal rebuilds the view tree which resets scrollable state)
+        let selected_index = self.collection.browser_left.table_state.selected
+            .iter()
+            .next()
+            .and_then(|id| self.collection.left_tracks.iter().position(|t| &t.id == id));
+        let total_items = self.collection.left_tracks.len();
+        if let Some(idx) = selected_index {
+            scroll_to_centered_selection(idx, total_items, 400.0)
+        } else {
+            Task::none()
+        }
     }
 
     /// Handle RequestDeleteById message (from context menu)

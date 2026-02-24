@@ -285,7 +285,8 @@ impl MeshApp {
                     db_service.clone(),
                     config.display.show_local_collection,
                 );
-                cb.browser.table_state.pill_color = Some(active.stems[2]);
+                cb.browser.table_state.pill_color = Some(active.stems[1]);
+                cb.browser.table_state.tag_category_colors = Some([active.stems[1], active.stems[0], active.stems[3], active.stems[2]]);
                 cb
             },
             status: if audio_connected { "Audio connected (lock-free)".to_string() } else { "No audio".to_string() },
