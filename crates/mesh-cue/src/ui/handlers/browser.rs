@@ -157,8 +157,12 @@ impl MeshCueApp {
             if already_selected && !modifiers.shift && !modifiers.ctrl {
                 log::info!("[{} SELECT] preserving multi-selection for drag", side_name);
             } else {
-                let all_ids: Vec<NodeId> = self.collection.tracks(side).iter().map(|t| t.id.clone()).collect();
-                self.collection.browser_mut(side).table_state.handle_select(track_id.clone(), modifiers, &all_ids);
+                // Split borrow: tracks and browser are separate fields on CollectionState
+                let (tracks, browser) = match side {
+                    BrowserSide::Left => (&self.collection.left_tracks, &mut self.collection.browser_left),
+                    BrowserSide::Right => (&self.collection.right_tracks, &mut self.collection.browser_right),
+                };
+                browser.table_state.handle_select_from_rows(track_id.clone(), modifiers, tracks);
                 log::info!(
                     "[{} SELECT] after handle_select: selected={}",
                     side_name,
@@ -198,11 +202,18 @@ impl MeshCueApp {
 
         // Handle pending drag initiation (actual drag starts after mouse moves threshold)
         if let TrackTableMessage::Select(_) = &table_msg {
-            let selected_ids: Vec<NodeId> = self.collection.browser(side).table_state.selected.iter().cloned().collect();
-            if !selected_ids.is_empty() {
-                let track_names: Vec<String> = selected_ids.iter()
-                    .filter_map(|id| self.domain.get_node(id).map(|n| n.name.clone()))
-                    .collect();
+            let selected = &self.collection.browser(side).table_state.selected;
+            if !selected.is_empty() {
+                // Resolve names from already-loaded track rows (no DB queries needed)
+                let tracks = self.collection.tracks(side);
+                let mut selected_ids = Vec::with_capacity(selected.len());
+                let mut track_names = Vec::with_capacity(selected.len());
+                for t in tracks {
+                    if selected.contains(&t.id) {
+                        selected_ids.push(t.id.clone());
+                        track_names.push(t.title.clone());
+                    }
+                }
                 log::debug!("{} table: creating pending drag for {} track(s)", side_name, selected_ids.len());
                 // Store pending drag - actual drag starts when mouse moves past threshold
                 self.collection.pending_drag = Some(PendingDragState {

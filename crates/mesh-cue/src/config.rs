@@ -92,7 +92,7 @@ impl Default for DisplayConfig {
             global_bpm: 128.0,  // Standard house/techno BPM
             default_loop_length_index: 4,  // Default to 4 beats (index 4 in LOOP_LENGTH_OPTIONS)
             theme: "Mesh".to_string(),
-            font: AppFont::default(), // Hack
+            font: AppFont::default(), // Space Mono
         }
     }
 }

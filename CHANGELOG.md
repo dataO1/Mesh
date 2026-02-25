@@ -171,11 +171,18 @@ All notable changes to Mesh are documented in this file.
   mouse areas to properly propagate events and preserve selection state.
 
 - **Double-click edits cell instead of loading track** — Double-clicking an
-  editable column always entered edit mode, even when the row wasn't selected.
-  Now double-click on an unselected row loads the track (Activate), and only
-  enters edit mode when the row is already highlighted (single-clicked first).
+  editable column entered edit mode because the first click of the double-click
+  selected the row, making the "already selected?" check always true. Now
+  double-click always activates (loads) the track, regardless of prior selection.
 
-- **Dragging many tracks to playlist is very slow** — Adding N selected tracks
+- **Shift-click selection and drag start very slow on large collections** —
+  Shift-click selection cloned all track IDs into a temporary Vec on every click,
+  then did O(n) linear searches. Drag initiation called `get_node()` per selected
+  track, each doing a database query + linear search (O(n × folder_size)). Fixed
+  by passing track row references directly to range selection (zero-copy) and
+  resolving drag names from already-loaded in-memory track data instead of the DB.
+
+- **Dropping many tracks to playlist is very slow** — Adding N selected tracks
   to a playlist ran 5N+2 database queries (full metadata load per track plus
   individual inserts). Replaced with batch path→ID resolution and batch insert,
   reducing to 4 queries regardless of selection size. Also skips refreshing

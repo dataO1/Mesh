@@ -550,14 +550,30 @@ impl<Id: Clone + Eq + Hash> TrackTableState<Id> {
     /// Select a range of tracks (Shift+click)
     /// Selects all tracks between anchor and target
     pub fn select_range(&mut self, id: Id, all_ids: &[Id]) {
+        self.select_range_by(id, all_ids.len(), |i| &all_ids[i]);
+    }
+
+    /// Select a range using an index function (avoids cloning all IDs into a Vec)
+    fn select_range_by<'b, F>(&mut self, id: Id, len: usize, get_id: F)
+    where
+        F: Fn(usize) -> &'b Id,
+        Id: 'b,
+    {
         if let Some(ref anchor) = self.anchor {
-            let anchor_idx = all_ids.iter().position(|x| x == anchor);
-            let target_idx = all_ids.iter().position(|x| x == &id);
+            let mut anchor_idx = None;
+            let mut target_idx = None;
+            for i in 0..len {
+                let item_id = get_id(i);
+                if item_id == anchor { anchor_idx = Some(i); }
+                if item_id == &id { target_idx = Some(i); }
+                if anchor_idx.is_some() && target_idx.is_some() { break; }
+            }
 
             if let (Some(a), Some(t)) = (anchor_idx, target_idx) {
                 let (start, end) = if a <= t { (a, t) } else { (t, a) };
+                self.selected.reserve(end - start + 1);
                 for i in start..=end {
-                    self.selected.insert(all_ids[i].clone());
+                    self.selected.insert(get_id(i).clone());
                 }
             }
         } else {
@@ -572,6 +588,17 @@ impl<Id: Clone + Eq + Hash> TrackTableState<Id> {
     pub fn handle_select(&mut self, id: Id, modifiers: SelectModifiers, all_ids: &[Id]) {
         if modifiers.shift {
             self.select_range(id, all_ids);
+        } else if modifiers.ctrl {
+            self.toggle_select(id);
+        } else {
+            self.select(id);
+        }
+    }
+
+    /// Handle a selection using track rows directly (avoids cloning IDs)
+    pub fn handle_select_from_rows(&mut self, id: Id, modifiers: SelectModifiers, rows: &[TrackRow<Id>]) {
+        if modifiers.shift {
+            self.select_range_by(id, rows.len(), |i| &rows[i].id);
         } else if modifiers.ctrl {
             self.toggle_select(id);
         } else {
@@ -950,8 +977,9 @@ where
             .into()
     } else if state.is_column_editable(column) {
         // Editable cell - wrap in mouse_area for double-click behavior.
-        // Double-click on an already-selected row enters edit mode.
-        // Double-click on an unselected row activates (loads) the track.
+        // Double-click always activates (loads) the track — never enters edit mode,
+        // because the first click of a double-click selects the row, making it
+        // impossible to distinguish "was already selected" from "just got selected".
         // IMPORTANT: Must also set on_press and on_release here because iced's mouse_area
         // captures ALL ButtonPressed events when on_double_click is set (to track timing),
         // which prevents the row-level mouse_area from seeing single clicks.
@@ -961,21 +989,6 @@ where
         let on_msg = on_message.clone();
         let on_msg_select = on_message.clone();
         let on_msg_drop = on_message.clone();
-        let is_selected = state.is_selected(&track.id);
-
-        // Determine double-click action based on selection state
-        let dbl_click_msg = if is_selected {
-            let current_value = match column {
-                TrackColumn::Name => track.title.clone(),
-                TrackColumn::Artist => track.artist.clone().unwrap_or_default(),
-                TrackColumn::Bpm => track.bpm.map(|b| format!("{:.1}", b)).unwrap_or_default(),
-                TrackColumn::Key => track.key.clone().unwrap_or_default(),
-                _ => String::new(),
-            };
-            TrackTableMessage::StartEdit(id.clone(), column, current_value)
-        } else {
-            TrackTableMessage::Activate(id.clone())
-        };
 
         // Use clipping to prevent text overlap
         let txt = text(display_value)
@@ -988,7 +1001,7 @@ where
                 .clip(true),
         )
         .on_press(on_msg_select(TrackTableMessage::Select(id_select)))
-        .on_double_click(on_msg(dbl_click_msg))
+        .on_double_click(on_msg(TrackTableMessage::Activate(id.clone())))
         .on_release(on_msg_drop(TrackTableMessage::DropReceived(id_drop)))
         .into()
     } else {

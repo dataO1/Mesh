@@ -240,7 +240,7 @@ impl Default for DisplayConfig {
             key_scoring_model: KeyScoringModel::default(), // Camelot wheel
             waveform_layout: WaveformLayout::default(),  // Horizontal
             waveform_abstraction: WaveformAbstraction::default(), // Medium
-            font: AppFont::default(), // Hack
+            font: AppFont::default(), // Space Mono
         }
     }
 }
