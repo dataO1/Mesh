@@ -833,36 +833,57 @@ impl MeshCueDomain {
     ///
     /// This copies tracks from collection to a playlist.
     pub fn add_tracks_to_playlist(&mut self, target_playlist_id: &NodeId, track_ids: &[NodeId]) -> Result<usize> {
-        // Resolve target playlist DB ID once (was previously per-track)
+        // Resolve target playlist DB ID once
         let playlist_db_id = match self.db_service.resolve_playlist_path(target_playlist_id.as_str()) {
             Ok(Some(id)) => id,
             Ok(None) => return Err(anyhow::anyhow!("Playlist not found: {}", target_playlist_id)),
             Err(e) => return Err(anyhow::anyhow!("Failed to resolve playlist: {}", e)),
         };
-        // Get starting sort order once, increment locally (was O(N) MAX queries)
-        let mut sort_order = self.db_service.next_playlist_sort_order(playlist_db_id)
+        // Get starting sort order once
+        let start_sort_order = self.db_service.next_playlist_sort_order(playlist_db_id)
             .unwrap_or(0);
 
-        let mut success_count = 0;
+        // Phase 1: Collect all file paths from collection nodes (in-memory, no DB)
+        let mut paths: Vec<String> = Vec::with_capacity(track_ids.len());
         for track_id in track_ids {
-            let is_from_collection = track_id.as_str().starts_with("tracks/");
-            if is_from_collection {
+            if track_id.as_str().starts_with("tracks/") {
                 if let Some(node) = self.playlist_storage.get_node(track_id) {
                     if let Some(ref path) = node.track_path {
-                        let path_str = path.to_string_lossy();
-                        if let Ok(Some(track)) = self.db_service.get_track_by_path(&path_str) {
-                            if let Some(track_db_id) = track.id {
-                                if self.db_service.add_track_to_playlist(playlist_db_id, track_db_id, sort_order).is_ok() {
-                                    success_count += 1;
-                                    sort_order += 1;
-                                }
-                            }
-                        }
+                        paths.push(path.to_string_lossy().to_string());
                     }
                 }
             }
         }
-        Ok(success_count)
+
+        if paths.is_empty() {
+            return Ok(0);
+        }
+
+        // Phase 2: Batch resolve all paths to DB track IDs (single query)
+        let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+        let path_to_id = self.db_service.get_track_ids_by_paths(&path_refs)
+            .unwrap_or_default();
+
+        // Phase 3: Build batch insert data, preserving order
+        let mut batch: Vec<(i64, i32)> = Vec::with_capacity(paths.len());
+        let mut sort_order = start_sort_order;
+        for path in &paths {
+            if let Some(&track_db_id) = path_to_id.get(path) {
+                batch.push((track_db_id, sort_order));
+                sort_order += 1;
+            }
+        }
+
+        if batch.is_empty() {
+            return Ok(0);
+        }
+
+        // Phase 4: Batch insert all tracks into the playlist (single query)
+        let count = batch.len();
+        self.db_service.add_tracks_to_playlist_batch(playlist_db_id, &batch)
+            .map_err(|e| anyhow::anyhow!("Batch playlist insert failed: {}", e))?;
+
+        Ok(count)
     }
 
     /// Get all playlist paths (for export sync)

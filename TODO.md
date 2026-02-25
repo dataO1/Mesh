@@ -183,13 +183,10 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
-- [ ] While having a lot of track selected, both dragging and moving into
-  playlist is veeeerry slow, we need to make this much more efficient.
-- [ ] Currently double clicking a cell enters it, but double clicking a row
-  should actually load the track, we need to make cell edits, only when the row
-  has been highlitghted (so single clicked once) before.
-- [ ] make space mono the default font. increase font size for sax mono and
-  space mono, decrease alot for press start font.
+- [ ] deck indicator in player deck header spacing to the left should match stem
+  indicator width.
+- [ ] in mesh player, center the global bpm header and remove the slider (just
+  the slider in the ui, not the functionaliti or midi mapping)
 - [ ] sometimes the smart suggestion system is stuck and doesnt give new
   results, analyse why, give me a report, we will decide together how to fix.
 - [ ] when on the fly stem linking in the browser for selecting a linked track,

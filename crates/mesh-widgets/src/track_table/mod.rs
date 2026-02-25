@@ -949,7 +949,9 @@ where
             .width(state.column_width(column))
             .into()
     } else if state.is_column_editable(column) {
-        // Editable cell - wrap in mouse_area for double-click to edit.
+        // Editable cell - wrap in mouse_area for double-click behavior.
+        // Double-click on an already-selected row enters edit mode.
+        // Double-click on an unselected row activates (loads) the track.
         // IMPORTANT: Must also set on_press and on_release here because iced's mouse_area
         // captures ALL ButtonPressed events when on_double_click is set (to track timing),
         // which prevents the row-level mouse_area from seeing single clicks.
@@ -959,12 +961,20 @@ where
         let on_msg = on_message.clone();
         let on_msg_select = on_message.clone();
         let on_msg_drop = on_message.clone();
-        let current_value = match column {
-            TrackColumn::Name => track.title.clone(),
-            TrackColumn::Artist => track.artist.clone().unwrap_or_default(),
-            TrackColumn::Bpm => track.bpm.map(|b| format!("{:.1}", b)).unwrap_or_default(),
-            TrackColumn::Key => track.key.clone().unwrap_or_default(),
-            _ => String::new(),
+        let is_selected = state.is_selected(&track.id);
+
+        // Determine double-click action based on selection state
+        let dbl_click_msg = if is_selected {
+            let current_value = match column {
+                TrackColumn::Name => track.title.clone(),
+                TrackColumn::Artist => track.artist.clone().unwrap_or_default(),
+                TrackColumn::Bpm => track.bpm.map(|b| format!("{:.1}", b)).unwrap_or_default(),
+                TrackColumn::Key => track.key.clone().unwrap_or_default(),
+                _ => String::new(),
+            };
+            TrackTableMessage::StartEdit(id.clone(), column, current_value)
+        } else {
+            TrackTableMessage::Activate(id.clone())
         };
 
         // Use clipping to prevent text overlap
@@ -978,7 +988,7 @@ where
                 .clip(true),
         )
         .on_press(on_msg_select(TrackTableMessage::Select(id_select)))
-        .on_double_click(on_msg(TrackTableMessage::StartEdit(id, column, current_value)))
+        .on_double_click(on_msg(dbl_click_msg))
         .on_release(on_msg_drop(TrackTableMessage::DropReceived(id_drop)))
         .into()
     } else {

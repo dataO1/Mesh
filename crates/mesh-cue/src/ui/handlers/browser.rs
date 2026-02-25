@@ -377,19 +377,20 @@ impl MeshCueApp {
             track_ids.len(),
             target_playlist
         );
-        // Use domain's add_tracks_to_playlist for batch adding
+        // Use domain's batch add (resolves all paths + inserts in 2 DB queries)
         match self.domain.add_tracks_to_playlist(&target_playlist, &track_ids) {
             Ok(success_count) => {
                 if success_count > 0 {
                     log::info!("Added {}/{} tracks successfully", success_count, track_ids.len());
-                    // Refresh tree and both browser track lists (re-applies current sort order)
+                    // Refresh tree (playlist track count may have changed)
                     self.collection.tree_nodes = self.domain.tree_nodes().to_vec();
-                    if let Some(folder) = self.collection.browser_left.current_folder.clone() {
-                        let tracks = self.domain.get_tracks_for_display(&folder);
+                    // Only refresh browser panes that are showing the target playlist
+                    if self.collection.browser_left.current_folder.as_ref() == Some(&target_playlist) {
+                        let tracks = self.domain.get_tracks_for_display(&target_playlist);
                         self.collection.refresh_tracks(BrowserSide::Left, tracks);
                     }
-                    if let Some(folder) = self.collection.browser_right.current_folder.clone() {
-                        let tracks = self.domain.get_tracks_for_display(&folder);
+                    if self.collection.browser_right.current_folder.as_ref() == Some(&target_playlist) {
+                        let tracks = self.domain.get_tracks_for_display(&target_playlist);
                         self.collection.refresh_tracks(BrowserSide::Right, tracks);
                     }
                 }

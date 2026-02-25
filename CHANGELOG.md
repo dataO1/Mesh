@@ -12,6 +12,19 @@ All notable changes to Mesh are documented in this file.
 
 ### Added
 
+- **Configurable fonts with settings selector** — Six bundled fonts selectable in
+  Settings → Display: Hack, JetBrains Mono, Press Start 2P, Exo, Space Mono, and
+  Sax Mono. Default is Space Mono. Font data is compiled in via `include_bytes!()`
+  and registered with iced at startup. Changing font requires restart. Per-font
+  size scaling normalizes visual appearance (pixel fonts like Press Start 2P are
+  scaled down automatically). Both mesh-player and mesh-cue share the `AppFont`
+  enum from mesh-widgets.
+
+- **Window icon and header branding** — Both apps show `grid.png` as the window
+  icon (taskbar/dock) and as a logo image in the header bar. Header text changed
+  to "mesh" in both apps. Logo uses a `LazyLock<image::Handle>` static to avoid
+  per-frame texture re-upload flickering.
+
 - **YAML-based theme system** — Themes are now defined in `theme.yaml` in the collection
   folder. Each theme specifies a full iced UI palette (background, text, accent, success,
   warning, danger) plus 4 stem waveform colors. Ships with 5 built-in themes: Mesh
@@ -151,7 +164,36 @@ All notable changes to Mesh are documented in this file.
   the audio streams when export starts and resumes them on completion, error, or
   cancellation.
 
+- **Editable cells swallowing clicks and shift-click collapsing selection** —
+  Double-click on editable columns (Name, Artist, BPM, Key) consumed the click
+  event at the cell level, preventing row-level handlers from firing. Shift-click
+  on an already-selected track collapsed the multi-selection. Fixed cell-level
+  mouse areas to properly propagate events and preserve selection state.
+
+- **Double-click edits cell instead of loading track** — Double-clicking an
+  editable column always entered edit mode, even when the row wasn't selected.
+  Now double-click on an unselected row loads the track (Activate), and only
+  enters edit mode when the row is already highlighted (single-clicked first).
+
+- **Dragging many tracks to playlist is very slow** — Adding N selected tracks
+  to a playlist ran 5N+2 database queries (full metadata load per track plus
+  individual inserts). Replaced with batch path→ID resolution and batch insert,
+  reducing to 4 queries regardless of selection size. Also skips refreshing
+  browser panes not showing the target playlist.
+
 ### Changed
+
+- **Deck header badge left padding** — The space to the left of the deck number
+  badge is now 10px, matching the stem indicator strip width for visual alignment.
+
+- **Header layout: FX selector centered, BPM repositioned** — In mesh-player,
+  the global FX preset selector and BPM are centered as a group in the header.
+  The BPM slider is hidden in performance mode but remains visible in mapping
+  mode (`--midi-learn`) for interactive adjustment.
+
+- **"General Collection" renamed to "Collection"** — The tree browser root node
+  for the track collection now displays as "Collection" instead of "General
+  Collection".
 
 - **Deck header text sizing** — Increased all header text sizes to better fill
   the 48px header height: track name 20→24, BPM/loop/LUFS 16→20, key 18→22,

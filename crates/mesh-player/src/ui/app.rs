@@ -1647,11 +1647,7 @@ impl MeshApp {
             .align_y(iced::Alignment::Center);
 
         let global_bpm = self.domain.global_bpm();
-        let bpm_label = text(format!("BPM: {}", global_bpm as i32)).size(16);
-
-        let bpm_slider = slider(30.0..=200.0, global_bpm, Message::SetGlobalBpm)
-            .step(1.0)
-            .width(200);
+        let bpm_label = text(format!("{} BPM", global_bpm as i32)).size(16);
 
         // Global FX preset selector
         let fx_element = self.view_global_fx_dropdown();
@@ -1713,20 +1709,48 @@ impl MeshApp {
             .size(11)
             .color(Color::from_rgb(0.5, 0.5, 0.5));
 
-        row![
-            title,
-            Space::new().width(Fill),
-            bpm_label,
-            bpm_slider,
-            Space::new().width(20),
-            fx_element,
-            Space::new().width(Fill),
+        // Center group: FX selector + BPM (+ slider in mapping mode)
+        let center_group: Element<'_, Message> = if self.app_mode == AppMode::Mapping {
+            let bpm_slider = slider(30.0..=200.0, global_bpm, Message::SetGlobalBpm)
+                .step(1.0)
+                .width(200);
+            row![
+                fx_element,
+                Space::new().width(16),
+                bpm_label,
+                bpm_slider,
+            ]
+            .align_y(CenterAlign)
+            .into()
+        } else {
+            row![
+                fx_element,
+                Space::new().width(16),
+                bpm_label,
+            ]
+            .align_y(CenterAlign)
+            .into()
+        };
+
+        // Right group: stats, connection, latency, settings
+        let right_group: Element<'_, Message> = row![
             stats_label,
             connection_status,
             latency_label,
             settings_btn,
         ]
-        .spacing(20)
+        .spacing(12)
+        .align_y(CenterAlign)
+        .into();
+
+        row![
+            title,
+            Space::new().width(Fill),
+            center_group,
+            Space::new().width(Fill),
+            right_group,
+        ]
+        .spacing(10)
         .align_y(CenterAlign)
         .padding(10)
         .into()

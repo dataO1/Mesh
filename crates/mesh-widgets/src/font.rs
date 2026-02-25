@@ -27,7 +27,6 @@ pub static LOGO_HANDLE: LazyLock<image::Handle> = LazyLock::new(|| {
 #[serde(rename_all = "kebab-case")]
 pub enum AppFont {
     /// Hack — clean monospace, optimized for source code (MIT license)
-    #[default]
     Hack,
     /// JetBrains Mono — modern monospace with ligatures (OFL 1.1)
     JetBrainsMono,
@@ -36,6 +35,7 @@ pub enum AppFont {
     /// Exo — geometric sans-serif with a futuristic feel (OFL 1.1)
     Exo,
     /// Space Mono — fixed-width typeface designed for editorial use (OFL 1.1)
+    #[default]
     SpaceMono,
     /// saxMono — clean monospace between Courier and Letter Gothic (Freeware)
     SaxMono,
@@ -105,10 +105,10 @@ impl AppFont {
         match self {
             AppFont::Hack => 1.0,
             AppFont::JetBrainsMono => 1.0,
-            AppFont::PressStart2P => 0.55,
+            AppFont::PressStart2P => 0.42,
             AppFont::Exo => 1.0,
-            AppFont::SpaceMono => 1.0,
-            AppFont::SaxMono => 1.0,
+            AppFont::SpaceMono => 1.1,
+            AppFont::SaxMono => 1.1,
         }
     }
 }

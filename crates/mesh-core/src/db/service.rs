@@ -823,6 +823,39 @@ impl DatabaseService {
         PlaylistQuery::add_track(&self.db, playlist_id, track_id, sort_order)
     }
 
+    /// Add multiple tracks to a playlist in a single batch query
+    pub fn add_tracks_to_playlist_batch(&self, playlist_id: i64, track_ids: &[(i64, i32)]) -> Result<(), DbError> {
+        PlaylistQuery::add_tracks_batch(&self.db, playlist_id, track_ids)
+    }
+
+    /// Resolve multiple file paths to track database IDs in a single query.
+    ///
+    /// Returns a map from path → track_id. Paths not found in the database are omitted.
+    pub fn get_track_ids_by_paths(&self, paths: &[&str]) -> Result<std::collections::HashMap<String, i64>, DbError> {
+        use std::collections::HashMap;
+
+        if paths.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let path_values: Vec<DataValue> = paths.iter().map(|p| DataValue::Str((*p).into())).collect();
+        let mut params = BTreeMap::new();
+        params.insert("paths".to_string(), DataValue::List(path_values));
+
+        let result = self.db.run_query(r#"
+            ?[id, path] := *tracks{id, path}, path in $paths
+        "#, params)?;
+
+        let mut map = HashMap::new();
+        for row in &result.rows {
+            let id = row[0].get_int().unwrap_or(0);
+            if let Some(path) = row[1].get_str() {
+                map.insert(path.to_string(), id);
+            }
+        }
+        Ok(map)
+    }
+
     /// Remove a track from a playlist
     pub fn remove_track_from_playlist(&self, playlist_id: i64, track_id: i64) -> Result<(), DbError> {
         PlaylistQuery::remove_track(&self.db, playlist_id, track_id)

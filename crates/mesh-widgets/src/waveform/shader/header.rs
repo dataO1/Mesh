@@ -145,7 +145,7 @@ pub fn view_deck_header<'a, Message: Clone + 'a>(
             background: Some(HEADER_BG.into()),
             ..Default::default()
         })
-        .padding([0, 6])
+        .padding(iced::Padding::new(0.0).right(6.0).left(10.0))
         .into()
 }
 

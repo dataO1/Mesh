@@ -585,6 +585,33 @@ impl PlaylistQuery {
         Ok(())
     }
 
+    /// Add multiple tracks to a playlist in a single query
+    pub fn add_tracks_batch(db: &MeshDb, playlist_id: i64, track_ids: &[(i64, i32)]) -> Result<(), DbError> {
+        if track_ids.is_empty() {
+            return Ok(());
+        }
+        // Build inline data rows: [[playlist_id, track_id, sort_order], ...]
+        let rows: Vec<DataValue> = track_ids.iter()
+            .map(|&(tid, sort)| DataValue::List(vec![
+                DataValue::from(playlist_id),
+                DataValue::from(tid),
+                DataValue::from(sort as i64),
+            ]))
+            .collect();
+        let mut params = BTreeMap::new();
+        params.insert("rows".to_string(), DataValue::List(rows));
+
+        db.run_script(
+            r#"
+            ?[playlist_id, track_id, sort_order] <- $rows
+            :put playlist_tracks {playlist_id, track_id => sort_order}
+        "#,
+            params,
+        )?;
+
+        Ok(())
+    }
+
     /// Remove a track from a playlist
     pub fn remove_track(db: &MeshDb, playlist_id: i64, track_id: i64) -> Result<(), DbError> {
         let mut params = BTreeMap::new();
