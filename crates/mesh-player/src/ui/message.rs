@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use mesh_widgets::MultibandEditorMessage;
 
-use crate::config::{KeyScoringModel, WaveformAbstraction, WaveformLayout};
+use crate::config::{AppFont, KeyScoringModel, WaveformAbstraction, WaveformLayout};
 use crate::suggestions::SuggestedTrack;
 use super::collection_browser::CollectionBrowserMessage;
 use super::deck_view::DeckMessage;
@@ -50,6 +50,8 @@ pub enum SettingsMessage {
     UpdateWaveformLayout(WaveformLayout),
     /// Update draft waveform abstraction level
     UpdateWaveformAbstraction(WaveformAbstraction),
+    /// Update draft UI font (requires restart)
+    UpdateFont(AppFont),
     /// Update master device index
     UpdateMasterPair(usize),
     /// Update cue device index

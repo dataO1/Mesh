@@ -4,6 +4,7 @@
 
 use super::app::{Message, SettingsState};
 use crate::config::{BackendType, BeatDetectionBackend, BpmSource, ModelType, SeparationConfig};
+use mesh_widgets::AppFont;
 use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_input, Space};
 use mesh_core::engine::InterpolationMethod;
 use iced::{Alignment, Element, Length};
@@ -379,6 +380,29 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
 
     let theme_row = row(theme_buttons).spacing(4).align_y(Alignment::Center);
 
+    // Font section
+    let font_title = text("Font").size(14);
+    let font_hint = text("UI typeface (restart required to apply)")
+        .size(12);
+
+    let font_buttons: Vec<Element<Message>> = AppFont::ALL
+        .iter()
+        .map(|&font| {
+            let is_selected = state.draft_font == font;
+            let btn = button(text(font.display_name()).size(11))
+                .on_press(Message::UpdateSettingsFont(font))
+                .style(if is_selected {
+                    iced::widget::button::primary
+                } else {
+                    iced::widget::button::secondary
+                })
+                .width(Length::Shrink);
+            btn.into()
+        })
+        .collect();
+
+    let font_row = row(font_buttons).spacing(4).align_y(Alignment::Center).wrap();
+
     container(
         column![
             section_title,
@@ -393,6 +417,10 @@ fn view_display_section(state: &SettingsState) -> Element<'_, Message> {
             theme_title,
             theme_hint,
             theme_row,
+            Space::new().height(10),
+            font_title,
+            font_hint,
+            font_row,
         ]
         .spacing(10),
     )

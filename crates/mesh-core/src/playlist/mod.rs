@@ -22,7 +22,7 @@ impl NodeId {
         Self(String::new())
     }
 
-    /// Create the "tracks" (General Collection) node ID
+    /// Create the "tracks" (Collection) node ID
     pub fn tracks() -> Self {
         Self("tracks".to_string())
     }
@@ -87,7 +87,7 @@ impl std::fmt::Display for NodeId {
 pub enum NodeKind {
     /// Virtual root of the tree
     Root,
-    /// The "General Collection" folder (tracks/)
+    /// The "Collection" folder (tracks/)
     Collection,
     /// A subfolder within the collection
     CollectionFolder,

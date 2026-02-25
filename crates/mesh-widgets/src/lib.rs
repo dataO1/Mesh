@@ -26,6 +26,7 @@
 
 pub mod button_styles;
 pub mod deck_preset;
+pub mod font;
 pub mod keyboard;
 pub mod knob;
 pub mod multiband;
@@ -39,6 +40,7 @@ pub mod tree;
 pub mod waveform;
 
 // Re-export commonly used items
+pub use font::{AppFont, LOGO_HANDLE};
 pub use theme::{WaveformConfig, CUE_COLORS, STEM_COLORS, STEM_NAMES, STEM_NAMES_SHORT};
 
 // Button styling functions

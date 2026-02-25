@@ -113,6 +113,10 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             app.player_canvas_state.abstraction_level = level.as_level();
             Task::none()
         }
+        UpdateFont(font) => {
+            app.settings.draft_font = font;
+            Task::none()
+        }
         UpdateMasterPair(index) => {
             app.settings.draft_master_device = index;
             Task::none()
@@ -136,6 +140,7 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             new_config.display.key_scoring_model = app.settings.draft_key_scoring_model;
             new_config.display.waveform_layout = app.settings.draft_waveform_layout;
             new_config.display.waveform_abstraction = app.settings.draft_waveform_abstraction;
+            new_config.display.font = app.settings.draft_font;
             // Save global BPM from current state
             new_config.audio.global_bpm = app.domain.global_bpm();
             // Save phase sync setting

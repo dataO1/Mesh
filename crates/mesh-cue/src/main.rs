@@ -11,7 +11,7 @@
 use mesh_cue::ui::MeshCueApp;
 
 fn title(_app: &MeshCueApp) -> String {
-    String::from("mesh-cue - Track Preparation")
+    String::from("Mesh")
 }
 
 fn main() -> iced::Result {
@@ -27,15 +27,33 @@ fn main() -> iced::Result {
 
     log::info!("mesh-cue starting up");
 
+    // Load config to get font selection for iced default_font
+    let config_path = mesh_cue::config::default_config_path();
+    let config: mesh_cue::config::Config = mesh_cue::config::load_config(&config_path);
+    let selected_font = config.display.font;
+
     iced::application(MeshCueApp::new, MeshCueApp::update, MeshCueApp::view)
         .title(title)
         .window(iced::window::Settings {
             size: iced::Size::new(1200.0, 800.0),
             min_size: Some(iced::Size::new(960.0, 600.0)),
+            icon: iced::window::icon::from_file_data(
+                include_bytes!("../../../assets/grid.png"),
+                None,
+            ).ok(),
             ..Default::default()
         })
-        // TODO: Custom font — .font(include_bytes!("path.ttf")) + .default_font(Font { family: Family::Name("X"), .. })
-        // TODO: Window icon — window::Settings { icon: Some(window::icon::from_rgba(data, w, h).unwrap()), .. }
+        .settings(iced::Settings {
+            default_text_size: iced::Pixels(16.0 * selected_font.size_scale()),
+            ..Default::default()
+        })
+        .font(mesh_widgets::AppFont::Hack.font_data())
+        .font(mesh_widgets::AppFont::JetBrainsMono.font_data())
+        .font(mesh_widgets::AppFont::PressStart2P.font_data())
+        .font(mesh_widgets::AppFont::Exo.font_data())
+        .font(mesh_widgets::AppFont::SpaceMono.font_data())
+        .font(mesh_widgets::AppFont::SaxMono.font_data())
+        .default_font(selected_font.to_iced_font())
         .theme(MeshCueApp::theme)
         .subscription(MeshCueApp::subscription)
         .run()

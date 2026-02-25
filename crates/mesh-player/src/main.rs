@@ -188,7 +188,7 @@ fn main() -> iced::Result {
     log::info!("Rayon thread pool initialized with 4 threads");
 
     println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║                     Mesh DJ Player                            ║");
+    println!("║                          Mesh                                  ║");
     println!("║              4-deck stem-based mixing                         ║");
     println!("╚══════════════════════════════════════════════════════════════╝");
     println!();
@@ -222,7 +222,7 @@ fn main() -> iced::Result {
         };
 
     println!();
-    println!("Starting Mesh DJ Player GUI...");
+    println!("Starting Mesh GUI...");
 
     // Wrap resources in cells so the boot closure can be Fn (required by iced)
     // The boot function is only called once, but iced requires Fn for API consistency
@@ -295,20 +295,33 @@ fn main() -> iced::Result {
     )
     .subscription(subscription)
     .theme(theme)
-    .title("Mesh DJ Player")
-    .antialiasing(true)
+    .title("Mesh")
+    .settings(iced::Settings {
+        default_text_size: iced::Pixels(16.0 * config.display.font.size_scale()),
+        antialiasing: true,
+        ..Default::default()
+    })
     .window(iced::window::Settings {
         size: Size::new(1920.0, 1080.0),
         min_size: Some(Size::new(1280.0, 720.0)),
+        icon: iced::window::icon::from_file_data(
+            include_bytes!("../../../assets/grid.png"),
+            None,
+        ).ok(),
         ..Default::default()
     })
-    // TODO: Custom font — .font(include_bytes!("path.ttf")) + .default_font(Font { family: Family::Name("X"), .. })
-    // TODO: Window icon — window::Settings { icon: Some(window::icon::from_rgba(data, w, h).unwrap()), .. }
+    .font(mesh_widgets::AppFont::Hack.font_data())
+    .font(mesh_widgets::AppFont::JetBrainsMono.font_data())
+    .font(mesh_widgets::AppFont::PressStart2P.font_data())
+    .font(mesh_widgets::AppFont::Exo.font_data())
+    .font(mesh_widgets::AppFont::SpaceMono.font_data())
+    .font(mesh_widgets::AppFont::SaxMono.font_data())
+    .default_font(config.display.font.to_iced_font())
     .run();
 
     // Keep audio handle alive until we're done (it will be dropped here)
     drop(audio_handle);
-    println!("Mesh DJ Player stopped.");
+    println!("Mesh stopped.");
 
     result
 }

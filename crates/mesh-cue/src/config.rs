@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use mesh_widgets::AppFont;
 
 // Re-export separation config for convenience
 pub use crate::separation::{BackendType, ModelType, SeparationConfig};
@@ -76,6 +77,8 @@ pub struct DisplayConfig {
     pub default_loop_length_index: usize,
     /// Active theme name (references a theme from theme.yaml)
     pub theme: String,
+    /// UI font (requires restart to apply)
+    pub font: AppFont,
 }
 
 /// Loop length options in beats
@@ -89,6 +92,7 @@ impl Default for DisplayConfig {
             global_bpm: 128.0,  // Standard house/techno BPM
             default_loop_length_index: 4,  // Default to 4 beats (index 4 in LOOP_LENGTH_OPTIONS)
             theme: "Mesh".to_string(),
+            font: AppFont::default(), // Hack
         }
     }
 }

@@ -120,7 +120,7 @@ impl PlaylistStorage for DatabaseStorage {
             return Some(PlaylistNode {
                 id: NodeId::tracks(),
                 kind: NodeKind::Collection,
-                name: "General Collection".into(),
+                name: "Collection".into(),
                 children: self.get_folder_children("tracks"),
                 track_path: None,
             });

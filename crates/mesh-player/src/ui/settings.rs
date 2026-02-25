@@ -7,7 +7,7 @@ use super::midi_learn::MidiLearnMessage;
 use super::network::NetworkState;
 use super::system_update::UpdateState;
 use crate::audio::{get_available_stereo_pairs, StereoPair};
-use crate::config::{LOOP_LENGTH_OPTIONS, KeyScoringModel, WaveformAbstraction, WaveformLayout};
+use crate::config::{AppFont, LOOP_LENGTH_OPTIONS, KeyScoringModel, WaveformAbstraction, WaveformLayout};
 use iced::widget::{button, column, container, pick_list, row, scrollable, text, toggler, Id, Space};
 use iced::{Alignment, Color, Element, Length};
 use std::sync::LazyLock;
@@ -18,7 +18,7 @@ pub static SETTINGS_SCROLLABLE_ID: LazyLock<Id> = LazyLock::new(|| Id::new("mesh
 /// Calculate the total number of navigable settings entries.
 /// Dynamic because Network and Update sections are optional.
 pub fn settings_entry_count(state: &SettingsState) -> usize {
-    let mut count = 14; // Base entries from build_settings_entries
+    let mut count = 15; // Base entries from build_settings_entries
     if state.network.is_some() {
         count += 1; // Network section
     }
@@ -82,6 +82,8 @@ pub struct SettingsState {
     pub draft_waveform_layout: WaveformLayout,
     /// Draft waveform abstraction level
     pub draft_waveform_abstraction: WaveformAbstraction,
+    /// Draft UI font (requires restart to apply)
+    pub draft_font: AppFont,
     /// Draft master device index (for audio routing)
     pub draft_master_device: usize,
     /// Draft cue device index (for audio routing)
@@ -122,6 +124,7 @@ impl SettingsState {
             draft_key_scoring_model: config.display.key_scoring_model,
             draft_waveform_layout: config.display.waveform_layout,
             draft_waveform_abstraction: config.display.waveform_abstraction,
+            draft_font: config.display.font,
             draft_master_device: config.audio.outputs.master_device.unwrap_or(0),
             draft_cue_device: config.audio.outputs.cue_device.unwrap_or_else(|| {
                 if num_devices >= 2 { 1 } else { 0 }
@@ -155,6 +158,7 @@ impl SettingsState {
             draft_key_scoring_model: KeyScoringModel::default(),
             draft_waveform_layout: WaveformLayout::default(),
             draft_waveform_abstraction: WaveformAbstraction::default(),
+            draft_font: AppFont::default(),
             draft_master_device: 0, // First device
             draft_cue_device: if num_devices >= 2 { 1 } else { 0 }, // Second device or fallback
             available_devices,
@@ -197,6 +201,7 @@ impl SettingsState {
             key_scoring_model: self.draft_key_scoring_model,
             waveform_layout: self.draft_waveform_layout,
             waveform_abstraction: self.draft_waveform_abstraction,
+            font: self.draft_font,
             master_device: self.draft_master_device,
             cue_device: self.draft_cue_device,
         });
@@ -219,6 +224,7 @@ impl SettingsState {
                     || snap.key_scoring_model != self.draft_key_scoring_model
                     || snap.waveform_layout != self.draft_waveform_layout
                     || snap.waveform_abstraction != self.draft_waveform_abstraction
+                    || snap.font != self.draft_font
                     || snap.master_device != self.draft_master_device
                     || snap.cue_device != self.draft_cue_device
             }
@@ -249,6 +255,7 @@ struct SettingsSnapshot {
     key_scoring_model: KeyScoringModel,
     waveform_layout: WaveformLayout,
     waveform_abstraction: WaveformAbstraction,
+    font: AppFont,
     master_device: usize,
     cue_device: usize,
 }
@@ -403,6 +410,12 @@ pub fn build_settings_entries(state: &SettingsState) -> Vec<SettingsEntry> {
             options: BUFFER_SIZES.iter().map(|s| format!("{} bars", s)).collect(),
             selected: BUFFER_SIZES.iter().position(|&s| s == state.draft_slicer_buffer_bars).unwrap_or(0),
             on_select: |idx| SettingsMessage::UpdateSlicerBufferBars(BUFFER_SIZES[idx.min(BUFFER_SIZES.len() - 1)]),
+        },
+        SettingsEntry {
+            label: "Font",
+            options: AppFont::ALL.iter().map(|f| f.display_name().to_string()).collect(),
+            selected: AppFont::ALL.iter().position(|&f| f == state.draft_font).unwrap_or(0),
+            on_select: |idx| SettingsMessage::UpdateFont(AppFont::ALL[idx.min(AppFont::ALL.len() - 1)]),
         },
     ]
 }
@@ -800,6 +813,30 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
     let model_row = row(model_buttons).spacing(4).align_y(Alignment::Center);
     let model_row = wrap_navigable(model_row.into(), 10, nav);
 
+    // Font section
+    let font_subsection = text("Font").size(14);
+    let font_hint = text("UI typeface (restart required to apply)")
+        .size(12);
+
+    let font_buttons: Vec<Element<Message>> = AppFont::ALL
+        .iter()
+        .map(|&font| {
+            let is_selected = state.draft_font == font;
+            let btn = button(text(font.display_name()).size(11))
+                .on_press(Message::Settings(SettingsMessage::UpdateFont(font)))
+                .style(if is_selected {
+                    iced::widget::button::primary
+                } else {
+                    iced::widget::button::secondary
+                })
+                .width(Length::Shrink);
+            btn.into()
+        })
+        .collect();
+
+    let font_row = row(font_buttons).spacing(4).align_y(Alignment::Center).wrap();
+    let font_row = wrap_navigable(font_row.into(), 11, nav);
+
     container(
         column![
             section_title,
@@ -829,6 +866,10 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
             key_model_subsection,
             key_model_hint,
             model_row,
+            Space::new().height(10),
+            font_subsection,
+            font_hint,
+            font_row,
         ]
         .spacing(8),
     )

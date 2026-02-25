@@ -164,9 +164,10 @@ impl MeshCueApp {
             // Update track name format
             config.track_name_format = self.settings.draft_track_name_format.clone();
 
-            // Update display settings (grid bars, theme)
+            // Update display settings (grid bars, theme, font)
             config.display.grid_bars = self.settings.draft_grid_bars;
             config.display.theme = self.settings.draft_theme.clone();
+            config.display.font = self.settings.draft_font;
 
             // Update slicer buffer bars
             config.slicer.buffer_bars = self.settings.draft_slicer_buffer_bars;

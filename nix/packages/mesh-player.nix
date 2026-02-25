@@ -24,7 +24,10 @@ let
       baseName == "config.toml" ||
       # Rust source files + compile-time includes (WGSL shaders)
       pkgs.lib.hasSuffix ".rs" baseName ||
-      pkgs.lib.hasSuffix ".wgsl" baseName;
+      pkgs.lib.hasSuffix ".wgsl" baseName ||
+      # Assets: fonts (.ttf) and images (.png) for compile-time include_bytes!()
+      pkgs.lib.hasSuffix ".ttf" baseName ||
+      pkgs.lib.hasSuffix ".png" baseName;
   };
 
   meshBuildInputs = common.runtimeInputs ++ [

@@ -164,6 +164,8 @@ pub enum Message {
     UpdateSettingsSeparationModel(ModelType),
     /// Update separation shift augmentation (1-5)
     UpdateSettingsSeparationShifts(u8),
+    /// Update draft UI font (requires restart)
+    UpdateSettingsFont(mesh_widgets::AppFont),
     /// Refresh available audio devices
     RefreshAudioDevices,
     SaveSettings,

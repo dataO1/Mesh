@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 // Re-export shared config utilities from mesh-core
 pub use mesh_core::config::{load_config, save_config, LoudnessConfig};
+pub use mesh_widgets::AppFont;
 
 /// Key scoring model for harmonic compatibility
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -220,6 +221,8 @@ pub struct DisplayConfig {
     pub waveform_layout: WaveformLayout,
     /// Waveform abstraction level (Low/Medium/High grid-aligned subsampling)
     pub waveform_abstraction: WaveformAbstraction,
+    /// UI font (requires restart to apply)
+    pub font: AppFont,
 }
 
 /// Loop length options in beats (matches mesh-core/deck.rs LOOP_LENGTHS)
@@ -237,6 +240,7 @@ impl Default for DisplayConfig {
             key_scoring_model: KeyScoringModel::default(), // Camelot wheel
             waveform_layout: WaveformLayout::default(),  // Horizontal
             waveform_abstraction: WaveformAbstraction::default(), // Medium
+            font: AppFont::default(), // Hack
         }
     }
 }

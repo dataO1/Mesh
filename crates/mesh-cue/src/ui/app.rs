@@ -410,6 +410,7 @@ impl MeshCueApp {
             Message::UpdateSettingsSeparationShifts(shifts) => return self.handle_update_settings_separation_shifts(shifts),
             Message::RefreshAudioDevices => return self.handle_refresh_audio_devices(),
             Message::UpdateSettingsTheme(name) => return self.handle_update_settings_theme(name),
+            Message::UpdateSettingsFont(font) => { self.settings.draft_font = font; return Task::none(); }
             Message::SaveSettings => return self.handle_save_settings(),
             Message::SaveSettingsComplete(result) => return self.handle_save_settings_complete(result),
             // Keyboard input (delegated to handlers/keyboard.rs)
@@ -1061,8 +1062,12 @@ impl MeshCueApp {
             .on_press(Message::OpenSettings)
             .style(button::secondary);
 
+        let logo = iced::widget::image(mesh_widgets::LOGO_HANDLE.clone())
+            .height(28);
+
         row![
-            text("mesh-cue").size(24),
+            logo,
+            text("mesh").size(24),
             Space::new().width(Length::Fill),
             slicer_btn,
             fx_btn,

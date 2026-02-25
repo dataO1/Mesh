@@ -183,18 +183,15 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
+- [ ] While having a lot of track selected, both dragging and moving into
+  playlist is veeeerry slow, we need to make this much more efficient.
+- [ ] Currently double clicking a cell enters it, but double clicking a row
+  should actually load the track, we need to make cell edits, only when the row
+  has been highlitghted (so single clicked once) before.
+- [ ] make space mono the default font. increase font size for sax mono and
+  space mono, decrease alot for press start font.
 - [ ] sometimes the smart suggestion system is stuck and doesnt give new
   results, analyse why, give me a report, we will decide together how to fix.
 - [ ] when on the fly stem linking in the browser for selecting a linked track,
   we can utilise smart suggestions better by additionally adding specific search parameters for the stem that is about to be linked or weighting certain markers more. for example when linking drums, key is relatively irrelevant, but the energy or lufs, aggression and other metrics matters more. for vocals, key is absolutely the most important, bpm also a bit, not so much energy, for bass i think the weighting can stay as is, for other too. Its also possible that for linked stems(other than drums) very compatible key is actually a hard requirement,  and a filter for results.
-- [ ] Some iced configs we can still improve
-  ┌──────────────────────────────┬────────────┬──────────────────────────────────────────────────┐
-  │           Feature            │ Relevance  │                      Notes                       │
-  ├──────────────────────────────┼────────────┼──────────────────────────────────────────────────┤
-  │ Custom fonts                 │ Medium     │ Consistent typography across platforms           │
-  ├──────────────────────────────┼────────────┼──────────────────────────────────────────────────┤
-  │ Window icon                  │ Low-Medium │ Branding in taskbar/title bar                    │
-  ├──────────────────────────────┼────────────┼──────────────────────────────────────────────────┤
-  │ exit_on_close_request(false) │ Low        │ "Unsaved changes" dialog (more for mesh-cue)     │
-  └──────────────────────────────┴────────────┴──────────────────────────────────────────────────┘
-- [ ] Set hack font as default for iced
+- [ ] mesh theme: green, orange, purple, blue

@@ -1640,8 +1640,11 @@ impl MeshApp {
 
     /// View for the header/global controls
     fn view_header(&self) -> Element<'_, Message> {
-        let title = text("MESH DJ PLAYER")
-            .size(24);
+        let logo = iced::widget::image(mesh_widgets::LOGO_HANDLE.clone())
+            .height(28);
+        let title = row![logo, text("mesh").size(24)]
+            .spacing(10)
+            .align_y(iced::Alignment::Center);
 
         let global_bpm = self.domain.global_bpm();
         let bpm_label = text(format!("BPM: {}", global_bpm as i32)).size(16);
