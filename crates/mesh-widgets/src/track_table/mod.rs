@@ -949,9 +949,16 @@ where
             .width(state.column_width(column))
             .into()
     } else if state.is_column_editable(column) {
-        // Editable cell - wrap in mouse_area for double-click to edit
+        // Editable cell - wrap in mouse_area for double-click to edit.
+        // IMPORTANT: Must also set on_press and on_release here because iced's mouse_area
+        // captures ALL ButtonPressed events when on_double_click is set (to track timing),
+        // which prevents the row-level mouse_area from seeing single clicks.
         let id = track.id.clone();
+        let id_select = track.id.clone();
+        let id_drop = track.id.clone();
         let on_msg = on_message.clone();
+        let on_msg_select = on_message.clone();
+        let on_msg_drop = on_message.clone();
         let current_value = match column {
             TrackColumn::Name => track.title.clone(),
             TrackColumn::Artist => track.artist.clone().unwrap_or_default(),
@@ -970,7 +977,9 @@ where
                 .width(state.column_width(column))
                 .clip(true),
         )
+        .on_press(on_msg_select(TrackTableMessage::Select(id_select)))
         .on_double_click(on_msg(TrackTableMessage::StartEdit(id, column, current_value)))
+        .on_release(on_msg_drop(TrackTableMessage::DropReceived(id_drop)))
         .into()
     } else {
         // Non-editable cell - display text with clipping to prevent overlap

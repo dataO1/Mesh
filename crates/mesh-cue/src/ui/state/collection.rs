@@ -32,6 +32,9 @@ pub struct PendingDragState {
     pub track_names: Vec<String>,
     /// Which browser the click happened in
     pub source_browser: BrowserSide,
+    /// Whether Shift or Ctrl was held when the click occurred.
+    /// Used to prevent collapsing a modifier-built selection on release.
+    pub had_modifiers: bool,
 }
 
 impl PendingDragState {

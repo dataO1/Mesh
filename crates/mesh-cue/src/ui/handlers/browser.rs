@@ -210,6 +210,7 @@ impl MeshCueApp {
                     track_ids: selected_ids,
                     track_names,
                     source_browser: side,
+                    had_modifiers: self.shift_held || self.ctrl_held,
                 });
             }
         }
@@ -249,6 +250,8 @@ impl MeshCueApp {
         if matches!(table_msg, TrackTableMessage::DropReceived(_) | TrackTableMessage::DropReceivedOnTable) {
             log::debug!("{} table: DropReceived", side_name);
             let had_pending = self.collection.pending_drag.is_some();
+            let pending_had_modifiers = self.collection.pending_drag.as_ref()
+                .map(|p| p.had_modifiers).unwrap_or(false);
             self.collection.pending_drag = None;
 
             if let Some(ref drag) = self.collection.dragging_track {
@@ -266,8 +269,9 @@ impl MeshCueApp {
                     }
                 }
                 return self.update(Message::DragTrackEnd);
-            } else if had_pending {
-                // Click-release without drag threshold: collapse multi-selection
+            } else if had_pending && !pending_had_modifiers {
+                // Click-release without drag AND without modifiers: collapse multi-selection
+                // (Shift/Ctrl-clicks build selection intentionally — don't collapse those)
                 match table_msg {
                     TrackTableMessage::DropReceived(ref id) => {
                         log::debug!("{} table: click-release without drag, selecting single track", side_name);

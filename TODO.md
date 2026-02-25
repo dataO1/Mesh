@@ -197,3 +197,4 @@ for v3 and beyond.
   ├──────────────────────────────┼────────────┼──────────────────────────────────────────────────┤
   │ exit_on_close_request(false) │ Low        │ "Unsaved changes" dialog (more for mesh-cue)     │
   └──────────────────────────────┴────────────┴──────────────────────────────────────────────────┘
+- [ ] Set hack font as default for iced
