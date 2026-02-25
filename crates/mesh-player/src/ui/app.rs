@@ -1743,17 +1743,25 @@ impl MeshApp {
         .align_y(CenterAlign)
         .into();
 
-        row![
+        // Layer 1: left-aligned title + right-aligned status (full width)
+        let sides = row![
             title,
-            Space::new().width(Fill),
-            center_group,
             Space::new().width(Fill),
             right_group,
         ]
         .spacing(10)
-        .align_y(CenterAlign)
-        .padding(10)
-        .into()
+        .align_y(CenterAlign);
+
+        // Layer 2: absolutely centered FX+BPM group (overlaid via stack)
+        let centered = container(center_group)
+            .width(Fill)
+            .align_x(iced::alignment::Horizontal::Center)
+            .align_y(iced::alignment::Vertical::Center);
+
+        container(stack![sides, centered])
+            .width(Fill)
+            .padding(10)
+            .into()
     }
 
     /// View for the global FX preset button in the header (list is overlaid separately)

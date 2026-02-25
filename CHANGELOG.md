@@ -187,9 +187,10 @@ All notable changes to Mesh are documented in this file.
   badge is now 10px, matching the stem indicator strip width for visual alignment.
 
 - **Header layout: FX selector centered, BPM repositioned** — In mesh-player,
-  the global FX preset selector and BPM are centered as a group in the header.
-  The BPM slider is hidden in performance mode but remains visible in mapping
-  mode (`--midi-learn`) for interactive adjustment.
+  the global FX preset selector and BPM are truly centered in the header using
+  a stack overlay (immune to asymmetric left/right content widths). The BPM
+  slider is hidden in performance mode but remains visible in mapping mode
+  (`--midi-learn`) for interactive adjustment.
 
 - **"General Collection" renamed to "Collection"** — The tree browser root node
   for the track collection now displays as "Collection" instead of "General
