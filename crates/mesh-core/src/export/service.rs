@@ -6,7 +6,7 @@
 //!
 //! 1. Presets: Copy small YAML files to USB
 //! 2. Staging: Copy USB mesh.db to local temp dir, open as DatabaseService
-//! 3. WAV copy: Sequential 1 MB buffered writes to USB, fsync each file
+//! 3. File copy: Sequential 1 MB buffered writes to USB, batch syncfs at end
 //! 4. DB update: All metadata/playlist ops against local staging DB
 //! 5. DB writeback: Copy staging DB back to USB (single large sequential write)
 //! 6. Delete: Remove obsolete track files from USB
@@ -251,14 +251,31 @@ impl ExportService {
                 }
             }
 
+            // Batch sync: flush all pending writes to USB in one go
+            if tracks_exported > 0 {
+                let tracks_dir = usb_root.join("tracks");
+                match std::fs::File::open(&tracks_dir) {
+                    Ok(dir_fd) => {
+                        use std::os::unix::io::AsRawFd;
+                        let ret = unsafe { libc::syncfs(dir_fd.as_raw_fd()) };
+                        if ret != 0 {
+                            log::warn!("[export] syncfs failed: {}", std::io::Error::last_os_error());
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("[export] Could not open tracks dir for syncfs: {}", e);
+                    }
+                }
+            }
+
             log::info!(
-                "[export] Phase 2 (WAV copy): {:.1}s — {} tracks copied, {} bytes",
+                "[export] Phase 2 (file copy): {:.1}s — {} tracks copied, {} bytes",
                 t_phase2.elapsed().as_secs_f64(),
                 tracks_exported,
                 bytes_exported,
             );
 
-            // Check for cancellation after WAV copy phase
+            // Check for cancellation after file copy phase
             if cancel_flag.load(Ordering::Relaxed) {
                 let _ = progress_tx.send(ExportProgress::Cancelled);
                 return;

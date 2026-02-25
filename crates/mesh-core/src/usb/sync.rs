@@ -182,8 +182,7 @@ fn collect_descendants(parent_id: i64, all_playlists: &[crate::db::Playlist], re
 
 /// Scan a local collection from the database to discover tracks and playlist membership
 ///
-/// This is the database-based version that reads playlist membership from CozoDB
-/// instead of scanning the filesystem for symlinks.
+/// Reads playlist membership from CozoDB and resolves track file paths.
 ///
 /// # Arguments
 /// * `db` - Database connection
@@ -867,13 +866,9 @@ pub fn copy_large_file(
         on_bytes_written(total_written);
     }
 
-    // Flush BufWriter, then sync to physical media
+    // Flush BufWriter to OS page cache (batch syncfs at end of export phase)
     writer.flush().map_err(|e| {
         super::UsbError::IoError(format!("Flush error on {}: {}", destination.display(), e))
-    })?;
-    drop(writer); // Drop BufWriter to release borrow on dest_file
-    dest_file.sync_all().map_err(|e| {
-        super::UsbError::IoError(format!("Sync error on {}: {}", destination.display(), e))
     })?;
 
     // Verify size

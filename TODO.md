@@ -183,6 +183,9 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
+- [ ] while exporting in mesh-cu im hearing constant crackling, since the audio
+  backend seems to be running. while exporting disable/destroy the backend, when
+  finished resume.
 - [ ] sometimes the smart suggestion system is stuck and doesnt give new
   results, analyse why, give me a report, we will decide together how to fix.
 - [ ] when on the fly stem linking in the browser for selecting a linked track,

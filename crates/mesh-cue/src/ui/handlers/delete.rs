@@ -120,13 +120,15 @@ impl MeshCueApp {
                             log::error!("Failed to remove track from playlist: {:?}", e);
                         }
                     }
-                    // Refresh displays
+                    // Refresh displays (re-applies current sort order)
                     self.collection.tree_nodes = self.domain.tree_nodes().to_vec();
-                    if let Some(ref folder) = self.collection.browser_left.current_folder {
-                        self.collection.left_tracks = self.domain.get_tracks_for_display(folder);
+                    if let Some(folder) = self.collection.browser_left.current_folder.clone() {
+                        let tracks = self.domain.get_tracks_for_display(&folder);
+                        self.collection.refresh_tracks(BrowserSide::Left, tracks);
                     }
-                    if let Some(ref folder) = self.collection.browser_right.current_folder {
-                        self.collection.right_tracks = self.domain.get_tracks_for_display(folder);
+                    if let Some(folder) = self.collection.browser_right.current_folder.clone() {
+                        let tracks = self.domain.get_tracks_for_display(&folder);
+                        self.collection.refresh_tracks(BrowserSide::Right, tracks);
                     }
                 }
                 DeleteTarget::CollectionTracks { track_ids, .. } => {
@@ -136,13 +138,15 @@ impl MeshCueApp {
                             log::error!("Failed to delete track permanently: {:?}", e);
                         }
                     }
-                    // Refresh displays
+                    // Refresh displays (re-applies current sort order)
                     self.collection.tree_nodes = self.domain.tree_nodes().to_vec();
-                    if let Some(ref folder) = self.collection.browser_left.current_folder {
-                        self.collection.left_tracks = self.domain.get_tracks_for_display(folder);
+                    if let Some(folder) = self.collection.browser_left.current_folder.clone() {
+                        let tracks = self.domain.get_tracks_for_display(&folder);
+                        self.collection.refresh_tracks(BrowserSide::Left, tracks);
                     }
-                    if let Some(ref folder) = self.collection.browser_right.current_folder {
-                        self.collection.right_tracks = self.domain.get_tracks_for_display(folder);
+                    if let Some(folder) = self.collection.browser_right.current_folder.clone() {
+                        let tracks = self.domain.get_tracks_for_display(&folder);
+                        self.collection.refresh_tracks(BrowserSide::Right, tracks);
                     }
                 }
                 DeleteTarget::Playlist { playlist_id, .. } => {

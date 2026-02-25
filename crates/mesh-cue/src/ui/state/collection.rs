@@ -6,7 +6,8 @@
 use std::path::PathBuf;
 use iced::{Color, Point};
 use mesh_core::playlist::NodeId;
-use mesh_widgets::{PlaylistBrowserState, TrackRow, TreeNode};
+use mesh_widgets::{PlaylistBrowserState, TrackColumn, TrackRow, TreeNode};
+use mesh_widgets::track_table::sort_tracks;
 
 use super::loaded_track::LoadedTrackState;
 
@@ -175,6 +176,19 @@ impl CollectionState {
             BrowserSide::Right => "Right",
         }
     }
+
+    /// Replace track list for a browser side and re-apply the current sort order.
+    ///
+    /// This must be used instead of direct assignment whenever tracks are refreshed
+    /// from the domain (e.g. after delete, edit, or playlist drop) so that index-based
+    /// selection and scroll restoration operate on correctly sorted data.
+    pub fn refresh_tracks(&mut self, side: BrowserSide, tracks: Vec<TrackRow<NodeId>>) {
+        *self.tracks_mut(side) = tracks;
+        let state = &self.browser(side).table_state;
+        let sort_col = state.sort_column;
+        let sort_asc = state.sort_ascending;
+        sort_tracks(self.tracks_mut(side), sort_col, sort_asc);
+    }
 }
 
 impl Default for CollectionState {
@@ -185,11 +199,17 @@ impl Default for CollectionState {
             .join("Music")
             .join("mesh-collection");
 
+        let editable_cols = &[TrackColumn::Name, TrackColumn::Artist, TrackColumn::Bpm, TrackColumn::Key];
+        let mut browser_left = PlaylistBrowserState::new();
+        browser_left.table_state.set_editable_columns(editable_cols);
+        let mut browser_right = PlaylistBrowserState::new();
+        browser_right.table_state.set_editable_columns(editable_cols);
+
         Self {
             collection_path: default_path,
             loaded_track: None,
-            browser_left: PlaylistBrowserState::new(),
-            browser_right: PlaylistBrowserState::new(),
+            browser_left,
+            browser_right,
             tree_nodes: Vec::new(),
             left_tracks: Vec::new(),
             right_tracks: Vec::new(),

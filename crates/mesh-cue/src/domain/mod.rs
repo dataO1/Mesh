@@ -833,26 +833,28 @@ impl MeshCueDomain {
     ///
     /// This copies tracks from collection to a playlist.
     pub fn add_tracks_to_playlist(&mut self, target_playlist_id: &NodeId, track_ids: &[NodeId]) -> Result<usize> {
+        // Resolve target playlist DB ID once (was previously per-track)
+        let playlist_db_id = match self.db_service.resolve_playlist_path(target_playlist_id.as_str()) {
+            Ok(Some(id)) => id,
+            Ok(None) => return Err(anyhow::anyhow!("Playlist not found: {}", target_playlist_id)),
+            Err(e) => return Err(anyhow::anyhow!("Failed to resolve playlist: {}", e)),
+        };
+        // Get starting sort order once, increment locally (was O(N) MAX queries)
+        let mut sort_order = self.db_service.next_playlist_sort_order(playlist_db_id)
+            .unwrap_or(0);
+
         let mut success_count = 0;
         for track_id in track_ids {
-            // Check if source is collection (tracks/...) or playlist (playlists/...)
             let is_from_collection = track_id.as_str().starts_with("tracks/");
-
             if is_from_collection {
-                // Get the track path from the node
                 if let Some(node) = self.playlist_storage.get_node(track_id) {
                     if let Some(ref path) = node.track_path {
-                        // Resolve target playlist DB ID by walking the full NodeId path
                         let path_str = path.to_string_lossy();
-                        if let Ok(Some(playlist_db_id)) = self.db_service.resolve_playlist_path(target_playlist_id.as_str()) {
-                            // Look up track ID from path
-                            if let Ok(Some(track)) = self.db_service.get_track_by_path(&path_str) {
-                                if let Some(track_db_id) = track.id {
-                                    let sort_order = self.db_service.next_playlist_sort_order(playlist_db_id)
-                                        .unwrap_or(0);
-                                    if self.db_service.add_track_to_playlist(playlist_db_id, track_db_id, sort_order).is_ok() {
-                                        success_count += 1;
-                                    }
+                        if let Ok(Some(track)) = self.db_service.get_track_by_path(&path_str) {
+                            if let Some(track_db_id) = track.id {
+                                if self.db_service.add_track_to_playlist(playlist_db_id, track_db_id, sort_order).is_ok() {
+                                    success_count += 1;
+                                    sort_order += 1;
                                 }
                             }
                         }

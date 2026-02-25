@@ -122,7 +122,7 @@ impl MeshCueApp {
                             log::debug!("{} browser folder changed to {:?}", side_name, current_folder);
                             if let Some(ref folder) = current_folder {
                                 let tracks = self.domain.get_tracks_for_display(folder);
-                                *self.collection.tracks_mut(side) = tracks;
+                                self.collection.refresh_tracks(side, tracks);
                             } else {
                                 self.collection.tracks_mut(side).clear();
                             }
@@ -174,6 +174,7 @@ impl MeshCueApp {
             if let Some(node) = self.domain.get_node(&track_id) {
                 if let Some(ref path) = node.track_path {
                     let db_field = match column {
+                        TrackColumn::Name => "title",
                         TrackColumn::Artist => "artist",
                         TrackColumn::Bpm => "bpm",
                         TrackColumn::Key => "key",
@@ -186,7 +187,7 @@ impl MeshCueApp {
                             let current_folder = self.collection.browser(side).current_folder.clone();
                             if let Some(ref folder) = current_folder {
                                 let tracks = self.domain.get_tracks_for_display(folder);
-                                *self.collection.tracks_mut(side) = tracks;
+                                self.collection.refresh_tracks(side, tracks);
                             }
                         }
                         Err(e) => log::error!("Failed to update track field: {:?}", e),
@@ -247,9 +248,11 @@ impl MeshCueApp {
         // Handle drop on table (both on track rows and empty table space)
         if matches!(table_msg, TrackTableMessage::DropReceived(_) | TrackTableMessage::DropReceivedOnTable) {
             log::debug!("{} table: DropReceived", side_name);
-            // Clear pending drag on mouse release (whether or not we had an active drag)
+            let had_pending = self.collection.pending_drag.is_some();
             self.collection.pending_drag = None;
+
             if let Some(ref drag) = self.collection.dragging_track {
+                // Active drag — handle drop on playlist target
                 let current_folder = self.collection.browser(side).current_folder.clone();
                 if let Some(ref folder) = current_folder {
                     if let Some(folder_node) = self.domain.get_node(folder) {
@@ -262,6 +265,21 @@ impl MeshCueApp {
                         }
                     }
                 }
+                return self.update(Message::DragTrackEnd);
+            } else if had_pending {
+                // Click-release without drag threshold: collapse multi-selection
+                match table_msg {
+                    TrackTableMessage::DropReceived(ref id) => {
+                        log::debug!("{} table: click-release without drag, selecting single track", side_name);
+                        self.collection.browser_mut(side).table_state.select(id.clone());
+                    }
+                    TrackTableMessage::DropReceivedOnTable => {
+                        log::debug!("{} table: click-release on empty space, clearing selection", side_name);
+                        self.collection.browser_mut(side).table_state.clear_selection();
+                    }
+                    _ => {}
+                }
+                return Task::none();
             }
             return self.update(Message::DragTrackEnd);
         }
@@ -317,12 +335,14 @@ impl MeshCueApp {
         // Database queries are always fresh - just rebuild the UI views
         self.domain.refresh_tree();
         self.collection.tree_nodes = self.domain.tree_nodes().to_vec();
-        // Refresh track lists for both browsers
-        if let Some(ref folder) = self.collection.browser_left.current_folder {
-            self.collection.left_tracks = self.domain.get_tracks_for_display(folder);
+        // Refresh track lists for both browsers (re-applies current sort order)
+        if let Some(folder) = self.collection.browser_left.current_folder.clone() {
+            let tracks = self.domain.get_tracks_for_display(&folder);
+            self.collection.refresh_tracks(BrowserSide::Left, tracks);
         }
-        if let Some(ref folder) = self.collection.browser_right.current_folder {
-            self.collection.right_tracks = self.domain.get_tracks_for_display(folder);
+        if let Some(folder) = self.collection.browser_right.current_folder.clone() {
+            let tracks = self.domain.get_tracks_for_display(&folder);
+            self.collection.refresh_tracks(BrowserSide::Right, tracks);
         }
         Task::none()
     }
@@ -358,13 +378,15 @@ impl MeshCueApp {
             Ok(success_count) => {
                 if success_count > 0 {
                     log::info!("Added {}/{} tracks successfully", success_count, track_ids.len());
-                    // Refresh tree and both browser track lists
+                    // Refresh tree and both browser track lists (re-applies current sort order)
                     self.collection.tree_nodes = self.domain.tree_nodes().to_vec();
-                    if let Some(ref folder) = self.collection.browser_left.current_folder {
-                        self.collection.left_tracks = self.domain.get_tracks_for_display(folder);
+                    if let Some(folder) = self.collection.browser_left.current_folder.clone() {
+                        let tracks = self.domain.get_tracks_for_display(&folder);
+                        self.collection.refresh_tracks(BrowserSide::Left, tracks);
                     }
-                    if let Some(ref folder) = self.collection.browser_right.current_folder {
-                        self.collection.right_tracks = self.domain.get_tracks_for_display(folder);
+                    if let Some(folder) = self.collection.browser_right.current_folder.clone() {
+                        let tracks = self.domain.get_tracks_for_display(&folder);
+                        self.collection.refresh_tracks(BrowserSide::Right, tracks);
                     }
                 }
             }

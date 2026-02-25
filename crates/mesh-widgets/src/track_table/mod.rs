@@ -189,7 +189,7 @@ pub struct SelectModifiers {
 }
 
 /// Column types for the track table
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TrackColumn {
     /// Order in playlist/collection (#)
     Order,
@@ -475,6 +475,9 @@ pub struct TrackTableState<Id: Clone + Eq + Hash> {
     pub tag_category_colors: Option<[Color; 4]>,
     /// Override width for the Name/Title column (default uses TrackColumn::width())
     pub name_column_width: Option<Length>,
+    /// Which columns are editable (empty = none). Configured per-app:
+    /// mesh-cue sets Name/Artist/Bpm/Key, mesh-player leaves empty.
+    pub editable_columns: HashSet<TrackColumn>,
 }
 
 impl<Id: Clone + Eq + Hash> Default for TrackTableState<Id> {
@@ -500,6 +503,7 @@ impl<Id: Clone + Eq + Hash> TrackTableState<Id> {
             pill_color: None,
             tag_category_colors: None,
             name_column_width: None,
+            editable_columns: HashSet::new(),
         }
     }
 
@@ -610,6 +614,16 @@ impl<Id: Clone + Eq + Hash> TrackTableState<Id> {
     /// Check if a track is selected
     pub fn is_selected(&self, id: &Id) -> bool {
         self.selected.contains(id)
+    }
+
+    /// Set which columns are editable in this table instance.
+    pub fn set_editable_columns(&mut self, cols: &[TrackColumn]) {
+        self.editable_columns = cols.iter().copied().collect();
+    }
+
+    /// Check if a column is editable in this table instance.
+    pub fn is_column_editable(&self, column: TrackColumn) -> bool {
+        self.editable_columns.contains(&column)
     }
 
     /// Start editing a cell
@@ -934,11 +948,12 @@ where
             .padding(2)
             .width(state.column_width(column))
             .into()
-    } else if column.is_editable() {
+    } else if state.is_column_editable(column) {
         // Editable cell - wrap in mouse_area for double-click to edit
         let id = track.id.clone();
         let on_msg = on_message.clone();
         let current_value = match column {
+            TrackColumn::Name => track.title.clone(),
             TrackColumn::Artist => track.artist.clone().unwrap_or_default(),
             TrackColumn::Bpm => track.bpm.map(|b| format!("{:.1}", b)).unwrap_or_default(),
             TrackColumn::Key => track.key.clone().unwrap_or_default(),

@@ -42,6 +42,11 @@ impl MeshCueApp {
                 if let Some(ref handle) = self.audio_handle {
                     handle.pause();
                 }
+                // Reset position atomics so stale playhead from the previous track
+                // doesn't appear on the new waveform during progressive loading
+                self.audio.deck_atomics().position.store(0, std::sync::atomic::Ordering::Relaxed);
+                self.audio.deck_atomics().position_timestamp_ns.store(0, std::sync::atomic::Ordering::Relaxed);
+
                 let bpm = metadata.bpm.unwrap_or(120.0);
                 let key = metadata.key.clone().unwrap_or_else(|| "?".to_string());
                 let cue_points = metadata.cue_points.clone();

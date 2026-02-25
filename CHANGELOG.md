@@ -6,6 +6,10 @@ All notable changes to Mesh are documented in this file.
 
 ## [Unreleased]
 
+---
+
+## [0.9.8]
+
 ### Added
 
 - **YAML-based theme system** — Themes are now defined in `theme.yaml` in the collection
@@ -25,6 +29,20 @@ All notable changes to Mesh are documented in this file.
   shows an orange pill with the number of hot cues set per track, letting DJs see at a
   glance which tracks are prepared. Empty cell when no cues are set. Sortable. Works in
   both mesh-cue and mesh-player, including USB browsing.
+
+- **D key sets drop marker** — Pressing `D` sets or moves the drop marker to the
+  current playhead position. `Shift+D` clears it. Configurable via `keybindings.yaml`.
+
+- **Progressive track loading** — Both mesh-cue and mesh-player now use a
+  work-stealing thread pool (4 workers) that prioritises hot cue regions first,
+  then fills the remaining audio in ~10-second chunks. Waveforms visibly grow
+  as each chunk completes. Hot cue areas are playable within the first few
+  hundred milliseconds; the rest of the track loads progressively in the
+  background without blocking the UI.
+
+- **Configurable column editability** — Track table columns are now editable per-app
+  via `editable_columns` on `TrackTableState`. mesh-cue enables double-click editing
+  for Name, Artist, BPM, and Key columns; mesh-player leaves all read-only.
 
 ### Fixed
 
@@ -100,17 +118,32 @@ All notable changes to Mesh are documented in this file.
   width), 8 hot cue buttons fill the center, and a 56px right spacer aligns with
   the stem column. Stem link buttons now have 2px vertical spacing.
 
-### Added
+- **Delete with non-default sort jumps to wrong position** — After deleting a track
+  while sorted by BPM/key/etc., the selection jumped to the wrong neighbor because
+  `get_tracks_for_display()` returned unsorted data but `select_at_index()` used the
+  old sorted index. Added `refresh_tracks()` helper that re-applies the current sort
+  after every track list refresh.
 
-- **D key sets drop marker** — Pressing `D` sets or moves the drop marker to the
-  current playhead position. `Shift+D` clears it. Configurable via `keybindings.yaml`.
+- **Multi-select drag-and-drop blocks UI** — `add_tracks_to_playlist()` ran O(4N)
+  database queries (resolving the target playlist and querying max sort order per
+  track). Hoisted both invariant queries before the loop, reducing to O(N+2).
 
-- **Progressive track loading** — Both mesh-cue and mesh-player now use a
-  work-stealing thread pool (4 workers) that prioritises hot cue regions first,
-  then fills the remaining audio in ~10-second chunks. Waveforms visibly grow
-  as each chunk completes. Hot cue areas are playable within the first few
-  hundred milliseconds; the rest of the track loads progressively in the
-  background without blocking the UI.
+- **Track title not editable** — The Name column was excluded from
+  `TrackColumn::is_editable()`. Added `Name → "title"` DB field mapping and
+  included Name in mesh-cue's editable column set.
+
+- **Multi-selection not cleared on click without drag** — Clicking an already-selected
+  track preserved the multi-selection for potential drag, but releasing without dragging
+  never collapsed it back. Now detects click-release without drag threshold and selects
+  only the clicked track. Clicking empty table space clears all selection.
+
+- **Stale playhead shown during track load** — Loading a new track showed the previous
+  track's playhead position on the new waveform because `DeckAtomics.position` wasn't
+  reset after `unload_track()`. Now zeroes position and timestamp atomics immediately.
+
+- **USB export re-copies all FLAC files instead of skipping existing** — The skip
+  check compared extension-stripped stems against full `.flac` filenames on USB,
+  never matching. Fixed path comparison to use consistent extensions.
 
 ### Changed
 
@@ -128,6 +161,10 @@ All notable changes to Mesh are documented in this file.
   linear to quadratic and lowered minimum resolution from 256 to 128 pixels.
   Reduces visual jitter at maximum zoom-out (64 bars) while preserving detail
   at moderate zoom levels.
+
+- **USB export uses batch syncfs** — Per-file `sync_all()` calls replaced with a
+  single `syncfs()` after all track files are copied. Reduces USB I/O overhead
+  from O(N) sync operations to O(1).
 
 ---
 

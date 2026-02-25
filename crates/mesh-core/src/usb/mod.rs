@@ -114,10 +114,6 @@ impl UsbDevice {
         }
     }
 
-    /// Check if this device supports symlinks
-    pub fn supports_symlinks(&self) -> bool {
-        matches!(self.filesystem, FilesystemType::Ext4)
-    }
 }
 
 /// Format bytes as human-readable string (GB for >= 1GB, MB otherwise)
@@ -136,11 +132,11 @@ pub fn format_bytes(bytes: u64) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum FilesystemType {
-    /// Linux native filesystem - supports symlinks
+    /// Linux native filesystem
     Ext4,
-    /// Extended FAT - cross-platform, no symlinks
+    /// Extended FAT - cross-platform
     ExFat,
-    /// FAT32 - maximum compatibility, no symlinks, 4GB file limit
+    /// FAT32 - maximum compatibility, 4GB file limit
     Fat32,
     /// Unknown or unsupported filesystem
     #[default]
@@ -168,10 +164,6 @@ impl FilesystemType {
         }
     }
 
-    /// Check if this filesystem supports symlinks
-    pub fn supports_symlinks(&self) -> bool {
-        matches!(self, FilesystemType::Ext4)
-    }
 }
 
 impl std::fmt::Display for FilesystemType {
@@ -279,13 +271,6 @@ mod tests {
         assert_eq!(FilesystemType::from_str("vfat"), FilesystemType::Fat32);
         assert_eq!(FilesystemType::from_str("fat32"), FilesystemType::Fat32);
         assert_eq!(FilesystemType::from_str("ntfs"), FilesystemType::Unknown);
-    }
-
-    #[test]
-    fn test_symlink_support() {
-        assert!(FilesystemType::Ext4.supports_symlinks());
-        assert!(!FilesystemType::ExFat.supports_symlinks());
-        assert!(!FilesystemType::Fat32.supports_symlinks());
     }
 
     #[test]
