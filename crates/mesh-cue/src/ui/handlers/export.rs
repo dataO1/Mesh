@@ -154,6 +154,10 @@ impl MeshCueApp {
                     } else {
                         Some(self.export_state.device_label.clone())
                     };
+                    // Pause audio backend to avoid crackling during export I/O
+                    if let Some(ref handle) = self.audio_handle {
+                        handle.pause();
+                    }
                     self.domain.start_usb_export(
                         device.device_path.clone(),
                         plan.clone(),
@@ -307,11 +311,19 @@ impl MeshCueApp {
                 self.export_state.show_results = true;
                 // Re-open modal to show completion results (even if user closed it during export)
                 self.export_state.is_open = true;
+                // Resume audio backend (was paused at export start)
+                if let Some(ref handle) = self.audio_handle {
+                    handle.play();
+                }
             }
             UsbMsg::ExportError(err) => {
                 self.export_state.phase = ExportPhase::Error(err.to_string());
                 // Re-open modal to show error (even if user closed it during export)
                 self.export_state.is_open = true;
+                // Resume audio backend (was paused at export start)
+                if let Some(ref handle) = self.audio_handle {
+                    handle.play();
+                }
             }
             UsbMsg::ExportPresetsCopied => {
                 // Don't transition phase — presets are already copied at this point.
@@ -321,6 +333,10 @@ impl MeshCueApp {
             }
             UsbMsg::ExportCancelled => {
                 self.export_state.phase = ExportPhase::SelectDevice;
+                // Resume audio backend (was paused at export start)
+                if let Some(ref handle) = self.audio_handle {
+                    handle.play();
+                }
             }
             _ => {
                 // Handle other messages as needed
@@ -350,6 +366,10 @@ impl MeshCueApp {
                     } else {
                         Some(self.export_state.device_label.clone())
                     };
+                    // Pause audio backend to avoid crackling during export I/O
+                    if let Some(ref handle) = self.audio_handle {
+                        handle.pause();
+                    }
                     self.domain.start_usb_export(
                         device.device_path.clone(),
                         plan.clone(),

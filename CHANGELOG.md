@@ -145,6 +145,12 @@ All notable changes to Mesh are documented in this file.
   check compared extension-stripped stems against full `.flac` filenames on USB,
   never matching. Fixed path comparison to use consistent extensions.
 
+- **Audio crackling during USB export** — The CPAL audio backend continued running
+  while the export background thread performed heavy sequential I/O to USB media,
+  starving the audio callback of CPU time and causing constant crackling. Now pauses
+  the audio streams when export starts and resumes them on completion, error, or
+  cancellation.
+
 ### Changed
 
 - **Deck header text sizing** — Increased all header text sizes to better fill
