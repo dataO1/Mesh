@@ -6,6 +6,13 @@ All notable changes to Mesh are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Sub-beat loops (1/8, 1/4, 1/2) silently fail** — `snap_to_beat()` snapped the loop
+  end back to the same beat as the start, producing a zero-length loop that was ignored.
+  Added `snap_to_subdivision()` which divides each beat grid interval into fractional
+  parts matching the loop length, keeping sub-beat loops phase-locked to the grid.
+
 ---
 
 ## [0.9.8]

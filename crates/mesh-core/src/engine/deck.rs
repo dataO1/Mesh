@@ -776,6 +776,67 @@ impl Deck {
         }
     }
 
+    /// Snap a sample position to the nearest subdivision of the beat grid.
+    ///
+    /// `subdivisions_per_beat` controls the grid resolution:
+    /// - 1 = snap to beats (same as snap_to_beat)
+    /// - 2 = snap to half-beats (1/2 beat grid)
+    /// - 4 = snap to quarter-beats (1/4 beat grid)
+    /// - 8 = snap to eighth-beats (1/8 beat grid)
+    ///
+    /// Finds the two adjacent beats surrounding `position`, subdivides that
+    /// interval, and snaps to the nearest subdivision point.
+    fn snap_to_subdivision(&self, position: usize, subdivisions_per_beat: u32) -> usize {
+        if subdivisions_per_beat <= 1 {
+            return self.snap_to_beat(position);
+        }
+        if let Some(track) = &self.track {
+            let beats = &track.metadata.beat_grid.beats;
+            if beats.len() < 2 {
+                return self.snap_to_beat(position);
+            }
+
+            // Find the beat at or just before position
+            let pos = position as u64;
+            let beat_idx = match beats.binary_search(&pos) {
+                Ok(i) => i,        // Exactly on a beat
+                Err(0) => 0,       // Before first beat — use first interval
+                Err(i) if i >= beats.len() => beats.len() - 2, // Past last beat
+                Err(i) => i - 1,   // Between beats[i-1] and beats[i]
+            };
+
+            let next_idx = (beat_idx + 1).min(beats.len() - 1);
+            let beat_start = beats[beat_idx] as f64;
+            let beat_end = beats[next_idx] as f64;
+            let beat_len = beat_end - beat_start;
+
+            if beat_len <= 0.0 {
+                return position;
+            }
+
+            // Subdivide and find nearest
+            let sub_len = beat_len / subdivisions_per_beat as f64;
+            let offset = position as f64 - beat_start;
+            let sub_index = (offset / sub_len).round() as i64;
+            let snapped = beat_start + sub_index as f64 * sub_len;
+            snapped.round() as usize
+        } else {
+            position
+        }
+    }
+
+    /// Get the number of subdivisions per beat for the current loop length.
+    /// Returns 1 for loops >= 1 beat (snap to whole beats).
+    fn loop_subdivisions(&self) -> u32 {
+        let beats = self.loop_state.length_beats();
+        if beats >= 1.0 {
+            1
+        } else {
+            // 0.5 → 2, 0.25 → 4, 0.125 → 8
+            (1.0 / beats).round() as u32
+        }
+    }
+
     /// Update the beat grid (call after UI nudge operations)
     ///
     /// This syncs the deck's internal beat grid with UI changes,
@@ -1315,12 +1376,14 @@ impl Deck {
             if self.slip_enabled {
                 self.slip_position = Some(self.position);
             }
-            // Snap loop start to nearest beat
-            let start = self.snap_to_beat(self.position);
-            // Calculate raw end and snap to nearest beat
+            // Snap loop start and end to the appropriate grid subdivision.
+            // Full-beat loops snap to whole beats; sub-beat loops (1/2, 1/4, 1/8)
+            // snap to fractional subdivisions of the beat grid so they stay phase-locked.
+            let subs = self.loop_subdivisions();
+            let start = self.snap_to_subdivision(self.position, subs);
             let length = self.loop_state.length_samples(self.samples_per_beat());
             let raw_end = start + length;
-            let end = self.snap_to_beat(raw_end);
+            let end = self.snap_to_subdivision(raw_end, subs);
 
             self.loop_state.start = start;
             self.loop_state.end = end;
@@ -1342,11 +1405,16 @@ impl Deck {
             self.loop_state.decrease_length();
         }
 
-        // Update loop end if loop is active, snapping to beat grid
+        // Update loop bounds if loop is active, snapping to grid subdivision
         if self.loop_state.active {
+            let subs = self.loop_subdivisions();
+            // Re-snap start too — when going from 1-beat to 1/2-beat, the start
+            // is already on a beat boundary which is also a valid subdivision
+            let start = self.snap_to_subdivision(self.loop_state.start, subs);
             let length = self.loop_state.length_samples(self.samples_per_beat());
-            let raw_end = self.loop_state.start + length;
-            let end = self.snap_to_beat(raw_end);
+            let raw_end = start + length;
+            let end = self.snap_to_subdivision(raw_end, subs);
+            self.loop_state.start = start;
             self.loop_state.end = end;
         }
 
