@@ -25,8 +25,8 @@ pub static PROCESS_EPOCH: std::sync::LazyLock<std::time::Instant> =
 /// Number of hot cue slots per deck
 pub const HOT_CUE_SLOTS: usize = 8;
 
-/// Loop lengths available in beats (1 beat to 64 bars = 256 beats)
-pub const LOOP_LENGTHS: [f64; 9] = [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0];
+/// Loop lengths available in beats (1/8 beat to 64 bars = 256 beats)
+pub const LOOP_LENGTHS: [f64; 12] = [0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0];
 
 /// A hot cue point stored in a slot
 #[derive(Debug, Clone)]
@@ -126,7 +126,7 @@ pub struct DeckAtomics {
     pub loop_start: AtomicU64,
     /// Loop end position in samples
     pub loop_end: AtomicU64,
-    /// Loop length index (0-6 maps to 0.25, 0.5, 1, 2, 4, 8, 16 beats)
+    /// Loop length index into LOOP_LENGTHS (0 = 1/8 beat .. 11 = 256 beats)
     pub loop_length_index: AtomicU8,
     /// Whether this deck is the master (longest playing, others sync to it)
     pub is_master: AtomicBool,
@@ -164,7 +164,7 @@ impl DeckAtomics {
             loop_active: AtomicBool::new(false),
             loop_start: AtomicU64::new(0),
             loop_end: AtomicU64::new(0),
-            loop_length_index: AtomicU8::new(2), // Default to 4 beats (index 2)
+            loop_length_index: AtomicU8::new(5), // Default to 4 beats (index 5)
             is_master: AtomicBool::new(false),
             key_match_enabled: AtomicBool::new(false),
             current_transpose: AtomicI8::new(0),
@@ -1934,16 +1934,19 @@ mod tests {
     #[test]
     fn test_loop_state() {
         let mut loop_state = LoopState::default();
-        assert_eq!(loop_state.length_beats(), 1.0); // First element (1 beat minimum)
+        assert_eq!(loop_state.length_beats(), 0.125); // First element (1/8 beat)
 
         loop_state.increase_length();
-        assert_eq!(loop_state.length_beats(), 2.0);
+        assert_eq!(loop_state.length_beats(), 0.25);
 
         loop_state.increase_length();
-        assert_eq!(loop_state.length_beats(), 4.0);
+        assert_eq!(loop_state.length_beats(), 0.5);
+
+        loop_state.increase_length();
+        assert_eq!(loop_state.length_beats(), 1.0);
 
         loop_state.decrease_length();
-        assert_eq!(loop_state.length_beats(), 2.0);
+        assert_eq!(loop_state.length_beats(), 0.5);
     }
 
     #[test]

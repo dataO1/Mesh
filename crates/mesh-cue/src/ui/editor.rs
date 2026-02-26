@@ -39,7 +39,7 @@ pub fn view(state: &LoadedTrackState, stem_link_selection: Option<usize>, stem_c
     container(
         column![
             header,
-            Space::new().height(8.0),  // Explicit spacing after header
+            Space::new().height(14.0),  // Spacing between header and waveforms
             main_row,
             cue_panel,         // Hot cues - directly under waveforms
         ],
@@ -53,9 +53,13 @@ pub fn view(state: &LoadedTrackState, stem_link_selection: Option<usize>, stem_c
 
 /// Header with track info and editable BPM/key
 fn view_header(state: &LoadedTrackState) -> Element<'_, Message> {
-    let track_name = &state.title;
+    // Build "Artist - Title" display
+    let display_name = match &state.artist {
+        Some(artist) if !artist.is_empty() => format!("{} - {}", artist, state.title),
+        _ => state.title.clone(),
+    };
 
-    let title = text(track_name).size(20);
+    let title = text(display_name).size(20);
 
     let bpm_label = text("BPM:");
     let bpm_minus = button(text("-").size(12))
@@ -95,7 +99,10 @@ fn view_header(state: &LoadedTrackState) -> Element<'_, Message> {
         text("").size(20)
     };
 
+    // Left spacer: match transport column (120px) so title aligns with waveform start
+    // Right spacer: match stem link column (50px) so grid controls align with beat grid
     row![
+        Space::new().width(Length::Fixed(120.0)),
         title,
         modified_indicator,
         Space::new().width(Length::Fill),
@@ -109,6 +116,7 @@ fn view_header(state: &LoadedTrackState) -> Element<'_, Message> {
         nudge_left,
         nudge_right,
         align_grid,
+        Space::new().width(Length::Fixed(50.0)),
     ]
     .spacing(10)
     .align_y(Alignment::Center)

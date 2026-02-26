@@ -157,8 +157,8 @@ pub enum DeckMessage {
     ShiftReleased,
 }
 
-/// Loop length labels for display (1 beat to 64 bars = 256 beats)
-const LOOP_LENGTHS: [f32; 9] = [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0];
+/// Loop length labels for display (1/8 beat to 64 bars = 256 beats)
+const LOOP_LENGTHS: [f32; 12] = [0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0];
 
 impl DeckView {
     /// Create a new deck view

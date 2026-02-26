@@ -311,6 +311,14 @@ pub struct SettingsEntry {
     pub on_select: fn(usize) -> SettingsMessage,
 }
 
+/// Format a beat count for display (fraction notation for sub-beat values)
+fn format_beats(beats: f64) -> String {
+    if (beats - 0.125).abs() < 0.001 { "1/8".into() }
+    else if (beats - 0.25).abs() < 0.001 { "1/4".into() }
+    else if (beats - 0.5).abs() < 0.001 { "1/2".into() }
+    else { format!("{:.0}", beats) }
+}
+
 /// Zoom bar options used in both the registry and view
 pub const ZOOM_SIZES: [u32; 6] = [2, 4, 8, 16, 32, 64];
 /// Grid density options in beats — used in both the registry and view
@@ -345,9 +353,7 @@ pub fn build_settings_entries(state: &SettingsState) -> Vec<SettingsEntry> {
         },
         SettingsEntry {
             label: "Loop/Beat Jump Length",
-            options: LOOP_LENGTH_OPTIONS.iter().map(|&b| {
-                if b < 1.0 { format!("{:.2}", b) } else { format!("{:.0}", b) }
-            }).collect(),
+            options: LOOP_LENGTH_OPTIONS.iter().map(|&b| format_beats(b)).collect(),
             selected: state.draft_loop_length_index,
             on_select: |idx| SettingsMessage::UpdateLoopLength(idx),
         },
@@ -382,6 +388,12 @@ pub fn build_settings_entries(state: &SettingsState) -> Vec<SettingsEntry> {
             on_select: |idx| SettingsMessage::UpdateThemeIndex(idx),
         },
         SettingsEntry {
+            label: "Font",
+            options: AppFont::ALL.iter().map(|f| f.display_name().to_string()).collect(),
+            selected: AppFont::ALL.iter().position(|&f| f == state.draft_font).unwrap_or(0),
+            on_select: |idx| SettingsMessage::UpdateFont(AppFont::ALL[idx.min(AppFont::ALL.len() - 1)]),
+        },
+        SettingsEntry {
             label: "Show Local Collection",
             options: vec!["On".into(), "Off".into()],
             selected: if state.draft_show_local_collection { 0 } else { 1 },
@@ -410,12 +422,6 @@ pub fn build_settings_entries(state: &SettingsState) -> Vec<SettingsEntry> {
             options: BUFFER_SIZES.iter().map(|s| format!("{} bars", s)).collect(),
             selected: BUFFER_SIZES.iter().position(|&s| s == state.draft_slicer_buffer_bars).unwrap_or(0),
             on_select: |idx| SettingsMessage::UpdateSlicerBufferBars(BUFFER_SIZES[idx.min(BUFFER_SIZES.len() - 1)]),
-        },
-        SettingsEntry {
-            label: "Font",
-            options: AppFont::ALL.iter().map(|f| f.display_name().to_string()).collect(),
-            selected: AppFont::ALL.iter().position(|&f| f == state.draft_font).unwrap_or(0),
-            on_select: |idx| SettingsMessage::UpdateFont(AppFont::ALL[idx.min(AppFont::ALL.len() - 1)]),
         },
     ]
 }
@@ -482,8 +488,8 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
     // Slicer settings section
     let slicer_section = view_slicer_section(state, nav);
 
-    // Dynamic entry indices for network/update (base entries = indices 0..18)
-    let mut next_idx = 14usize;
+    // Dynamic entry indices for network/update (base entries = indices 0..14)
+    let mut next_idx = 15usize;
 
     // Network settings section (only when nmcli available)
     let network_section: Option<Element<'_, Message>> = state.network.as_ref().map(|ns| {
@@ -587,17 +593,13 @@ fn view_loop_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiNav>
     let hint = text("Loop length also controls beat jump distance")
         .size(12);
 
-    // Loop length buttons (0.25, 0.5, 1, 2, 4, 8, 16 beats)
+    // Loop length buttons (1/8 beat to 256 beats)
     let loop_buttons: Vec<Element<Message>> = LOOP_LENGTH_OPTIONS
         .iter()
         .enumerate()
         .map(|(idx, &beats)| {
             let is_selected = state.draft_loop_length_index == idx;
-            let label = if beats < 1.0 {
-                format!("{:.2}", beats)
-            } else {
-                format!("{:.0}", beats)
-            };
+            let label = format_beats(beats);
             let btn = button(text(label).size(11))
                 .on_press(Message::Settings(SettingsMessage::UpdateLoopLength(idx)))
                 .style(if is_selected {
@@ -773,6 +775,30 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
     let palette_row = row(palette_buttons).spacing(4).align_y(Alignment::Center);
     let palette_row = wrap_navigable(palette_row.into(), 8, nav);
 
+    // Font section (right after Theme)
+    let font_subsection = text("Font").size(14);
+    let font_hint = text("UI typeface (restart required to apply)")
+        .size(12);
+
+    let font_buttons: Vec<Element<Message>> = AppFont::ALL
+        .iter()
+        .map(|&font| {
+            let is_selected = state.draft_font == font;
+            let btn = button(text(font.display_name()).size(11))
+                .on_press(Message::Settings(SettingsMessage::UpdateFont(font)))
+                .style(if is_selected {
+                    iced::widget::button::primary
+                } else {
+                    iced::widget::button::secondary
+                })
+                .width(Length::Shrink);
+            btn.into()
+        })
+        .collect();
+
+    let font_row = row(font_buttons).spacing(4).align_y(Alignment::Center).wrap();
+    let font_row = wrap_navigable(font_row.into(), 9, nav);
+
     // Browser settings
     let browser_subsection = text("Browser").size(14);
     let local_collection_label = text("Show Local Collection").size(14);
@@ -787,7 +813,7 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
     ]
     .spacing(10)
     .align_y(Alignment::Center);
-    let local_collection_row = wrap_navigable(local_collection_row.into(), 9, nav);
+    let local_collection_row = wrap_navigable(local_collection_row.into(), 10, nav);
 
     // Key scoring model section
     let key_model_subsection = text("Key Matching").size(14);
@@ -811,31 +837,7 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
         .collect();
 
     let model_row = row(model_buttons).spacing(4).align_y(Alignment::Center);
-    let model_row = wrap_navigable(model_row.into(), 10, nav);
-
-    // Font section
-    let font_subsection = text("Font").size(14);
-    let font_hint = text("UI typeface (restart required to apply)")
-        .size(12);
-
-    let font_buttons: Vec<Element<Message>> = AppFont::ALL
-        .iter()
-        .map(|&font| {
-            let is_selected = state.draft_font == font;
-            let btn = button(text(font.display_name()).size(11))
-                .on_press(Message::Settings(SettingsMessage::UpdateFont(font)))
-                .style(if is_selected {
-                    iced::widget::button::primary
-                } else {
-                    iced::widget::button::secondary
-                })
-                .width(Length::Shrink);
-            btn.into()
-        })
-        .collect();
-
-    let font_row = row(font_buttons).spacing(4).align_y(Alignment::Center).wrap();
-    let font_row = wrap_navigable(font_row.into(), 11, nav);
+    let model_row = wrap_navigable(model_row.into(), 11, nav);
 
     container(
         column![
@@ -860,16 +862,16 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
             palette_hint,
             palette_row,
             Space::new().height(10),
+            font_subsection,
+            font_hint,
+            font_row,
+            Space::new().height(10),
             browser_subsection,
             local_collection_row,
             Space::new().height(10),
             key_model_subsection,
             key_model_hint,
             model_row,
-            Space::new().height(10),
-            font_subsection,
-            font_hint,
-            font_row,
         ]
         .spacing(8),
     )
@@ -895,7 +897,7 @@ fn view_loudness_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidi
     ]
     .spacing(10)
     .align_y(Alignment::Center);
-    let auto_gain_row = wrap_navigable(auto_gain_row.into(), 11, nav);
+    let auto_gain_row = wrap_navigable(auto_gain_row.into(), 12, nav);
 
     // Target LUFS section
     let target_subsection = text("Target Loudness").size(14);
@@ -927,7 +929,7 @@ fn view_loudness_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidi
     ]
     .spacing(10)
     .align_y(Alignment::Center);
-    let target_row = wrap_navigable(target_row.into(), 12, nav);
+    let target_row = wrap_navigable(target_row.into(), 13, nav);
 
     // Current preset description
     let preset_desc = text(lufs_preset_name(state.draft_target_lufs_index)).size(12);
@@ -982,7 +984,7 @@ fn view_slicer_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiNa
     ]
     .spacing(10)
     .align_y(Alignment::Center);
-    let buffer_row = wrap_navigable(buffer_row.into(), 13, nav);
+    let buffer_row = wrap_navigable(buffer_row.into(), 14, nav);
 
     // Note about preset editing
     let preset_hint = text("Edit slicer presets and per-stem patterns in mesh-cue")

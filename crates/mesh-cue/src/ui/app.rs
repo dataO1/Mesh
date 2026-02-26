@@ -1067,7 +1067,10 @@ impl MeshCueApp {
 
         row![
             logo,
-            text("mesh").size(30).font(iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT }),
+            text("mesh").size(30).font({
+                let f = self.settings.draft_font.to_iced_font();
+                iced::Font { weight: iced::font::Weight::Bold, ..f }
+            }),
             Space::new().width(Length::Fill),
             slicer_btn,
             fx_btn,

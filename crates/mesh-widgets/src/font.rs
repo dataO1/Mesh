@@ -1,6 +1,6 @@
 //! Application font configuration
 //!
-//! Provides a selectable set of monospace fonts bundled at compile time.
+//! Provides a selectable set of fonts bundled at compile time.
 //! Both mesh-player and mesh-cue share this enum for consistent font
 //! selection across the UI and config persistence.
 
@@ -33,23 +33,17 @@ pub enum AppFont {
     /// Press Start 2P — retro 8-bit pixel font (OFL 1.1)
     PressStart2P,
     /// Exo — geometric sans-serif with a futuristic feel (OFL 1.1)
-    Exo,
-    /// Space Mono — fixed-width typeface designed for editorial use (OFL 1.1)
     #[default]
-    SpaceMono,
-    /// saxMono — clean monospace between Courier and Letter Gothic (Freeware)
-    SaxMono,
+    Exo,
 }
 
 impl AppFont {
     /// All available fonts in display order.
-    pub const ALL: [AppFont; 6] = [
+    pub const ALL: [AppFont; 4] = [
         AppFont::Hack,
         AppFont::JetBrainsMono,
         AppFont::PressStart2P,
         AppFont::Exo,
-        AppFont::SpaceMono,
-        AppFont::SaxMono,
     ];
 
     /// Human-readable name for settings UI.
@@ -59,8 +53,6 @@ impl AppFont {
             AppFont::JetBrainsMono => "JetBrains Mono",
             AppFont::PressStart2P => "Press Start 2P",
             AppFont::Exo => "Exo",
-            AppFont::SpaceMono => "Space Mono",
-            AppFont::SaxMono => "Sax Mono",
         }
     }
 
@@ -71,8 +63,6 @@ impl AppFont {
             AppFont::JetBrainsMono => "JetBrains Mono",
             AppFont::PressStart2P => "Press Start 2P",
             AppFont::Exo => "Exo",
-            AppFont::SpaceMono => "Space Mono",
-            AppFont::SaxMono => "saxMono",
         }
     }
 
@@ -83,8 +73,6 @@ impl AppFont {
             AppFont::JetBrainsMono => include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf"),
             AppFont::PressStart2P => include_bytes!("../../../assets/fonts/PressStart2P-Regular.ttf"),
             AppFont::Exo => include_bytes!("../../../assets/fonts/Exo-Regular.ttf"),
-            AppFont::SpaceMono => include_bytes!("../../../assets/fonts/SpaceMono-Regular.ttf"),
-            AppFont::SaxMono => include_bytes!("../../../assets/fonts/SaxMono-Regular.ttf"),
         }
     }
 
@@ -105,10 +93,8 @@ impl AppFont {
         match self {
             AppFont::Hack => 1.0,
             AppFont::JetBrainsMono => 1.0,
-            AppFont::PressStart2P => 0.42,
+            AppFont::PressStart2P => 0.32,
             AppFont::Exo => 1.0,
-            AppFont::SpaceMono => 1.1,
-            AppFont::SaxMono => 1.1,
         }
     }
 }

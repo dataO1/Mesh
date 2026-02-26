@@ -19,6 +19,8 @@ pub struct LoadedTrackState {
     pub path: PathBuf,
     /// Track display title
     pub title: String,
+    /// Track artist
+    pub artist: Option<String>,
     /// Loaded audio data (wrapped in Arc for efficient cloning in messages)
     /// None while audio is loading asynchronously
     pub track: Option<Arc<LoadedTrack>>,

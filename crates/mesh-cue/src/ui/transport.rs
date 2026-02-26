@@ -10,6 +10,7 @@
 use super::app::{LoadedTrackState, Message};
 use iced::widget::{button, column, container, mouse_area, row, text};
 use iced::{Alignment, Background, Border, Color, Element, Length};
+use mesh_widgets::{COMBINED_WAVEFORM_GAP, WAVEFORM_HEIGHT, ZOOMED_WAVEFORM_HEIGHT};
 
 /// Render vertical player controls (left of waveform)
 pub fn view(state: &LoadedTrackState) -> Element<'_, Message> {
@@ -21,10 +22,11 @@ pub fn view(state: &LoadedTrackState) -> Element<'_, Message> {
     let controls_enabled = !state.loading_audio && state.stems.is_some();
 
     // Loop toggle button (green when active)
+    // Uses Fill height to absorb remaining space so transport matches waveform height
     let loop_btn = button(text("LOOP").size(14))
         .on_press_maybe(controls_enabled.then_some(Message::ToggleLoop))
         .width(Length::Fixed(104.0))
-        .height(Length::Fixed(32.0))
+        .height(Length::Fill)
         .style(move |theme, status| {
             if loop_active {
                 // Green style when loop is active
@@ -46,18 +48,22 @@ pub fn view(state: &LoadedTrackState) -> Element<'_, Message> {
     // Loop length controls: [-] [N beats] [+]
     let loop_length_beats = state.loop_length_beats();
 
-    // Halve loop length button
-    let halve_btn = button(text("−").size(14))
+    // Halve loop length button — center text inside button
+    let halve_btn = button(text("−").size(14).center())
         .on_press_maybe(controls_enabled.then_some(Message::AdjustLoopLength(-1)))
         .width(Length::Fixed(28.0))
         .height(Length::Fixed(24.0))
         .padding(0);
 
-    // Loop length label
-    let beat_label = text(format!("{}", loop_length_beats)).size(12);
+    // Loop length label (use fraction notation for sub-beat values)
+    let beat_text = if (loop_length_beats - 0.125).abs() < 0.001 { "1/8".into() }
+        else if (loop_length_beats - 0.25).abs() < 0.001 { "1/4".into() }
+        else if (loop_length_beats - 0.5).abs() < 0.001 { "1/2".into() }
+        else { format!("{:.0}", loop_length_beats) };
+    let beat_label = text(beat_text).size(12);
 
-    // Double loop length button
-    let double_btn = button(text("+").size(14))
+    // Double loop length button — center text inside button
+    let double_btn = button(text("+").size(14).center())
         .on_press_maybe(controls_enabled.then_some(Message::AdjustLoopLength(1)))
         .width(Length::Fixed(28.0))
         .height(Length::Fixed(24.0))
@@ -131,7 +137,8 @@ pub fn view(state: &LoadedTrackState) -> Element<'_, Message> {
         .spacing(8)
         .align_x(Alignment::Center),
     )
-    .padding(8)
+    .padding(iced::Padding::from([0, 8]))  // No vertical padding — flush with waveform
     .width(Length::Fixed(120.0))
+    .height(Length::Fixed(ZOOMED_WAVEFORM_HEIGHT + COMBINED_WAVEFORM_GAP + WAVEFORM_HEIGHT))
     .into()
 }

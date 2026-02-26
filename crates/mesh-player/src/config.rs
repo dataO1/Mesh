@@ -226,13 +226,13 @@ pub struct DisplayConfig {
 }
 
 /// Loop length options in beats (matches mesh-core/deck.rs LOOP_LENGTHS)
-/// Range: 1 beat to 64 bars (256 beats)
-pub const LOOP_LENGTH_OPTIONS: [f64; 9] = [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0];
+/// Range: 1/8 beat to 64 bars (256 beats)
+pub const LOOP_LENGTH_OPTIONS: [f64; 12] = [0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0];
 
 impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
-            default_loop_length_index: 2, // Default to 4 beats (index 2 in LOOP_LENGTH_OPTIONS)
+            default_loop_length_index: 5, // Default to 4 beats (index 5 in LOOP_LENGTH_OPTIONS)
             default_zoom_bars: 8,         // Default zoomed waveform to 8 bars
             grid_bars: 32,                // Default grid density to 32 beats (8 bars)
             theme: "Mesh".to_string(), // Default theme (from theme.yaml)
@@ -240,7 +240,7 @@ impl Default for DisplayConfig {
             key_scoring_model: KeyScoringModel::default(), // Camelot wheel
             waveform_layout: WaveformLayout::default(),  // Horizontal
             waveform_abstraction: WaveformAbstraction::default(), // Medium
-            font: AppFont::default(), // Space Mono
+            font: AppFont::default(), // Exo
         }
     }
 }

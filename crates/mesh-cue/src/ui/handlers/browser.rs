@@ -141,23 +141,13 @@ impl MeshCueApp {
     fn handle_browser_table(&mut self, side: BrowserSide, table_msg: TrackTableMessage<NodeId>) -> Task<Message> {
         let side_name = CollectionState::side_name(side);
 
-        // Handle CellClicked: if already selected, enter edit mode; otherwise treat as Select
+        // Handle CellClicked: if already selected, defer edit until mouse release
+        // (avoids race where second click of double-click triggers both edit AND load)
         if let TrackTableMessage::CellClicked(ref track_id, column) = table_msg {
             let already_selected = self.collection.browser(side).table_state.is_selected(track_id);
             if already_selected && !self.shift_held && !self.ctrl_held {
-                // Find current value from in-memory track data
-                let current_value = self.collection.tracks(side).iter()
-                    .find(|t| &t.id == track_id)
-                    .map(|t| match column {
-                        TrackColumn::Name => t.title.clone(),
-                        TrackColumn::Artist => t.artist.clone().unwrap_or_default(),
-                        TrackColumn::Bpm => t.bpm.map(|b| format!("{:.1}", b)).unwrap_or_default(),
-                        TrackColumn::Key => t.key.clone().unwrap_or_default(),
-                        _ => String::new(),
-                    })
-                    .unwrap_or_default();
-                self.collection.browser_mut(side).table_state
-                    .start_edit(track_id.clone(), column, current_value);
+                // Defer edit — will execute on mouse release if no double-click intervenes
+                self.collection.pending_cell_edit = Some((track_id.clone(), column));
                 return Task::none();
             }
             // Not already selected — fall through to Select handling below
@@ -170,6 +160,15 @@ impl MeshCueApp {
             _ => None,
         };
         if let Some(ref track_id) = select_track_id {
+            // Exclusive selection: clear the OTHER browser's selection
+            let other_side = match side {
+                BrowserSide::Left => BrowserSide::Right,
+                BrowserSide::Right => BrowserSide::Left,
+            };
+            if self.collection.browser(other_side).table_state.has_selection() {
+                self.collection.browser_mut(other_side).table_state.clear_selection();
+            }
+
             let modifiers = mesh_widgets::SelectModifiers {
                 shift: self.shift_held,
                 ctrl: self.ctrl_held,
@@ -184,6 +183,8 @@ impl MeshCueApp {
             if already_selected && !modifiers.shift && !modifiers.ctrl {
                 log::info!("[{} SELECT] preserving multi-selection for drag", side_name);
             } else {
+                // Clear pending cell edit when selection changes
+                self.collection.pending_cell_edit = None;
                 // Split borrow: tracks and browser are separate fields on CollectionState
                 let (tracks, browser) = match side {
                     BrowserSide::Left => (&self.collection.left_tracks, &mut self.collection.browser_left),
@@ -276,6 +277,8 @@ impl MeshCueApp {
 
         // Handle double-click to load track
         if let TrackTableMessage::Activate(ref track_id) = table_msg {
+            // Cancel any pending cell edit — double-click means "load", not "edit"
+            self.collection.pending_cell_edit = None;
             log::info!("{} browser: Track activated (double-click): {:?}", side_name, track_id);
             if let Some(node) = self.domain.get_node(track_id) {
                 if let Some(path) = &node.track_path {
@@ -287,6 +290,28 @@ impl MeshCueApp {
         // Handle drop on table (both on track rows and empty table space)
         if matches!(table_msg, TrackTableMessage::DropReceived(_) | TrackTableMessage::DropReceivedOnTable) {
             log::debug!("{} table: DropReceived", side_name);
+
+            // Execute pending cell edit on mouse release (deferred from CellClicked).
+            // If a double-click occurred, Activate already cleared pending_cell_edit.
+            if let Some((edit_id, edit_column)) = self.collection.pending_cell_edit.take() {
+                if self.collection.dragging_track.is_none() {
+                    let current_value = self.collection.tracks(side).iter()
+                        .find(|t| t.id == edit_id)
+                        .map(|t| match edit_column {
+                            TrackColumn::Name => t.title.clone(),
+                            TrackColumn::Artist => t.artist.clone().unwrap_or_default(),
+                            TrackColumn::Bpm => t.bpm.map(|b| format!("{:.1}", b)).unwrap_or_default(),
+                            TrackColumn::Key => t.key.clone().unwrap_or_default(),
+                            _ => String::new(),
+                        })
+                        .unwrap_or_default();
+                    self.collection.browser_mut(side).table_state
+                        .start_edit(edit_id, edit_column, current_value);
+                    self.collection.pending_drag = None;
+                    return Task::none();
+                }
+            }
+
             let had_pending = self.collection.pending_drag.is_some();
             let pending_had_modifiers = self.collection.pending_drag.as_ref()
                 .map(|p| p.had_modifiers).unwrap_or(false);

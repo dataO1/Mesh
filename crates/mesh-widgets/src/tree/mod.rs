@@ -293,12 +293,15 @@ where
     let mut elements = Vec::new();
 
     for node in nodes {
-        let indent = Space::new().width(Length::Fixed((depth * 16) as f32));
+        // Fold marker overlaps the indent space: text stays left-aligned,
+        // the arrow sits in front of it.  For depth-0 nodes (no indent)
+        // the arrow extends to the left of the text.
+        let indent_px = (depth * 16) as f32;
         let is_expanded = state.is_expanded(&node.id);
         let is_selected = state.is_selected(&node.id);
         let is_editing = state.is_editing(&node.id);
 
-        // Expand/collapse arrow button
+        // Expand/collapse arrow button (overlaid into indent area)
         let arrow: Element<'a, Message> = if node.has_children() {
             let arrow_text = if is_expanded { "\u{25BC}" } else { "\u{25B6}" }; // ▼ or ▶
             let id_clone = node.id.clone();
@@ -318,8 +321,13 @@ where
                 .on_press(on_msg(TreeMessage::Toggle(id_clone)))
                 .into()
         } else {
-            Space::new().width(Length::Fixed(22.0)).into()
+            Space::new().width(Length::Fixed(0.0)).into()
         };
+
+        // Indent space before the arrow (arrow sits at end of indent)
+        let arrow_width = if node.has_children() { 22.0_f32 } else { 0.0 };
+        let indent_before_arrow = (indent_px - arrow_width).max(0.0);
+        let indent = Space::new().width(Length::Fixed(indent_before_arrow));
 
         // Icon
         let icon = node.icon.as_char();

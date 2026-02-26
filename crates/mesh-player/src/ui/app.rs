@@ -1642,7 +1642,9 @@ impl MeshApp {
     fn view_header(&self) -> Element<'_, Message> {
         let logo = iced::widget::image(mesh_widgets::LOGO_HANDLE.clone())
             .height(28);
-        let title = row![logo, text("mesh").size(30).font(iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT })]
+        let app_font = self.config.display.font.to_iced_font();
+        let bold_font = iced::Font { weight: iced::font::Weight::Bold, ..app_font };
+        let title = row![logo, text("mesh").size(30).font(bold_font)]
             .spacing(10)
             .align_y(iced::Alignment::Center);
 

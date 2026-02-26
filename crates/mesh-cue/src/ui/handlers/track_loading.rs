@@ -86,9 +86,12 @@ impl MeshCueApp {
                         .unwrap_or_else(|| String::from("Unknown Track"))
                 });
 
+                let artist = metadata.artist.clone();
+
                 self.collection.loaded_track = Some(LoadedTrackState {
                     path: path.clone(),
                     title,
+                    artist,
                     track: None,
                     stems: None,
                     cue_points,

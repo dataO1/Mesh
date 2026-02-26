@@ -81,8 +81,8 @@ pub struct DisplayConfig {
     pub font: AppFont,
 }
 
-/// Loop length options in beats
-pub const LOOP_LENGTH_OPTIONS: [f32; 7] = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0];
+/// Loop length options in beats (1/8 beat to 16 beats)
+pub const LOOP_LENGTH_OPTIONS: [f32; 8] = [0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0];
 
 impl Default for DisplayConfig {
     fn default() -> Self {
@@ -90,9 +90,9 @@ impl Default for DisplayConfig {
             grid_bars: 32,      // Default: red grid line every 32 beats (8 bars)
             zoom_bars: 8,       // Default zoomed waveform to 8 bars
             global_bpm: 128.0,  // Standard house/techno BPM
-            default_loop_length_index: 4,  // Default to 4 beats (index 4 in LOOP_LENGTH_OPTIONS)
+            default_loop_length_index: 5,  // Default to 4 beats (index 5 in LOOP_LENGTH_OPTIONS)
             theme: "Mesh".to_string(),
-            font: AppFont::default(), // Space Mono
+            font: AppFont::default(), // Exo
         }
     }
 }

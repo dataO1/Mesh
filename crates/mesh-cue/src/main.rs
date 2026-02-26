@@ -51,8 +51,6 @@ fn main() -> iced::Result {
         .font(mesh_widgets::AppFont::JetBrainsMono.font_data())
         .font(mesh_widgets::AppFont::PressStart2P.font_data())
         .font(mesh_widgets::AppFont::Exo.font_data())
-        .font(mesh_widgets::AppFont::SpaceMono.font_data())
-        .font(mesh_widgets::AppFont::SaxMono.font_data())
         .default_font(selected_font.to_iced_font())
         .theme(MeshCueApp::theme)
         .subscription(MeshCueApp::subscription)

@@ -123,6 +123,10 @@ pub struct CollectionState {
     pub pending_drag: Option<PendingDragState>,
     /// Which browser the mouse is currently hovering over (during drag)
     pub drag_hover_browser: Option<BrowserSide>,
+    /// Pending cell edit (deferred until mouse release to avoid double-click race)
+    /// Set by CellClicked on an already-selected row, cleared by Activate (double-click).
+    /// Executed on DropReceived (mouse release) if still present.
+    pub pending_cell_edit: Option<(NodeId, TrackColumn)>,
     /// Active theme stem colors (for waveform rendering)
     pub stem_colors: [Color; 4],
 }
@@ -219,6 +223,7 @@ impl Default for CollectionState {
             dragging_track: None,
             pending_drag: None,
             drag_hover_browser: None,
+            pending_cell_edit: None,
             stem_colors: mesh_widgets::STEM_COLORS,
         }
     }
