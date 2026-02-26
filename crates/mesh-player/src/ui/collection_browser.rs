@@ -385,6 +385,13 @@ impl CollectionBrowserState {
                                     return Some((0, path));
                                 }
                             }
+                            TrackTableMessage::CellClicked(track_id, _) => {
+                                // Treat same as Select in mesh-player (no cell editing)
+                                self.browser.table_state.select(track_id.clone());
+                                let active = self.active_track_list();
+                                self.scroll_index = active.iter().position(|t| &t.id == track_id);
+                                self.selected_track_path = self.get_track_path(track_id);
+                            }
                             // Ignore all edit, drop, and context menu operations (mesh-player is read-only)
                             TrackTableMessage::StartEdit(_, _, _)
                             | TrackTableMessage::EditChanged(_)

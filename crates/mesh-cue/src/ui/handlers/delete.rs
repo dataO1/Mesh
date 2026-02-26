@@ -30,10 +30,10 @@ impl MeshCueApp {
             return Task::none();
         }
 
-        // Get track names from domain
+        // Get track names directly from NodeId (last path segment = track title)
         let track_names: Vec<String> = selected_ids
             .iter()
-            .filter_map(|id| self.domain.get_node(id).map(|n| n.name.clone()))
+            .map(|id| id.name().to_string())
             .collect();
 
         // Determine delete target based on current folder
@@ -114,11 +114,9 @@ impl MeshCueApp {
 
             match target {
                 DeleteTarget::PlaylistTracks { track_ids, .. } => {
-                    // Remove tracks from playlist (not from collection)
-                    for track_id in track_ids {
-                        if let Err(e) = self.domain.remove_track_from_playlist_by_node(track_id) {
-                            log::error!("Failed to remove track from playlist: {:?}", e);
-                        }
+                    // Batch remove tracks from playlist (single DB query per playlist)
+                    if let Err(e) = self.domain.remove_tracks_from_playlist_batch(track_ids) {
+                        log::error!("Failed to batch remove tracks from playlist: {:?}", e);
                     }
                     // Refresh displays (re-applies current sort order)
                     self.collection.tree_nodes = self.domain.tree_nodes().to_vec();
@@ -132,11 +130,9 @@ impl MeshCueApp {
                     }
                 }
                 DeleteTarget::CollectionTracks { track_ids, .. } => {
-                    // PERMANENT deletion - delete files from disk!
-                    for track_id in track_ids {
-                        if let Err(e) = self.domain.delete_track_permanently_by_node(track_id) {
-                            log::error!("Failed to delete track permanently: {:?}", e);
-                        }
+                    // Batch PERMANENT deletion — DB batch + file deletion
+                    if let Err(e) = self.domain.delete_tracks_permanently_batch(track_ids) {
+                        log::error!("Failed to batch delete tracks permanently: {:?}", e);
                     }
                     // Refresh displays (re-applies current sort order)
                     self.collection.tree_nodes = self.domain.tree_nodes().to_vec();

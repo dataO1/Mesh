@@ -576,6 +576,31 @@ impl DatabaseService {
         TrackQuery::delete(&self.db, id)
     }
 
+    /// Delete multiple tracks and all their associated metadata in batch
+    pub fn delete_tracks_batch(&self, ids: &[i64]) -> Result<(), DbError> {
+        for &id in ids {
+            BatchQuery::batch_delete_track_metadata(&self.db, id)?;
+        }
+        // Batch delete all track rows in a single query
+        if !ids.is_empty() {
+            let rows: Vec<DataValue> = ids.iter()
+                .map(|&id| DataValue::List(vec![DataValue::from(id)]))
+                .collect();
+            let mut params = BTreeMap::new();
+            params.insert("rows".to_string(), DataValue::List(rows));
+            self.db.run_script(r#"
+                ?[id] <- $rows
+                :rm tracks {id}
+            "#, params)?;
+        }
+        Ok(())
+    }
+
+    /// Remove multiple tracks from a playlist by their database IDs
+    pub fn remove_tracks_from_playlist_batch(&self, playlist_id: i64, track_ids: &[i64]) -> Result<(), DbError> {
+        PlaylistQuery::remove_tracks_batch(&self.db, playlist_id, track_ids)
+    }
+
     /// Get all tracks in the database
     ///
     /// Returns tracks with basic metadata only (no cue_points/saved_loops/stem_links).

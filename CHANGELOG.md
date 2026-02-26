@@ -173,7 +173,9 @@ All notable changes to Mesh are documented in this file.
 - **Double-click edits cell instead of loading track** — Double-clicking an
   editable column entered edit mode because the first click of the double-click
   selected the row, making the "already selected?" check always true. Now
-  double-click always activates (loads) the track, regardless of prior selection.
+  double-click always activates (loads) the track. Cell editing is entered by
+  single-clicking an editable cell on an already-selected row (via `CellClicked`
+  message that checks selection state before the click modifies it).
 
 - **Shift-click selection and drag start very slow on large collections** —
   Shift-click selection cloned all track IDs into a temporary Vec on every click,
@@ -188,7 +190,17 @@ All notable changes to Mesh are documented in this file.
   reducing to 4 queries regardless of selection size. Also skips refreshing
   browser panes not showing the target playlist.
 
+- **Deleting or removing many tracks very slow** — Deleting N tracks from the
+  collection or removing N from a playlist ran O(N × folder_size) database
+  queries (each track loaded its entire folder/playlist to find one title).
+  Batch methods now group by folder/playlist, load once, resolve all titles
+  to DB IDs, then batch-delete in a single query. Confirmation dialog also
+  resolves names from NodeId directly instead of per-track DB lookups.
+
 ### Changed
+
+- **Header "mesh" text bolder and larger** — The "mesh" title in both apps is
+  now bold weight and 25% larger (size 24 → 30) for better visual presence.
 
 - **Deck header badge left padding** — The space to the left of the deck number
   badge is now 10px, matching the stem indicator strip width for visual alignment.

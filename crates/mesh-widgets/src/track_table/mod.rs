@@ -711,6 +711,10 @@ pub enum TrackTableMessage<Id> {
     /// Mouse released over the table container (for drop on empty space)
     /// Used to detect when dragged tracks are dropped onto the table area
     DropReceivedOnTable,
+    /// Single click on an editable cell (for edit-on-selected behavior)
+    /// If the track is already selected, this enters edit mode.
+    /// Otherwise, it behaves like Select.
+    CellClicked(Id, TrackColumn),
     /// Right-click on a track (for context menu)
     /// Contains the track ID and cursor position for menu placement
     RightClick(Id, Point),
@@ -1000,7 +1004,7 @@ where
                 .width(state.column_width(column))
                 .clip(true),
         )
-        .on_press(on_msg_select(TrackTableMessage::Select(id_select)))
+        .on_press(on_msg_select(TrackTableMessage::CellClicked(id_select, column)))
         .on_double_click(on_msg(TrackTableMessage::Activate(id.clone())))
         .on_release(on_msg_drop(TrackTableMessage::DropReceived(id_drop)))
         .into()

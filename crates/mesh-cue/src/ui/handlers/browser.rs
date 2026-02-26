@@ -141,8 +141,35 @@ impl MeshCueApp {
     fn handle_browser_table(&mut self, side: BrowserSide, table_msg: TrackTableMessage<NodeId>) -> Task<Message> {
         let side_name = CollectionState::side_name(side);
 
+        // Handle CellClicked: if already selected, enter edit mode; otherwise treat as Select
+        if let TrackTableMessage::CellClicked(ref track_id, column) = table_msg {
+            let already_selected = self.collection.browser(side).table_state.is_selected(track_id);
+            if already_selected && !self.shift_held && !self.ctrl_held {
+                // Find current value from in-memory track data
+                let current_value = self.collection.tracks(side).iter()
+                    .find(|t| &t.id == track_id)
+                    .map(|t| match column {
+                        TrackColumn::Name => t.title.clone(),
+                        TrackColumn::Artist => t.artist.clone().unwrap_or_default(),
+                        TrackColumn::Bpm => t.bpm.map(|b| format!("{:.1}", b)).unwrap_or_default(),
+                        TrackColumn::Key => t.key.clone().unwrap_or_default(),
+                        _ => String::new(),
+                    })
+                    .unwrap_or_default();
+                self.collection.browser_mut(side).table_state
+                    .start_edit(track_id.clone(), column, current_value);
+                return Task::none();
+            }
+            // Not already selected — fall through to Select handling below
+        }
+
         // Handle selection with CURRENT modifier state
-        if let TrackTableMessage::Select(ref track_id) = table_msg {
+        let is_select_like = matches!(table_msg, TrackTableMessage::Select(_) | TrackTableMessage::CellClicked(_, _));
+        let select_track_id = match &table_msg {
+            TrackTableMessage::Select(id) | TrackTableMessage::CellClicked(id, _) => Some(id.clone()),
+            _ => None,
+        };
+        if let Some(ref track_id) = select_track_id {
             let modifiers = mesh_widgets::SelectModifiers {
                 shift: self.shift_held,
                 ctrl: self.ctrl_held,
@@ -201,7 +228,7 @@ impl MeshCueApp {
         }
 
         // Handle pending drag initiation (actual drag starts after mouse moves threshold)
-        if let TrackTableMessage::Select(_) = &table_msg {
+        if is_select_like {
             let selected = &self.collection.browser(side).table_state.selected;
             if !selected.is_empty() {
                 // Resolve names from already-loaded track rows (no DB queries needed)

@@ -120,7 +120,7 @@ where
                 self.table_state.set_search(query.clone());
                 None
             }
-            TrackTableMessage::Select(_id) => {
+            TrackTableMessage::Select(_id) | TrackTableMessage::CellClicked(_id, _) => {
                 // Cancel any in-progress edit when selecting
                 self.table_state.cancel_edit();
                 // Selection with modifiers is handled by the app's update() handler
