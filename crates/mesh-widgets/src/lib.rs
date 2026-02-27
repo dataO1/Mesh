@@ -40,7 +40,7 @@ pub mod tree;
 pub mod waveform;
 
 // Re-export commonly used items
-pub use font::{AppFont, LOGO_HANDLE};
+pub use font::{AppFont, FontSize, LOGO_HANDLE, set_font_scale, sz};
 pub use theme::{WaveformConfig, CUE_COLORS, STEM_COLORS, STEM_NAMES, STEM_NAMES_SHORT};
 
 // Button styling functions

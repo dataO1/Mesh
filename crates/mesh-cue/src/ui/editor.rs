@@ -4,6 +4,7 @@ use super::app::{LoadedTrackState, Message};
 use super::waveform::view_combined_waveform;
 use super::{cue_editor, transport};
 use iced::widget::{button, column, container, row, text, text_input, Space};
+use mesh_widgets::sz;
 use iced::{Alignment, Color, Element, Length};
 
 /// Render the track editor
@@ -16,7 +17,7 @@ pub fn view(state: &LoadedTrackState, stem_link_selection: Option<usize>, stem_c
     let header = view_header(state);
 
     // Player controls (vertical, left of waveforms)
-    let player_controls = transport::view(state);
+    let player_controls = transport::view(state, stem_colors[0]);
 
     // Combined waveform canvas (zoomed detail view above overview)
     // Uses single canvas to work around iced bug #3040 where multiple Canvas widgets
@@ -25,7 +26,7 @@ pub fn view(state: &LoadedTrackState, stem_link_selection: Option<usize>, stem_c
     let waveforms = view_combined_waveform(&state.combined_waveform, state.interpolated_playhead_position(), stem_colors);
 
     // Stem link buttons as vertical column (right of waveforms)
-    let stem_links_column = cue_editor::view_stem_links_column(state, stem_link_selection);
+    let stem_links_column = cue_editor::view_stem_links_column(state, stem_link_selection, stem_colors);
 
     // Layout: player controls on left, waveforms center, stem links right
     // Align to top (Start) so content doesn't float in the middle
@@ -34,7 +35,7 @@ pub fn view(state: &LoadedTrackState, stem_link_selection: Option<usize>, stem_c
         .align_y(Alignment::Start);
 
     // Hot cue buttons (single row of 8) - directly under waveforms
-    let cue_panel = cue_editor::view(state);
+    let cue_panel = cue_editor::view(state, stem_colors);
 
     container(
         column![
@@ -59,10 +60,10 @@ fn view_header(state: &LoadedTrackState) -> Element<'_, Message> {
         _ => state.title.clone(),
     };
 
-    let title = text(display_name).size(20);
+    let title = text(display_name).size(sz(24.0));
 
     let bpm_label = text("BPM:");
-    let bpm_minus = button(text("-").size(12))
+    let bpm_minus = button(text("-").size(sz(12.0)))
         .padding([4, 8])
         .on_press(Message::DecreaseBpm);
     let bpm_input = text_input("BPM", &format!("{:.2}", state.bpm))
@@ -72,7 +73,7 @@ fn view_header(state: &LoadedTrackState) -> Element<'_, Message> {
                 .unwrap_or(Message::SetBpm(state.bpm))
         })
         .width(Length::Fixed(80.0));
-    let bpm_plus = button(text("+").size(12))
+    let bpm_plus = button(text("+").size(sz(12.0)))
         .padding([4, 8])
         .on_press(Message::IncreaseBpm);
 
@@ -82,21 +83,21 @@ fn view_header(state: &LoadedTrackState) -> Element<'_, Message> {
         .width(Length::Fixed(60.0));
 
     // Beat grid controls
-    let grid_label = text("Grid:").size(14);
-    let nudge_left = button(text("<<").size(12))
+    let grid_label = text("Grid:").size(sz(14.0));
+    let nudge_left = button(text("<<").size(sz(12.0)))
         .padding([4, 8])
         .on_press(Message::NudgeBeatGridLeft);
-    let nudge_right = button(text(">>").size(12))
+    let nudge_right = button(text(">>").size(sz(12.0)))
         .padding([4, 8])
         .on_press(Message::NudgeBeatGridRight);
-    let align_grid = button(text("│").size(14))
+    let align_grid = button(text("│").size(sz(14.0)))
         .padding([4, 10])
         .on_press(Message::AlignBeatGridToPlayhead);
 
     let modified_indicator = if state.modified {
-        text("*").size(20)
+        text("*").size(sz(20.0))
     } else {
-        text("").size(20)
+        text("").size(sz(20.0))
     };
 
     // Left spacer: match transport column (120px) so title aligns with waveform start

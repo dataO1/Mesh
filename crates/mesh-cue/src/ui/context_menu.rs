@@ -5,6 +5,7 @@
 use super::app::Message;
 use crate::analysis::ReanalysisScope;
 use iced::widget::{button, column, container, text};
+use mesh_widgets::sz;
 use iced::{Background, Border, Element, Length, Point};
 use mesh_core::playlist::NodeId;
 
@@ -220,7 +221,7 @@ pub fn view(state: &ContextMenuState) -> Option<Element<'static, Message>> {
 
 /// Create a menu item button
 fn menu_item(label: impl ToString, message: Message) -> Element<'static, Message> {
-    button(text(label.to_string()).size(13))
+    button(text(label.to_string()).size(sz(13.0)))
         .on_press(message)
         .width(Length::Fill)
         .padding([6, 12])
@@ -242,7 +243,7 @@ fn menu_item(label: impl ToString, message: Message) -> Element<'static, Message
 
 /// Create a danger-styled menu item (for destructive actions)
 fn menu_item_danger(label: impl ToString, message: Message) -> Element<'static, Message> {
-    button(text(label.to_string()).size(13).color(iced::Color::from_rgb(0.9, 0.3, 0.3)))
+    button(text(label.to_string()).size(sz(13.0)).color(iced::Color::from_rgb(0.9, 0.3, 0.3)))
         .on_press(message)
         .width(Length::Fill)
         .padding([6, 12])

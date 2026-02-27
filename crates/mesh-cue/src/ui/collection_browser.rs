@@ -4,7 +4,7 @@ use super::app::{BrowserSide, CollectionState, ImportState, Message};
 use super::editor;
 use iced::widget::{button, column, container, row, rule, text, Space};
 use iced::{Alignment, Element, Length};
-use mesh_widgets::playlist_browser_with_drop_highlight;
+use mesh_widgets::{playlist_browser_with_drop_highlight, sz};
 
 /// Render the collection view (editor + dual browsers below)
 /// Note: Progress bar moved to main app view (always visible at bottom of screen)
@@ -32,19 +32,19 @@ pub fn view<'a>(
 
 /// Header row above the browsers with Import and Export buttons
 fn view_browser_header() -> Element<'static, Message> {
-    let import_btn = button(text("Import").size(14))
+    let import_btn = button(text("Import").size(sz(14.0)))
         .on_press(Message::OpenImport)
         .style(button::secondary)
         .padding([4, 12]);
 
-    let export_btn = button(text("Export").size(14))
+    let export_btn = button(text("Export").size(sz(14.0)))
         .on_press(Message::OpenExport)
         .style(button::secondary)
         .padding([4, 12]);
 
     container(
         row![
-            text("Playlists").size(16),
+            text("Playlists").size(sz(16.0)),
             Space::new().width(Length::Fill),
             import_btn,
             export_btn,
@@ -64,9 +64,9 @@ fn view_editor(state: &CollectionState, stem_link_selection: Option<usize>) -> E
     } else {
         container(
             column![
-                text("No track loaded").size(18),
+                text("No track loaded").size(sz(18.0)),
                 Space::new().height(20.0),
-                text("Select a track from the browser below to load it for editing.").size(14),
+                text("Select a track from the browser below to load it for editing.").size(sz(14.0)),
             ]
             .spacing(10),
         )

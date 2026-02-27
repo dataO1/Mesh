@@ -16,6 +16,7 @@
 use iced::widget::{button, column, container, mouse_area, row, scrollable, text, text_input, Id};
 use iced::{Background, Border, Color, Element, Length, Padding, Point, Theme};
 use std::collections::HashSet;
+use crate::font::sz;
 use std::hash::Hash;
 use std::sync::LazyLock;
 
@@ -749,7 +750,7 @@ where
     let search = text_input("Search tracks...", &state.search_query)
         .on_input(move |s| on_msg(TrackTableMessage::SearchChanged(s)))
         .padding(8)
-        .size(13);
+        .size(sz(13.0));
 
     // Column headers
     let headers = build_headers(state, on_message.clone());
@@ -789,7 +790,7 @@ where
         };
         container(
             text(empty_msg)
-                .size(12)
+                .size(sz(12.0))
                 .style(|theme: &Theme| text::Style {
                     color: Some(theme.extended_palette().background.weak.text),
                 }),
@@ -873,7 +874,7 @@ where
 
     let label = format!("{}{}", column.label(), arrow);
 
-    button(text(label).size(11))
+    button(text(label).size(sz(11.0)))
         .padding(Padding::from([2, 4]))
         .width(state.column_width(column))
         .style(|theme: &Theme, _status| {
@@ -906,7 +907,7 @@ where
             let pill_bg = state.pill_color.unwrap_or(Color::from_rgb8(235, 145, 50));
             let pill = container(
                 text(track.cue_count.to_string())
-                    .size(10)
+                    .size(sz(10.0))
                     .wrapping(iced::widget::text::Wrapping::None)
             )
             .padding(Padding::from([2, 5]))
@@ -933,7 +934,7 @@ where
             let bg = resolve_tag_color(tag.color, cat_colors);
             container(
                 text(&tag.label)
-                    .size(10)
+                    .size(sz(10.0))
                     .wrapping(iced::widget::text::Wrapping::None)
             )
             .padding(Padding::from([2, 5]))
@@ -975,7 +976,7 @@ where
         text_input("", &state.edit_buffer)
             .on_input(move |s| on_msg_change(TrackTableMessage::EditChanged(s)))
             .on_submit(on_msg_submit(TrackTableMessage::CommitEdit))
-            .size(12)
+            .size(sz(12.0))
             .padding(2)
             .width(state.column_width(column))
             .into()
@@ -996,7 +997,7 @@ where
 
         // Use clipping to prevent text overlap
         let txt = text(display_value)
-            .size(12)
+            .size(sz(12.0))
             .wrapping(iced::widget::text::Wrapping::None);
 
         mouse_area(
@@ -1012,7 +1013,7 @@ where
         // Non-editable cell - display text with clipping to prevent overlap
         // Use Wrapping::None + container clip to truncate long text
         let txt = text(display_value)
-            .size(12)
+            .size(sz(12.0))
             .wrapping(iced::widget::text::Wrapping::None);
 
         container(txt)

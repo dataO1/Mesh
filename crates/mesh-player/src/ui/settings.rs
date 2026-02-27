@@ -7,9 +7,10 @@ use super::midi_learn::MidiLearnMessage;
 use super::network::NetworkState;
 use super::system_update::UpdateState;
 use crate::audio::{get_available_stereo_pairs, StereoPair};
-use crate::config::{AppFont, LOOP_LENGTH_OPTIONS, KeyScoringModel, WaveformAbstraction, WaveformLayout};
+use crate::config::{AppFont, FontSize, LOOP_LENGTH_OPTIONS, KeyScoringModel, WaveformAbstraction, WaveformLayout};
 use iced::widget::{button, column, container, pick_list, row, scrollable, text, toggler, Id, Space};
 use iced::{Alignment, Color, Element, Length};
+use mesh_widgets::sz;
 use std::sync::LazyLock;
 
 /// Scrollable ID for the settings content area (used for programmatic scrolling via MIDI nav)
@@ -18,7 +19,7 @@ pub static SETTINGS_SCROLLABLE_ID: LazyLock<Id> = LazyLock::new(|| Id::new("mesh
 /// Calculate the total number of navigable settings entries.
 /// Dynamic because Network and Update sections are optional.
 pub fn settings_entry_count(state: &SettingsState) -> usize {
-    let mut count = 15; // Base entries from build_settings_entries
+    let mut count = 16; // Base entries from build_settings_entries
     if state.network.is_some() {
         count += 1; // Network section
     }
@@ -84,6 +85,8 @@ pub struct SettingsState {
     pub draft_waveform_abstraction: WaveformAbstraction,
     /// Draft UI font (requires restart to apply)
     pub draft_font: AppFont,
+    /// Draft font size preset
+    pub draft_font_size: FontSize,
     /// Draft master device index (for audio routing)
     pub draft_master_device: usize,
     /// Draft cue device index (for audio routing)
@@ -125,6 +128,7 @@ impl SettingsState {
             draft_waveform_layout: config.display.waveform_layout,
             draft_waveform_abstraction: config.display.waveform_abstraction,
             draft_font: config.display.font,
+            draft_font_size: config.display.font_size,
             draft_master_device: config.audio.outputs.master_device.unwrap_or(0),
             draft_cue_device: config.audio.outputs.cue_device.unwrap_or_else(|| {
                 if num_devices >= 2 { 1 } else { 0 }
@@ -159,6 +163,7 @@ impl SettingsState {
             draft_waveform_layout: WaveformLayout::default(),
             draft_waveform_abstraction: WaveformAbstraction::default(),
             draft_font: AppFont::default(),
+            draft_font_size: FontSize::default(),
             draft_master_device: 0, // First device
             draft_cue_device: if num_devices >= 2 { 1 } else { 0 }, // Second device or fallback
             available_devices,
@@ -202,6 +207,7 @@ impl SettingsState {
             waveform_layout: self.draft_waveform_layout,
             waveform_abstraction: self.draft_waveform_abstraction,
             font: self.draft_font,
+            font_size: self.draft_font_size,
             master_device: self.draft_master_device,
             cue_device: self.draft_cue_device,
         });
@@ -225,6 +231,7 @@ impl SettingsState {
                     || snap.waveform_layout != self.draft_waveform_layout
                     || snap.waveform_abstraction != self.draft_waveform_abstraction
                     || snap.font != self.draft_font
+                    || snap.font_size != self.draft_font_size
                     || snap.master_device != self.draft_master_device
                     || snap.cue_device != self.draft_cue_device
             }
@@ -256,6 +263,7 @@ struct SettingsSnapshot {
     waveform_layout: WaveformLayout,
     waveform_abstraction: WaveformAbstraction,
     font: AppFont,
+    font_size: FontSize,
     master_device: usize,
     cue_device: usize,
 }
@@ -394,6 +402,12 @@ pub fn build_settings_entries(state: &SettingsState) -> Vec<SettingsEntry> {
             on_select: |idx| SettingsMessage::UpdateFont(AppFont::ALL[idx.min(AppFont::ALL.len() - 1)]),
         },
         SettingsEntry {
+            label: "Font Size",
+            options: FontSize::ALL.iter().map(|f| f.display_name().to_string()).collect(),
+            selected: FontSize::ALL.iter().position(|&f| f == state.draft_font_size).unwrap_or(0),
+            on_select: |idx| SettingsMessage::UpdateFontSize(FontSize::ALL[idx.min(FontSize::ALL.len() - 1)]),
+        },
+        SettingsEntry {
             label: "Show Local Collection",
             options: vec!["On".into(), "Off".into()],
             selected: if state.draft_show_local_collection { 0 } else { 1 },
@@ -462,8 +476,8 @@ pub fn wrap_navigable<'a>(
 
 /// Render the settings modal content
 pub fn view(state: &SettingsState) -> Element<'_, Message> {
-    let title = text("Settings").size(24);
-    let close_btn = button(text("×").size(20))
+    let title = text("Settings").size(sz(24.0));
+    let close_btn = button(text("×").size(sz(20.0)))
         .on_press(Message::Settings(SettingsMessage::Close))
         .style(button::secondary);
 
@@ -488,8 +502,8 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
     // Slicer settings section
     let slicer_section = view_slicer_section(state, nav);
 
-    // Dynamic entry indices for network/update (base entries = indices 0..14)
-    let mut next_idx = 15usize;
+    // Dynamic entry indices for network/update (base entries = indices 0..15)
+    let mut next_idx = 16usize;
 
     // Network settings section (only when nmcli available)
     let network_section: Option<Element<'_, Message>> = state.network.as_ref().map(|ns| {
@@ -539,7 +553,7 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
 
     // Status message (for save feedback)
     let status: Element<Message> = if !state.status.is_empty() {
-        text(&state.status).size(14).into()
+        text(&state.status).size(sz(14.0)).into()
     } else {
         Space::new().height(20).into()
     };
@@ -571,12 +585,12 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
 
 /// Playback settings (loop length, phase sync)
 fn view_loop_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiNav>) -> Element<'a, Message> {
-    let section_title = text("Playback").size(18);
+    let section_title = text("Playback").size(sz(18.0));
 
     // Phase sync toggle
-    let phase_sync_label = text("Automatic Beat Sync").size(14);
+    let phase_sync_label = text("Automatic Beat Sync").size(sz(14.0));
     let phase_sync_hint = text("Automatically align beats when starting playback or hot cues")
-        .size(12);
+        .size(sz(12.0));
     let phase_sync_toggle = toggler(state.draft_phase_sync)
         .on_toggle(|v| Message::Settings(SettingsMessage::UpdatePhaseSync(v)));
     let phase_sync_row = row![
@@ -589,9 +603,9 @@ fn view_loop_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiNav>
     let phase_sync_row = wrap_navigable(phase_sync_row.into(), 2, nav);
 
     // Loop length section
-    let subsection_title = text("Default Loop/Beat Jump Length").size(14);
+    let subsection_title = text("Default Loop/Beat Jump Length").size(sz(14.0));
     let hint = text("Loop length also controls beat jump distance")
-        .size(12);
+        .size(sz(12.0));
 
     // Loop length buttons (1/8 beat to 256 beats)
     let loop_buttons: Vec<Element<Message>> = LOOP_LENGTH_OPTIONS
@@ -600,7 +614,7 @@ fn view_loop_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiNav>
         .map(|(idx, &beats)| {
             let is_selected = state.draft_loop_length_index == idx;
             let label = format_beats(beats);
-            let btn = button(text(label).size(11))
+            let btn = button(text(label).size(sz(11.0)))
                 .on_press(Message::Settings(SettingsMessage::UpdateLoopLength(idx)))
                 .style(if is_selected {
                     iced::widget::button::primary
@@ -612,7 +626,7 @@ fn view_loop_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiNav>
         })
         .collect();
 
-    let loop_label = text("Beats:").size(14);
+    let loop_label = text("Beats:").size(sz(14.0));
     let loop_row = row![
         loop_label,
         row(loop_buttons).spacing(4).align_y(Alignment::Center),
@@ -639,18 +653,18 @@ fn view_loop_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiNav>
 
 /// Display settings (waveform zoom and grid)
 fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiNav>) -> Element<'a, Message> {
-    let section_title = text("Display").size(18);
+    let section_title = text("Display").size(sz(18.0));
 
     // Waveform layout section
-    let layout_subsection = text("Waveform Layout").size(14);
+    let layout_subsection = text("Waveform Layout").size(sz(14.0));
     let layout_hint = text("Orientation of waveform display")
-        .size(12);
+        .size(sz(12.0));
 
     let layout_buttons: Vec<Element<Message>> = WaveformLayout::ALL
         .iter()
         .map(|&layout| {
             let is_selected = state.draft_waveform_layout == layout;
-            let btn = button(text(layout.display_name()).size(11))
+            let btn = button(text(layout.display_name()).size(sz(11.0)))
                 .on_press(Message::Settings(SettingsMessage::UpdateWaveformLayout(layout)))
                 .style(if is_selected {
                     iced::widget::button::primary
@@ -666,15 +680,15 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
     let layout_row = wrap_navigable(layout_row.into(), 4, nav);
 
     // Waveform abstraction level section
-    let abstraction_subsection = text("Waveform Abstraction").size(14);
+    let abstraction_subsection = text("Waveform Abstraction").size(sz(14.0));
     let abstraction_hint = text("Grid-aligned subsampling intensity (Low = detailed, High = smooth)")
-        .size(12);
+        .size(sz(12.0));
 
     let abstraction_buttons: Vec<Element<Message>> = WaveformAbstraction::ALL
         .iter()
         .map(|&level| {
             let is_selected = state.draft_waveform_abstraction == level;
-            let btn = button(text(level.display_name()).size(11))
+            let btn = button(text(level.display_name()).size(sz(11.0)))
                 .on_press(Message::Settings(SettingsMessage::UpdateWaveformAbstraction(level)))
                 .style(if is_selected {
                     iced::widget::button::primary
@@ -690,16 +704,16 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
     let abstraction_row = wrap_navigable(abstraction_row.into(), 5, nav);
 
     // Zoom level section
-    let zoom_subsection = text("Default Zoomed Waveform Level").size(14);
+    let zoom_subsection = text("Default Zoomed Waveform Level").size(sz(14.0));
     let zoom_hint = text("Number of bars visible in zoomed waveform view")
-        .size(12);
+        .size(sz(12.0));
 
     let zoom_sizes: [u32; 6] = [2, 4, 8, 16, 32, 64];
     let zoom_buttons: Vec<Element<Message>> = zoom_sizes
         .iter()
         .map(|&size| {
             let is_selected = state.draft_zoom_bars == size;
-            let btn = button(text(format!("{}", size)).size(11))
+            let btn = button(text(format!("{}", size)).size(sz(11.0)))
                 .on_press(Message::Settings(SettingsMessage::UpdateZoomBars(size)))
                 .style(if is_selected {
                     iced::widget::button::primary
@@ -711,7 +725,7 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
         })
         .collect();
 
-    let zoom_label = text("Bars:").size(14);
+    let zoom_label = text("Bars:").size(sz(14.0));
     let zoom_row = row![
         zoom_label,
         row(zoom_buttons).spacing(4).align_y(Alignment::Center),
@@ -721,16 +735,16 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
     let zoom_row = wrap_navigable(zoom_row.into(), 6, nav);
 
     // Grid density section
-    let grid_subsection = text("Overview Grid Density").size(14);
+    let grid_subsection = text("Overview Grid Density").size(sz(14.0));
     let grid_hint = text("Beat grid line spacing on the overview waveform")
-        .size(12);
+        .size(sz(12.0));
 
     let grid_sizes: [u32; 4] = [8, 16, 32, 64];
     let grid_buttons: Vec<Element<Message>> = grid_sizes
         .iter()
         .map(|&size| {
             let is_selected = state.draft_grid_bars == size;
-            let btn = button(text(format!("{}", size)).size(11))
+            let btn = button(text(format!("{}", size)).size(sz(11.0)))
                 .on_press(Message::Settings(SettingsMessage::UpdateGridBars(size)))
                 .style(if is_selected {
                     iced::widget::button::primary
@@ -742,7 +756,7 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
         })
         .collect();
 
-    let grid_label = text("Beats:").size(14);
+    let grid_label = text("Beats:").size(sz(14.0));
     let grid_row = row![
         grid_label,
         row(grid_buttons).spacing(4).align_y(Alignment::Center),
@@ -752,15 +766,15 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
     let grid_row = wrap_navigable(grid_row.into(), 7, nav);
 
     // Theme section
-    let palette_subsection = text("Theme").size(14);
+    let palette_subsection = text("Theme").size(sz(14.0));
     let palette_hint = text("Color scheme for UI and waveform visualization")
-        .size(12);
+        .size(sz(12.0));
 
     let palette_buttons: Vec<Element<Message>> = state.available_theme_names
         .iter()
         .map(|name| {
             let is_selected = state.draft_theme == *name;
-            let btn = button(text(name.as_str()).size(11))
+            let btn = button(text(name.as_str()).size(sz(11.0)))
                 .on_press(Message::Settings(SettingsMessage::UpdateTheme(name.clone())))
                 .style(if is_selected {
                     iced::widget::button::primary
@@ -776,15 +790,15 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
     let palette_row = wrap_navigable(palette_row.into(), 8, nav);
 
     // Font section (right after Theme)
-    let font_subsection = text("Font").size(14);
+    let font_subsection = text("Font").size(sz(14.0));
     let font_hint = text("UI typeface (restart required to apply)")
-        .size(12);
+        .size(sz(12.0));
 
     let font_buttons: Vec<Element<Message>> = AppFont::ALL
         .iter()
         .map(|&font| {
             let is_selected = state.draft_font == font;
-            let btn = button(text(font.display_name()).size(11))
+            let btn = button(text(font.display_name()).size(sz(11.0)))
                 .on_press(Message::Settings(SettingsMessage::UpdateFont(font)))
                 .style(if is_selected {
                     iced::widget::button::primary
@@ -799,11 +813,35 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
     let font_row = row(font_buttons).spacing(4).align_y(Alignment::Center).wrap();
     let font_row = wrap_navigable(font_row.into(), 9, nav);
 
+    // Font size section
+    let size_subsection = text("Font Size").size(sz(14.0));
+    let size_hint = text("Text size preset (restart required to apply)")
+        .size(sz(12.0));
+
+    let size_buttons: Vec<Element<Message>> = FontSize::ALL
+        .iter()
+        .map(|&fs| {
+            let is_selected = state.draft_font_size == fs;
+            let btn = button(text(fs.display_name()).size(sz(11.0)))
+                .on_press(Message::Settings(SettingsMessage::UpdateFontSize(fs)))
+                .style(if is_selected {
+                    iced::widget::button::primary
+                } else {
+                    iced::widget::button::secondary
+                })
+                .width(Length::Fixed(70.0));
+            btn.into()
+        })
+        .collect();
+
+    let size_row = row(size_buttons).spacing(4).align_y(Alignment::Center);
+    let size_row = wrap_navigable(size_row.into(), 10, nav);
+
     // Browser settings
-    let browser_subsection = text("Browser").size(14);
-    let local_collection_label = text("Show Local Collection").size(14);
+    let browser_subsection = text("Browser").size(sz(14.0));
+    let local_collection_label = text("Show Local Collection").size(sz(14.0));
     let local_collection_hint = text("Display local music library alongside USB devices")
-        .size(12);
+        .size(sz(12.0));
     let local_collection_toggle = toggler(state.draft_show_local_collection)
         .on_toggle(|v| Message::Settings(SettingsMessage::UpdateShowLocalCollection(v)));
     let local_collection_row = row![
@@ -813,18 +851,18 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
     ]
     .spacing(10)
     .align_y(Alignment::Center);
-    let local_collection_row = wrap_navigable(local_collection_row.into(), 10, nav);
+    let local_collection_row = wrap_navigable(local_collection_row.into(), 11, nav);
 
     // Key scoring model section
-    let key_model_subsection = text("Key Matching").size(14);
+    let key_model_subsection = text("Key Matching").size(sz(14.0));
     let key_model_hint = text("Algorithm for harmonic compatibility scoring")
-        .size(12);
+        .size(sz(12.0));
 
     let model_buttons: Vec<Element<Message>> = KeyScoringModel::ALL
         .iter()
         .map(|&model| {
             let is_selected = state.draft_key_scoring_model == model;
-            let btn = button(text(model.display_name()).size(11))
+            let btn = button(text(model.display_name()).size(sz(11.0)))
                 .on_press(Message::Settings(SettingsMessage::UpdateKeyScoringModel(model)))
                 .style(if is_selected {
                     iced::widget::button::primary
@@ -837,7 +875,7 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
         .collect();
 
     let model_row = row(model_buttons).spacing(4).align_y(Alignment::Center);
-    let model_row = wrap_navigable(model_row.into(), 11, nav);
+    let model_row = wrap_navigable(model_row.into(), 12, nav);
 
     container(
         column![
@@ -866,6 +904,10 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
             font_hint,
             font_row,
             Space::new().height(10),
+            size_subsection,
+            size_hint,
+            size_row,
+            Space::new().height(10),
             browser_subsection,
             local_collection_row,
             Space::new().height(10),
@@ -882,12 +924,12 @@ fn view_display_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiN
 
 /// Loudness normalization settings (auto-gain, target LUFS)
 fn view_loudness_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiNav>) -> Element<'a, Message> {
-    let section_title = text("Loudness").size(18);
+    let section_title = text("Loudness").size(sz(18.0));
 
     // Auto-gain toggle
-    let auto_gain_label = text("Auto-Gain Normalization").size(14);
+    let auto_gain_label = text("Auto-Gain Normalization").size(sz(14.0));
     let auto_gain_hint = text("Automatically adjust track volume to match target loudness")
-        .size(12);
+        .size(sz(12.0));
     let auto_gain_toggle = toggler(state.draft_auto_gain_enabled)
         .on_toggle(|v| Message::Settings(SettingsMessage::UpdateAutoGainEnabled(v)));
     let auto_gain_row = row![
@@ -897,12 +939,12 @@ fn view_loudness_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidi
     ]
     .spacing(10)
     .align_y(Alignment::Center);
-    let auto_gain_row = wrap_navigable(auto_gain_row.into(), 12, nav);
+    let auto_gain_row = wrap_navigable(auto_gain_row.into(), 13, nav);
 
     // Target LUFS section
-    let target_subsection = text("Target Loudness").size(14);
+    let target_subsection = text("Target Loudness").size(sz(14.0));
     let target_hint = text("Tracks will be gain-compensated to reach this level")
-        .size(12);
+        .size(sz(12.0));
 
     let target_buttons: Vec<Element<Message>> = TARGET_LUFS_OPTIONS
         .iter()
@@ -910,7 +952,7 @@ fn view_loudness_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidi
         .map(|(idx, &lufs)| {
             let is_selected = state.draft_target_lufs_index == idx;
             let label = format!("{:.0}", lufs);
-            let btn = button(text(label).size(11))
+            let btn = button(text(label).size(sz(11.0)))
                 .on_press(Message::Settings(SettingsMessage::UpdateTargetLufs(idx)))
                 .style(if is_selected {
                     iced::widget::button::primary
@@ -922,17 +964,17 @@ fn view_loudness_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidi
         })
         .collect();
 
-    let target_label = text("LUFS:").size(14);
+    let target_label = text("LUFS:").size(sz(14.0));
     let target_row = row![
         target_label,
         row(target_buttons).spacing(4).align_y(Alignment::Center),
     ]
     .spacing(10)
     .align_y(Alignment::Center);
-    let target_row = wrap_navigable(target_row.into(), 13, nav);
+    let target_row = wrap_navigable(target_row.into(), 14, nav);
 
     // Current preset description
-    let preset_desc = text(lufs_preset_name(state.draft_target_lufs_index)).size(12);
+    let preset_desc = text(lufs_preset_name(state.draft_target_lufs_index)).size(sz(12.0));
 
     container(
         column![
@@ -953,19 +995,19 @@ fn view_loudness_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidi
 
 /// Slicer settings (buffer size)
 fn view_slicer_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiNav>) -> Element<'a, Message> {
-    let section_title = text("Slicer").size(18);
+    let section_title = text("Slicer").size(sz(18.0));
 
     // Buffer bars section
-    let buffer_subsection = text("Buffer Size").size(14);
+    let buffer_subsection = text("Buffer Size").size(sz(14.0));
     let buffer_hint = text("Size of the slicer buffer window (16 slices)")
-        .size(12);
+        .size(sz(12.0));
 
     let buffer_sizes: [u32; 4] = [1, 4, 8, 16];
     let buffer_buttons: Vec<Element<Message>> = buffer_sizes
         .iter()
         .map(|&size| {
             let is_selected = state.draft_slicer_buffer_bars == size;
-            let btn = button(text(format!("{}", size)).size(11))
+            let btn = button(text(format!("{}", size)).size(sz(11.0)))
                 .on_press(Message::Settings(SettingsMessage::UpdateSlicerBufferBars(size)))
                 .style(if is_selected {
                     iced::widget::button::primary
@@ -977,18 +1019,18 @@ fn view_slicer_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiNa
         })
         .collect();
 
-    let buffer_label = text("Bars:").size(14);
+    let buffer_label = text("Bars:").size(sz(14.0));
     let buffer_row = row![
         buffer_label,
         row(buffer_buttons).spacing(4).align_y(Alignment::Center),
     ]
     .spacing(10)
     .align_y(Alignment::Center);
-    let buffer_row = wrap_navigable(buffer_row.into(), 14, nav);
+    let buffer_row = wrap_navigable(buffer_row.into(), 15, nav);
 
     // Note about preset editing
     let preset_hint = text("Edit slicer presets and per-stem patterns in mesh-cue")
-        .size(12);
+        .size(sz(12.0));
 
     container(
         column![
@@ -1008,12 +1050,12 @@ fn view_slicer_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiNa
 
 /// MIDI settings section (learn button)
 fn view_midi_section() -> Element<'static, Message> {
-    let section_title = text("MIDI Controller").size(18);
+    let section_title = text("MIDI Controller").size(sz(18.0));
 
     let hint = text("Create a custom mapping for your MIDI controller")
-        .size(12);
+        .size(sz(12.0));
 
-    let learn_btn = button(text("Start MIDI Learn").size(14))
+    let learn_btn = button(text("Start MIDI Learn").size(sz(14.0)))
         .on_press(Message::MidiLearn(MidiLearnMessage::Start))
         .style(button::primary);
 
@@ -1033,21 +1075,21 @@ fn view_midi_section() -> Element<'static, Message> {
 
 /// Audio output settings section (device routing)
 fn view_audio_output_section<'a>(state: &'a SettingsState, nav: Option<&SettingsMidiNav>) -> Element<'a, Message> {
-    let section_title = text("Audio Output").size(18);
+    let section_title = text("Audio Output").size(sz(18.0));
 
     let hint = text("Route master and cue to different audio devices")
-        .size(12);
+        .size(sz(12.0));
 
     // Master output — show button group when MIDI-editing, pick_list otherwise
-    let master_label = text("Master (Speakers):").size(14);
+    let master_label = text("Master (Speakers):").size(sz(14.0));
     let master_is_editing = nav.is_some_and(|n| n.focused_index == 0 && n.editing);
     let master_control: Element<'_, Message> = if state.available_devices.is_empty() {
-        text("No audio devices available").size(12).into()
+        text("No audio devices available").size(sz(12.0)).into()
     } else if master_is_editing {
         // Inline button group so user can see all options while cycling via encoder
         let btns: Vec<Element<Message>> = state.available_devices.iter().enumerate().map(|(idx, dev)| {
             let is_selected = state.draft_master_device == idx;
-            button(text(dev.to_string()).size(11))
+            button(text(dev.to_string()).size(sz(11.0)))
                 .on_press(Message::Settings(SettingsMessage::UpdateMasterPair(idx)))
                 .style(if is_selected { button::primary } else { button::secondary })
                 .into()
@@ -1073,14 +1115,14 @@ fn view_audio_output_section<'a>(state: &'a SettingsState, nav: Option<&Settings
     let master_row = wrap_navigable(master_row.into(), 0, nav);
 
     // Cue output — show button group when MIDI-editing, pick_list otherwise
-    let cue_label = text("Cue (Headphones):").size(14);
+    let cue_label = text("Cue (Headphones):").size(sz(14.0));
     let cue_is_editing = nav.is_some_and(|n| n.focused_index == 1 && n.editing);
     let cue_control: Element<'_, Message> = if state.available_devices.is_empty() {
-        text("No audio devices available").size(12).into()
+        text("No audio devices available").size(sz(12.0)).into()
     } else if cue_is_editing {
         let btns: Vec<Element<Message>> = state.available_devices.iter().enumerate().map(|(idx, dev)| {
             let is_selected = state.draft_cue_device == idx;
-            button(text(dev.to_string()).size(11))
+            button(text(dev.to_string()).size(sz(11.0)))
                 .on_press(Message::Settings(SettingsMessage::UpdateCuePair(idx)))
                 .style(if is_selected { button::primary } else { button::secondary })
                 .into()
@@ -1106,7 +1148,7 @@ fn view_audio_output_section<'a>(state: &'a SettingsState, nav: Option<&Settings
     let cue_row = wrap_navigable(cue_row.into(), 1, nav);
 
     // Refresh button
-    let refresh_btn = button(text("Refresh Devices").size(11))
+    let refresh_btn = button(text("Refresh Devices").size(sz(11.0)))
         .on_press(Message::Settings(SettingsMessage::RefreshAudioDevices))
         .style(button::secondary);
 

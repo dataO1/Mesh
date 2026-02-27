@@ -32,6 +32,9 @@ fn main() -> iced::Result {
     let config: mesh_cue::config::Config = mesh_cue::config::load_config(&config_path);
     let selected_font = config.display.font;
 
+    // Set global font size scale (used by sz() helper across all widget code)
+    mesh_widgets::set_font_scale(config.display.font_size.scale() * selected_font.size_scale());
+
     iced::application(MeshCueApp::new, MeshCueApp::update, MeshCueApp::view)
         .title(title)
         .window(iced::window::Settings {
@@ -44,7 +47,7 @@ fn main() -> iced::Result {
             ..Default::default()
         })
         .settings(iced::Settings {
-            default_text_size: iced::Pixels(16.0 * selected_font.size_scale()),
+            default_text_size: iced::Pixels(16.0 * selected_font.size_scale() * config.display.font_size.scale()),
             ..Default::default()
         })
         .font(mesh_widgets::AppFont::Hack.font_data())

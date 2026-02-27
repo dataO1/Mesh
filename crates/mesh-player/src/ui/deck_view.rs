@@ -14,7 +14,7 @@ use iced::{Background, Center, Color, Element, Fill, Length};
 
 use mesh_core::engine::Deck;
 use mesh_core::types::PlayState;
-use mesh_widgets::{CUE_COLORS, DeckPresetState, DeckPresetMessage, DECK_PRESET_NUM_MACROS};
+use mesh_widgets::{sz, CUE_COLORS, DeckPresetState, DeckPresetMessage, DECK_PRESET_NUM_MACROS};
 
 use super::midi_learn::HighlightTarget;
 
@@ -598,13 +598,13 @@ impl DeckView {
             Color::WHITE // Not targeted by MIDI
         };
         let deck_label = text(format!("DECK {}", self.deck_idx + 1))
-            .size(16)
+            .size(sz(16.0))
             .color(deck_label_color);
 
         let track_info = if self.track_name.is_empty() {
-            text("No track loaded").size(12)
+            text("No track loaded").size(sz(12.0))
         } else {
-            text(format!("{} ({:.1} BPM)", self.track_name, self.track_bpm)).size(12)
+            text(format!("{} ({:.1} BPM)", self.track_name, self.track_bpm)).size(sz(12.0))
         };
 
         let header = row![deck_label, Space::new().width(10), track_info]
@@ -645,11 +645,11 @@ impl DeckView {
     /// Transport controls view
     fn view_transport(&self) -> Element<'_, DeckMessage> {
         // Beat jump buttons
-        let jump_back = button(text("◀◀").size(14))
+        let jump_back = button(text("◀◀").size(sz(14.0)))
             .on_press(DeckMessage::BeatJumpBack)
             .padding(6);
 
-        let jump_fwd = button(text("▶▶").size(14))
+        let jump_fwd = button(text("▶▶").size(sz(14.0)))
             .on_press(DeckMessage::BeatJumpForward)
             .padding(6);
 
@@ -680,7 +680,7 @@ impl DeckView {
         };
 
         let cue_btn = mouse_area(
-            button(text("CUE").size(14))
+            button(text("CUE").size(sz(14.0)))
                 .padding(8)
                 .style(move |_, _| cue_style)
         )
@@ -714,37 +714,37 @@ impl DeckView {
             }
         };
 
-        let play_btn = button(text(play_icon).size(18))
+        let play_btn = button(text(play_icon).size(sz(18.0)))
             .on_press(DeckMessage::TogglePlayPause)
             .padding(8)
             .style(move |_, _| play_style);
 
         // Loop controls with length display
         let loop_text = if self.loop_active { "●" } else { "○" };
-        let loop_btn = button(text(format!("LOOP {}", loop_text)).size(12))
+        let loop_btn = button(text(format!("LOOP {}", loop_text)).size(sz(12.0)))
             .on_press(DeckMessage::ToggleLoop)
             .padding(6);
 
         // Slip button (shows state)
         let slip_text = if self.slip_enabled { "SLIP ●" } else { "SLIP" };
-        let slip_btn = button(text(slip_text).size(12))
+        let slip_btn = button(text(slip_text).size(sz(12.0)))
             .on_press(DeckMessage::ToggleSlip)
             .padding(6);
 
         // Key match button (shows state)
         let key_text = if self.key_match_enabled { "KEY ●" } else { "KEY" };
-        let key_btn = button(text(key_text).size(12))
+        let key_btn = button(text(key_text).size(sz(12.0)))
             .on_press(DeckMessage::ToggleKeyMatch)
             .padding(6);
 
-        let loop_halve = button(text("÷2").size(10))
+        let loop_halve = button(text("÷2").size(sz(10.0)))
             .on_press(DeckMessage::LoopHalve)
             .padding(4);
 
         let loop_length_text = format_loop_length(self.loop_length_beats);
-        let loop_length = text(loop_length_text).size(10);
+        let loop_length = text(loop_length_text).size(sz(10.0));
 
-        let loop_double = button(text("×2").size(10))
+        let loop_double = button(text("×2").size(sz(10.0)))
             .on_press(DeckMessage::LoopDouble)
             .padding(4);
 
@@ -801,7 +801,7 @@ impl DeckView {
                 };
 
                 let label = format!("{}", i + 1);
-                let btn = button(text(label).size(12))
+                let btn = button(text(label).size(sz(12.0)))
                     .padding(8)
                     .style(move |_, _| btn_style);
 
@@ -827,7 +827,7 @@ impl DeckView {
                 let label = STEM_NAMES_SHORT[i];
                 let style = if is_selected { "●" } else { "" };
 
-                button(text(format!("{}{}", label, style)).size(11))
+                button(text(format!("{}{}", label, style)).size(sz(11.0)))
                     .on_press(DeckMessage::SelectStem(i))
                     .padding(5)
                     .into()
@@ -842,11 +842,11 @@ impl DeckView {
         let solo_label = if self.stem_soloed[stem_idx] { "S●" } else { "S" };
 
         let stem_controls = row![
-            text(STEM_NAMES[stem_idx]).size(12),
-            button(text(mute_label).size(10))
+            text(STEM_NAMES[stem_idx]).size(sz(12.0)),
+            button(text(mute_label).size(sz(10.0)))
                 .on_press(DeckMessage::ToggleStemMute(stem_idx))
                 .padding(4),
-            button(text(solo_label).size(10))
+            button(text(solo_label).size(sz(10.0)))
                 .on_press(DeckMessage::ToggleStemSolo(stem_idx))
                 .padding(4),
         ]
@@ -857,7 +857,7 @@ impl DeckView {
         let knobs = self.view_chain_knobs(stem_idx);
 
         column![
-            row![text("STEM FX").size(10), Space::new().width(Fill), tab_row].align_y(Center),
+            row![text("STEM FX").size(sz(10.0)), Space::new().width(Fill), tab_row].align_y(Center),
             stem_controls,
             knobs,
         ]
@@ -878,7 +878,7 @@ impl DeckView {
             .unwrap_or("No Preset");
 
         let dropdown_btn = button(
-            row![text(label).size(9), Space::new().width(Fill), text("▾").size(9)]
+            row![text(label).size(sz(9.0)), Space::new().width(Fill), text("▾").size(sz(9.0))]
                 .spacing(4)
                 .align_y(Center)
         )
@@ -906,7 +906,7 @@ impl DeckView {
         // "No Preset" option (passthrough)
         let no_preset_selected = preset.loaded_deck_preset.is_none();
         items.push(
-            button(text("(No Preset)").size(9))
+            button(text("(No Preset)").size(sz(9.0)))
                 .on_press(DeckMessage::DeckPreset(DeckPresetMessage::SelectDeckPreset(None)))
                 .padding([3, 8])
                 .width(Fill)
@@ -919,7 +919,7 @@ impl DeckView {
             let is_selected = preset.loaded_deck_preset.as_ref() == Some(preset_name);
             let name = preset_name.clone();
             items.push(
-                button(text(preset_name).size(9))
+                button(text(preset_name).size(sz(9.0)))
                     .on_press(DeckMessage::DeckPreset(DeckPresetMessage::SelectDeckPreset(Some(name))))
                     .padding([3, 8])
                     .width(Fill)
@@ -957,7 +957,7 @@ impl DeckView {
                 };
 
                 column![
-                    text(display_name).size(7),
+                    text(display_name).size(sz(7.0)),
                     slider(0.0..=1.0, value, move |v| DeckMessage::DeckPreset(
                         DeckPresetMessage::SetMacro { index: k, value: v }
                     ))
@@ -972,7 +972,7 @@ impl DeckView {
             .collect();
 
         row![
-            text("MACROS").size(9),
+            text("MACROS").size(sz(9.0)),
             Row::with_children(knobs).spacing(4).width(Fill),
         ]
         .spacing(5)
@@ -1016,7 +1016,7 @@ impl DeckView {
             }
         };
 
-        let play_btn = button(text(play_icon).size(24))
+        let play_btn = button(text(play_icon).size(sz(24.0)))
             .on_press(DeckMessage::TogglePlayPause)
             .padding([12, 40])
             .style(move |_, _| play_style);
@@ -1048,7 +1048,7 @@ impl DeckView {
         };
 
         let cue_btn = mouse_area(
-            button(text("CUE").size(16))
+            button(text("CUE").size(sz(16.0)))
                 .padding([10, 36])
                 .style(move |_, _| cue_style)
         )
@@ -1056,11 +1056,11 @@ impl DeckView {
         .on_release(DeckMessage::CueReleased);
 
         // Beat jump buttons (side by side)
-        let jump_back = button(text("◀◀").size(16))
+        let jump_back = button(text("◀◀").size(sz(16.0)))
             .on_press(DeckMessage::BeatJumpBack)
             .padding([8, 20]);
 
-        let jump_fwd = button(text("▶▶").size(16))
+        let jump_fwd = button(text("▶▶").size(sz(16.0)))
             .on_press(DeckMessage::BeatJumpForward)
             .padding([8, 20]);
 
@@ -1069,30 +1069,30 @@ impl DeckView {
             .align_y(Center);
 
         // Loop controls row
-        let loop_halve = button(text("÷2").size(11))
+        let loop_halve = button(text("÷2").size(sz(11.0)))
             .on_press(DeckMessage::LoopHalve)
             .padding(5);
 
         let loop_length_text = format_loop_length(self.loop_length_beats);
-        let loop_length = container(text(loop_length_text).size(11))
+        let loop_length = container(text(loop_length_text).size(sz(11.0)))
             .padding([5, 8]);
 
-        let loop_double = button(text("×2").size(11))
+        let loop_double = button(text("×2").size(sz(11.0)))
             .on_press(DeckMessage::LoopDouble)
             .padding(5);
 
         let loop_text = if self.loop_active { "LOOP ●" } else { "LOOP" };
-        let loop_btn = button(text(loop_text).size(11))
+        let loop_btn = button(text(loop_text).size(sz(11.0)))
             .on_press(DeckMessage::ToggleLoop)
             .padding(5);
 
         let slip_text = if self.slip_enabled { "SLIP ●" } else { "SLIP" };
-        let slip_btn = button(text(slip_text).size(11))
+        let slip_btn = button(text(slip_text).size(sz(11.0)))
             .on_press(DeckMessage::ToggleSlip)
             .padding(5);
 
         let key_text = if self.key_match_enabled { "KEY ●" } else { "KEY" };
-        let key_btn = button(text(key_text).size(11))
+        let key_btn = button(text(key_text).size(sz(11.0)))
             .on_press(DeckMessage::ToggleKeyMatch)
             .padding(5);
 
@@ -1165,7 +1165,7 @@ impl DeckView {
             };
 
             let label = format!("{}", i + 1);
-            let btn = button(text(label).size(14))
+            let btn = button(text(label).size(sz(14.0)))
                 .padding([12, 0])
                 .width(Length::Fill)
                 .style(move |_, _| btn_style);
@@ -1285,7 +1285,7 @@ impl DeckView {
             } else {
                 DeckMessage::SlicerPresetSelect(i)
             };
-            let btn = button(text(label).size(14))
+            let btn = button(text(label).size(sz(14.0)))
                 .on_press(msg)
                 .padding([12, 0])
                 .width(Length::Fill)
@@ -1421,7 +1421,7 @@ impl DeckView {
                     }
                 };
 
-                button(text(label).size(10))
+                button(text(label).size(sz(10.0)))
                     .on_press(DeckMessage::SelectStem(i))
                     .padding([4, 8])
                     .width(Length::Fixed(40.0))
@@ -1436,7 +1436,7 @@ impl DeckView {
         let mute_label = if self.stem_muted[stem_idx] { "M●" } else { "M" };
         let solo_label = if self.stem_soloed[stem_idx] { "S●" } else { "S" };
 
-        let mute_btn = button(text(mute_label).size(10))
+        let mute_btn = button(text(mute_label).size(sz(10.0)))
             .on_press(DeckMessage::ToggleStemMute(stem_idx))
             .padding([4, 6])
             .width(Length::Fixed(28.0));
@@ -1453,7 +1453,7 @@ impl DeckView {
             mute_btn.into()
         };
 
-        let solo_btn = button(text(solo_label).size(10))
+        let solo_btn = button(text(solo_label).size(sz(10.0)))
             .on_press(DeckMessage::ToggleStemSolo(stem_idx))
             .padding([4, 6])
             .width(Length::Fixed(28.0));
@@ -1488,7 +1488,7 @@ impl DeckView {
             .unwrap_or("No Preset");
 
         let dropdown_btn = button(
-            row![text(label).size(9), Space::new().width(Fill), text("▾").size(9)]
+            row![text(label).size(sz(9.0)), Space::new().width(Fill), text("▾").size(sz(9.0))]
                 .spacing(2)
                 .align_y(Center)
         )
@@ -1524,7 +1524,7 @@ impl DeckView {
                 };
 
                 column![
-                    text(display_name).size(6),
+                    text(display_name).size(sz(6.0)),
                     slider(0.0..=1.0, value, move |v| DeckMessage::DeckPreset(
                         DeckPresetMessage::SetMacro { index: k, value: v }
                     ))
@@ -1551,7 +1551,7 @@ impl DeckView {
 
         // Loop button with optional MIDI learn highlight
         let loop_text = if self.loop_active { "LOOP ●" } else { "LOOP" };
-        let loop_btn = button(text(loop_text).size(10))
+        let loop_btn = button(text(loop_text).size(sz(10.0)))
             .on_press(DeckMessage::ToggleLoop)
             .padding([4, 8])
             .width(Length::Fixed(60.0));
@@ -1568,30 +1568,30 @@ impl DeckView {
 
         // Slip button
         let slip_text = if self.slip_enabled { "SLIP ●" } else { "SLIP" };
-        let slip_btn = button(text(slip_text).size(10))
+        let slip_btn = button(text(slip_text).size(sz(10.0)))
             .on_press(DeckMessage::ToggleSlip)
             .padding([4, 8])
             .width(Length::Fixed(60.0));
 
         // Key match button
         let key_text = if self.key_match_enabled { "KEY ●" } else { "KEY" };
-        let key_btn = button(text(key_text).size(10))
+        let key_btn = button(text(key_text).size(sz(10.0)))
             .on_press(DeckMessage::ToggleKeyMatch)
             .padding([4, 8])
             .width(Length::Fixed(60.0));
 
         // Loop length controls with optional MIDI learn highlights
-        let loop_halve = button(text("÷2").size(10))
+        let loop_halve = button(text("÷2").size(sz(10.0)))
             .on_press(DeckMessage::LoopHalve)
             .padding([4, 6]);
 
         let loop_length_text = format_loop_length(self.loop_length_beats);
-        let loop_length = container(text(loop_length_text).size(11))
+        let loop_length = container(text(loop_length_text).size(sz(11.0)))
             .padding([4, 8])
             .width(Length::Fixed(32.0))
             .center_x(Length::Fill);
 
-        let loop_double = button(text("×2").size(10))
+        let loop_double = button(text("×2").size(sz(10.0)))
             .on_press(DeckMessage::LoopDouble)
             .padding([4, 6]);
 
@@ -1608,7 +1608,7 @@ impl DeckView {
         };
 
         // Beat jump buttons with optional MIDI learn highlights
-        let jump_back = button(text("◀◀").size(12))
+        let jump_back = button(text("◀◀").size(sz(12.0)))
             .on_press(DeckMessage::BeatJumpBack)
             .padding([4, 8])
             .width(Length::Fixed(60.0));
@@ -1623,7 +1623,7 @@ impl DeckView {
             jump_back.into()
         };
 
-        let jump_fwd = button(text("▶▶").size(12))
+        let jump_fwd = button(text("▶▶").size(sz(12.0)))
             .on_press(DeckMessage::BeatJumpForward)
             .padding([4, 8])
             .width(Length::Fixed(60.0));
@@ -1686,7 +1686,7 @@ impl DeckView {
         };
 
         let shift_btn = mouse_area(
-            button(text(shift_text).size(10))
+            button(text(shift_text).size(sz(10.0)))
                 .padding([6, 12])
                 .width(Length::Fixed(70.0))
                 .style(move |_, _| shift_style)
@@ -1724,7 +1724,7 @@ impl DeckView {
         // HOTCUE mode button
         let hotcue_is_active = self.action_mode == ActionButtonMode::HotCue;
         let hotcue_style = build_mode_style(hotcue_is_active);
-        let hotcue_btn = button(text("HOTCUE").size(10))
+        let hotcue_btn = button(text("HOTCUE").size(sz(10.0)))
             .on_press(DeckMessage::SetActionMode(ActionButtonMode::HotCue))
             .padding([6, 12])
             .width(Length::Fixed(60.0))
@@ -1771,7 +1771,7 @@ impl DeckView {
             DeckMessage::SetActionMode(ActionButtonMode::Slicer)
         };
 
-        let slicer_btn = button(text("SLICER").size(10))
+        let slicer_btn = button(text("SLICER").size(sz(10.0)))
             .on_press(slicer_btn_msg)
             .padding([6, 12])
             .width(Length::Fixed(70.0))
@@ -1856,7 +1856,7 @@ impl DeckView {
         };
 
         let cue_btn = mouse_area(
-            button(text("CUE").size(14))
+            button(text("CUE").size(sz(14.0)))
                 .padding([12, 16])
                 .width(Length::Fixed(BUTTON_WIDTH))
                 .style(move |_, _| cue_style)
@@ -1885,7 +1885,7 @@ impl DeckView {
             ..Default::default()
         };
 
-        let play_btn = button(text(play_label).size(14))
+        let play_btn = button(text(play_label).size(sz(14.0)))
             .on_press(DeckMessage::TogglePlayPause)
             .padding([12, 16])
             .width(Length::Fixed(BUTTON_WIDTH))

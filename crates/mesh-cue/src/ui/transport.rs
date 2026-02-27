@@ -10,10 +10,10 @@
 use super::app::{LoadedTrackState, Message};
 use iced::widget::{button, column, container, mouse_area, row, text};
 use iced::{Alignment, Background, Border, Color, Element, Length};
-use mesh_widgets::{COMBINED_WAVEFORM_GAP, WAVEFORM_HEIGHT, ZOOMED_WAVEFORM_HEIGHT};
+use mesh_widgets::{sz, COMBINED_WAVEFORM_GAP, WAVEFORM_HEIGHT, ZOOMED_WAVEFORM_HEIGHT};
 
 /// Render vertical player controls (left of waveform)
-pub fn view(state: &LoadedTrackState) -> Element<'_, Message> {
+pub fn view(state: &LoadedTrackState, vocal_color: Color) -> Element<'_, Message> {
     let beat_jump_size = state.beat_jump_size();
     let is_playing = state.is_playing();
     let loop_active = state.is_loop_active();
@@ -21,24 +21,24 @@ pub fn view(state: &LoadedTrackState) -> Element<'_, Message> {
     // Disable controls while loading
     let controls_enabled = !state.loading_audio && state.stems.is_some();
 
-    // Loop toggle button (green when active)
+    // Loop toggle button (vocal stem color when active)
     // Uses Fill height to absorb remaining space so transport matches waveform height
-    let loop_btn = button(text("LOOP").size(14))
+    let loop_btn = button(text("LOOP").size(sz(14.0)))
         .on_press_maybe(controls_enabled.then_some(Message::ToggleLoop))
         .width(Length::Fixed(104.0))
         .height(Length::Fill)
         .style(move |theme, status| {
             if loop_active {
-                // Green style when loop is active
+                let base = button::primary(theme, status);
                 button::Style {
-                    background: Some(Background::Color(Color::from_rgb(0.2, 0.7, 0.3))),
-                    text_color: Color::WHITE,
+                    background: Some(Background::Color(vocal_color)),
+                    text_color: Color::BLACK,
                     border: Border {
-                        color: Color::from_rgb(0.1, 0.5, 0.2),
-                        width: 1.0,
-                        radius: 4.0.into(),
+                        color: Color::TRANSPARENT,
+                        width: 0.0,
+                        radius: base.border.radius,
                     },
-                    ..button::primary(theme, status)
+                    ..base
                 }
             } else {
                 button::secondary(theme, status)
@@ -48,38 +48,41 @@ pub fn view(state: &LoadedTrackState) -> Element<'_, Message> {
     // Loop length controls: [-] [N beats] [+]
     let loop_length_beats = state.loop_length_beats();
 
-    // Halve loop length button — center text inside button
-    let halve_btn = button(text("−").size(14).center())
+    // Halve loop length button — flush left
+    let halve_btn = button(text("−").size(sz(14.0)).center())
         .on_press_maybe(controls_enabled.then_some(Message::AdjustLoopLength(-1)))
-        .width(Length::Fixed(28.0))
+        .width(Length::Fill)
         .height(Length::Fixed(24.0))
         .padding(0);
 
     // Loop length label (use fraction notation for sub-beat values)
-    let beat_text = if (loop_length_beats - 0.125).abs() < 0.001 { "1/8".into() }
+    let beat_text: String = if (loop_length_beats - 0.125).abs() < 0.001 { "1/8".into() }
         else if (loop_length_beats - 0.25).abs() < 0.001 { "1/4".into() }
         else if (loop_length_beats - 0.5).abs() < 0.001 { "1/2".into() }
         else { format!("{:.0}", loop_length_beats) };
-    let beat_label = text(beat_text).size(12);
+    let beat_label = container(text(beat_text).size(sz(12.0)).center())
+        .width(Length::Fixed(32.0))
+        .center_x(Length::Fixed(32.0));
 
-    // Double loop length button — center text inside button
-    let double_btn = button(text("+").size(14).center())
+    // Double loop length button — flush right
+    let double_btn = button(text("+").size(sz(14.0)).center())
         .on_press_maybe(controls_enabled.then_some(Message::AdjustLoopLength(1)))
-        .width(Length::Fixed(28.0))
+        .width(Length::Fill)
         .height(Length::Fixed(24.0))
         .padding(0);
 
+    // -/+ buttons fill to the edges, number has fixed width in center
     let loop_length_row = row![halve_btn, beat_label, double_btn]
-        .spacing(4)
+        .width(Length::Fixed(104.0))
         .align_y(Alignment::Center);
 
     // Beat jump buttons (side by side)
-    let jump_back = button(text("◄◄").size(14))
+    let jump_back = button(text("◄◄").size(sz(14.0)))
         .on_press_maybe(controls_enabled.then_some(Message::BeatJump(-beat_jump_size)))
         .width(Length::Fixed(50.0))
         .height(Length::Fixed(36.0));
 
-    let jump_forward = button(text("►►").size(14))
+    let jump_forward = button(text("►►").size(sz(14.0)))
         .on_press_maybe(controls_enabled.then_some(Message::BeatJump(beat_jump_size)))
         .width(Length::Fixed(50.0))
         .height(Length::Fixed(36.0));
@@ -90,7 +93,7 @@ pub fn view(state: &LoadedTrackState) -> Element<'_, Message> {
 
     // CDJ-style cue button
     // Press only works when stopped, but release always works to stop preview
-    let cue_btn = button(text("[Cue]").size(18))
+    let cue_btn = button(text("[Cue]").size(sz(18.0)))
         .width(Length::Fixed(104.0))
         .height(Length::Fixed(60.0));  // Match Play button height
 
@@ -108,18 +111,18 @@ pub fn view(state: &LoadedTrackState) -> Element<'_, Message> {
     // Large Play/Pause toggle button
     let play_pause = if controls_enabled {
         if is_playing {
-            button(text("▮▮").size(24))
+            button(text("▮▮").size(sz(24.0)))
                 .on_press(Message::Pause)
                 .width(Length::Fixed(104.0))
                 .height(Length::Fixed(60.0))
         } else {
-            button(text("▶").size(28))
+            button(text("▶").size(sz(28.0)))
                 .on_press(Message::Play)
                 .width(Length::Fixed(104.0))
                 .height(Length::Fixed(60.0))
         }
     } else {
-        button(text("▶").size(28))
+        button(text("▶").size(sz(28.0)))
             .width(Length::Fixed(104.0))
             .height(Length::Fixed(60.0))
     };

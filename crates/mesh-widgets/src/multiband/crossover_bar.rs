@@ -6,6 +6,7 @@
 use iced::widget::{button, column, container, mouse_area, row, text, Space};
 use iced::{Alignment, Color, Element, Length, Point};
 
+use crate::font::sz;
 use super::message::MultibandEditorMessage;
 use super::state::MultibandEditorState;
 use super::{format_freq, freq_to_position};
@@ -63,16 +64,16 @@ fn single_band_bar() -> Element<'static, MultibandEditorMessage> {
 
     let content = container(
         column![
-            text(band_name).size(12).color(TEXT_COLOR),
+            text(band_name).size(sz(12.0)).color(TEXT_COLOR),
             text(format!(
                 "{} - {}",
                 format_freq(super::FREQ_MIN),
                 format_freq(super::FREQ_MAX)
             ))
-            .size(10)
+            .size(sz(10.0))
             .color(Color::from_rgb(0.7, 0.7, 0.7)),
             text("click to split into bands")
-                .size(9)
+                .size(sz(9.0))
                 .color(Color::from_rgba(1.0, 1.0, 1.0, 0.5)),
         ]
         .spacing(3)
@@ -216,14 +217,14 @@ fn band_segment<'a>(
 
     let segment = container(
         column![
-            text(band_name).size(10).color(TEXT_COLOR),
+            text(band_name).size(sz(10.0)).color(TEXT_COLOR),
             text(format!("{} - {}", format_freq(freq_low), format_freq(freq_high)))
-                .size(8)
+                .size(sz(8.0))
                 .color(Color::from_rgb(0.7, 0.7, 0.7)),
             if can_add_band {
-                text("click to split").size(7).color(Color::from_rgba(1.0, 1.0, 1.0, 0.4))
+                text("click to split").size(sz(7.0)).color(Color::from_rgba(1.0, 1.0, 1.0, 0.4))
             } else {
-                text("").size(7)
+                text("").size(sz(7.0))
             },
         ]
         .spacing(2)
@@ -272,7 +273,7 @@ fn crossover_divider<'a>(
                     ..Default::default()
                 }),
             // Frequency label
-            container(text(format_freq(freq)).size(8).color(color))
+            container(text(format_freq(freq)).size(sz(8.0)).color(color))
                 .padding([1, 3])
                 .style(|_| container::Style {
                     background: Some(LABEL_BG.into()),
@@ -304,15 +305,15 @@ fn frequency_scale_labels() -> Element<'static, MultibandEditorMessage> {
 
     // Simple evenly-spaced labels for key frequency markers
     row![
-        text("20").size(8).color(scale_color),
+        text("20").size(sz(8.0)).color(scale_color),
         Space::new().width(Length::Fill),
-        text("100").size(8).color(scale_color),
+        text("100").size(sz(8.0)).color(scale_color),
         Space::new().width(Length::Fill),
-        text("1k").size(8).color(scale_color),
+        text("1k").size(sz(8.0)).color(scale_color),
         Space::new().width(Length::Fill),
-        text("10k").size(8).color(scale_color),
+        text("10k").size(sz(8.0)).color(scale_color),
         Space::new().width(Length::Fill),
-        text("20k").size(8).color(scale_color),
+        text("20k").size(sz(8.0)).color(scale_color),
     ]
     .height(Length::Fixed(16.0))
     .padding([0, 4])
@@ -335,15 +336,15 @@ pub fn crossover_controls(state: &MultibandEditorState) -> Element<'_, Multiband
         .enumerate()
         .map(|(i, &freq)| {
             row![
-                text(format!("X{}: ", i + 1)).size(10).color(TEXT_COLOR),
+                text(format!("X{}: ", i + 1)).size(sz(10.0)).color(TEXT_COLOR),
                 // Decrease button
-                button(text("◀").size(10))
+                button(text("◀").size(sz(10.0)))
                     .padding([2, 6])
                     .on_press(MultibandEditorMessage::DragCrossover(freq * 0.9)),
                 // Current value
-                text(format_freq(freq)).size(10).color(DIVIDER_HOVER_COLOR),
+                text(format_freq(freq)).size(sz(10.0)).color(DIVIDER_HOVER_COLOR),
                 // Increase button
-                button(text("▶").size(10))
+                button(text("▶").size(sz(10.0)))
                     .padding([2, 6])
                     .on_press(MultibandEditorMessage::DragCrossover(freq * 1.1)),
             ]

@@ -5,10 +5,32 @@
 //! selection across the UI and config persistence.
 
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicU32, Ordering};
 use serde::{Deserialize, Serialize};
 use iced::Font;
 use iced::font::Family;
 use iced::widget::image;
+
+// ── Global font size scale factor ────────────────────────────────────────────
+// Set once at app startup from config. View code calls `sz(base)` to scale
+// any explicit text size by the user's chosen font size preset.
+// Stored as f32 bits in an AtomicU32 (no AtomicF32 in std).
+
+static FONT_SCALE: AtomicU32 = AtomicU32::new(0x3F800000); // 1.0f32 bits
+
+/// Set the global font size scale factor (call once at startup).
+pub fn set_font_scale(scale: f32) {
+    FONT_SCALE.store(scale.to_bits(), Ordering::Relaxed);
+}
+
+/// Scale a base font size by the global font size preset.
+///
+/// Usage: `text("Label").size(sz(14))`
+#[inline]
+pub fn sz(base: f32) -> f32 {
+    let scale = f32::from_bits(FONT_SCALE.load(Ordering::Relaxed));
+    (base * scale).round()
+}
 
 /// Logo image handle — created once and reused across all view frames.
 /// Without this, `Handle::from_bytes()` inside view functions causes flickering
@@ -95,6 +117,42 @@ impl AppFont {
             AppFont::JetBrainsMono => 1.0,
             AppFont::PressStart2P => 0.32,
             AppFont::Exo => 1.0,
+        }
+    }
+}
+
+/// Font size preset (Small / Medium / Big).
+///
+/// Controls the global text size multiplier. "Medium" is the default.
+/// "Small" matches the original pre-scaling sizing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum FontSize {
+    Small,
+    #[default]
+    Medium,
+    Big,
+}
+
+impl FontSize {
+    /// All presets in display order.
+    pub const ALL: [FontSize; 3] = [FontSize::Small, FontSize::Medium, FontSize::Big];
+
+    /// Human-readable name for settings UI.
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            FontSize::Small => "Small",
+            FontSize::Medium => "Medium",
+            FontSize::Big => "Big",
+        }
+    }
+
+    /// Scale factor applied to all font sizes (1.0 = original).
+    pub fn scale(&self) -> f32 {
+        match self {
+            FontSize::Small => 1.0,
+            FontSize::Medium => 1.2,
+            FontSize::Big => 1.4,
         }
     }
 }

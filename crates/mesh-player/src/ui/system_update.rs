@@ -7,6 +7,7 @@
 
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Color, Element, Length};
+use mesh_widgets::sz;
 
 use super::message::Message;
 
@@ -263,10 +264,10 @@ fn wrap_focus<'a>(
 /// Render the system update settings section.
 /// `focused_action` is Some(idx) when in sub-panel (0=Check, 1=Install/Restart).
 pub fn view_update_section(state: &UpdateState, focused_action: Option<usize>) -> Element<'_, Message> {
-    let section_title = text("System Update").size(18);
+    let section_title = text("System Update").size(sz(18.0));
 
     let version_label = text(format!("Current version: v{}", state.current_version))
-        .size(12)
+        .size(sz(12.0))
         .color(Color::from_rgb(0.5, 0.5, 0.5));
 
     let mut content_items: Vec<Element<'_, Message>> = vec![
@@ -277,22 +278,22 @@ pub fn view_update_section(state: &UpdateState, focused_action: Option<usize>) -
     // Status and action based on current state
     match &state.check_status {
         UpdateCheckStatus::Idle => {
-            let check_btn = button(text("Check for Updates").size(11))
+            let check_btn = button(text("Check for Updates").size(sz(11.0)))
                 .on_press(Message::SystemUpdate(SystemUpdateMessage::CheckForUpdate))
                 .style(button::secondary);
             content_items.push(wrap_focus(check_btn.into(), 0, focused_action));
         }
         UpdateCheckStatus::Checking => {
             let label = text("Checking for updates...")
-                .size(12)
+                .size(sz(12.0))
                 .color(Color::from_rgb(0.7, 0.7, 0.3));
             content_items.push(label.into());
         }
         UpdateCheckStatus::UpToDate => {
             let label = text("Up to date")
-                .size(12)
+                .size(sz(12.0))
                 .color(Color::from_rgb(0.4, 0.8, 0.4));
-            let check_btn = button(text("Check Again").size(11))
+            let check_btn = button(text("Check Again").size(sz(11.0)))
                 .on_press(Message::SystemUpdate(SystemUpdateMessage::CheckForUpdate))
                 .style(button::secondary);
             content_items.push(wrap_focus(
@@ -305,12 +306,12 @@ pub fn view_update_section(state: &UpdateState, focused_action: Option<usize>) -
         }
         UpdateCheckStatus::Available(version) => {
             let label = text(format!("{} available", version))
-                .size(12)
+                .size(sz(12.0))
                 .color(Color::from_rgb(0.3, 0.7, 1.0));
 
             match &state.install_status {
                 UpdateInstallStatus::Idle => {
-                    let install_btn = button(text("Install").size(11))
+                    let install_btn = button(text("Install").size(sz(11.0)))
                         .on_press(Message::SystemUpdate(SystemUpdateMessage::InstallUpdate))
                         .style(button::primary);
                     content_items.push(wrap_focus(
@@ -323,21 +324,21 @@ pub fn view_update_section(state: &UpdateState, focused_action: Option<usize>) -
                 }
                 UpdateInstallStatus::Starting => {
                     let status = text("Starting update...")
-                        .size(12)
+                        .size(sz(12.0))
                         .color(Color::from_rgb(0.7, 0.7, 0.3));
                     content_items.push(row![label, Space::new().width(8), status].into());
                 }
                 UpdateInstallStatus::Installing => {
                     let status = text("Installing...")
-                        .size(12)
+                        .size(sz(12.0))
                         .color(Color::from_rgb(0.7, 0.7, 0.3));
                     content_items.push(row![label, Space::new().width(8), status].into());
                 }
                 UpdateInstallStatus::Complete => {
                     let status = text("Update complete!")
-                        .size(12)
+                        .size(sz(12.0))
                         .color(Color::from_rgb(0.4, 0.8, 0.4));
-                    let restart_btn = button(text("Restart Now").size(11))
+                    let restart_btn = button(text("Restart Now").size(sz(11.0)))
                         .on_press(Message::SystemUpdate(SystemUpdateMessage::RestartCage))
                         .style(button::primary);
                     content_items.push(wrap_focus(
@@ -350,7 +351,7 @@ pub fn view_update_section(state: &UpdateState, focused_action: Option<usize>) -
                 }
                 UpdateInstallStatus::Error(e) => {
                     let err = text(e)
-                        .size(11)
+                        .size(sz(11.0))
                         .color(Color::from_rgb(1.0, 0.4, 0.4));
                     content_items.push(err.into());
                 }
@@ -358,9 +359,9 @@ pub fn view_update_section(state: &UpdateState, focused_action: Option<usize>) -
         }
         UpdateCheckStatus::Error(e) => {
             let err = text(e)
-                .size(11)
+                .size(sz(11.0))
                 .color(Color::from_rgb(1.0, 0.4, 0.4));
-            let retry_btn = button(text("Retry").size(11))
+            let retry_btn = button(text("Retry").size(sz(11.0)))
                 .on_press(Message::SystemUpdate(SystemUpdateMessage::CheckForUpdate))
                 .style(button::secondary);
             content_items.push(wrap_focus(
@@ -378,7 +379,7 @@ pub fn view_update_section(state: &UpdateState, focused_action: Option<usize>) -
         let journal_text = state.journal_lines.join("\n");
         let journal_view = scrollable(
             text(journal_text)
-                .size(9)
+                .size(sz(9.0))
                 .color(Color::from_rgb(0.6, 0.6, 0.6))
         )
         .height(Length::Fixed(120.0));

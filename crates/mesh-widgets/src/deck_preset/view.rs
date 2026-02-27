@@ -5,6 +5,7 @@
 
 use iced::widget::{button, column, container, row, scrollable, slider, text, Space};
 use iced::{Alignment, Background, Color, Element, Length};
+use crate::font::sz;
 
 use super::message::DeckPresetMessage;
 use super::DeckPresetState;
@@ -58,9 +59,9 @@ fn preset_dropdown(state: &DeckPresetState) -> Element<'_, DeckPresetMessage> {
 
     let dropdown_btn = button(
         row![
-            text(label).size(10),
+            text(label).size(sz(10.0)),
             Space::new().width(Length::Fill),
-            text("▾").size(10),
+            text("▾").size(sz(10.0)),
         ]
         .spacing(4)
         .align_y(Alignment::Center),
@@ -95,7 +96,7 @@ fn preset_picker_list(state: &DeckPresetState) -> Element<'_, DeckPresetMessage>
     };
 
     items.push(
-        button(text("(No Deck Preset)").size(9))
+        button(text("(No Deck Preset)").size(sz(9.0)))
             .on_press(DeckPresetMessage::SelectDeckPreset(None))
             .padding([3, 8])
             .width(Length::Fill)
@@ -114,7 +115,7 @@ fn preset_picker_list(state: &DeckPresetState) -> Element<'_, DeckPresetMessage>
 
         let name = preset_name.clone();
         items.push(
-            button(text(preset_name).size(9))
+            button(text(preset_name).size(sz(9.0)))
                 .on_press(DeckPresetMessage::SelectDeckPreset(Some(name)))
                 .padding([3, 8])
                 .width(Length::Fill)
@@ -158,7 +159,7 @@ fn macro_knob(state: &DeckPresetState, index: usize) -> Element<'_, DeckPresetMe
     };
 
     column![
-        text(display_name).size(7).color(TEXT_SECONDARY),
+        text(display_name).size(sz(7.0)).color(TEXT_SECONDARY),
         slider(0.0..=1.0, value, move |v| DeckPresetMessage::SetMacro {
             index,
             value: v,

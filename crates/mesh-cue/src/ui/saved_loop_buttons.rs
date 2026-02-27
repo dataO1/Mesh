@@ -7,6 +7,7 @@
 
 use super::app::{LoadedTrackState, Message};
 use iced::widget::{button, container, row, text};
+use mesh_widgets::sz;
 use iced::{Alignment, Color, Element, Length, Theme};
 use mesh_core::audio_file::SavedLoop;
 use mesh_core::types::SAMPLE_RATE;
@@ -39,7 +40,7 @@ pub fn view(state: &LoadedTrackState) -> Element<'_, Message> {
     let loop_row = row(buttons).spacing(8).align_y(Alignment::Center);
 
     // Small label and buttons row
-    let label = text("Loops:").size(11).color(Color::from_rgb(0.6, 0.6, 0.6));
+    let label = text("Loops:").size(sz(11.0)).color(Color::from_rgb(0.6, 0.6, 0.6));
 
     container(row![label, loop_row].spacing(8).align_y(Alignment::Center))
         .padding([4, 10])
@@ -70,7 +71,7 @@ fn create_loop_button(
     };
 
     // Match hot cue button dimensions: dynamic width, 44px height
-    let btn = button(text(label_text).size(11).center())
+    let btn = button(text(label_text).size(sz(11.0)).center())
         .width(Length::Fill)
         .height(Length::Fixed(44.0));
 
@@ -91,7 +92,11 @@ fn create_loop_button(
             .into()
     } else {
         // Empty slot, no loop active - disabled look
-        btn.style(iced::widget::button::secondary)
+        btn.style(|theme: &Theme, status| {
+            let mut s = iced::widget::button::secondary(theme, status);
+            s.border.radius = 4.0.into();
+            s
+        })
             .into()
     }
 }

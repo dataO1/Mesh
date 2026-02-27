@@ -17,7 +17,7 @@ use mesh_core::db::DatabaseService;
 use mesh_core::playlist::{DatabaseStorage, NodeId, NodeKind, PlaylistNode, PlaylistStorage};
 use mesh_core::usb::{UsbDevice, UsbStorage};
 use mesh_widgets::{
-    parse_hex_color, tag_sort_priority, playlist_browser, sort_tracks, PlaylistBrowserMessage, PlaylistBrowserState,
+    parse_hex_color, tag_sort_priority, playlist_browser, sort_tracks, sz, PlaylistBrowserMessage, PlaylistBrowserState,
     TrackRow, TrackTableMessage, TrackTag, TreeIcon, TreeMessage, TreeNode,
 };
 use std::collections::HashMap;
@@ -681,23 +681,23 @@ impl CollectionBrowserState {
         let load_buttons: Element<CollectionBrowserMessage> = if self.selected_track_path.is_some()
         {
             row![
-                button(text("1").size(12))
+                button(text("1").size(sz(12.0)))
                     .on_press(CollectionBrowserMessage::LoadToDeck(0))
                     .padding([6, 16]),
-                button(text("2").size(12))
+                button(text("2").size(sz(12.0)))
                     .on_press(CollectionBrowserMessage::LoadToDeck(1))
                     .padding([6, 16]),
-                button(text("3").size(12))
+                button(text("3").size(sz(12.0)))
                     .on_press(CollectionBrowserMessage::LoadToDeck(2))
                     .padding([6, 16]),
-                button(text("4").size(12))
+                button(text("4").size(sz(12.0)))
                     .on_press(CollectionBrowserMessage::LoadToDeck(3))
                     .padding([6, 16]),
             ]
             .spacing(8)
             .into()
         } else {
-            row![text("Select a track to load").size(11),].into()
+            row![text("Select a track to load").size(sz(11.0)),].into()
         };
 
         // Suggest toggle button + energy slider
@@ -765,7 +765,7 @@ impl CollectionBrowserState {
             suggest_inactive_style
         };
 
-        button(text(label).size(11))
+        button(text(label).size(sz(11.0)))
             .on_press(CollectionBrowserMessage::ToggleSuggestions)
             .padding([4, 10])
             .style(style)
@@ -788,7 +788,7 @@ impl CollectionBrowserState {
 
         Some(
             row![
-                text(label).size(9).width(Length::Fixed(30.0)),
+                text(label).size(sz(9.0)).width(Length::Fixed(30.0)),
                 slider(
                     0.0..=1.0,
                     self.energy_direction,

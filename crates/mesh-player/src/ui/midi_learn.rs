@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use iced::widget::{button, column, container, row, text, text_input, Space};
 use iced::{Alignment, Color, Element, Length};
+use mesh_widgets::sz;
 use mesh_midi::{
     ControlAddress, ControlBehavior, ControlMapping, DeckTargetConfig, DeviceProfile,
     FeedbackMapping, HardwareType, MidiAddress, MidiConfig, MidiSampleBuffer, ShiftButtonConfig,
@@ -1867,10 +1868,10 @@ pub fn view_drawer(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
     );
 
     // Header row with title and action buttons
-    let title = text("MIDI LEARN").size(16);
-    let progress = text(progress_text).size(12);
+    let title = text("MIDI LEARN").size(sz(16.0));
+    let progress = text(progress_text).size(sz(12.0));
 
-    let save_btn = button(text("Save").size(12))
+    let save_btn = button(text("Save").size(sz(12.0)))
         .on_press_maybe(if state.phase == LearnPhase::Review {
             Some(MidiLearnMessage::Save)
         } else {
@@ -1882,7 +1883,7 @@ pub fn view_drawer(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
             button::secondary
         });
 
-    let cancel_btn = button(text("Cancel").size(12))
+    let cancel_btn = button(text("Cancel").size(sz(12.0)))
         .on_press(MidiLearnMessage::Cancel)
         .style(button::secondary);
 
@@ -1905,11 +1906,11 @@ pub fn view_drawer(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
     };
 
     // Navigation row
-    let back_btn = button(text("← Back").size(12))
+    let back_btn = button(text("← Back").size(sz(12.0)))
         .on_press(MidiLearnMessage::Back)
         .style(button::secondary);
 
-    let skip_btn = button(text("Skip →").size(12))
+    let skip_btn = button(text("Skip →").size(sz(12.0)))
         .on_press(MidiLearnMessage::Skip)
         .style(button::secondary);
 
@@ -1940,11 +1941,11 @@ pub fn view_drawer(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
 fn view_setup_phase(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
     match state.setup_step {
         SetupStep::ControllerName => {
-            let label = text("Controller Name:").size(14);
+            let label = text("Controller Name:").size(sz(14.0));
             let input = text_input("e.g., DDJ-400", &state.controller_name)
                 .on_input(MidiLearnMessage::SetControllerName)
                 .width(Length::Fixed(200.0));
-            let next_btn = button(text("Next").size(12))
+            let next_btn = button(text("Next").size(sz(12.0)))
                 .on_press_maybe(if !state.controller_name.is_empty() {
                     Some(MidiLearnMessage::Next)
                 } else {
@@ -1957,22 +1958,22 @@ fn view_setup_phase(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
                 .into()
         }
         SetupStep::DeckCount => {
-            let label = text("Physical decks:").size(14);
-            let two_btn = button(text("2 decks").size(12))
+            let label = text("Physical decks:").size(sz(14.0));
+            let two_btn = button(text("2 decks").size(sz(12.0)))
                 .on_press(MidiLearnMessage::SetDeckCount(2))
                 .style(if state.deck_count == 2 {
                     button::primary
                 } else {
                     button::secondary
                 });
-            let four_btn = button(text("4 decks").size(12))
+            let four_btn = button(text("4 decks").size(sz(12.0)))
                 .on_press(MidiLearnMessage::SetDeckCount(4))
                 .style(if state.deck_count == 4 {
                     button::primary
                 } else {
                     button::secondary
                 });
-            let next_btn = button(text("Next").size(12))
+            let next_btn = button(text("Next").size(sz(12.0)))
                 .on_press(MidiLearnMessage::Next)
                 .style(button::primary);
 
@@ -1989,22 +1990,22 @@ fn view_setup_phase(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
             .into()
         }
         SetupStep::LayerToggle => {
-            let label = text("Layer toggle buttons (for 4-deck mode on 2-deck controller)?").size(14);
-            let yes_btn = button(text("Yes").size(12))
+            let label = text("Layer toggle buttons (for 4-deck mode on 2-deck controller)?").size(sz(14.0));
+            let yes_btn = button(text("Yes").size(sz(12.0)))
                 .on_press(MidiLearnMessage::SetHasLayerToggle(true))
                 .style(if state.has_layer_toggle {
                     button::primary
                 } else {
                     button::secondary
                 });
-            let no_btn = button(text("No").size(12))
+            let no_btn = button(text("No").size(sz(12.0)))
                 .on_press(MidiLearnMessage::SetHasLayerToggle(false))
                 .style(if !state.has_layer_toggle {
                     button::primary
                 } else {
                     button::secondary
                 });
-            let next_btn = button(text("Next").size(12))
+            let next_btn = button(text("Next").size(sz(12.0)))
                 .on_press(MidiLearnMessage::Next)
                 .style(button::primary);
 
@@ -2022,27 +2023,27 @@ fn view_setup_phase(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
         }
         SetupStep::PadModeSource => {
             // Explanation of pad mode source
-            let label = text("Pad buttons behavior:").size(14);
+            let label = text("Pad buttons behavior:").size(sz(14.0));
             let explanation = text(
                 "Controller-driven: Pads send different MIDI notes in hot cue vs slicer mode (e.g. DDJ-SB2). \
                  App-driven: Same notes in all modes, app decides what they do."
-            ).size(11);
+            ).size(sz(11.0));
 
-            let controller_btn = button(text("Controller").size(12))
+            let controller_btn = button(text("Controller").size(sz(12.0)))
                 .on_press(MidiLearnMessage::SetPadModeSource(mesh_midi::PadModeSource::Controller))
                 .style(if state.pad_mode_source == mesh_midi::PadModeSource::Controller {
                     button::primary
                 } else {
                     button::secondary
                 });
-            let app_btn = button(text("App").size(12))
+            let app_btn = button(text("App").size(sz(12.0)))
                 .on_press(MidiLearnMessage::SetPadModeSource(mesh_midi::PadModeSource::App))
                 .style(if state.pad_mode_source == mesh_midi::PadModeSource::App {
                     button::primary
                 } else {
                     button::secondary
                 });
-            let next_btn = button(text("Next").size(12))
+            let next_btn = button(text("Next").size(sz(12.0)))
                 .on_press(MidiLearnMessage::Next)
                 .style(button::primary);
 
@@ -2062,27 +2063,27 @@ fn view_setup_phase(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
             .into()
         }
         SetupStep::ModeButtonBehavior => {
-            let label = text("Mode button behavior:").size(14);
+            let label = text("Mode button behavior:").size(sz(14.0));
             let explanation = text(
                 "Permanent: Mode buttons toggle between Hot Cue and Slicer mode. Pads always act according to the current mode.\n\
                  Momentary: Hold to temporarily activate Hot Cue or Slicer mode. When released, pads return to their primary action. Best for compact controllers."
-            ).size(11);
+            ).size(sz(11.0));
 
-            let permanent_btn = button(text("Permanent").size(12))
+            let permanent_btn = button(text("Permanent").size(sz(12.0)))
                 .on_press(MidiLearnMessage::SetModeButtonBehavior(false))
                 .style(if !state.momentary_mode_buttons {
                     button::primary
                 } else {
                     button::secondary
                 });
-            let momentary_btn = button(text("Momentary").size(12))
+            let momentary_btn = button(text("Momentary").size(sz(12.0)))
                 .on_press(MidiLearnMessage::SetModeButtonBehavior(true))
                 .style(if state.momentary_mode_buttons {
                     button::primary
                 } else {
                     button::secondary
                 });
-            let next_btn = button(text("Next").size(12))
+            let next_btn = button(text("Next").size(sz(12.0)))
                 .on_press(MidiLearnMessage::Next)
                 .style(button::primary);
 
@@ -2103,11 +2104,11 @@ fn view_setup_phase(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
         }
         SetupStep::ShiftButtonLeft | SetupStep::ShiftButtonRight => {
             let side = if state.setup_step == SetupStep::ShiftButtonLeft { "LEFT" } else { "RIGHT" };
-            let label = text(format!("Press {} deck SHIFT button (or skip):", side)).size(14);
+            let label = text(format!("Press {} deck SHIFT button (or skip):", side)).size(sz(14.0));
             let last_midi = if let Some(ref event) = state.last_captured {
-                text(format!("Detected: {}", event.display())).size(12)
+                text(format!("Detected: {}", event.display())).size(sz(12.0))
             } else {
-                text("Waiting for MIDI input...").size(12)
+                text("Waiting for MIDI input...").size(sz(12.0))
             };
 
             row![label, Space::new().width(20), last_midi]
@@ -2116,11 +2117,11 @@ fn view_setup_phase(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
         }
         SetupStep::ToggleButtonLeft | SetupStep::ToggleButtonRight => {
             let side = if state.setup_step == SetupStep::ToggleButtonLeft { "LEFT" } else { "RIGHT" };
-            let label = text(format!("Press {} LAYER TOGGLE button (or skip):", side)).size(14);
+            let label = text(format!("Press {} LAYER TOGGLE button (or skip):", side)).size(sz(14.0));
             let last_midi = if let Some(ref event) = state.last_captured {
-                text(format!("Detected: {}", event.display())).size(12)
+                text(format!("Detected: {}", event.display())).size(sz(12.0))
             } else {
-                text("Waiting for MIDI input...").size(12)
+                text("Waiting for MIDI input...").size(sz(12.0))
             };
 
             row![label, Space::new().width(20), last_midi]
@@ -2132,19 +2133,19 @@ fn view_setup_phase(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
 
 /// View for mapping phases (Transport, Pads, Mixer, Browser)
 fn view_mapping_phase(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
-    let prompt = text(&state.status).size(14);
+    let prompt = text(&state.status).size(sz(14.0));
 
     let last_midi = if let Some(ref event) = state.last_captured {
-        text(format!("Last: {} ✓", event.display())).size(12)
+        text(format!("Last: {} ✓", event.display())).size(sz(12.0))
     } else {
-        text("Waiting for MIDI input...").size(12)
+        text("Waiting for MIDI input...").size(sz(12.0))
     };
 
     // Show detected hardware type if available
     let hw_info = if let Some(hw) = state.detected_hardware {
-        text(format!("Detected: {:?}", hw)).size(12)
+        text(format!("Detected: {:?}", hw)).size(sz(12.0))
     } else {
-        text("").size(12)
+        text("").size(sz(12.0))
     };
 
     row![
@@ -2166,10 +2167,10 @@ fn view_review_phase(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
         state.deck_count,
         state.pending_mappings.len()
     ))
-    .size(14);
+    .size(sz(14.0));
 
     let hint = text("Your mappings are working in live mode. Press Save to write the config file.")
-        .size(12);
+        .size(sz(12.0));
 
     column![summary, hint].spacing(5).into()
 }

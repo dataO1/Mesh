@@ -10,6 +10,7 @@ use super::state::ImportMode;
 use crate::batch_import::{MixedAudioFile, StemGroup};
 use iced::widget::{button, column, container, progress_bar, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
+use mesh_widgets::sz;
 
 /// Render the import modal content
 ///
@@ -21,8 +22,8 @@ pub fn view(state: &ImportState, use_advanced_beats: bool) -> Element<'_, Messag
         ImportMode::Stems => "Import Stems",
         ImportMode::MixedAudio => "Import Audio (Auto-Separate)",
     };
-    let title = text(title_text).size(24);
-    let close_btn = button(text("×").size(20))
+    let title = text(title_text).size(sz(24.0));
+    let close_btn = button(text("×").size(sz(20.0)))
         .on_press(Message::CloseImport)
         .style(button::secondary);
 
@@ -52,9 +53,9 @@ pub fn view(state: &ImportState, use_advanced_beats: bool) -> Element<'_, Messag
     let mode_toggle = row![stems_btn, mixed_btn].spacing(8);
 
     // Import folder display
-    let folder_label = text("Import Folder:").size(14);
+    let folder_label = text("Import Folder:").size(sz(14.0));
     let folder_path = text(state.import_folder.display().to_string())
-        .size(12);
+        .size(sz(12.0));
     let folder_section = column![folder_label, folder_path].spacing(5);
 
     // Content depends on current phase
@@ -90,12 +91,12 @@ fn view_scan_results_stems(state: &ImportState) -> Element<'_, Message> {
     let groups = &state.detected_groups;
 
     // Groups list
-    let groups_title = text("Detected Tracks").size(18);
+    let groups_title = text("Detected Tracks").size(sz(18.0));
 
     let groups_list: Element<Message> = if groups.is_empty() {
         column![
-            text("No stem files found in import folder.").size(14),
-            text("Place stems with pattern: Artist - Track_(Vocals).wav").size(12),
+            text("No stem files found in import folder.").size(sz(14.0)),
+            text("Place stems with pattern: Artist - Track_(Vocals).wav").size(sz(12.0)),
         ]
         .spacing(5)
         .into()
@@ -115,15 +116,15 @@ fn view_scan_results_stems(state: &ImportState) -> Element<'_, Message> {
     let incomplete_count = groups.len() - complete_count;
 
     let status = if groups.is_empty() {
-        text("").size(12)
+        text("").size(sz(12.0))
     } else if incomplete_count > 0 {
         text(format!(
             "{} ready to import, {} incomplete (need all 4 stems)",
             complete_count, incomplete_count
         ))
-        .size(12)
+        .size(sz(12.0))
     } else {
-        text(format!("{} tracks ready to import", complete_count)).size(12)
+        text(format!("{} tracks ready to import", complete_count)).size(sz(12.0))
     };
 
     // Action buttons
@@ -157,13 +158,13 @@ fn view_scan_results_mixed(state: &ImportState) -> Element<'_, Message> {
     let files = &state.detected_mixed_files;
 
     // Files list
-    let files_title = text("Detected Audio Files").size(18);
+    let files_title = text("Detected Audio Files").size(sz(18.0));
 
     let files_list: Element<Message> = if files.is_empty() {
         column![
-            text("No audio files found in import folder.").size(14),
-            text("Supported formats: MP3, FLAC, WAV, OGG, M4A").size(12),
-            text("Files with _(Vocals), _(Drums), etc. are skipped (use Stems mode).").size(11),
+            text("No audio files found in import folder.").size(sz(14.0)),
+            text("Supported formats: MP3, FLAC, WAV, OGG, M4A").size(sz(12.0)),
+            text("Files with _(Vocals), _(Drums), etc. are skipped (use Stems mode).").size(sz(11.0)),
         ]
         .spacing(5)
         .into()
@@ -180,19 +181,19 @@ fn view_scan_results_mixed(state: &ImportState) -> Element<'_, Message> {
 
     let file_count = files.len();
     let status = if files.is_empty() {
-        text("").size(12)
+        text("").size(sz(12.0))
     } else {
         text(format!(
             "{} audio {} ready for stem separation",
             file_count,
             if file_count == 1 { "file" } else { "files" }
         ))
-        .size(12)
+        .size(sz(12.0))
     };
 
     // Note about stem separation (experimental feature)
     let note = text("⚠ Experimental: Stem separation requires ~4GB RAM. GPU acceleration is untested.")
-        .size(11)
+        .size(sz(11.0))
         .color(iced::Color::from_rgb(0.8, 0.6, 0.2));
 
     // Action buttons
@@ -223,12 +224,12 @@ fn view_scan_results_mixed(state: &ImportState) -> Element<'_, Message> {
 
 /// View a single stem group
 fn view_stem_group(group: &StemGroup) -> Element<'_, Message> {
-    let name = text(&group.base_name).size(14);
+    let name = text(&group.base_name).size(sz(14.0));
     let status_icon = if group.is_complete() {
-        text("✓").size(14).color(iced::Color::from_rgb(0.2, 0.8, 0.2))
+        text("✓").size(sz(14.0)).color(iced::Color::from_rgb(0.2, 0.8, 0.2))
     } else {
         text(format!("{}/4", group.stem_count()))
-            .size(12)
+            .size(sz(12.0))
             .color(iced::Color::from_rgb(0.8, 0.6, 0.2))
     };
 
@@ -241,7 +242,7 @@ fn view_stem_group(group: &StemGroup) -> Element<'_, Message> {
         if group.other.is_some() { "O" } else { "·" },
     );
     let stems_text = text(stems_detail)
-        .size(12)
+        .size(sz(12.0))
         .color(iced::Color::from_rgb(0.5, 0.5, 0.5));
 
     container(
@@ -267,7 +268,7 @@ fn view_stem_group(group: &StemGroup) -> Element<'_, Message> {
 
 /// View a single mixed audio file
 fn view_mixed_audio_file(file: &MixedAudioFile) -> Element<'_, Message> {
-    let name = text(&file.base_name).size(14);
+    let name = text(&file.base_name).size(sz(14.0));
 
     // Get file extension
     let ext = file.path
@@ -276,11 +277,11 @@ fn view_mixed_audio_file(file: &MixedAudioFile) -> Element<'_, Message> {
         .unwrap_or("?")
         .to_uppercase();
     let ext_text = text(ext)
-        .size(11)
+        .size(sz(11.0))
         .color(iced::Color::from_rgb(0.5, 0.5, 0.5));
 
     let status_icon = text("♪")
-        .size(14)
+        .size(sz(14.0))
         .color(iced::Color::from_rgb(0.4, 0.6, 0.9));
 
     container(
@@ -307,7 +308,7 @@ fn view_mixed_audio_file(file: &MixedAudioFile) -> Element<'_, Message> {
 /// View while scanning
 fn view_scanning() -> Element<'static, Message> {
     column![
-        text("Scanning import folder...").size(16),
+        text("Scanning import folder...").size(sz(16.0)),
         container(progress_bar(0.0..=1.0, 0.5)).width(Length::Fill),
     ]
     .spacing(10)
@@ -347,9 +348,9 @@ fn view_processing<'a>(
         "Importing: {} ({}/{})",
         current_track, completed, total
     ))
-    .size(14);
+    .size(sz(14.0));
 
-    let eta = text(eta_text).size(12);
+    let eta = text(eta_text).size(sz(12.0));
 
     let cancel_btn = button(text("Cancel"))
         .on_press(Message::CancelImport)
@@ -367,7 +368,7 @@ fn view_processing<'a>(
     if use_advanced_beats {
         let banner = container(
             text("Using ML beat detection (Advanced). If analysis is too slow, switch to Simple in Settings.")
-                .size(12)
+                .size(sz(12.0))
         )
         .padding([6, 10])
         .width(Length::Fill)
@@ -401,9 +402,9 @@ fn view_complete(
         "{} tracks imported successfully, {} failed",
         success_count, fail_count
     ))
-    .size(16);
+    .size(sz(16.0));
 
-    let duration_label = text(duration_text).size(12);
+    let duration_label = text(duration_text).size(sz(12.0));
 
     // Show failed tracks if any
     let failures: Element<Message> = if fail_count > 0 {
@@ -413,14 +414,14 @@ fn view_complete(
             .map(|r| {
                 let error = r.error.as_deref().unwrap_or("Unknown error");
                 text(format!("• {}: {}", r.base_name, error))
-                    .size(12)
+                    .size(sz(12.0))
                     .color(iced::Color::from_rgb(0.9, 0.3, 0.3))
                     .into()
             })
             .collect();
 
         column![
-            text("Failed imports:").size(14),
+            text("Failed imports:").size(sz(14.0)),
             scrollable(column(failed_items).spacing(4)).height(Length::Fixed(100.0)),
         ]
         .spacing(5)
@@ -496,16 +497,16 @@ pub fn build_status_bar<M: Clone + 'static>(
     progress: f32,
     cancel_message: M,
 ) -> Element<'static, M> {
-    let cancel_btn = button(text("×").size(14))
+    let cancel_btn = button(text("×").size(sz(14.0)))
         .on_press(cancel_message)
         .style(button::secondary)
         .padding([2, 6]);
 
     let bar = container(
         row![
-            text(label).size(12),
+            text(label).size(sz(12.0)),
             Space::new().width(Length::Fill),
-            text(progress_text).size(12),
+            text(progress_text).size(sz(12.0)),
             cancel_btn,
         ]
         .spacing(10)

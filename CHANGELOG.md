@@ -4,23 +4,6 @@ All notable changes to Mesh are documented in this file.
 
 ---
 
-## [Unreleased]
-
-### Changed
-
-- **Reworked Mesh theme** — New earthy warm palette with violet (`#B090E0`) primary accent
-  and olive green (`#707030`) secondary. Dark warm background (`#202010`), muted stem colors:
-  olive vocals, teal-blue drums, dark red bass, violet other.
-
-### Fixed
-
-- **Sub-beat loops (1/8, 1/4, 1/2) silently fail** — `snap_to_beat()` snapped the loop
-  end back to the same beat as the start, producing a zero-length loop that was ignored.
-  Added `snap_to_subdivision()` which divides each beat grid interval into fractional
-  parts matching the loop length, keeping sub-beat loops phase-locked to the grid.
-
----
-
 ## [0.9.8]
 
 ### Added
@@ -32,6 +15,13 @@ All notable changes to Mesh are documented in this file.
   size scaling normalizes visual appearance (pixel fonts like Press Start 2P are
   scaled down automatically). Both mesh-player and mesh-cue share the `AppFont`
   enum from mesh-widgets.
+
+- **Global font size scaling** — Three size presets (Small, Medium, Big) in
+  Settings → Display scale all UI text via a global `sz()` multiplier applied to
+  every explicit text `.size()` call across mesh-player, mesh-cue, and mesh-widgets.
+  Small = 1.0× (original sizing), Medium = 1.2× (default), Big = 1.4×. The scale
+  factor is stored in an `AtomicU32` set once at startup and combined with per-font
+  normalization so all fonts render at visually equivalent sizes regardless of preset.
 
 - **Window icon and header branding** — Both apps show `grid.png` as the window
   icon (taskbar/dock) and as a logo image in the header bar. Header text changed
@@ -71,6 +61,11 @@ All notable changes to Mesh are documented in this file.
   for Name, Artist, BPM, and Key columns; mesh-player leaves all read-only.
 
 ### Fixed
+
+- **Sub-beat loops (1/8, 1/4, 1/2) silently fail** — `snap_to_beat()` snapped the loop
+  end back to the same beat as the start, producing a zero-length loop that was ignored.
+  Added `snap_to_subdivision()` which divides each beat grid interval into fractional
+  parts matching the loop length, keeping sub-beat loops phase-locked to the grid.
 
 - **Encoder scroll wraps to top on duplicate track IDs** — When the same track appeared
   at multiple positions in a playlist, the encoder scroll handler used `.position()` to
@@ -211,6 +206,10 @@ All notable changes to Mesh are documented in this file.
   resolves names from NodeId directly instead of per-track DB lookups.
 
 ### Changed
+
+- **Reworked Mesh theme** — New earthy warm palette with violet (`#B090E0`) primary accent
+  and olive green (`#707030`) secondary. Dark warm background (`#202010`), muted stem colors:
+  olive vocals, teal-blue drums, dark red bass, violet other.
 
 - **Header "mesh" text bolder and larger** — The "mesh" title in both apps is
   now bold weight and 25% larger (size 24 → 30) for better visual presence.

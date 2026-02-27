@@ -12,7 +12,7 @@ use iced::widget::{button, checkbox, column, container, mouse_area, opaque, row,
 use iced::{Color, Element, Length, Task, Theme};
 use super::modals::with_modal_overlay;
 use mesh_core::playlist::NodeId;
-use mesh_widgets::mpsc_subscription;
+use mesh_widgets::{mpsc_subscription, sz};
 use std::sync::Arc;
 
 // Re-export extracted modules for use by other UI modules
@@ -411,6 +411,7 @@ impl MeshCueApp {
             Message::RefreshAudioDevices => return self.handle_refresh_audio_devices(),
             Message::UpdateSettingsTheme(name) => return self.handle_update_settings_theme(name),
             Message::UpdateSettingsFont(font) => { self.settings.draft_font = font; return Task::none(); }
+            Message::UpdateSettingsFontSize(size) => { self.settings.draft_font_size = size; return Task::none(); }
             Message::SaveSettings => return self.handle_save_settings(),
             Message::SaveSettingsComplete(result) => return self.handle_save_settings_complete(result),
             // Keyboard input (delegated to handlers/keyboard.rs)
@@ -760,7 +761,7 @@ impl MeshCueApp {
         } else if let Some(ref drag) = self.collection.dragging_track {
             // Show drag indicator near the cursor when dragging tracks
             let drag_text = drag.display_text();
-            let indicator = container(text(drag_text).size(12))
+            let indicator = container(text(drag_text).size(sz(12.0)))
                 .padding([4, 8])
                 .style(|_theme| container::Style {
                     background: Some(iced::Color::from_rgba(0.2, 0.2, 0.2, 0.85).into()),
@@ -912,7 +913,7 @@ impl MeshCueApp {
             .unwrap_or_else(|| "tracks".to_string());
 
         let title = text(format!("Re-analyse Metadata ({})", scope_desc))
-            .size(18);
+            .size(sz(18.0));
 
         let cb_name = checkbox(self.reanalysis_state.config_name_artist)
             .label("Name / Artist")
@@ -932,17 +933,17 @@ impl MeshCueApp {
             .size(16);
 
         let start_btn = if any_checked {
-            button(text("Start").size(14))
+            button(text("Start").size(sz(14.0)))
                 .on_press(Message::ConfirmMetadataReanalysis)
                 .padding([8, 20])
                 .style(button::primary)
         } else {
-            button(text("Start").size(14))
+            button(text("Start").size(sz(14.0)))
                 .padding([8, 20])
                 .style(button::secondary)
         };
 
-        let cancel_btn = button(text("Cancel").size(14))
+        let cancel_btn = button(text("Cancel").size(sz(14.0)))
             .on_press(Message::CloseReanalysisConfig)
             .padding([8, 20])
             .style(button::secondary);
@@ -1032,7 +1033,7 @@ impl MeshCueApp {
                 column![
                     bar,
                     text("ML beat detection active — switch to Simple in Settings if too slow")
-                        .size(11)
+                        .size(sz(11.0))
                         .color(iced::Color::from_rgb(0.5, 0.5, 0.5)),
                 ]
                 .spacing(2)
@@ -1046,38 +1047,42 @@ impl MeshCueApp {
     /// View header with app title and settings
     fn view_header(&self) -> Element<'_, Message> {
         // FX Presets button - simple primary style
-        let fx_btn = button(text("FX Presets").size(14))
+        let fx_btn = button(text("FX Presets").size(sz(14.0)))
             .on_press(Message::OpenEffectsEditor)
             .padding([8, 16])
             .style(button::primary);
 
         // Slicer button - always clickable; modal handles no-track case
-        let slicer_btn = button(text("Slicer").size(14))
+        let slicer_btn = button(text("Slicer").size(sz(14.0)))
             .on_press(Message::OpenSlicerEditor)
             .padding([8, 16])
             .style(button::primary);
 
         // Settings gear icon (⚙ U+2699)
-        let settings_btn = button(text("⚙").size(20))
+        let settings_btn = button(text("⚙").size(sz(20.0)))
             .on_press(Message::OpenSettings)
             .style(button::secondary);
 
         let logo = iced::widget::image(mesh_widgets::LOGO_HANDLE.clone())
             .height(28);
 
-        row![
-            logo,
-            text("mesh").size(30).font({
-                let f = self.settings.draft_font.to_iced_font();
-                iced::Font { weight: iced::font::Weight::Bold, ..f }
-            }),
-            Space::new().width(Length::Fill),
-            slicer_btn,
-            fx_btn,
-            settings_btn,
-        ]
-        .spacing(10)
-        .align_y(iced::Alignment::Center)
+        container(
+            row![
+                logo,
+                text("mesh").size(sz(30.0)).font({
+                    let f = self.settings.draft_font.to_iced_font();
+                    iced::Font { weight: iced::font::Weight::Bold, ..f }
+                }),
+                Space::new().width(Length::Fill),
+                slicer_btn,
+                fx_btn,
+                settings_btn,
+            ]
+            .spacing(10)
+            .align_y(iced::Alignment::Center)
+        )
+        .padding(iced::Padding::default().left(15).right(15).bottom(8))  // Match editor, extra bottom
+        .width(Length::Fill)
         .into()
     }
 

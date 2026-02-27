@@ -7,6 +7,7 @@ use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 use mesh_core::clap::DiscoveredClapPlugin;
 use mesh_core::pd::DiscoveredEffect;
+use mesh_widgets::sz;
 
 /// Effect source type for distinguishing PD from CLAP effects
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,9 +194,9 @@ impl EffectPickerState {
         // Header
         let header = row![
             text(format!("Add Effect to {}", self.target_description()))
-                .size(18),
+                .size(sz(18.0)),
             Space::new().width(Length::Fill),
-            button(text("✕").size(16))
+            button(text("✕").size(sz(16.0)))
                 .on_press(EffectPickerMessage::Close)
                 .padding(5),
         ]
@@ -204,7 +205,7 @@ impl EffectPickerState {
 
         // Source filter buttons
         let filter_row = row![
-            button(text("All").size(12))
+            button(text("All").size(sz(12.0)))
                 .on_press(EffectPickerMessage::ToggleSourceFilter(None))
                 .padding([4, 10])
                 .style(if self.source_filter.is_none() {
@@ -212,7 +213,7 @@ impl EffectPickerState {
                 } else {
                     button::secondary
                 }),
-            button(text("PD").size(12))
+            button(text("PD").size(sz(12.0)))
                 .on_press(EffectPickerMessage::ToggleSourceFilter(Some(EffectSource::Pd)))
                 .padding([4, 10])
                 .style(if self.source_filter == Some(EffectSource::Pd) {
@@ -220,7 +221,7 @@ impl EffectPickerState {
                 } else {
                     button::secondary
                 }),
-            button(text("CLAP").size(12))
+            button(text("CLAP").size(sz(12.0)))
                 .on_press(EffectPickerMessage::ToggleSourceFilter(Some(EffectSource::Clap)))
                 .padding([4, 10])
                 .style(if self.source_filter == Some(EffectSource::Clap) {
@@ -234,7 +235,7 @@ impl EffectPickerState {
                 pd_effects.len(),
                 clap_plugins.len()
             ))
-            .size(11),
+            .size(sz(11.0)),
         ]
         .spacing(5)
         .align_y(Alignment::Center);
@@ -255,7 +256,7 @@ impl EffectPickerState {
             // Category header
             effect_rows.push(
                 text(category.clone())
-                    .size(14)
+                    .size(sz(14.0))
                     .style(iced::widget::text::primary)
                     .into(),
             );
@@ -279,11 +280,11 @@ impl EffectPickerState {
         if effects.is_empty() {
             effect_rows.push(
                 column![
-                    text("No effects found").size(14),
+                    text("No effects found").size(sz(14.0)),
                     Space::new().height(10),
-                    text("Effects locations (in mesh-collection/effects/):").size(12),
-                    text("  PD:   effects/pd/<effect-name>/").size(11),
-                    text("  CLAP: effects/clap/*.clap").size(11),
+                    text("Effects locations (in mesh-collection/effects/):").size(sz(12.0)),
+                    text("  PD:   effects/pd/<effect-name>/").size(sz(11.0)),
+                    text("  CLAP: effects/clap/*.clap").size(sz(11.0)),
                 ]
                 .spacing(2)
                 .into(),
@@ -301,7 +302,7 @@ impl EffectPickerState {
         // Footer with cancel button
         let footer = row![
             Space::new().width(Length::Fill),
-            button(text("Cancel").size(14))
+            button(text("Cancel").size(sz(14.0)))
                 .on_press(EffectPickerMessage::Close)
                 .padding([8, 16]),
         ];
@@ -327,22 +328,22 @@ impl EffectPickerState {
 
         // Source badge
         let source_badge = match &effect.source {
-            EffectSource::Pd => text("PD").size(9),
-            EffectSource::Clap => text("CLAP").size(9),
+            EffectSource::Pd => text("PD").size(sz(9.0)),
+            EffectSource::Clap => text("CLAP").size(sz(9.0)),
         };
 
         // Effect name and status
         let name_text = if available {
-            text(name).size(13)
+            text(name).size(sz(13.0))
         } else {
-            text(format!("{} (unavailable)", effect.name)).size(13)
+            text(format!("{} (unavailable)", effect.name)).size(sz(13.0))
         };
 
         // Status message (missing deps or error)
         let status = if let Some(ref msg) = effect.status_message {
-            text(msg.clone()).size(10)
+            text(msg.clone()).size(sz(10.0))
         } else {
-            text("").size(10)
+            text("").size(sz(10.0))
         };
 
         let info_col = column![
@@ -358,11 +359,11 @@ impl EffectPickerState {
                 EffectSource::Pd => EffectPickerMessage::SelectPdEffect(id),
                 EffectSource::Clap => EffectPickerMessage::SelectClapEffect(id),
             };
-            button(text("Add").size(12))
+            button(text("Add").size(sz(12.0)))
                 .on_press(msg)
                 .padding([4, 12])
         } else {
-            button(text("Add").size(12)).padding([4, 12])
+            button(text("Add").size(sz(12.0))).padding([4, 12])
         };
 
         row![info_col, Space::new().width(Length::Fill), add_btn]

@@ -12,13 +12,11 @@ use iced::widget::{button, column, container, mouse_area, row, text, Space};
 use iced::{Alignment, Color, Element, Length, Theme};
 use mesh_core::types::SAMPLE_RATE;
 use mesh_widgets::CUE_COLORS;
-use mesh_widgets::{COMBINED_WAVEFORM_GAP, WAVEFORM_HEIGHT, ZOOMED_WAVEFORM_HEIGHT};
-
-/// Drop marker color (orange - same as used in waveform visualization)
-const DROP_MARKER_COLOR: Color = Color::from_rgb(1.0, 0.5, 0.0);
+use mesh_widgets::{sz, COMBINED_WAVEFORM_GAP, WAVEFORM_HEIGHT, ZOOMED_WAVEFORM_HEIGHT};
 
 /// Render the hot cue buttons (single row of 8 action buttons + DROP button)
-pub fn view(state: &LoadedTrackState) -> Element<'_, Message> {
+pub fn view(state: &LoadedTrackState, stem_colors: [Color; 4]) -> Element<'_, Message> {
+    let drop_color = stem_colors[2]; // Bass stem color for drop marker
     // 8 hot cue buttons (no DROP in this row)
     let cue_buttons: Vec<Element<Message>> = (0..8)
         .map(|i| {
@@ -29,7 +27,7 @@ pub fn view(state: &LoadedTrackState) -> Element<'_, Message> {
     let hot_cue_row = row(cue_buttons).spacing(8).align_y(Alignment::Center);
 
     // DROP button on the left — same width container as transport (120px)
-    let drop_btn = create_drop_marker_button(state.drop_marker);
+    let drop_btn = create_drop_marker_button(state.drop_marker, drop_color);
     let drop_container = container(drop_btn)
         .padding([0, 8])  // Match transport horizontal padding
         .width(Length::Fixed(120.0))
@@ -41,13 +39,13 @@ pub fn view(state: &LoadedTrackState) -> Element<'_, Message> {
         .align_y(Alignment::Center);
 
     container(cue_row)
-        .padding(iced::Padding::default().top(4))
+        .padding(iced::Padding::default().top(12))
         .width(Length::Fill)
         .into()
 }
 
 /// Create the DROP marker button
-fn create_drop_marker_button(drop_marker: Option<u64>) -> Element<'static, Message> {
+fn create_drop_marker_button(drop_marker: Option<u64>, drop_color: Color) -> Element<'static, Message> {
     let label_text = if let Some(position) = drop_marker {
         let time = format_time_short(position);
         format!("DROP\n{}", time)
@@ -55,21 +53,21 @@ fn create_drop_marker_button(drop_marker: Option<u64>) -> Element<'static, Messa
         "DROP".to_string()
     };
 
-    let btn = button(text(label_text).size(11).center())
+    let btn = button(text(label_text).size(sz(13.0)).center())
         .width(Length::Fixed(104.0)) // Fixed width for DROP button
         .height(Length::Fixed(44.0));
 
     if drop_marker.is_some() {
-        // Drop marker is set - orange button, shift+click to clear
+        // Drop marker is set - bass stem color, shift+click to clear
         btn.on_press(Message::SetDropMarker) // Click updates position
             .style(move |theme: &Theme, status| {
-                colored_button_style(theme, status, DROP_MARKER_COLOR)
+                colored_button_style(theme, status, drop_color)
             })
             .into()
     } else {
         // No drop marker - secondary button, click to set
         btn.on_press(Message::SetDropMarker)
-            .style(iced::widget::button::secondary)
+            .style(secondary_r4)
             .into()
     }
 }
@@ -88,7 +86,7 @@ fn create_hot_cue_button(
         format!("{}", index + 1)
     };
 
-    let btn = button(text(label_text).size(11).center())
+    let btn = button(text(label_text).size(sz(13.0)).center())
         .width(Length::Fill)  // Dynamic width to match waveform
         .height(Length::Fixed(44.0));
 
@@ -108,7 +106,7 @@ fn create_hot_cue_button(
     } else {
         // Empty slot - just set cue on click
         btn.on_press(Message::SetCuePoint(index))
-            .style(iced::widget::button::secondary)
+            .style(secondary_r4)
             .into()
     }
 }
@@ -148,11 +146,21 @@ fn colored_button_style(
         border: iced::Border {
             color: Color::TRANSPARENT,
             width: 0.0,
-            radius: 4.0.into(),
+            radius: BUTTON_RADIUS.into(),
         },
         shadow: iced::Shadow::default(),
         snap: false,
     }
+}
+
+/// Consistent border radius for all buttons in the cue editor
+const BUTTON_RADIUS: f32 = 4.0;
+
+/// Secondary button style with consistent border radius
+fn secondary_r4(theme: &Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
+    let mut s = iced::widget::button::secondary(theme, status);
+    s.border.radius = BUTTON_RADIUS.into();
+    s
 }
 
 /// Format sample position as short time string (S.ms)
@@ -174,13 +182,7 @@ fn format_time_short(samples: u64) -> String {
 /// Stem names for display
 const STEM_NAMES: [&str; 4] = ["VOC", "DRM", "BAS", "OTH"];
 
-/// Stem colors (matching mesh_widgets::STEM_COLORS)
-const STEM_COLORS: [Color; 4] = [
-    Color::from_rgb(0.0, 0.8, 0.4),  // Vocals - green
-    Color::from_rgb(0.8, 0.2, 0.2),  // Drums - red
-    Color::from_rgb(0.2, 0.4, 0.9),  // Bass - blue
-    Color::from_rgb(0.9, 0.7, 0.1),  // Other - yellow
-];
+// Stem colors come from the active theme (passed as parameter)
 
 /// Render the stem link buttons (4 buttons, one per stem)
 ///
@@ -189,6 +191,7 @@ const STEM_COLORS: [Color; 4] = [
 pub fn view_stem_links(
     state: &LoadedTrackState,
     stem_link_selection: Option<usize>,
+    stem_colors: [Color; 4],
 ) -> Element<'_, Message> {
     use mesh_core::audio_file::StemLinkReference;
 
@@ -200,7 +203,7 @@ pub fn view_stem_links(
                 .iter()
                 .find(|l| l.stem_index == stem_idx as u8);
 
-            create_stem_link_button(stem_idx, link, stem_link_selection)
+            create_stem_link_button(stem_idx, link, stem_link_selection, stem_colors)
         })
         .collect();
 
@@ -221,6 +224,7 @@ pub fn view_stem_links(
 pub fn view_stem_links_column(
     state: &LoadedTrackState,
     stem_link_selection: Option<usize>,
+    stem_colors: [Color; 4],
 ) -> Element<'_, Message> {
     use mesh_core::audio_file::StemLinkReference;
 
@@ -236,7 +240,7 @@ pub fn view_stem_links_column(
                 .iter()
                 .find(|l| l.stem_index == stem_idx as u8);
 
-            create_stem_link_button_vertical(stem_idx, link, stem_link_selection, button_height)
+            create_stem_link_button_vertical(stem_idx, link, stem_link_selection, button_height, stem_colors)
         })
         .collect();
 
@@ -253,9 +257,10 @@ fn create_stem_link_button_vertical(
     link: Option<&mesh_core::audio_file::StemLinkReference>,
     stem_link_selection: Option<usize>,
     height: f32,
+    stem_colors: [Color; 4],
 ) -> Element<'static, Message> {
     let stem_name = STEM_NAMES[stem_idx];
-    let color = STEM_COLORS[stem_idx];
+    let color = stem_colors[stem_idx];
     let is_selecting = stem_link_selection == Some(stem_idx);
 
     // Shorter labels for vertical layout
@@ -267,7 +272,7 @@ fn create_stem_link_button_vertical(
         stem_name.to_string()
     };
 
-    let label = container(text(label_text).size(10).center())
+    let label = container(text(label_text).size(sz(10.0)).center())
         .width(Length::Fill)
         .height(Length::Fill)
         .center_x(Length::Fill)
@@ -300,7 +305,7 @@ fn create_stem_link_button_vertical(
     } else {
         // No link - secondary style
         btn.on_press(Message::StartStemLinkSelection(stem_idx))
-            .style(iced::widget::button::secondary)
+            .style(secondary_r4)
             .into()
     }
 }
@@ -310,9 +315,10 @@ fn create_stem_link_button(
     stem_idx: usize,
     link: Option<&mesh_core::audio_file::StemLinkReference>,
     stem_link_selection: Option<usize>,
+    stem_colors: [Color; 4],
 ) -> Element<'static, Message> {
     let stem_name = STEM_NAMES[stem_idx];
-    let color = STEM_COLORS[stem_idx];
+    let color = stem_colors[stem_idx];
     let is_selecting = stem_link_selection == Some(stem_idx);
 
     let label_text = if let Some(link_ref) = link {
@@ -333,7 +339,7 @@ fn create_stem_link_button(
         format!("{}\nLink", stem_name)
     };
 
-    let btn = button(text(label_text).size(10).center())
+    let btn = button(text(label_text).size(sz(10.0)).center())
         .width(Length::Fill)
         .height(Length::Fixed(40.0));
 
@@ -360,7 +366,7 @@ fn create_stem_link_button(
     } else {
         // No link - secondary style
         btn.on_press(Message::StartStemLinkSelection(stem_idx))
-            .style(iced::widget::button::secondary)
+            .style(secondary_r4)
             .into()
     }
 }

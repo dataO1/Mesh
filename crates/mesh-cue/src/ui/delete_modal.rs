@@ -5,6 +5,7 @@
 
 use super::app::Message;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
+use mesh_widgets::sz;
 use iced::{Alignment, Element, Length};
 use mesh_core::playlist::NodeId;
 
@@ -80,8 +81,8 @@ pub fn view(state: &DeleteState) -> Element<'_, Message> {
         return Space::new().into();
     };
 
-    let title = text("Confirm Delete").size(24);
-    let close_btn = button(text("×").size(20))
+    let title = text("Confirm Delete").size(sz(24.0));
+    let close_btn = button(text("×").size(sz(20.0)))
         .on_press(Message::CancelDelete)
         .style(button::secondary);
 
@@ -97,10 +98,10 @@ pub fn view(state: &DeleteState) -> Element<'_, Message> {
                 if track_names.len() == 1 { "" } else { "s" },
                 playlist_name
             ))
-            .size(16);
+            .size(sz(16.0));
             let items = track_names.clone();
             let warn = text("Tracks will remain in your collection.")
-                .size(12)
+                .size(sz(12.0))
                 .color(iced::Color::from_rgb(0.5, 0.5, 0.5));
             (desc, items, warn)
         }
@@ -110,17 +111,17 @@ pub fn view(state: &DeleteState) -> Element<'_, Message> {
                 track_names.len(),
                 if track_names.len() == 1 { "" } else { "s" }
             ))
-            .size(16);
+            .size(sz(16.0));
             let items = track_names.clone();
             let warn = text("⚠ WARNING: This will PERMANENTLY delete files from disk!")
-                .size(14)
+                .size(sz(14.0))
                 .color(iced::Color::from_rgb(0.9, 0.2, 0.2));
             (desc, items, warn)
         }
         DeleteTarget::Playlist { playlist_name, .. } => {
-            let desc = text(format!("Delete playlist \"{}\"?", playlist_name)).size(16);
+            let desc = text(format!("Delete playlist \"{}\"?", playlist_name)).size(sz(16.0));
             let warn = text("Tracks will remain in your collection.")
-                .size(12)
+                .size(sz(12.0))
                 .color(iced::Color::from_rgb(0.5, 0.5, 0.5));
             (desc, Vec::new(), warn)
         }
@@ -132,7 +133,7 @@ pub fn view(state: &DeleteState) -> Element<'_, Message> {
     } else if items.len() <= 5 {
         let item_elements: Vec<Element<Message>> = items
             .iter()
-            .map(|name| text(format!("• {}", name)).size(12).into())
+            .map(|name| text(format!("• {}", name)).size(sz(12.0)).into())
             .collect();
         column(item_elements).spacing(4).into()
     } else {
@@ -140,11 +141,11 @@ pub fn view(state: &DeleteState) -> Element<'_, Message> {
         let mut item_elements: Vec<Element<Message>> = items
             .iter()
             .take(5)
-            .map(|name| text(format!("• {}", name)).size(12).into())
+            .map(|name| text(format!("• {}", name)).size(sz(12.0)).into())
             .collect();
         item_elements.push(
             text(format!("... and {} more", items.len() - 5))
-                .size(12)
+                .size(sz(12.0))
                 .color(iced::Color::from_rgb(0.5, 0.5, 0.5))
                 .into(),
         );

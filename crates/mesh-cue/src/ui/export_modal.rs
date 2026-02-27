@@ -11,12 +11,13 @@ use iced::widget::{
 };
 use iced::{Alignment, Element, Length};
 use mesh_core::playlist::NodeId;
+use mesh_widgets::sz;
 use mesh_widgets::TreeNode;
 
 /// Render the export modal content
 pub fn view(state: &ExportState, playlist_tree: Vec<TreeNode<NodeId>>) -> Element<'static, Message> {
-    let title = text("Export to USB").size(24);
-    let close_btn = button(text("×").size(20))
+    let title = text("Export to USB").size(sz(24.0));
+    let close_btn = button(text("×").size(sz(20.0)))
         .on_press(Message::CloseExport)
         .style(button::secondary);
 
@@ -91,7 +92,7 @@ fn render_tree_node(
     let expand_arrow: Element<Message> = if has_children {
         let arrow_text = if is_expanded { "▼" } else { "▶" };
         let id_for_expand = node.id.clone();
-        button(text(arrow_text).size(10))
+        button(text(arrow_text).size(sz(10.0)))
             .on_press(Message::ToggleExportPlaylistExpand(id_for_expand))
             .style(button::text)
             .padding(2)
@@ -148,7 +149,7 @@ fn view_device_selection(
         .and_then(|idx| device_options.get(idx))
         .cloned();
 
-    let device_label = text("Device:").size(14);
+    let device_label = text("Device:").size(sz(14.0));
     let device_options_for_closure = device_options.clone();
     let device_picker = pick_list(device_options, selected_label, move |selected| {
         let idx = device_options_for_closure
@@ -166,17 +167,17 @@ fn view_device_selection(
 
     let no_devices_hint = if state.devices.is_empty() {
         text("No USB devices detected. Insert a USB drive to continue.")
-            .size(12)
+            .size(sz(12.0))
             .color(iced::Color::from_rgb(0.7, 0.5, 0.2))
     } else {
-        text("").size(1)
+        text("").size(sz(1.0))
     };
 
     // Device label input (filesystem label to set during export)
     let label_value = state.device_label.clone();
     let label_input: Element<Message> = text_input("e.g. Mesh DJ", &label_value)
         .on_input(Message::SetExportDeviceLabel)
-        .size(14)
+        .size(sz(14.0))
         .width(Length::Fill)
         .into();
     let label_hint_text = if let Some(device) = state.selected_device.and_then(|i| state.devices.get(i)) {
@@ -189,15 +190,15 @@ fn view_device_selection(
         ""
     };
     let label_row = row![
-        text("Label:").size(14),
+        text("Label:").size(sz(14.0)),
         label_input,
-        text(label_hint_text).size(11).color(iced::Color::from_rgb(0.5, 0.5, 0.5)),
+        text(label_hint_text).size(sz(11.0)).color(iced::Color::from_rgb(0.5, 0.5, 0.5)),
     ]
     .spacing(10)
     .align_y(Alignment::Center);
 
     // Playlist tree with hierarchical checkboxes
-    let playlists_title = text("Select Playlists to Export").size(16);
+    let playlists_title = text("Select Playlists to Export").size(sz(16.0));
 
     let playlist_items: Vec<Element<Message>> = playlist_tree
         .iter()
@@ -206,7 +207,7 @@ fn view_device_selection(
 
     let playlists_content: Element<Message> = if playlist_items.is_empty() {
         text("No playlists available. Create playlists first.")
-            .size(14)
+            .size(sz(14.0))
             .into()
     } else {
         scrollable(column(playlist_items).spacing(4))
@@ -223,7 +224,7 @@ fn view_device_selection(
     // Sync summary (shows what will be synced)
     let sync_summary: Element<Message> = if state.sync_plan_computing {
         text("Calculating changes...")
-            .size(12)
+            .size(sz(12.0))
             .color(iced::Color::from_rgb(0.5, 0.5, 0.5))
             .into()
     } else if let Some(ref plan) = state.sync_plan {
@@ -234,7 +235,7 @@ fn view_device_selection(
 
         if plan.is_empty() {
             text("✓ Everything up to date")
-                .size(12)
+                .size(sz(12.0))
                 .color(iced::Color::from_rgb(0.2, 0.7, 0.2))
                 .into()
         } else {
@@ -252,18 +253,18 @@ fn view_device_selection(
                 parts.push(format!("{} playlist links", link_changes));
             }
             text(parts.join(", "))
-                .size(12)
+                .size(sz(12.0))
                 .color(iced::Color::from_rgb(0.4, 0.6, 0.9))
                 .into()
         }
     } else if state.selected_playlists.is_empty() {
         text("Select playlists to export")
-            .size(12)
+            .size(sz(12.0))
             .color(iced::Color::from_rgb(0.5, 0.5, 0.5))
             .into()
     } else {
         text("Select a USB device")
-            .size(12)
+            .size(sz(12.0))
             .color(iced::Color::from_rgb(0.5, 0.5, 0.5))
             .into()
     };
@@ -307,7 +308,7 @@ fn view_device_selection(
 /// View while mounting device
 fn view_mounting(device_label: &str) -> Element<'static, Message> {
     column![
-        text(format!("Mounting {}...", device_label)).size(16),
+        text(format!("Mounting {}...", device_label)).size(sz(16.0)),
         container(progress_bar(0.0..=1.0, 0.3)).width(Length::Fill),
     ]
     .spacing(10)
@@ -317,7 +318,7 @@ fn view_mounting(device_label: &str) -> Element<'static, Message> {
 /// View while scanning USB playlists
 fn view_scanning_usb() -> Element<'static, Message> {
     column![
-        text("Scanning USB playlists...").size(16),
+        text("Scanning USB playlists...").size(sz(16.0)),
         container(progress_bar(0.0..=1.0, 0.5)).width(Length::Fill),
     ]
     .spacing(10)
@@ -341,7 +342,7 @@ fn view_building_plan(files_scanned: usize, total_files: usize) -> Element<'stat
             "Calculating changes: {}/{} files hashed",
             files_scanned, total_files
         ))
-        .size(16),
+        .size(sz(16.0)),
         container(progress_bar(0.0..=1.0, progress)).width(Length::Fill),
         row![Space::new().width(Length::Fill), cancel_btn],
     ]
@@ -355,7 +356,7 @@ fn view_ready_to_sync(
     _playlist_tree: &[TreeNode<NodeId>],
     plan: &mesh_core::usb::SyncPlan,
 ) -> Element<'static, Message> {
-    let summary_title = text("Sync Summary").size(18);
+    let summary_title = text("Sync Summary").size(sz(18.0));
 
     // Summary stats
     let copy_count = plan.tracks_to_copy.len();
@@ -367,7 +368,7 @@ fn view_ready_to_sync(
     let grey = iced::Color::from_rgb(0.5, 0.5, 0.5);
 
     let copy_text = text(format!("{} tracks to copy ({})", copy_count, mesh_core::usb::format_bytes(plan.total_bytes)))
-        .size(14)
+        .size(sz(14.0))
         .color(if copy_count > 0 {
             iced::Color::from_rgb(0.2, 0.7, 0.2)
         } else {
@@ -375,7 +376,7 @@ fn view_ready_to_sync(
         });
 
     let update_text = text(format!("{} tracks to sync metadata", update_count))
-        .size(14)
+        .size(sz(14.0))
         .color(if update_count > 0 {
             iced::Color::from_rgb(0.6, 0.5, 0.9)
         } else {
@@ -383,7 +384,7 @@ fn view_ready_to_sync(
         });
 
     let delete_text = text(format!("{} tracks to delete", delete_count))
-        .size(14)
+        .size(sz(14.0))
         .color(if delete_count > 0 {
             iced::Color::from_rgb(0.9, 0.4, 0.2)
         } else {
@@ -394,7 +395,7 @@ fn view_ready_to_sync(
     let playlist_changes = playlist_add_count + playlist_remove_count;
     let playlist_text = text(format!("{} playlist entries to update (+{} / -{})",
         playlist_changes, playlist_add_count, playlist_remove_count))
-        .size(14)
+        .size(sz(14.0))
         .color(if playlist_changes > 0 {
             iced::Color::from_rgb(0.4, 0.6, 0.9)
         } else {
@@ -412,20 +413,20 @@ fn view_ready_to_sync(
         };
 
         text(format!("{} available on {}", mesh_core::usb::format_bytes(device.available_bytes), device.label))
-            .size(12)
+            .size(sz(12.0))
             .color(space_color)
             .into()
     } else {
-        text("").size(1).into()
+        text("").size(sz(1.0)).into()
     };
 
     // Config export reminder
     let config_note = if state.export_config {
         text("Audio/display settings will be included")
-            .size(12)
+            .size(sz(12.0))
             .color(iced::Color::from_rgb(0.5, 0.5, 0.5))
     } else {
-        text("").size(1)
+        text("").size(sz(1.0))
     };
 
     // Show a few files that will be copied
@@ -441,7 +442,7 @@ fn view_ready_to_sync(
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| f.destination.display().to_string());
                 text(format!("  {} ({})", name, mesh_core::usb::format_bytes(f.size)))
-                    .size(12)
+                    .size(sz(12.0))
                     .into()
             })
             .collect();
@@ -450,22 +451,22 @@ fn view_ready_to_sync(
         if plan.tracks_to_copy.len() > 5 {
             preview_col = preview_col.push(
                 text(format!("  ... and {} more", plan.tracks_to_copy.len() - 5))
-                    .size(12)
+                    .size(sz(12.0))
                     .color(grey),
             );
         }
 
-        column![text("Tracks to copy:").size(14), preview_col]
+        column![text("Tracks to copy:").size(sz(14.0)), preview_col]
             .spacing(4)
             .into()
     } else if update_count > 0 || playlist_changes > 0 {
         text("All audio files up to date — metadata sync only")
-            .size(14)
+            .size(sz(14.0))
             .color(iced::Color::from_rgb(0.6, 0.5, 0.9))
             .into()
     } else {
         text("All tracks are up to date!")
-            .size(14)
+            .size(sz(14.0))
             .color(iced::Color::from_rgb(0.2, 0.7, 0.2))
             .into()
     };
@@ -556,16 +557,16 @@ fn view_exporting(
         "Exporting: {} ({}/{})",
         display_name, tracks_complete, total_tracks
     ))
-    .size(14);
+    .size(sz(14.0));
 
     let bytes_text = text(format!(
         "{} / {}",
         mesh_core::usb::format_bytes(bytes_complete),
         mesh_core::usb::format_bytes(total_bytes)
     ))
-    .size(12);
+    .size(sz(12.0));
 
-    let eta = text(eta_text).size(12);
+    let eta = text(eta_text).size(sz(12.0));
 
     let cancel_btn = button(text("Cancel"))
         .on_press(Message::CancelExport)
@@ -615,13 +616,13 @@ fn view_updating_database(
         "Updating database: {}/{}",
         completed, total
     ))
-    .size(14);
+    .size(sz(14.0));
 
     let detail = text("Syncing metadata, playlists, and audio features...")
-        .size(12)
+        .size(sz(12.0))
         .color(iced::Color::from_rgb(0.5, 0.5, 0.5));
 
-    let eta = text(eta_text).size(12);
+    let eta = text(eta_text).size(sz(12.0));
 
     let cancel_btn = button(text("Cancel"))
         .on_press(Message::CancelExport)
@@ -641,9 +642,9 @@ fn view_updating_database(
 /// View while copying presets
 fn view_copying_presets() -> Element<'static, Message> {
     column![
-        text("Copying presets...").size(14),
+        text("Copying presets...").size(sz(14.0)),
         text("Syncing stem, deck, and slicer presets to USB")
-            .size(12)
+            .size(sz(12.0))
             .color(iced::Color::from_rgb(0.5, 0.5, 0.5)),
         container(progress_bar(0.0..=1.0, 0.5)).width(Length::Fill),
     ]
@@ -669,26 +670,26 @@ fn view_complete(
 
     let success_icon = if failed_files.is_empty() {
         text("✓")
-            .size(48)
+            .size(sz(48.0))
             .color(iced::Color::from_rgb(0.2, 0.8, 0.2))
     } else {
         text("!")
-            .size(48)
+            .size(sz(48.0))
             .color(iced::Color::from_rgb(0.9, 0.6, 0.2))
     };
 
     let summary = if failed_files.is_empty() {
-        text(format!("{} tracks exported successfully", tracks_exported)).size(16)
+        text(format!("{} tracks exported successfully", tracks_exported)).size(sz(16.0))
     } else {
         text(format!(
             "{} tracks exported, {} failed",
             tracks_exported,
             failed_files.len()
         ))
-        .size(16)
+        .size(sz(16.0))
     };
 
-    let duration_label = text(duration_text).size(12);
+    let duration_label = text(duration_text).size(sz(12.0));
 
     // Show failed files if any
     let failures: Element<Message> = if !failed_files.is_empty() {
@@ -697,7 +698,7 @@ fn view_complete(
             .take(10)
             .map(|(filename, error)| {
                 text(format!("• {}: {}", filename, error))
-                    .size(12)
+                    .size(sz(12.0))
                     .color(iced::Color::from_rgb(0.9, 0.3, 0.3))
                     .into()
             })
@@ -707,13 +708,13 @@ fn view_complete(
         if failed_files.len() > 10 {
             failures_col = failures_col.push(
                 text(format!("  ... and {} more", failed_files.len() - 10))
-                    .size(12)
+                    .size(sz(12.0))
                     .color(iced::Color::from_rgb(0.5, 0.5, 0.5)),
             );
         }
 
         column![
-            text("Failed exports:").size(14),
+            text("Failed exports:").size(sz(14.0)),
             scrollable(failures_col).height(Length::Fixed(100.0)),
         ]
         .spacing(5)
@@ -745,10 +746,10 @@ fn view_complete(
 /// View for error state
 fn view_error(message: &str) -> Element<'static, Message> {
     let error_icon = text("✗")
-        .size(48)
+        .size(sz(48.0))
         .color(iced::Color::from_rgb(0.9, 0.3, 0.2));
 
-    let error_text = text(format!("Error: {}", message)).size(14);
+    let error_text = text(format!("Error: {}", message)).size(sz(14.0));
 
     let ok_btn = button(text("OK"))
         .on_press(Message::CloseExport)

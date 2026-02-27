@@ -3,6 +3,7 @@
 use iced::widget::{button, column, container, row, text, Space};
 use iced::{Alignment, Background, Color, Element, Length};
 use mesh_widgets::slice_editor;
+use mesh_widgets::sz;
 
 use super::state::SlicerEditorState;
 use crate::ui::app::LoadedTrackState;
@@ -43,13 +44,13 @@ pub fn slicer_editor_view<'a>(
     loaded_track: Option<&'a LoadedTrackState>,
 ) -> Element<'a, Message> {
     // Header: title + save button + close button
-    let title = text("SLICER").size(18).color(TEXT_PRIMARY);
+    let title = text("SLICER").size(sz(18.0)).color(TEXT_PRIMARY);
 
-    let save_presets_btn = button(text("Save Presets").size(11))
+    let save_presets_btn = button(text("Save Presets").size(sz(11.0)))
         .padding([4, 8])
         .on_press(Message::SaveSlicerPresets);
 
-    let close_btn = button(text("\u{00d7}").size(20))
+    let close_btn = button(text("\u{00d7}").size(sz(20.0)))
         .on_press(Message::CloseSlicerEditor)
         .padding([4, 10])
         .style(close_button_style);
@@ -73,7 +74,7 @@ pub fn slicer_editor_view<'a>(
              Mute buttons above the grid silence individual time steps. \
              8 preset banks at the bottom store different patterns per stem."
         )
-        .size(12)
+        .size(sz(12.0))
         .color(TEXT_DIM),
     )
     .padding([8, 16])
@@ -97,7 +98,7 @@ pub fn slicer_editor_view<'a>(
     } else {
         container(
             text("Load a track to edit slicer presets")
-                .size(14)
+                .size(sz(14.0))
                 .color(TEXT_DIM),
         )
         .padding(24)

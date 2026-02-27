@@ -7,6 +7,7 @@
 
 use iced::widget::{container, row, text, Space};
 use iced::{Color, Element, Length};
+use crate::font::sz;
 
 use super::super::state::{PlayerCanvasState, DECK_HEADER_HEIGHT};
 
@@ -45,12 +46,12 @@ pub fn view_deck_header<'a, Message: Clone + 'a>(
     // -- Track name --
     let name_widget: Element<'a, Message> = if has_track && !track_name.is_empty() {
         text(track_name)
-            .size(24)
+            .size(sz(24.0))
             .color(Color::from_rgb(0.75, 0.75, 0.75))
             .into()
     } else {
         text("No track")
-            .size(22)
+            .size(sz(22.0))
             .color(Color::from_rgb(0.4, 0.4, 0.4))
             .into()
     };
@@ -63,7 +64,7 @@ pub fn view_deck_header<'a, Message: Clone + 'a>(
         if let Some(bpm) = track_bpm {
             right_items.push(
                 text(format!("{:.1}", bpm))
-                    .size(20)
+                    .size(sz(20.0))
                     .color(Color::from_rgb(0.7, 0.7, 0.8))
                     .into(),
             );
@@ -83,7 +84,7 @@ pub fn view_deck_header<'a, Message: Clone + 'a>(
             } else {
                 Color::from_rgb(0.5, 0.5, 0.5)
             };
-            right_items.push(text(loop_text).size(20).color(loop_color).into());
+            right_items.push(text(loop_text).size(sz(20.0)).color(loop_color).into());
         }
     }
 
@@ -102,7 +103,7 @@ pub fn view_deck_header<'a, Message: Clone + 'a>(
             } else {
                 Color::from_rgb(0.9, 0.7, 0.5) // Orange for cut
             };
-            right_items.push(text(gain_text).size(20).color(gain_color).into());
+            right_items.push(text(gain_text).size(sz(20.0)).color(gain_color).into());
         }
     }
 
@@ -122,7 +123,7 @@ pub fn view_deck_header<'a, Message: Clone + 'a>(
                 Color::from_rgb(0.9, 0.7, 0.5),
             )
         };
-        right_items.push(text(key_display).size(22).color(key_color).into());
+        right_items.push(text(key_display).size(sz(22.0)).color(key_color).into());
     }
 
     // Compose the header row
@@ -184,7 +185,7 @@ fn view_badge<'a, Message: Clone + 'a>(
     };
 
     let badge_text = text(deck_num)
-        .size(26)
+        .size(sz(26.0))
         .color(text_color)
         .align_x(iced::Alignment::Center)
         .align_y(iced::Alignment::Center);

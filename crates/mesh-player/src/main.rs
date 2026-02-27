@@ -197,6 +197,9 @@ fn main() -> iced::Result {
     let config_path = config::default_config_path();
     let config: config::PlayerConfig = config::load_config(&config_path);
 
+    // Set global font size scale (used by sz() helper across all widget code)
+    mesh_widgets::set_font_scale(config.display.font_size.scale() * config.display.font.size_scale());
+
     // Create database service (required for track metadata loading)
     let db_service = DatabaseService::new(&config.collection_path)
         .expect("Failed to create database service - this is required for mesh-player");
@@ -297,7 +300,7 @@ fn main() -> iced::Result {
     .theme(theme)
     .title("Mesh")
     .settings(iced::Settings {
-        default_text_size: iced::Pixels(16.0 * config.display.font.size_scale()),
+        default_text_size: iced::Pixels(16.0 * config.display.font.size_scale() * config.display.font_size.scale()),
         antialiasing: true,
         ..Default::default()
     })

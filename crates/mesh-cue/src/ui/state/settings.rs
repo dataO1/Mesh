@@ -3,7 +3,7 @@
 use crate::audio::StereoPair;
 use crate::config::{BackendType, BeatDetectionBackend, BpmSource, Config, ModelType};
 use mesh_core::engine::InterpolationMethod;
-use mesh_widgets::AppFont;
+use mesh_widgets::{AppFont, FontSize};
 
 /// State for the settings modal
 #[derive(Debug, Default)]
@@ -51,6 +51,8 @@ pub struct SettingsState {
     pub available_theme_names: Vec<String>,
     /// Draft UI font (requires restart to apply)
     pub draft_font: AppFont,
+    /// Draft font size preset
+    pub draft_font_size: FontSize,
 }
 
 impl SettingsState {
@@ -81,6 +83,7 @@ impl SettingsState {
             available_theme_names: Vec::new(),
             // Font
             draft_font: config.display.font,
+            draft_font_size: config.display.font_size,
         }
     }
 

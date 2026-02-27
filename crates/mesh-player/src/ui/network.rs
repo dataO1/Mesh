@@ -6,6 +6,7 @@
 
 use iced::widget::{button, column, container, row, text, Space};
 use iced::{Alignment, Color, Element, Length};
+use mesh_widgets::sz;
 
 use super::message::Message;
 
@@ -395,7 +396,7 @@ fn signal_bars(signal: u8) -> &'static str {
 
 /// Render the network settings section
 pub fn view_network_section(state: &NetworkState) -> Element<'_, Message> {
-    let section_title = text("Network").size(18);
+    let section_title = text("Network").size(sz(18.0));
 
     let mut content_items: Vec<Element<'_, Message>> = vec![section_title.into()];
 
@@ -403,7 +404,7 @@ pub fn view_network_section(state: &NetworkState) -> Element<'_, Message> {
     match &state.lan_status {
         LanStatus::Connected { interface } => {
             let lan_label = text(format!("LAN: Connected ({})", interface))
-                .size(12)
+                .size(sz(12.0))
                 .color(Color::from_rgb(0.4, 0.8, 0.4));
             content_items.push(lan_label.into());
         }
@@ -411,7 +412,7 @@ pub fn view_network_section(state: &NetworkState) -> Element<'_, Message> {
             // Only show "LAN: Not connected" if WiFi is also disconnected
             if matches!(state.wifi_status, WifiStatus::Disconnected) {
                 let lan_label = text("LAN: Not connected")
-                    .size(12)
+                    .size(sz(12.0))
                     .color(Color::from_rgb(0.5, 0.5, 0.5));
                 content_items.push(lan_label.into());
             }
@@ -425,19 +426,19 @@ pub fn view_network_section(state: &NetworkState) -> Element<'_, Message> {
                 "WiFi: Connected to {} ({})",
                 ssid, signal_bars(*signal),
             ))
-            .size(12)
+            .size(sz(12.0))
             .color(Color::from_rgb(0.4, 0.8, 0.4))
             .into()
         }
         WifiStatus::Connecting { ssid } => {
             text(format!("WiFi: Connecting to {}...", ssid))
-                .size(12)
+                .size(sz(12.0))
                 .color(Color::from_rgb(0.9, 0.7, 0.2))
                 .into()
         }
         WifiStatus::Disconnected => {
             text("WiFi: Not connected")
-                .size(12)
+                .size(sz(12.0))
                 .color(Color::from_rgb(0.5, 0.5, 0.5))
                 .into()
         }
@@ -447,7 +448,7 @@ pub fn view_network_section(state: &NetworkState) -> Element<'_, Message> {
     // No WiFi adapter — greyed-out section
     if !state.has_wifi_adapter {
         let no_adapter = text("No WiFi adapter detected")
-            .size(12)
+            .size(sz(12.0))
             .color(Color::from_rgb(0.5, 0.5, 0.5));
         content_items.push(no_adapter.into());
 
@@ -459,15 +460,15 @@ pub fn view_network_section(state: &NetworkState) -> Element<'_, Message> {
 
     // Action buttons row
     let scan_btn = if state.scanning {
-        button(text("Scanning...").size(11)).style(button::secondary)
+        button(text("Scanning...").size(sz(11.0))).style(button::secondary)
     } else {
-        button(text("Scan").size(11))
+        button(text("Scan").size(sz(11.0)))
             .on_press(Message::Network(NetworkMessage::Scan))
             .style(button::secondary)
     };
 
     let disconnect_btn_elem: Element<'_, Message> = if matches!(state.wifi_status, WifiStatus::Connected { .. }) {
-        button(text("Disconnect").size(11))
+        button(text("Disconnect").size(sz(11.0)))
             .on_press(Message::Network(NetworkMessage::Disconnect))
             .style(button::secondary)
             .into()
@@ -483,7 +484,7 @@ pub fn view_network_section(state: &NetworkState) -> Element<'_, Message> {
     // Error message
     if !state.error_message.is_empty() {
         let err = text(&state.error_message)
-            .size(11)
+            .size(sz(11.0))
             .color(Color::from_rgb(1.0, 0.4, 0.4));
         content_items.push(err.into());
     }
@@ -491,7 +492,7 @@ pub fn view_network_section(state: &NetworkState) -> Element<'_, Message> {
     // Network list
     if state.networks.is_empty() && !state.scanning {
         let empty_label = text("No networks found — press Scan to search")
-            .size(12)
+            .size(sz(12.0))
             .color(Color::from_rgb(0.5, 0.5, 0.5));
         content_items.push(empty_label.into());
     } else {
@@ -515,7 +516,7 @@ pub fn view_network_section(state: &NetworkState) -> Element<'_, Message> {
                 Color::TRANSPARENT
             };
 
-            let network_row = button(text(label).size(11))
+            let network_row = button(text(label).size(sz(11.0)))
                 .on_press(Message::Network(NetworkMessage::SelectNetwork(i)))
                 .style(move |_theme, _status| button::Style {
                     background: Some(bg.into()),

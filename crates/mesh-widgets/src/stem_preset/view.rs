@@ -2,6 +2,7 @@
 
 use iced::widget::{button, column, container, row, scrollable, slider, text, Space};
 use iced::{Alignment, Background, Color, Element, Length};
+use crate::font::sz;
 
 use super::message::StemPresetMessage;
 use super::StemPresetState;
@@ -55,9 +56,9 @@ fn preset_dropdown(state: &StemPresetState) -> Element<'_, StemPresetMessage> {
 
     let dropdown_btn = button(
         row![
-            text(label).size(10),
+            text(label).size(sz(10.0)),
             Space::new().width(Length::Fill),
-            text("▾").size(10),
+            text("▾").size(sz(10.0)),
         ]
         .spacing(4)
         .align_y(Alignment::Center),
@@ -92,7 +93,7 @@ fn preset_picker_list(state: &StemPresetState) -> Element<'_, StemPresetMessage>
     };
 
     items.push(
-        button(text("(No Preset)").size(9))
+        button(text("(No Preset)").size(sz(9.0)))
             .on_press(StemPresetMessage::SelectPreset(None))
             .padding([3, 8])
             .width(Length::Fill)
@@ -111,7 +112,7 @@ fn preset_picker_list(state: &StemPresetState) -> Element<'_, StemPresetMessage>
 
         let name = preset_name.clone();
         items.push(
-            button(text(preset_name).size(9))
+            button(text(preset_name).size(sz(9.0)))
                 .on_press(StemPresetMessage::SelectPreset(Some(name)))
                 .padding([3, 8])
                 .width(Length::Fill)
@@ -155,7 +156,7 @@ fn macro_knob(state: &StemPresetState, index: usize) -> Element<'_, StemPresetMe
     };
 
     column![
-        text(display_name).size(7).color(TEXT_SECONDARY),
+        text(display_name).size(sz(7.0)).color(TEXT_SECONDARY),
         slider(0.0..=1.0, value, move |v| StemPresetMessage::SetMacro {
             index,
             value: v,

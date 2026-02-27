@@ -2,6 +2,7 @@
 
 use iced::widget::{button, column, container, row, scrollable, stack, text, text_input, Space};
 use iced::{Alignment, Background, Color, Element, Length};
+use mesh_widgets::sz;
 use mesh_widgets::{multiband_editor_content, MultibandEditorMessage};
 
 use super::state::{EffectsEditorState, PresetBrowserMode, SaveDialogMode};
@@ -49,7 +50,7 @@ pub fn effects_editor_view(state: &EffectsEditorState) -> Option<Element<'_, Mes
         .map(Message::EffectsEditor);
 
     let status_bar: Element<'_, Message> = if !state.status.is_empty() {
-        container(text(&state.status).size(11).color(TEXT_PRIMARY))
+        container(text(&state.status).size(sz(11.0)).color(TEXT_PRIMARY))
             .padding([4, 8])
             .into()
     } else {
@@ -107,10 +108,10 @@ pub fn effects_editor_view(state: &EffectsEditorState) -> Option<Element<'_, Mes
 
 fn header_view(_state: &EffectsEditorState) -> Element<'_, Message> {
     let title = text("FX PRESETS")
-        .size(18)
+        .size(sz(18.0))
         .color(TEXT_PRIMARY);
 
-    let close_btn = button(text("×").size(20))
+    let close_btn = button(text("×").size(sz(20.0)))
         .on_press(Message::CloseEffectsEditor)
         .padding([4, 10])
         .style(close_button_style);
@@ -136,29 +137,29 @@ fn header_view(_state: &EffectsEditorState) -> Element<'_, Message> {
 /// Top toolbar row: deck preset name + New/Load/Save + preview toggle
 fn deck_toolbar_view(state: &EffectsEditorState) -> Element<'_, Message> {
     let deck_label = if let Some(ref name) = state.deck_preset_name {
-        text(format!("Deck: {}", name)).size(12).color(TEXT_PRIMARY)
+        text(format!("Deck: {}", name)).size(sz(12.0)).color(TEXT_PRIMARY)
     } else {
-        text("Deck: (none)").size(12).color(TEXT_SECONDARY)
+        text("Deck: (none)").size(sz(12.0)).color(TEXT_SECONDARY)
     };
 
-    let new_btn = button(text("New").size(11))
+    let new_btn = button(text("New").size(sz(11.0)))
         .on_press(Message::EffectsEditorNewPreset)
         .padding([4, 12])
         .style(toolbar_button_style);
 
-    let load_btn = button(text("Load").size(11))
+    let load_btn = button(text("Load").size(sz(11.0)))
         .on_press(Message::EffectsEditorOpenDeckPresetBrowser)
         .padding([4, 12])
         .style(toolbar_button_style);
 
-    let save_btn = button(text("Save").size(11))
+    let save_btn = button(text("Save").size(sz(11.0)))
         .on_press(Message::EffectsEditorOpenDeckSaveDialog)
         .padding([4, 12])
         .style(toolbar_button_style);
 
     // Audio preview toggle
     let preview_icon = if state.audio_preview_enabled { "🔊" } else { "🔇" };
-    let preview_btn = button(text(format!("{} Preview", preview_icon)).size(11))
+    let preview_btn = button(text(format!("{} Preview", preview_icon)).size(sz(11.0)))
         .on_press(Message::EffectsEditorTogglePreview)
         .padding([4, 12])
         .style(if state.audio_preview_enabled {
@@ -215,24 +216,24 @@ fn stem_toolbar_view(state: &EffectsEditorState) -> Element<'_, Message> {
 
     // Stem preset info
     let stem_label = if let Some(ref name) = state.stem_preset_names[state.active_stem] {
-        text(format!("Stem: {}", name)).size(12).color(TEXT_PRIMARY)
+        text(format!("Stem: {}", name)).size(sz(12.0)).color(TEXT_PRIMARY)
     } else {
-        text("Stem: (unsaved)").size(12).color(TEXT_SECONDARY)
+        text("Stem: (unsaved)").size(sz(12.0)).color(TEXT_SECONDARY)
     };
 
-    let stem_load_btn = button(text("Load").size(11))
+    let stem_load_btn = button(text("Load").size(sz(11.0)))
         .on_press(Message::EffectsEditorOpenStemPresetBrowser)
         .padding([4, 12])
         .style(toolbar_button_style);
 
-    let stem_save_btn = button(text("Save").size(11))
+    let stem_save_btn = button(text("Save").size(sz(11.0)))
         .on_press(Message::EffectsEditorOpenStemSaveDialog)
         .padding([4, 12])
         .style(toolbar_button_style);
 
     container(
         row![
-            text("STEM").size(10).color(TEXT_SECONDARY),
+            text("STEM").size(sz(10.0)).color(TEXT_SECONDARY),
             Space::new().width(8),
             row(tabs).spacing(2),
             Space::new().width(16),
@@ -257,7 +258,7 @@ fn stem_toolbar_view(state: &EffectsEditorState) -> Element<'_, Message> {
 
 /// Create a single stem editing tab button
 fn stem_tab_button(label: String, stem_idx: usize, is_active: bool, has_data: bool) -> Element<'static, Message> {
-    button(text(label).size(11))
+    button(text(label).size(sz(11.0)))
         .on_press(Message::EffectsEditor(MultibandEditorMessage::SwitchStem(stem_idx)))
         .padding([5, 14])
         .style(if is_active {
@@ -310,11 +311,11 @@ fn preset_browser_overlay_impl<'a>(
             let name_for_load = name.clone();
             let name_for_delete = name.clone();
             row![
-                button(text(name.as_str()).size(14))
+                button(text(name.as_str()).size(sz(14.0)))
                     .padding([8, 16])
                     .width(Length::Fill)
                     .on_press(on_load(name_for_load)),
-                button(text("×").size(14).color(TEXT_SECONDARY))
+                button(text("×").size(sz(14.0)).color(TEXT_SECONDARY))
                     .padding([8, 8])
                     .on_press(on_delete(name_for_delete)),
             ]
@@ -325,8 +326,8 @@ fn preset_browser_overlay_impl<'a>(
 
     let content: Element<'_, Message> = if preset_list.is_empty() {
         column![
-            text("No presets found").size(14).color(TEXT_SECONDARY),
-            text("Save a preset first").size(11).color(TEXT_SECONDARY),
+            text("No presets found").size(sz(14.0)).color(TEXT_SECONDARY),
+            text("Save a preset first").size(sz(11.0)).color(TEXT_SECONDARY),
         ]
         .spacing(8)
         .align_x(Alignment::Center)
@@ -340,9 +341,9 @@ fn preset_browser_overlay_impl<'a>(
     let dialog = container(
         column![
             row![
-                text(title).size(14).color(TEXT_PRIMARY),
+                text(title).size(sz(14.0)).color(TEXT_PRIMARY),
                 Space::new().width(Length::Fill),
-                button(text("×").size(14))
+                button(text("×").size(sz(14.0)))
                     .padding([4, 8])
                     .on_press(on_close),
             ]
@@ -404,30 +405,30 @@ fn save_dialog_overlay_impl<'a>(
     let dialog = container(
         column![
             row![
-                text(title).size(14).color(TEXT_PRIMARY),
+                text(title).size(sz(14.0)).color(TEXT_PRIMARY),
                 Space::new().width(Length::Fill),
-                button(text("×").size(14))
+                button(text("×").size(sz(14.0)))
                     .padding([4, 8])
                     .on_press(on_close.clone()),
             ]
             .align_y(Alignment::Center),
             overlay_divider(),
-            text("Preset Name:").size(14).color(TEXT_SECONDARY),
+            text("Preset Name:").size(sz(14.0)).color(TEXT_SECONDARY),
             text_input("Enter preset name...", name_input)
                 .on_input(on_input)
                 .padding(8)
-                .size(14),
+                .size(sz(14.0)),
             row![
-                button(text("Cancel").size(14))
+                button(text("Cancel").size(sz(14.0)))
                     .padding([8, 16])
                     .on_press(on_close),
                 Space::new().width(Length::Fill),
                 if can_save {
-                    button(text("Save").size(14).color(ACCENT_COLOR))
+                    button(text("Save").size(sz(14.0)).color(ACCENT_COLOR))
                         .padding([8, 16])
                         .on_press(on_save)
                 } else {
-                    button(text("Save").size(14).color(TEXT_SECONDARY)).padding([8, 16])
+                    button(text("Save").size(sz(14.0)).color(TEXT_SECONDARY)).padding([8, 16])
                 },
             ]
             .spacing(8),

@@ -27,6 +27,7 @@
 
 use iced::widget::{button, column, container, row, stack, text, Space};
 use iced::{Alignment, Color, Element, Length};
+use crate::font::sz;
 
 // ── Key Layout ──
 
@@ -287,9 +288,9 @@ pub fn keyboard_view(state: &KeyboardState) -> Element<'_, KeyboardMessage> {
     };
 
     let text_content = if display_text.is_empty() {
-        text("Type here...").size(20).color(Color::from_rgba(0.5, 0.5, 0.5, 0.7))
+        text("Type here...").size(sz(20.0)).color(Color::from_rgba(0.5, 0.5, 0.5, 0.7))
     } else {
-        text(display_text).size(20)
+        text(display_text).size(sz(20.0))
     };
 
     let text_display = container(text_content)
@@ -306,7 +307,7 @@ pub fn keyboard_view(state: &KeyboardState) -> Element<'_, KeyboardMessage> {
         });
 
     // Prompt header (Cancel moved to bottom of keyboard)
-    let prompt_label = text(&state.prompt).size(13);
+    let prompt_label = text(&state.prompt).size(sz(13.0));
 
     let header = row![prompt_label]
         .align_y(Alignment::Center)
@@ -368,14 +369,14 @@ pub fn keyboard_view(state: &KeyboardState) -> Element<'_, KeyboardMessage> {
 
             let key_content: Element<'_, KeyboardMessage> = if let Some(hint_ch) = shift_hint {
                 // Main label centered + shift hint bottom-right
-                let main_label = container(text(label).size(16))
+                let main_label = container(text(label).size(sz(16.0)))
                     .center_x(Length::Fill)
                     .center_y(Length::Fill)
                     .width(Length::Fill)
                     .height(Length::Fill);
                 let hint_label = container(
                     text(hint_ch.to_string())
-                        .size(10)
+                        .size(sz(10.0))
                         .color(Color::from_rgba(0.5, 0.5, 0.5, 0.7)),
                 )
                 .width(Length::Fill)
@@ -388,7 +389,7 @@ pub fn keyboard_view(state: &KeyboardState) -> Element<'_, KeyboardMessage> {
                     .height(Length::Fill)
                     .into()
             } else {
-                container(text(label).size(16))
+                container(text(label).size(sz(16.0)))
                     .center_x(Length::Fill)
                     .center_y(Length::Fill)
                     .width(Length::Fill)

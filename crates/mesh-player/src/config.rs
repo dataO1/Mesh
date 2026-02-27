@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 // Re-export shared config utilities from mesh-core
 pub use mesh_core::config::{load_config, save_config, LoudnessConfig};
-pub use mesh_widgets::AppFont;
+pub use mesh_widgets::{AppFont, FontSize};
 
 /// Key scoring model for harmonic compatibility
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -223,6 +223,8 @@ pub struct DisplayConfig {
     pub waveform_abstraction: WaveformAbstraction,
     /// UI font (requires restart to apply)
     pub font: AppFont,
+    /// Font size preset (Small / Medium / Big)
+    pub font_size: FontSize,
 }
 
 /// Loop length options in beats (matches mesh-core/deck.rs LOOP_LENGTHS)
@@ -232,7 +234,7 @@ pub const LOOP_LENGTH_OPTIONS: [f64; 12] = [0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0
 impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
-            default_loop_length_index: 5, // Default to 4 beats (index 5 in LOOP_LENGTH_OPTIONS)
+            default_loop_length_index: 7, // Default to 16 beats (index 7 in LOOP_LENGTH_OPTIONS)
             default_zoom_bars: 8,         // Default zoomed waveform to 8 bars
             grid_bars: 32,                // Default grid density to 32 beats (8 bars)
             theme: "Mesh".to_string(), // Default theme (from theme.yaml)
@@ -241,6 +243,7 @@ impl Default for DisplayConfig {
             waveform_layout: WaveformLayout::default(),  // Horizontal
             waveform_abstraction: WaveformAbstraction::default(), // Medium
             font: AppFont::default(), // Exo
+            font_size: FontSize::default(), // Small
         }
     }
 }
@@ -328,13 +331,13 @@ mod tests {
         let config = PlayerConfig::default();
         assert_eq!(config.audio.global_bpm, 128.0);
         assert!(config.audio.phase_sync);
-        assert_eq!(config.display.default_loop_length_index, 2);
+        assert_eq!(config.display.default_loop_length_index, 7);
     }
 
     #[test]
     fn test_default_loop_length() {
         let display = DisplayConfig::default();
-        assert_eq!(display.default_loop_length_beats(), 4.0);
+        assert_eq!(display.default_loop_length_beats(), 16.0);
     }
 
     #[test]

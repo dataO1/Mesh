@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use mesh_widgets::AppFont;
+use mesh_widgets::{AppFont, FontSize};
 
 // Re-export separation config for convenience
 pub use crate::separation::{BackendType, ModelType, SeparationConfig};
@@ -79,6 +79,8 @@ pub struct DisplayConfig {
     pub theme: String,
     /// UI font (requires restart to apply)
     pub font: AppFont,
+    /// Font size preset (Small / Medium / Big)
+    pub font_size: FontSize,
 }
 
 /// Loop length options in beats (1/8 beat to 16 beats)
@@ -90,9 +92,10 @@ impl Default for DisplayConfig {
             grid_bars: 32,      // Default: red grid line every 32 beats (8 bars)
             zoom_bars: 8,       // Default zoomed waveform to 8 bars
             global_bpm: 128.0,  // Standard house/techno BPM
-            default_loop_length_index: 5,  // Default to 4 beats (index 5 in LOOP_LENGTH_OPTIONS)
+            default_loop_length_index: 7,  // Default to 16 beats (index 7 in LOOP_LENGTH_OPTIONS)
             theme: "Mesh".to_string(),
             font: AppFont::default(), // Exo
+            font_size: FontSize::default(), // Small
         }
     }
 }

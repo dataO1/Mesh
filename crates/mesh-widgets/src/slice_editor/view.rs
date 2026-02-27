@@ -7,6 +7,7 @@ use super::state::{SliceEditorState, NUM_PRESETS, NUM_SLICES, NUM_STEPS, STEM_NA
 use crate::theme::STEM_COLORS;
 use iced::widget::{button, column, row, text, Row};
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding};
+use crate::font::sz;
 
 /// Stem button width (fixed — labels need consistent space)
 const STEM_BUTTON_WIDTH: f32 = 48.0;
@@ -90,7 +91,7 @@ fn build_preset_tabs<'a, Message: Clone + 'a>(
             };
 
             let on_select = on_preset_select.clone();
-            button(text(label).size(14))
+            button(text(label).size(sz(14.0)))
                 .width(Length::FillPortion(1)) // Equal width for all 8 tabs
                 .height(PRESET_TAB_HEIGHT)
                 .padding(Padding::from([4, 8]))
@@ -130,7 +131,7 @@ fn build_stem_buttons<'a, Message: Clone + 'a>(
             };
 
             let on_click = on_stem_click.clone();
-            button(text(STEM_NAMES[stem_idx]).size(14))
+            button(text(STEM_NAMES[stem_idx]).size(sz(14.0)))
                 .width(STEM_BUTTON_WIDTH)
                 .height(Length::FillPortion(1))
                 .padding(Padding::from([4, 8]))
@@ -157,7 +158,7 @@ fn build_mute_row<'a, Message: Clone + 'a>(
             let style = MuteButtonStyle { muted: is_muted };
 
             let on_toggle = on_mute_toggle.clone();
-            button(text("").size(8))
+            button(text("").size(sz(8.0)))
                 .width(Length::FillPortion(1))
                 .height(MUTE_BUTTON_HEIGHT)
                 .padding(0)
@@ -196,7 +197,7 @@ fn build_grid<'a, Message: Clone + 'a>(
                     };
 
                     let on_toggle = on_cell_toggle.clone();
-                    button(text("").size(6))
+                    button(text("").size(sz(6.0)))
                         .width(Length::FillPortion(1))
                         .height(Length::FillPortion(1))
                         .padding(0)

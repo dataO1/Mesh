@@ -16,6 +16,7 @@
 use iced::widget::{button, column, container, mouse_area, row, scrollable, text, text_input, Space};
 use iced::{Background, Border, Color, Element, Length, Padding, Point, Theme};
 use std::collections::HashSet;
+use crate::font::sz;
 use std::hash::Hash;
 
 /// Icon type for tree nodes
@@ -307,7 +308,7 @@ where
             let id_clone = node.id.clone();
             let on_msg = on_message.clone();
 
-            button(text(arrow_text).size(10))
+            button(text(arrow_text).size(sz(10.0)))
                 .padding(Padding::from([2, 4]))
                 .style(|theme: &Theme, _status| {
                     let palette = theme.extended_palette();
@@ -339,11 +340,11 @@ where
             let on_msg_submit = on_message.clone();
 
             row![
-                text(icon).size(14),
+                text(icon).size(sz(14.0)),
                 text_input("", &state.edit_buffer)
                     .on_input(move |s| on_msg_input(TreeMessage::EditChanged(s)))
                     .on_submit(on_msg_submit(TreeMessage::CommitEdit))
-                    .size(12)
+                    .size(sz(12.0))
                     .width(Length::Fixed(120.0))
                     .padding(2),
             ]
@@ -356,11 +357,11 @@ where
 
             // Use Wrapping::None + clip to truncate long labels without overlap
             let label_text = text(&node.label)
-                .size(12)
+                .size(sz(12.0))
                 .wrapping(iced::widget::text::Wrapping::None);
 
             let label_content = row![
-                text(icon).size(14),
+                text(icon).size(sz(14.0)),
                 container(label_text).clip(true),
             ]
             .spacing(6);
@@ -413,7 +414,7 @@ where
             let on_msg_create = on_message.clone();
 
             Some(
-                button(text("+").size(12))
+                button(text("+").size(sz(12.0)))
                     .padding(Padding::from([2, 6]))
                     .style(|theme: &Theme, status| {
                         let palette = theme.extended_palette();

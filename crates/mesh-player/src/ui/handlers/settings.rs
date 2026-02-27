@@ -117,6 +117,10 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             app.settings.draft_font = font;
             Task::none()
         }
+        UpdateFontSize(size) => {
+            app.settings.draft_font_size = size;
+            Task::none()
+        }
         UpdateMasterPair(index) => {
             app.settings.draft_master_device = index;
             Task::none()
@@ -141,6 +145,7 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             new_config.display.waveform_layout = app.settings.draft_waveform_layout;
             new_config.display.waveform_abstraction = app.settings.draft_waveform_abstraction;
             new_config.display.font = app.settings.draft_font;
+            new_config.display.font_size = app.settings.draft_font_size;
             // Save global BPM from current state
             new_config.audio.global_bpm = app.domain.global_bpm();
             // Save phase sync setting

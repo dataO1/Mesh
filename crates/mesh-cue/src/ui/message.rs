@@ -166,6 +166,8 @@ pub enum Message {
     UpdateSettingsSeparationShifts(u8),
     /// Update draft UI font (requires restart)
     UpdateSettingsFont(mesh_widgets::AppFont),
+    /// Update draft font size preset
+    UpdateSettingsFontSize(mesh_widgets::FontSize),
     /// Refresh available audio devices
     RefreshAudioDevices,
     SaveSettings,

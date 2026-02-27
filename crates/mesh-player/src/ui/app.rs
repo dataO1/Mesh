@@ -29,7 +29,7 @@ use crate::plugin_gui::PluginGuiManager;
 use mesh_midi::{ControllerManager, MidiMessage as MidiMsg, MidiEvent, MidiInputEvent, DeckAction as MidiDeckAction, MixerAction as MidiMixerAction, BrowserAction as MidiBrowserAction};
 use mesh_core::engine::{DeckAtomics, LinkedStemAtomics, SlicerAtomics};
 use mesh_core::types::NUM_DECKS;
-use mesh_widgets::{mpsc_subscription, multiband_editor, MultibandEditorState, SliceEditorState};
+use mesh_widgets::{mpsc_subscription, multiband_editor, MultibandEditorState, SliceEditorState, sz};
 use mesh_widgets::keyboard::{KeyboardState, KeyboardEvent, keyboard_view, keyboard_handle};
 
 use super::collection_browser::{CollectionBrowserState, CollectionBrowserMessage};
@@ -1403,7 +1403,7 @@ impl MeshApp {
     fn view_performance_mode(&self) -> Element<'_, Message> {
         let header = self.view_header();
         let canvas = view_player_canvas(&self.player_canvas_state);
-        let status_bar = container(text(&self.status).size(12))
+        let status_bar = container(text(&self.status).size(sz(12.0)))
             .padding(5)
             .height(Length::Shrink);
 
@@ -1480,7 +1480,7 @@ impl MeshApp {
 
         // Status bar
         let status_bar = container(
-            text(&self.status).size(12)
+            text(&self.status).size(sz(12.0))
         )
         .padding(5)
         .height(Length::Shrink);
@@ -1642,14 +1642,14 @@ impl MeshApp {
     fn view_header(&self) -> Element<'_, Message> {
         let logo = iced::widget::image(mesh_widgets::LOGO_HANDLE.clone())
             .height(28);
-        let app_font = self.config.display.font.to_iced_font();
+        let app_font = self.settings.draft_font.to_iced_font();
         let bold_font = iced::Font { weight: iced::font::Weight::Bold, ..app_font };
-        let title = row![logo, text("mesh").size(30).font(bold_font)]
+        let title = row![logo, text("mesh").size(sz(30.0)).font(bold_font)]
             .spacing(10)
             .align_y(iced::Alignment::Center);
 
         let global_bpm = self.domain.global_bpm();
-        let bpm_label = text(format!("{} BPM", global_bpm as i32)).size(16);
+        let bpm_label = text(format!("{} BPM", global_bpm as i32)).size(sz(16.0));
 
         // Global FX preset selector
         let fx_element = self.view_global_fx_dropdown();
@@ -1662,15 +1662,15 @@ impl MeshApp {
         };
         let connection_status: Element<'_, Message> = if self.domain.is_audio_connected() {
             row![
-                text("●").size(12).color(dot_color),
-                text(" Audio Connected").size(12),
+                text("●").size(sz(12.0)).color(dot_color),
+                text(" Audio Connected").size(sz(12.0)),
             ].into()
         } else {
-            text("○ Audio Disconnected").size(12).into()
+            text("○ Audio Disconnected").size(sz(12.0)).into()
         };
 
         // Settings gear icon (⚙ U+2699)
-        let settings_btn = button(text("⚙").size(20))
+        let settings_btn = button(text("⚙").size(sz(20.0)))
             .on_press(Message::Settings(SettingsMessage::Open))
             .style(button::secondary);
 
@@ -1688,7 +1688,7 @@ impl MeshApp {
                 0.0
             };
             text(format!("{:.1}ms", total_ms))
-                .size(11)
+                .size(sz(11.0))
                 .color(Color::from_rgb(0.5, 0.5, 0.5))
                 .into()
         } else {
@@ -1708,7 +1708,7 @@ impl MeshApp {
             stats_parts.push(format!("{}fps", self.fps_display));
         }
         let stats_label = text(stats_parts.join(" | "))
-            .size(11)
+            .size(sz(11.0))
             .color(Color::from_rgb(0.5, 0.5, 0.5));
 
         // Center group: FX selector + BPM (+ slider in mapping mode)
@@ -1790,7 +1790,7 @@ impl MeshApp {
         let arrow = if self.global_fx_picker_open { "▴" } else { "▾" };
 
         button(
-            row![text(label).size(11), Space::new().width(Fill), text(arrow).size(11)]
+            row![text(label).size(sz(11.0)), Space::new().width(Fill), text(arrow).size(sz(11.0))]
                 .spacing(4)
                 .align_y(CenterAlign),
         )
@@ -1810,7 +1810,7 @@ impl MeshApp {
         let no_fx_selected = self.global_fx_preset.is_none();
         let no_fx_hovered = self.global_fx_hover_index == Some(0);
         items.push(
-            button(text("(No FX)").size(10))
+            button(text("(No FX)").size(sz(10.0)))
                 .on_press(Message::SelectGlobalFxPreset(None))
                 .padding([3, 8])
                 .width(Fill)
@@ -1824,7 +1824,7 @@ impl MeshApp {
             let is_hovered = self.global_fx_hover_index == Some(i + 1);
             let name = preset_name.clone();
             items.push(
-                button(text(preset_name).size(10))
+                button(text(preset_name).size(sz(10.0)))
                     .on_press(Message::SelectGlobalFxPreset(Some(name)))
                     .padding([3, 8])
                     .width(Fill)

@@ -168,6 +168,7 @@ impl MeshCueApp {
             config.display.grid_bars = self.settings.draft_grid_bars;
             config.display.theme = self.settings.draft_theme.clone();
             config.display.font = self.settings.draft_font;
+            config.display.font_size = self.settings.draft_font_size;
 
             // Update slicer buffer bars
             config.slicer.buffer_bars = self.settings.draft_slicer_buffer_bars;
