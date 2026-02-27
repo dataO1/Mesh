@@ -1,8 +1,8 @@
 # Mesh Player Theme Configuration
-# Stem colors for waveform display
+# Stem colors for waveform display (legacy format — runtime themes in ~/Music/mesh-collection/theme.yaml)
 
 stems:
-  vocals: "#26B864"   # Teal-green
-  drums: "#2840CC"    # Navy blue
-  bass: "#D94830"     # Red-orange
-  other: "#9926D9"    # Violet
+  vocals: "#B8BB26"   # Gruvbox green
+  drums: "#504090"    # Deep purple
+  bass: "#D06040"     # Warm orange
+  other: "#6070A0"    # Steel blue

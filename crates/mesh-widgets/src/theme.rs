@@ -241,25 +241,24 @@ pub fn find_theme<'a>(themes: &'a [MeshTheme], name: &str) -> &'a MeshTheme {
 
 /// The hardcoded fallback theme (used when no themes can be loaded)
 ///
-/// Deep indigo-black background with cyan-blue accent, inspired by
-/// professional DJ hardware (Pioneer CDJ/Denon screens). The purple
-/// undertone makes warm stem colors (orange, magenta) pop.
+/// Neutral dark background with deep purple accent. Warm cream text,
+/// gruvbox-green vocals, purple drums, warm orange bass, steel-blue other.
 pub fn fallback_theme() -> MeshTheme {
     MeshTheme {
         name: "Mesh".to_string(),
         ui: UiColors {
-            background: hex("#16141F"), // Deep indigo-black
-            text: hex("#E0DDE8"),       // Warm off-white (slight lavender)
-            accent: hex("#47B5FF"),     // Electric cyan-blue
-            success: hex("#5EEAA0"),    // Soft mint green
-            warning: hex("#F0C060"),    // Warm amber gold
-            danger: hex("#E85C6F"),     // Coral-red
+            background: hex("#29262A"), // Neutral dark (slight warm)
+            text: hex("#EBDBB2"),       // Warm cream (gruvbox fg)
+            accent: hex("#504090"),     // Deep purple
+            success: hex("#205030"),    // Dark forest green
+            warning: hex("#D06040"),    // Warm orange
+            danger: hex("#602010"),     // Dark red
         },
         stems: [
-            hex("#4DE8B0"), // Vocals - Teal-mint
-            hex("#6090F0"), // Drums - Periwinkle
-            hex("#F09040"), // Bass - Warm orange
-            hex("#D060D0"), // Other - Magenta
+            hex("#B8BB26"), // Vocals - Gruvbox green
+            hex("#504090"), // Drums - Deep purple
+            hex("#D06040"), // Bass - Warm orange
+            hex("#6070A0"), // Other - Steel blue
         ],
     }
 }
@@ -310,7 +309,7 @@ pub fn default_themes() -> Vec<MeshTheme> {
             name: "Synthwave".to_string(),
             ui: UiColors {
                 background: hex("#1A1025"), // Deep violet-black
-                text: hex("#F0E6FF"),       // Pale lavender white
+                text: hex("#EBDBB2"),       // Warm cream
                 accent: hex("#4DB3F2"),     // Neon blue
                 success: hex("#66F299"),    // Neon green
                 warning: hex("#F2D94D"),    // Electric yellow
@@ -349,12 +348,12 @@ pub fn default_themes() -> Vec<MeshTheme> {
 pub mod stem_palettes {
     use iced::Color;
 
-    /// Mesh default: teal-mint, periwinkle, orange, magenta
+    /// Mesh default: gruvbox green, deep purple, warm orange, steel blue
     pub const MESH: [Color; 4] = [
-        Color::from_rgb(0.302, 0.910, 0.690), // #4DE8B0
-        Color::from_rgb(0.376, 0.565, 0.941), // #6090F0
-        Color::from_rgb(0.941, 0.565, 0.251), // #F09040
-        Color::from_rgb(0.816, 0.376, 0.816), // #D060D0
+        Color::from_rgb(0.722, 0.733, 0.149), // #B8BB26 - Gruvbox green (Vocals)
+        Color::from_rgb(0.314, 0.251, 0.565), // #504090 - Deep purple (Drums)
+        Color::from_rgb(0.816, 0.376, 0.251), // #D06040 - Warm orange (Bass)
+        Color::from_rgb(0.376, 0.439, 0.627), // #6070A0 - Steel blue (Other)
     ];
 
     pub const SYNTHWAVE: [Color; 4] = [
