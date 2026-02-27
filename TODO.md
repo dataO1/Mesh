@@ -183,11 +183,6 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
-- [ ] make the mesh header bold and also about 25 %bigger.
-- [ ] double clicking now loads correclty, but even when a row is connected we
-  cant edit a cell anymore by clicking it again.
-- [ ] deleting or removing a large selection of tracks also takes very long in
-  mesh-cue. make this performant.
 - [ ] sometimes the smart suggestion system is stuck and doesnt give new
   results, analyse why, give me a report, we will decide together how to fix.
 - [ ] when on the fly stem linking in the browser for selecting a linked track,

@@ -980,7 +980,8 @@ pub const ML_TAG_COLORS: &[&str] = &[
     "#60a5fa", // genre sub (light blue)
     "#3b82f6", // genre plain (blue)
     "#8b5cf6", // Jamendo mood (purple)
-    "#2d8a4e", // vocal (green)
+    "#b8bb26", // vocal (gruvbox green — matches vocal stem color)
+    "#2d8a4e", // vocal legacy (green — kept for clearing old tags)
     "#ec4899", // binary mood (pink)
     "#0d9488", // audio characteristics (teal)
 ];
@@ -1065,9 +1066,9 @@ pub fn auto_tag_from_ml(track_id: i64, ml: &MlAnalysisData, db: &DatabaseService
         }
     }
 
-    // Vocal tag (green) — from ML voice/instrumental classifier
+    // Vocal tag (gruvbox green — matches vocal stem color) — from ML voice/instrumental classifier
     if ml.vocal_presence >= 0.5 {
-        let _ = db.add_tag(track_id, "Vocal", Some("#2d8a4e"));
+        let _ = db.add_tag(track_id, "Vocal", Some("#b8bb26"));
     }
 
     // Audio characteristic tags (teal) — from binary classifiers

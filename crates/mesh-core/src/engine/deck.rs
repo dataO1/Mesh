@@ -164,7 +164,7 @@ impl DeckAtomics {
             loop_active: AtomicBool::new(false),
             loop_start: AtomicU64::new(0),
             loop_end: AtomicU64::new(0),
-            loop_length_index: AtomicU8::new(5), // Default to 4 beats (index 5)
+            loop_length_index: AtomicU8::new(7), // Default to 16 beats (index 7)
             is_master: AtomicBool::new(false),
             key_match_enabled: AtomicBool::new(false),
             current_transpose: AtomicI8::new(0),
