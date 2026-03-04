@@ -106,11 +106,21 @@ pub fn is_nixos() -> bool {
     std::path::Path::new("/etc/NIXOS").exists()
 }
 
-/// Fetch the latest release tag from GitHub
-pub fn check_latest_version() -> Result<Option<String>, String> {
+/// Fetch the latest release tag from GitHub.
+///
+/// When `prerelease` is false, uses `/releases/latest` which only returns
+/// stable releases (GitHub excludes prereleases from this endpoint).
+/// When `prerelease` is true, fetches all releases and finds the newest
+/// version including release candidates and beta versions.
+pub fn check_latest_version(prerelease: bool) -> Result<Option<String>, String> {
+    let url = if prerelease {
+        "https://api.github.com/repos/dataO1/Mesh/releases?per_page=10"
+    } else {
+        "https://api.github.com/repos/dataO1/Mesh/releases/latest"
+    };
+
     let output = std::process::Command::new("curl")
-        .args(["-s", "--max-time", "10",
-               "https://api.github.com/repos/dataO1/Mesh/releases/latest"])
+        .args(["-s", "--max-time", "10", url])
         .output()
         .map_err(|e| format!("Failed to run curl: {}", e))?;
 
@@ -120,43 +130,112 @@ pub fn check_latest_version() -> Result<Option<String>, String> {
     }
 
     let body = String::from_utf8_lossy(&output.stdout);
+    let current = env!("CARGO_PKG_VERSION");
 
-    // Simple JSON parsing for "tag_name": "v0.9.2"
-    // Avoids serde_json dependency for a single field
-    let tag = body.split("\"tag_name\"")
-        .nth(1)
-        .and_then(|rest| rest.split('"').nth(2))
-        .map(|s| s.to_string());
+    if prerelease {
+        // Parse JSON array: extract all "tag_name" values, find newest
+        find_newest_release(&body, current)
+    } else {
+        // Parse single JSON object: extract "tag_name"
+        // GitHub returns: "tag_name": "v0.9.8", — value is at split('"')[1]
+        let tag = body.split("\"tag_name\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').nth(1))
+            .map(|s| s.to_string());
 
-    match tag {
-        Some(version) => {
-            let current = env!("CARGO_PKG_VERSION");
-            let remote = version.strip_prefix('v').unwrap_or(&version);
-            if is_newer(remote, current) {
-                Ok(Some(version))
-            } else {
-                Ok(None) // Up to date
+        match tag {
+            Some(version) => {
+                let remote = version.strip_prefix('v').unwrap_or(&version);
+                if is_newer(remote, current) {
+                    Ok(Some(version))
+                } else {
+                    Ok(None)
+                }
             }
+            None => Err("Could not parse release tag from GitHub API".to_string()),
         }
-        None => Err("Could not parse release tag from GitHub API".to_string()),
     }
 }
 
-/// Simple semver comparison: is `remote` newer than `current`?
+/// Find the newest release from a GitHub `/releases` JSON array response.
+///
+/// GitHub returns releases newest-first, so the first tag that is newer
+/// than our current version wins.
+fn find_newest_release(body: &str, current: &str) -> Result<Option<String>, String> {
+    // Extract all "tag_name": "vX.Y.Z" values from the JSON array
+    // GitHub returns: "tag_name": "v0.9.8", — value is at split('"')[1]
+    let tags: Vec<String> = body.split("\"tag_name\"")
+        .skip(1) // skip text before first match
+        .filter_map(|rest| rest.split('"').nth(1).map(|s| s.to_string()))
+        .collect();
+
+    if tags.is_empty() {
+        return Err("Could not parse any release tags from GitHub API".to_string());
+    }
+
+    // Return the first (newest) tag that is newer than current
+    for tag in &tags {
+        let remote = tag.strip_prefix('v').unwrap_or(tag);
+        if is_newer(remote, current) {
+            return Ok(Some(tag.clone()));
+        }
+    }
+
+    Ok(None) // All releases are older or equal
+}
+
+/// Semver comparison with pre-release suffix support.
+///
+/// Handles versions like "0.9.9", "0.9.9-rc.1", "0.9.9-beta.2".
+/// Rules:
+/// - Compare base version (MAJOR.MINOR.PATCH) numerically
+/// - If base versions are equal: release (no suffix) > pre-release (has suffix)
+/// - Among pre-releases with the same base: compare suffix number
 fn is_newer(remote: &str, current: &str) -> bool {
-    let parse = |s: &str| -> Vec<u32> {
+    let (r_base, r_pre) = split_version(remote);
+    let (c_base, c_pre) = split_version(current);
+
+    let parse_base = |s: &str| -> Vec<u32> {
         s.split('.').filter_map(|p| p.parse().ok()).collect()
     };
-    let r = parse(remote);
-    let c = parse(current);
+    let r = parse_base(r_base);
+    let c = parse_base(c_base);
 
+    // Compare base version components
     for i in 0..r.len().max(c.len()) {
         let rv = r.get(i).copied().unwrap_or(0);
         let cv = c.get(i).copied().unwrap_or(0);
         if rv > cv { return true; }
         if rv < cv { return false; }
     }
-    false
+
+    // Base versions are equal — compare pre-release suffixes
+    match (r_pre, c_pre) {
+        (None, Some(_)) => true,   // "0.9.9" > "0.9.9-rc.1"
+        (Some(_), None) => false,  // "0.9.9-rc.1" < "0.9.9"
+        (None, None) => false,     // identical
+        (Some(r_suffix), Some(c_suffix)) => {
+            // Compare suffix numbers: "rc.2" > "rc.1"
+            pre_release_num(r_suffix) > pre_release_num(c_suffix)
+        }
+    }
+}
+
+/// Split "0.9.9-rc.1" into ("0.9.9", Some("rc.1"))
+fn split_version(v: &str) -> (&str, Option<&str>) {
+    match v.split_once('-') {
+        Some((base, pre)) => (base, Some(pre)),
+        None => (v, None),
+    }
+}
+
+/// Extract the numeric suffix from a pre-release tag.
+/// "rc.1" → 1, "beta.2" → 2, "alpha.3" → 3, "rc" → 0
+fn pre_release_num(pre: &str) -> u32 {
+    pre.rsplit('.')
+        .next()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
 }
 
 /// Write update target version and start the mesh-update service
@@ -404,4 +483,66 @@ pub fn view_update_section(state: &UpdateState, focused_action: Option<usize>) -
         .padding(15)
         .width(Length::Fill)
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_newer_basic() {
+        assert!(is_newer("0.9.9", "0.9.8"));
+        assert!(is_newer("1.0.0", "0.9.9"));
+        assert!(!is_newer("0.9.8", "0.9.9"));
+        assert!(!is_newer("0.9.9", "0.9.9"));
+    }
+
+    #[test]
+    fn test_is_newer_prerelease() {
+        // RC is newer than previous stable
+        assert!(is_newer("0.9.9-rc.1", "0.9.8"));
+        // Stable is newer than its own RC
+        assert!(is_newer("0.9.9", "0.9.9-rc.1"));
+        // RC is not newer than its own stable
+        assert!(!is_newer("0.9.9-rc.1", "0.9.9"));
+        // Higher RC is newer than lower RC
+        assert!(is_newer("0.9.9-rc.2", "0.9.9-rc.1"));
+        assert!(!is_newer("0.9.9-rc.1", "0.9.9-rc.2"));
+    }
+
+    #[test]
+    fn test_is_newer_beta_alpha() {
+        assert!(is_newer("1.0.0-beta.1", "0.9.9"));
+        assert!(is_newer("1.0.0", "1.0.0-beta.2"));
+        assert!(is_newer("1.0.0-beta.2", "1.0.0-beta.1"));
+    }
+
+    #[test]
+    fn test_split_version() {
+        assert_eq!(split_version("0.9.9"), ("0.9.9", None));
+        assert_eq!(split_version("0.9.9-rc.1"), ("0.9.9", Some("rc.1")));
+        assert_eq!(split_version("1.0.0-beta.2"), ("1.0.0", Some("beta.2")));
+    }
+
+    #[test]
+    fn test_find_newest_release() {
+        // Simulated GitHub API response (newest first)
+        let body = r#"[
+            {"tag_name": "v0.9.9-rc.2", "prerelease": true},
+            {"tag_name": "v0.9.9-rc.1", "prerelease": true},
+            {"tag_name": "v0.9.8", "prerelease": false}
+        ]"#;
+
+        // Current is 0.9.8 — should find v0.9.9-rc.2 (first newer)
+        let result = find_newest_release(body, "0.9.8").unwrap();
+        assert_eq!(result, Some("v0.9.9-rc.2".to_string()));
+
+        // Current is 0.9.9-rc.2 — nothing newer
+        let result = find_newest_release(body, "0.9.9-rc.2").unwrap();
+        assert_eq!(result, None);
+
+        // Current is 0.9.9 — RCs are not newer than stable
+        let result = find_newest_release(body, "0.9.9").unwrap();
+        assert_eq!(result, None);
+    }
 }

@@ -22,8 +22,9 @@ pub fn handle(app: &mut MeshApp, msg: SystemUpdateMessage) -> Task<Message> {
     match msg {
         SystemUpdateMessage::CheckForUpdate => {
             state.check_status = UpdateCheckStatus::Checking;
+            let prerelease = app.config.updates.prerelease_channel;
             Task::perform(
-                async { system_update::check_latest_version() },
+                async move { system_update::check_latest_version(prerelease) },
                 |result| Message::SystemUpdate(SystemUpdateMessage::CheckComplete(result)),
             )
         }

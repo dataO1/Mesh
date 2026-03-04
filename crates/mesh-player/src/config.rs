@@ -130,6 +130,8 @@ pub struct PlayerConfig {
     pub display: DisplayConfig,
     /// Slicer settings (buffer size, queue algorithm)
     pub slicer: SlicerConfig,
+    /// OTA update settings
+    pub updates: UpdateConfig,
     /// Path to the mesh collection folder (shared with mesh-cue)
     /// Default: ~/Music/mesh-collection
     pub collection_path: PathBuf,
@@ -147,7 +149,24 @@ impl Default for PlayerConfig {
             audio: AudioConfig::default(),
             display: DisplayConfig::default(),
             slicer: SlicerConfig::default(),
+            updates: UpdateConfig::default(),
             collection_path,
+        }
+    }
+}
+
+/// OTA update configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateConfig {
+    /// When true, include release candidates and beta versions in OTA checks
+    pub prerelease_channel: bool,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            prerelease_channel: false,
         }
     }
 }
@@ -358,6 +377,7 @@ mod tests {
                 buffer_bars: 8,
                 ..Default::default()
             },
+            updates: UpdateConfig::default(),
             collection_path: PathBuf::from("/tmp/test-collection"),
         };
 

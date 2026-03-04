@@ -333,6 +333,14 @@ pub fn build_settings_items(state: &SettingsState) -> Vec<SettingsItem> {
         items.push(SettingsItem::new("Network", SettingsBehavior::SubPanel(SubPanelType::Network)));
     }
     if state.update.is_some() {
+        items.push(
+            SettingsItem::new("Pre-release Updates", SettingsBehavior::Toggle {
+                value: state.draft_prerelease_channel,
+                on_toggle: |v| SettingsMessage::UpdatePrereleaseChannel(v),
+            })
+                .section("System Update")
+                .hint("Include release candidates and beta versions in OTA checks")
+        );
         items.push(SettingsItem::new("System Update", SettingsBehavior::SubPanel(SubPanelType::SystemUpdate)));
     }
 
@@ -391,6 +399,8 @@ pub struct SettingsState {
     pub draft_cue_device: usize,
     /// Available audio output devices
     pub available_devices: Vec<StereoPair>,
+    /// Draft prerelease channel toggle (include RC/beta in OTA checks)
+    pub draft_prerelease_channel: bool,
     /// Status message (for save feedback)
     pub status: String,
     /// MIDI navigation state (Some when opened via MIDI, None when opened via mouse)
@@ -430,6 +440,7 @@ impl SettingsState {
             draft_master_device: config.audio.outputs.master_device.unwrap_or(0).min(num_devices.saturating_sub(1)),
             draft_cue_device: config.audio.outputs.cue_device.unwrap_or(if num_devices > 1 { 1 } else { 0 }).min(num_devices.saturating_sub(1)),
             available_devices,
+            draft_prerelease_channel: config.updates.prerelease_channel,
             status: String::new(),
             settings_midi_nav: None,
             network: None,
@@ -457,6 +468,7 @@ impl SettingsState {
             font_size: self.draft_font_size,
             master_device: self.draft_master_device,
             cue_device: self.draft_cue_device,
+            prerelease_channel: self.draft_prerelease_channel,
         });
     }
 
@@ -479,6 +491,7 @@ impl SettingsState {
             || self.draft_font_size != snap.font_size
             || self.draft_master_device != snap.master_device
             || self.draft_cue_device != snap.cue_device
+            || self.draft_prerelease_channel != snap.prerelease_channel
         } else {
             false
         }
@@ -509,6 +522,7 @@ struct SettingsSnapshot {
     font_size: FontSize,
     master_device: usize,
     cue_device: usize,
+    prerelease_channel: bool,
 }
 
 // ── MIDI Navigation State ─────────────────────────────────────────────────────

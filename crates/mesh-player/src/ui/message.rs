@@ -61,6 +61,8 @@ pub enum SettingsMessage {
     UpdateCuePair(usize),
     /// Refresh available audio devices
     RefreshAudioDevices,
+    /// Update prerelease channel toggle (include RC/beta in OTA checks)
+    UpdatePrereleaseChannel(bool),
     /// Save settings to disk
     Save,
     /// Settings save completed

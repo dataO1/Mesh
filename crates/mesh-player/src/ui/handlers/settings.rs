@@ -133,6 +133,10 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             app.settings.refresh_audio_devices();
             Task::none()
         }
+        UpdatePrereleaseChannel(enabled) => {
+            app.settings.draft_prerelease_channel = enabled;
+            Task::none()
+        }
         Save => {
             // Apply draft settings to config
             let mut new_config = (*app.config).clone();
@@ -155,6 +159,8 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             // Save loudness settings
             new_config.audio.loudness.auto_gain_enabled = app.settings.draft_auto_gain_enabled;
             new_config.audio.loudness.target_lufs = crate::ui::settings::TARGET_LUFS_OPTIONS[app.settings.draft_target_lufs_index];
+            // Save update channel preference
+            new_config.updates.prerelease_channel = app.settings.draft_prerelease_channel;
             // Check if audio output devices changed
             let master_changed = app.config.audio.outputs.master_device != Some(app.settings.draft_master_device);
             let cue_changed = app.config.audio.outputs.cue_device != Some(app.settings.draft_cue_device);

@@ -8,6 +8,12 @@ All notable changes to Mesh are documented in this file.
 
 ### Added
 
+- **Pre-release OTA channel** — New toggle in Settings → System Update allows
+  opting into release candidate and beta versions for over-the-air updates.
+  When enabled, the update check queries all GitHub releases (not just stable),
+  and the version comparator now correctly handles pre-release suffixes like
+  `-rc.1` and `-beta.2`. Disabled by default.
+
 - **DJ session history** — Mesh now records a full session history while you play,
   tracking every track load, play start, hot cue press, and loop usage. History is
   persisted to all active databases (local collection and every connected USB stick
@@ -69,6 +75,11 @@ All notable changes to Mesh are documented in this file.
   of 16 navigable items. Pressing the encoder on these entries would trigger
   the wrong action (e.g. opening the Network sub-panel instead of toggling
   Auto-Gain).
+
+- **OTA version check always reported "up to date"** — The GitHub API response
+  parser used the wrong string split index (`nth(2)` instead of `nth(1)`),
+  causing it to extract a comma instead of the version tag. Every version
+  check silently returned "up to date" regardless of actual available updates.
 
 - **Smart suggestion loading spinner stuck** — The suggestion loading indicator
   could get stuck permanently when the energy direction slider was adjusted
