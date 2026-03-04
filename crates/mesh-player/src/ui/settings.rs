@@ -443,8 +443,8 @@ impl SettingsState {
             draft_prerelease_channel: config.updates.prerelease_channel,
             status: String::new(),
             settings_midi_nav: None,
-            network: None,
-            update: None,
+            network: super::handlers::network::init_network_state(),
+            update: super::handlers::system_update::init_update_state(),
             initial_snapshot: None,
         }
     }
