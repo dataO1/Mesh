@@ -884,6 +884,7 @@ impl CollectionBrowserState {
                         // can route them back to USB storage lookup
                         let prefixed_id = NodeId(format!("usb:{}/{}", device_path.display(), &info.id.0));
                         let mut row = TrackRow::new(prefixed_id, info.title, info.order);
+                        row.track_path = Some(info.path.to_string_lossy().into_owned());
                         if let Some(artist) = info.artist {
                             row = row.with_artist(artist);
                         }
@@ -1030,23 +1031,16 @@ impl CollectionBrowserState {
 
     /// Reapply dimming flags to all cached tracks based on played_this_session.
     fn refresh_dimming(&mut self) {
-        if self.played_this_session.is_empty() {
-            // Fast path: clear all dimming
-            for track in &mut self.tracks {
-                track.dimmed = false;
-            }
-            return;
+        let played = &self.played_this_session;
+        for track in &mut self.tracks {
+            track.dimmed = track.track_path.as_ref()
+                .map(|p| played.contains(p))
+                .unwrap_or(false);
         }
-        // Collect dimming decisions first (avoids simultaneous &self + &mut self.tracks)
-        let dimmed: Vec<bool> = self.tracks.iter()
-            .map(|track| {
-                self.get_track_path(&track.id)
-                    .map(|p| self.played_this_session.contains(&*p.to_string_lossy()))
-                    .unwrap_or(false)
-            })
-            .collect();
-        for (track, dim) in self.tracks.iter_mut().zip(dimmed) {
-            track.dimmed = dim;
+        for track in &mut self.suggestion_tracks {
+            track.dimmed = track.track_path.as_ref()
+                .map(|p| played.contains(p))
+                .unwrap_or(false);
         }
     }
 
@@ -1116,6 +1110,7 @@ fn get_tracks_for_folder(storage: &dyn PlaylistStorage, folder_id: &NodeId) -> V
         .into_iter()
         .map(|info| {
             let mut row = TrackRow::new(info.id, info.title, info.order);
+            row.track_path = Some(info.path.to_string_lossy().into_owned());
             if let Some(artist) = info.artist {
                 row = row.with_artist(artist);
             }

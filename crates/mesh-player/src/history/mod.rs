@@ -110,7 +110,7 @@ impl HistoryManager {
             played_this_session: HashSet::new(),
             write_targets,
         };
-        manager.write_to_all(|db| {
+        manager.write_to_all_bg(move |db| {
             if let Err(e) = db.create_session(session_id) {
                 log::warn!("[HISTORY] Failed to create session: {e}");
             }
@@ -152,6 +152,7 @@ impl HistoryManager {
     /// Called when a track is loaded to a deck.
     ///
     /// Finalizes any previous track on this deck, then records the new track load.
+    /// Eagerly adds the track to the played set so the browser dims it immediately.
     pub fn on_track_loaded(
         &mut self,
         deck: usize,
@@ -171,6 +172,7 @@ impl HistoryManager {
         let suggestion_tags_json = suggestion.map(|s| {
             serde_json::to_string(&s.reason_tags).unwrap_or_default()
         });
+        let suggestion_tags_json_copy = suggestion_tags_json.clone();
 
         let record = TrackPlayRecord {
             session_id: self.session_id,
@@ -185,11 +187,14 @@ impl HistoryManager {
             suggestion_energy_dir: suggestion.map(|s| s.energy_direction),
         };
 
-        self.write_to_all(|db| {
+        self.write_to_all_bg(move |db| {
             if let Err(e) = db.insert_track_play(&record) {
                 log::warn!("[HISTORY] Failed to insert track play: {e}");
             }
         });
+
+        // Eagerly add to played set so browser dims immediately on load
+        self.played_this_session.insert(track_path.to_string());
 
         self.deck_state[deck] = Some(DeckPlayState {
             track_path: track_path.to_string(),
@@ -198,7 +203,7 @@ impl HistoryManager {
             loaded_at,
             load_source: source,
             suggestion_score: suggestion.map(|s| s.score),
-            suggestion_tags_json: record.suggestion_tags_json.clone(),
+            suggestion_tags_json: suggestion_tags_json_copy,
             suggestion_energy_dir: suggestion.map(|s| s.energy_direction),
             play_started_at: None,
             play_start_sample: None,
@@ -253,10 +258,11 @@ impl HistoryManager {
         let loaded_at = state.loaded_at;
         let session_id = self.session_id;
 
-        // Write play_started to all DBs
-        self.write_to_all(|db| {
+        // Write play_started to all DBs (background — never block UI)
+        let position_i64 = position_samples as i64;
+        self.write_to_all_bg(move |db| {
             if let Err(e) = db.update_play_started(
-                session_id, loaded_at, now, position_samples as i64, played_with_json.clone(),
+                session_id, loaded_at, now, position_i64, played_with_json.clone(),
             ) {
                 log::warn!("[HISTORY] Failed to update play_started: {e}");
             }
@@ -270,7 +276,7 @@ impl HistoryManager {
                     co_state.played_with.push(new_track_name.clone());
                     let co_loaded_at = co_state.loaded_at;
                     let updated_json = serde_json::to_string(&co_state.played_with).ok();
-                    self.write_to_all(|db| {
+                    self.write_to_all_bg(move |db| {
                         if let Err(e) = db.update_played_with(session_id, co_loaded_at, updated_json.clone()) {
                             log::warn!("[HISTORY] Failed to update co-player played_with: {e}");
                         }
@@ -309,13 +315,16 @@ impl HistoryManager {
     }
 
     /// End the current session: finalize all active decks and write session end timestamp.
+    ///
+    /// Uses synchronous writes since this is called from Drop — data must be
+    /// flushed before the process exits.
     pub fn end_session(&mut self) {
         for deck in 0..4 {
-            self.finalize_deck(deck);
+            self.finalize_deck_sync(deck);
         }
         let ended_at = now_millis();
         let session_id = self.session_id;
-        self.write_to_all(|db| {
+        self.write_to_all_sync(|db| {
             if let Err(e) = db.end_session(session_id, ended_at) {
                 log::warn!("[HISTORY] Failed to end session: {e}");
             }
@@ -331,7 +340,17 @@ impl HistoryManager {
     // ========================================================================
 
     /// Finalize the current track on a deck: compute play duration and write to all DBs.
+    /// Uses background thread for writes (called during normal operation).
     fn finalize_deck(&mut self, deck: usize) {
+        self.finalize_deck_inner(deck, false);
+    }
+
+    /// Finalize synchronously (called during shutdown to ensure data is flushed).
+    fn finalize_deck_sync(&mut self, deck: usize) {
+        self.finalize_deck_inner(deck, true);
+    }
+
+    fn finalize_deck_inner(&mut self, deck: usize, sync: bool) {
         let state = match self.deck_state[deck].take() {
             Some(s) => s,
             None => return,
@@ -364,15 +383,18 @@ impl HistoryManager {
 
         let session_id = self.session_id;
         let loaded_at = state.loaded_at;
-        self.write_to_all(|db| {
-            if let Err(e) = db.finalize_track_play(session_id, loaded_at, &update) {
-                log::warn!("[HISTORY] Failed to finalize track play: {e}");
-            }
-        });
-
-        // Add to played set (only if play actually started)
-        if state.play_started_at.is_some() {
-            self.played_this_session.insert(state.track_path);
+        if sync {
+            self.write_to_all_sync(|db| {
+                if let Err(e) = db.finalize_track_play(session_id, loaded_at, &update) {
+                    log::warn!("[HISTORY] Failed to finalize track play: {e}");
+                }
+            });
+        } else {
+            self.write_to_all_bg(move |db| {
+                if let Err(e) = db.finalize_track_play(session_id, loaded_at, &update) {
+                    log::warn!("[HISTORY] Failed to finalize track play: {e}");
+                }
+            });
         }
 
         log::debug!(
@@ -381,8 +403,27 @@ impl HistoryManager {
         );
     }
 
-    /// Write an operation to all active databases, logging failures per-target.
-    fn write_to_all(&self, f: impl Fn(&DatabaseService)) {
+    /// Write an operation to all active databases on a background thread.
+    ///
+    /// Fire-and-forget: spawns a thread per call so the UI thread is never blocked
+    /// by CozoDB write locks or USB I/O. The `Arc<DatabaseService>` write lock
+    /// serializes concurrent writes per-database automatically.
+    fn write_to_all_bg(&self, f: impl Fn(&DatabaseService) + Send + 'static) {
+        let targets: Vec<Arc<DatabaseService>> = self.write_targets
+            .iter()
+            .map(|t| t.db.clone())
+            .collect();
+        std::thread::spawn(move || {
+            for db in &targets {
+                f(db);
+            }
+        });
+    }
+
+    /// Write an operation to all active databases synchronously.
+    ///
+    /// Used only during shutdown (Drop) to ensure data is flushed before exit.
+    fn write_to_all_sync(&self, f: impl Fn(&DatabaseService)) {
         for target in &self.write_targets {
             f(&target.db);
         }

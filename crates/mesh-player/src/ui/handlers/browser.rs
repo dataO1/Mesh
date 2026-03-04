@@ -243,8 +243,11 @@ pub fn handle_suggestions_ready(
                     row = row.with_tags(tags);
                 }
 
-                // Cache suggestion context for history recording
+                // Cache path on row for fast dimming lookups
                 let track_path_str = track.path.to_string_lossy().to_string();
+                row.track_path = Some(track_path_str.clone());
+
+                // Cache suggestion context for history recording
                 contexts.insert(track_path_str, SuggestionContext {
                     score: s.score,
                     reason_tags: s.reason_tags.clone(),

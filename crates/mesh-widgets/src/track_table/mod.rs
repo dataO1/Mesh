@@ -289,6 +289,8 @@ pub struct TrackRow<Id: Clone> {
     pub cue_count: u8,
     /// Whether this track should appear dimmed (e.g. already played this session)
     pub dimmed: bool,
+    /// Absolute file path (cached for fast dimming lookups without DB queries)
+    pub track_path: Option<String>,
 }
 
 impl<Id: Clone> TrackRow<Id> {
@@ -306,6 +308,7 @@ impl<Id: Clone> TrackRow<Id> {
             tags: Vec::new(),
             cue_count: 0,
             dimmed: false,
+            track_path: None,
         }
     }
 
@@ -1085,7 +1088,7 @@ where
             };
 
             // Dim already-played tracks (reduce text opacity)
-            if is_dimmed && !is_selected {
+            if is_dimmed {
                 text_color.a *= 0.4;
             }
 

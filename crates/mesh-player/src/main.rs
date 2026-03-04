@@ -325,7 +325,9 @@ fn main() -> iced::Result {
     drop(audio_handle);
     println!("Mesh stopped.");
 
-    result
+    // Force-exit to terminate any lingering background threads (history write threads,
+    // rayon pool, etc.) that would otherwise keep the process alive during cleanup.
+    std::process::exit(if result.is_ok() { 0 } else { 1 });
 }
 
 /// Update function for iced
