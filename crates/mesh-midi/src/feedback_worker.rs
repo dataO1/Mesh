@@ -139,6 +139,9 @@ impl FeedbackWorker {
     }
 
     fn run(rx: Receiver<FeedbackState>, registrations: Vec<HidFeedbackRegistration>) {
+        // Pin to big cores — LED evaluation is background work
+        crate::rt::pin_to_big_cores();
+
         let mut devices: Vec<HidDeviceFeedback> = registrations.into_iter()
             .map(|reg| HidDeviceFeedback {
                 mappings: reg.mappings,

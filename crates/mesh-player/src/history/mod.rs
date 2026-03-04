@@ -414,6 +414,7 @@ impl HistoryManager {
             .map(|t| t.db.clone())
             .collect();
         std::thread::spawn(move || {
+            mesh_core::rt::pin_to_big_cores();
             for db in &targets {
                 f(db);
             }

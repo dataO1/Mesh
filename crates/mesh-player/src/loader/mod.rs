@@ -24,6 +24,7 @@ use std::thread::{self, JoinHandle};
 
 use basedrop::Shared;
 use mesh_core::audio_file::{AudioFileReader, LoadedTrack, StemBuffers, TrackMetadata};
+use mesh_core::buffer_pool::StemBufferPool;
 use mesh_core::engine::PreparedTrack;
 use mesh_widgets::{
     CueMarker, OverviewState, ZoomedState, CUE_COLORS,
@@ -114,6 +115,10 @@ pub struct TrackLoader {
     rx: TrackLoadResultReceiver,
     /// Target sample rate for loading (audio system's sample rate)
     target_sample_rate: Arc<AtomicU32>,
+    /// Pre-allocated buffer pool (eliminates page fault storms on embedded).
+    /// Kept alive here so the pool outlives the loader thread.
+    #[allow(dead_code)]
+    buffer_pool: Option<Arc<StemBufferPool>>,
     /// Thread handle (for graceful shutdown)
     _handle: JoinHandle<()>,
 }
@@ -126,18 +131,19 @@ impl TrackLoader {
     ///
     /// Note: The loader is database-agnostic. Metadata is provided with each
     /// load request by the domain layer, which knows which database to query.
-    pub fn spawn(target_sample_rate: u32) -> Self {
+    pub fn spawn(target_sample_rate: u32, buffer_pool: Option<Arc<StemBufferPool>>) -> Self {
         let (request_tx, request_rx) = std::sync::mpsc::channel::<TrackLoadRequest>();
         let (result_tx, result_rx) = std::sync::mpsc::channel::<TrackLoadResult>();
 
         // Store sample rate in Arc<AtomicU32> so loader thread can access it
         let rate = Arc::new(AtomicU32::new(target_sample_rate));
         let rate_for_thread = rate.clone();
+        let pool_for_thread = buffer_pool.clone();
 
         let handle = thread::Builder::new()
             .name("track-loader".to_string())
             .spawn(move || {
-                loader_thread(request_rx, result_tx, rate_for_thread);
+                loader_thread(request_rx, result_tx, rate_for_thread, pool_for_thread);
             })
             .expect("Failed to spawn track loader thread");
 
@@ -147,6 +153,7 @@ impl TrackLoader {
             tx: request_tx,
             rx: Arc::new(Mutex::new(result_rx)),
             target_sample_rate: rate,
+            buffer_pool,
             _handle: handle,
         }
     }
@@ -215,17 +222,23 @@ fn loader_thread(
     rx: Receiver<TrackLoadRequest>,
     tx: Sender<TrackLoadResult>,
     target_sample_rate: Arc<AtomicU32>,
+    buffer_pool: Option<Arc<StemBufferPool>>,
 ) {
+    // Pin dispatch thread to big cores — track loading is heavy background work
+    mesh_core::rt::pin_to_big_cores();
+
     log::info!("Track loader dispatch thread started");
 
     while let Ok(request) = rx.recv() {
         let tx = tx.clone();
         let rate = target_sample_rate.clone();
+        let pool = buffer_pool.clone();
         let deck_idx = request.deck_idx;
         if let Err(e) = thread::Builder::new()
             .name(format!("track-load-{}", deck_idx))
             .spawn(move || {
-                handle_track_load(request, tx, rate);
+                mesh_core::rt::pin_to_big_cores();
+                handle_track_load(request, tx, rate, pool);
             })
         {
             log::error!("Failed to spawn load thread: {}", e);
@@ -246,6 +259,7 @@ fn handle_track_load(
     request: TrackLoadRequest,
     tx: Sender<TrackLoadResult>,
     target_sample_rate: Arc<AtomicU32>,
+    buffer_pool: Option<Arc<StemBufferPool>>,
 ) {
     let sample_rate = target_sample_rate.load(Ordering::SeqCst);
     let deck_idx = request.deck_idx;
@@ -281,7 +295,7 @@ fn handle_track_load(
         handle_full_load(request, &tx, sample_rate);
     } else {
         // STREAMING PATH: native rate, can read regions directly
-        handle_streaming_load(request, &tx, reader, sample_rate);
+        handle_streaming_load(request, &tx, reader, sample_rate, buffer_pool);
     }
 
     log::info!(
@@ -348,6 +362,7 @@ fn handle_streaming_load(
     tx: &Sender<TrackLoadResult>,
     reader: AudioFileReader,
     sample_rate: u32,
+    buffer_pool: Option<Arc<StemBufferPool>>,
 ) {
     let deck_idx = request.deck_idx;
     let path = request.path.clone();
@@ -372,9 +387,12 @@ fn handle_streaming_load(
         path.file_name().unwrap_or_default()
     );
 
-    // 1. Allocate full buffer with silence (single allocation, no clone)
+    // 1. Allocate full buffer — try pool first, fall back to fresh allocation
     let alloc_start = std::time::Instant::now();
-    let mut stems = StemBuffers::with_length(frame_count);
+    let mut stems = buffer_pool
+        .as_ref()
+        .and_then(|pool| pool.checkout(frame_count))
+        .unwrap_or_else(|| StemBuffers::with_length(frame_count));
     log::info!("[PERF] Loader: StemBuffers allocation took {:?} ({:.1} MB)",
         alloc_start.elapsed(), (frame_count * 32) as f64 / 1_000_000.0);
 
@@ -442,6 +460,7 @@ fn handle_streaming_load(
                 let regions_ref = &all_regions;
 
                 s.spawn(move || {
+                    mesh_core::rt::pin_to_big_cores();
                     loop {
                         let i = idx.fetch_add(1, Ordering::SeqCst);
                         if i >= total_regions {

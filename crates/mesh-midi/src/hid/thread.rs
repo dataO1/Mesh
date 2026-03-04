@@ -51,6 +51,7 @@ impl HidIoThread {
         let handle = thread::Builder::new()
             .name(format!("hid-io-{}", device_name))
             .spawn(move || {
+                crate::rt::pin_to_big_cores();
                 Self::io_loop(device, &mut *driver, event_tx, feedback_rx, shutdown_clone, &name);
                 alive_clone.store(false, Ordering::Relaxed);
             })

@@ -268,6 +268,9 @@ fn loader_thread(
     sample_rate: Arc<AtomicU32>,
     db_service: Arc<DatabaseService>,
 ) {
+    // Pin coordinator to big cores — I/O and time-stretching are heavy background work
+    crate::rt::pin_to_big_cores();
+
     log::info!("Linked stem loader thread started");
 
     while let Ok(request) = rx.recv() {
@@ -282,6 +285,7 @@ fn loader_thread(
         if let Err(e) = std::thread::Builder::new()
             .name(format!("linked-stem-{}-{}", request.host_deck_idx, request.stem_idx))
             .spawn(move || {
+                crate::rt::pin_to_big_cores();
                 handle_linked_stem_load(request, tx_clone, rate, &db);
             })
         {

@@ -7,6 +7,9 @@ edition.workspace = true
 # JACK backend is default for Linux pro-audio; on other platforms it's a no-op
 # Use --no-default-features for CPAL-only builds (Windows/macOS cross-compile)
 default = ["jack-backend", "pd-effects"]
+# Real-time thread pinning for embedded (OrangePi 5 / RK3588 big.LITTLE)
+# Pins background threads to A76 cores, keeping A55 cores free for RT audio
+embedded-rt = []
 # Use native JACK backend on Linux for pro-audio port routing
 # When disabled, uses CPAL (which supports ALSA/PipeWire on Linux)
 jack-backend = ["dep:jack"]

@@ -135,6 +135,9 @@ fn init_gc() -> Handle {
     thread::Builder::new()
         .name("audio-gc".to_string())
         .spawn(move || {
+            // Pin GC thread to big cores — deallocation must never contend with RT
+            crate::rt::pin_to_big_cores();
+
             // Create collector on this thread (Collector is !Sync)
             let mut collector = Collector::new();
 

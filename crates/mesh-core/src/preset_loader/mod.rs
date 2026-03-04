@@ -260,6 +260,9 @@ fn loader_thread(
     collection_path: PathBuf,
     clap_extra_paths: Vec<PathBuf>,
 ) {
+    // Pin to big cores — plugin creation is heavy background work
+    crate::rt::pin_to_big_cores();
+
     log::info!("[PRESET_LOADER] Loader thread started, initializing plugin managers...");
 
     // Create our own PdManager (PD is not thread-safe, needs own instance)

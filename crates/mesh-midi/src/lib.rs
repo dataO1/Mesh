@@ -30,6 +30,7 @@ mod messages;
 pub mod midi;
 mod feedback_worker;
 mod normalize;
+mod rt;
 mod shared_state;
 pub mod types;
 

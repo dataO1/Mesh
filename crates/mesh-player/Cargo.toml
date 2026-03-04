@@ -20,7 +20,7 @@ pd-effects = ["mesh-core/pd-effects"]
 console = []
 # Real-time audio optimizations for embedded (OrangePi 5 / RK3588)
 # Enables mlockall, CPU affinity, SCHED_FIFO for rayon, /dev/cpu_dma_latency
-embedded-rt = ["dep:libc"]
+embedded-rt = ["dep:libc", "mesh-core/embedded-rt", "mesh-midi/embedded-rt"]
 
 [[bin]]
 name = "mesh-player"

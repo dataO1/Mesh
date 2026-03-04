@@ -28,6 +28,41 @@ All notable changes to Mesh are documented in this file.
   (both audible with volume > 0), both tracks record each other in their
   `played_with` field, enabling future set reconstruction and transition analysis.
 
+### Performance (embedded / OrangePi 5)
+
+- **Fixed RT core pinning** — Rayon audio workers were incorrectly sharing 2 A55
+  cores (4 workers on cores 2-3). Now 3 workers are pinned 1:1 to cores 1-3,
+  with core 0 dedicated to the JACK RT thread. Eliminates core contention
+  during parallel stem/mixer/multiband processing.
+
+- **Background thread isolation** — All background threads (track loader, linked
+  stem loader, preset loader, GC, HID I/O, LED feedback, DB writes) are now
+  pinned to A76 big cores 4-7. This keeps A55 LITTLE cores exclusively for
+  real-time audio and DSP, preventing background I/O from stealing cycles or
+  polluting caches on latency-sensitive cores.
+
+- **StemBuffer pool pre-allocation** — On embedded builds, 4 StemBuffers (~3.5 GB
+  total) are pre-allocated and pre-touched at startup. Track loading checks out
+  a buffer from the pool instead of allocating fresh memory, eliminating the
+  ~452K page faults per load that caused TLB shootdown IPIs across all cores
+  (including the RT audio core). After pool exhaustion, loading falls back to
+  normal allocation.
+
+### Fixed
+
+- **History writes moved off UI thread** — Database writes for session history
+  now run on background threads (fire-and-forget). Only session-end writes are
+  synchronous to ensure data is flushed before exit.
+
+- **Fast track dimming** — Browser dimming now uses cached track paths instead
+  of querying the database for every visible track. Previously, refreshing
+  dimming state for ~200 tracks triggered ~200 full folder queries on the
+  UI thread, causing multi-second freezes.
+
+- **Clean process exit** — The application now calls `process::exit()` after
+  shutdown to terminate lingering background threads (rayon pool, history
+  writers) that previously kept the process alive indefinitely after Ctrl+C.
+
 ---
 
 ## [0.9.8]

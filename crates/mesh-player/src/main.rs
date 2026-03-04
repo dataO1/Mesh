@@ -102,17 +102,19 @@ mod rt_init {
 
     /// Configure a rayon worker thread for RT audio processing.
     /// Called from rayon's start_handler on each worker thread.
-    /// - Pins to A55 cores 2-3 (core 0 = JACK RT, core 1 = UI)
+    /// - Pins each worker to a dedicated A55 core (1, 2, or 3 by round-robin)
+    ///   Core 0 is reserved for JACK RT thread
     /// - Sets SCHED_FIFO priority 70 (below PipeWire's 88, above normal tasks)
     /// - Pre-faults 512KB of stack to avoid minor page faults during processing
-    pub fn setup_rayon_worker() {
-        // Pin to A55 LITTLE cores 2-3
+    pub fn setup_rayon_worker(thread_idx: usize) {
+        // Pin each worker to its own A55 LITTLE core (1, 2, 3)
+        // Core 0 is reserved for JACK RT — one worker per core eliminates contention
         // A55 in-order pipeline gives deterministic WCET (1.2-1.5x avg vs A76's 2-5x)
+        let core = 1 + (thread_idx % 3);
         unsafe {
             let mut cpuset: libc::cpu_set_t = std::mem::zeroed();
             libc::CPU_ZERO(&mut cpuset);
-            libc::CPU_SET(2, &mut cpuset);
-            libc::CPU_SET(3, &mut cpuset);
+            libc::CPU_SET(core, &mut cpuset);
             let ret = libc::sched_setaffinity(
                 0,
                 std::mem::size_of::<libc::cpu_set_t>(),
@@ -120,9 +122,11 @@ mod rt_init {
             );
             if ret != 0 {
                 log::warn!(
-                    "[RT] sched_setaffinity failed for rayon worker: {}",
-                    std::io::Error::last_os_error()
+                    "[RT] sched_setaffinity to core {} failed for rayon worker {}: {}",
+                    core, thread_idx, std::io::Error::last_os_error()
                 );
+            } else {
+                log::info!("[RT] rayon-audio-{} pinned to core {} (A55)", thread_idx, core);
             }
         }
 
@@ -178,15 +182,15 @@ fn main() -> iced::Result {
     // This prevents lazy initialization from causing latency in the audio callback
     // (Rayon's default lazy init would happen on first parallel call, which is in audio callback)
     rayon::ThreadPoolBuilder::new()
-        .num_threads(4) // Match NUM_DECKS for optimal stem parallelism
+        .num_threads(3) // 3 workers on A55 cores 1-3 (core 0 = JACK RT)
         .thread_name(|i| format!("rayon-audio-{}", i))
         .start_handler(|_thread_idx| {
             #[cfg(feature = "embedded-rt")]
-            rt_init::setup_rayon_worker();
+            rt_init::setup_rayon_worker(_thread_idx);
         })
         .build_global()
         .expect("Failed to initialize Rayon thread pool");
-    log::info!("Rayon thread pool initialized with 4 threads");
+    log::info!("Rayon thread pool initialized with 3 threads");
 
     println!("╔══════════════════════════════════════════════════════════════╗");
     println!("║                          Mesh                                  ║");
@@ -241,6 +245,19 @@ fn main() -> iced::Result {
     let internal_latency_cell = std::cell::RefCell::new(internal_latency_samples);
     let direct_producer_cell = std::cell::RefCell::new(direct_command_producer);
 
+    // Pre-allocate StemBuffer pool for zero-allocation track loading (embedded only).
+    // 4 buffers × 10 min @ 48kHz ≈ 3.5 GB — eliminates page fault storms at startup.
+    #[cfg(feature = "embedded-rt")]
+    let buffer_pool = {
+        let max_samples = 10 * 60 * 48000; // 10 minutes at 48kHz
+        log::info!("[RT] Pre-allocating StemBuffer pool (4 × {} samples)...", max_samples);
+        let pool = std::sync::Arc::new(mesh_core::buffer_pool::StemBufferPool::new(4, max_samples));
+        log::info!("[RT] StemBuffer pool ready");
+        Some(pool)
+    };
+    #[cfg(not(feature = "embedded-rt"))]
+    let buffer_pool: Option<std::sync::Arc<mesh_core::buffer_pool::StemBufferPool>> = None;
+
     // Run the iced application using the functional API
     let result = iced::application(
         move || {
@@ -264,7 +281,7 @@ fn main() -> iced::Result {
             });
 
             // mapping_mode = true shows full UI with controls, false = performance mode
-            let mut app = MeshApp::new(db_service, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, audio_sample_rate, audio_client_name.clone(), start_midi_learn, output_latency, internal_latency);
+            let mut app = MeshApp::new(db_service, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, audio_sample_rate, audio_client_name.clone(), start_midi_learn, output_latency, internal_latency, buffer_pool.clone());
 
             // Wire direct dispatch to controller for bypassing iced tick on timing-critical commands
             if let (Some(ref mut controller), Some(dispatch)) = (&mut app.controller, direct_dispatch) {

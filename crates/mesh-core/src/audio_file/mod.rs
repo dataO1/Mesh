@@ -592,6 +592,18 @@ impl StemBuffers {
         }
     }
 
+    /// Truncate all stems to `len` samples without deallocating.
+    ///
+    /// The underlying `Vec` capacity is preserved, so no memory is returned to the OS.
+    /// Used by `StemBufferPool` to shrink a pre-allocated buffer to match the actual
+    /// track length after checkout.
+    pub fn truncate(&mut self, len: usize) {
+        self.vocals.truncate(len);
+        self.drums.truncate(len);
+        self.bass.truncate(len);
+        self.other.truncate(len);
+    }
+
     /// Copy `count` frames from `src` (starting at offset 0) into `self` at `dst_offset`.
     ///
     /// Used after parallel decoding to merge per-region results into the main buffer.

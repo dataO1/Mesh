@@ -163,6 +163,7 @@ impl MeshApp {
         mapping_mode: bool,
         output_latency_samples: Option<Arc<AtomicU64>>,
         internal_latency_samples: Option<Arc<AtomicU32>>,
+        buffer_pool: Option<Arc<mesh_core::buffer_pool::StemBufferPool>>,
     ) -> Self {
         // Load configuration
         let config_path = config::default_config_path();
@@ -224,6 +225,7 @@ impl MeshApp {
             linked_stem_receiver,
             sample_rate,
             config.audio.global_bpm,
+            buffer_pool,
         );
 
         // Initialize audio engine with config (sends initial settings)

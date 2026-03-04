@@ -177,6 +177,7 @@ impl MeshDomain {
         linked_stem_receiver: Option<LinkedStemResultReceiver>,
         sample_rate: u32,
         initial_global_bpm: f64,
+        buffer_pool: Option<Arc<mesh_core::buffer_pool::StemBufferPool>>,
     ) -> Self {
         // Initialize PD effect manager (discovers effects at startup)
         let pd_manager = PdManager::new(&local_collection_path)
@@ -227,7 +228,7 @@ impl MeshDomain {
             local_collection_path,
             // Services
             command_sender,
-            track_loader: TrackLoader::spawn(sample_rate),
+            track_loader: TrackLoader::spawn(sample_rate, buffer_pool),
             usb_manager: UsbManager::spawn(Some(local_db)),
             linked_stem_receiver,
             pd_manager,
