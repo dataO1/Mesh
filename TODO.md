@@ -81,6 +81,10 @@ for v3 and beyond.
 - [ ] Improved playlist features using graph DB and vector features.
 - [ ] Database backup (without wav files, just DB, so hot cues, markers,
   analysis data etc.).
+- [ ] Session import from USB sticks to local collection via mesh-cue. so when
+  playing on the player (for example on embedded, or another mesh setup) the
+  history is stored on the sticks db. we need to automatically import this
+  (rename "export" to "sync") as its own import step before the export step.
 
 ## Audio Processing
 - [ ] Live peak meter per channel and master channel.
