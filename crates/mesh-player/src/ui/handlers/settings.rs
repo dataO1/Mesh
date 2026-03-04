@@ -137,6 +137,24 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             app.settings.draft_prerelease_channel = enabled;
             Task::none()
         }
+        PowerOffConfirm => {
+            app.settings.power_off_confirm = true;
+            Task::none()
+        }
+        PowerOffCancel => {
+            app.settings.power_off_confirm = false;
+            Task::none()
+        }
+        PowerOffExecute => {
+            app.settings.power_off_confirm = false;
+            #[cfg(feature = "embedded-rt")]
+            {
+                if let Err(e) = crate::ui::system_update::power_off() {
+                    app.settings.status = format!("Power off failed: {}", e);
+                }
+            }
+            Task::none()
+        }
         Save => {
             // Apply draft settings to config
             let mut new_config = (*app.config).clone();

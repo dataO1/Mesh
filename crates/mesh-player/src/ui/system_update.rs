@@ -316,6 +316,22 @@ pub fn restart_cage() -> Result<(), String> {
     }
 }
 
+/// Power off the system (embedded only, requires polkit authorization)
+#[cfg(feature = "embedded-rt")]
+pub fn power_off() -> Result<(), String> {
+    let output = std::process::Command::new("systemctl")
+        .arg("poweroff")
+        .output()
+        .map_err(|e| format!("Failed to power off: {}", e))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("Power off failed: {}", stderr.trim()))
+    }
+}
+
 // ── View ──
 
 /// Wrap an element with a highlight background when it's the focused sub-panel action.

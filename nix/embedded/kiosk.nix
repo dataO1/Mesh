@@ -102,13 +102,26 @@ in
       };
     };
 
-    # Crash restart + allow all cores (app manages per-thread affinity internally:
-    # audio RT + UI → A55 cores 0-3, background loading → A76 cores 4-7)
+    # Crash restart + RT limits + all cores.
+    # App manages per-thread affinity internally (audio → A55, loaders → A76).
+    #
+    # CRITICAL: PAM loginLimits do NOT apply to systemd services.
+    # cage-tty1 inherits limits from its unit, not from /etc/security/limits.conf.
+    # Without these, RLIMIT_RTPRIO=0 and sched_setscheduler(SCHED_FIFO) fails,
+    # making CPU pinning counterproductive (pinned threads can't preempt).
     systemd.services."cage-tty1" = {
       serviceConfig = {
         Restart = "always";
         RestartSec = 2;
         CPUAffinity = "0-7";
+        # RT scheduling: allow SCHED_FIFO up to priority 95
+        # (rayon audio workers use 70, PipeWire data thread uses 88)
+        LimitRTPRIO = "95";
+        # Memory locking: allow mlockall() to pin all pages in RAM
+        # (prevents page faults during audio processing)
+        LimitMEMLOCK = "infinity";
+        # Nice level: allow high-priority scheduling
+        LimitNICE = "-20";
       };
     };
 
@@ -159,12 +172,16 @@ in
       };
     };
 
-    # Polkit rule: allow mesh user to manage update and cage services
+    # Polkit rule: allow mesh user to manage update/cage services and power off
     security.polkit.extraConfig = ''
       polkit.addRule(function(action, subject) {
         if (action.id == "org.freedesktop.systemd1.manage-units" &&
             (action.lookup("unit") == "mesh-update.service" ||
              action.lookup("unit") == "cage-tty1.service") &&
+            subject.user == "mesh") {
+          return polkit.Result.YES;
+        }
+        if (action.id == "org.freedesktop.login1.power-off" &&
             subject.user == "mesh") {
           return polkit.Result.YES;
         }

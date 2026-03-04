@@ -63,6 +63,12 @@ pub enum SettingsMessage {
     RefreshAudioDevices,
     /// Update prerelease channel toggle (include RC/beta in OTA checks)
     UpdatePrereleaseChannel(bool),
+    /// Show power off confirmation dialog (embedded only)
+    PowerOffConfirm,
+    /// Cancel power off (dismiss dialog)
+    PowerOffCancel,
+    /// Execute power off (confirmed)
+    PowerOffExecute,
     /// Save settings to disk
     Save,
     /// Settings save completed

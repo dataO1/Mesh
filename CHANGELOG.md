@@ -14,6 +14,11 @@ All notable changes to Mesh are documented in this file.
   and the version comparator now correctly handles pre-release suffixes like
   `-rc.1` and `-beta.2`. Disabled by default.
 
+- **Power off button (embedded)** — New "Power Off" button in Settings → System
+  with a confirmation dialog to safely shut down the device. Only appears on
+  embedded builds (`embedded-rt` feature flag). Includes polkit authorization
+  for the mesh user to execute `systemctl poweroff` without a password.
+
 - **DJ session history** — Mesh now records a full session history while you play,
   tracking every track load, play start, hot cue press, and loop usage. History is
   persisted to all active databases (local collection and every connected USB stick

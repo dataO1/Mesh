@@ -344,13 +344,23 @@ pub fn build_settings_items(state: &SettingsState) -> Vec<SettingsItem> {
         items.push(SettingsItem::new("System Update", SettingsBehavior::SubPanel(SubPanelType::SystemUpdate)));
     }
 
-    // ── MIDI Learn (always last) ──
+    // ── MIDI Learn ──
     items.push(
         SettingsItem::new("Start MIDI Learn", SettingsBehavior::Action(
             Message::MidiLearn(MidiLearnMessage::Start),
         ))
             .section("MIDI Controller")
             .section_hint("Create a custom mapping for your MIDI controller")
+    );
+
+    // ── Power Off (embedded only) ──
+    #[cfg(feature = "embedded-rt")]
+    items.push(
+        SettingsItem::new("Power Off", SettingsBehavior::Action(
+            Message::Settings(SettingsMessage::PowerOffConfirm),
+        ))
+            .section("System")
+            .hint("Safely shut down the device")
     );
 
     items
@@ -401,6 +411,8 @@ pub struct SettingsState {
     pub available_devices: Vec<StereoPair>,
     /// Draft prerelease channel toggle (include RC/beta in OTA checks)
     pub draft_prerelease_channel: bool,
+    /// Whether the power off confirmation dialog is showing
+    pub power_off_confirm: bool,
     /// Status message (for save feedback)
     pub status: String,
     /// MIDI navigation state (Some when opened via MIDI, None when opened via mouse)
@@ -441,6 +453,7 @@ impl SettingsState {
             draft_cue_device: config.audio.outputs.cue_device.unwrap_or(if num_devices > 1 { 1 } else { 0 }).min(num_devices.saturating_sub(1)),
             available_devices,
             draft_prerelease_channel: config.updates.prerelease_channel,
+            power_off_confirm: false,
             status: String::new(),
             settings_midi_nav: None,
             network: super::handlers::network::init_network_state(),
@@ -887,8 +900,51 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
         .width(Length::Fixed(550.0))
         .height(Length::Fixed(600.0));
 
-    container(content)
+    let settings_view: Element<Message> = container(content)
         .padding(30)
         .style(container::rounded_box)
-        .into()
+        .into();
+
+    // Power off confirmation overlay (embedded only)
+    if state.power_off_confirm {
+        use iced::widget::{center, stack};
+
+        let backdrop: Element<Message> = container(Space::new())
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_theme: &iced::Theme| container::Style {
+                background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.5).into()),
+                ..Default::default()
+            })
+            .into();
+
+        let cancel_btn = button(text("Cancel").size(sz(16.0)))
+            .on_press(Message::Settings(SettingsMessage::PowerOffCancel))
+            .style(button::secondary)
+            .padding([8, 24]);
+
+        let confirm_btn = button(text("Power Off").size(sz(16.0)))
+            .on_press(Message::Settings(SettingsMessage::PowerOffExecute))
+            .style(button::danger)
+            .padding([8, 24]);
+
+        let dialog = container(
+            column![
+                text("Power Off?").size(sz(22.0)),
+                text("The device will shut down. Are you sure?").size(sz(14.0)),
+                Space::new().height(10),
+                row![Space::new().width(Length::Fill), cancel_btn, confirm_btn]
+                    .spacing(10)
+                    .width(Length::Fill),
+            ]
+            .spacing(10)
+            .width(Length::Fixed(350.0))
+        )
+        .padding(25)
+        .style(container::rounded_box);
+
+        stack![settings_view, backdrop, center(dialog)].into()
+    } else {
+        settings_view
+    }
 }
