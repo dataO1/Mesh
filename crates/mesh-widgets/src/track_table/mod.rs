@@ -287,6 +287,8 @@ pub struct TrackRow<Id: Clone> {
     pub tags: Vec<TrackTag>,
     /// Number of hot cue points set (0 = hide in browser)
     pub cue_count: u8,
+    /// Whether this track should appear dimmed (e.g. already played this session)
+    pub dimmed: bool,
 }
 
 impl<Id: Clone> TrackRow<Id> {
@@ -303,6 +305,7 @@ impl<Id: Clone> TrackRow<Id> {
             lufs: None,
             tags: Vec::new(),
             cue_count: 0,
+            dimmed: false,
         }
     }
 
@@ -345,6 +348,12 @@ impl<Id: Clone> TrackRow<Id> {
     /// Set tags for this row
     pub fn with_tags(mut self, tags: Vec<TrackTag>) -> Self {
         self.tags = tags;
+        self
+    }
+
+    /// Mark this track as dimmed (e.g. already played this session)
+    pub fn with_dimmed(mut self, dimmed: bool) -> Self {
+        self.dimmed = dimmed;
         self
     }
 
@@ -1034,6 +1043,7 @@ where
     Message: Clone + 'a,
 {
     let is_selected = state.is_selected(&track.id);
+    let is_dimmed = track.dimmed;
     let selection_override = state.selection_color_override;
     let id = track.id.clone();
     let id_activate = track.id.clone();
@@ -1068,11 +1078,16 @@ where
                     _ => Color::TRANSPARENT,
                 }
             };
-            let text_color = if is_selected {
+            let mut text_color = if is_selected {
                 palette.primary.weak.text
             } else {
                 palette.background.base.text
             };
+
+            // Dim already-played tracks (reduce text opacity)
+            if is_dimmed && !is_selected {
+                text_color.a *= 0.4;
+            }
 
             button::Style {
                 background: Some(Background::Color(bg)),

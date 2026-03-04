@@ -6,6 +6,7 @@ use std::sync::Arc;
 use mesh_widgets::MultibandEditorMessage;
 
 use crate::config::{AppFont, FontSize, KeyScoringModel, WaveformAbstraction, WaveformLayout};
+use crate::history::SuggestionContext;
 use crate::suggestions::SuggestedTrack;
 use super::collection_browser::CollectionBrowserMessage;
 use super::deck_view::DeckMessage;
@@ -87,8 +88,8 @@ pub enum Message {
     CollectionBrowser(CollectionBrowserMessage),
     /// Set global BPM
     SetGlobalBpm(f64),
-    /// Load track to deck
-    LoadTrack(usize, String),
+    /// Load track to deck (deck_idx, path, optional suggestion context)
+    LoadTrack(usize, String, Option<SuggestionContext>),
     /// Seek on a deck (deck_idx, normalized position 0.0-1.0)
     DeckSeek(usize, f64),
     /// Set zoom level on a deck (deck_idx, zoom in bars)

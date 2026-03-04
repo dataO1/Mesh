@@ -28,8 +28,8 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use super::batch::BatchQuery;
-use super::queries::{TrackQuery, PlaylistQuery, SimilarityQuery, CuePointQuery, SavedLoopQuery, StemLinkQuery};
-use super::schema::{TrackRow, Playlist, AudioFeatures, CuePoint, SavedLoop, StemLink};
+use super::queries::{TrackQuery, PlaylistQuery, SimilarityQuery, CuePointQuery, SavedLoopQuery, StemLinkQuery, HistoryQuery};
+use super::schema::{TrackRow, Playlist, AudioFeatures, CuePoint, SavedLoop, StemLink, TrackPlayRecord, TrackPlayUpdate};
 use super::{MeshDb, DbError};
 use cozo::{DataValue, Vector};
 use std::collections::BTreeMap;
@@ -1399,6 +1399,52 @@ impl DatabaseService {
             }
         }
         Ok(map)
+    }
+
+    // ========================================================================
+    // Session History
+    // ========================================================================
+
+    /// Create a new DJ session record
+    pub fn create_session(&self, id: i64) -> Result<(), DbError> {
+        HistoryQuery::insert_session(&self.db, id)
+    }
+
+    /// Mark a session as ended
+    pub fn end_session(&self, id: i64, ended_at: i64) -> Result<(), DbError> {
+        HistoryQuery::end_session(&self.db, id, ended_at)
+    }
+
+    /// Insert a track play record (load-time fields; play fields start null)
+    pub fn insert_track_play(&self, record: &TrackPlayRecord) -> Result<(), DbError> {
+        HistoryQuery::insert_track_play(&self.db, record)
+    }
+
+    /// Update play_started fields when the DJ first presses play
+    pub fn update_play_started(
+        &self,
+        session_id: i64,
+        loaded_at: i64,
+        play_started_at: i64,
+        play_start_sample: i64,
+        played_with_json: Option<String>,
+    ) -> Result<(), DbError> {
+        HistoryQuery::update_play_started(&self.db, session_id, loaded_at, play_started_at, play_start_sample, played_with_json)
+    }
+
+    /// Update played_with_json on an existing track play (bidirectional co-play)
+    pub fn update_played_with(&self, session_id: i64, loaded_at: i64, played_with_json: Option<String>) -> Result<(), DbError> {
+        HistoryQuery::update_played_with(&self.db, session_id, loaded_at, played_with_json)
+    }
+
+    /// Finalize a track play when the track is replaced or session ends
+    pub fn finalize_track_play(&self, session_id: i64, loaded_at: i64, update: &TrackPlayUpdate) -> Result<(), DbError> {
+        HistoryQuery::finalize_track_play(&self.db, session_id, loaded_at, update)
+    }
+
+    /// Get all track paths played in a session (for suggestion filtering)
+    pub fn get_session_played_paths(&self, session_id: i64) -> Result<std::collections::HashSet<String>, DbError> {
+        HistoryQuery::get_session_played_paths(&self.db, session_id)
     }
 
     // ========================================================================

@@ -24,10 +24,10 @@ mod service;
 pub(crate) use schema::TrackRow;
 
 // Public schema types (used across crates)
-pub use schema::{Playlist, AudioFeatures, CuePoint, SavedLoop, StemLink, SimilarTo, PlayedAfter, HarmonicMatch, HarmonicMatchType, MlAnalysisData};
+pub use schema::{Playlist, AudioFeatures, CuePoint, SavedLoop, StemLink, SimilarTo, HarmonicMatch, HarmonicMatchType, MlAnalysisData, SessionRecord, TrackPlayRecord, TrackPlayUpdate};
 
 // Internal query module (pub(crate) - implementation detail)
-pub(crate) use queries::{TrackQuery, PlaylistQuery, SimilarityQuery, CuePointQuery, SavedLoopQuery, StemLinkQuery};
+pub(crate) use queries::{TrackQuery, PlaylistQuery, SimilarityQuery, CuePointQuery, SavedLoopQuery, StemLinkQuery, HistoryQuery};
 
 // Internal batch module (used directly by service.rs for efficient bulk inserts)
 

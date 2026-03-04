@@ -7,7 +7,7 @@ use iced::Task;
 use crate::ui::app::MeshApp;
 use crate::ui::deck_view::{DeckMessage, ActionButtonMode};
 use crate::ui::message::Message;
-use mesh_core::types::Stem;
+use mesh_core::types::{PlayState, Stem};
 use mesh_widgets::multiband::{
     list_deck_presets, list_stem_presets,
     EffectPresetConfig, StemPresetConfig, NUM_MACROS,
@@ -25,7 +25,17 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
         // Playback Control
         // ─────────────────────────────────────────────────
         TogglePlayPause => {
+            // Detect play-start for history recording (before sending async command)
+            let was_playing = app.deck_views[deck_idx].play_state() == PlayState::Playing;
             app.domain.toggle_play(deck_idx);
+            if !was_playing {
+                // DJ pressed play — record in history with current position and volumes
+                let position = app.deck_atomics.as_ref()
+                    .map(|a| a[deck_idx].position())
+                    .unwrap_or(0);
+                let volumes: [f32; 4] = std::array::from_fn(|i| app.mixer_view.channel_volume(i));
+                app.history.on_play_started(deck_idx, position, &volumes);
+            }
             return Task::done(Message::ScheduleSuggestionRefresh);
         }
         CuePressed => {
@@ -54,6 +64,8 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
                 }
             }
             app.domain.hot_cue_press(deck_idx, slot);
+            // Record hot cue usage in session history
+            app.history.on_hot_cue_pressed(deck_idx, slot as u8);
         }
         HotCueReleased(_slot) => {
             app.domain.hot_cue_release(deck_idx);

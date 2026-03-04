@@ -20,11 +20,11 @@ use mesh_widgets::{
     parse_hex_color, tag_sort_priority, playlist_browser, sort_tracks, sz, PlaylistBrowserMessage, PlaylistBrowserState,
     TrackRow, TrackTableMessage, TrackTag, TreeIcon, TreeMessage, TreeNode,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::suggestions::SuggestedTrack;
+use crate::history::SuggestionContext;
 
 /// State for the collection browser
 pub struct CollectionBrowserState {
@@ -62,6 +62,10 @@ pub struct CollectionBrowserState {
     last_seed_paths: Vec<String>,
     /// Current encoder scroll index (avoids ambiguous ID→index lookup with duplicates)
     scroll_index: Option<usize>,
+    /// Suggestion metadata cache (track_path → SuggestionContext) for history recording
+    suggestion_context_cache: HashMap<String, SuggestionContext>,
+    /// Tracks played this session (absolute paths) — used to dim already-played rows
+    played_this_session: HashSet<String>,
 }
 
 /// Messages from the collection browser
@@ -141,6 +145,8 @@ impl CollectionBrowserState {
             energy_direction: 0.5,
             last_seed_paths: Vec::new(),
             scroll_index: None,
+            suggestion_context_cache: HashMap::new(),
+            played_this_session: HashSet::new(),
         }
     }
 
@@ -989,9 +995,11 @@ impl CollectionBrowserState {
         &mut self,
         tracks: Vec<TrackRow<NodeId>>,
         paths: HashMap<NodeId, PathBuf>,
+        contexts: HashMap<String, SuggestionContext>,
     ) {
         self.suggestion_tracks = tracks;
         self.suggestion_paths = paths;
+        self.suggestion_context_cache = contexts;
         self.suggestion_loading = false;
 
         // Auto-select first suggestion
@@ -1003,10 +1011,50 @@ impl CollectionBrowserState {
         }
     }
 
+    /// Get suggestion context for a track path (if it came from suggestions)
+    pub fn get_suggestion_context(&self, track_path: &str) -> Option<SuggestionContext> {
+        self.suggestion_context_cache.get(track_path).cloned()
+    }
+
+    /// Update the set of played track paths and refresh dimming on cached tracks.
+    ///
+    /// Called after a track finishes playing or on folder navigation. Resolves
+    /// each track's ID to its absolute path and marks matches as dimmed.
+    pub fn update_played_paths(&mut self, played: &HashSet<String>) {
+        if *played == self.played_this_session {
+            return;
+        }
+        self.played_this_session = played.clone();
+        self.refresh_dimming();
+    }
+
+    /// Reapply dimming flags to all cached tracks based on played_this_session.
+    fn refresh_dimming(&mut self) {
+        if self.played_this_session.is_empty() {
+            // Fast path: clear all dimming
+            for track in &mut self.tracks {
+                track.dimmed = false;
+            }
+            return;
+        }
+        // Collect dimming decisions first (avoids simultaneous &self + &mut self.tracks)
+        let dimmed: Vec<bool> = self.tracks.iter()
+            .map(|track| {
+                self.get_track_path(&track.id)
+                    .map(|p| self.played_this_session.contains(&*p.to_string_lossy()))
+                    .unwrap_or(false)
+            })
+            .collect();
+        for (track, dim) in self.tracks.iter_mut().zip(dimmed) {
+            track.dimmed = dim;
+        }
+    }
+
     /// Clear suggestion state
     pub fn clear_suggestions(&mut self) {
         self.suggestion_tracks.clear();
         self.suggestion_paths.clear();
+        self.suggestion_context_cache.clear();
         self.suggestion_loading = false;
         self.scroll_index = None;
     }

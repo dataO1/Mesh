@@ -139,13 +139,49 @@ pub struct SimilarTo {
     pub similarity_score: f32,
 }
 
-/// Tracks played in sequence (DJ transition history)
+// ============================================================================
+// Session History Types
+// ============================================================================
+
+/// A DJ session (one continuous play session, started each time mesh-player launches)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlayedAfter {
-    pub from_track: i64,
-    pub to_track: i64,
-    pub count: i32,
-    pub avg_transition_quality: Option<f32>,
+pub struct SessionRecord {
+    /// Unix millisecond timestamp at session start — also serves as unique session ID
+    pub id: i64,
+    /// Unix millisecond timestamp when session ended (None if still active)
+    pub ended_at: Option<i64>,
+}
+
+/// Data captured when a track is first loaded to a deck
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrackPlayRecord {
+    pub session_id: i64,
+    /// Unix ms timestamp of load — composite key with session_id
+    pub loaded_at: i64,
+    pub track_path: String,
+    /// "{artist} - {title}" display name, self-contained for set reconstruction
+    pub track_name: String,
+    pub track_id: Option<i64>,
+    pub deck_index: u8,
+    /// "browser" or "suggestions"
+    pub load_source: String,
+    pub suggestion_score: Option<f32>,
+    /// JSON: [["Key ▲", "#2d8a4e"], ...]
+    pub suggestion_tags_json: Option<String>,
+    pub suggestion_energy_dir: Option<f32>,
+}
+
+/// Playback data filled in after play starts and when track is finalized
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TrackPlayUpdate {
+    pub play_started_at: Option<i64>,
+    pub play_start_sample: Option<i64>,
+    pub play_ended_at: Option<i64>,
+    pub seconds_played: Option<f32>,
+    pub hot_cues_used_json: Option<String>,
+    pub loop_was_active: bool,
+    /// JSON: ["Artist A - Title X", "Artist B - Title Y"]
+    pub played_with_json: Option<String>,
 }
 
 /// Harmonic compatibility type
@@ -408,16 +444,21 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
         log::debug!("Creating 'similar_to' relation");
         create_similar_to_relation(db)?;
     }
-    if !existing.contains("played_after") {
-        log::debug!("Creating 'played_after' relation");
-        create_played_after_relation(db)?;
-    }
     if !existing.contains("harmonic_match") {
         log::debug!("Creating 'harmonic_match' relation");
         create_harmonic_match_relation(db)?;
     }
 
-    // Tag relation
+    // History relations
+    if !existing.contains("sessions") {
+        log::debug!("Creating 'sessions' relation");
+        create_sessions_relation(db)?;
+    }
+    if !existing.contains("track_plays") {
+        log::debug!("Creating 'track_plays' relation");
+        create_track_plays_relation(db)?;
+    }
+
     if !existing.contains("track_tags") {
         log::debug!("Creating 'track_tags' relation");
         create_track_tags_relation(db)?;
@@ -537,13 +578,35 @@ fn create_similar_to_relation(db: &DbInstance) -> Result<(), DbError> {
     "#)
 }
 
-fn create_played_after_relation(db: &DbInstance) -> Result<(), DbError> {
+fn create_sessions_relation(db: &DbInstance) -> Result<(), DbError> {
     run_schema(db, r#"
-        {:create played_after {
-            from_track: Int,
-            to_track: Int =>
-            count: Int,
-            avg_transition_quality: Float?
+        {:create sessions {
+            id: Int =>
+            ended_at: Int?
+        }}
+    "#)
+}
+
+fn create_track_plays_relation(db: &DbInstance) -> Result<(), DbError> {
+    run_schema(db, r#"
+        {:create track_plays {
+            session_id: Int,
+            loaded_at: Int =>
+            track_path: String,
+            track_name: String,
+            track_id: Int?,
+            deck_index: Int,
+            load_source: String,
+            suggestion_score: Float?,
+            suggestion_tags_json: String?,
+            suggestion_energy_dir: Float?,
+            play_started_at: Int?,
+            play_start_sample: Int?,
+            play_ended_at: Int?,
+            seconds_played: Float?,
+            hot_cues_used_json: String?,
+            loop_was_active: Bool default false,
+            played_with_json: String?
         }}
     "#)
 }

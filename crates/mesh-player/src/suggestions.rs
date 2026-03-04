@@ -569,6 +569,7 @@ pub fn query_suggestions(
     key_scoring_model: KeyScoringModel,
     per_seed_limit: usize,
     total_limit: usize,
+    played_paths: &HashSet<String>,
 ) -> Result<Vec<SuggestedTrack>, String> {
     if sources.is_empty() {
         return Ok(Vec::new());
@@ -685,6 +686,10 @@ pub fn query_suggestions(
                             // Resolve relative paths to absolute for loading
                             if !track.path.is_absolute() {
                                 track.path = target_source.collection_root.join(&track.path);
+                            }
+                            // Skip tracks already played this session
+                            if played_paths.contains(&*track.path.to_string_lossy()) {
+                                continue;
                             }
                             // Keep minimum distance per candidate
                             candidates

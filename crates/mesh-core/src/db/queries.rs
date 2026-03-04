@@ -2,10 +2,10 @@
 //!
 //! This module provides typed query APIs that generate CozoScript internally.
 
-use super::schema::{TrackRow, Playlist, AudioFeatures, CuePoint, SavedLoop, StemLink};
+use super::schema::{TrackRow, Playlist, AudioFeatures, CuePoint, SavedLoop, StemLink, TrackPlayRecord, TrackPlayUpdate};
 use super::{MeshDb, DbError};
 use cozo::{DataValue, NamedRows};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Column list for track queries (must match schema order for first_beat_sample)
 const TRACK_COLUMNS: &str = "id, path, folder_path, title, original_name, artist, bpm, original_bpm, key, duration_seconds, lufs, integrated_lufs, drop_marker, first_beat_sample, file_mtime, file_size, waveform_path";
@@ -1098,6 +1098,160 @@ impl StemLinkQuery {
         }
 
         Ok(())
+    }
+}
+
+// ============================================================================
+// History Queries
+// ============================================================================
+
+/// Query builder for DJ session history (sessions + track_plays)
+pub struct HistoryQuery;
+
+impl HistoryQuery {
+    /// Create a new session record
+    pub fn insert_session(db: &MeshDb, id: i64) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("id".to_string(), DataValue::from(id));
+        db.run_script(r#"
+            ?[id, ended_at] <- [[$id, null]]
+            :put sessions {id => ended_at}
+        "#, params)?;
+        Ok(())
+    }
+
+    /// Mark session as ended
+    pub fn end_session(db: &MeshDb, id: i64, ended_at: i64) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("id".to_string(), DataValue::from(id));
+        params.insert("ended_at".to_string(), DataValue::from(ended_at));
+        db.run_script(r#"
+            ?[id, ended_at] <- [[$id, $ended_at]]
+            :put sessions {id => ended_at}
+        "#, params)?;
+        Ok(())
+    }
+
+    /// Insert a new track play record (load-time fields only; play fields start null)
+    pub fn insert_track_play(db: &MeshDb, r: &TrackPlayRecord) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("session_id".to_string(), DataValue::from(r.session_id));
+        params.insert("loaded_at".to_string(), DataValue::from(r.loaded_at));
+        params.insert("track_path".to_string(), DataValue::Str(r.track_path.clone().into()));
+        params.insert("track_name".to_string(), DataValue::Str(r.track_name.clone().into()));
+        params.insert("track_id".to_string(), r.track_id.map(DataValue::from).unwrap_or(DataValue::Null));
+        params.insert("deck_index".to_string(), DataValue::from(r.deck_index as i64));
+        params.insert("load_source".to_string(), DataValue::Str(r.load_source.clone().into()));
+        params.insert("suggestion_score".to_string(), r.suggestion_score.map(|f| DataValue::from(f as f64)).unwrap_or(DataValue::Null));
+        params.insert("suggestion_tags_json".to_string(), r.suggestion_tags_json.as_ref().map(|s| DataValue::Str(s.clone().into())).unwrap_or(DataValue::Null));
+        params.insert("suggestion_energy_dir".to_string(), r.suggestion_energy_dir.map(|f| DataValue::from(f as f64)).unwrap_or(DataValue::Null));
+
+        db.run_script(r#"
+            ?[session_id, loaded_at, track_path, track_name, track_id, deck_index,
+              load_source, suggestion_score, suggestion_tags_json, suggestion_energy_dir,
+              play_started_at, play_start_sample, play_ended_at, seconds_played,
+              hot_cues_used_json, loop_was_active, played_with_json]
+            <- [[$session_id, $loaded_at, $track_path, $track_name, $track_id, $deck_index,
+                 $load_source, $suggestion_score, $suggestion_tags_json, $suggestion_energy_dir,
+                 null, null, null, null, null, false, null]]
+            :put track_plays {
+                session_id, loaded_at =>
+                track_path, track_name, track_id, deck_index,
+                load_source, suggestion_score, suggestion_tags_json, suggestion_energy_dir,
+                play_started_at, play_start_sample, play_ended_at, seconds_played,
+                hot_cues_used_json, loop_was_active, played_with_json
+            }
+        "#, params)?;
+        Ok(())
+    }
+
+    /// Update play_started fields when the DJ first presses play
+    pub fn update_play_started(
+        db: &MeshDb,
+        session_id: i64,
+        loaded_at: i64,
+        play_started_at: i64,
+        play_start_sample: i64,
+        played_with_json: Option<String>,
+    ) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("session_id".to_string(), DataValue::from(session_id));
+        params.insert("loaded_at".to_string(), DataValue::from(loaded_at));
+        params.insert("play_started_at".to_string(), DataValue::from(play_started_at));
+        params.insert("play_start_sample".to_string(), DataValue::from(play_start_sample));
+        params.insert("played_with_json".to_string(), played_with_json.as_ref().map(|s| DataValue::Str(s.clone().into())).unwrap_or(DataValue::Null));
+
+        db.run_script(r#"
+            ?[session_id, loaded_at, play_started_at, play_start_sample, played_with_json]
+            <- [[$session_id, $loaded_at, $play_started_at, $play_start_sample, $played_with_json]]
+            :update track_plays {
+                session_id, loaded_at =>
+                play_started_at, play_start_sample, played_with_json
+            }
+        "#, params)?;
+        Ok(())
+    }
+
+    /// Update only played_with_json on an existing track play (bidirectional co-play update)
+    pub fn update_played_with(
+        db: &MeshDb,
+        session_id: i64,
+        loaded_at: i64,
+        played_with_json: Option<String>,
+    ) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("session_id".to_string(), DataValue::from(session_id));
+        params.insert("loaded_at".to_string(), DataValue::from(loaded_at));
+        params.insert("played_with_json".to_string(), played_with_json.as_ref().map(|s| DataValue::Str(s.clone().into())).unwrap_or(DataValue::Null));
+
+        db.run_script(r#"
+            ?[session_id, loaded_at, played_with_json]
+            <- [[$session_id, $loaded_at, $played_with_json]]
+            :update track_plays { session_id, loaded_at => played_with_json }
+        "#, params)?;
+        Ok(())
+    }
+
+    /// Finalize a track play when the track is replaced or session ends
+    pub fn finalize_track_play(
+        db: &MeshDb,
+        session_id: i64,
+        loaded_at: i64,
+        u: &TrackPlayUpdate,
+    ) -> Result<(), DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("session_id".to_string(), DataValue::from(session_id));
+        params.insert("loaded_at".to_string(), DataValue::from(loaded_at));
+        params.insert("play_ended_at".to_string(), u.play_ended_at.map(DataValue::from).unwrap_or(DataValue::Null));
+        params.insert("seconds_played".to_string(), u.seconds_played.map(|f| DataValue::from(f as f64)).unwrap_or(DataValue::Null));
+        params.insert("hot_cues_used_json".to_string(), u.hot_cues_used_json.as_ref().map(|s| DataValue::Str(s.clone().into())).unwrap_or(DataValue::Null));
+        params.insert("loop_was_active".to_string(), DataValue::from(u.loop_was_active));
+
+        db.run_script(r#"
+            ?[session_id, loaded_at, play_ended_at, seconds_played, hot_cues_used_json, loop_was_active]
+            <- [[$session_id, $loaded_at, $play_ended_at, $seconds_played, $hot_cues_used_json, $loop_was_active]]
+            :update track_plays {
+                session_id, loaded_at =>
+                play_ended_at, seconds_played, hot_cues_used_json, loop_was_active
+            }
+        "#, params)?;
+        Ok(())
+    }
+
+    /// Get all track paths played in a session (for suggestion filtering and browser dimming)
+    pub fn get_session_played_paths(db: &MeshDb, session_id: i64) -> Result<HashSet<String>, DbError> {
+        let mut params = BTreeMap::new();
+        params.insert("session_id".to_string(), DataValue::from(session_id));
+
+        let result = db.run_query(r#"
+            ?[track_path] :=
+                *track_plays{session_id: $session_id, track_path, play_started_at},
+                is_not_null(play_started_at)
+        "#, params)?;
+
+        Ok(result.rows.iter()
+            .filter_map(|row| row.first()?.get_str().map(|s| s.to_string()))
+            .collect())
     }
 }
 

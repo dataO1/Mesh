@@ -11,6 +11,7 @@ use mesh_core::playlist::NodeId;
 use mesh_core::usb::UsbMessage as UsbMsg;
 use mesh_widgets::{parse_hex_color, scroll_to_centered_selection, TrackRow, TrackTag};
 use mesh_core::types::PlayState;
+use crate::history::SuggestionContext;
 use crate::suggestions::{query_suggestions, DbSource, SuggestedTrack};
 use crate::ui::app::MeshApp;
 use crate::ui::collection_browser::CollectionBrowserMessage;
@@ -71,9 +72,10 @@ pub fn handle_browser(app: &mut MeshApp, browser_msg: CollectionBrowserMessage) 
 
     // Handle collection browser message and check if we need to load a track
     if let Some((deck_idx, path)) = app.collection_browser.handle_message(browser_msg) {
-        // Convert to LoadTrack message
         let path_str = path.to_string_lossy().to_string();
-        return app.update(Message::LoadTrack(deck_idx, path_str));
+        // If track came from the suggestion panel, capture suggestion metadata
+        let suggestion_ctx = app.collection_browser.get_suggestion_context(&path_str);
+        return app.update(Message::LoadTrack(deck_idx, path_str, suggestion_ctx));
     }
 
     // Sync domain layer with collection browser's active storage.
@@ -113,6 +115,8 @@ pub fn handle_usb(app: &mut MeshApp, usb_msg: UsbMsg) -> Task<Message> {
             for device in &devices {
                 if device.mount_point.is_some() && device.has_mesh_collection {
                     app.collection_browser.init_usb_storage(device);
+                    // Register USB database as history write target
+                    register_usb_history_target(app, &device.device_path);
                     // Trigger background metadata preload for instant browsing
                     let _ = app.domain.send_usb_command(
                         mesh_core::usb::UsbCommand::PreloadMetadata {
@@ -126,6 +130,8 @@ pub fn handle_usb(app: &mut MeshApp, usb_msg: UsbMsg) -> Task<Message> {
             app.collection_browser.add_usb_device(device.clone());
             if device.mount_point.is_some() && device.has_mesh_collection {
                 app.collection_browser.init_usb_storage(&device);
+                // Register USB database as history write target
+                register_usb_history_target(app, &device.device_path);
                 // Trigger background metadata preload for instant browsing
                 let _ = app.domain.send_usb_command(
                     mesh_core::usb::UsbCommand::PreloadMetadata {
@@ -140,6 +146,9 @@ pub fn handle_usb(app: &mut MeshApp, usb_msg: UsbMsg) -> Task<Message> {
             let collection_root = device_path.join("mesh-collection");
             mesh_core::usb::cache::clear_usb_database(&collection_root);
 
+            // Remove USB database from history write targets
+            app.history.remove_write_target(&collection_root);
+
             app.collection_browser.remove_usb_device(&device_path);
             app.status = "USB: Device disconnected".to_string();
         }
@@ -150,6 +159,8 @@ pub fn handle_usb(app: &mut MeshApp, usb_msg: UsbMsg) -> Task<Message> {
                     app.collection_browser.add_usb_device(device.clone());
                     if device.has_mesh_collection {
                         app.collection_browser.init_usb_storage(&device);
+                        // Register USB database as history write target
+                        register_usb_history_target(app, &device.device_path);
                         // Trigger background metadata preload for instant browsing
                         let _ = app.domain.send_usb_command(
                             mesh_core::usb::UsbCommand::PreloadMetadata {
@@ -191,6 +202,9 @@ pub fn handle_suggestions_ready(
         Ok(suggested) => {
             let mut tracks = Vec::with_capacity(suggested.len());
             let mut paths = HashMap::new();
+            let mut contexts = HashMap::new();
+
+            let energy_direction = app.collection_browser.energy_direction();
 
             for (i, s) in suggested.iter().enumerate() {
                 let track = &s.track;
@@ -229,12 +243,20 @@ pub fn handle_suggestions_ready(
                     row = row.with_tags(tags);
                 }
 
+                // Cache suggestion context for history recording
+                let track_path_str = track.path.to_string_lossy().to_string();
+                contexts.insert(track_path_str, SuggestionContext {
+                    score: s.score,
+                    reason_tags: s.reason_tags.clone(),
+                    energy_direction,
+                });
+
                 paths.insert(node_id, track.path.clone());
                 tracks.push(row);
             }
 
             log::info!("Suggestions ready: {} tracks", tracks.len());
-            app.collection_browser.apply_suggestion_results(tracks, paths);
+            app.collection_browser.apply_suggestion_results(tracks, paths, contexts);
         }
         Err(e) => {
             log::warn!("Suggestion query failed: {}", e);
@@ -292,9 +314,10 @@ pub fn trigger_suggestion_query(app: &MeshApp) -> Task<Message> {
 
     let energy_direction = app.collection_browser.energy_direction();
     let key_model = app.config.display.key_scoring_model;
+    let played = app.history.played_paths().clone();
 
     Task::perform(
-        async move { query_suggestions(&sources, seed_paths, energy_direction, key_model, 10_000, 30) },
+        async move { query_suggestions(&sources, seed_paths, energy_direction, key_model, 10_000, 30, &played) },
         |result| Message::SuggestionsReady(Arc::new(result)),
     )
 }
@@ -352,4 +375,22 @@ pub fn check_energy_debounce(app: &mut MeshApp, gen: u64) -> Task<Message> {
     }
 
     trigger_suggestion_query(app)
+}
+
+/// Register a USB device's database as a history write target.
+///
+/// Looks up the USB storage by device path, and if it has a DB, adds it
+/// as a write target so session history is persisted to the USB stick.
+fn register_usb_history_target(app: &mut MeshApp, device_path: &PathBuf) {
+    if let Some((_, usb_storage)) = app.collection_browser.usb_storages
+        .iter()
+        .find(|(path, _)| path == device_path)
+    {
+        if let Some(db) = usb_storage.db() {
+            app.history.add_write_target(
+                db.clone(),
+                usb_storage.collection_root().clone(),
+            );
+        }
+    }
 }

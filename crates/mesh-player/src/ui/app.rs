@@ -123,6 +123,8 @@ pub struct MeshApp {
     pub(crate) audio_sample_rate: u32,
     /// On-screen keyboard state (shared widget from mesh-widgets)
     pub(crate) keyboard: KeyboardState,
+    /// DJ session history manager — tracks all actions, writes to all active databases
+    pub(crate) history: crate::history::HistoryManager,
     /// System resource monitor (CPU%, GPU%, RAM)
     pub(crate) resource_monitor: mesh_core::resource_monitor::ResourceMonitor,
     /// FPS frame counter (incremented each tick, reset every second)
@@ -262,6 +264,11 @@ impl MeshApp {
             dv.sync_loop_length_index(default_loop_idx as u8);
         }
 
+        let history = crate::history::HistoryManager::new(
+            db_service.clone(),
+            config.collection_path.clone(),
+        );
+
         Self {
             domain,
             deck_atomics,
@@ -321,6 +328,7 @@ impl MeshApp {
             output_latency_samples,
             internal_latency_samples,
             audio_sample_rate: sample_rate,
+            history,
             keyboard: KeyboardState::new(),
             resource_monitor: mesh_core::resource_monitor::ResourceMonitor::new(),
             fps_frame_count: 0,
@@ -381,7 +389,7 @@ impl MeshApp {
                 Task::none()
             }
 
-            Message::LoadTrack(deck_idx, path) => {
+            Message::LoadTrack(deck_idx, path, suggestion_ctx) => {
                 // Streaming track loading: create skeleton immediately, load audio in background
                 if deck_idx < 4 {
                     match self.domain.create_skeleton_and_load(deck_idx, path.into(), 0, self.monitor_width) {
@@ -400,12 +408,31 @@ impl MeshApp {
                             let track = &skeleton.prepared.track;
                             let display_name = track.display_name();
 
-                            self.player_canvas_state.set_track_name(deck_idx, display_name);
+                            self.player_canvas_state.set_track_name(deck_idx, display_name.clone());
                             self.player_canvas_state.set_track_key(
                                 deck_idx,
                                 track.metadata.key.clone().unwrap_or_default(),
                             );
                             self.player_canvas_state.set_track_bpm(deck_idx, track.metadata.bpm);
+
+                            // Record in session history
+                            let track_path = track.path.to_string_lossy().to_string();
+                            let load_source = if suggestion_ctx.is_some() {
+                                crate::history::LoadSource::Suggestions
+                            } else {
+                                crate::history::LoadSource::Browser
+                            };
+                            self.history.on_track_loaded(
+                                deck_idx,
+                                &track_path,
+                                &display_name,
+                                None, // track DB id not available at skeleton stage
+                                load_source,
+                                suggestion_ctx.as_ref(),
+                            );
+
+                            // Update browser dimming (finalize_deck may have added to played set)
+                            self.collection_browser.update_played_paths(self.history.played_paths());
 
                             // Sync hot cues to deck view
                             for (slot, hot_cue) in skeleton.prepared.hot_cues.iter().enumerate() {
@@ -417,7 +444,7 @@ impl MeshApp {
 
                             // Store loaded track path for stale detection
                             self.deck_views[deck_idx].set_loaded_track_path(
-                                Some(track.path.to_string_lossy().to_string()),
+                                Some(track_path),
                             );
 
                             // Reset stem mute/solo state
@@ -903,7 +930,7 @@ impl MeshApp {
                     MidiDeckAction::LoadSelected => {
                         // If a track is selected, load it to this deck
                         if let Some(track_path) = self.collection_browser.get_selected_track_path() {
-                            let _ = self.update(Message::LoadTrack(deck, track_path.to_string_lossy().to_string()));
+                            let _ = self.update(Message::LoadTrack(deck, track_path.to_string_lossy().to_string(), None));
                             self.hide_browser_overlay();
                         } else {
                             // No track selected — enter the selected folder/playlist
@@ -1854,6 +1881,12 @@ impl MeshApp {
     /// Get the theme
     pub fn theme(&self) -> Theme {
         self.iced_theme.clone()
+    }
+}
+
+impl Drop for MeshApp {
+    fn drop(&mut self) {
+        self.history.end_session();
     }
 }
 

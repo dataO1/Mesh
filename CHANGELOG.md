@@ -4,6 +4,32 @@ All notable changes to Mesh are documented in this file.
 
 ---
 
+## [0.9.9]
+
+### Added
+
+- **DJ session history** — Mesh now records a full session history while you play,
+  tracking every track load, play start, hot cue press, and loop usage. History is
+  persisted to all active databases (local collection and every connected USB stick
+  with a mesh collection), so your session data travels with your library.
+
+- **Played track dimming in browser** — Tracks you've already played this session
+  appear dimmed in the collection browser, giving you a visual cue to avoid repeats.
+
+- **Played track exclusion from suggestions** — The smart suggestion engine
+  automatically excludes tracks already played this session, ensuring all 30
+  suggestion results are fresh picks.
+
+- **Session metadata capture** — When loading a track from the suggestion panel,
+  the suggestion score, reason tags, and energy direction are captured alongside the
+  play record for future set analysis.
+
+- **Bidirectional co-play tracking** — When two tracks are playing simultaneously
+  (both audible with volume > 0), both tracks record each other in their
+  `played_with` field, enabling future set reconstruction and transition analysis.
+
+---
+
 ## [0.9.8]
 
 ### Added

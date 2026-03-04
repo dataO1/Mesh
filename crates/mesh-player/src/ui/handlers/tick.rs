@@ -90,6 +90,11 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
             let loop_end = atomics[i].loop_end();
             let is_master = atomics[i].is_master();
 
+            // Record loop usage in session history (no-op after first observation)
+            if loop_active {
+                app.history.on_loop_observed(i);
+            }
+
             // Update playhead state with audio-thread timestamp for smooth interpolation
             app.player_canvas_state.set_playhead(
                 i, position, is_playing, timestamp_ns, playback_rate,

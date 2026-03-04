@@ -37,39 +37,48 @@ selectable key scoring model (Camelot / Krumhansl). The following are ideas
 for v3 and beyond.
 
 ### History-Informed Suggestions (requires deep research)
-- [ ] **Play history graph**: once mesh-player records session history to the
-  USB stick (see DJ History below), feed co-play data into the suggestion
-  algorithm via the graph DB. Tracks that have been played together frequently
-  across sessions should score higher as candidates — they have proven
-  real-world compatibility that audio features alone cannot capture.
-- [ ] **Pattern mining from play history**: research existing algorithms and
-  systems for finding patterns in DJ play histories. Areas to investigate:
-  - Collaborative filtering (item-item similarity from co-occurrence matrices)
-  - Sequential pattern mining (frequent subsequences in set tracklists)
-  - Graph-based recommendations (PageRank / random walks on the track
-    co-play graph, weighted by recency and frequency)
-  - Transition probability models (Markov chains over track-to-track
-    transitions, conditioned on energy/key context)
-  - Session-aware recommendation systems from the RecSys literature
-    (e.g. GRU4Rec, STAMP, SR-GNN — adapted for DJ set context)
-  - Existing DJ-specific research: DJ mix graph datasets, automatic
-    playlist continuation, set.fm / 1001tracklists data analysis
-  This needs a dedicated research document before implementation.
-- [ ] **Negative signals**: tracks that were loaded but immediately skipped
-  (played < 30 seconds) could receive a soft penalty in future sessions,
-  especially when paired with the same seed tracks.
-- [ ] **DJ profile divergence**: when multiple DJs use the same collection
-  (B2B, shared USB), per-DJ history(per usb stick) should be kept separate so suggestions
-  reflect each DJ's mixing style, not a blended average.
+- [x] **Session history foundation**: HistoryManager records all play data
+  (loads, plays, hot cues, loops, co-play, suggestion metadata) to all active
+  databases. Played tracks excluded from suggestions and dimmed in browser.
+- [ ] **Play history graph**: feed co-play data into the suggestion algorithm
+  via the graph DB. Tracks that have been played together frequently across
+  sessions should score higher as candidates — they have proven real-world
+  compatibility that audio features alone cannot capture. Time-decayed
+  co-play scoring (half-life ~30 days) to prioritize recent patterns.
+- [ ] **Pattern mining from play history**: research existing algorithms for
+  finding patterns in DJ play histories (see DJ History section for details).
+  Areas: collaborative filtering, PrefixSpan, graph-based recommendations,
+  transition probability models, session-aware RecSys (GRU4Rec, SR-GNN).
+- [ ] **Negative signals**: tracks loaded but played < 30s could receive a
+  soft penalty in future sessions, especially when paired with the same seeds.
+- [ ] **DJ profile divergence**: see DJ History section.
 
 
 ### Infrastructure
 
 ## DJ History & Playlists
-- [ ] Keep DJ history per session, per DJ, persisted to DB while playing.
-  Initially used to update graph-based relations for track exploration, later
-  for full set reconstruction.
-- [ ] Improved playlist features using graph DB and vector features:
+- [x] Keep DJ history per session, persisted to all active DBs while playing.
+  HistoryManager tracks loads, plays, hot cues, loops, co-play (played_with),
+  suggestion metadata. Played tracks dimmed in browser and excluded from
+  suggestions.
+- [ ] **Set reconstruction UI**: session browser that lists past sessions with
+  timeline view showing which tracks played on which decks, when transitions
+  happened (via played_with), and how long each track was played. Export as
+  text tracklist or shareable format.
+- [ ] **Track metadata mining from play history**: once enough sessions are
+  recorded (50+), mine patterns to improve suggestions:
+  - Co-play frequency scoring: tracks played together often across sessions
+    get a bonus in suggestion scoring (time-decayed, half-life ~30 days)
+  - Transition probability models: Markov chains over track-to-track
+    transitions, conditioned on energy/key context
+  - Skip penalty: tracks loaded but played < 30s get a soft penalty when
+    paired with the same seed tracks in future sessions
+  - PrefixSpan sequential pattern mining for finding common subsequences
+    in set tracklists (requires 200+ sessions for meaningful patterns)
+- [ ] **Per-DJ history divergence**: when multiple DJs use the same collection
+  (B2B, shared USB), per-DJ history (keyed by USB stick identity) should be
+  kept separate so suggestions reflect each DJ's mixing style.
+- [ ] Improved playlist features using graph DB and vector features.
 - [ ] Database backup (without wav files, just DB, so hot cues, markers,
   analysis data etc.).
 
@@ -183,6 +192,17 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
+- [ ] on the orangepi 5 base model sometimes loading a track, while 2-3 others
+  are running is followed by xrun even though we have process pinning. we need
+  to debug if the processes are correctly pinned to the correct cpu or if having
+  4 loader tracks is just too much for audio playback. maybe it blocks the
+  stretcher, which is required for audio playback. could we move the live audio
+  stretcher (not the one for the linked stems) to the a55 cpu instead, where the
+  actual real-time audio callback runs?
+- [ ] some settings are not reachable via the midi mapped scrollwhell.
+- [ ] copy over new midi.yaml and theme.yaml file (when no midi.yaml was
+  detected automatically start in midi learn mode, so the user can map the
+  software).
 - [ ] sometimes the smart suggestion system is stuck and doesnt give new
   results, analyse why, give me a report, we will decide together how to fix.
 - [ ] when on the fly stem linking in the browser for selecting a linked track,
