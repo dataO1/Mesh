@@ -54,15 +54,13 @@ jobs:
           TAG_VERSION="${{ steps.version.outputs.version }}"
           # Strip 'v' prefix for comparison (v0.8.4 -> 0.8.4)
           TAG_SEMVER="${TAG_VERSION#v}"
-          # Also strip any pre-release suffix for base version check (0.8.4-rc1 -> 0.8.4)
-          TAG_BASE="${TAG_SEMVER%%-*}"
 
           CARGO_VERSION=$(grep -A2 '^\[workspace\.package\]' Cargo.toml | grep '^version' | sed 's/.*"\(.*\)".*/\1/')
-          echo "Tag version:   $TAG_SEMVER (base: $TAG_BASE)"
+          echo "Tag version:   $TAG_SEMVER"
           echo "Cargo version: $CARGO_VERSION"
 
-          if [ "$TAG_BASE" != "$CARGO_VERSION" ]; then
-            echo "::error::Version mismatch! Tag base '$TAG_BASE' does not match Cargo.toml version '$CARGO_VERSION'"
+          if [ "$TAG_SEMVER" != "$CARGO_VERSION" ]; then
+            echo "::error::Version mismatch! Tag '$TAG_SEMVER' does not match Cargo.toml version '$CARGO_VERSION'"
             echo "Update [workspace.package] version in Cargo.toml before tagging."
             exit 1
           fi
