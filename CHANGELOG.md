@@ -63,6 +63,28 @@ All notable changes to Mesh are documented in this file.
   shutdown to terminate lingering background threads (rayon pool, history
   writers) that previously kept the process alive indefinitely after Ctrl+C.
 
+- **Settings MIDI navigation unreachable entries** — Auto-Gain, Target LUFS,
+  and Slicer Buffer settings were unreachable via MIDI encoder press due to a
+  hardcoded entry count (`base_entries = 13`) that fell behind the actual count
+  of 16 navigable items. Pressing the encoder on these entries would trigger
+  the wrong action (e.g. opening the Network sub-panel instead of toggling
+  Auto-Gain).
+
+- **Smart suggestion loading spinner stuck** — The suggestion loading indicator
+  could get stuck permanently when the energy direction slider was adjusted
+  with no audible decks, or when seed tracks hadn't changed between refreshes.
+  The spinner now clears correctly in all edge cases.
+
+### Improved
+
+- **Data-driven settings registry** — The settings UI is now driven by a single
+  `Vec<SettingsItem>` registry that serves as the source of truth for both view
+  rendering and MIDI navigation. Adding or reordering settings only requires
+  editing `build_settings_items()` — no manual index counting, no hardcoded
+  entry offsets, no separate view functions to keep in sync. Replaces 4
+  previously fragile sync points (entry builder, entry count, 19 hardcoded
+  wrap indices, MIDI handler index arithmetic) with behavior-based dispatch.
+
 ---
 
 ## [0.9.8]

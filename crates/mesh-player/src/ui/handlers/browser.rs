@@ -292,10 +292,11 @@ pub fn active_seed_paths(app: &MeshApp) -> Vec<String> {
 ///
 /// Collects all available database sources (local + mounted USBs) so the
 /// suggestion engine can search across all libraries simultaneously.
-pub fn trigger_suggestion_query(app: &MeshApp) -> Task<Message> {
+pub fn trigger_suggestion_query(app: &mut MeshApp) -> Task<Message> {
     let seed_paths = active_seed_paths(app);
 
     if seed_paths.is_empty() {
+        app.collection_browser.set_suggestion_loading(false);
         return Task::none();
     }
 

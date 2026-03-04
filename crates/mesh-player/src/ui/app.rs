@@ -1104,8 +1104,11 @@ impl MeshApp {
 
     /// Handle encoder scroll while in settings MIDI navigation mode.
     /// Priority: sub-panel → editing → browsing settings list.
+    ///
+    /// Uses `build_settings_items()` to determine item count and behavior,
+    /// so adding/reordering settings never requires updating this function.
     fn handle_settings_midi_scroll(&mut self, delta: i32) -> Task<Message> {
-        use super::settings::{build_settings_entries, settings_entry_count, SubPanelFocus, SETTINGS_SCROLLABLE_ID};
+        use super::settings::{build_settings_items, SettingsBehavior, SubPanelFocus, SETTINGS_SCROLLABLE_ID};
 
         if self.settings.settings_midi_nav.is_none() {
             return Task::none();
@@ -1124,7 +1127,6 @@ impl MeshApp {
                             } else {
                                 (*selected + count - 1) % count
                             };
-                            // Sync visual selection
                             let sel = *selected;
                             if let Some(ref mut net) = self.settings.network {
                                 net.selected_network = Some(sel);
@@ -1145,24 +1147,46 @@ impl MeshApp {
             }
         }
 
-        // Pre-compute values that need &self.settings before mutably borrowing nav
-        let entries = build_settings_entries(&self.settings);
-        let entry_count = settings_entry_count(&self.settings);
+        // Build the registry — vec length IS the item count
+        let items = build_settings_items(&self.settings);
+        let entry_count = items.len();
 
         let nav = self.settings.settings_midi_nav.as_mut().unwrap();
 
         if nav.editing {
-            // Cycle through options for the focused setting
-            if let Some(entry) = entries.get(nav.focused_index) {
-                let count = entry.options.len();
-                if count > 0 {
-                    let new_idx = if delta > 0 {
-                        (entry.selected + 1) % count
-                    } else {
-                        (entry.selected + count - 1) % count
-                    };
-                    let msg = (entry.on_select)(new_idx);
-                    return self.update(Message::Settings(msg));
+            // Cycle through options for the focused setting based on its behavior
+            if let Some(item) = items.get(nav.focused_index) {
+                match &item.behavior {
+                    SettingsBehavior::Toggle { value, on_toggle } => {
+                        let msg = on_toggle(!value);
+                        return self.update(Message::Settings(msg));
+                    }
+                    SettingsBehavior::ButtonGroup { options, selected, on_select } => {
+                        let count = options.len();
+                        if count > 0 {
+                            let new_idx = if delta > 0 {
+                                (selected + 1) % count
+                            } else {
+                                (selected + count - 1) % count
+                            };
+                            let msg = on_select(new_idx);
+                            return self.update(Message::Settings(msg));
+                        }
+                    }
+                    SettingsBehavior::DeviceSelect { devices, selected, on_select } => {
+                        let count = devices.len();
+                        if count > 0 {
+                            let new_idx = if delta > 0 {
+                                (selected + 1) % count
+                            } else {
+                                (selected + count - 1) % count
+                            };
+                            let msg = on_select(new_idx);
+                            return self.update(Message::Settings(msg));
+                        }
+                    }
+                    // SubPanel and Action don't have editing mode
+                    _ => {}
                 }
             }
         } else {
@@ -1191,10 +1215,9 @@ impl MeshApp {
 
     /// Handle encoder press while in settings MIDI navigation mode.
     /// Shift+press always exits current mode (sub-panel → editing → scroll).
-    /// Normal press: sub-panel activates action, otherwise toggles edit mode.
-    /// For Network/Update entries: press in edit mode enters sub-panel.
+    /// Normal press: dispatches based on `SettingsBehavior` — no hardcoded indices.
     fn handle_settings_midi_select(&mut self) -> Task<Message> {
-        use super::settings::SubPanelFocus;
+        use super::settings::{build_settings_items, SettingsBehavior, SubPanelType, SubPanelFocus};
         use super::network::NetworkMessage;
         use super::system_update::SystemUpdateMessage;
 
@@ -1242,52 +1265,43 @@ impl MeshApp {
             }
         }
 
-        // Pre-compute indices before mutably borrowing nav
-        let base_entries = 13usize;
-        let has_network = self.settings.network.is_some();
-        let has_update = self.settings.update.is_some();
-        let network_entry_idx = if has_network { Some(base_entries) } else { None };
-        let update_entry_idx = if has_update {
-            Some(base_entries + if has_network { 1 } else { 0 })
-        } else { None };
+        // Pre-compute values from &self.settings before taking &mut nav
+        let items = build_settings_items(&self.settings);
+        let focused = self.settings.settings_midi_nav.as_ref().unwrap().focused_index;
         let initial_net_selection = self.settings.network.as_ref()
             .and_then(|n| n.selected_network)
             .unwrap_or(0);
         let networks_empty = self.settings.network.as_ref()
             .is_some_and(|n| n.networks.is_empty());
 
-        // Compute MIDI Learn entry index (always last)
-        let midi_learn_idx = base_entries
-            + if has_network { 1 } else { 0 }
-            + if has_update { 1 } else { 0 };
-
-        let nav = self.settings.settings_midi_nav.as_mut().unwrap();
-
-        // Network/Update: go directly to sub-panel (no editing step needed)
-        if Some(nav.focused_index) == network_entry_idx {
-            nav.sub_panel = Some(SubPanelFocus::WifiNetworkList { selected: initial_net_selection });
-            if networks_empty {
-                return self.update(Message::Network(NetworkMessage::Scan));
+        // Dispatch based on the focused item's behavior — no hardcoded indices
+        if let Some(item) = items.get(focused) {
+            match &item.behavior {
+                SettingsBehavior::SubPanel(SubPanelType::Network) => {
+                    let nav = self.settings.settings_midi_nav.as_mut().unwrap();
+                    nav.sub_panel = Some(SubPanelFocus::WifiNetworkList { selected: initial_net_selection });
+                    if networks_empty {
+                        return self.update(Message::Network(NetworkMessage::Scan));
+                    }
+                    return Task::none();
+                }
+                SettingsBehavior::SubPanel(SubPanelType::SystemUpdate) => {
+                    let nav = self.settings.settings_midi_nav.as_mut().unwrap();
+                    nav.sub_panel = Some(SubPanelFocus::UpdateActions { selected: 0 });
+                    return Task::none();
+                }
+                SettingsBehavior::Action(msg) => {
+                    let msg = msg.clone();
+                    return self.update(msg);
+                }
+                // Toggle, ButtonGroup, DeviceSelect: toggle editing mode
+                _ => {
+                    let nav = self.settings.settings_midi_nav.as_mut().unwrap();
+                    nav.editing = !nav.editing;
+                }
             }
-            return Task::none();
-        } else if Some(nav.focused_index) == update_entry_idx {
-            nav.sub_panel = Some(SubPanelFocus::UpdateActions { selected: 0 });
-            return Task::none();
         }
 
-        // MIDI Learn: press triggers Start directly
-        if nav.focused_index == midi_learn_idx {
-            return self.update(Message::MidiLearn(
-                super::midi_learn::MidiLearnMessage::Start,
-            ));
-        }
-
-        // Regular settings: toggle editing mode
-        if nav.editing {
-            nav.editing = false;
-        } else {
-            nav.editing = true;
-        }
         Task::none()
     }
 
