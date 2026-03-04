@@ -32,7 +32,7 @@ maintainer = "Mesh Team"
 section = "sound"
 priority = "optional"
 assets = [
-    # Wrapper script sets WGPU_BACKEND=vulkan and ICED_PRESENT_MODE=mailbox, then execs the binary
+    # Wrapper script sets WGPU_BACKEND=vulkan and ICED_PRESENT_MODE=auto_vsync, then execs the binary
     ["../../packaging/mesh-player-wrapper", "usr/bin/mesh-player", "755"],
     ["target/release/mesh-player", "usr/lib/mesh/", "755"],
     ["../../packaging/mesh-player.desktop", "usr/share/applications/", "644"],
@@ -47,7 +47,7 @@ depends = "$auto, libasound2, libvulkan1, libxkbcommon0, libwayland-client0, lib
 # === Fedora/RHEL packaging ===
 [package.metadata.generate-rpm]
 assets = [
-    # Wrapper script sets WGPU_BACKEND=vulkan and ICED_PRESENT_MODE=mailbox, then execs the binary
+    # Wrapper script sets WGPU_BACKEND=vulkan and ICED_PRESENT_MODE=auto_vsync, then execs the binary
     { source = "../../packaging/mesh-player-wrapper", dest = "/usr/bin/mesh-player", mode = "755" },
     { source = "target/release/mesh-player", dest = "/usr/lib/mesh/mesh-player", mode = "755" },
     { source = "../../packaging/mesh-player.desktop", dest = "/usr/share/applications/mesh-player.desktop", mode = "644" },

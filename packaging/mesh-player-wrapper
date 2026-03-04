@@ -1,7 +1,8 @@
 #!/bin/sh
 # Wrapper for mesh-player — sets optimal GPU rendering defaults
-# Vulkan backend with low-latency Mailbox presentation mode
+# Vulkan backend with AutoVsync (tries Mailbox, falls back to Fifo)
+# Embedded builds override to Mailbox via kiosk.nix where hardware is known
 # These can be overridden by setting the env vars before launching
 export WGPU_BACKEND="${WGPU_BACKEND:-vulkan}"
-export ICED_PRESENT_MODE="${ICED_PRESENT_MODE:-mailbox}"
+export ICED_PRESENT_MODE="${ICED_PRESENT_MODE:-auto_vsync}"
 exec /usr/lib/mesh/mesh-player "$@"

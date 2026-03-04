@@ -61,6 +61,11 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Present mode crash on Nvidia/X11** — Desktop wrapper scripts and devshell
+  now use `auto_vsync` (tries Mailbox, falls back to Fifo) instead of
+  hardcoded `mailbox` which panics on GPUs that don't support it. Embedded
+  kiosk keeps `mailbox` where the hardware is known.
+
 - **History writes moved off UI thread** — Database writes for session history
   now run on background threads (fire-and-forget). Only session-end writes are
   synchronous to ensure data is flushed before exit.

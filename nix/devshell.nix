@@ -146,12 +146,13 @@ pkgs.mkShell {
     # Fix Eigen include path for essentia-sys (it incorrectly appends /eigen3)
     export CPLUS_INCLUDE_PATH="${pkgs.eigen}/include/eigen3:$CPLUS_INCLUDE_PATH"
 
-    # Vulkan for iced — default to Vulkan backend with low-latency Mailbox presentation
+    # Vulkan for iced — AutoVsync tries Mailbox then falls back to Fifo
+    # (Mailbox not supported on all GPU/driver combos, e.g. Nvidia on X11)
     # ICD discovery: NixOS sets up /run/opengl-driver/share/vulkan/icd.d/ via
     # hardware.graphics.enable, and the Vulkan loader searches it automatically.
     # No VK_ICD_FILENAMES override needed (vulkan-loader package has no ICDs).
     export WGPU_BACKEND=vulkan
-    export ICED_PRESENT_MODE=mailbox
+    export ICED_PRESENT_MODE=auto_vsync
 
     MESH_VERSION=$(grep -A2 '^\[workspace\.package\]' Cargo.toml | grep '^version' | sed 's/.*"\(.*\)".*/\1/')
     echo ""
