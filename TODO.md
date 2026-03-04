@@ -192,19 +192,6 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
-- [ ] on the orangepi 5 base model sometimes loading a track, while 2-3 others
-  are running is followed by xrun even though we have process pinning. we need
-  to debug if the processes are correctly pinned to the correct cpu or if having
-  4 loader tracks is just too much for audio playback. maybe it blocks the
-  stretcher, which is required for audio playback. could we move the live audio
-  stretcher (not the one for the linked stems) to the a55 cpu instead, where the
-  actual real-time audio callback runs?
-- [ ] some settings are not reachable via the midi mapped scrollwhell.
-- [ ] copy over new midi.yaml and theme.yaml file (when no midi.yaml was
-  detected automatically start in midi learn mode, so the user can map the
-  software).
-- [ ] sometimes the smart suggestion system is stuck and doesnt give new
-  results, analyse why, give me a report, we will decide together how to fix.
+- [ ] when no midi.yaml is detected while starting mesh-player automatically start in midi learn mode, so the user can map the software).
 - [ ] when on the fly stem linking in the browser for selecting a linked track,
   we can utilise smart suggestions better by additionally adding specific search parameters for the stem that is about to be linked or weighting certain markers more. for example when linking drums, key is relatively irrelevant, but the energy or lufs, aggression and other metrics matters more. for vocals, key is absolutely the most important, bpm also a bit, not so much energy, for bass i think the weighting can stay as is, for other too. Its also possible that for linked stems(other than drums) very compatible key is actually a hard requirement,  and a filter for results.
-- [ ] mesh theme: green, orange, purple, blue
