@@ -81,6 +81,11 @@ All notable changes to Mesh are documented in this file.
 
 ### Fixed
 
+- **Windows build: Linux-only USB sync** — USB export used `syncfs()` (a Linux
+  syscall) without a platform gate, breaking the Windows cross-compile. Now gated
+  with `#[cfg(target_os = "linux")]` and a `File::sync_all()` fallback on
+  Windows/macOS for USB write safety.
+
 - **Present mode crash on Nvidia/X11** — Desktop wrapper scripts and devshell
   now use `auto_vsync` (tries Mailbox, falls back to Fifo) instead of
   hardcoded `mailbox` which panics on GPUs that don't support it. Embedded

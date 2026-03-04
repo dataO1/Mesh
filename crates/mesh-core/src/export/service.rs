@@ -253,17 +253,33 @@ impl ExportService {
 
             // Batch sync: flush all pending writes to USB in one go
             if tracks_exported > 0 {
-                let tracks_dir = usb_root.join("tracks");
-                match std::fs::File::open(&tracks_dir) {
-                    Ok(dir_fd) => {
-                        use std::os::unix::io::AsRawFd;
-                        let ret = unsafe { libc::syncfs(dir_fd.as_raw_fd()) };
-                        if ret != 0 {
-                            log::warn!("[export] syncfs failed: {}", std::io::Error::last_os_error());
+                #[cfg(target_os = "linux")]
+                {
+                    let tracks_dir = usb_root.join("tracks");
+                    match std::fs::File::open(&tracks_dir) {
+                        Ok(dir_fd) => {
+                            use std::os::unix::io::AsRawFd;
+                            let ret = unsafe { libc::syncfs(dir_fd.as_raw_fd()) };
+                            if ret != 0 {
+                                log::warn!("[export] syncfs failed: {}", std::io::Error::last_os_error());
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("[export] Could not open tracks dir for syncfs: {}", e);
                         }
                     }
-                    Err(e) => {
-                        log::warn!("[export] Could not open tracks dir for syncfs: {}", e);
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    // No filesystem-level sync on Windows/macOS — flush each exported
+                    // file individually via sync_all() for USB write safety
+                    let tracks_dir = usb_root.join("tracks");
+                    if let Ok(entries) = std::fs::read_dir(&tracks_dir) {
+                        for entry in entries.flatten() {
+                            if let Ok(f) = std::fs::File::open(entry.path()) {
+                                let _ = f.sync_all();
+                            }
+                        }
                     }
                 }
             }
