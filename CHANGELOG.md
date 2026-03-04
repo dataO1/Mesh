@@ -59,6 +59,26 @@ All notable changes to Mesh are documented in this file.
   (including the RT audio core). After pool exhaustion, loading falls back to
   normal allocation.
 
+- **PipeWire RT scheduling fix** — PipeWire's `nice.level` and `rt.prio`
+  settings were placed in `context.properties` where they were silently ignored.
+  Moved to `module.rt.args` so the RT module actually reads them. Also granted
+  `LimitRTPRIO=95` and `LimitMEMLOCK=infinity` to the PipeWire and WirePlumber
+  user services so they use direct RLIMIT scheduling instead of RTKit (which
+  caps at SCHED_RR priority 20).
+
+- **Kernel wakeup preemption tuning** — Added `sched_wakeup_granularity_ns=500µs`
+  to match the existing CFS granularity, reducing scheduler latency for RT thread
+  preemption.
+
+- **cpu_dma_latency udev rule** — `/dev/cpu_dma_latency` is now group-accessible
+  to `audio`, allowing mesh-player to disable CPU C-state transitions during
+  playback without root.
+
+- **cage-tty1 I/O and OOM hardening** — Set realtime I/O scheduling class
+  (priority 0) so track file reads aren't starved by USB or journald activity.
+  `OOMScoreAdjust=-1000` prevents the OOM killer from targeting the audio
+  process.
+
 ### Fixed
 
 - **Present mode crash on Nvidia/X11** — Desktop wrapper scripts and devshell

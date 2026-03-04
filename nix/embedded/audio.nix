@@ -34,15 +34,32 @@
         "default.clock.min-quantum" = 256;    # Lock quantum (was 64)
         "default.clock.max-quantum" = 256;    # Lock quantum (was 1024)
         "default.clock.force-quantum" = 256;  # Override client requests
-        # RT module settings (read by the default-loaded libpipewire-module-rt)
-        # NOTE: Do NOT use context.modules here — SPA JSON arrays in fragments
-        # REPLACE the base config's module list, breaking ALSA/JACK/protocol support
+      };
+      # RT module args — merges into the base module-rt config without
+      # duplicating the module load (context.modules arrays would append, not merge).
+      # These were previously in context.properties where they were IGNORED.
+      "module.rt.args" = {
         "nice.level" = -15;
         "rt.prio" = 88;         # High RT priority for PipeWire data thread
         "rt.time.soft" = -1;     # No soft RT time limit
         "rt.time.hard" = -1;     # No hard RT time limit
       };
     };
+  };
+
+  # Give PipeWire's own user services RT privileges so it uses direct
+  # RLIMIT scheduling instead of RTKit (which caps at SCHED_RR prio 20).
+  # Without this, PipeWire runs under cage-tty1's user session but its
+  # user service units inherit default systemd limits, not cage-tty1's.
+  systemd.user.services.pipewire.serviceConfig = {
+    LimitRTPRIO = "95";
+    LimitMEMLOCK = "infinity";
+    LimitNICE = "-20";
+  };
+  systemd.user.services.wireplumber.serviceConfig = {
+    LimitRTPRIO = "95";
+    LimitMEMLOCK = "infinity";
+    LimitNICE = "-20";
   };
 
   # Named ALSA aliases for stable device references (with plug wrapper

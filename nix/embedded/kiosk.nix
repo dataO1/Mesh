@@ -120,8 +120,14 @@ in
         # Memory locking: allow mlockall() to pin all pages in RAM
         # (prevents page faults during audio processing)
         LimitMEMLOCK = "infinity";
-        # Nice level: allow high-priority scheduling
+        # Nice level: allow nice -20 (with - prefix = nice value, not raw rlimit)
         LimitNICE = "-20";
+        # I/O scheduling: realtime class ensures track file reads aren't
+        # starved by USB I/O, journald, or other background disk activity
+        IOSchedulingClass = "realtime";
+        IOSchedulingPriority = 0;
+        # OOM protection: prevent the OOM killer from targeting the audio process
+        OOMScoreAdjust = -1000;
       };
     };
 

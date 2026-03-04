@@ -37,6 +37,7 @@
     "kernel.sched_rt_runtime_us" = -1;             # Allow RT threads 100% CPU (no 95% throttle)
     "kernel.sched_latency_ns" = 4000000;           # 4ms CFS latency (from 6ms default)
     "kernel.sched_min_granularity_ns" = 500000;    # 0.5ms CFS granularity (from 0.75ms)
+    "kernel.sched_wakeup_granularity_ns" = 500000; # 0.5ms wakeup preemption (from ~1ms)
   };
   boot.kernelParams = [
     "quiet"
@@ -96,6 +97,10 @@
   services.udisks2.enable = true;
 
   services.udev.extraRules = ''
+    # /dev/cpu_dma_latency: allow audio group to prevent CPU idle transitions
+    # mesh-player writes 0 to this fd to disable C-state transitions during playback
+    KERNEL=="cpu_dma_latency", MODE="0660", GROUP="audio"
+
     # BFQ I/O scheduler for USB storage (better for mixed read workloads during track loading)
     ACTION=="add|change", KERNEL=="sd[a-z]", SUBSYSTEM=="block", ATTR{queue/scheduler}="bfq"
 
