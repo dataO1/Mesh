@@ -280,8 +280,15 @@ fn main() -> iced::Result {
                     as std::sync::Arc<dyn mesh_midi::DirectDispatch>
             });
 
+            // Auto-start MIDI learn if no midi.yaml exists
+            let auto_learn = !mesh_midi::default_midi_config_path().exists();
+            if auto_learn {
+                log::info!("No midi.yaml found — will auto-start MIDI learn mode");
+            }
+            let effective_mapping_mode = start_midi_learn || auto_learn;
+
             // mapping_mode = true shows full UI with controls, false = performance mode
-            let mut app = MeshApp::new(db_service, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, audio_sample_rate, audio_client_name.clone(), start_midi_learn, output_latency, internal_latency, buffer_pool.clone());
+            let mut app = MeshApp::new(db_service, sender, deck_atomics, slicer_atomics, linked_stem_atomics, linked_stem_receiver, clip_indicator, audio_sample_rate, audio_client_name.clone(), effective_mapping_mode, output_latency, internal_latency, buffer_pool.clone());
 
             // Wire direct dispatch to controller for bypassing iced tick on timing-critical commands
             if let (Some(ref mut controller), Some(dispatch)) = (&mut app.controller, direct_dispatch) {
@@ -299,8 +306,8 @@ fn main() -> iced::Result {
                 }
             });
 
-            // If --midi-learn flag was passed, start MIDI learn mode (opens the drawer)
-            let startup_task = if start_midi_learn {
+            // If --midi-learn flag was passed or no midi.yaml exists, start MIDI learn mode
+            let startup_task = if effective_mapping_mode {
                 Task::batch([
                     monitor_task,
                     Task::done(Message::MidiLearn(MidiLearnMessage::Start)),

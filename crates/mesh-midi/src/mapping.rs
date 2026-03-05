@@ -890,6 +890,173 @@ impl MappingEngine {
     }
 }
 
+// ============================================================================
+// Standalone action dispatch for learn mode (no MappingEngine needed)
+// ============================================================================
+
+/// Simplified action-to-message conversion for learn mode live mapping.
+///
+/// Unlike the full `MappingEngine::action_to_message`, this:
+/// - Has no debounce (immediate response for testing)
+/// - Uses simple 0-127 normalization for continuous values
+/// - Uses default relative encoder mode for delta extraction
+///
+/// The `value` parameter is the raw 0-127 value from the captured event.
+/// `hardware_type` determines interpretation (button press vs continuous vs encoder delta).
+pub fn learn_mode_dispatch(
+    action: &str,
+    deck: usize,
+    value: u8,
+    hardware_type: crate::config::HardwareType,
+    param_key: Option<&str>,
+    param_value: Option<usize>,
+) -> Option<MidiMessage> {
+    use crate::config::HardwareType;
+
+    let is_press = value > 0;
+    let normalized = value as f32 / 127.0;
+    let get_param = || param_value.unwrap_or(0);
+
+    // Encoder delta extraction (relative mode: 1-63 positive, 65-127 negative)
+    let delta = if hardware_type == HardwareType::Encoder {
+        encoder_to_delta(value, EncoderMode::Relative)
+    } else {
+        0
+    };
+
+    match action {
+        // Transport (button actions)
+        "deck.play" => {
+            if is_press { Some(MidiMessage::deck_play(deck)) } else { None }
+        }
+        "deck.cue_press" => {
+            if is_press {
+                Some(MidiMessage::deck_cue_press(deck))
+            } else {
+                Some(MidiMessage::deck_cue_release(deck))
+            }
+        }
+        "deck.toggle_loop" => {
+            if is_press { Some(MidiMessage::Deck { deck, action: DeckAction::ToggleLoop }) } else { None }
+        }
+        "deck.loop_size" => {
+            if delta != 0 {
+                Some(MidiMessage::Deck { deck, action: DeckAction::LoopSize(delta) })
+            } else {
+                None
+            }
+        }
+        "deck.loop_in" => {
+            if is_press { Some(MidiMessage::Deck { deck, action: DeckAction::LoopIn }) } else { None }
+        }
+        "deck.loop_out" => {
+            if is_press { Some(MidiMessage::Deck { deck, action: DeckAction::LoopOut }) } else { None }
+        }
+        "deck.beat_jump_forward" => {
+            if is_press { Some(MidiMessage::Deck { deck, action: DeckAction::BeatJumpForward }) } else { None }
+        }
+        "deck.beat_jump_backward" => {
+            if is_press { Some(MidiMessage::Deck { deck, action: DeckAction::BeatJumpBackward }) } else { None }
+        }
+        "deck.slip" => {
+            if is_press { Some(MidiMessage::Deck { deck, action: DeckAction::ToggleSlip }) } else { None }
+        }
+        "deck.key_match" => {
+            if is_press { Some(MidiMessage::Deck { deck, action: DeckAction::ToggleKeyMatch }) } else { None }
+        }
+
+        // Hot cues / pads
+        "deck.hot_cue_press" | "deck.pad_press" => {
+            let slot = get_param();
+            if is_press {
+                Some(MidiMessage::hot_cue_press(deck, slot))
+            } else {
+                Some(MidiMessage::hot_cue_release(deck, slot))
+            }
+        }
+        "deck.hot_cue_mode" => {
+            if is_press { Some(MidiMessage::Deck { deck, action: DeckAction::SetHotCueMode { enabled: true } }) } else { None }
+        }
+        "deck.slicer_mode" => {
+            if is_press { Some(MidiMessage::Deck { deck, action: DeckAction::SetSlicerMode { enabled: true } }) } else { None }
+        }
+        "deck.slicer_trigger" => {
+            let pad = get_param();
+            if is_press { Some(MidiMessage::Deck { deck, action: DeckAction::SlicerTrigger { pad } }) } else { None }
+        }
+        "deck.slicer_reset" => {
+            if is_press { Some(MidiMessage::Deck { deck, action: DeckAction::SlicerReset }) } else { None }
+        }
+
+        // Stems
+        "deck.stem_mute" => {
+            let stem = get_param();
+            if is_press { Some(MidiMessage::Deck { deck, action: DeckAction::ToggleStemMute { stem } }) } else { None }
+        }
+        "deck.stem_solo" => {
+            let stem = get_param();
+            if is_press { Some(MidiMessage::Deck { deck, action: DeckAction::ToggleStemSolo { stem } }) } else { None }
+        }
+        "deck.stem_link" => {
+            let stem = get_param();
+            if is_press { Some(MidiMessage::Deck { deck, action: DeckAction::ToggleStemLink { stem } }) } else { None }
+        }
+
+        // Deck load
+        "deck.load_selected" => {
+            if is_press { Some(MidiMessage::Deck { deck, action: DeckAction::LoadSelected }) } else { None }
+        }
+
+        // Mixer (continuous)
+        "mixer.volume" => Some(MidiMessage::mixer_volume(deck, normalized)),
+        "mixer.filter" => {
+            // Filter is bipolar: center = 0.5 = no filter
+            Some(MidiMessage::mixer_filter(deck, normalized))
+        }
+        "mixer.eq_hi" => Some(MidiMessage::Mixer { channel: deck, action: MixerAction::SetEqHi(normalized) }),
+        "mixer.eq_mid" => Some(MidiMessage::Mixer { channel: deck, action: MixerAction::SetEqMid(normalized) }),
+        "mixer.eq_lo" => Some(MidiMessage::Mixer { channel: deck, action: MixerAction::SetEqLo(normalized) }),
+        "mixer.cue" => {
+            if is_press { Some(MidiMessage::Mixer { channel: deck, action: MixerAction::ToggleCue }) } else { None }
+        }
+        "mixer.crossfader" => Some(MidiMessage::Mixer { channel: 0, action: MixerAction::SetCrossfader(normalized) }),
+
+        // Browser
+        "browser.scroll" => {
+            if delta != 0 { Some(MidiMessage::browser_scroll(delta)) } else { None }
+        }
+        "browser.select" => {
+            if is_press { Some(MidiMessage::Browser(BrowserAction::Select)) } else { None }
+        }
+
+        // FX
+        "deck.fx_macro" => {
+            let macro_idx = get_param();
+            Some(MidiMessage::Deck { deck, action: DeckAction::SetFxMacro { macro_index: macro_idx, value: normalized } })
+        }
+        "global.fx_scroll" => {
+            if delta != 0 { Some(MidiMessage::Global(GlobalAction::FxScroll(delta))) } else { None }
+        }
+        "global.fx_select" => {
+            if is_press { Some(MidiMessage::Global(GlobalAction::FxSelect)) } else { None }
+        }
+
+        // Global
+        "global.master_volume" => Some(MidiMessage::Global(GlobalAction::SetMasterVolume(normalized))),
+        "global.cue_volume" => Some(MidiMessage::Global(GlobalAction::SetCueVolume(normalized))),
+        "mixer.cue_mix" => Some(MidiMessage::Global(GlobalAction::SetCueMix(normalized))),
+        "global.bpm" => Some(MidiMessage::Global(GlobalAction::SetBpm(normalized as f64))),
+        "global.settings_toggle" => {
+            if is_press { Some(MidiMessage::Global(GlobalAction::SettingsToggle)) } else { None }
+        }
+        "deck.suggestion_energy" => {
+            Some(MidiMessage::Deck { deck, action: DeckAction::SetSuggestionEnergy(normalized) })
+        }
+
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

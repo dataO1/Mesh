@@ -63,7 +63,8 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
 
     // MIDI Learn mode: capture raw events when waiting for input
     if app.midi_learn.is_active {
-        poll_midi_learn_events(app);
+        let learn_tasks = poll_midi_learn_events(app);
+        midi_tasks.extend(learn_tasks);
     }
 
     // Read master clipper clip indicator (LOCK-FREE)
@@ -271,153 +272,277 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
     Task::batch(midi_tasks)
 }
 
-/// Poll raw MIDI/HID events for MIDI Learn capture.
+/// Poll raw MIDI/HID events for MIDI Learn capture-or-execute.
 ///
-/// Called every frame when learn mode is active. Captures raw controller events,
-/// detects hardware type (button vs encoder vs fader), and routes to the appropriate
-/// learn phase handler (setup buttons, mapping phases).
-fn poll_midi_learn_events(app: &mut MeshApp) {
+/// Called every frame when learn mode is active. Implements:
+///
+/// **NavCapture mode**: Capture browse encoder and press (simple capture, no execution)
+///
+/// **Setup mode**: Browse encoder/select navigate setup questions. All other events ignored.
+///
+/// **TreeNavigation mode**: Full capture-or-execute logic:
+///   1. Update shift state if event matches a learned shift address
+///   2. Browse encoder → scroll tree
+///   3. Browse select → toggle section / select node
+///   4. Lookup `(address, shift_held)` in active_mappings → execute via learn_mode_dispatch
+///   5. Not found + cursor on Mapping node → capture (start hardware detection)
+///   6. Log all actions to the action log footer
+fn poll_midi_learn_events(app: &mut MeshApp) -> Vec<Task<Message>> {
     use crate::ui::app::{convert_midi_event_to_captured, convert_hid_event_to_captured};
-    use crate::ui::midi_learn::{LearnPhase, SetupStep};
+    use crate::ui::midi_learn::LearnMode;
+    use crate::ui::midi_learn_tree::{ActionLogEntry, FlatNodeType, LogStatus};
+    use mesh_midi::{learn_mode_dispatch, MidiEvent};
 
-    let needs_capture = match app.midi_learn.phase {
-        LearnPhase::Setup => {
-            // Capture during shift and toggle button steps
-            matches!(
-                app.midi_learn.setup_step,
-                SetupStep::ShiftButtonLeft
-                    | SetupStep::ShiftButtonRight
-                    | SetupStep::ToggleButtonLeft
-                    | SetupStep::ToggleButtonRight
-            )
-        }
-        LearnPhase::Review => false,
-        // All other phases need MIDI capture
-        _ => true,
+    let mode = app.midi_learn.mode;
+
+    // Only NavCapture, Setup, and TreeNavigation need event polling
+    if !matches!(mode, LearnMode::NavCapture | LearnMode::Setup | LearnMode::TreeNavigation) {
+        sync_highlights(app);
+        return Vec::new();
+    }
+
+    let controller = match app.controller {
+        Some(ref c) => c,
+        None => { sync_highlights(app); return Vec::new(); }
     };
 
-    if needs_capture {
-        if let Some(ref controller) = app.controller {
-            // Check if we're in hardware detection mode (sampling in progress)
-            let sampling_active = app.midi_learn.detection_buffer.is_some();
+    let sampling_active = app.midi_learn.detection_buffer.is_some();
 
-            // Drain raw events with source device info (for port name capture)
-            for (raw_event, source_port) in controller.drain_raw_events_with_source() {
-                let captured = convert_midi_event_to_captured(&raw_event);
+    // Collect captured events from raw MIDI + HID
+    let mut captured_events: Vec<crate::ui::midi_learn::CapturedEvent> = Vec::new();
 
-                // Capture the port name on first event (for device identification)
-                if app.midi_learn.captured_port_name.is_none() {
-                    log::info!("MIDI Learn: Captured source port '{}'", source_port);
-                    app.midi_learn.captured_port_name = Some(source_port);
-                }
+    // --- Drain raw MIDI events ---
+    for (raw_event, source_port) in controller.drain_raw_events_with_source() {
+        let captured = convert_midi_event_to_captured(&raw_event);
 
-                // Always update display so user sees what's happening
-                app.midi_learn.last_captured = Some(captured.clone());
+        if app.midi_learn.captured_port_name.is_none() {
+            log::info!("MIDI Learn: Captured source port '{}'", source_port);
+            app.midi_learn.captured_port_name = Some(source_port);
+        }
 
-                if sampling_active {
-                    // Add sample to detection buffer
-                    if app.midi_learn.add_detection_sample(&captured) {
-                        // Buffer is complete - finalize mapping
-                        app.midi_learn.finalize_mapping();
-                        break;
-                    }
-                } else {
-                    // Not sampling yet - check if we should start
-                    if !app.midi_learn.should_capture(&captured) {
-                        continue;
-                    }
+        captured_events.push(captured);
+    }
 
-                    app.midi_learn.mark_captured();
+    // --- Drain HID events ---
+    if !sampling_active {
+        for hid_event in controller.drain_hid_events() {
+            let descriptor = controller.hid_descriptor_for(&hid_event.address);
+            let device_name = controller.first_hid_device_name().unwrap_or("HID Device");
+            let captured = convert_hid_event_to_captured(
+                &hid_event,
+                descriptor,
+                device_name,
+            );
 
-                    if app.midi_learn.phase == LearnPhase::Setup {
-                        match app.midi_learn.setup_step {
-                            SetupStep::ShiftButtonLeft => {
-                                app.midi_learn.shift_mapping_left = Some(captured);
-                            }
-                            SetupStep::ShiftButtonRight => {
-                                app.midi_learn.shift_mapping_right = Some(captured);
-                            }
-                            SetupStep::ToggleButtonLeft => {
-                                app.midi_learn.toggle_mapping_left = Some(captured);
-                            }
-                            SetupStep::ToggleButtonRight => {
-                                app.midi_learn.toggle_mapping_right = Some(captured);
-                            }
-                            _ => {}
-                        }
-                        app.midi_learn.advance();
-                    } else {
-                        app.midi_learn.record_mapping(captured);
-                    }
-
-                    break; // Only start one capture per tick
+            if app.midi_learn.captured_port_name.is_none() {
+                if let Some(ref name) = captured.source_device {
+                    log::info!("Learn: Captured HID source '{}'", name);
+                    app.midi_learn.captured_port_name = Some(name.to_string());
                 }
             }
 
-            // Check if detection timed out (1 second elapsed)
-            if app.midi_learn.is_detection_complete() {
-                app.midi_learn.finalize_mapping();
-            }
+            captured_events.push(captured);
+        }
+    } else {
+        // Drain and discard HID events while sampling is active
+        for _hid_event in controller.drain_hid_events() {}
+    }
 
-            // HID event capture for learn mode
-            if !sampling_active {
-                for hid_event in controller.drain_hid_events() {
-                    let descriptor = controller.hid_descriptor_for(&hid_event.address);
-                    let device_name = controller.first_hid_device_name().unwrap_or("HID Device");
-                    let captured = convert_hid_event_to_captured(
-                        &hid_event,
-                        descriptor,
-                        device_name,
-                    );
+    // --- Process events based on current mode ---
 
-                    if app.midi_learn.captured_port_name.is_none() {
-                        if let Some(ref name) = captured.source_device {
-                            log::info!("Learn: Captured HID source device '{}'", name);
-                            app.midi_learn.captured_port_name = Some(name.to_string());
-                        }
-                    }
-
-                    log::info!("[HID Learn] Captured: {}", captured.display());
-                    app.midi_learn.last_captured = Some(captured.clone());
-
-                    if !app.midi_learn.should_capture(&captured) {
-                        continue;
-                    }
-
-                    log::info!("[HID Learn] Accepted: {} (phase={:?})", captured.display(), app.midi_learn.phase);
-                    app.midi_learn.mark_captured();
-
-                    if app.midi_learn.phase == LearnPhase::Setup {
-                        match app.midi_learn.setup_step {
-                            SetupStep::ShiftButtonLeft => {
-                                app.midi_learn.shift_mapping_left = Some(captured);
-                            }
-                            SetupStep::ShiftButtonRight => {
-                                app.midi_learn.shift_mapping_right = Some(captured);
-                            }
-                            SetupStep::ToggleButtonLeft => {
-                                app.midi_learn.toggle_mapping_left = Some(captured);
-                            }
-                            SetupStep::ToggleButtonRight => {
-                                app.midi_learn.toggle_mapping_right = Some(captured);
-                            }
-                            _ => {}
-                        }
-                        app.midi_learn.advance();
-                    } else {
-                        app.midi_learn.record_mapping(captured);
-                    }
-
-                    break; // One capture per tick
+    if mode == LearnMode::NavCapture {
+        // Simple capture mode: accept first valid event for browse encoder/press
+        for captured in captured_events {
+            app.midi_learn.last_captured = Some(captured.clone());
+            if sampling_active {
+                if app.midi_learn.add_detection_sample(&captured) {
+                    app.midi_learn.finalize_mapping();
+                    break;
                 }
             } else {
-                // Sampling active (MIDI detection in progress) — drain HID to prevent overflow
-                for _hid_event in controller.drain_hid_events() {}
+                if !app.midi_learn.should_capture(&captured) { continue; }
+                app.midi_learn.mark_captured();
+                app.midi_learn.start_capture(captured);
+                break;
             }
+        }
+        if app.midi_learn.is_detection_complete() {
+            app.midi_learn.finalize_mapping();
+        }
+        sync_highlights(app);
+        return Vec::new();
+    }
+
+    // Pre-read browse/shift addresses (avoid borrowing issues)
+    let browse_encoder_addr = app.midi_learn.browse_encoder_address.clone();
+    let browse_select_addr = app.midi_learn.browse_select_address.clone();
+    let shift_addrs = app.midi_learn.shift_addresses.clone();
+
+    if mode == LearnMode::Setup {
+        // During setup, only browse encoder/select are functional
+        // They navigate the setup questions (will be wired in a future iteration)
+        for captured in captured_events {
+            // Browse encoder → no-op in setup for now (questions are click-based)
+            // Browse select → confirm setup
+            if let Some(ref addr) = browse_select_addr {
+                if captured.address == *addr && captured.value > 0 {
+                    app.midi_learn.confirm_setup();
+                    app.status = "Tree built. Map your controls!".to_string();
+                    break;
+                }
+            }
+        }
+        sync_highlights(app);
+        return Vec::new();
+    }
+
+    // --- TreeNavigation mode: capture-or-execute ---
+
+    // Collect actions to execute after we're done processing events
+    // (to avoid borrow conflicts with handle_midi_message)
+    let mut actions_to_execute: Vec<MidiEvent> = Vec::new();
+    let mut log_entries: Vec<ActionLogEntry> = Vec::new();
+
+    for captured in captured_events {
+        app.midi_learn.last_captured = Some(captured.clone());
+
+        // 1. If we're actively sampling hardware type, feed samples
+        if sampling_active {
+            if app.midi_learn.add_detection_sample(&captured) {
+                app.midi_learn.finalize_mapping();
+            }
+            continue;
+        }
+
+        // 2. Update shift state
+        let mut is_shift_event = false;
+        for i in 0..2 {
+            if let Some(ref addr) = shift_addrs[i] {
+                if captured.address == *addr {
+                    app.midi_learn.shift_held[i] = captured.value > 0;
+                    is_shift_event = true;
+                }
+            }
+        }
+        if is_shift_event { continue; }
+
+        let shift_global = app.midi_learn.shift_held[0] || app.midi_learn.shift_held[1];
+
+        // 3. Browse encoder → scroll tree
+        if let Some(ref addr) = browse_encoder_addr {
+            if captured.address == *addr {
+                // Extract delta from encoder value
+                let delta = if captured.value > 64 {
+                    -1i32  // counter-clockwise
+                } else if captured.value > 0 && captured.value < 64 {
+                    1i32   // clockwise
+                } else {
+                    continue; // no delta
+                };
+                if let Some(ref mut tree) = app.midi_learn.tree {
+                    tree.scroll(delta);
+                }
+                app.midi_learn.update_highlight();
+                continue;
+            }
+        }
+
+        // 4. Browse select → toggle section / select node
+        if let Some(ref addr) = browse_select_addr {
+            if captured.address == *addr && captured.value > 0 {
+                if let Some(ref mut tree) = app.midi_learn.tree {
+                    let is_done = tree.select();
+                    if is_done {
+                        app.midi_learn.mode = LearnMode::Verification;
+                    }
+                }
+                app.midi_learn.update_highlight();
+                continue;
+            }
+        }
+
+        // 5. Lookup (address, shift_held) in active_mappings → execute
+        let lookup_key = (captured.address.clone(), shift_global);
+        if let Some(mapping) = app.midi_learn.active_mappings.get(&lookup_key).cloned() {
+            let deck = mapping.deck_index.unwrap_or(0);
+            if let Some(msg) = learn_mode_dispatch(
+                &mapping.action,
+                deck,
+                captured.value,
+                mapping.hardware_type,
+                mapping.param_key,
+                mapping.param_value,
+            ) {
+                actions_to_execute.push(MidiEvent {
+                    message: msg,
+                    engine_dispatched: false,
+                });
+                log_entries.push(ActionLogEntry {
+                    control_display: captured.display(),
+                    action_name: mapping.display_name.clone(),
+                    status: LogStatus::Mapped,
+                });
+            }
+            continue;
+        }
+
+        // 6. Not found → capture if cursor is on a Mapping node
+        let cursor_on_mapping = app.midi_learn.tree.as_ref()
+            .and_then(|t| t.flat_nodes.get(t.cursor))
+            .map(|f| f.node_type == FlatNodeType::Mapping)
+            .unwrap_or(false);
+
+        if cursor_on_mapping {
+            if !app.midi_learn.should_capture(&captured) { continue; }
+
+            // Log the capture
+            let def_label = app.midi_learn.tree.as_ref()
+                .and_then(|t| t.current_node())
+                .and_then(|n| match n {
+                    crate::ui::midi_learn_tree::TreeNode::Mapping { def, deck_index, .. } => {
+                        let deck_label = deck_index.map(|d| format!(" Deck {}", d + 1)).unwrap_or_default();
+                        Some(format!("captured: {}{}", def.label, deck_label))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| "captured".to_string());
+
+            log_entries.push(ActionLogEntry {
+                control_display: captured.display(),
+                action_name: def_label,
+                status: LogStatus::Captured,
+            });
+
+            app.midi_learn.mark_captured();
+            app.midi_learn.start_capture(captured);
+            break;
         }
     }
 
-    // Update highlight targets for views (only when learn is active)
+    // Finalize any pending detection
+    if app.midi_learn.is_detection_complete() {
+        app.midi_learn.finalize_mapping();
+    }
+
+    // Push log entries to the tree's action log
+    if let Some(ref mut tree) = app.midi_learn.tree {
+        for entry in log_entries {
+            tree.action_log.push(entry);
+        }
+    }
+
+    // Execute mapped actions (now safe — no borrow conflicts)
+    let mut learn_tasks = Vec::new();
+    for event in actions_to_execute {
+        learn_tasks.push(app.handle_midi_message(event));
+    }
+
+    sync_highlights(app);
+    learn_tasks
+}
+
+/// Sync highlight targets from learn state to deck/mixer views.
+fn sync_highlights(app: &mut MeshApp) {
     let highlight = app.midi_learn.highlight_target;
     for i in 0..4 {
         app.deck_views[i].set_highlight(highlight);

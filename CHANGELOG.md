@@ -4,6 +4,42 @@ All notable changes to Mesh are documented in this file.
 
 ---
 
+## [0.9.10]
+
+### Added
+
+- **MIDI learn tree** — The linear step-by-step MIDI learn wizard is now a
+  collapsible tree you can navigate freely. Map your browse encoder first, then
+  use it to scroll through sections, expand what you need, and skip what you
+  don't. 73 mappable actions across 9 sections: Navigation, Modifiers,
+  Transport, Performance Pads, Stems, Mixer, Effects, and Global Controls.
+
+- **Live mapping during learn** — Mapped controls work immediately while you
+  continue assigning others. Shift combinations are tracked live, so you can
+  test your layout as you build it.
+
+- **In-context descriptions** — Every mapping shows a short explanation when
+  selected, so you know what each control does before assigning it. Setup
+  questions (deck layout, compact mode, pad mode) also include descriptions.
+
+- **Edit existing mappings** — Re-entering learn mode with an existing config
+  pre-loads all assignments. Change individual mappings without re-doing
+  everything. A verification screen shows what changed before saving.
+
+- **Auto-start learn mode** — If no `midi.yaml` exists, learn mode opens
+  automatically on startup.
+
+### Changed
+
+- **Removed "4 Decks + Layer Toggle"** topology option (8 virtual decks is not
+  a real-world configuration). Options are now: 2 Decks, 2 Decks + Layer
+  Toggle, 4 Decks.
+
+- **Removed per-deck Sync button** — Mesh handles sync globally; a dedicated
+  sync button mapping is no longer offered.
+
+---
+
 ## [0.9.9]
 
 ### Added

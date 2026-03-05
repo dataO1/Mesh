@@ -1,13 +1,14 @@
 //! MIDI learn message handler
 //!
-//! Handles the MIDI learn workflow: capturing mappings, saving config, reloading.
+//! Handles the tree-based MIDI learn workflow: setup, tree navigation,
+//! capture routing, saving config, reloading controller.
 
 use iced::Task;
 
 use mesh_midi::ControllerManager;
 use crate::ui::app::MeshApp;
 use crate::ui::message::Message;
-use crate::ui::midi_learn::MidiLearnMessage;
+use crate::ui::midi_learn::{LearnMode, MidiLearnMessage};
 
 /// Clear MIDI learn highlight from all views (called when learn mode exits)
 fn clear_highlights(app: &mut MeshApp) {
@@ -26,34 +27,101 @@ pub fn handle(app: &mut MeshApp, learn_msg: MidiLearnMessage) -> Task<Message> {
             app.midi_learn.start();
             // Close settings modal if open
             app.settings.is_open = false;
-            app.status = "MIDI Learn mode started".to_string();
+
+            // If existing config exists, load it into the tree
+            let config_path = mesh_midi::default_midi_config_path();
+            if config_path.exists() {
+                let config = mesh_midi::load_midi_config(&config_path);
+                if !config.devices.is_empty() {
+                    log::info!("MIDI Learn: Loading existing config with {} devices", config.devices.len());
+                    app.midi_learn.load_existing_config(&config);
+                    app.status = "MIDI Learn: existing config loaded. Edit and save.".to_string();
+                } else {
+                    app.status = "MIDI Learn mode started".to_string();
+                }
+            } else {
+                app.status = "MIDI Learn mode started".to_string();
+            }
         }
         Cancel => {
             app.midi_learn.cancel();
             clear_highlights(app);
             app.status = "MIDI Learn cancelled".to_string();
         }
-        Next => {
-            app.midi_learn.advance();
-        }
-        Back => {
-            app.midi_learn.go_back();
-        }
-        Skip => {
-            app.midi_learn.advance();
-        }
-        Save => {
-            app.status = format!(
-                "Saving {} mappings for {}...",
-                app.midi_learn.pending_mappings.len(),
-                app.midi_learn.controller_name
-            );
 
-            // Generate the config from learned mappings
+        // --- Setup phase ---
+        SetTopology(choice) => {
+            app.midi_learn.topology_choice = choice;
+        }
+        SetCompactMode(enabled) => {
+            app.midi_learn.compact_mode = enabled;
+        }
+        SetPadMode(source) => {
+            app.midi_learn.pad_mode_source = source;
+        }
+        ConfirmSetup => {
+            app.midi_learn.confirm_setup();
+            app.status = "Tree built. Map your controls!".to_string();
+        }
+
+        // --- Tree navigation (keyboard/touch) ---
+        ScrollTree(delta) => {
+            // During verification, ScrollTree(0) means "go back to tree"
+            if app.midi_learn.mode == LearnMode::Verification && delta == 0 {
+                app.midi_learn.mode = LearnMode::TreeNavigation;
+                app.midi_learn.update_highlight();
+                return Task::none();
+            }
+
+            if let Some(ref mut tree) = app.midi_learn.tree {
+                tree.scroll(delta);
+            }
+            app.midi_learn.update_highlight();
+        }
+        SelectRow(idx) => {
+            if let Some(ref mut tree) = app.midi_learn.tree {
+                tree.cursor = idx;
+                let is_done = tree.select();
+                if is_done {
+                    app.midi_learn.mode = LearnMode::Verification;
+                }
+            }
+            app.midi_learn.update_highlight();
+        }
+        ToggleSection => {
+            if let Some(ref mut tree) = app.midi_learn.tree {
+                let is_done = tree.select();
+                if is_done {
+                    app.midi_learn.mode = LearnMode::Verification;
+                }
+            }
+            app.midi_learn.update_highlight();
+        }
+        ClearMapping => {
+            if let Some(ref mut tree) = app.midi_learn.tree {
+                tree.clear_current_mapping();
+            }
+            app.midi_learn.update_highlight();
+            app.midi_learn.rebuild_active_mappings();
+        }
+
+        // --- Capture (from tick.rs) ---
+        MidiCaptured(event) => {
+            app.midi_learn.start_capture(event);
+        }
+
+        // --- Save ---
+        Save => {
+            app.status = "Saving MIDI config...".to_string();
+
             let config = app.midi_learn.generate_config();
             let config_path = mesh_midi::default_midi_config_path();
 
-            // Save to disk in background
+            let mapping_count = config.devices.first()
+                .map(|d| d.mappings.len())
+                .unwrap_or(0);
+            log::info!("MIDI Learn: Saving config with {} mappings", mapping_count);
+
             return Task::perform(
                 async move {
                     mesh_midi::save_midi_config(&config, &config_path)
@@ -65,22 +133,20 @@ pub fn handle(app: &mut MeshApp, learn_msg: MidiLearnMessage) -> Task<Message> {
         SaveComplete(result) => {
             match result {
                 Ok(()) => {
-                    app.midi_learn.cancel(); // Reset state
+                    app.midi_learn.cancel();
                     clear_highlights(app);
                     app.status = "MIDI config saved! Reloading...".to_string();
 
                     // Reload MIDI controller with new config
-                    // Drop old controller first to release the port
                     app.controller = None;
-
-                    // Create new controller with fresh config
                     match ControllerManager::new_with_options(None, true) {
                         Ok(controller) => {
                             if controller.is_connected() {
                                 log::info!("MIDI: Reloaded controller with new config");
                                 app.status = "MIDI config saved and loaded!".to_string();
                             } else {
-                                app.status = "MIDI config saved (no device connected)".to_string();
+                                app.status =
+                                    "MIDI config saved (no device connected)".to_string();
                             }
                             app.controller = Some(controller);
                         }
@@ -95,40 +161,6 @@ pub fn handle(app: &mut MeshApp, learn_msg: MidiLearnMessage) -> Task<Message> {
                     app.status = format!("MIDI config save failed: {}", e);
                 }
             }
-        }
-        SetControllerName(name) => {
-            app.midi_learn.controller_name = name;
-        }
-        SetDeckCount(count) => {
-            app.midi_learn.deck_count = count;
-        }
-        SetHasLayerToggle(has) => {
-            app.midi_learn.has_layer_toggle = has;
-        }
-        SetPadModeSource(source) => {
-            app.midi_learn.pad_mode_source = source;
-        }
-        SetModeButtonBehavior(momentary) => {
-            app.midi_learn.momentary_mode_buttons = momentary;
-        }
-        ShiftLeftDetected(event) => {
-            app.midi_learn.shift_mapping_left = event;
-            app.midi_learn.advance();
-        }
-        ShiftRightDetected(event) => {
-            app.midi_learn.shift_mapping_right = event;
-            app.midi_learn.advance();
-        }
-        ToggleLeftDetected(event) => {
-            app.midi_learn.toggle_mapping_left = event;
-            app.midi_learn.advance();
-        }
-        ToggleRightDetected(event) => {
-            app.midi_learn.toggle_mapping_right = event;
-            app.midi_learn.advance();
-        }
-        MidiCaptured(event) => {
-            app.midi_learn.record_mapping(event);
         }
     }
     Task::none()

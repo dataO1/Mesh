@@ -11,6 +11,7 @@ pub mod message;
 pub mod network;
 pub mod system_update;
 pub mod midi_learn;
+pub mod midi_learn_tree;
 pub mod mixer_view;
 pub mod player_canvas;
 pub mod settings;

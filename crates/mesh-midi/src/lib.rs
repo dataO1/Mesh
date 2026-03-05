@@ -25,6 +25,8 @@ mod detection;
 mod direct_dispatch;
 pub mod feedback;
 pub mod hid;
+pub mod learn_catalog;
+pub mod learn_defs;
 mod mapping;
 mod messages;
 pub mod midi;
@@ -50,7 +52,7 @@ pub use midi::output::MidiOutputHandler;
 // Re-export core types
 pub use detection::{MidiSample, MidiSampleBuffer};
 pub use deck_target::{DeckTargetMode, DeckTargetState, LayerSelection};
-pub use mapping::{ActionRegistry, MappingEngine};
+pub use mapping::{ActionRegistry, MappingEngine, learn_mode_dispatch};
 pub use direct_dispatch::DirectDispatch;
 pub use messages::{DeckAction, GlobalAction, MidiMessage, MidiEvent, MixerAction, BrowserAction};
 pub use normalize::{normalize_cc_value, ControlRange};
