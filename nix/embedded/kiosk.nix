@@ -137,8 +137,14 @@ in
       "d /home/mesh/Music/mesh-collection 0755 mesh mesh -"
       "C /home/mesh/Music/mesh-collection/midi.yaml 0644 mesh mesh - ${../../config/midi.yaml}"
       "C /home/mesh/Music/mesh-collection/slicer-presets.yaml 0644 mesh mesh - ${../../config/slicer-presets.yaml}"
-      "C /home/mesh/Music/mesh-collection/theme.yaml 0644 mesh mesh - ${../../config/theme.yaml}"
     ];
+
+    # Theme file is force-updated on every activation (OTA update) so new
+    # default themes reach the device. Unlike midi/slicer configs, theme
+    # definitions are managed upstream and should track the release.
+    system.activationScripts.meshTheme.text = ''
+      install -D -m 0644 -o mesh -g mesh ${../../config/theme.yaml} /home/mesh/Music/mesh-collection/theme.yaml
+    '';
 
     # TTY2 login shell for local debugging (Ctrl+Alt+F2 when cage has -s flag)
     systemd.services."getty@tty2".enable = true;

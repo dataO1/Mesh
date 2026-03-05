@@ -1,8 +1,70 @@
-# Mesh Player Theme Configuration
-# Stem colors for waveform display (legacy format — runtime themes in ~/Music/mesh-collection/theme.yaml)
+# Mesh Theme Configuration
+# Each theme has UI colors (buttons, backgrounds, text) and stem waveform colors.
+# Add your own themes or modify existing ones.
 
-stems:
-  vocals: "#B8BB26"   # Gruvbox green
-  drums: "#504090"    # Deep purple
-  bass: "#D06040"     # Warm orange
-  other: "#6070A0"    # Steel blue
+themes:
+- name: Mesh
+  ui:
+    background: '#29262a'
+    text: '#EBDBB2'
+    accent: '#504090'
+    success: '#205030'
+    warning: '#D06040'
+    danger: '#602010'
+  stems:
+    vocals: '#B8BB26'
+    drums: '#504090'
+    bass: '#D06040'
+    other: '#6070a0'
+- name: Catppuccin
+  ui:
+    background: '#1E1E2E'
+    text: '#CDD6F4'
+    accent: '#CBA6F7'
+    success: '#A6E3A1'
+    warning: '#F9E2AF'
+    danger: '#F38BA8'
+  stems:
+    vocals: '#A6E3A1'
+    drums: '#89B4FA'
+    bass: '#FAB387'
+    other: '#CBA6F7'
+- name: Rosé Pine
+  ui:
+    background: '#232136'
+    text: '#E0DEF4'
+    accent: '#C4A7E7'
+    success: '#9CCFD8'
+    warning: '#F6C177'
+    danger: '#EB6F92'
+  stems:
+    vocals: '#9CCFD8'
+    drums: '#EA9A97'
+    bass: '#F6C177'
+    other: '#C4A7E7'
+- name: Synthwave
+  ui:
+    background: '#1A1025'
+    text: '#EBDBB2'
+    accent: '#4DB3F2'
+    success: '#66F299'
+    warning: '#F2D94D'
+    danger: '#F266B3'
+  stems:
+    vocals: '#66F299'
+    drums: '#4DB3F2'
+    bass: '#F266B3'
+    other: '#F2D94D'
+- name: Gruvbox
+  ui:
+    background: '#282828'
+    text: '#EBDBB2'
+    accent: '#D79921'
+    success: '#B8BB26'
+    warning: '#FE8019'
+    danger: '#CC241D'
+  stems:
+    vocals: '#B8BB26'
+    drums: '#83A598'
+    bass: '#FE8019'
+    other: '#D3869B'

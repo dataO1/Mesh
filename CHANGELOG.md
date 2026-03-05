@@ -91,6 +91,9 @@ All notable changes to Mesh are documented in this file.
   mingw GCC headers. Fixed by defining `__GCC_MAX_ALIGN_T` to suppress the
   duplicate typedef.
 
+- **Embedded theme not updating on OTA** — Theme file now force-deployed on every
+  activation via NixOS activation script instead of tmpfiles copy-if-not-exists.
+
 - **History DB schema on older USB databases** — Schema init now unconditionally
   creates all relations, treating "already exists" as success instead of pre-checking.
 
