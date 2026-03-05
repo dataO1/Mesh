@@ -124,6 +124,8 @@ pub struct SettingsItem {
     pub below_text: Option<String>,
     /// Extra non-navigable widget after this item
     pub section_extra: Option<SectionExtra>,
+    /// Render Action button with danger (red) style instead of primary (blue)
+    pub danger: bool,
     /// What MIDI does with this item
     pub behavior: SettingsBehavior,
 }
@@ -144,6 +146,7 @@ impl SettingsItem {
             wrap: false,
             below_text: None,
             section_extra: None,
+            danger: false,
             behavior,
         }
     }
@@ -168,6 +171,8 @@ impl SettingsItem {
     pub fn below_text(mut self, s: String) -> Self { self.below_text = Some(s); self }
     /// Extra non-navigable widget after item
     pub fn section_extra(mut self, e: SectionExtra) -> Self { self.section_extra = Some(e); self }
+    /// Use danger (red) style for Action buttons
+    pub fn danger(mut self) -> Self { self.danger = true; self }
 }
 
 /// Build the ordered list of ALL navigable settings from current state.
@@ -176,7 +181,20 @@ impl SettingsItem {
 /// their options, and their behavior. Both the view and MIDI navigation
 /// derive from this list. Vec position = nav index.
 pub fn build_settings_items(state: &SettingsState) -> Vec<SettingsItem> {
-    let mut items = vec![
+    let mut items = Vec::new();
+
+    // ── Power Off (embedded only, first item for quick access) ──
+    #[cfg(feature = "embedded-rt")]
+    items.push(
+        SettingsItem::new("Power Off", SettingsBehavior::Action(
+            Message::Settings(SettingsMessage::PowerOffConfirm),
+        ))
+            .section("System")
+            .hint("Safely shut down the device")
+            .danger()
+    );
+
+    items.extend([
         // ── Audio Output ──
         SettingsItem::new("Master (Speakers):", SettingsBehavior::DeviceSelect {
             devices: state.available_devices.iter().map(|d| d.to_string()).collect(),
@@ -326,7 +344,7 @@ pub fn build_settings_items(state: &SettingsState) -> Vec<SettingsItem> {
             .prefix("Bars:")
             .button_width(ButtonWidth::Fixed(44.0))
             .below_text("Edit slicer presets and per-stem patterns in mesh-cue".into()),
-    ];
+    ]);
 
     // ── Conditional sections ──
     if state.network.is_some() {
@@ -351,16 +369,6 @@ pub fn build_settings_items(state: &SettingsState) -> Vec<SettingsItem> {
         ))
             .section("MIDI Controller")
             .section_hint("Create a custom mapping for your MIDI controller")
-    );
-
-    // ── Power Off (embedded only) ──
-    #[cfg(feature = "embedded-rt")]
-    items.push(
-        SettingsItem::new("Power Off", SettingsBehavior::Action(
-            Message::Settings(SettingsMessage::PowerOffConfirm),
-        ))
-            .section("System")
-            .hint("Safely shut down the device")
     );
 
     items
@@ -547,6 +555,8 @@ pub enum SubPanelFocus {
     WifiNetworkList { selected: usize },
     /// Cycling through update actions (Check/Install or Install/Restart)
     UpdateActions { selected: usize },
+    /// Cycling through power off confirmation (0=Cancel, 1=Power Off)
+    PowerOffConfirm { selected: usize },
 }
 
 /// Which kind of sub-panel a settings item opens
@@ -610,6 +620,27 @@ pub fn wrap_navigable<'a>(
         })
         .padding(4)
         .width(Length::Fill)
+        .into()
+}
+
+/// Wrap a dialog button with highlight when it's the focused action via MIDI.
+fn wrap_dialog_focus<'a>(
+    elem: Element<'a, Message>,
+    action_idx: usize,
+    focused: Option<usize>,
+) -> Element<'a, Message> {
+    let bg = if focused == Some(action_idx) {
+        Color::from_rgba(0.3, 0.5, 1.0, 0.3)
+    } else {
+        Color::TRANSPARENT
+    };
+    container(elem)
+        .style(move |_theme| container::Style {
+            background: Some(bg.into()),
+            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+            ..Default::default()
+        })
+        .padding(2)
         .into()
 }
 
@@ -747,9 +778,10 @@ fn render_item<'a>(
         }
 
         SettingsBehavior::Action(msg) => {
+            let style = if item.danger { button::danger } else { button::primary };
             button(text(item.label.to_string()).size(sz(14.0)))
                 .on_press(msg.clone())
-                .style(button::primary)
+                .style(style)
                 .into()
         }
     }
@@ -909,6 +941,15 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
     if state.power_off_confirm {
         use iced::widget::{center, stack};
 
+        // Extract MIDI focus for the confirmation dialog buttons
+        let focused_action = state.settings_midi_nav.as_ref().and_then(|n| {
+            if let Some(SubPanelFocus::PowerOffConfirm { selected }) = &n.sub_panel {
+                Some(*selected)
+            } else {
+                None
+            }
+        });
+
         let backdrop: Element<Message> = container(Space::new())
             .width(Length::Fill)
             .height(Length::Fill)
@@ -918,15 +959,21 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
             })
             .into();
 
-        let cancel_btn = button(text("Cancel").size(sz(16.0)))
+        let cancel_btn: Element<Message> = button(text("Cancel").size(sz(16.0)))
             .on_press(Message::Settings(SettingsMessage::PowerOffCancel))
             .style(button::secondary)
-            .padding([8, 24]);
+            .padding([8, 24])
+            .into();
 
-        let confirm_btn = button(text("Power Off").size(sz(16.0)))
+        let confirm_btn: Element<Message> = button(text("Power Off").size(sz(16.0)))
             .on_press(Message::Settings(SettingsMessage::PowerOffExecute))
             .style(button::danger)
-            .padding([8, 24]);
+            .padding([8, 24])
+            .into();
+
+        // Wrap buttons with MIDI focus highlight
+        let cancel_btn = wrap_dialog_focus(cancel_btn, 0, focused_action);
+        let confirm_btn = wrap_dialog_focus(confirm_btn, 1, focused_action);
 
         let dialog = container(
             column![

@@ -143,6 +143,9 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
         }
         PowerOffCancel => {
             app.settings.power_off_confirm = false;
+            if let Some(ref mut nav) = app.settings.settings_midi_nav {
+                nav.sub_panel = None;
+            }
             Task::none()
         }
         PowerOffExecute => {

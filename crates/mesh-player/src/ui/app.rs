@@ -1143,6 +1143,10 @@ impl MeshApp {
                         };
                         return Task::none();
                     }
+                    SubPanelFocus::PowerOffConfirm { selected } => {
+                        *selected = if *selected == 0 { 1 } else { 0 };
+                        return Task::none();
+                    }
                 }
             }
         }
@@ -1230,8 +1234,11 @@ impl MeshApp {
             .is_some_and(|c| c.is_shift_held());
         if shift_held {
             let nav = self.settings.settings_midi_nav.as_mut().unwrap();
-            if nav.sub_panel.is_some() {
-                nav.sub_panel = None;
+            if let Some(panel) = nav.sub_panel.take() {
+                // Dismiss the power off dialog when exiting its sub-panel
+                if matches!(panel, SubPanelFocus::PowerOffConfirm { .. }) {
+                    self.settings.power_off_confirm = false;
+                }
             } else if nav.editing {
                 nav.editing = false;
             }
@@ -1262,6 +1269,13 @@ impl MeshApp {
                     }
                     return Task::none();
                 }
+                SubPanelFocus::PowerOffConfirm { selected } => {
+                    return match selected {
+                        0 => self.update(Message::Settings(SettingsMessage::PowerOffCancel)),
+                        1 => self.update(Message::Settings(SettingsMessage::PowerOffExecute)),
+                        _ => Task::none(),
+                    };
+                }
             }
         }
 
@@ -1291,6 +1305,13 @@ impl MeshApp {
                     return Task::none();
                 }
                 SettingsBehavior::Action(msg) => {
+                    // Power off: enter confirmation sub-panel instead of firing directly
+                    if matches!(msg, Message::Settings(SettingsMessage::PowerOffConfirm)) {
+                        self.settings.power_off_confirm = true;
+                        let nav = self.settings.settings_midi_nav.as_mut().unwrap();
+                        nav.sub_panel = Some(SubPanelFocus::PowerOffConfirm { selected: 0 });
+                        return Task::none();
+                    }
                     let msg = msg.clone();
                     return self.update(msg);
                 }
