@@ -86,6 +86,11 @@ All notable changes to Mesh are documented in this file.
   with `#[cfg(target_os = "linux")]` and a `File::sync_all()` fallback on
   Windows/macOS for USB write safety.
 
+- **Windows build: bindgen max_align_t conflict** — Phase 5 (mesh-cue) bindgen
+  cross-compilation hit a `max_align_t` typedef redefinition between clang and
+  mingw GCC headers. Fixed by defining `__GCC_MAX_ALIGN_T` to suppress the
+  duplicate typedef.
+
 - **Present mode crash on Nvidia/X11** — Desktop wrapper scripts and devshell
   now use `auto_vsync` (tries Mailbox, falls back to Fifo) instead of
   hardcoded `mailbox` which panics on GPUs that don't support it. Embedded
