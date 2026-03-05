@@ -394,7 +394,6 @@ fn get_existing_relations(db: &DbInstance) -> Result<std::collections::HashSet<S
 /// This function checks which relations already exist and only creates
 /// missing ones. Safe to call multiple times.
 pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
-    // Get existing relations to avoid "already exists" errors
     let existing = get_existing_relations(db)?;
     log::debug!("Existing relations: {:?}", existing);
 
@@ -411,68 +410,31 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
         }
     }
 
-    // Core relations
-    if !existing.contains("tracks") {
-        log::debug!("Creating 'tracks' relation");
-        create_tracks_relation(db)?;
-    } else {
+    // Run migrations on existing relations (drop + recreate if columns changed)
+    if existing.contains("tracks") {
         migrate_tracks_if_needed(db)?;
     }
-    if !existing.contains("playlists") {
-        log::debug!("Creating 'playlists' relation");
-        create_playlists_relation(db)?;
-    }
-    if !existing.contains("playlist_tracks") {
-        log::debug!("Creating 'playlist_tracks' relation");
-        create_playlist_tracks_relation(db)?;
-    }
-    if !existing.contains("cue_points") {
-        log::debug!("Creating 'cue_points' relation");
-        create_cue_points_relation(db)?;
-    }
-    if !existing.contains("saved_loops") {
-        log::debug!("Creating 'saved_loops' relation");
-        create_saved_loops_relation(db)?;
-    }
-    if !existing.contains("stem_links") {
-        log::debug!("Creating 'stem_links' relation");
-        create_stem_links_relation(db)?;
-    }
-
-    // Graph relations
-    if !existing.contains("similar_to") {
-        log::debug!("Creating 'similar_to' relation");
-        create_similar_to_relation(db)?;
-    }
-    if !existing.contains("harmonic_match") {
-        log::debug!("Creating 'harmonic_match' relation");
-        create_harmonic_match_relation(db)?;
-    }
-
-    // History relations
-    if !existing.contains("sessions") {
-        log::debug!("Creating 'sessions' relation");
-        create_sessions_relation(db)?;
-    }
-    if !existing.contains("track_plays") {
-        log::debug!("Creating 'track_plays' relation");
-        create_track_plays_relation(db)?;
-    }
-
-    if !existing.contains("track_tags") {
-        log::debug!("Creating 'track_tags' relation");
-        create_track_tags_relation(db)?;
-    }
-
-    // ML analysis relation
-    if !existing.contains("ml_analysis") {
-        log::debug!("Creating 'ml_analysis' relation");
-        create_ml_analysis_relation(db)?;
-    } else {
+    if existing.contains("ml_analysis") {
         migrate_ml_analysis_if_needed(db)?;
     }
 
-    // Vector index (HNSW) - check for audio_features relation
+    // Ensure all relations exist. run_schema() treats "already exists" as success,
+    // so this is safe to call unconditionally on databases from older versions
+    // that may be missing relations added after initial export.
+    create_tracks_relation(db)?;
+    create_playlists_relation(db)?;
+    create_playlist_tracks_relation(db)?;
+    create_cue_points_relation(db)?;
+    create_saved_loops_relation(db)?;
+    create_stem_links_relation(db)?;
+    create_similar_to_relation(db)?;
+    create_harmonic_match_relation(db)?;
+    create_sessions_relation(db)?;
+    create_track_plays_relation(db)?;
+    create_track_tags_relation(db)?;
+    create_ml_analysis_relation(db)?;
+
+    // HNSW index (::hnsw create is NOT idempotent — must guard)
     if !existing.contains("audio_features") {
         log::debug!("Creating 'audio_features' HNSW index");
         create_audio_features_index(db)?;
@@ -482,9 +444,21 @@ pub fn create_all_relations(db: &DbInstance) -> Result<(), DbError> {
 }
 
 fn run_schema(db: &DbInstance, script: &str) -> Result<(), DbError> {
-    db.run_script(script, Default::default(), cozo::ScriptMutability::Mutable)
-        .map_err(|e| DbError::Schema(e.to_string()))?;
-    Ok(())
+    match db.run_script(script, Default::default(), cozo::ScriptMutability::Mutable) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let msg = e.to_string();
+            // {:create} fails if the relation already exists. Treat this as
+            // success so schema init is fully idempotent — safe to re-run on
+            // databases from older versions that may have some but not all
+            // relations.
+            if msg.contains("already exists") {
+                Ok(())
+            } else {
+                Err(DbError::Schema(msg))
+            }
+        }
+    }
 }
 
 fn create_tracks_relation(db: &DbInstance) -> Result<(), DbError> {
