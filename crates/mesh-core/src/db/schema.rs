@@ -452,7 +452,7 @@ fn run_schema(db: &DbInstance, script: &str) -> Result<(), DbError> {
             // success so schema init is fully idempotent — safe to re-run on
             // databases from older versions that may have some but not all
             // relations.
-            if msg.contains("already exists") {
+            if msg.contains("already exists") || msg.contains("conflicts with an existing one") {
                 Ok(())
             } else {
                 Err(DbError::Schema(msg))
