@@ -1193,4 +1193,11 @@ impl ControllerManager {
     pub fn first_hid_device_name(&self) -> Option<&str> {
         self.hid_devices.values().next().map(|d| d.info.product_name.as_str())
     }
+
+    /// Get HID device product name by device_id (from ControlAddress::Hid)
+    pub fn hid_device_name_for_id(&self, device_id: &str) -> Option<&str> {
+        self.hid_devices.values()
+            .find(|d| d.output_handler.device_id() == device_id)
+            .map(|d| d.info.product_name.as_str())
+    }
 }

@@ -161,6 +161,7 @@ impl MeshApp {
         sample_rate: u32,
         audio_client_name: String,
         mapping_mode: bool,
+        auto_learn: bool,
         output_latency_samples: Option<Arc<AtomicU64>>,
         internal_latency_samples: Option<Arc<AtomicU32>>,
         buffer_pool: Option<Arc<mesh_core::buffer_pool::StemBufferPool>>,
@@ -182,7 +183,7 @@ impl MeshApp {
         // Initialize MIDI controller
         // In mapping mode: connect to ALL available ports (for device discovery)
         // In normal mode: connect only to devices matching config (with raw capture for live learning)
-        let controller = if mapping_mode {
+        let controller = if mapping_mode || auto_learn {
             match ControllerManager::new_for_learn_mode() {
                 Ok(controller) => {
                     if controller.is_connected() {
@@ -1930,7 +1931,7 @@ impl Drop for MeshApp {
 // Note: MeshApp no longer implements Default as it requires a DatabaseService
 
 /// Convert a raw MidiInputEvent to CapturedEvent for learn mode
-pub(crate) fn convert_midi_event_to_captured(event: &MidiInputEvent) -> super::midi_learn::CapturedEvent {
+pub(crate) fn convert_midi_event_to_captured(event: &MidiInputEvent, source_port: &str) -> super::midi_learn::CapturedEvent {
     use super::midi_learn::CapturedEvent;
     use mesh_midi::{ControlAddress, MidiAddress};
 
@@ -1953,7 +1954,7 @@ pub(crate) fn convert_midi_event_to_captured(event: &MidiInputEvent) -> super::m
         address,
         value,
         hardware_type: None, // MIDI: needs detection via MidiSampleBuffer
-        source_device: None, // Source captured at port level in tick.rs
+        source_device: Some(source_port.to_string()),
     }
 }
 

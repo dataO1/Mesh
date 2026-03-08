@@ -8,7 +8,7 @@ use iced::Task;
 use mesh_midi::ControllerManager;
 use crate::ui::app::MeshApp;
 use crate::ui::message::Message;
-use crate::ui::midi_learn::{LearnMode, MidiLearnMessage};
+use crate::ui::midi_learn::{LearnMode, MidiLearnMessage, scroll_tree_to_cursor};
 
 /// Clear MIDI learn highlight from all views (called when learn mode exits)
 fn clear_highlights(app: &mut MeshApp) {
@@ -53,15 +53,17 @@ pub fn handle(app: &mut MeshApp, learn_msg: MidiLearnMessage) -> Task<Message> {
         SetTopology(choice) => {
             app.midi_learn.topology_choice = choice;
         }
-        SetCompactMode(enabled) => {
-            app.midi_learn.compact_mode = enabled;
+        SetOverlayMode(enabled) => {
+            app.midi_learn.overlay_mode = enabled;
         }
         SetPadMode(source) => {
             app.midi_learn.pad_mode_source = source;
         }
         ConfirmSetup => {
             app.midi_learn.confirm_setup();
-            app.status = "Tree built. Map your controls!".to_string();
+            if app.midi_learn.mode == LearnMode::TreeNavigation {
+                app.status = "Tree built. Map your controls!".to_string();
+            }
         }
 
         // --- Tree navigation (keyboard/touch) ---
@@ -73,13 +75,30 @@ pub fn handle(app: &mut MeshApp, learn_msg: MidiLearnMessage) -> Task<Message> {
                 return Task::none();
             }
 
-            if let Some(ref mut tree) = app.midi_learn.tree {
+            if app.midi_learn.mode == LearnMode::Setup {
+                app.midi_learn.setup_scroll(delta);
+            } else if let Some(ref mut tree) = app.midi_learn.tree {
                 tree.scroll(delta);
             }
             app.midi_learn.update_highlight();
+
+            // Auto-scroll tree view to keep cursor visible
+            if let Some((cursor, total)) = app.midi_learn.tree_scroll_info() {
+                return scroll_tree_to_cursor(cursor, total);
+            }
         }
         SelectRow(idx) => {
-            if let Some(ref mut tree) = app.midi_learn.tree {
+            if app.midi_learn.mode == LearnMode::Setup {
+                // Setup mode: set cursor and select the item
+                app.midi_learn.setup_cursor = idx;
+                let should_confirm = app.midi_learn.setup_select();
+                if should_confirm {
+                    app.midi_learn.confirm_setup();
+                    if app.midi_learn.mode == LearnMode::TreeNavigation {
+                        app.status = "Tree built. Map your controls!".to_string();
+                    }
+                }
+            } else if let Some(ref mut tree) = app.midi_learn.tree {
                 tree.cursor = idx;
                 let is_done = tree.select();
                 if is_done {
@@ -87,6 +106,10 @@ pub fn handle(app: &mut MeshApp, learn_msg: MidiLearnMessage) -> Task<Message> {
                 }
             }
             app.midi_learn.update_highlight();
+            // Auto-scroll to selected row
+            if let Some((cursor, total)) = app.midi_learn.tree_scroll_info() {
+                return scroll_tree_to_cursor(cursor, total);
+            }
         }
         ToggleSection => {
             if let Some(ref mut tree) = app.midi_learn.tree {
@@ -96,6 +119,11 @@ pub fn handle(app: &mut MeshApp, learn_msg: MidiLearnMessage) -> Task<Message> {
                 }
             }
             app.midi_learn.update_highlight();
+
+            // Auto-scroll after section toggle
+            if let Some((cursor, total)) = app.midi_learn.tree_scroll_info() {
+                return scroll_tree_to_cursor(cursor, total);
+            }
         }
         ClearMapping => {
             if let Some(ref mut tree) = app.midi_learn.tree {
@@ -105,9 +133,31 @@ pub fn handle(app: &mut MeshApp, learn_msg: MidiLearnMessage) -> Task<Message> {
             app.midi_learn.rebuild_active_mappings();
         }
 
+        // --- Reset confirmation ---
+        ResetMappings => {
+            app.midi_learn.mode = LearnMode::ResetConfirm;
+            app.midi_learn.reset_confirm_cursor = 0;
+        }
+        ConfirmReset => {
+            app.midi_learn.start();
+            clear_highlights(app);
+            app.status = "MIDI Learn restarted. Turn your main BROWSE encoder.".to_string();
+        }
+        CancelReset => {
+            app.midi_learn.mode = LearnMode::TreeNavigation;
+            app.midi_learn.update_highlight();
+        }
+
         // --- Capture (from tick.rs) ---
         MidiCaptured(event) => {
             app.midi_learn.start_capture(event);
+        }
+
+        // --- Deferred scroll (after fold/unfold layout recalculation) ---
+        RefreshScroll => {
+            if let Some((cursor, total)) = app.midi_learn.tree_scroll_info() {
+                return scroll_tree_to_cursor(cursor, total);
+            }
         }
 
         // --- Save ---

@@ -48,6 +48,7 @@ pub struct MappedControl {
 pub enum FlatNodeType {
     Section,
     Mapping,
+    Reset,
     Done,
 }
 
@@ -70,6 +71,8 @@ pub enum TreeNode {
         original: Option<MappedControl>,
         status: MappingStatus,
     },
+    /// "Reset All Mappings" action node (only shown when existing config loaded).
+    Reset,
     /// Terminal "Done" node at the bottom of the tree.
     Done,
 }
@@ -98,6 +101,7 @@ impl TreeNode {
         match self {
             TreeNode::Section { label, .. } => label,
             TreeNode::Mapping { def, .. } => def.label,
+            TreeNode::Reset => "Reset All Mappings",
             TreeNode::Done => "Done",
         }
     }
@@ -121,7 +125,7 @@ impl TreeNode {
                                 mapped += 1;
                             }
                         }
-                        TreeNode::Done => {}
+                        TreeNode::Reset | TreeNode::Done => {}
                     }
                 }
                 (mapped, total)
@@ -363,6 +367,13 @@ impl LearnTree {
                     node_type: FlatNodeType::Mapping,
                 });
             }
+            TreeNode::Reset => {
+                out.push(FlatNode {
+                    tree_path: path.to_vec(),
+                    depth: 0,
+                    node_type: FlatNodeType::Reset,
+                });
+            }
             TreeNode::Done => {
                 out.push(FlatNode {
                     tree_path: path.to_vec(),
@@ -378,6 +389,10 @@ impl LearnTree {
     // -----------------------------------------------------------------------
 
     /// Move cursor by delta (from encoder scroll). Positive = down, negative = up.
+    ///
+    /// Manual scrolling does NOT auto-fold/unfold sections — the user controls
+    /// section state manually via browse press (toggle). Auto-fold only happens
+    /// in `advance_to_next()` after answering questions.
     pub fn scroll(&mut self, delta: i32) {
         if self.flat_nodes.is_empty() {
             return;
@@ -406,6 +421,7 @@ impl LearnTree {
                 self.rebuild_flat_list();
                 false
             }
+            FlatNodeType::Reset => false, // handled via browse select in tick.rs
             FlatNodeType::Done => true,
             FlatNodeType::Mapping => false,
         }
@@ -457,14 +473,17 @@ impl LearnTree {
         }
     }
 
-    /// After recording a mapping, advance to the next unmapped leaf in the current section.
+    /// After recording a mapping, advance to the next unmapped leaf.
     ///
-    /// If no more unmapped leaves in the current section, fold it and expand
-    /// the next section's first leaf.
+    /// 1. First searches the visible flat list for the next unmapped node.
+    /// 2. If not found, searches collapsed sections — collapses current root,
+    ///    expands the next root with unmapped nodes, and jumps there.
     pub fn advance_to_next(&mut self) {
         let start = self.cursor;
+        let current_root = self.root_index_for_cursor(start);
+        let current_sub = self.sub_index_for_cursor(start);
 
-        // Find the next Mapping node that is Unmapped, within the visible flat list
+        // 1. Search visible flat list after cursor
         for i in (start + 1)..self.flat_nodes.len() {
             if self.flat_nodes[i].node_type == FlatNodeType::Mapping {
                 let node = self.node_at_path(&self.flat_nodes[i].tree_path);
@@ -477,10 +496,165 @@ impl LearnTree {
             }
         }
 
-        // No unmapped node found after cursor — stay at current position + 1
-        // (move to next item so user can see what's next)
-        if start + 1 < self.flat_nodes.len() {
-            self.cursor = start + 1;
+        // 2. Search for next unmapped SUBSECTION within the same root
+        //    (e.g., Transport Deck 1 → Transport Deck 2)
+        if let Some(root_idx) = current_root {
+            if let Some(target_sub) = self.find_next_unmapped_sub(root_idx, current_sub) {
+                self.collapse_sub(root_idx, current_sub);
+                self.expand_sub(root_idx, target_sub);
+                self.rebuild_flat_list();
+                // Find first unmapped in target subsection
+                let section_start = self.flat_nodes.iter().position(|f|
+                    f.tree_path.len() >= 2 && f.tree_path[0] == root_idx && f.tree_path[1] == target_sub
+                ).unwrap_or(0);
+                // Park cursor at section header (rebuild_flat_list may have clamped it to end)
+                self.cursor = section_start;
+                for i in section_start..self.flat_nodes.len() {
+                    if self.flat_nodes[i].node_type == FlatNodeType::Mapping {
+                        let node = self.node_at_path(&self.flat_nodes[i].tree_path);
+                        if let TreeNode::Mapping { status, .. } = node {
+                            if *status == MappingStatus::Unmapped {
+                                self.cursor = i;
+                                return;
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+        }
+
+        // 3. No unmapped subsections → search next ROOT section
+        if let Some(target) = self.find_next_unmapped_root(current_root) {
+            if let Some(cur) = current_root {
+                self.collapse_root(cur);
+            }
+            self.expand_to_first_unmapped(target);
+            self.rebuild_flat_list();
+            let section_start = self.flat_nodes.iter().position(|f|
+                f.tree_path.first() == Some(&target)
+            ).unwrap_or(0);
+            // Park cursor at section header (rebuild_flat_list may have clamped it to end)
+            self.cursor = section_start;
+            for i in section_start..self.flat_nodes.len() {
+                if self.flat_nodes[i].node_type == FlatNodeType::Mapping {
+                    let node = self.node_at_path(&self.flat_nodes[i].tree_path);
+                    if let TreeNode::Mapping { status, .. } = node {
+                        if *status == MappingStatus::Unmapped {
+                            self.cursor = i;
+                            return;
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
+        // 4. No more unmapped anywhere → move to next visible item
+        let new = (start + 1).min(self.flat_nodes.len().saturating_sub(1));
+        self.cursor = new;
+    }
+
+    // -----------------------------------------------------------------------
+    // Section auto-fold/unfold helpers
+    // -----------------------------------------------------------------------
+
+    /// Find which root section index the current cursor belongs to.
+    fn root_index_for_cursor(&self, cursor: usize) -> Option<usize> {
+        self.flat_nodes.get(cursor)
+            .and_then(|f| f.tree_path.first().copied())
+    }
+
+    /// Find which subsection index the current cursor belongs to (tree_path[1]).
+    fn sub_index_for_cursor(&self, cursor: usize) -> Option<usize> {
+        self.flat_nodes.get(cursor)
+            .and_then(|f| if f.tree_path.len() >= 2 { Some(f.tree_path[1]) } else { None })
+    }
+
+    /// Find next unmapped subsection within a root, starting after `after_sub`.
+    fn find_next_unmapped_sub(&self, root_idx: usize, after_sub: Option<usize>) -> Option<usize> {
+        if let TreeNode::Section { children, .. } = &self.roots[root_idx] {
+            let start = after_sub.map(|s| s + 1).unwrap_or(0);
+            for i in start..children.len() {
+                if matches!(&children[i], TreeNode::Section { .. }) && Self::node_has_unmapped(&children[i]) {
+                    return Some(i);
+                }
+            }
+        }
+        None
+    }
+
+    /// Collapse a subsection within a root.
+    fn collapse_sub(&mut self, root_idx: usize, sub: Option<usize>) {
+        if let Some(sub_idx) = sub {
+            if let TreeNode::Section { children, .. } = &mut self.roots[root_idx] {
+                if let Some(TreeNode::Section { expanded, .. }) = children.get_mut(sub_idx) {
+                    *expanded = false;
+                }
+            }
+        }
+    }
+
+    /// Expand a specific subsection within a root (keeps root expanded).
+    fn expand_sub(&mut self, root_idx: usize, sub_idx: usize) {
+        if let TreeNode::Section { expanded, children, .. } = &mut self.roots[root_idx] {
+            *expanded = true;
+            if let Some(TreeNode::Section { expanded: child_exp, .. }) = children.get_mut(sub_idx) {
+                *child_exp = true;
+            }
+        }
+    }
+
+    /// Search root sections starting after `after_root` for one with unmapped nodes.
+    fn find_next_unmapped_root(&self, after_root: Option<usize>) -> Option<usize> {
+        let start = after_root.map(|r| r + 1).unwrap_or(0);
+        for i in start..self.roots.len() {
+            if Self::node_has_unmapped(&self.roots[i]) {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Recursively check if a node has any unmapped mapping descendants.
+    fn node_has_unmapped(node: &TreeNode) -> bool {
+        match node {
+            TreeNode::Section { children, .. } => {
+                children.iter().any(|c| Self::node_has_unmapped(c))
+            }
+            TreeNode::Mapping { status, .. } => *status == MappingStatus::Unmapped,
+            TreeNode::Reset | TreeNode::Done => false,
+        }
+    }
+
+    /// Collapse a root section and all its sub-sections.
+    fn collapse_root(&mut self, root_idx: usize) {
+        if root_idx >= self.roots.len() { return; }
+        if let TreeNode::Section { expanded, children, .. } = &mut self.roots[root_idx] {
+            *expanded = false;
+            for child in children.iter_mut() {
+                if let TreeNode::Section { expanded, .. } = child {
+                    *expanded = false;
+                }
+            }
+        }
+    }
+
+    /// Expand a root section and its first sub-section that has unmapped nodes.
+    fn expand_to_first_unmapped(&mut self, root_idx: usize) {
+        if root_idx >= self.roots.len() { return; }
+        if let TreeNode::Section { expanded, children, .. } = &mut self.roots[root_idx] {
+            *expanded = true;
+            // If children are sub-sections, expand first one with unmapped nodes
+            // Find index first (immutable), then mutate — avoids borrow conflict
+            let target_idx = children.iter().position(|child| {
+                matches!(child, TreeNode::Section { .. }) && Self::node_has_unmapped(child)
+            });
+            if let Some(idx) = target_idx {
+                if let TreeNode::Section { expanded: child_exp, .. } = &mut children[idx] {
+                    *child_exp = true;
+                }
+            }
         }
     }
 
@@ -499,6 +673,31 @@ impl LearnTree {
             } else {
                 MappingStatus::Unmapped
             };
+        }
+    }
+
+    /// Clear ALL mappings in the tree (reset to unmapped state).
+    pub fn clear_all_mappings(&mut self) {
+        for root in &mut self.roots {
+            Self::clear_all_recursive(root);
+        }
+        self.rebuild_flat_list();
+        self.cursor = 0;
+    }
+
+    fn clear_all_recursive(node: &mut TreeNode) {
+        match node {
+            TreeNode::Section { children, .. } => {
+                for child in children {
+                    Self::clear_all_recursive(child);
+                }
+            }
+            TreeNode::Mapping { mapped, status, original, .. } => {
+                *mapped = None;
+                *original = None;
+                *status = MappingStatus::Unmapped;
+            }
+            TreeNode::Reset | TreeNode::Done => {}
         }
     }
 
@@ -614,7 +813,35 @@ impl LearnTree {
                     None
                 }
             }
-            TreeNode::Done => None,
+            TreeNode::Reset | TreeNode::Done => None,
+        }
+    }
+
+    /// Find a mapping node by its def.id (unique identifier).
+    pub fn find_by_id_mut(&mut self, id: &str) -> Option<&mut TreeNode> {
+        for root in &mut self.roots {
+            if let Some(node) = Self::find_by_id_in_node_mut(root, id) {
+                return Some(node);
+            }
+        }
+        None
+    }
+
+    fn find_by_id_in_node_mut<'a>(
+        node: &'a mut TreeNode,
+        id: &str,
+    ) -> Option<&'a mut TreeNode> {
+        match node {
+            TreeNode::Section { children, .. } => {
+                for child in children {
+                    if let Some(found) = Self::find_by_id_in_node_mut(child, id) {
+                        return Some(found);
+                    }
+                }
+                None
+            }
+            TreeNode::Mapping { def, .. } if def.id == id => Some(node),
+            _ => None,
         }
     }
 
@@ -624,13 +851,31 @@ impl LearnTree {
 
     /// Expand the Navigation section and set cursor to its first child.
     pub fn expand_navigation(&mut self) {
-        if let Some(TreeNode::Section { expanded, .. }) = self.roots.first_mut() {
-            *expanded = true;
+        // Find and expand the navigation section (may not be first if Reset is present)
+        for root in &mut self.roots {
+            if let TreeNode::Section { section_id, expanded, .. } = root {
+                if *section_id == "navigation" {
+                    *expanded = true;
+                    break;
+                }
+            }
         }
         self.rebuild_flat_list();
-        // Set cursor to first mapping (skip the section header itself)
-        if self.flat_nodes.len() > 1 {
-            self.cursor = 1;
+        // Set cursor to first unmapped mapping (shift buttons)
+        for (i, flat) in self.flat_nodes.iter().enumerate() {
+            if flat.node_type == FlatNodeType::Mapping {
+                let node = self.node_at_path(&flat.tree_path);
+                if let TreeNode::Mapping { status, .. } = node {
+                    if *status == MappingStatus::Unmapped {
+                        self.cursor = i;
+                        return;
+                    }
+                }
+            }
+        }
+        // Fallback: first mapping node
+        if let Some(i) = self.flat_nodes.iter().position(|f| f.node_type == FlatNodeType::Mapping) {
+            self.cursor = i;
         }
     }
 
@@ -657,7 +902,7 @@ impl LearnTree {
                     *mapped += 1;
                 }
             }
-            TreeNode::Done => {}
+            TreeNode::Reset | TreeNode::Done => {}
         }
     }
 

@@ -154,21 +154,6 @@ for v3 and beyond.
   we need to be able to be backwards compatible (not yet, but we should pave the
   way for this possibility, by adding a versioning system for the schema/db version)
 
-# MIDI/HID Mapping
-- [ ] Overhaul midi mapping mode to be a  structured tree like hierarchy where the mappings are structured into logical units (action buttons, deck controls, mixer controls etc) with some questions at each logical group to figure out the style of mapping we want(do we have 2 or 4 decks, physical, virtual or momentary mode etc), instead of a list with
-  questions at the front. The midi mapping guide needs to be controllable by
-  just the browse encoder and its press. parent nodes should be collapsed per
-  default unless we click on them, then we enter the child nodes. answering a
-  questions or doing a mapping should jump to the next one (if its the last
-  question/mapping in this parent node, jump to first leaf note in parent and
-  unfold everything for it visually).
-- [ ] The first mapping should be the encoder scroll then encoder press, so the user can interactively scroll through the steps of the mapping with just the MIDI/HID device and can decide which controls they want to remap, only those should be overwritten in the config file!.
-- [ ] Before writing anything to the file we need a verification window, that
-  shows all mappings that would be updated (just the control name, so the user
-  can see what they are about to update). this can be "Save"d or "Cancel"d, all
-  browsable via the browse encoder. For this to work we need to load existing
-  mappings even for midi learn mode, so existing browse rotate + press already
-  work without needing to remap.
 
 # UPDATE LIFECYCLE
 - [ ] connecting to wifi should first check if we already have credentials
@@ -196,6 +181,7 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
-- [ ] when no midi.yaml is detected while starting mesh-player automatically start in midi learn mode, so the user can map the software).
+- pressing the browse/loop length encoder now toggles the loop?! this is not intended bhaviour at all. loop toggle is its own mapping, this should not be implicitly mapped.
 - [ ] when on the fly stem linking in the browser for selecting a linked track,
   we can utilise smart suggestions better by additionally adding specific search parameters for the stem that is about to be linked or weighting certain markers more. for example when linking drums, key is relatively irrelevant, but the energy or lufs, aggression and other metrics matters more. for vocals, key is absolutely the most important, bpm also a bit, not so much energy, for bass i think the weighting can stay as is, for other too. Its also possible that for linked stems(other than drums) very compatible key is actually a hard requirement,  and a filter for results.
+

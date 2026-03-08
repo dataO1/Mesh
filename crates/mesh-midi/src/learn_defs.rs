@@ -51,10 +51,10 @@ pub enum Visibility {
     LayerToggleOnly,
     /// Only visible when pad_mode_source == Controller
     ControllerPadModeOnly,
-    /// Only visible when compact_mode is true and deck_count == 4
-    CompactModeOnly,
     /// Only visible when there are 4 virtual decks (any topology yielding 4 channels)
     FourDeckOnly,
+    /// Only visible when there are 4 physical decks (not counting layer toggle virtual decks)
+    FourPhysicalDeckOnly,
 }
 
 /// Definition of a single mappable action (leaf node in the tree).
@@ -120,8 +120,6 @@ pub struct TopologyConfig {
     pub deck_count: usize,
     /// Whether controller has layer toggle buttons (2 physical → 4 virtual)
     pub has_layer_toggle: bool,
-    /// Compact mode: per-side momentary mode buttons (renamed from momentary_mode_buttons)
-    pub compact_mode: bool,
     /// How pad button actions are determined
     pub pad_mode_source: PadModeSource,
 }
@@ -159,8 +157,8 @@ impl TopologyConfig {
             Visibility::ControllerPadModeOnly => {
                 self.pad_mode_source == PadModeSource::Controller
             }
-            Visibility::CompactModeOnly => self.compact_mode && self.deck_count == 4,
             Visibility::FourDeckOnly => self.num_mixer_channels() >= 4,
+            Visibility::FourPhysicalDeckOnly => self.deck_count >= 4,
         }
     }
 }
@@ -170,7 +168,6 @@ impl Default for TopologyConfig {
         Self {
             deck_count: 2,
             has_layer_toggle: false,
-            compact_mode: false,
             pad_mode_source: PadModeSource::default(),
         }
     }

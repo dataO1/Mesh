@@ -289,14 +289,14 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
 ///   6. Log all actions to the action log footer
 fn poll_midi_learn_events(app: &mut MeshApp) -> Vec<Task<Message>> {
     use crate::ui::app::{convert_midi_event_to_captured, convert_hid_event_to_captured};
-    use crate::ui::midi_learn::LearnMode;
+    use crate::ui::midi_learn::{LearnMode, MidiLearnMessage};
     use crate::ui::midi_learn_tree::{ActionLogEntry, FlatNodeType, LogStatus};
     use mesh_midi::{learn_mode_dispatch, MidiEvent};
 
     let mode = app.midi_learn.mode;
 
-    // Only NavCapture, Setup, and TreeNavigation need event polling
-    if !matches!(mode, LearnMode::NavCapture | LearnMode::Setup | LearnMode::TreeNavigation) {
+    // All active learn modes need event polling
+    if !matches!(mode, LearnMode::NavCapture | LearnMode::Setup | LearnMode::TreeNavigation | LearnMode::ResetConfirm | LearnMode::Verification) {
         sync_highlights(app);
         return Vec::new();
     }
@@ -313,7 +313,7 @@ fn poll_midi_learn_events(app: &mut MeshApp) -> Vec<Task<Message>> {
 
     // --- Drain raw MIDI events ---
     for (raw_event, source_port) in controller.drain_raw_events_with_source() {
-        let captured = convert_midi_event_to_captured(&raw_event);
+        let captured = convert_midi_event_to_captured(&raw_event, &source_port);
 
         if app.midi_learn.captured_port_name.is_none() {
             log::info!("MIDI Learn: Captured source port '{}'", source_port);
@@ -327,7 +327,14 @@ fn poll_midi_learn_events(app: &mut MeshApp) -> Vec<Task<Message>> {
     if !sampling_active {
         for hid_event in controller.drain_hid_events() {
             let descriptor = controller.hid_descriptor_for(&hid_event.address);
-            let device_name = controller.first_hid_device_name().unwrap_or("HID Device");
+            let device_name = match &hid_event.address {
+                mesh_midi::ControlAddress::Hid { device_id, .. } => {
+                    controller.hid_device_name_for_id(device_id)
+                }
+                _ => None,
+            }
+            .or_else(|| controller.first_hid_device_name())
+            .unwrap_or("HID Device");
             let captured = convert_hid_event_to_captured(
                 &hid_event,
                 descriptor,
@@ -374,22 +381,98 @@ fn poll_midi_learn_events(app: &mut MeshApp) -> Vec<Task<Message>> {
     }
 
     // Pre-read browse/shift addresses (avoid borrowing issues)
-    let browse_encoder_addr = app.midi_learn.browse_encoder_address.clone();
-    let browse_select_addr = app.midi_learn.browse_select_address.clone();
+    let browse_encoder_addrs = app.midi_learn.browse_encoder_addresses.clone();
+    let browse_select_addrs = app.midi_learn.browse_select_addresses.clone();
     let shift_addrs = app.midi_learn.shift_addresses.clone();
 
-    if mode == LearnMode::Setup {
-        // During setup, only browse encoder/select are functional
-        // They navigate the setup questions (will be wired in a future iteration)
+    if mode == LearnMode::ResetConfirm {
+        // Encoder scrolls between Cancel (0) and Reset (1), select button activates
         for captured in captured_events {
-            // Browse encoder → no-op in setup for now (questions are click-based)
-            // Browse select → confirm setup
-            if let Some(ref addr) = browse_select_addr {
-                if captured.address == *addr && captured.value > 0 {
-                    app.midi_learn.confirm_setup();
-                    app.status = "Tree built. Map your controls!".to_string();
-                    break;
+            if browse_encoder_addrs.iter().any(|a| *a == captured.address) {
+                let delta = if captured.value > 64 { -1i32 } else if captured.value > 0 { 1 } else { 0 };
+                if delta != 0 {
+                    let cur = app.midi_learn.reset_confirm_cursor as i32;
+                    app.midi_learn.reset_confirm_cursor = (cur + delta).clamp(0, 1) as usize;
                 }
+                continue;
+            }
+            if browse_select_addrs.iter().any(|a| *a == captured.address) && captured.value > 0 {
+                if app.midi_learn.reset_confirm_cursor == 0 {
+                    // Cancel — back to tree
+                    app.midi_learn.mode = LearnMode::TreeNavigation;
+                    app.midi_learn.update_highlight();
+                } else {
+                    // Confirm reset — clear all mappings
+                    if let Some(ref mut tree) = app.midi_learn.tree {
+                        tree.clear_all_mappings();
+                    }
+                    app.midi_learn.rebuild_active_mappings();
+                    app.midi_learn.mode = LearnMode::TreeNavigation;
+                    app.midi_learn.update_highlight();
+                    app.status = "All mappings cleared. Ready to remap.".to_string();
+                }
+                break;
+            }
+        }
+        sync_highlights(app);
+        return Vec::new();
+    }
+
+    if mode == LearnMode::Verification {
+        // Encoder scrolls between Back (0) and Save (1), select button activates
+        for captured in captured_events {
+            if browse_encoder_addrs.iter().any(|a| *a == captured.address) {
+                let delta = if captured.value > 64 { -1i32 } else if captured.value > 0 { 1 } else { 0 };
+                if delta != 0 {
+                    let cur = app.midi_learn.verify_cursor as i32;
+                    app.midi_learn.verify_cursor = (cur + delta).clamp(0, 1) as usize;
+                }
+                continue;
+            }
+            if browse_select_addrs.iter().any(|a| *a == captured.address) && captured.value > 0 {
+                if app.midi_learn.verify_cursor == 0 {
+                    // Back to tree
+                    app.midi_learn.mode = LearnMode::TreeNavigation;
+                    app.midi_learn.update_highlight();
+                } else {
+                    // Save — dispatch via Task
+                    sync_highlights(app);
+                    return vec![Task::done(Message::MidiLearn(MidiLearnMessage::Save))];
+                }
+                break;
+            }
+        }
+        sync_highlights(app);
+        return Vec::new();
+    }
+
+    if mode == LearnMode::Setup {
+        // Encoder scrolls the setup menu, select button activates the focused item
+        for captured in captured_events {
+            // Browse encoder → scroll setup cursor
+            if browse_encoder_addrs.iter().any(|a| *a == captured.address) {
+                let delta = if captured.value > 64 {
+                    -1 // Counter-clockwise
+                } else if captured.value > 0 && captured.value <= 64 {
+                    1 // Clockwise
+                } else {
+                    0
+                };
+                if delta != 0 {
+                    app.midi_learn.setup_scroll(delta);
+                }
+                continue;
+            }
+            // Browse select → select current setup item
+            if browse_select_addrs.iter().any(|a| *a == captured.address) && captured.value > 0 {
+                let should_confirm = app.midi_learn.setup_select();
+                if should_confirm {
+                    app.midi_learn.confirm_setup();
+                    if app.midi_learn.mode == LearnMode::TreeNavigation {
+                        app.status = "Tree built. Map your controls!".to_string();
+                    }
+                }
+                break;
             }
         }
         sync_highlights(app);
@@ -402,6 +485,7 @@ fn poll_midi_learn_events(app: &mut MeshApp) -> Vec<Task<Message>> {
     // (to avoid borrow conflicts with handle_midi_message)
     let mut actions_to_execute: Vec<MidiEvent> = Vec::new();
     let mut log_entries: Vec<ActionLogEntry> = Vec::new();
+    let mut scroll_tasks: Vec<Task<Message>> = Vec::new();
 
     for captured in captured_events {
         app.midi_learn.last_captured = Some(captured.clone());
@@ -428,62 +512,109 @@ fn poll_midi_learn_events(app: &mut MeshApp) -> Vec<Task<Message>> {
 
         let shift_global = app.midi_learn.shift_held[0] || app.midi_learn.shift_held[1];
 
-        // 3. Browse encoder → scroll tree
-        if let Some(ref addr) = browse_encoder_addr {
-            if captured.address == *addr {
-                // Extract delta from encoder value
-                let delta = if captured.value > 64 {
-                    -1i32  // counter-clockwise
-                } else if captured.value > 0 && captured.value < 64 {
-                    1i32   // clockwise
-                } else {
-                    continue; // no delta
-                };
-                if let Some(ref mut tree) = app.midi_learn.tree {
-                    tree.scroll(delta);
-                }
-                app.midi_learn.update_highlight();
-                continue;
+        // 3. Browse encoder(s) → scroll tree (pass through when shift held for capture)
+        if !shift_global && browse_encoder_addrs.iter().any(|a| *a == captured.address) {
+            // Extract delta from encoder value
+            let delta = if captured.value > 64 {
+                -1i32  // counter-clockwise
+            } else if captured.value > 0 && captured.value < 64 {
+                1i32   // clockwise
+            } else {
+                continue; // no delta
+            };
+            if let Some(ref mut tree) = app.midi_learn.tree {
+                tree.scroll(delta);
             }
-        }
-
-        // 4. Browse select → toggle section / select node
-        if let Some(ref addr) = browse_select_addr {
-            if captured.address == *addr && captured.value > 0 {
-                if let Some(ref mut tree) = app.midi_learn.tree {
-                    let is_done = tree.select();
-                    if is_done {
-                        app.midi_learn.mode = LearnMode::Verification;
-                    }
-                }
-                app.midi_learn.update_highlight();
-                continue;
-            }
-        }
-
-        // 5. Lookup (address, shift_held) in active_mappings → execute
-        let lookup_key = (captured.address.clone(), shift_global);
-        if let Some(mapping) = app.midi_learn.active_mappings.get(&lookup_key).cloned() {
-            let deck = mapping.deck_index.unwrap_or(0);
-            if let Some(msg) = learn_mode_dispatch(
-                &mapping.action,
-                deck,
-                captured.value,
-                mapping.hardware_type,
-                mapping.param_key,
-                mapping.param_value,
-            ) {
-                actions_to_execute.push(MidiEvent {
-                    message: msg,
-                    engine_dispatched: false,
-                });
-                log_entries.push(ActionLogEntry {
-                    control_display: captured.display(),
-                    action_name: mapping.display_name.clone(),
-                    status: LogStatus::Mapped,
-                });
+            app.midi_learn.update_highlight();
+            // Auto-scroll tree view to keep cursor visible
+            if let Some((cursor, total)) = app.midi_learn.tree_scroll_info() {
+                scroll_tasks.push(crate::ui::midi_learn::scroll_tree_to_cursor(cursor, total));
             }
             continue;
+        }
+
+        // 4. Browse select → toggle section / clear mapping / verify done
+        //    When shift held, pass through to capture (allows shift+browse → browser.back etc.)
+        if !shift_global && browse_select_addrs.iter().any(|a| *a == captured.address) && captured.value > 0 {
+            if let Some(ref mut tree) = app.midi_learn.tree {
+                let current_type = tree.current_flat().map(|f| f.node_type);
+                match current_type {
+                    Some(FlatNodeType::Mapping) => {
+                        // Clear the current mapping so user can re-capture
+                        tree.clear_current_mapping();
+                        app.midi_learn.rebuild_active_mappings();
+                    }
+                    Some(FlatNodeType::Section) => {
+                        tree.select();
+                    }
+                    Some(FlatNodeType::Reset) => {
+                        app.midi_learn.mode = LearnMode::ResetConfirm;
+                        app.midi_learn.reset_confirm_cursor = 0; // Default to Cancel (safe)
+                    }
+                    Some(FlatNodeType::Done) => {
+                        app.midi_learn.mode = LearnMode::Verification;
+                    }
+                    None => {}
+                }
+            }
+            app.midi_learn.update_highlight();
+            // Auto-scroll after action
+            if let Some((cursor, total)) = app.midi_learn.tree_scroll_info() {
+                scroll_tasks.push(crate::ui::midi_learn::scroll_tree_to_cursor(cursor, total));
+            }
+            continue;
+        }
+
+        // 5. Lookup (address, shift_held) in active_mappings → execute or allow cross-mode capture
+        let lookup_key = (captured.address.clone(), shift_global);
+        if let Some(mappings) = app.midi_learn.active_mappings.get(&lookup_key) {
+            // Get cursor node's mode_condition (None if cursor not on a mapping node)
+            let cursor_mode: Option<Option<&str>> = app.midi_learn.tree.as_ref()
+                .and_then(|t| t.current_node())
+                .and_then(|n| match n {
+                    crate::ui::midi_learn_tree::TreeNode::Mapping { def, .. } => Some(def.mode_condition),
+                    _ => None,
+                });
+
+            if let Some(target_mode) = cursor_mode {
+                // Cursor IS on a mapping node — only block if same mode exists
+                if let Some(mapping) = mappings.iter().find(|m| m.mode_condition == target_mode) {
+                    // Same-mode mapping exists → execute (true duplicate)
+                    let deck = mapping.deck_index.unwrap_or(0);
+                    if let Some(msg) = learn_mode_dispatch(
+                        &mapping.action, deck, captured.value,
+                        mapping.hardware_type, mapping.param_key, mapping.param_value,
+                    ) {
+                        actions_to_execute.push(MidiEvent { message: msg, engine_dispatched: false });
+                        log_entries.push(ActionLogEntry {
+                            control_display: captured.display(),
+                            action_name: mapping.display_name.clone(),
+                            status: LogStatus::Mapped,
+                        });
+                    }
+                    continue;
+                }
+                // No same-mode mapping → fall through to capture at step 6
+            } else {
+                // Cursor NOT on a mapping node → execute (prefer modeless, then first)
+                if let Some(mapping) = mappings.iter().find(|m| m.mode_condition.is_none())
+                    .or_else(|| mappings.first())
+                {
+                    let deck = mapping.deck_index.unwrap_or(0);
+                    if let Some(msg) = learn_mode_dispatch(
+                        &mapping.action, deck, captured.value,
+                        mapping.hardware_type, mapping.param_key, mapping.param_value,
+                    ) {
+                        actions_to_execute.push(MidiEvent { message: msg, engine_dispatched: false });
+                        log_entries.push(ActionLogEntry {
+                            control_display: captured.display(),
+                            action_name: mapping.display_name.clone(),
+                            status: LogStatus::Mapped,
+                        });
+                    }
+                    continue;
+                }
+            }
         }
 
         // 6. Not found → capture if cursor is on a Mapping node
@@ -515,6 +646,11 @@ fn poll_midi_learn_events(app: &mut MeshApp) -> Vec<Task<Message>> {
 
             app.midi_learn.mark_captured();
             app.midi_learn.start_capture(captured);
+            // HID / MIDI Note: start_capture already finalized (no detection buffer).
+            // Schedule scroll now since the is_detection_complete check below won't fire.
+            if app.midi_learn.detection_buffer.is_none() {
+                scroll_tasks.push(Task::done(Message::MidiLearn(MidiLearnMessage::RefreshScroll)));
+            }
             break;
         }
     }
@@ -522,6 +658,10 @@ fn poll_midi_learn_events(app: &mut MeshApp) -> Vec<Task<Message>> {
     // Finalize any pending detection
     if app.midi_learn.is_detection_complete() {
         app.midi_learn.finalize_mapping();
+        // Defer scroll to next frame — finalize_mapping may trigger advance_to_next
+        // which folds/unfolds sections, changing the flat list. Iced needs a layout
+        // pass before snap_to can correctly position the viewport.
+        scroll_tasks.push(Task::done(Message::MidiLearn(MidiLearnMessage::RefreshScroll)));
     }
 
     // Push log entries to the tree's action log
@@ -536,6 +676,7 @@ fn poll_midi_learn_events(app: &mut MeshApp) -> Vec<Task<Message>> {
     for event in actions_to_execute {
         learn_tasks.push(app.handle_midi_message(event));
     }
+    learn_tasks.extend(scroll_tasks);
 
     sync_highlights(app);
     learn_tasks

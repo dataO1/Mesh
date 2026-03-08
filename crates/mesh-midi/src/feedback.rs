@@ -7,7 +7,7 @@
 use crate::config::FeedbackMapping;
 use crate::deck_target::{DeckTargetState, LayerSelection};
 use crate::types::ControlAddress;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Compute a smooth pulse brightness for HID RGB LEDs (0.15-1.0) from beat phase.
 ///
@@ -98,6 +98,20 @@ const SLICER_COLOR: [u8; 3] = [0, 180, 200];     // Cyan (assigned preset)
 const SLICER_COLOR_DIM: [u8; 3] = [0, 12, 14];   // Dim cyan (empty slot)
 const BROWSE_COLOR: [u8; 3] = [200, 200, 200];    // White (browse mode active)
 const BROWSE_COLOR_DIM: [u8; 3] = [20, 20, 20];   // Dim white (browse mode inactive)
+
+// Mode indicator / utility LED colors
+const HOT_CUE_MODE_COLOR: [u8; 3] = [0, 100, 200];     // Blue (hot cue mode active)
+const HOT_CUE_MODE_COLOR_DIM: [u8; 3] = [8, 8, 8];
+const SLICER_MODE_COLOR: [u8; 3] = [160, 0, 180];      // Purple (slicer mode active)
+const SLICER_MODE_COLOR_DIM: [u8; 3] = [8, 8, 8];
+const CUE_ENABLED_COLOR: [u8; 3] = [200, 200, 0];      // Yellow (PFL cue enabled)
+const CUE_ENABLED_COLOR_DIM: [u8; 3] = [8, 8, 8];
+const SLIP_COLOR: [u8; 3] = [180, 100, 0];              // Amber (slip mode active)
+const SLIP_COLOR_DIM: [u8; 3] = [8, 8, 8];
+const KEY_MATCH_COLOR: [u8; 3] = [0, 150, 200];         // Teal (key match active)
+const KEY_MATCH_COLOR_DIM: [u8; 3] = [8, 8, 8];
+const LAYER_A_COLOR: [u8; 3] = [200, 0, 0];             // Red (layer A)
+const LAYER_B_COLOR: [u8; 3] = [0, 200, 0];             // Green (layer B)
 
 /// Application state for LED feedback
 ///
@@ -208,29 +222,39 @@ pub fn evaluate_feedback(
     state: &FeedbackState,
     deck_target: &DeckTargetState,
 ) -> Vec<FeedbackResult> {
+    // Pass 1: Collect addresses "owned" by active mode-conditional feedback.
+    // When a mode-specific mapping (e.g. hot_cue) matches, unconditional mappings
+    // (e.g. stem mutes) for the same address are suppressed — the mode owns those
+    // buttons now and should control their LEDs exclusively.
+    let mode_owned: HashSet<&ControlAddress> = mappings.iter()
+        .filter(|m| m.mode.is_some() && mode_matches(m, state, deck_target))
+        .map(|m| &m.output)
+        .collect();
+
+    // Pass 2: Evaluate normally, suppressing unconditional mappings for owned addresses
     mappings
         .iter()
         .filter_map(|mapping| {
-            // Mode-conditional feedback: skip mappings whose mode doesn't match
-            // the deck's current action mode. This prevents mode-gated off results
-            // from overwriting unconditional results for the same output address.
             if !mode_matches(mapping, state, deck_target) {
                 return None;
             }
 
-            // Clone address only after mode filtering (avoids cloning ControlAddress
-            // strings for mode-gated mappings that won't produce results)
+            // Suppress unconditional mappings when a mode owns the address
+            if mapping.mode.is_none() && mode_owned.contains(&mapping.output) {
+                return None;
+            }
+
             let address = mapping.output.clone();
 
-            // Special handling for layer indicator LEDs with alt_on_value
+            // Layer indicator: hardcoded red (A) / green (B)
             if mapping.state == "deck.layer_active" {
                 let physical_deck = mapping.physical_deck.unwrap_or(0);
                 let current_layer = deck_target.get_layer(physical_deck);
                 let (value, color) = match current_layer {
-                    LayerSelection::A => (mapping.on_value, mapping.on_color),
+                    LayerSelection::A => (mapping.on_value, Some(LAYER_A_COLOR)),
                     LayerSelection::B => (
                         mapping.alt_on_value.unwrap_or(mapping.on_value),
-                        mapping.alt_on_color.or(mapping.on_color),
+                        Some(LAYER_B_COLOR),
                     ),
                 };
                 return Some(FeedbackResult { address, value, color });
@@ -316,7 +340,7 @@ pub fn evaluate_feedback(
 
             // Browse mode: per-side state, white when active, dim when inactive
             if mapping.state == "side.browse_mode" {
-                let side = mapping.physical_deck.unwrap_or(0).min(1);
+                let side = mapping.physical_deck.unwrap_or(0) % 2;
                 let active = state.browse_active[side];
                 return Some(if active {
                     FeedbackResult { address, value: mapping.on_value, color: Some(BROWSE_COLOR) }
@@ -370,11 +394,67 @@ pub fn evaluate_feedback(
                 return Some(FeedbackResult { address, value: mapping.on_value, color: Some(base) });
             }
 
+            // Hot cue mode indicator: blue when active
+            if mapping.state == "deck.hot_cue_mode" {
+                let deck_idx = resolve_feedback_deck(mapping, deck_target);
+                let active = state.decks[deck_idx].action_mode == ActionMode::HotCue;
+                return Some(if active {
+                    FeedbackResult { address, value: mapping.on_value, color: Some(HOT_CUE_MODE_COLOR) }
+                } else {
+                    FeedbackResult { address, value: mapping.off_value, color: Some(HOT_CUE_MODE_COLOR_DIM) }
+                });
+            }
+
+            // Slicer mode indicator: purple when active
+            if mapping.state == "deck.slicer_mode" {
+                let deck_idx = resolve_feedback_deck(mapping, deck_target);
+                let active = state.decks[deck_idx].action_mode == ActionMode::Slicer;
+                return Some(if active {
+                    FeedbackResult { address, value: mapping.on_value, color: Some(SLICER_MODE_COLOR) }
+                } else {
+                    FeedbackResult { address, value: mapping.off_value, color: Some(SLICER_MODE_COLOR_DIM) }
+                });
+            }
+
+            // Mixer cue/PFL: yellow when enabled
+            if mapping.state == "mixer.cue_enabled" {
+                let channel = mapping.deck_index.unwrap_or(0).min(3);
+                let active = state.mixer[channel].cue_enabled;
+                return Some(if active {
+                    FeedbackResult { address, value: mapping.on_value, color: Some(CUE_ENABLED_COLOR) }
+                } else {
+                    FeedbackResult { address, value: mapping.off_value, color: Some(CUE_ENABLED_COLOR_DIM) }
+                });
+            }
+
+            // Slip mode: amber when active
+            if mapping.state == "deck.slip_active" {
+                let deck_idx = resolve_feedback_deck(mapping, deck_target);
+                let active = state.decks[deck_idx].slip_active;
+                return Some(if active {
+                    FeedbackResult { address, value: mapping.on_value, color: Some(SLIP_COLOR) }
+                } else {
+                    FeedbackResult { address, value: mapping.off_value, color: Some(SLIP_COLOR_DIM) }
+                });
+            }
+
+            // Key match: teal when active
+            if mapping.state == "deck.key_match_enabled" {
+                let deck_idx = resolve_feedback_deck(mapping, deck_target);
+                let active = state.decks[deck_idx].key_match_enabled;
+                return Some(if active {
+                    FeedbackResult { address, value: mapping.on_value, color: Some(KEY_MATCH_COLOR) }
+                } else {
+                    FeedbackResult { address, value: mapping.off_value, color: Some(KEY_MATCH_COLOR_DIM) }
+                });
+            }
+
+            // Generic fallback: dim white for unknown states
             let active = evaluate_state(mapping, state, deck_target);
             let (value, color) = if active {
-                (mapping.on_value, mapping.on_color)
+                (mapping.on_value, Some([60, 60, 60]))
             } else {
-                (mapping.off_value, mapping.off_color)
+                (mapping.off_value, Some([8, 8, 8]))
             };
             Some(FeedbackResult { address, value, color })
         })

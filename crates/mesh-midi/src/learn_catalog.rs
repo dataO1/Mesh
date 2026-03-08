@@ -129,31 +129,7 @@ const fn fader(
 // ---------------------------------------------------------------------------
 
 static NAVIGATION_MAPPINGS: &[MappingDef] = &[
-    encoder("nav.browse_encoder", "Browse Encoder",
-        "Turn to scroll through the track list.",
-        "browser.scroll"),
-    MappingDef {
-        uses_physical_deck: false,
-        ..button("nav.browse_select", "Browse Press",
-            "Press to load the selected track or enter a folder.",
-            "browser.select", None)
-    },
-];
-
-static NAVIGATION: SectionDef = SectionDef {
-    id: "navigation",
-    label: "Navigation",
-    description: "Scroll the track browser and select tracks for loading.",
-    repeat_mode: RepeatMode::Once,
-    visibility: Visibility::Always,
-    mappings: NAVIGATION_MAPPINGS,
-};
-
-// ---------------------------------------------------------------------------
-// Section: Modifiers (shift buttons, layer toggles)
-// ---------------------------------------------------------------------------
-
-static MODIFIER_MAPPINGS: &[MappingDef] = &[
+    // Shift buttons first — needed before any shift+button combinations can be mapped
     MappingDef {
         uses_physical_deck: false,
         ..button("mod.shift_left", "Shift Button — Left",
@@ -166,6 +142,66 @@ static MODIFIER_MAPPINGS: &[MappingDef] = &[
             "Hold to access the shift-layer of other mapped controls.",
             "_shift", None)
     },
+    MappingDef {
+        mode_condition: Some("browse"),
+        ..encoder("nav.browse_encoder", "Browse Encoder",
+            "Main navigation encoder: scrolls the track browser, settings menus, and mapping tree.",
+            "browser.scroll")
+    },
+    MappingDef {
+        uses_physical_deck: false,
+        mode_condition: Some("browse"),
+        ..button("nav.browse_select", "Browse Press",
+            "Main select button: loads tracks, confirms selections, and opens folders.",
+            "browser.select", None)
+    },
+    MappingDef {
+        uses_physical_deck: false,
+        ..button("nav.browser_back", "Browser Back",
+            "Navigate up one level in the browser or exit the suggestion playlist.",
+            "browser.back", None)
+    },
+    // Extra browse encoders — scroll + select per encoder
+    MappingDef { param_key: Some("index"), param_value: Some(1), uses_physical_deck: false,
+        visibility: Visibility::Always, mode_condition: Some("browse"),
+        ..encoder("nav.browse_encoder_2", "Browse Encoder 2",
+            "Additional browse encoder (e.g. right side).", "browser.scroll") },
+    MappingDef { param_key: Some("index"), param_value: Some(1), uses_physical_deck: false,
+        visibility: Visibility::Always, mode_condition: Some("browse"),
+        ..button("nav.browse_select_2", "Browse Press 2",
+            "Select button for additional browse encoder.", "browser.select", None) },
+    MappingDef { param_key: Some("index"), param_value: Some(2), uses_physical_deck: false,
+        visibility: Visibility::FourPhysicalDeckOnly, mode_condition: Some("browse"),
+        ..encoder("nav.browse_encoder_3", "Browse Encoder 3",
+            "Additional browse encoder.", "browser.scroll") },
+    MappingDef { param_key: Some("index"), param_value: Some(2), uses_physical_deck: false,
+        visibility: Visibility::FourPhysicalDeckOnly, mode_condition: Some("browse"),
+        ..button("nav.browse_select_3", "Browse Press 3",
+            "Select button for additional browse encoder.", "browser.select", None) },
+    MappingDef { param_key: Some("index"), param_value: Some(3), uses_physical_deck: false,
+        visibility: Visibility::FourPhysicalDeckOnly, mode_condition: Some("browse"),
+        ..encoder("nav.browse_encoder_4", "Browse Encoder 4",
+            "Additional browse encoder.", "browser.scroll") },
+    MappingDef { param_key: Some("index"), param_value: Some(3), uses_physical_deck: false,
+        visibility: Visibility::FourPhysicalDeckOnly, mode_condition: Some("browse"),
+        ..button("nav.browse_select_4", "Browse Press 4",
+            "Select button for additional browse encoder.", "browser.select", None) },
+];
+
+static NAVIGATION: SectionDef = SectionDef {
+    id: "navigation",
+    label: "Navigation",
+    description: "Scroll the track browser and select tracks for loading.",
+    repeat_mode: RepeatMode::Once,
+    visibility: Visibility::Always,
+    mappings: NAVIGATION_MAPPINGS,
+};
+
+// ---------------------------------------------------------------------------
+// Section: Modifiers (layer toggles — shift buttons are in Navigation)
+// ---------------------------------------------------------------------------
+
+static MODIFIER_MAPPINGS: &[MappingDef] = &[
     MappingDef {
         uses_physical_deck: false,
         visibility: Visibility::LayerToggleOnly,
@@ -185,7 +221,7 @@ static MODIFIER_MAPPINGS: &[MappingDef] = &[
 static MODIFIERS: SectionDef = SectionDef {
     id: "modifiers",
     label: "Modifiers",
-    description: "Shift buttons add a second function to any mapped control. Layer toggles switch between deck layers.",
+    description: "Layer toggles switch between deck layers (A/B).",
     repeat_mode: RepeatMode::Once,
     visibility: Visibility::Always,
     mappings: MODIFIER_MAPPINGS,
@@ -238,6 +274,15 @@ static TRANSPORT_MAPPINGS: &[MappingDef] = &[
     button("transport.key_match", "Key Match",
         "Transpose this deck's key to match the master deck.",
         "deck.key_match", Some("deck.key_match_enabled")),
+    knob("transport.suggestion_energy", "Suggestion Energy",
+        "Bias track suggestions toward higher or lower energy.",
+        "deck.suggestion_energy"),
+    button_toggle("transport.browse_toggle", "Browser Toggle",
+        "Toggle the track browser on this side.",
+        "side.browse_mode", Some("side.browse_mode")),
+    button("transport.deck_load", "Deck Load",
+        "Load the selected browser track into this deck.",
+        "deck.load_selected", None),
 ];
 
 static TRANSPORT: SectionDef = SectionDef {
@@ -257,46 +302,44 @@ static PADS_MAPPINGS: &[MappingDef] = &[
     button("pads.hot_cue_mode", "Hot Cue Mode",
         "Switch pads to hot cue mode (if your controller has mode buttons).",
         "deck.hot_cue_mode", Some("deck.hot_cue_mode")),
-    MappingDef { param_key: Some("slot"), param_value: Some(0),
+    button("pads.slicer_mode", "Slicer Mode",
+        "Switch pads to slicer mode.",
+        "deck.slicer_mode", Some("deck.slicer_mode")),
+    MappingDef { param_key: Some("slot"), param_value: Some(0), mode_condition: Some("hot_cue"),
         ..button("pads.hot_cue.0", "Hot Cue 1", "Set or trigger a cue point at this position.", "deck.hot_cue_press", Some("deck.hot_cue_set")) },
-    MappingDef { param_key: Some("slot"), param_value: Some(1),
+    MappingDef { param_key: Some("slot"), param_value: Some(1), mode_condition: Some("hot_cue"),
         ..button("pads.hot_cue.1", "Hot Cue 2", "Set or trigger a cue point at this position.", "deck.hot_cue_press", Some("deck.hot_cue_set")) },
-    MappingDef { param_key: Some("slot"), param_value: Some(2),
+    MappingDef { param_key: Some("slot"), param_value: Some(2), mode_condition: Some("hot_cue"),
         ..button("pads.hot_cue.2", "Hot Cue 3", "Set or trigger a cue point at this position.", "deck.hot_cue_press", Some("deck.hot_cue_set")) },
-    MappingDef { param_key: Some("slot"), param_value: Some(3),
+    MappingDef { param_key: Some("slot"), param_value: Some(3), mode_condition: Some("hot_cue"),
         ..button("pads.hot_cue.3", "Hot Cue 4", "Set or trigger a cue point at this position.", "deck.hot_cue_press", Some("deck.hot_cue_set")) },
-    MappingDef { param_key: Some("slot"), param_value: Some(4),
+    MappingDef { param_key: Some("slot"), param_value: Some(4), mode_condition: Some("hot_cue"),
         ..button("pads.hot_cue.4", "Hot Cue 5", "Set or trigger a cue point at this position.", "deck.hot_cue_press", Some("deck.hot_cue_set")) },
-    MappingDef { param_key: Some("slot"), param_value: Some(5),
+    MappingDef { param_key: Some("slot"), param_value: Some(5), mode_condition: Some("hot_cue"),
         ..button("pads.hot_cue.5", "Hot Cue 6", "Set or trigger a cue point at this position.", "deck.hot_cue_press", Some("deck.hot_cue_set")) },
-    MappingDef { param_key: Some("slot"), param_value: Some(6),
+    MappingDef { param_key: Some("slot"), param_value: Some(6), mode_condition: Some("hot_cue"),
         ..button("pads.hot_cue.6", "Hot Cue 7", "Set or trigger a cue point at this position.", "deck.hot_cue_press", Some("deck.hot_cue_set")) },
-    MappingDef { param_key: Some("slot"), param_value: Some(7),
+    MappingDef { param_key: Some("slot"), param_value: Some(7), mode_condition: Some("hot_cue"),
         ..button("pads.hot_cue.7", "Hot Cue 8", "Set or trigger a cue point at this position.", "deck.hot_cue_press", Some("deck.hot_cue_set")) },
-    MappingDef {
-        visibility: Visibility::ControllerPadModeOnly,
-        ..button("pads.slicer_mode", "Slicer Mode",
-            "Switch pads to slicer mode.",
-            "deck.slicer_mode", Some("deck.slicer_mode"))
-    },
-    MappingDef { param_key: Some("pad"), param_value: Some(0), visibility: Visibility::ControllerPadModeOnly,
+    MappingDef { param_key: Some("pad"), param_value: Some(0), visibility: Visibility::ControllerPadModeOnly, mode_condition: Some("slicer"),
         ..button("pads.slicer.0", "Slicer 1", "Trigger a slice from the current slicer buffer.", "deck.slicer_trigger", Some("deck.slicer_slice_active")) },
-    MappingDef { param_key: Some("pad"), param_value: Some(1), visibility: Visibility::ControllerPadModeOnly,
+    MappingDef { param_key: Some("pad"), param_value: Some(1), visibility: Visibility::ControllerPadModeOnly, mode_condition: Some("slicer"),
         ..button("pads.slicer.1", "Slicer 2", "Trigger a slice from the current slicer buffer.", "deck.slicer_trigger", Some("deck.slicer_slice_active")) },
-    MappingDef { param_key: Some("pad"), param_value: Some(2), visibility: Visibility::ControllerPadModeOnly,
+    MappingDef { param_key: Some("pad"), param_value: Some(2), visibility: Visibility::ControllerPadModeOnly, mode_condition: Some("slicer"),
         ..button("pads.slicer.2", "Slicer 3", "Trigger a slice from the current slicer buffer.", "deck.slicer_trigger", Some("deck.slicer_slice_active")) },
-    MappingDef { param_key: Some("pad"), param_value: Some(3), visibility: Visibility::ControllerPadModeOnly,
+    MappingDef { param_key: Some("pad"), param_value: Some(3), visibility: Visibility::ControllerPadModeOnly, mode_condition: Some("slicer"),
         ..button("pads.slicer.3", "Slicer 4", "Trigger a slice from the current slicer buffer.", "deck.slicer_trigger", Some("deck.slicer_slice_active")) },
-    MappingDef { param_key: Some("pad"), param_value: Some(4), visibility: Visibility::ControllerPadModeOnly,
+    MappingDef { param_key: Some("pad"), param_value: Some(4), visibility: Visibility::ControllerPadModeOnly, mode_condition: Some("slicer"),
         ..button("pads.slicer.4", "Slicer 5", "Trigger a slice from the current slicer buffer.", "deck.slicer_trigger", Some("deck.slicer_slice_active")) },
-    MappingDef { param_key: Some("pad"), param_value: Some(5), visibility: Visibility::ControllerPadModeOnly,
+    MappingDef { param_key: Some("pad"), param_value: Some(5), visibility: Visibility::ControllerPadModeOnly, mode_condition: Some("slicer"),
         ..button("pads.slicer.5", "Slicer 6", "Trigger a slice from the current slicer buffer.", "deck.slicer_trigger", Some("deck.slicer_slice_active")) },
-    MappingDef { param_key: Some("pad"), param_value: Some(6), visibility: Visibility::ControllerPadModeOnly,
+    MappingDef { param_key: Some("pad"), param_value: Some(6), visibility: Visibility::ControllerPadModeOnly, mode_condition: Some("slicer"),
         ..button("pads.slicer.6", "Slicer 7", "Trigger a slice from the current slicer buffer.", "deck.slicer_trigger", Some("deck.slicer_slice_active")) },
-    MappingDef { param_key: Some("pad"), param_value: Some(7), visibility: Visibility::ControllerPadModeOnly,
+    MappingDef { param_key: Some("pad"), param_value: Some(7), visibility: Visibility::ControllerPadModeOnly, mode_condition: Some("slicer"),
         ..button("pads.slicer.7", "Slicer 8", "Trigger a slice from the current slicer buffer.", "deck.slicer_trigger", Some("deck.slicer_slice_active")) },
     MappingDef {
         visibility: Visibility::ControllerPadModeOnly,
+        mode_condition: Some("slicer"),
         ..button("pads.slicer_reset", "Slicer Reset",
             "Clear the slicer buffer and return to normal playback.",
             "deck.slicer_reset", None)
@@ -319,31 +362,31 @@ static PADS: SectionDef = SectionDef {
 const STEM_NAMES: [&str; 4] = ["Vocals", "Drums", "Bass", "Other"];
 
 static STEMS_MAPPINGS: &[MappingDef] = &[
-    // Mutes
-    MappingDef { param_key: Some("stem"), param_value: Some(0), uses_physical_deck: false,
-        ..button("stems.mute.0", "Vocals Mute", "Silence the vocals stem.", "deck.stem_mute", Some("deck.stem_muted")) },
+    // Mutes — ordered: Drums, Bass, Vocals, Other
     MappingDef { param_key: Some("stem"), param_value: Some(1), uses_physical_deck: false,
         ..button("stems.mute.1", "Drums Mute", "Silence the drums stem.", "deck.stem_mute", Some("deck.stem_muted")) },
     MappingDef { param_key: Some("stem"), param_value: Some(2), uses_physical_deck: false,
         ..button("stems.mute.2", "Bass Mute", "Silence the bass stem.", "deck.stem_mute", Some("deck.stem_muted")) },
+    MappingDef { param_key: Some("stem"), param_value: Some(0), uses_physical_deck: false,
+        ..button("stems.mute.0", "Vocals Mute", "Silence the vocals stem.", "deck.stem_mute", Some("deck.stem_muted")) },
     MappingDef { param_key: Some("stem"), param_value: Some(3), uses_physical_deck: false,
         ..button("stems.mute.3", "Other Mute", "Silence the other/melody stem.", "deck.stem_mute", Some("deck.stem_muted")) },
-    // Solos
-    MappingDef { param_key: Some("stem"), param_value: Some(0), uses_physical_deck: false,
-        ..button("stems.solo.0", "Vocals Solo", "Play only vocals, muting all other stems.", "deck.stem_solo", None) },
+    // Solos — same order
     MappingDef { param_key: Some("stem"), param_value: Some(1), uses_physical_deck: false,
         ..button("stems.solo.1", "Drums Solo", "Play only drums, muting all other stems.", "deck.stem_solo", None) },
     MappingDef { param_key: Some("stem"), param_value: Some(2), uses_physical_deck: false,
         ..button("stems.solo.2", "Bass Solo", "Play only bass, muting all other stems.", "deck.stem_solo", None) },
+    MappingDef { param_key: Some("stem"), param_value: Some(0), uses_physical_deck: false,
+        ..button("stems.solo.0", "Vocals Solo", "Play only vocals, muting all other stems.", "deck.stem_solo", None) },
     MappingDef { param_key: Some("stem"), param_value: Some(3), uses_physical_deck: false,
         ..button("stems.solo.3", "Other Solo", "Play only other/melody, muting all other stems.", "deck.stem_solo", None) },
-    // Links
-    MappingDef { param_key: Some("stem"), param_value: Some(0), uses_physical_deck: false,
-        ..button("stems.link.0", "Vocals Link", "Link vocals to the same stem on the other deck for smooth transitions.", "deck.stem_link", None) },
+    // Links — same order
     MappingDef { param_key: Some("stem"), param_value: Some(1), uses_physical_deck: false,
         ..button("stems.link.1", "Drums Link", "Link drums to the same stem on the other deck for smooth transitions.", "deck.stem_link", None) },
     MappingDef { param_key: Some("stem"), param_value: Some(2), uses_physical_deck: false,
         ..button("stems.link.2", "Bass Link", "Link bass to the same stem on the other deck for smooth transitions.", "deck.stem_link", None) },
+    MappingDef { param_key: Some("stem"), param_value: Some(0), uses_physical_deck: false,
+        ..button("stems.link.0", "Vocals Link", "Link vocals to the same stem on the other deck for smooth transitions.", "deck.stem_link", None) },
     MappingDef { param_key: Some("stem"), param_value: Some(3), uses_physical_deck: false,
         ..button("stems.link.3", "Other Link", "Link other/melody to the same stem on the other deck for smooth transitions.", "deck.stem_link", None) },
 ];
@@ -375,12 +418,6 @@ static MIXER_MAPPINGS: &[MappingDef] = &[
     },
 ];
 
-static MIXER_GLOBAL_MAPPINGS: &[MappingDef] = &[
-    fader("mixer.crossfader", "Crossfader",
-        "Blend between left and right channels.",
-        "mixer.crossfader"),
-];
-
 static MIXER_CHANNELS: SectionDef = SectionDef {
     id: "mixer",
     label: "Mixer",
@@ -388,15 +425,6 @@ static MIXER_CHANNELS: SectionDef = SectionDef {
     repeat_mode: RepeatMode::PerVirtualDeck,
     visibility: Visibility::Always,
     mappings: MIXER_MAPPINGS,
-};
-
-static MIXER_GLOBAL: SectionDef = SectionDef {
-    id: "mixer_global",
-    label: "Mixer Global",
-    description: "Crossfader (shared across all channels).",
-    repeat_mode: RepeatMode::Once,
-    visibility: Visibility::Always,
-    mappings: MIXER_GLOBAL_MAPPINGS,
 };
 
 // ---------------------------------------------------------------------------
@@ -428,6 +456,9 @@ static EFFECTS: SectionDef = SectionDef {
 // ---------------------------------------------------------------------------
 
 static GLOBAL_MAPPINGS: &[MappingDef] = &[
+    fader("global.crossfader", "Crossfader",
+        "Blend between left and right channels.",
+        "mixer.crossfader"),
     encoder("global.fx_encoder", "FX Preset Encoder",
         "Scroll through available FX presets for all decks.",
         "global.fx_scroll"),
@@ -455,58 +486,12 @@ static GLOBAL_MAPPINGS: &[MappingDef] = &[
             "Open or close the settings panel.",
             "global.settings_toggle", None)
     },
-    knob("global.suggestion_energy_left", "Suggestion Energy — Left",
-        "Bias track suggestions toward higher or lower energy.",
-        "deck.suggestion_energy"),
-    knob("global.suggestion_energy_right", "Suggestion Energy — Right",
-        "Bias track suggestions toward higher or lower energy.",
-        "deck.suggestion_energy"),
-    MappingDef {
-        uses_physical_deck: false,
-        ..button("global.deck_load.0", "Deck Load 1",
-            "Load the selected browser track into this deck.",
-            "deck.load_selected", None)
-    },
-    MappingDef {
-        uses_physical_deck: false,
-        ..button("global.deck_load.1", "Deck Load 2",
-            "Load the selected browser track into this deck.",
-            "deck.load_selected", None)
-    },
-    MappingDef {
-        uses_physical_deck: false,
-        visibility: Visibility::FourDeckOnly,
-        ..button("global.deck_load.2", "Deck Load 3",
-            "Load the selected browser track into this deck.",
-            "deck.load_selected", None)
-    },
-    MappingDef {
-        uses_physical_deck: false,
-        visibility: Visibility::FourDeckOnly,
-        ..button("global.deck_load.3", "Deck Load 4",
-            "Load the selected browser track into this deck.",
-            "deck.load_selected", None)
-    },
-    MappingDef {
-        uses_physical_deck: false,
-        visibility: Visibility::CompactModeOnly,
-        ..button("global.side_browse_left", "Side Browse Mode — Left",
-            "Hold to temporarily enter browse mode on this side.",
-            "side.browse_mode", Some("side.browse_mode"))
-    },
-    MappingDef {
-        uses_physical_deck: false,
-        visibility: Visibility::CompactModeOnly,
-        ..button("global.side_browse_right", "Side Browse Mode — Right",
-            "Hold to temporarily enter browse mode on this side.",
-            "side.browse_mode", Some("side.browse_mode"))
-    },
 ];
 
 static GLOBAL: SectionDef = SectionDef {
     id: "global",
     label: "Global Controls",
-    description: "Master volume, cue mix, BPM, FX preset scrolling, deck load buttons, and settings.",
+    description: "Master volume, cue mix, BPM, FX preset scrolling, and settings.",
     repeat_mode: RepeatMode::Once,
     visibility: Visibility::Always,
     mappings: GLOBAL_MAPPINGS,
@@ -528,7 +513,6 @@ pub fn section_catalog() -> &'static [SectionDef] {
         PADS,
         STEMS,
         MIXER_CHANNELS,
-        MIXER_GLOBAL,
         EFFECTS,
         GLOBAL,
     ];

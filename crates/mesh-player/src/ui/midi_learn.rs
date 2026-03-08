@@ -2,14 +2,15 @@
 //!
 //! Replaces the linear phase-based wizard with a collapsible tree:
 //! - Browse encoder/press mapped first for controller navigation
-//! - Topology setup (deck count, layer toggle, compact mode)
+//! - Topology setup (deck count, layer toggle, performance style)
 //! - Collapsible tree with sections for each mapping category
 //! - Live mapping: once mapped, controls execute their action
 //! - Verification window before saving
 
 use std::collections::HashMap;
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
-use iced::widget::{button, column, container, row, scrollable, text, Space};
+use iced::widget::{button, column, container, row, scrollable, text, Id, Space};
 use iced::{Alignment, Color, Element, Length};
 use mesh_widgets::sz;
 use mesh_midi::{
@@ -19,11 +20,37 @@ use mesh_midi::{
 };
 use mesh_midi::learn_defs::{ControlType, MappingDef, TopologyConfig};
 use crate::ui::midi_learn_tree::{
-    FlatNodeType, LearnTree, LogStatus, MappedControl, MappingStatus, TreeNode,
+    LearnTree, LogStatus, MappedControl, MappingStatus, TreeNode,
 };
 
 /// Debounce duration for MIDI capture (prevents release/encoder spam from double-mapping)
 const CAPTURE_DEBOUNCE: Duration = Duration::from_millis(1000);
+
+/// Approximate row height in the tree view (for scroll offset calculation)
+const TREE_ROW_HEIGHT: f32 = 22.0;
+/// Visible height of the tree scrollable area
+const TREE_VISIBLE_HEIGHT: f32 = 300.0;
+
+/// Scrollable ID for the MIDI learn tree view.
+pub static LEARN_TREE_SCROLLABLE_ID: LazyLock<Id> = LazyLock::new(|| Id::new("midi_learn_tree_scroll"));
+
+/// Create a Task to snap the tree scrollable to keep the cursor centered.
+pub fn scroll_tree_to_cursor<Message: 'static>(cursor: usize, total_items: usize) -> iced::Task<Message> {
+    let total_height = total_items as f32 * TREE_ROW_HEIGHT;
+    let max_scroll = (total_height - TREE_VISIBLE_HEIGHT).max(0.0);
+    if max_scroll <= 0.0 {
+        return iced::Task::none();
+    }
+
+    let visible_rows = (TREE_VISIBLE_HEIGHT / TREE_ROW_HEIGHT).floor();
+    let cursor_y = cursor as f32 * TREE_ROW_HEIGHT;
+    let center_offset = (visible_rows / 2.0).floor() * TREE_ROW_HEIGHT;
+    let target = (cursor_y - center_offset + TREE_ROW_HEIGHT / 2.0).clamp(0.0, max_scroll);
+    let relative_y = (target / max_scroll).clamp(0.0, 1.0);
+
+    let offset = iced::widget::scrollable::RelativeOffset { x: 0.0, y: relative_y };
+    iced::widget::operation::snap_to(LEARN_TREE_SCROLLABLE_ID.clone(), offset)
+}
 
 // ============================================================================
 // Phase / Mode
@@ -35,10 +62,12 @@ pub enum LearnMode {
     /// Map browse encoder and press first (before any questions)
     #[default]
     NavCapture,
-    /// Topology setup questions (deck count, compact mode, pad mode)
+    /// Topology setup questions (deck count, performance style, pad mode, encoder count)
     Setup,
     /// Main tree view — browse and map controls
     TreeNavigation,
+    /// Reset confirmation dialog — confirm clearing all mappings
+    ResetConfirm,
     /// Verification window — review changes before saving
     Verification,
 }
@@ -79,7 +108,6 @@ impl TopologyChoice {
     /// Convert to TopologyConfig for tree building.
     pub fn to_topology(
         &self,
-        compact_mode: bool,
         pad_mode_source: PadModeSource,
     ) -> TopologyConfig {
         let (deck_count, has_layer_toggle) = match self {
@@ -90,7 +118,6 @@ impl TopologyChoice {
         TopologyConfig {
             deck_count,
             has_layer_toggle,
-            compact_mode,
             pad_mode_source,
         }
     }
@@ -132,8 +159,6 @@ pub enum HighlightTarget {
     // Per-side mode buttons (4-deck compact: side 0=left, 1=right)
     SideHotCueMode(usize),
     SideSlicerMode(usize),
-    SideBrowseMode(usize),
-
     // Performance pads (deck, slot)
     DeckHotCue(usize, usize),
     DeckSlicerPad(usize, usize),
@@ -217,10 +242,6 @@ impl HighlightTarget {
             HighlightTarget::SideSlicerMode(side) => {
                 let s = if *side == 0 { "LEFT" } else { "RIGHT" };
                 format!("Press {} side SLICER mode button", s)
-            }
-            HighlightTarget::SideBrowseMode(side) => {
-                let s = if *side == 0 { "LEFT" } else { "RIGHT" };
-                format!("Press {} side BROWSE mode button (toggle)", s)
             }
             HighlightTarget::DeckHotCue(d, s) => {
                 format!("Press HOT CUE pad {} on deck {}", s + 1, d + 1)
@@ -358,7 +379,6 @@ pub fn highlight_for_mapping(
         ("deck.load_selected", _, _) => Some(HighlightTarget::DeckLoad(d)),
         ("deck.suggestion_energy", _, _) => Some(HighlightTarget::SuggestionEnergy(d)),
         ("global.settings_toggle", _, _) => Some(HighlightTarget::SettingsButton),
-        ("side.browse_mode", _, _) => Some(HighlightTarget::SideBrowseMode(d)),
         // Special actions (_shift, _layer_toggle) don't have UI highlights
         _ => None,
     }
@@ -451,7 +471,7 @@ pub enum MidiLearnMessage {
 
     // Setup phase
     SetTopology(TopologyChoice),
-    SetCompactMode(bool),
+    SetOverlayMode(bool),
     SetPadMode(PadModeSource),
     ConfirmSetup,
 
@@ -461,8 +481,16 @@ pub enum MidiLearnMessage {
     ToggleSection,
     ClearMapping,
 
+    // Reset confirmation
+    ResetMappings,
+    ConfirmReset,
+    CancelReset,
+
     // Capture (routed from tick.rs)
     MidiCaptured(CapturedEvent),
+
+    // Deferred scroll (re-scroll after layout recalculation from fold/unfold)
+    RefreshScroll,
 }
 
 // ============================================================================
@@ -483,6 +511,8 @@ pub struct ActiveMapping {
     pub param_key: Option<&'static str>,
     pub param_value: Option<usize>,
     pub hardware_type: HardwareType,
+    /// Mode condition from the catalog def — enables same address across different modes
+    pub mode_condition: Option<&'static str>,
 }
 
 // ============================================================================
@@ -500,17 +530,24 @@ pub struct MidiLearnState {
     pub mode: LearnMode,
 
     // --- Nav Capture ---
-    /// 0 = waiting for browse encoder, 1 = waiting for browse press
+    /// Step counter for NavCapture phase:
+    /// 0 = encoder count question, 1..N = capture encoders, N+1 = capture select
     pub nav_capture_step: usize,
-    /// Captured browse encoder mapping
-    pub nav_encoder_mapping: Option<MappedControl>,
+    /// Captured browse encoder mappings (one per encoder)
+    pub nav_encoder_mappings: Vec<MappedControl>,
     /// Captured browse select mapping
     pub nav_select_mapping: Option<MappedControl>,
 
     // --- Setup ---
+    /// Cursor position in the setup menu (encoder-navigable flat list)
+    pub setup_cursor: usize,
+    /// Cursor position in the verification view (0 = Back, 1 = Save)
+    pub verify_cursor: usize,
     pub topology_choice: TopologyChoice,
-    pub compact_mode: bool,
+    pub overlay_mode: bool,
     pub pad_mode_source: PadModeSource,
+    /// Deck indices where loop encoder is auto-shared: (shared_deck, source_deck)
+    pub loop_shared_decks: Vec<(usize, usize)>,
 
     // --- Tree (built after ConfirmSetup) ---
     pub tree: Option<LearnTree>,
@@ -525,15 +562,15 @@ pub struct MidiLearnState {
     last_capture_time: Option<Instant>,
 
     // --- Browse Navigation Addresses ---
-    pub browse_encoder_address: Option<ControlAddress>,
-    pub browse_select_address: Option<ControlAddress>,
+    pub browse_encoder_addresses: Vec<ControlAddress>,
+    pub browse_select_addresses: Vec<ControlAddress>,
 
     // --- Shift Tracking ---
     pub shift_held: [bool; 2],
     pub shift_addresses: [Option<ControlAddress>; 2],
 
     // --- Active Mappings (for live execution) ---
-    pub active_mappings: HashMap<(ControlAddress, bool), ActiveMapping>,
+    pub active_mappings: HashMap<(ControlAddress, bool), Vec<ActiveMapping>>,
 
     // --- Status ---
     pub status: String,
@@ -541,6 +578,15 @@ pub struct MidiLearnState {
     // --- Port / device info ---
     pub captured_port_name: Option<String>,
     pub existing_profile_name: Option<String>,
+
+    // --- HID device identification (preserved from existing config or inferred) ---
+    pub existing_device_type: Option<String>,
+    pub existing_hid_product_match: Option<String>,
+    pub existing_hid_device_id: Option<String>,
+
+    // --- Reset confirmation ---
+    pub has_existing_config: bool,
+    pub reset_confirm_cursor: usize, // 0 = Cancel, 1 = Reset
 }
 
 impl Default for MidiLearnState {
@@ -555,25 +601,33 @@ impl MidiLearnState {
             is_active: false,
             mode: LearnMode::NavCapture,
             nav_capture_step: 0,
-            nav_encoder_mapping: None,
+            nav_encoder_mappings: Vec::new(),
             nav_select_mapping: None,
+            setup_cursor: 0,
+            verify_cursor: 1, // Default to Save
             topology_choice: TopologyChoice::default(),
-            compact_mode: false,
+            overlay_mode: false,
             pad_mode_source: PadModeSource::default(),
+            loop_shared_decks: Vec::new(),
             tree: None,
             highlight_target: None,
             detection_buffer: None,
             detected_hardware: None,
             last_captured: None,
             last_capture_time: None,
-            browse_encoder_address: None,
-            browse_select_address: None,
+            browse_encoder_addresses: Vec::new(),
+            browse_select_addresses: Vec::new(),
             shift_held: [false; 2],
             shift_addresses: [None, None],
             active_mappings: HashMap::new(),
             status: String::new(),
             captured_port_name: None,
             existing_profile_name: None,
+            existing_device_type: None,
+            existing_hid_product_match: None,
+            existing_hid_device_id: None,
+            has_existing_config: false,
+            reset_confirm_cursor: 0,
         }
     }
 
@@ -583,7 +637,7 @@ impl MidiLearnState {
         self.is_active = true;
         self.mode = LearnMode::NavCapture;
         self.nav_capture_step = 0;
-        self.status = "Map your BROWSE encoder (turn it)".to_string();
+        self.status = "Turn your main BROWSE encoder".to_string();
     }
 
     /// Cancel and reset learn mode.
@@ -592,16 +646,47 @@ impl MidiLearnState {
         *self = Self::new();
     }
 
+    /// Total number of selectable items in the setup menu.
+    const SETUP_ITEM_COUNT: usize = 8;
+    // 0-2:   TopologyChoice (TwoDecks, TwoDecksLayer, FourDecks)
+    // 3-4:   Performance style (Toggle, Overlay)
+    // 5-6:   Pad mode (App, Controller)
+    // 7:     Confirm
+
+    /// Scroll the setup cursor by `delta` (positive = down, negative = up).
+    pub fn setup_scroll(&mut self, delta: i32) {
+        let max = Self::SETUP_ITEM_COUNT - 1;
+        let new = (self.setup_cursor as i32 + delta).clamp(0, max as i32) as usize;
+        self.setup_cursor = new;
+    }
+
+    /// Select the item at the current setup cursor position.
+    /// Returns true if setup should be confirmed (cursor was on Confirm).
+    pub fn setup_select(&mut self) -> bool {
+        match self.setup_cursor {
+            0 => self.topology_choice = TopologyChoice::TwoDecks,
+            1 => self.topology_choice = TopologyChoice::TwoDecksLayer,
+            2 => self.topology_choice = TopologyChoice::FourDecks,
+            3 => self.overlay_mode = false,
+            4 => self.overlay_mode = true,
+            5 => self.pad_mode_source = PadModeSource::App,
+            6 => self.pad_mode_source = PadModeSource::Controller,
+            7 => return true, // Confirm
+            _ => {}
+        }
+        false
+    }
+
     /// Build the tree from setup choices and switch to tree navigation.
     pub fn confirm_setup(&mut self) {
         let topology = self.topology_choice.to_topology(
-            self.compact_mode,
             self.pad_mode_source,
         );
+        let deck_count = topology.physical_deck_count();
         let mut tree = LearnTree::build(topology);
 
-        // Pre-fill navigation section with browse encoder/select from NavCapture
-        if let Some(ref mapping) = self.nav_encoder_mapping {
+        // Pre-fill navigation section with first browse encoder from NavCapture
+        if let Some(mapping) = self.nav_encoder_mappings.first() {
             if let Some(node) = tree.find_mapping_node_mut(
                 "browser.scroll", None, None, None,
             ) {
@@ -622,23 +707,48 @@ impl MidiLearnState {
             }
         }
 
-        // Expand navigation section and set cursor past it
-        tree.expand_navigation();
+        // Smart loop encoder pre-fill: use all captured browse encoders
+        let enc_count = self.nav_encoder_mappings.len();
+        self.loop_shared_decks.clear();
 
-        // Rebuild flat list and position cursor at first non-nav section
-        tree.rebuild_flat_list();
-        // Move cursor to first non-navigation section
-        for (i, flat) in tree.flat_nodes.iter().enumerate() {
-            if flat.node_type == FlatNodeType::Section && flat.depth == 0 {
-                let node = tree.node_at_path(&flat.tree_path);
-                if let TreeNode::Section { section_id, .. } = node {
-                    if *section_id != "navigation" {
-                        tree.cursor = i;
-                        break;
+        if enc_count > 0 {
+            for pd in 0..deck_count {
+                let enc_idx = match (enc_count, deck_count) {
+                    (1, _) => 0,                                // single encoder → all decks share
+                    (2, 4) => pd % 2,                           // 2 encoders + 4 decks → per side
+                    _ => pd.min(enc_count - 1),                 // 1:1 or clamp
+                };
+                // Track which decks are sharing (not the primary owner)
+                // Source deck = enc_idx (the deck that "owns" this encoder)
+                if enc_count < deck_count && pd >= enc_count {
+                    self.loop_shared_decks.push((pd, enc_idx));
+                } else if enc_count == 1 && pd > 0 {
+                    self.loop_shared_decks.push((pd, 0));
+                } else if enc_count == 2 && deck_count == 4 && pd >= 2 {
+                    self.loop_shared_decks.push((pd, enc_idx));
+                }
+                if let Some(enc) = self.nav_encoder_mappings.get(enc_idx) {
+                    if let Some(node) = tree.find_mapping_node_mut(
+                        "deck.loop_size", Some(pd), None, None,
+                    ) {
+                        if let TreeNode::Mapping { mapped, status, .. } = node {
+                            *mapped = Some(enc.clone());
+                            *status = MappingStatus::New;
+                        }
                     }
                 }
             }
         }
+
+        // Insert Reset node if editing an existing config
+        if self.has_existing_config {
+            tree.roots.insert(0, TreeNode::Reset);
+        }
+
+        // Expand navigation section and set cursor past it
+        tree.expand_navigation();
+
+        // expand_navigation already positioned cursor on first unmapped mapping (shift buttons)
 
         self.tree = Some(tree);
         self.mode = LearnMode::TreeNavigation;
@@ -650,6 +760,11 @@ impl MidiLearnState {
     // -------------------------------------------------------------------
     // Highlight management
     // -------------------------------------------------------------------
+
+    /// Get the cursor position and total item count for auto-scrolling.
+    pub fn tree_scroll_info(&self) -> Option<(usize, usize)> {
+        self.tree.as_ref().map(|t| (t.cursor, t.flat_nodes.len()))
+    }
 
     /// Update the highlight target based on the current tree cursor.
     pub fn update_highlight(&mut self) {
@@ -678,8 +793,32 @@ impl MidiLearnState {
         self.active_mappings.clear();
         self.shift_addresses = [None, None];
 
+        // Rebuild browse encoder + select addresses from NavCapture + tree-mapped nodes
+        self.browse_encoder_addresses.clear();
+        self.browse_select_addresses.clear();
+        if let Some(first) = self.nav_encoder_mappings.first() {
+            self.browse_encoder_addresses.push(first.address.clone());
+        }
+        if let Some(ref select) = self.nav_select_mapping {
+            self.browse_select_addresses.push(select.address.clone());
+        }
+
         if let Some(ref tree) = self.tree {
             for (def, deck_idx, ctrl) in tree.all_mapped_nodes() {
+                // Sync additional browse encoder addresses from tree
+                if def.action == "browser.scroll"
+                    && !self.browse_encoder_addresses.contains(&ctrl.address)
+                {
+                    self.browse_encoder_addresses.push(ctrl.address.clone());
+                }
+
+                // Sync additional browse select addresses from tree
+                if def.action == "browser.select"
+                    && !self.browse_select_addresses.contains(&ctrl.address)
+                {
+                    self.browse_select_addresses.push(ctrl.address.clone());
+                }
+
                 // Shift buttons: extract addresses for shift tracking
                 if def.action == "_shift" {
                     let idx = match def.id {
@@ -703,7 +842,7 @@ impl MidiLearnState {
                 };
                 let physical = if def.uses_physical_deck { deck_idx } else { None };
                 let deck = if !def.uses_physical_deck { deck_idx } else { None };
-                self.active_mappings.insert(key, ActiveMapping {
+                self.active_mappings.entry(key).or_default().push(ActiveMapping {
                     action: def.action.to_string(),
                     display_name: display,
                     deck_index: deck,
@@ -711,6 +850,7 @@ impl MidiLearnState {
                     param_key: def.param_key,
                     param_value: def.param_value,
                     hardware_type: ctrl.hardware_type,
+                    mode_condition: def.mode_condition,
                 });
             }
         }
@@ -722,9 +862,9 @@ impl MidiLearnState {
 
     /// Generate a complete `MidiConfig` from the current tree state.
     ///
-    /// Walks all mapped tree nodes and builds `ControlMapping` + `FeedbackMapping`
-    /// entries, with shift merging (two mappings sharing the same address with
-    /// different shift states become a single mapping with `shift_action`).
+    /// Groups mapped nodes by source device and creates one `DeviceProfile`
+    /// per device. Handles shift merging, feedback, and auto-generated
+    /// browse-mode loop encoder mappings per-device.
     pub fn generate_config(&self) -> MidiConfig {
         let tree = match &self.tree {
             Some(t) => t,
@@ -736,43 +876,22 @@ impl MidiLearnState {
         // Collect all mapped nodes
         let mapped_nodes = tree.all_mapped_nodes();
 
-        // Build shift buttons from modifier section
-        let mut shift_buttons = Vec::new();
+        // --- Extract layer toggle addresses (needed for shared deck_target) ---
         let mut layer_toggle_left: Option<ControlAddress> = None;
         let mut layer_toggle_right: Option<ControlAddress> = None;
-
         for (def, _deck_idx, ctrl) in &mapped_nodes {
             match def.id {
-                "mod.shift_left" => {
-                    shift_buttons.push(ShiftButtonConfig {
-                        control: ctrl.address.clone(),
-                        physical_deck: 0,
-                    });
-                }
-                "mod.shift_right" => {
-                    shift_buttons.push(ShiftButtonConfig {
-                        control: ctrl.address.clone(),
-                        physical_deck: 1,
-                    });
-                }
-                "mod.layer_toggle_left" => {
-                    layer_toggle_left = Some(ctrl.address.clone());
-                }
-                "mod.layer_toggle_right" => {
-                    layer_toggle_right = Some(ctrl.address.clone());
-                }
+                "mod.layer_toggle_left" => layer_toggle_left = Some(ctrl.address.clone()),
+                "mod.layer_toggle_right" => layer_toggle_right = Some(ctrl.address.clone()),
                 _ => {}
             }
         }
 
-        // Build deck target configuration
-        // Clone layer toggle addresses before moving into DeckTargetConfig
-        // (we need them again later for feedback mappings)
+        // Build deck target configuration (shared across all profiles)
         let layer_toggle_left_fb = layer_toggle_left.clone();
         let layer_toggle_right_fb = layer_toggle_right.clone();
 
         let deck_target = if topology.has_layer_toggle {
-            // Layer mode: 2 physical decks → 4 virtual via toggle
             let toggle_left = layer_toggle_left
                 .unwrap_or(ControlAddress::Midi(mesh_midi::MidiAddress::Note { channel: 0, note: 0 }));
             let toggle_right = layer_toggle_right
@@ -784,7 +903,6 @@ impl MidiLearnState {
                 layer_b: vec![2, 3],
             }
         } else {
-            // Direct mode: channel-to-deck 1:1
             let mut channel_to_deck = HashMap::new();
             for i in 0..topology.deck_count {
                 channel_to_deck.insert(i as u8, i);
@@ -792,175 +910,594 @@ impl MidiLearnState {
             DeckTargetConfig::Direct { channel_to_deck }
         };
 
-        // Build mappings and feedback, grouping by address for shift merging
-        let mut mappings: Vec<ControlMapping> = Vec::new();
-        let mut feedback: Vec<FeedbackMapping> = Vec::new();
+        // --- Group mapped nodes by source device ---
+        let mut device_groups: std::collections::BTreeMap<String, Vec<(&mesh_midi::learn_defs::MappingDef, Option<usize>, &MappedControl)>> = std::collections::BTreeMap::new();
+        for entry @ (_, _, ctrl) in &mapped_nodes {
+            let key = Self::device_key(ctrl);
+            device_groups.entry(key).or_default().push(*entry);
+        }
 
-        // Group mappings by (address) for shift merging
-        // Key: address, Value: (non-shift mapping index, shift mapping index)
-        let mut address_groups: HashMap<ControlAddress, (Option<usize>, Option<usize>)> = HashMap::new();
+        if device_groups.is_empty() {
+            return MidiConfig { devices: vec![] };
+        }
 
-        for (def, deck_idx, ctrl) in &mapped_nodes {
-            // Skip special actions
-            if def.action.starts_with('_') { continue; }
+        // --- Build one DeviceProfile per device ---
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
-            let behavior = Self::resolve_behavior(def, ctrl.hardware_type);
-            let encoder_mode = ctrl.hardware_type.default_encoder_mode();
-
-            let mut params = HashMap::new();
-            if let Some(key) = def.param_key {
-                if let Some(val) = def.param_value {
-                    params.insert(key.to_string(), serde_yaml::Value::Number(serde_yaml::Number::from(val as u64)));
+        let mut profiles: Vec<DeviceProfile> = Vec::new();
+        for (device_key, group) in &device_groups {
+            // Extract shift buttons for this device
+            let mut shift_buttons = Vec::new();
+            for (def, _deck_idx, ctrl) in group {
+                match def.id {
+                    "mod.shift_left" => {
+                        shift_buttons.push(ShiftButtonConfig {
+                            control: ctrl.address.clone(),
+                            physical_deck: 0,
+                        });
+                    }
+                    "mod.shift_right" => {
+                        shift_buttons.push(ShiftButtonConfig {
+                            control: ctrl.address.clone(),
+                            physical_deck: 1,
+                        });
+                    }
+                    _ => {}
                 }
             }
 
-            let (physical_deck, deck_index) = if def.uses_physical_deck {
-                (*deck_idx, None)
-            } else {
-                (None, *deck_idx)
-            };
+            // Build mappings and feedback for this device
+            let mut mappings: Vec<ControlMapping> = Vec::new();
+            let mut feedback: Vec<FeedbackMapping> = Vec::new();
+            let mut address_groups: HashMap<ControlAddress, (Option<usize>, Option<usize>)> = HashMap::new();
 
-            let cm = ControlMapping {
-                control: ctrl.address.clone(),
-                action: def.action.to_string(),
-                physical_deck,
-                deck_index,
-                params: params.clone(),
-                behavior,
-                shift_action: None,
-                encoder_mode,
-                hardware_type: Some(ctrl.hardware_type),
-                mode: def.mode_condition.map(|s| s.to_string()),
-            };
+            for (def, deck_idx, ctrl) in group {
+                // Skip special actions (shift, layer toggle, etc.)
+                if def.action.starts_with('_') { continue; }
 
-            let idx = mappings.len();
-            mappings.push(cm);
+                let behavior = Self::resolve_behavior(def, ctrl.hardware_type);
+                let encoder_mode = ctrl.hardware_type.default_encoder_mode();
 
-            // Track for shift merging
-            let group = address_groups.entry(ctrl.address.clone()).or_insert((None, None));
-            if ctrl.shift_held {
-                group.1 = Some(idx);
-            } else {
-                group.0 = Some(idx);
-            }
+                let mut params = HashMap::new();
+                let is_extra_browse = (def.action == "browser.scroll" || def.action == "browser.select")
+                    && def.param_key == Some("index");
+                if !is_extra_browse {
+                    if let Some(key) = def.param_key {
+                        if let Some(val) = def.param_value {
+                            params.insert(key.to_string(), serde_yaml::Value::Number(serde_yaml::Number::from(val as u64)));
+                        }
+                    }
+                }
 
-            // Build feedback mapping if the def has a feedback state
-            if let Some(feedback_state) = def.feedback_state {
-                let (on_color, off_color) = Self::hid_feedback_colors(&ctrl.address);
+                let (physical_deck, deck_index) = if is_extra_browse {
+                    (def.param_value, None)
+                } else if def.uses_physical_deck {
+                    (*deck_idx, None)
+                } else {
+                    (None, *deck_idx)
+                };
 
-                feedback.push(FeedbackMapping {
-                    state: feedback_state.to_string(),
+                let cm = ControlMapping {
+                    control: ctrl.address.clone(),
+                    action: def.action.to_string(),
                     physical_deck,
                     deck_index,
+                    params: params.clone(),
+                    behavior,
+                    shift_action: None,
+                    encoder_mode,
+                    hardware_type: Some(ctrl.hardware_type),
+                    mode: def.mode_condition.map(|s| s.to_string()),
+                };
+
+                let idx = mappings.len();
+                mappings.push(cm);
+
+                // Browse mode: derive "side" param from physical_deck (% 2 for 4-deck support)
+                if def.action == "side.browse_mode" {
+                    if let Some(pd) = physical_deck {
+                        mappings[idx].params.insert(
+                            "side".to_string(),
+                            serde_yaml::Value::Number(((pd % 2) as u64).into()),
+                        );
+                    }
+                }
+
+                // Mode buttons: pair deck N with deck N+2 (e.g. deck 0+2, deck 1+3)
+                // Works for all topologies — guard `paired < 4` prevents OOB
+                if (def.action == "deck.hot_cue_mode" || def.action == "deck.slicer_mode")
+                    && physical_deck.is_some()
+                {
+                    let pd = physical_deck.unwrap();
+                    let paired = pd + 2;
+                    if paired < 4 {
+                        let decks_seq = vec![
+                            serde_yaml::Value::Number((pd as u64).into()),
+                            serde_yaml::Value::Number((paired as u64).into()),
+                        ];
+                        mappings[idx].params.insert(
+                            "decks".to_string(),
+                            serde_yaml::Value::Sequence(decks_seq),
+                        );
+                    }
+                }
+
+                let group_entry = address_groups.entry(ctrl.address.clone()).or_insert((None, None));
+                if ctrl.shift_held {
+                    group_entry.1 = Some(idx);
+                } else {
+                    group_entry.0 = Some(idx);
+                }
+
+                if let Some(feedback_state) = def.feedback_state {
+                    // Browse mode: map physical_deck to side (% 2) for feedback
+                    let fb_physical_deck = if feedback_state == "side.browse_mode" {
+                        physical_deck.map(|pd| pd % 2)
+                    } else {
+                        physical_deck
+                    };
+                    feedback.push(FeedbackMapping {
+                        state: feedback_state.to_string(),
+                        physical_deck: fb_physical_deck,
+                        deck_index,
+                        params,
+                        output: ctrl.address.clone(),
+                        on_value: 127,
+                        off_value: 0,
+                        alt_on_value: None,
+                        on_color: None,
+                        off_color: None,
+                        alt_on_color: None,
+                        mode: def.mode_condition.map(|s| s.to_string()),
+                    });
+                }
+            }
+
+            // Shift merging within this device
+            let mut remove_indices = Vec::new();
+            for (_addr, (non_shift, shift)) in &address_groups {
+                if let (Some(ns_idx), Some(s_idx)) = (non_shift, shift) {
+                    let shift_action = mappings[*s_idx].action.clone();
+                    mappings[*ns_idx].shift_action = Some(shift_action);
+                    remove_indices.push(*s_idx);
+                }
+            }
+            remove_indices.sort_unstable();
+            remove_indices.reverse();
+            for idx in remove_indices {
+                mappings.remove(idx);
+            }
+
+            // Auto-propagate browser.back: if any browser.select has shift_action=browser.back,
+            // apply the same shift_action to all other browser.select mappings
+            let has_back = mappings.iter().any(|m|
+                m.action == "browser.select" && m.shift_action.as_deref() == Some("browser.back")
+            );
+            if has_back {
+                for m in &mut mappings {
+                    if m.action == "browser.select" && m.shift_action.is_none() {
+                        m.shift_action = Some("browser.back".to_string());
+                    }
+                }
+            }
+
+            // Add layer toggle feedback if this device owns the toggle
+            if topology.has_layer_toggle {
+                if let Some(ref addr) = layer_toggle_left_fb {
+                    if group.iter().any(|(def, _, _)| def.id == "mod.layer_toggle_left") {
+                        feedback.push(FeedbackMapping {
+                            state: "deck.layer_active".to_string(),
+                            physical_deck: Some(0),
+                            deck_index: None,
+                            params: HashMap::new(),
+                            output: addr.clone(),
+                            on_value: 127,
+                            off_value: 0,
+                            alt_on_value: Some(64),
+                            on_color: None,
+                            off_color: None,
+                            alt_on_color: None,
+                            mode: None,
+                        });
+                    }
+                }
+                if let Some(ref addr) = layer_toggle_right_fb {
+                    if group.iter().any(|(def, _, _)| def.id == "mod.layer_toggle_right") {
+                        feedback.push(FeedbackMapping {
+                            state: "deck.layer_active".to_string(),
+                            physical_deck: Some(1),
+                            deck_index: None,
+                            params: HashMap::new(),
+                            output: addr.clone(),
+                            on_value: 127,
+                            off_value: 0,
+                            alt_on_value: Some(64),
+                            on_color: None,
+                            off_color: None,
+                            alt_on_color: None,
+                            mode: None,
+                        });
+                    }
+                }
+            }
+
+            // Reverse auto-gen: extra browse encoders → deck.loop_size
+            // When a browser.scroll (mode:"browse") control has no deck.loop_size
+            // counterpart, infer a loop_size mapping so the encoder doubles as
+            // loop length outside browse mode.
+            let browse_needing_loop: Vec<_> = mappings.iter()
+                .filter(|m| m.action == "browser.scroll" && m.mode.as_deref() == Some("browse"))
+                .filter(|m| !mappings.iter().any(|other|
+                    other.action == "deck.loop_size" && other.control == m.control
+                ))
+                .map(|m| (m.control.clone(), m.physical_deck.unwrap_or(0), m.encoder_mode, m.hardware_type))
+                .collect();
+            for (control, pd, encoder_mode, hw_type) in browse_needing_loop {
+                mappings.push(ControlMapping {
+                    control,
+                    action: "deck.loop_size".to_string(),
+                    physical_deck: None,
+                    deck_index: Some(pd),
+                    params: HashMap::new(),
+                    behavior: ControlBehavior::Continuous,
+                    shift_action: None,
+                    encoder_mode,
+                    hardware_type: hw_type,
+                    mode: None,
+                });
+            }
+
+            // NOTE: No reverse auto-gen for toggle_loop from browser.select.
+            // Unlike loop_size (encoder rotation naturally doubles as browse scroll),
+            // toggle_loop is a deliberate button assignment — auto-inferring it from
+            // the navigation browse press causes unwanted loop toggling.
+
+            // Side-pair loop_size and toggle_loop across layer-complementary decks.
+            // When 2+ controls map the same action, each is assigned to a "side"
+            // (even decks 0,2 or odd decks 1,3) based on its lowest deck_index.
+            // Excess entries are removed and a `decks` param is added for the pair.
+            // Single-control case: multi-dispatch engine handles all entries as-is.
+            let virtual_deck_count = if topology.has_layer_toggle {
+                (topology.deck_count * 2).min(4)
+            } else {
+                topology.deck_count.min(4)
+            };
+
+            if virtual_deck_count > 2 {
+                for action_name in &["deck.loop_size"] {
+                    // Find unique controls and their lowest (primary) deck_index
+                    let mut ctrl_primary: HashMap<ControlAddress, usize> = HashMap::new();
+                    for m in mappings.iter() {
+                        if m.action == *action_name {
+                            if let Some(di) = m.deck_index {
+                                ctrl_primary.entry(m.control.clone())
+                                    .and_modify(|e| { if di < *e { *e = di } })
+                                    .or_insert(di);
+                            }
+                        }
+                    }
+
+                    if ctrl_primary.len() >= 2 {
+                        // Multiple controls — assign each to a side, deduplicate
+                        let mut sorted: Vec<_> = ctrl_primary.iter().collect();
+                        sorted.sort_by_key(|(_, primary)| **primary);
+
+                        let mut side_ctrl: [Option<ControlAddress>; 2] = [None, None];
+                        for (ctrl, primary) in &sorted {
+                            let side = *primary % 2;
+                            if side_ctrl[side].is_none() {
+                                side_ctrl[side] = Some((*ctrl).clone());
+                            }
+                        }
+
+                        // Save one template per control
+                        let templates: HashMap<ControlAddress, ControlMapping> = mappings.iter()
+                            .filter(|m| m.action == *action_name)
+                            .map(|m| (m.control.clone(), m.clone()))
+                            .collect();
+
+                        // Remove all entries for this action
+                        mappings.retain(|m| m.action != *action_name);
+
+                        // Re-add one entry per side-owning control with decks param
+                        for side in 0..2usize {
+                            if let Some(ref ctrl) = side_ctrl[side] {
+                                if let Some(template) = templates.get(ctrl) {
+                                    let mut entry = template.clone();
+                                    entry.deck_index = Some(side);
+                                    let paired = side + 2;
+                                    if paired < virtual_deck_count {
+                                        let decks_seq = vec![
+                                            serde_yaml::Value::Number((side as u64).into()),
+                                            serde_yaml::Value::Number((paired as u64).into()),
+                                        ];
+                                        entry.params.insert(
+                                            "decks".to_string(),
+                                            serde_yaml::Value::Sequence(decks_seq),
+                                        );
+                                    }
+                                    mappings.push(entry);
+                                }
+                            }
+                        }
+                    } else if topology.has_layer_toggle {
+                        // Single control with layer toggle — pair each entry with its complement
+                        for m in mappings.iter_mut() {
+                            if m.action == *action_name
+                                && m.deck_index.is_some()
+                                && !m.params.contains_key("decks")
+                            {
+                                let di = m.deck_index.unwrap();
+                                let paired = di + topology.deck_count;
+                                if paired < virtual_deck_count {
+                                    let decks_array = vec![
+                                        serde_yaml::Value::Number((di as u64).into()),
+                                        serde_yaml::Value::Number((paired as u64).into()),
+                                    ];
+                                    m.params.insert(
+                                        "decks".to_string(),
+                                        serde_yaml::Value::Sequence(decks_array),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    // Single control without layer toggle: multi-dispatch handles all entries
+                }
+            }
+
+            // Auto-generate browser.scroll with mode:"browse" on loop encoders
+            // Skip controls that already have a browser.scroll (e.g. from extra browse encoders)
+            let loop_entries: Vec<_> = mappings.iter()
+                .filter(|m| m.action == "deck.loop_size")
+                .filter(|m| !mappings.iter().any(|other|
+                    other.action == "browser.scroll" && other.control == m.control
+                ))
+                .map(|m| (m.control.clone(), m.physical_deck.unwrap_or(0), m.encoder_mode, m.hardware_type))
+                .collect();
+            for (control, pd, encoder_mode, hw_type) in loop_entries {
+                mappings.push(ControlMapping {
+                    control,
+                    action: "browser.scroll".to_string(),
+                    physical_deck: Some(pd),
+                    deck_index: None,
+                    params: HashMap::new(),
+                    behavior: ControlBehavior::Continuous,
+                    shift_action: None,
+                    encoder_mode,
+                    hardware_type: hw_type,
+                    mode: Some("browse".to_string()),
+                });
+            }
+
+            // Auto-generate browser.select with mode:"browse" on loop toggle buttons
+            // Skip controls that already have a browser.select
+            let loop_toggle_entries: Vec<_> = mappings.iter()
+                .filter(|m| m.action == "deck.toggle_loop")
+                .filter(|m| !mappings.iter().any(|other|
+                    other.action == "browser.select" && other.control == m.control
+                ))
+                .map(|m| (m.control.clone(), m.physical_deck.unwrap_or(0), m.hardware_type))
+                .collect();
+            for (control, pd, hw_type) in loop_toggle_entries {
+                mappings.push(ControlMapping {
+                    control,
+                    action: "browser.select".to_string(),
+                    physical_deck: Some(pd),
+                    deck_index: None,
+                    params: HashMap::new(),
+                    behavior: ControlBehavior::Momentary,
+                    shift_action: None,
+                    encoder_mode: None,
+                    hardware_type: hw_type,
+                    mode: Some("browse".to_string()),
+                });
+            }
+
+            // Auto-generate slicer pad mappings + feedback from hot cue pads.
+            // Slicer pads always share the same physical buttons as hot cue pads,
+            // just with mode:"slicer" instead of mode:"hot_cue".
+            let hot_cue_entries: Vec<_> = mappings.iter()
+                .filter(|m| m.action == "deck.hot_cue_press" && m.mode.as_deref() == Some("hot_cue"))
+                .map(|m| {
+                    let slot = m.params.get("slot")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    (m.control.clone(), m.physical_deck, m.deck_index, m.hardware_type, slot)
+                })
+                .collect();
+            for (control, pd, di, hw_type, slot) in &hot_cue_entries {
+                let mut params = HashMap::new();
+                params.insert("pad".to_string(), serde_yaml::Value::Number((*slot).into()));
+                mappings.push(ControlMapping {
+                    control: control.clone(),
+                    action: "deck.slicer_trigger".to_string(),
+                    physical_deck: *pd,
+                    deck_index: *di,
+                    params: params.clone(),
+                    behavior: ControlBehavior::Momentary,
+                    shift_action: None,
+                    encoder_mode: None,
+                    hardware_type: *hw_type,
+                    mode: Some("slicer".to_string()),
+                });
+                feedback.push(FeedbackMapping {
+                    state: "deck.slicer_slice_active".to_string(),
+                    physical_deck: *pd,
+                    deck_index: *di,
                     params,
-                    output: ctrl.address.clone(),
+                    output: control.clone(),
                     on_value: 127,
                     off_value: 0,
                     alt_on_value: None,
-                    on_color,
-                    off_color,
+                    on_color: None,
+                    off_color: None,
                     alt_on_color: None,
-                    mode: def.mode_condition.map(|s| s.to_string()),
+                    mode: Some("slicer".to_string()),
                 });
             }
-        }
 
-        // Shift merging: combine entries sharing the same address
-        // where one is shift and one is non-shift
-        let mut remove_indices = Vec::new();
-        for (_addr, (non_shift, shift)) in &address_groups {
-            if let (Some(ns_idx), Some(s_idx)) = (non_shift, shift) {
-                // Move shift action into the non-shift mapping
-                let shift_action = mappings[*s_idx].action.clone();
-                mappings[*ns_idx].shift_action = Some(shift_action);
-                remove_indices.push(*s_idx);
-            }
-        }
-        // Remove merged shift entries (in reverse order to preserve indices)
-        remove_indices.sort_unstable();
-        remove_indices.reverse();
-        for idx in remove_indices {
-            mappings.remove(idx);
-        }
+            // --- Infer device identification from the device key ---
+            let is_hid = device_key.starts_with("hid:");
+            let (device_type, hid_product_match, hid_device_id, port_match, learned_port_name) = if is_hid {
+                let did = device_key.strip_prefix("hid:").unwrap_or(device_key).to_string();
+                let product = group.iter()
+                    .find_map(|(_, _, ctrl)| ctrl.source_device.clone())
+                    .unwrap_or_else(|| self.captured_port_name.clone().unwrap_or_else(|| "HID Device".to_string()));
+                (
+                    Some("hid".to_string()),
+                    Some(product.clone()),
+                    Some(did),
+                    product.clone(),
+                    None,
+                )
+            } else {
+                let port = device_key.clone();
+                let normalized = mesh_midi::normalize_port_name(&port);
+                (None, None, None, port, Some(normalized))
+            };
 
-        // Add layer toggle feedback
-        if topology.has_layer_toggle {
-            if let Some(ref addr) = layer_toggle_left_fb {
-                let (on_color, off_color) = Self::hid_feedback_colors(addr);
-                feedback.push(FeedbackMapping {
-                    state: "deck.layer_active".to_string(),
-                    physical_deck: Some(0),
-                    deck_index: None,
-                    params: HashMap::new(),
-                    output: addr.clone(),
-                    on_value: 127,
-                    off_value: 0,
-                    alt_on_value: Some(64),
-                    on_color,
-                    off_color,
-                    alt_on_color: Some([0, 127, 0]),
-                    mode: None,
-                });
-            }
-            if let Some(ref addr) = layer_toggle_right_fb {
-                let (on_color, off_color) = Self::hid_feedback_colors(addr);
-                feedback.push(FeedbackMapping {
-                    state: "deck.layer_active".to_string(),
-                    physical_deck: Some(1),
-                    deck_index: None,
-                    params: HashMap::new(),
-                    output: addr.clone(),
-                    on_value: 127,
-                    off_value: 0,
-                    alt_on_value: Some(64),
-                    on_color,
-                    off_color,
-                    alt_on_color: Some([0, 127, 0]),
-                    mode: None,
-                });
-            }
-        }
+            let profile_name = if profiles.is_empty() {
+                // First profile: use existing name if available
+                self.existing_profile_name.clone().unwrap_or_else(|| format!("{}-{}", port_match, ts))
+            } else {
+                format!("{}-{}", port_match, ts)
+            };
 
-        // Profile name: use existing or generate from port name + timestamp
-        let profile_name = self.existing_profile_name.clone()
-            .unwrap_or_else(|| {
-                let base = self.captured_port_name.as_deref().unwrap_or("learned");
-                let ts = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                format!("{}-{}", base, ts)
+            let color_note_offsets = mesh_midi::detect_color_note_offsets(&port_match);
+
+            profiles.push(DeviceProfile {
+                name: profile_name,
+                port_match,
+                learned_port_name,
+                device_type,
+                hid_product_match,
+                hid_device_id,
+                deck_target: deck_target.clone(),
+                pad_mode_source: topology.pad_mode_source,
+                shift_buttons,
+                mappings,
+                feedback,
+                momentary_mode_buttons: self.overlay_mode,
+                color_note_offsets,
             });
+        }
 
-        // Port match from captured port name
-        let port_match = self.captured_port_name.clone()
-            .unwrap_or_else(|| "Unknown Device".to_string());
-
-        let learned_port_name = self.captured_port_name.clone()
-            .map(|p| mesh_midi::normalize_port_name(&p));
-
-        let color_note_offsets = mesh_midi::detect_color_note_offsets(
-            &port_match
-        );
-
-        let profile = DeviceProfile {
-            name: profile_name,
-            port_match,
-            learned_port_name,
-            device_type: None,
-            hid_product_match: None,
-            hid_device_id: None,
-            deck_target,
-            pad_mode_source: topology.pad_mode_source,
-            shift_buttons,
-            mappings,
-            feedback,
-            momentary_mode_buttons: topology.compact_mode,
-            color_note_offsets,
+        // Cross-device side-pairing for loop_size and toggle_loop.
+        // When multiple devices have encoders mapped to the same action,
+        // assign each control to a side (decks 0,2 or 1,3) and trim excess.
+        let virtual_deck_count = if topology.has_layer_toggle {
+            (topology.deck_count * 2).min(4)
+        } else {
+            topology.deck_count.min(4)
         };
 
-        MidiConfig {
-            devices: vec![profile],
+        if virtual_deck_count > 2 {
+            for action_name in &["deck.loop_size"] {
+                // Collect all (control, deck_index) across ALL device profiles
+                let mut ctrl_primary: HashMap<ControlAddress, usize> = HashMap::new();
+                for profile in &profiles {
+                    for m in &profile.mappings {
+                        if m.action == *action_name {
+                            if let Some(di) = m.deck_index {
+                                ctrl_primary.entry(m.control.clone())
+                                    .and_modify(|e| { if di < *e { *e = di } })
+                                    .or_insert(di);
+                            }
+                        }
+                    }
+                }
+
+                if ctrl_primary.len() < 2 { continue; }
+
+                // Assign each control to side 0 or 1 based on lowest deck_index
+                let mut sorted: Vec<_> = ctrl_primary.iter().collect();
+                sorted.sort_by_key(|(_, primary)| **primary);
+
+                let mut side_ctrl: [Option<ControlAddress>; 2] = [None, None];
+                for (ctrl, primary) in &sorted {
+                    let side = *primary % 2;
+                    if side_ctrl[side].is_none() {
+                        side_ctrl[side] = Some((*ctrl).clone());
+                    }
+                }
+
+                // Build the target deck list per side-owning control
+                let mut ctrl_target: HashMap<ControlAddress, Vec<usize>> = HashMap::new();
+                for side in 0..2usize {
+                    if let Some(ref ctrl) = side_ctrl[side] {
+                        let mut decks = vec![side];
+                        if side + 2 < virtual_deck_count {
+                            decks.push(side + 2);
+                        }
+                        ctrl_target.insert(ctrl.clone(), decks);
+                    }
+                }
+
+                // Rewrite each profile: keep one entry per side-owning control
+                for profile in &mut profiles {
+                    let templates: HashMap<ControlAddress, ControlMapping> = profile.mappings.iter()
+                        .filter(|m| m.action == *action_name)
+                        .map(|m| (m.control.clone(), m.clone()))
+                        .collect();
+
+                    if templates.is_empty() { continue; }
+
+                    // Remove all entries for this action
+                    profile.mappings.retain(|m| m.action != *action_name);
+
+                    // Re-add one entry per control that owns a side
+                    for (ctrl, template) in &templates {
+                        if let Some(decks) = ctrl_target.get(ctrl) {
+                            let mut entry = template.clone();
+                            entry.deck_index = Some(decks[0]);
+                            if decks.len() > 1 {
+                                let decks_seq: Vec<serde_yaml::Value> = decks.iter()
+                                    .map(|&d| serde_yaml::Value::Number((d as u64).into()))
+                                    .collect();
+                                entry.params.insert(
+                                    "decks".to_string(),
+                                    serde_yaml::Value::Sequence(decks_seq),
+                                );
+                            }
+                            profile.mappings.push(entry);
+                        }
+                        // else: control doesn't own a side → entry dropped
+                    }
+                }
+            }
+        }
+
+        // Cross-device browser.back propagation: if any device has a browser.select
+        // with shift_action="browser.back", propagate to all other browser.select
+        // entries across all devices that lack a shift_action.
+        let any_has_back = profiles.iter().any(|p|
+            p.mappings.iter().any(|m|
+                m.action == "browser.select" && m.shift_action.as_deref() == Some("browser.back")
+            )
+        );
+        if any_has_back {
+            for profile in &mut profiles {
+                for m in &mut profile.mappings {
+                    if m.action == "browser.select" && m.shift_action.is_none() {
+                        m.shift_action = Some("browser.back".to_string());
+                    }
+                }
+            }
+        }
+
+        MidiConfig { devices: profiles }
+    }
+
+    /// Derive a device grouping key from a mapped control.
+    /// HID controls group by device_id, MIDI by source port name.
+    fn device_key(ctrl: &MappedControl) -> String {
+        match &ctrl.address {
+            ControlAddress::Hid { device_id, .. } => format!("hid:{}", device_id),
+            _ => ctrl.source_device.clone().unwrap_or_else(|| "unknown".to_string()),
         }
     }
 
@@ -985,20 +1522,6 @@ impl MidiLearnState {
         }
     }
 
-    /// Get HID feedback colors for a control address.
-    ///
-    /// Returns (on_color, off_color) for HID devices.
-    /// For MIDI devices, returns (None, None).
-    fn hid_feedback_colors(addr: &ControlAddress) -> (Option<[u8; 3]>, Option<[u8; 3]>) {
-        match addr {
-            ControlAddress::Hid { .. } => {
-                // Default HID feedback: bright blue on, dim off
-                (Some([0, 60, 127]), Some([0, 5, 10]))
-            }
-            _ => (None, None),
-        }
-    }
-
     // -------------------------------------------------------------------
     // Existing config loading (midi.yaml → tree)
     // -------------------------------------------------------------------
@@ -1011,13 +1534,12 @@ impl MidiLearnState {
     /// 3. Walks profile mappings and matches to tree nodes
     /// 4. Marks matched nodes as `Existing`
     pub fn load_existing_config(&mut self, config: &MidiConfig) {
-        let profile = match config.devices.first() {
-            Some(p) => p,
-            None => return,
-        };
+        if config.devices.is_empty() { return; }
 
-        // Infer topology from profile
-        let (deck_count, has_layer_toggle) = match &profile.deck_target {
+        let first_profile = &config.devices[0];
+
+        // Infer topology from first profile (all profiles share topology)
+        let (deck_count, has_layer_toggle) = match &first_profile.deck_target {
             DeckTargetConfig::Layer { .. } => (2, true),
             DeckTargetConfig::Direct { channel_to_deck } => {
                 let max_deck = channel_to_deck.values().max().copied().unwrap_or(1);
@@ -1028,8 +1550,7 @@ impl MidiLearnState {
         let topology = TopologyConfig {
             deck_count,
             has_layer_toggle,
-            compact_mode: profile.momentary_mode_buttons,
-            pad_mode_source: profile.pad_mode_source,
+            pad_mode_source: first_profile.pad_mode_source,
         };
 
         // Set setup choices to match existing config
@@ -1038,164 +1559,219 @@ impl MidiLearnState {
             (2, true) | (_, true) => TopologyChoice::TwoDecksLayer,
             _ => TopologyChoice::FourDecks,
         };
-        self.compact_mode = profile.momentary_mode_buttons;
-        self.pad_mode_source = profile.pad_mode_source;
-        self.existing_profile_name = Some(profile.name.clone());
+        self.overlay_mode = first_profile.momentary_mode_buttons;
+        self.pad_mode_source = first_profile.pad_mode_source;
+        self.existing_profile_name = Some(first_profile.name.clone());
 
-        // Preserve port info
-        if let Some(ref lpn) = profile.learned_port_name {
+        // Preserve port info from first profile (for backward compat fallback)
+        if let Some(ref lpn) = first_profile.learned_port_name {
             self.captured_port_name = Some(lpn.clone());
         }
+        self.existing_device_type = first_profile.device_type.clone();
+        self.existing_hid_product_match = first_profile.hid_product_match.clone();
+        self.existing_hid_device_id = first_profile.hid_device_id.clone();
 
         // Build tree
         let mut tree = LearnTree::build(topology);
 
-        // Load shift buttons into modifier nodes
-        for sb in &profile.shift_buttons {
-            let def_id = match sb.physical_deck {
-                0 => "mod.shift_left",
-                _ => "mod.shift_right",
-            };
-            if let Some(node) = tree.find_mapping_node_mut("_shift", None, None, None) {
-                if let TreeNode::Mapping { def, mapped, status, .. } = node {
-                    if def.id == def_id {
+        // --- Load mappings from ALL profiles ---
+        self.nav_encoder_mappings.clear();
+        self.browse_encoder_addresses.clear();
+
+        // Collect all loop_size mappings across profiles for encoder inference
+        let mut all_loop_size_mappings: Vec<&ControlMapping> = Vec::new();
+
+        for profile in &config.devices {
+            let source = Self::source_device_for_profile(profile);
+
+            // Load shift buttons
+            for sb in &profile.shift_buttons {
+                let def_id = match sb.physical_deck {
+                    0 => "mod.shift_left",
+                    _ => "mod.shift_right",
+                };
+                if let Some(node) = tree.find_by_id_mut(def_id) {
+                    if let TreeNode::Mapping { mapped, status, .. } = node {
                         *mapped = Some(MappedControl {
                             address: sb.control.clone(),
                             hardware_type: HardwareType::Button,
                             shift_held: false,
-                            source_device: None,
+                            source_device: source.clone(),
                         });
                         *status = MappingStatus::Existing;
                     }
                 }
             }
-        }
 
-        // Load layer toggle buttons
-        if let DeckTargetConfig::Layer { ref toggle_left, ref toggle_right, .. } = profile.deck_target {
-            if let Some(node) = tree.find_mapping_node_mut("_layer_toggle", None, None, None) {
-                if let TreeNode::Mapping { def, mapped, status, .. } = node {
-                    if def.id == "mod.layer_toggle_left" {
-                        *mapped = Some(MappedControl {
-                            address: toggle_left.clone(),
-                            hardware_type: HardwareType::Button,
-                            shift_held: false,
-                            source_device: None,
-                        });
-                        *status = MappingStatus::Existing;
+            // Load layer toggle buttons
+            if let DeckTargetConfig::Layer { ref toggle_left, ref toggle_right, .. } = profile.deck_target {
+                if let Some(node) = tree.find_by_id_mut("mod.layer_toggle_left") {
+                    if let TreeNode::Mapping { mapped, status, .. } = node {
+                        if mapped.is_none() { // Don't overwrite if already loaded from another profile
+                            *mapped = Some(MappedControl {
+                                address: toggle_left.clone(),
+                                hardware_type: HardwareType::Button,
+                                shift_held: false,
+                                source_device: source.clone(),
+                            });
+                            *status = MappingStatus::Existing;
+                        }
+                    }
+                }
+                if let Some(node) = tree.find_by_id_mut("mod.layer_toggle_right") {
+                    if let TreeNode::Mapping { mapped, status, .. } = node {
+                        if mapped.is_none() {
+                            *mapped = Some(MappedControl {
+                                address: toggle_right.clone(),
+                                hardware_type: HardwareType::Button,
+                                shift_held: false,
+                                source_device: source.clone(),
+                            });
+                            *status = MappingStatus::Existing;
+                        }
                     }
                 }
             }
-            if let Some(node) = tree.find_mapping_node_mut("_layer_toggle", None, None, None) {
-                if let TreeNode::Mapping { def, mapped, status, .. } = node {
-                    if def.id == "mod.layer_toggle_right" {
-                        *mapped = Some(MappedControl {
-                            address: toggle_right.clone(),
-                            hardware_type: HardwareType::Button,
-                            shift_held: false,
-                            source_device: None,
-                        });
-                        *status = MappingStatus::Existing;
-                    }
-                }
-            }
-        }
 
-        // Load control mappings into tree nodes
-        for cm in &profile.mappings {
-            let deck_idx = if cm.physical_deck.is_some() {
-                cm.physical_deck
-            } else {
-                cm.deck_index
-            };
+            // Load control mappings
+            for cm in &profile.mappings {
+                let deck_idx = if cm.physical_deck.is_some() {
+                    cm.physical_deck
+                } else {
+                    cm.deck_index
+                };
 
-            // Extract param info
-            let param_key_str: Option<String> = cm.params.keys().next().cloned();
-            let param_value: Option<usize> = param_key_str.as_ref().and_then(|k| {
-                cm.params.get(k).and_then(|v| v.as_u64()).map(|n| n as usize)
-            });
+                let param_key_str: Option<String> = cm.params.keys().next().cloned();
+                let param_value: Option<usize> = param_key_str.as_ref().and_then(|k| {
+                    cm.params.get(k).and_then(|v| v.as_u64()).map(|n| n as usize)
+                });
 
-            let hw_type = cm.hardware_type.unwrap_or(HardwareType::Unknown);
+                let hw_type = cm.hardware_type.unwrap_or(HardwareType::Unknown);
 
-            // Find matching tree node
-            if let Some(node) = tree.find_mapping_node_mut(
-                &cm.action,
-                deck_idx,
-                param_key_str.as_deref(),
-                param_value,
-            ) {
-                if let TreeNode::Mapping { mapped, original, status, .. } = node {
-                    let ctrl = MappedControl {
-                        address: cm.control.clone(),
-                        hardware_type: hw_type,
-                        shift_held: false,
-                        source_device: None,
-                    };
-                    *mapped = Some(ctrl.clone());
-                    *original = Some(ctrl);
-                    *status = MappingStatus::Existing;
-                }
-            }
-
-            // Handle shift_action: find the node for that action and mark it
-            if let Some(ref shift_action) = cm.shift_action {
                 if let Some(node) = tree.find_mapping_node_mut(
-                    shift_action,
+                    &cm.action,
                     deck_idx,
-                    None,
-                    None,
+                    param_key_str.as_deref(),
+                    param_value,
                 ) {
                     if let TreeNode::Mapping { mapped, original, status, .. } = node {
                         let ctrl = MappedControl {
                             address: cm.control.clone(),
                             hardware_type: hw_type,
-                            shift_held: true,
-                            source_device: None,
+                            shift_held: false,
+                            source_device: source.clone(),
                         };
                         *mapped = Some(ctrl.clone());
                         *original = Some(ctrl);
                         *status = MappingStatus::Existing;
                     }
                 }
+
+                if let Some(ref shift_action) = cm.shift_action {
+                    if let Some(node) = tree.find_mapping_node_mut(
+                        shift_action,
+                        deck_idx,
+                        None,
+                        None,
+                    ) {
+                        if let TreeNode::Mapping { mapped, original, status, .. } = node {
+                            let ctrl = MappedControl {
+                                address: cm.control.clone(),
+                                hardware_type: hw_type,
+                                shift_held: true,
+                                source_device: source.clone(),
+                            };
+                            *mapped = Some(ctrl.clone());
+                            *original = Some(ctrl);
+                            *status = MappingStatus::Existing;
+                        }
+                    }
+                }
             }
+
+            // Load browse encoder/select mappings
+            let browse_scroll_mappings: Vec<_> = profile.mappings.iter()
+                .filter(|m| m.action == "browser.scroll" && m.mode.is_none())
+                .collect();
+            for cm in &browse_scroll_mappings {
+                let hw_type = cm.hardware_type.unwrap_or(HardwareType::Encoder);
+                let ctrl = MappedControl {
+                    address: cm.control.clone(),
+                    hardware_type: hw_type,
+                    shift_held: false,
+                    source_device: source.clone(),
+                };
+                self.browse_encoder_addresses.push(cm.control.clone());
+
+                let target_node = match cm.physical_deck {
+                    None | Some(0) => {
+                        self.nav_encoder_mappings.push(ctrl.clone());
+                        tree.find_mapping_node_mut("browser.scroll", None, None, None)
+                    }
+                    Some(idx) => {
+                        tree.find_mapping_node_mut("browser.scroll", None, Some("index"), Some(idx))
+                    }
+                };
+                if let Some(node) = target_node {
+                    if let TreeNode::Mapping { mapped, status, .. } = node {
+                        *mapped = Some(ctrl);
+                        *status = MappingStatus::Existing;
+                    }
+                }
+            }
+
+            // Collect loop_size mappings for encoder inference
+            all_loop_size_mappings.extend(
+                profile.mappings.iter().filter(|m| m.action == "deck.loop_size")
+            );
         }
 
-        // Extract browse encoder/select from navigation section
-        if let Some(node) = tree.find_mapping_node_mut("browser.scroll", None, None, None) {
-            if let TreeNode::Mapping { mapped: Some(ref ctrl), .. } = node {
-                self.browse_encoder_address = Some(ctrl.address.clone());
-                self.nav_encoder_mapping = Some(ctrl.clone());
-            }
-        }
+        // Extract browse select addresses from tree (loaded across all profiles)
+        self.browse_select_addresses.clear();
         if let Some(node) = tree.find_mapping_node_mut("browser.select", None, None, None) {
             if let TreeNode::Mapping { mapped: Some(ref ctrl), .. } = node {
-                self.browse_select_address = Some(ctrl.address.clone());
+                self.browse_select_addresses.push(ctrl.address.clone());
                 self.nav_select_mapping = Some(ctrl.clone());
             }
         }
 
-        // Expand nav section and set cursor
-        tree.expand_navigation();
-        tree.rebuild_flat_list();
-
-        // Move cursor to first non-navigation section
-        for (i, flat) in tree.flat_nodes.iter().enumerate() {
-            if flat.node_type == FlatNodeType::Section && flat.depth == 0 {
-                let node = tree.node_at_path(&flat.tree_path);
-                if let TreeNode::Section { section_id, .. } = node {
-                    if *section_id != "navigation" {
-                        tree.cursor = i;
-                        break;
-                    }
+        // Infer shared decks from deck.loop_size addresses across all profiles
+        self.loop_shared_decks.clear();
+        for (i, m1) in all_loop_size_mappings.iter().enumerate() {
+            let deck1 = m1.physical_deck.or(m1.deck_index).unwrap_or(i);
+            for m2 in &all_loop_size_mappings[..i] {
+                let deck2 = m2.physical_deck.or(m2.deck_index).unwrap_or(0);
+                if m1.control == m2.control {
+                    self.loop_shared_decks.push((deck1, deck2));
+                    break;
                 }
             }
         }
+
+        // Insert Reset node at top (only for existing configs)
+        self.has_existing_config = true;
+        tree.roots.insert(0, TreeNode::Reset);
+
+        // Expand nav section — cursor lands on first unmapped mapping (if any)
+        tree.expand_navigation();
 
         self.tree = Some(tree);
         self.mode = LearnMode::TreeNavigation;
         self.status = "Existing config loaded. Edit and save.".to_string();
         self.update_highlight();
         self.rebuild_active_mappings();
+    }
+
+    /// Derive a source_device string for a profile (used when loading config).
+    /// For HID profiles, uses the product match name. For MIDI, uses the port name.
+    fn source_device_for_profile(profile: &DeviceProfile) -> Option<String> {
+        if profile.device_type.as_deref() == Some("hid") {
+            profile.hid_product_match.clone()
+                .or_else(|| Some(profile.name.clone()))
+        } else {
+            profile.learned_port_name.clone()
+                .or_else(|| Some(profile.port_match.clone()))
+        }
     }
 
     // -------------------------------------------------------------------
@@ -1316,7 +1892,8 @@ impl MidiLearnState {
             log::info!("Learn: Detected {:?} ({:?})", hw_type, address);
 
             self.detection_buffer = None;
-            self.finalize_with_hardware(hw_type, address, None);
+            let source = self.last_captured.as_ref().and_then(|c| c.source_device.clone());
+            self.finalize_with_hardware(hw_type, address, source);
         }
     }
 
@@ -1337,20 +1914,24 @@ impl MidiLearnState {
         match self.mode {
             LearnMode::NavCapture => {
                 if self.nav_capture_step == 0 {
-                    // Browse encoder captured
-                    self.browse_encoder_address = Some(address);
-                    self.nav_encoder_mapping = Some(ctrl);
+                    // First browse encoder captured
+                    self.browse_encoder_addresses.push(address);
+                    self.nav_encoder_mappings.push(ctrl);
                     self.nav_capture_step = 1;
-                    self.last_capture_time = None;
-                    self.status = "Map your BROWSE press (push the encoder)".to_string();
+                    self.last_capture_time = Some(Instant::now());
+                    self.status = "Press your BROWSE button — this will select tracks, confirm choices, and open folders".to_string();
                     log::info!("Learn: Browse encoder captured");
-                } else {
+                } else if self.nav_capture_step == 1 {
+                    // Reject leftover encoder CCs from fast rotation
+                    if self.browse_encoder_addresses.iter().any(|a| *a == address) {
+                        return;
+                    }
                     // Browse select captured
-                    self.browse_select_address = Some(address);
+                    self.browse_select_addresses.push(address);
                     self.nav_select_mapping = Some(ctrl);
                     self.mode = LearnMode::Setup;
                     self.last_capture_time = None;
-                    self.status = "Select your deck topology".to_string();
+                    self.status = "Configure your deck layout".to_string();
                     log::info!("Learn: Browse select captured, entering setup");
                 }
             }
@@ -1421,6 +2002,7 @@ pub fn view_drawer(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
                 String::new()
             }
         }
+        LearnMode::ResetConfirm => "Reset Confirmation".to_string(),
         LearnMode::Verification => "Review Changes".to_string(),
     };
     let progress = text(progress_text).size(sz(12.0)).color(Color::from_rgb(0.6, 0.6, 0.7));
@@ -1443,6 +2025,7 @@ pub fn view_drawer(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
         LearnMode::NavCapture => view_nav_capture(state),
         LearnMode::Setup => view_setup(state),
         LearnMode::TreeNavigation => view_tree(state),
+        LearnMode::ResetConfirm => view_reset_confirm(state),
         LearnMode::Verification => view_verification(state),
     };
 
@@ -1467,23 +2050,21 @@ pub fn view_drawer(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
         .into()
 }
 
-/// View for NavCapture phase — map browse encoder and press.
+/// View for NavCapture phase — capture first browse encoder, then select button.
 fn view_nav_capture(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
-    let prompt = if state.nav_capture_step == 0 {
-        "Turn your BROWSE encoder (the knob you'll use to scroll through mappings)"
-    } else {
-        "Press your BROWSE button (push the encoder to select items)"
-    };
-
-    let prompt_text = text(prompt)
+    let prompt_text = text(&state.status)
         .size(sz(14.0))
         .color(Color::from_rgb(0.9, 0.9, 0.95));
 
-    let status_text = text(&state.status)
+    let step_label = if state.nav_capture_step == 0 {
+        "Step 1/2: Browse encoder"
+    } else {
+        "Step 2/2: Select button"
+    };
+    let step = text(step_label)
         .size(sz(11.0))
         .color(Color::from_rgb(0.5, 0.5, 0.6));
 
-    // Show captured info
     let captured_display = if let Some(ref event) = state.last_captured {
         text(format!("Last: {}", event.display()))
             .size(sz(11.0))
@@ -1494,93 +2075,147 @@ fn view_nav_capture(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
             .color(Color::from_rgb(0.4, 0.4, 0.5))
     };
 
-    column![prompt_text, status_text, captured_display]
+    column![prompt_text, step, captured_display]
         .spacing(8)
         .into()
 }
 
-/// View for Setup phase — topology, compact mode, pad mode.
+/// Render a setup option row: dot + label, with cursor highlight and click support.
+fn setup_option_row<'a>(
+    label: &'a str,
+    is_selected: bool,
+    is_cursor: bool,
+    cursor_idx: usize,
+) -> Element<'a, MidiLearnMessage> {
+    let dot = if is_selected { "●" } else { "○" };
+    let dot_color = if is_selected {
+        Color::from_rgb(0.2, 0.8, 0.3)
+    } else {
+        Color::from_rgb(0.4, 0.4, 0.5)
+    };
+    let label_color = if is_cursor {
+        Color::from_rgb(0.95, 0.95, 1.0)
+    } else {
+        Color::from_rgb(0.8, 0.8, 0.85)
+    };
+
+    let content = row![
+        text(dot).size(sz(12.0)).color(dot_color),
+        Space::new().width(6),
+        text(label).size(sz(12.0)).color(label_color),
+    ]
+    .align_y(Alignment::Center);
+
+    let clickable = button(content)
+        .on_press(MidiLearnMessage::SelectRow(cursor_idx))
+        .style(button::text)
+        .width(Length::Fill);
+
+    if is_cursor {
+        container(clickable)
+            .style(|_| container::Style {
+                background: Some(Color::from_rgba(0.2, 0.25, 0.35, 0.8).into()),
+                border: iced::Border {
+                    color: Color::from_rgb(0.3, 0.4, 0.6),
+                    width: 1.0,
+                    radius: 3.0.into(),
+                },
+                ..Default::default()
+            })
+            .width(Length::Fill)
+            .into()
+    } else {
+        container(clickable).width(Length::Fill).into()
+    }
+}
+
+/// View for Setup phase — encoder-navigable flat list.
+///
+/// Items 0-2: topology, 3-4: performance style, 5-6: pad mode, 7: confirm.
+/// Browse encoder scrolls, select button activates.
 fn view_setup(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
     let dim = Color::from_rgb(0.5, 0.5, 0.6);
+    let cursor = state.setup_cursor;
 
-    // --- Topology question ---
-    let topo_label = text("Deck Layout").size(sz(13.0));
-    let topo_desc = text("How many physical deck sections does your controller have?")
-        .size(sz(10.0))
-        .color(dim);
-    let topo_buttons: Vec<Element<MidiLearnMessage>> = TopologyChoice::ALL
-        .iter()
-        .map(|choice| {
-            let is_selected = *choice == state.topology_choice;
-            button(text(choice.label()).size(sz(11.0)))
-                .on_press(MidiLearnMessage::SetTopology(*choice))
-                .style(if is_selected { button::primary } else { button::secondary })
-                .into()
-        })
-        .collect();
-    let topo_options = row(topo_buttons).spacing(5);
-    let topo_selected_desc = text(state.topology_choice.description())
-        .size(sz(10.0))
-        .color(dim);
+    let mut items: Vec<Element<MidiLearnMessage>> = Vec::new();
 
-    // --- Compact mode question ---
-    let compact_label = text("Compact Mode").size(sz(13.0));
-    let compact_desc = text(
-        "Default is performance mode (play, cue, loops on every control). \
-         Compact controllers share pads between modes — hold a mode button \
-         to overlay hot cues or slicer on the same pads."
-    )
-        .size(sz(10.0))
-        .color(dim);
-    let compact_off = button(text("Off").size(sz(11.0)))
-        .on_press(MidiLearnMessage::SetCompactMode(false))
-        .style(if !state.compact_mode { button::primary } else { button::secondary });
-    let compact_on = button(text("On").size(sz(11.0)))
-        .on_press(MidiLearnMessage::SetCompactMode(true))
-        .style(if state.compact_mode { button::primary } else { button::secondary });
-    let compact_row = row![compact_off, Space::new().width(5), compact_on]
-        .align_y(Alignment::Center);
+    // --- Topology ---
+    items.push(text("Deck Layout").size(sz(13.0)).into());
+    items.push(
+        text("How many physical deck sections does your controller have?")
+            .size(sz(10.0)).color(dim).into()
+    );
+    for (i, choice) in TopologyChoice::ALL.iter().enumerate() {
+        items.push(setup_option_row(
+            choice.label(),
+            *choice == state.topology_choice,
+            cursor == i,
+            i,
+        ));
+    }
+    // Show description of selected topology below the options
+    items.push(
+        text(state.topology_choice.description())
+            .size(sz(10.0)).color(dim).into()
+    );
 
-    // --- Pad mode question ---
-    let pad_label = text("Pad Mode Source").size(sz(13.0));
-    let pad_desc = text(
-        "App: Pads always send the same MIDI notes — the app decides what they do. \
-         Controller: Each pad mode sends different MIDI notes — map slicer pads separately."
-    )
-        .size(sz(10.0))
-        .color(dim);
-    let pad_app = button(text("App").size(sz(11.0)))
-        .on_press(MidiLearnMessage::SetPadMode(PadModeSource::App))
-        .style(if state.pad_mode_source == PadModeSource::App { button::primary } else { button::secondary });
-    let pad_controller = button(text("Controller").size(sz(11.0)))
-        .on_press(MidiLearnMessage::SetPadMode(PadModeSource::Controller))
-        .style(if state.pad_mode_source == PadModeSource::Controller { button::primary } else { button::secondary });
-    let pad_row = row![pad_app, Space::new().width(5), pad_controller]
-        .align_y(Alignment::Center);
+    items.push(Space::new().height(2).into());
 
-    // Confirm button
-    let confirm_btn = button(text("Build Mapping Tree").size(sz(12.0)))
-        .on_press(MidiLearnMessage::ConfirmSetup)
-        .style(button::primary);
+    // --- Performance style ---
+    items.push(text("Performance Style").size(sz(13.0)).into());
+    items.push(
+        text("How should pad mode buttons (hot cue, slicer) work?")
+            .size(sz(10.0)).color(dim).into()
+    );
+    items.push(setup_option_row("Toggle", !state.overlay_mode, cursor == 3, 3));
+    items.push(setup_option_row("Overlay", state.overlay_mode, cursor == 4, 4));
 
-    column![
-        topo_label,
-        topo_desc,
-        topo_options,
-        topo_selected_desc,
-        Space::new().height(2),
-        compact_label,
-        compact_desc,
-        compact_row,
-        Space::new().height(2),
-        pad_label,
-        pad_desc,
-        pad_row,
-        Space::new().height(5),
-        confirm_btn,
+    items.push(Space::new().height(2).into());
+
+    // --- Pad mode ---
+    items.push(text("Pad Mode Source").size(sz(13.0)).into());
+    items.push(
+        text("App: the app decides what pads do. Controller: each pad mode sends different MIDI notes.")
+            .size(sz(10.0)).color(dim).into()
+    );
+    items.push(setup_option_row("App", state.pad_mode_source == PadModeSource::App, cursor == 5, 5));
+    items.push(setup_option_row("Controller", state.pad_mode_source == PadModeSource::Controller, cursor == 6, 6));
+
+    items.push(Space::new().height(4).into());
+
+    // --- Confirm ---
+    let confirm_label = row![
+        text("▶").size(sz(12.0)).color(Color::from_rgb(0.2, 0.8, 0.3)),
+        Space::new().width(6),
+        text("Build Mapping Tree").size(sz(13.0)),
     ]
-    .spacing(4)
-    .into()
+    .align_y(Alignment::Center);
+
+    let confirm_btn = button(confirm_label)
+        .on_press(MidiLearnMessage::ConfirmSetup)
+        .style(button::text)
+        .width(Length::Fill);
+
+    if cursor == 7 {
+        items.push(
+            container(confirm_btn)
+                .style(|_| container::Style {
+                    background: Some(Color::from_rgba(0.2, 0.25, 0.35, 0.8).into()),
+                    border: iced::Border {
+                        color: Color::from_rgb(0.3, 0.4, 0.6),
+                        width: 1.0,
+                        radius: 3.0.into(),
+                    },
+                    ..Default::default()
+                })
+                .width(Length::Fill)
+                .into()
+        );
+    } else {
+        items.push(container(confirm_btn).width(Length::Fill).into());
+    }
+
+    column(items).spacing(3).into()
 }
 
 /// View for TreeNavigation phase — the main tree view.
@@ -1622,27 +2257,45 @@ fn view_tree(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
                     .align_y(Alignment::Center)
                     .into()
                 }
-                TreeNode::Mapping { def, mapped, status, .. } => {
+                TreeNode::Mapping { def, deck_index, mapped, status, .. } => {
                     if is_cursor && !def.description.is_empty() {
                         cursor_description = Some(def.description);
                     }
+
+                    // Check if this is a shared loop encoder node
+                    let shared_source = if def.action == "deck.loop_size" {
+                        deck_index.and_then(|di| {
+                            state.loop_shared_decks.iter()
+                                .find(|(shared, _)| *shared == di)
+                                .map(|(_, source)| *source)
+                        })
+                    } else {
+                        None
+                    };
+
                     let (dot, dot_color) = match status {
                         MappingStatus::Unmapped => ("○", Color::from_rgb(0.4, 0.4, 0.5)),
                         MappingStatus::Existing => ("◆", Color::from_rgb(0.3, 0.4, 0.6)),
                         MappingStatus::New => ("●", Color::from_rgb(0.2, 0.8, 0.3)),
                         MappingStatus::Changed => ("◈", Color::from_rgb(0.9, 0.6, 0.1)),
                     };
-                    let addr_text = mapped
-                        .as_ref()
-                        .map(|m| format_address(&m.address))
-                        .unwrap_or_else(|| {
-                            if is_cursor && *status == MappingStatus::Unmapped {
-                                "(press control...)".to_string()
-                            } else {
-                                String::new()
-                            }
-                        });
-                    let addr_color = if mapped.is_some() {
+                    let addr_text = if let Some(source) = shared_source {
+                        format!("(shared with Deck {})", source + 1)
+                    } else {
+                        mapped
+                            .as_ref()
+                            .map(|m| format_address(&m.address))
+                            .unwrap_or_else(|| {
+                                if is_cursor && *status == MappingStatus::Unmapped {
+                                    "(press control...)".to_string()
+                                } else {
+                                    String::new()
+                                }
+                            })
+                    };
+                    let addr_color = if shared_source.is_some() {
+                        Color::from_rgb(0.4, 0.4, 0.5) // gray for shared
+                    } else if mapped.is_some() {
                         Color::from_rgb(0.5, 0.6, 0.5)
                     } else {
                         Color::from_rgb(0.4, 0.4, 0.5)
@@ -1654,6 +2307,15 @@ fn view_tree(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
                         text(def.label).size(sz(12.0)),
                         Space::new().width(Length::Fill),
                         text(addr_text).size(sz(11.0)).color(addr_color),
+                    ]
+                    .align_y(Alignment::Center)
+                    .into()
+                }
+                TreeNode::Reset => {
+                    row![
+                        text("⚠").size(sz(12.0)).color(Color::from_rgb(0.9, 0.3, 0.3)),
+                        Space::new().width(4),
+                        text("Reset All Mappings").size(sz(13.0)).color(Color::from_rgb(0.9, 0.3, 0.3)),
                     ]
                     .align_y(Alignment::Center)
                     .into()
@@ -1716,9 +2378,9 @@ fn view_tree(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
     let tree_column = column(rows).spacing(2);
 
     let tree_scroll = scrollable(tree_column)
-        .height(Length::Fixed(sz(300.0)))
+        .height(Length::Fixed(sz(TREE_VISIBLE_HEIGHT)))
         .width(Length::Fill)
-        .id("midi_learn_tree");
+        .id(LEARN_TREE_SCROLLABLE_ID.clone());
 
     // Action log footer
     let log_entries: Vec<Element<MidiLearnMessage>> = tree
@@ -1784,6 +2446,42 @@ fn view_tree(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
         .into()
 }
 
+/// View for Reset Confirmation — confirm clearing all mappings.
+fn view_reset_confirm(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
+    let warning = text("Clear all mappings and start fresh?")
+        .size(sz(14.0))
+        .color(Color::from_rgb(0.9, 0.3, 0.3));
+
+    let subtext = text("The saved config file will not be affected.")
+        .size(sz(12.0))
+        .color(Color::from_rgb(0.5, 0.5, 0.6));
+
+    let cancel_style = if state.reset_confirm_cursor == 0 { button::primary } else { button::secondary };
+    let reset_style = if state.reset_confirm_cursor == 1 { button::danger } else { button::secondary };
+
+    let cancel_btn = button(text("← Cancel").size(sz(13.0)))
+        .on_press(MidiLearnMessage::CancelReset)
+        .style(cancel_style);
+
+    let reset_btn = button(text("Reset All").size(sz(13.0)))
+        .on_press(MidiLearnMessage::ConfirmReset)
+        .style(reset_style);
+
+    let button_row = row![cancel_btn, Space::new().width(Length::Fill), reset_btn]
+        .align_y(Alignment::Center);
+
+    column![
+        Space::new().height(20),
+        warning,
+        Space::new().height(8),
+        subtext,
+        Space::new().height(20),
+        button_row,
+    ]
+    .spacing(6)
+    .into()
+}
+
 /// View for Verification phase — review changes and save.
 fn view_verification(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
     let tree = match &state.tree {
@@ -1844,13 +2542,16 @@ fn view_verification(state: &MidiLearnState) -> Element<'_, MidiLearnMessage> {
         text("").size(sz(1.0))
     };
 
+    let back_style = if state.verify_cursor == 0 { button::primary } else { button::secondary };
+    let save_style = if state.verify_cursor == 1 { button::primary } else { button::secondary };
+
     let save_btn = button(text("Save").size(sz(13.0)))
         .on_press(MidiLearnMessage::Save)
-        .style(button::primary);
+        .style(save_style);
 
     let back_btn = button(text("← Back to Tree").size(sz(12.0)))
         .on_press(MidiLearnMessage::ScrollTree(0)) // Will be handled to go back to tree mode
-        .style(button::secondary);
+        .style(back_style);
 
     let button_row = row![back_btn, Space::new().width(Length::Fill), save_btn]
         .align_y(Alignment::Center);

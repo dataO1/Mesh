@@ -245,11 +245,26 @@ impl MappingEngine {
             return self.handle_side_loop_size(event, mapping);
         }
 
-        // Resolve deck index
-        let deck = self.resolve_deck(mapping);
-
-        // Convert to MidiMessage based on action
-        let mut result: Vec<MidiMessage> = self.action_to_message(action, event, mapping, deck).into_iter().collect();
+        // Dispatch to ALL mappings matching the resolved action and mode.
+        // This handles the common case where the same control has entries for
+        // multiple deck_indices (e.g., one encoder mapped to loop_size for decks 0-3).
+        // select_mapping() determined which action/mode to use; now we collect all
+        // sibling mappings that share that action+mode and dispatch to each.
+        let mut result: Vec<MidiMessage> = mappings.iter()
+            .filter(|m| {
+                let m_action = if shift_held {
+                    m.shift_action.as_ref().unwrap_or(&m.action)
+                } else {
+                    &m.action
+                };
+                m_action == action && m.mode == mapping.mode
+            })
+            .flat_map(|m| {
+                let target_decks = self.get_deck_list_param(m);
+                target_decks.into_iter()
+                    .filter_map(|d| self.action_to_message(action, event, m, d))
+            })
+            .collect();
 
         // Auto-close browse mode only on track load (dedicated load buttons).
         // browser.select (encoder push) stays in browse mode to allow continued browsing.
@@ -420,7 +435,7 @@ impl MappingEngine {
             .and_then(|v| v.as_u64())
             .unwrap_or(mapping.physical_deck.unwrap_or(0) as u64) as usize;
         let mut browse = self.browse_held.lock().unwrap();
-        let side_idx = side.min(1);
+        let side_idx = side % 2;
         browse[side_idx] = !browse[side_idx]; // Toggle
         let active = browse[side_idx];
         log::debug!("Browse mode toggle: side {} = {}", side, active);
