@@ -221,8 +221,11 @@ pub enum BrowserAction {
         /// Scroll direction: positive = down, negative = up
         delta: i32,
     },
-    /// Select/enter current item
-    Select,
+    /// Select/enter current item.
+    /// When `load_deck` is set, load the focused track to that deck instead of just navigating.
+    Select {
+        load_deck: Option<usize>,
+    },
     /// Go back/up in hierarchy
     Back,
 }

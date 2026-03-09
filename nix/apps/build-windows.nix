@@ -489,7 +489,7 @@ TOOLCHAIN
         # resource directory. We only need the include path, not the MinGW sysroot.
         CLANG_INCLUDE=$(find /usr/lib/llvm-*/lib/clang -path "*/include/stdbool.h" -printf "%h\n" 2>/dev/null | head -1)
         if [[ -n "$CLANG_INCLUDE" ]]; then
-          export BINDGEN_EXTRA_CLANG_ARGS="-I$CLANG_INCLUDE -D__GCC_MAX_ALIGN_T"
+          export BINDGEN_EXTRA_CLANG_ARGS="-I$CLANG_INCLUDE -D_GCC_MAX_ALIGN_T"
         fi
 
         # Copy source to writable location (container mounts /project as read-only)
@@ -708,7 +708,7 @@ PKGWRAPPER
         # Include clang resource directory so stdbool.h is always found
         # even with --sysroot overriding default header search paths.
         CLANG_INCLUDE=$(find /usr/lib/llvm-*/lib/clang -path "*/include/stdbool.h" -printf "%h\n" 2>/dev/null | head -1)
-        export BINDGEN_EXTRA_CLANG_ARGS="--sysroot=/usr/x86_64-w64-mingw32 -I/usr/x86_64-w64-mingw32/include -D__GCC_MAX_ALIGN_T ''${GCC_INCLUDE:+-I$GCC_INCLUDE} ''${CLANG_INCLUDE:+-I$CLANG_INCLUDE}"
+        export BINDGEN_EXTRA_CLANG_ARGS="--sysroot=/usr/x86_64-w64-mingw32 -I/usr/x86_64-w64-mingw32/include -D_GCC_MAX_ALIGN_T ''${GCC_INCLUDE:+-I$GCC_INCLUDE} ''${CLANG_INCLUDE:+-I$CLANG_INCLUDE}"
 
         # Set C++ flags for Windows TARGET builds only (not host builds):
         # - C++17: required for std::variant in essentia-sys bridge code

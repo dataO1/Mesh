@@ -74,7 +74,7 @@ const fn encoder(
         feedback_state: None,
         param_key: None,
         param_value: None,
-        uses_physical_deck: false,
+        uses_physical_deck: true,
         visibility: Visibility::Always,
         mode_condition: None,
     }
@@ -96,7 +96,7 @@ const fn knob(
         feedback_state: None,
         param_key: None,
         param_value: None,
-        uses_physical_deck: false,
+        uses_physical_deck: true,
         visibility: Visibility::Always,
         mode_condition: None,
     }
@@ -118,7 +118,7 @@ const fn fader(
         feedback_state: None,
         param_key: None,
         param_value: None,
-        uses_physical_deck: false,
+        uses_physical_deck: true,
         visibility: Visibility::Always,
         mode_condition: None,
     }
@@ -131,13 +131,13 @@ const fn fader(
 static NAVIGATION_MAPPINGS: &[MappingDef] = &[
     // Shift buttons first — needed before any shift+button combinations can be mapped
     MappingDef {
-        uses_physical_deck: false,
+        uses_physical_deck: true,
         ..button("mod.shift_left", "Shift Button — Left",
             "Hold to access the shift-layer of other mapped controls.",
             "_shift", None)
     },
     MappingDef {
-        uses_physical_deck: false,
+        uses_physical_deck: true,
         ..button("mod.shift_right", "Shift Button — Right",
             "Hold to access the shift-layer of other mapped controls.",
             "_shift", None)
@@ -149,14 +149,14 @@ static NAVIGATION_MAPPINGS: &[MappingDef] = &[
             "browser.scroll")
     },
     MappingDef {
-        uses_physical_deck: false,
+        uses_physical_deck: true,
         mode_condition: Some("browse"),
         ..button("nav.browse_select", "Browse Press",
             "Main select button: loads tracks, confirms selections, and opens folders.",
             "browser.select", None)
     },
     MappingDef {
-        uses_physical_deck: false,
+        uses_physical_deck: true,
         ..button("nav.browser_back", "Browser Back",
             "Navigate up one level in the browser or exit the suggestion playlist.",
             "browser.back", None)
@@ -203,14 +203,14 @@ static NAVIGATION: SectionDef = SectionDef {
 
 static MODIFIER_MAPPINGS: &[MappingDef] = &[
     MappingDef {
-        uses_physical_deck: false,
+        uses_physical_deck: true,
         visibility: Visibility::LayerToggleOnly,
         ..button("mod.layer_toggle_left", "Layer Toggle — Left",
             "Press to switch this side between Layer A (Decks 1-2) and Layer B (Decks 3-4).",
             "_layer_toggle", Some("deck.layer_active"))
     },
     MappingDef {
-        uses_physical_deck: false,
+        uses_physical_deck: true,
         visibility: Visibility::LayerToggleOnly,
         ..button("mod.layer_toggle_right", "Layer Toggle — Right",
             "Press to switch this side between Layer A (Decks 1-2) and Layer B (Decks 3-4).",
@@ -238,12 +238,9 @@ static TRANSPORT_MAPPINGS: &[MappingDef] = &[
     button("transport.cue", "Cue",
         "Hold to preview from the cue point. Release to snap back.",
         "deck.cue_press", Some("deck.is_cueing")),
-    MappingDef {
-        uses_physical_deck: false,
-        ..button_toggle("transport.loop_toggle", "Loop Toggle",
-            "Turn the active loop on or off.",
-            "deck.toggle_loop", Some("deck.loop_encoder"))
-    },
+    button_toggle("transport.loop_toggle", "Loop Toggle",
+        "Turn the active loop on or off.",
+        "deck.toggle_loop", Some("deck.loop_encoder")),
     MappingDef {
         uses_physical_deck: false,
         ..encoder("transport.loop_encoder", "Loop Size Encoder",
@@ -363,31 +360,31 @@ const STEM_NAMES: [&str; 4] = ["Vocals", "Drums", "Bass", "Other"];
 
 static STEMS_MAPPINGS: &[MappingDef] = &[
     // Mutes — ordered: Drums, Bass, Vocals, Other
-    MappingDef { param_key: Some("stem"), param_value: Some(1), uses_physical_deck: false,
+    MappingDef { param_key: Some("stem"), param_value: Some(1), uses_physical_deck: true,
         ..button("stems.mute.1", "Drums Mute", "Silence the drums stem.", "deck.stem_mute", Some("deck.stem_muted")) },
-    MappingDef { param_key: Some("stem"), param_value: Some(2), uses_physical_deck: false,
+    MappingDef { param_key: Some("stem"), param_value: Some(2), uses_physical_deck: true,
         ..button("stems.mute.2", "Bass Mute", "Silence the bass stem.", "deck.stem_mute", Some("deck.stem_muted")) },
-    MappingDef { param_key: Some("stem"), param_value: Some(0), uses_physical_deck: false,
+    MappingDef { param_key: Some("stem"), param_value: Some(0), uses_physical_deck: true,
         ..button("stems.mute.0", "Vocals Mute", "Silence the vocals stem.", "deck.stem_mute", Some("deck.stem_muted")) },
-    MappingDef { param_key: Some("stem"), param_value: Some(3), uses_physical_deck: false,
+    MappingDef { param_key: Some("stem"), param_value: Some(3), uses_physical_deck: true,
         ..button("stems.mute.3", "Other Mute", "Silence the other/melody stem.", "deck.stem_mute", Some("deck.stem_muted")) },
     // Solos — same order
-    MappingDef { param_key: Some("stem"), param_value: Some(1), uses_physical_deck: false,
+    MappingDef { param_key: Some("stem"), param_value: Some(1), uses_physical_deck: true,
         ..button("stems.solo.1", "Drums Solo", "Play only drums, muting all other stems.", "deck.stem_solo", None) },
-    MappingDef { param_key: Some("stem"), param_value: Some(2), uses_physical_deck: false,
+    MappingDef { param_key: Some("stem"), param_value: Some(2), uses_physical_deck: true,
         ..button("stems.solo.2", "Bass Solo", "Play only bass, muting all other stems.", "deck.stem_solo", None) },
-    MappingDef { param_key: Some("stem"), param_value: Some(0), uses_physical_deck: false,
+    MappingDef { param_key: Some("stem"), param_value: Some(0), uses_physical_deck: true,
         ..button("stems.solo.0", "Vocals Solo", "Play only vocals, muting all other stems.", "deck.stem_solo", None) },
-    MappingDef { param_key: Some("stem"), param_value: Some(3), uses_physical_deck: false,
+    MappingDef { param_key: Some("stem"), param_value: Some(3), uses_physical_deck: true,
         ..button("stems.solo.3", "Other Solo", "Play only other/melody, muting all other stems.", "deck.stem_solo", None) },
     // Links — same order
-    MappingDef { param_key: Some("stem"), param_value: Some(1), uses_physical_deck: false,
+    MappingDef { param_key: Some("stem"), param_value: Some(1), uses_physical_deck: true,
         ..button("stems.link.1", "Drums Link", "Link drums to the same stem on the other deck for smooth transitions.", "deck.stem_link", None) },
-    MappingDef { param_key: Some("stem"), param_value: Some(2), uses_physical_deck: false,
+    MappingDef { param_key: Some("stem"), param_value: Some(2), uses_physical_deck: true,
         ..button("stems.link.2", "Bass Link", "Link bass to the same stem on the other deck for smooth transitions.", "deck.stem_link", None) },
-    MappingDef { param_key: Some("stem"), param_value: Some(0), uses_physical_deck: false,
+    MappingDef { param_key: Some("stem"), param_value: Some(0), uses_physical_deck: true,
         ..button("stems.link.0", "Vocals Link", "Link vocals to the same stem on the other deck for smooth transitions.", "deck.stem_link", None) },
-    MappingDef { param_key: Some("stem"), param_value: Some(3), uses_physical_deck: false,
+    MappingDef { param_key: Some("stem"), param_value: Some(3), uses_physical_deck: true,
         ..button("stems.link.3", "Other Link", "Link other/melody to the same stem on the other deck for smooth transitions.", "deck.stem_link", None) },
 ];
 
@@ -395,7 +392,7 @@ static STEMS: SectionDef = SectionDef {
     id: "stems",
     label: "Stems",
     description: "Mute, solo, or link individual stems (Vocals, Drums, Bass, Other).",
-    repeat_mode: RepeatMode::PerVirtualDeck,
+    repeat_mode: RepeatMode::PerPhysicalDeck,
     visibility: Visibility::Always,
     mappings: STEMS_MAPPINGS,
 };
@@ -463,7 +460,7 @@ static GLOBAL_MAPPINGS: &[MappingDef] = &[
         "Scroll through available FX presets for all decks.",
         "global.fx_scroll"),
     MappingDef {
-        uses_physical_deck: false,
+        uses_physical_deck: true,
         ..button("global.fx_select", "FX Preset Select",
             "Apply the currently highlighted FX preset.",
             "global.fx_select", None)
@@ -481,7 +478,7 @@ static GLOBAL_MAPPINGS: &[MappingDef] = &[
         "Adjust the global tempo.",
         "global.bpm"),
     MappingDef {
-        uses_physical_deck: false,
+        uses_physical_deck: true,
         ..button("global.settings", "Settings Button",
             "Open or close the settings panel.",
             "global.settings_toggle", None)

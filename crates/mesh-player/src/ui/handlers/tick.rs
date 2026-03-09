@@ -260,11 +260,16 @@ pub fn handle(app: &mut MeshApp) -> Task<Message> {
         }
     }
 
-    // Browser overlay auto-hide countdown (runs every tick at 60Hz)
+    // Browser overlay auto-hide countdown (runs every tick at 60Hz).
+    // Paused while browse mode is toggled on — browser stays visible until explicitly closed.
     if app.browser_hide_countdown > 0 {
-        app.browser_hide_countdown -= 1;
-        if app.browser_hide_countdown == 0 {
-            app.browser_visible = false;
+        if app.browse_mode_active[0] || app.browse_mode_active[1] {
+            app.browser_hide_countdown = 0; // cancel timer while browse mode active
+        } else {
+            app.browser_hide_countdown -= 1;
+            if app.browser_hide_countdown == 0 {
+                app.browser_visible = false;
+            }
         }
     }
 

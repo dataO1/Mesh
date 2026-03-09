@@ -740,6 +740,23 @@ impl MidiLearnState {
             }
         }
 
+        // Pre-fill deck.toggle_loop and deck.load_selected from browse encoder press.
+        // In 2-physical-deck setups, each browse encoder press doubles as loop toggle + load.
+        if deck_count == 2 {
+            if let Some(ref select) = self.nav_select_mapping {
+                for action in &["deck.toggle_loop", "deck.load_selected"] {
+                    if let Some(node) = tree.find_mapping_node_mut(action, Some(0), None, None) {
+                        if let TreeNode::Mapping { mapped, status, .. } = node {
+                            if *status == MappingStatus::Unmapped {
+                                *mapped = Some(select.clone());
+                                *status = MappingStatus::New;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Insert Reset node if editing an existing config
         if self.has_existing_config {
             tree.roots.insert(0, TreeNode::Reset);
@@ -1340,6 +1357,55 @@ impl MidiLearnState {
                 });
             }
 
+            // Propagate physical_deck from deck.toggle_loop to browser.select on same control.
+            // The main browse select (nav.browse_select) comes from a Once section so it
+            // has physical_deck: None. But when it shares a control with a per-deck
+            // toggle_loop, it needs physical_deck for context-aware loading.
+            if topology.deck_count == 2 {
+                let toggle_pd: Vec<_> = mappings.iter()
+                    .filter(|m| m.action == "deck.toggle_loop" && m.physical_deck.is_some())
+                    .map(|m| (m.control.clone(), m.physical_deck.unwrap()))
+                    .collect();
+                for (control, pd) in &toggle_pd {
+                    for m in mappings.iter_mut() {
+                        if m.action == "browser.select" && m.control == *control
+                            && m.mode.as_deref() == Some("browse")
+                            && m.physical_deck.is_none()
+                        {
+                            m.physical_deck = Some(*pd);
+                        }
+                    }
+                }
+            }
+
+            // Auto-generate deck.toggle_loop (performance mode) on per-deck browse encoder press buttons.
+            // In browse mode the encoder press does browser.select; in performance mode it toggles loop.
+            // Only for 2-physical-deck setups where each deck has its own encoder.
+            if topology.deck_count == 2 {
+                let browse_press_entries: Vec<_> = mappings.iter()
+                    .filter(|m| m.action == "browser.select" && m.mode.as_deref() == Some("browse"))
+                    .filter(|m| m.physical_deck.is_some())
+                    .filter(|m| !mappings.iter().any(|other|
+                        other.action == "deck.toggle_loop" && other.control == m.control
+                    ))
+                    .map(|m| (m.control.clone(), m.physical_deck.unwrap(), m.hardware_type))
+                    .collect();
+                for (control, pd, hw_type) in browse_press_entries {
+                    mappings.push(ControlMapping {
+                        control,
+                        action: "deck.toggle_loop".to_string(),
+                        physical_deck: Some(pd),
+                        deck_index: None,
+                        params: HashMap::new(),
+                        behavior: ControlBehavior::Toggle,
+                        shift_action: None,
+                        encoder_mode: None,
+                        hardware_type: hw_type,
+                        mode: None, // default/performance mode
+                    });
+                }
+            }
+
             // --- Infer device identification from the device key ---
             let is_hid = device_key.starts_with("hid:");
             let (device_type, hid_product_match, hid_device_id, port_match, learned_port_name) = if is_hid {
@@ -1937,8 +2003,50 @@ impl MidiLearnState {
             }
             LearnMode::TreeNavigation => {
                 if let Some(ref mut tree) = self.tree {
-                    if tree.record_mapping(ctrl) {
+                    // Check if we're about to map a browser.select (extra browse encoder press).
+                    // In 2-deck setups, auto-fill deck.toggle_loop + deck.load_selected
+                    // for the corresponding physical deck from the encoder press control.
+                    let auto_fill_deck = if matches!(self.topology_choice, TopologyChoice::TwoDecks | TopologyChoice::TwoDecksLayer) {
+                        tree.current_node().and_then(|node| {
+                            if let TreeNode::Mapping { def, .. } = node {
+                                if def.action == "browser.select" {
+                                    // Main select (no index) → deck 0, index N → deck N
+                                    Some(def.param_value.unwrap_or(0))
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        })
+                    } else {
+                        None
+                    };
+
+                    if tree.record_mapping(ctrl.clone()) {
                         log::info!("Learn: Recorded mapping on tree node");
+
+                        // Auto-populate deck.toggle_loop and deck.load_selected from
+                        // browse encoder presses — the encoder press doubles as loop
+                        // toggle (performance mode) and context-aware load (browse mode).
+                        if let Some(deck_idx) = auto_fill_deck {
+                            if deck_idx < 2 {
+                                for action in &["deck.toggle_loop", "deck.load_selected"] {
+                                    if let Some(node) = tree.find_mapping_node_mut(
+                                        action, Some(deck_idx), None, None,
+                                    ) {
+                                        if let TreeNode::Mapping { mapped, status, .. } = node {
+                                            if *status == MappingStatus::Unmapped {
+                                                *mapped = Some(ctrl.clone());
+                                                *status = MappingStatus::New;
+                                                log::info!("Learn: Auto-filled {} for deck {} from browse select", action, deck_idx);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         tree.advance_to_next();
                     }
                 }

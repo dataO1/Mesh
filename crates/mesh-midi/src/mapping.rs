@@ -231,8 +231,12 @@ impl MappingEngine {
         };
 
         // Check for mode button actions that target multiple decks
-        if self.momentary_mode_buttons && (action == "deck.hot_cue_mode" || action == "deck.slicer_mode") {
-            return self.handle_mode_action_multi(action, event, mapping);
+        if action == "deck.hot_cue_mode" || action == "deck.slicer_mode" {
+            if self.momentary_mode_buttons {
+                return self.handle_mode_action_multi(action, event, mapping);
+            } else {
+                return self.handle_mode_action_toggle(action, event, mapping);
+            }
         }
 
         // Browse mode button: toggle + notify app
@@ -314,9 +318,13 @@ impl MappingEngine {
             &mapping.action
         };
 
-        // Handle momentary mode buttons
-        if self.momentary_mode_buttons && (action == "deck.hot_cue_mode" || action == "deck.slicer_mode") {
-            let msgs = self.handle_mode_action_multi(action, event, mapping);
+        // Handle mode buttons (momentary or toggle)
+        if action == "deck.hot_cue_mode" || action == "deck.slicer_mode" {
+            let msgs = if self.momentary_mode_buttons {
+                self.handle_mode_action_multi(action, event, mapping)
+            } else {
+                self.handle_mode_action_toggle(action, event, mapping)
+            };
             return msgs.into_iter().next();
         }
 
@@ -409,6 +417,44 @@ impl MappingEngine {
         self.set_mode_held_multi(&target_decks, mode_val);
 
         // Generate messages for each target deck
+        target_decks.iter().map(|&deck| {
+            let deck_action = if action == "deck.hot_cue_mode" {
+                DeckAction::SetHotCueMode { enabled }
+            } else {
+                DeckAction::SetSlicerMode { enabled }
+            };
+            MidiMessage::Deck { deck, action: deck_action }
+        }).collect()
+    }
+
+    /// Handle a non-momentary mode button action (toggle on/off on each press)
+    ///
+    /// When `momentary_mode_buttons` is false, each press toggles the mode:
+    /// - If the mode is already active → deactivate (send enabled: false)
+    /// - If a different mode or no mode is active → activate this mode (send enabled: true)
+    fn handle_mode_action_toggle(
+        &self,
+        action: &str,
+        event: &ControlEvent,
+        mapping: &ControlMapping,
+    ) -> Vec<MidiMessage> {
+        if !event.value.is_press() {
+            return Vec::new(); // Ignore release for toggle buttons
+        }
+
+        let mode_name = if action == "deck.hot_cue_mode" { "hot_cue" } else { "slicer" };
+        let target_decks = self.get_deck_list_param(mapping);
+
+        // Check current mode state from the first target deck
+        let current = self.get_mode_held(target_decks[0]);
+        let (new_mode, enabled) = if current.as_deref() == Some(mode_name) {
+            (None, false) // Same mode → toggle OFF
+        } else {
+            (Some(mode_name), true) // Different/none → toggle ON
+        };
+
+        self.set_mode_held_multi(&target_decks, new_mode);
+
         target_decks.iter().map(|&deck| {
             let deck_action = if action == "deck.hot_cue_mode" {
                 DeckAction::SetHotCueMode { enabled }
@@ -784,7 +830,9 @@ impl MappingEngine {
                         }
                     }
                     debounce.last_browser_select = Some(now);
-                    Some(MidiMessage::Browser(BrowserAction::Select))
+                    // Per-deck encoder: pass resolved deck for context-aware load
+                    let load_deck = mapping.physical_deck.map(|_| deck);
+                    Some(MidiMessage::Browser(BrowserAction::Select { load_deck }))
                 } else {
                     None
                 }
@@ -1041,7 +1089,7 @@ pub fn learn_mode_dispatch(
             if delta != 0 { Some(MidiMessage::browser_scroll(delta)) } else { None }
         }
         "browser.select" => {
-            if is_press { Some(MidiMessage::Browser(BrowserAction::Select)) } else { None }
+            if is_press { Some(MidiMessage::Browser(BrowserAction::Select { load_deck: None })) } else { None }
         }
 
         // FX

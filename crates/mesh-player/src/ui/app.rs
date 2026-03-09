@@ -358,7 +358,13 @@ impl MeshApp {
     pub(crate) fn show_browser_overlay(&mut self) {
         if self.app_mode == AppMode::Performance {
             self.browser_visible = true;
-            self.browser_hide_countdown = 300; // 5 seconds at 60Hz
+            // When browse mode is toggled on, stay visible until toggled off.
+            // Otherwise auto-hide after 5 seconds of inactivity.
+            if !self.browse_mode_active[0] && !self.browse_mode_active[1] {
+                self.browser_hide_countdown = 300; // 5 seconds at 60Hz
+            } else {
+                self.browser_hide_countdown = 0; // no auto-hide while browse mode active
+            }
         }
     }
 
@@ -804,7 +810,7 @@ impl MeshApp {
                         mesh_widgets::keyboard::KeyboardMessage::MidiScroll(delta),
                     ));
                 }
-                MidiMsg::Browser(MidiBrowserAction::Select) => {
+                MidiMsg::Browser(MidiBrowserAction::Select { .. }) => {
                     return self.update(Message::Keyboard(
                         mesh_widgets::keyboard::KeyboardMessage::MidiSelect,
                     ));
@@ -822,7 +828,7 @@ impl MeshApp {
                     let delta = *delta;
                     return self.handle_settings_midi_scroll(delta);
                 }
-                MidiMsg::Browser(MidiBrowserAction::Select) => {
+                MidiMsg::Browser(MidiBrowserAction::Select { .. }) => {
                     return self.handle_settings_midi_select();
                 }
                 _ => {} // Other messages fall through
@@ -982,14 +988,24 @@ impl MeshApp {
                             CollectionBrowserMessage::ScrollBy(delta),
                         ))
                     }
-                    MidiBrowserAction::Select => {
+                    MidiBrowserAction::Select { load_deck } => {
                         // Check if we're in stem link selection mode
                         if matches!(self.stem_link_state, StemLinkState::Selecting { .. }) {
                             self.confirm_stem_link_selection();
                             Task::none()
+                        } else if let Some(deck) = load_deck {
+                            // Per-deck encoder: try load if a track is focused, else navigate
+                            if let Some(track_path) = self.collection_browser.get_selected_track_path() {
+                                let _ = self.update(Message::LoadTrack(deck, track_path.to_string_lossy().to_string(), None));
+                                self.hide_browser_overlay();
+                                Task::none()
+                            } else {
+                                self.update(Message::CollectionBrowser(
+                                    CollectionBrowserMessage::NavigateInto,
+                                ))
+                            }
                         } else {
-                            // Navigate into folders/playlists only — never load tracks.
-                            // Track loading is handled by deck.load_selected (dedicated load buttons).
+                            // Global encoder (no physical_deck): navigate only
                             self.update(Message::CollectionBrowser(
                                 CollectionBrowserMessage::NavigateInto,
                             ))
