@@ -358,12 +358,9 @@ impl MeshApp {
     pub(crate) fn show_browser_overlay(&mut self) {
         if self.app_mode == AppMode::Performance {
             self.browser_visible = true;
-            // When browse mode is toggled on, stay visible until toggled off.
-            // Otherwise auto-hide after 5 seconds of inactivity.
-            if !self.browse_mode_active[0] && !self.browse_mode_active[1] {
+            // In persistent mode, no auto-hide timer — browser stays until browse mode is toggled off
+            if !self.config.display.persistent_browse {
                 self.browser_hide_countdown = 300; // 5 seconds at 60Hz
-            } else {
-                self.browser_hide_countdown = 0; // no auto-hide while browse mode active
             }
         }
     }
@@ -997,6 +994,12 @@ impl MeshApp {
                             // Per-deck encoder: try load if a track is focused, else navigate
                             if let Some(track_path) = self.collection_browser.get_selected_track_path() {
                                 let _ = self.update(Message::LoadTrack(deck, track_path.to_string_lossy().to_string(), None));
+                                // Deactivate browse mode so encoder returns to loop toggle
+                                let side = deck % 2;
+                                self.browse_mode_active[side] = false;
+                                if let Some(ref controller) = self.controller {
+                                    controller.set_browse_mode(side, false);
+                                }
                                 self.hide_browser_overlay();
                                 Task::none()
                             } else {

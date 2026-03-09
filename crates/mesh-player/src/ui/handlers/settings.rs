@@ -99,6 +99,10 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             app.settings.draft_show_local_collection = enabled;
             Task::none()
         }
+        UpdatePersistentBrowse(enabled) => {
+            app.settings.draft_persistent_browse = enabled;
+            Task::none()
+        }
         UpdateKeyScoringModel(model) => {
             app.settings.draft_key_scoring_model = model;
             Task::none()
@@ -166,6 +170,7 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             new_config.display.grid_bars = app.settings.draft_grid_bars;
             new_config.display.theme = app.settings.draft_theme.clone();
             new_config.display.show_local_collection = app.settings.draft_show_local_collection;
+            new_config.display.persistent_browse = app.settings.draft_persistent_browse;
             new_config.display.key_scoring_model = app.settings.draft_key_scoring_model;
             new_config.display.waveform_layout = app.settings.draft_waveform_layout;
             new_config.display.waveform_abstraction = app.settings.draft_waveform_abstraction;

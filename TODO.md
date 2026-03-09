@@ -181,6 +181,7 @@ for v3 and beyond.
   for a true pre-kernel splash.
 
 # OTHER
+- we alternatively need to support arrow key based workflow isntead of encoders, some hardware dont have encoders. the very first mapping (browse encoder) needs to detect then if the mapped control is an encoder or a button, then adapt the mapping scheme accordingly.
 - pressing the browse/loop length encoder now toggles the loop?! this is not intended bhaviour at all. loop toggle is its own mapping, this should not be implicitly mapped.
 - [ ] when on the fly stem linking in the browser for selecting a linked track,
   we can utilise smart suggestions better by additionally adding specific search parameters for the stem that is about to be linked or weighting certain markers more. for example when linking drums, key is relatively irrelevant, but the energy or lufs, aggression and other metrics matters more. for vocals, key is absolutely the most important, bpm also a bit, not so much energy, for bass i think the weighting can stay as is, for other too. Its also possible that for linked stems(other than drums) very compatible key is actually a hard requirement,  and a filter for results.

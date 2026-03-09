@@ -45,6 +45,8 @@ pub enum SettingsMessage {
     UpdateTargetLufs(usize),
     /// Update draft show local collection
     UpdateShowLocalCollection(bool),
+    /// Update draft persistent browse (keep browser visible while browse mode active)
+    UpdatePersistentBrowse(bool),
     /// Update draft key scoring model
     UpdateKeyScoringModel(KeyScoringModel),
     /// Update draft waveform layout orientation

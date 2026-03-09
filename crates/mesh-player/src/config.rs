@@ -244,6 +244,8 @@ pub struct DisplayConfig {
     pub font: AppFont,
     /// Font size preset (Small / Medium / Big)
     pub font_size: FontSize,
+    /// Keep browser overlay visible while browse mode is active (disable auto-hide timeout)
+    pub persistent_browse: bool,
 }
 
 /// Loop length options in beats (matches mesh-core/deck.rs LOOP_LENGTHS)
@@ -263,6 +265,7 @@ impl Default for DisplayConfig {
             waveform_abstraction: WaveformAbstraction::default(), // Medium
             font: AppFont::default(), // Exo
             font_size: FontSize::default(), // Small
+            persistent_browse: false, // Auto-hide browser overlay by default
         }
     }
 }
