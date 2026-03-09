@@ -489,7 +489,7 @@ TOOLCHAIN
         # resource directory. We only need the include path, not the MinGW sysroot.
         CLANG_INCLUDE=$(find /usr/lib/llvm-*/lib/clang -path "*/include/stdbool.h" -printf "%h\n" 2>/dev/null | head -1)
         if [[ -n "$CLANG_INCLUDE" ]]; then
-          export BINDGEN_EXTRA_CLANG_ARGS="-I$CLANG_INCLUDE"
+          export BINDGEN_EXTRA_CLANG_ARGS="-I$CLANG_INCLUDE -D__GCC_MAX_ALIGN_T"
         fi
 
         # Copy source to writable location (container mounts /project as read-only)

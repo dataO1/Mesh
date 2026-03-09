@@ -70,4 +70,9 @@ name = "lufs-report"
 path = "src/bin/lufs_report.rs"
 required-features = []
 
+[[bin]]
+name = "history-stats"
+path = "src/bin/history_stats.rs"
+required-features = []
+
 [dev-dependencies]

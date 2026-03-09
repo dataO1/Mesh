@@ -200,6 +200,8 @@ pkgs.mkShell {
     echo "║    nix run .#bpm-report -- --no-scrape  # Report from cached GT    ║"
     echo "║  LUFS Comparison Report:                                             ║"
     echo "║    cargo run -p mesh-core --bin lufs-report  # Drop vs integrated  ║"
+    echo "║  History Statistics:                                                ║"
+    echo "║    cargo run -p mesh-core --bin history-stats # Session play stats ║"
     echo "╠═══════════════════════════════════════════════════════════════════════╣"
     echo "║  Embedded (Orange Pi 5):                                              ║"
     echo "║    nix run .#embedded-flash            # Download + flash SD image  ║"

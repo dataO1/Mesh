@@ -69,7 +69,7 @@ let
 
     echo "[1/3] Installing tf2onnx..."
     ${pythonEnv}/bin/pip install --target "$TEMP_DIR/site-packages" --no-warn-script-location \
-      tf2onnx "tensorflow>=2.8,<2.17" onnx 2>&1 | tail -5
+      tf2onnx "tensorflow>=2.8,<2.17" "onnx<1.19" 2>&1 | tail -5
 
     export PYTHONPATH="$TEMP_DIR/site-packages:''${PYTHONPATH:-}"
 
