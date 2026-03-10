@@ -94,10 +94,11 @@ in
       #   surface (e.g. 3840x1080) that exceeds Mali G610's max texture dim (2048)
       extraArguments = [ "-d" "-s" "-m" "last" ];
       environment = {
-        # Vulkan via PanVK (Mali-G610, conformant Vulkan 1.2+)
-        # Mailbox: low-latency tearless presentation (1-frame queue vs Fifo's 3)
-        WGPU_BACKEND = "vulkan";
-        ICED_PRESENT_MODE = "mailbox";
+        # GL via Panfrost (Mali-G610) — Vulkan (PanVK) crashes on non-standard
+        # resolutions like 2880x864. Panfrost GL is mature and handles all modes.
+        # Note: Mailbox present mode is Vulkan-only; GL uses Fifo (vsync).
+        WGPU_BACKEND = "gl";
+        ICED_PRESENT_MODE = "fifo";
         WLR_NO_HARDWARE_CURSORS = "1";
       };
     };
@@ -133,17 +134,17 @@ in
 
     # Seed default config files on first boot (C = copy-if-not-exists)
     systemd.tmpfiles.rules = [
-      "d /home/mesh/Music 0755 mesh mesh -"
-      "d /home/mesh/Music/mesh-collection 0755 mesh mesh -"
-      "C /home/mesh/Music/mesh-collection/midi.yaml 0644 mesh mesh - ${../../config/midi.yaml}"
-      "C /home/mesh/Music/mesh-collection/slicer-presets.yaml 0644 mesh mesh - ${../../config/slicer-presets.yaml}"
+      "d /home/mesh/Music 0755 mesh users -"
+      "d /home/mesh/Music/mesh-collection 0755 mesh users -"
+      "C /home/mesh/Music/mesh-collection/midi.yaml 0644 mesh users - ${../../config/midi.yaml}"
+      "C /home/mesh/Music/mesh-collection/slicer-presets.yaml 0644 mesh users - ${../../config/slicer-presets.yaml}"
     ];
 
     # Theme file is force-updated on every activation (OTA update) so new
     # default themes reach the device. Unlike midi/slicer configs, theme
     # definitions are managed upstream and should track the release.
     system.activationScripts.meshTheme.text = ''
-      install -D -m 0644 -o mesh -g mesh ${../../config/theme.yaml} /home/mesh/Music/mesh-collection/theme.yaml
+      install -D -m 0644 -o mesh -g users ${../../config/theme.yaml} /home/mesh/Music/mesh-collection/theme.yaml
     '';
 
     # TTY2 login shell for local debugging (Ctrl+Alt+F2 when cage has -s flag)
