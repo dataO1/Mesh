@@ -100,6 +100,32 @@ mod rt_init {
         }
     }
 
+    /// Pin the main/render thread to an A76 big core.
+    ///
+    /// The A76 is 2-3x faster for single-threaded work than A55. Without pinning,
+    /// the scheduler can place the render thread on A55 cores (1-3) where it competes
+    /// with audio rayon workers. Core 4 = first A76 on RK3588S.
+    pub fn pin_render_thread() {
+        unsafe {
+            let mut cpuset: libc::cpu_set_t = std::mem::zeroed();
+            libc::CPU_ZERO(&mut cpuset);
+            libc::CPU_SET(4, &mut cpuset); // Core 4 = first A76
+            let ret = libc::sched_setaffinity(
+                0,
+                std::mem::size_of::<libc::cpu_set_t>(),
+                &cpuset,
+            );
+            if ret != 0 {
+                log::warn!(
+                    "[RT] sched_setaffinity to core 4 (A76) failed for render thread: {}",
+                    std::io::Error::last_os_error()
+                );
+            } else {
+                log::info!("[RT] Render thread pinned to core 4 (A76)");
+            }
+        }
+    }
+
     /// Configure a rayon worker thread for RT audio processing.
     /// Called from rayon's start_handler on each worker thread.
     /// - Pins each worker to a dedicated A55 core (1, 2, or 3 by round-robin)
@@ -191,6 +217,10 @@ fn main() -> iced::Result {
         .build_global()
         .expect("Failed to initialize Rayon thread pool");
     log::info!("Rayon thread pool initialized with 3 threads");
+
+    // Pin render/main thread to A76 big core for 2-3x better single-threaded perf
+    #[cfg(feature = "embedded-rt")]
+    rt_init::pin_render_thread();
 
     println!("╔══════════════════════════════════════════════════════════════╗");
     println!("║                          Mesh                                  ║");

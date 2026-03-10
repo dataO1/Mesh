@@ -9,9 +9,253 @@ use super::shader::PeakBuffer;
 use crate::{CUE_COLORS, STEM_COLORS};
 use iced::Color;
 use mesh_core::audio_file::{CuePoint, LoadedTrack, StemBuffers};
+use std::cell::RefCell;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{compute_highres_width, generate_peaks, smooth_peaks_gaussian, DEFAULT_WIDTH};
+
+/// Global monotonic generation counter for peak buffer change detection.
+/// Shared across all views — each recompute gets a unique generation.
+static PEAK_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+pub fn next_peak_generation() -> u64 {
+    PEAK_GENERATION.fetch_add(1, Ordering::Relaxed)
+}
+
+// =============================================================================
+// Zoomed Peak Cache — smart caching for zoomed waveform views
+// =============================================================================
+
+/// Cached state for zoomed waveform peak precomputation.
+///
+/// Enables 3-tier cache: full hit, incremental scroll, full recompute.
+/// Lives on `PlayerCanvasState` via `RefCell` for interior mutability from `draw()`.
+#[derive(Debug)]
+pub struct ZoomedPeakCache {
+    // Structural params — any change triggers full recompute
+    pub width: u32,
+    pub bpm_scale_bits: u32,
+    pub peak_index_scale_bits: u32,
+    pub abstraction_level: u8,
+    pub linked_stems_bits: [u32; 4],
+    pub linked_active_bits: [u32; 4],
+    /// Generation of the raw peak buffer — detects progressive loading batches.
+    pub raw_generation: u64,
+
+    // Window the cached buffer represents
+    pub cached_window_start: f32,
+    pub cached_window_end: f32,
+
+    // Persistent working buffer (mutated in place for incremental scroll)
+    pub buffer: Vec<f32>,
+    /// Cached Arc snapshot — created only when buffer changes, reused on cache hits.
+    /// This avoids cloning the entire Vec every frame.
+    pub cached_peak_buffer: Option<PeakBuffer>,
+    pub output_stems: u32,
+    pub generation: u64,
+
+    // Performance counters (accumulated between periodic log dumps)
+    pub stats_hits: u32,
+    pub stats_incremental: u32,
+    pub stats_full_recompute: u32,
+    /// Total pixels computed since last reset (incremental fills + full width on recompute)
+    pub stats_pixels_computed: u64,
+}
+
+impl ZoomedPeakCache {
+    pub fn new() -> Self {
+        Self {
+            width: 0,
+            bpm_scale_bits: 0,
+            peak_index_scale_bits: 0,
+            abstraction_level: 0,
+            linked_stems_bits: [0; 4],
+            linked_active_bits: [0; 4],
+            raw_generation: 0,
+            cached_window_start: 0.0,
+            cached_window_end: 0.0,
+            buffer: Vec::new(),
+            cached_peak_buffer: None,
+            output_stems: 0,
+            generation: 0,
+            stats_hits: 0,
+            stats_incremental: 0,
+            stats_full_recompute: 0,
+            stats_pixels_computed: 0,
+        }
+    }
+
+    /// Reset performance counters (call after periodic log dump).
+    pub fn reset_stats(&mut self) {
+        self.stats_hits = 0;
+        self.stats_incremental = 0;
+        self.stats_full_recompute = 0;
+        self.stats_pixels_computed = 0;
+    }
+
+    /// Check if structural parameters match (everything except window position).
+    /// If false, a full recompute is required.
+    pub fn structural_match(
+        &self,
+        width: u32,
+        bpm_scale: f32,
+        peak_index_scale: f32,
+        abstraction_level: u8,
+        linked_stems: &[f32; 4],
+        linked_active: &[f32; 4],
+        raw_generation: u64,
+    ) -> bool {
+        self.width == width
+            && self.raw_generation == raw_generation
+            && self.bpm_scale_bits == bpm_scale.to_bits()
+            && self.peak_index_scale_bits == peak_index_scale.to_bits()
+            && self.abstraction_level == abstraction_level
+            && self.linked_stems_bits == [
+                linked_stems[0].to_bits(),
+                linked_stems[1].to_bits(),
+                linked_stems[2].to_bits(),
+                linked_stems[3].to_bits(),
+            ]
+            && self.linked_active_bits == [
+                linked_active[0].to_bits(),
+                linked_active[1].to_bits(),
+                linked_active[2].to_bits(),
+                linked_active[3].to_bits(),
+            ]
+    }
+
+    /// Update structural parameters after a full recompute.
+    pub fn update_structural(
+        &mut self,
+        width: u32,
+        bpm_scale: f32,
+        peak_index_scale: f32,
+        abstraction_level: u8,
+        linked_stems: &[f32; 4],
+        linked_active: &[f32; 4],
+        raw_generation: u64,
+    ) {
+        self.width = width;
+        self.bpm_scale_bits = bpm_scale.to_bits();
+        self.peak_index_scale_bits = peak_index_scale.to_bits();
+        self.abstraction_level = abstraction_level;
+        self.linked_stems_bits = [
+            linked_stems[0].to_bits(),
+            linked_stems[1].to_bits(),
+            linked_stems[2].to_bits(),
+            linked_stems[3].to_bits(),
+        ];
+        self.linked_active_bits = [
+            linked_active[0].to_bits(),
+            linked_active[1].to_bits(),
+            linked_active[2].to_bits(),
+            linked_active[3].to_bits(),
+        ];
+        self.raw_generation = raw_generation;
+    }
+}
+
+/// Cached precomputed overview peaks for a single deck.
+/// Stored at viewport width — recomputed only on track load, resize, or linked stem change.
+#[derive(Debug)]
+pub struct OverviewPeakCache {
+    pub peaks: Option<PeakBuffer>,
+    pub width: u32,
+    pub bpm_scale_bits: u32,
+    pub abstraction_level: u8,
+    pub linked_stems_bits: [u32; 4],
+    pub linked_active_bits: [u32; 4],
+    /// Generation of the raw peak buffer this was computed from.
+    /// Detects progressive loading (batch arrivals with new generations).
+    pub raw_generation: u64,
+
+    // Performance counters
+    pub stats_hits: u32,
+    pub stats_recomputes: u32,
+}
+
+impl OverviewPeakCache {
+    pub fn new() -> Self {
+        Self {
+            peaks: None,
+            width: 0,
+            bpm_scale_bits: 0,
+            abstraction_level: 0,
+            linked_stems_bits: [0; 4],
+            linked_active_bits: [0; 4],
+            raw_generation: 0,
+            stats_hits: 0,
+            stats_recomputes: 0,
+        }
+    }
+
+    /// Check if cache is valid for these parameters
+    pub fn is_valid(
+        &self,
+        width: u32,
+        bpm_scale: f32,
+        abstraction_level: u8,
+        linked_stems: &[f32; 4],
+        linked_active: &[f32; 4],
+        raw_generation: u64,
+    ) -> bool {
+        self.peaks.is_some()
+            && self.raw_generation == raw_generation
+            && self.width == width
+            && self.bpm_scale_bits == bpm_scale.to_bits()
+            && self.abstraction_level == abstraction_level
+            && self.linked_stems_bits == [
+                linked_stems[0].to_bits(),
+                linked_stems[1].to_bits(),
+                linked_stems[2].to_bits(),
+                linked_stems[3].to_bits(),
+            ]
+            && self.linked_active_bits == [
+                linked_active[0].to_bits(),
+                linked_active[1].to_bits(),
+                linked_active[2].to_bits(),
+                linked_active[3].to_bits(),
+            ]
+    }
+
+    /// Update cache after recomputing
+    pub fn update(
+        &mut self,
+        peaks: PeakBuffer,
+        width: u32,
+        bpm_scale: f32,
+        abstraction_level: u8,
+        linked_stems: &[f32; 4],
+        linked_active: &[f32; 4],
+        raw_generation: u64,
+    ) {
+        self.peaks = Some(peaks);
+        self.width = width;
+        self.bpm_scale_bits = bpm_scale.to_bits();
+        self.abstraction_level = abstraction_level;
+        self.linked_stems_bits = [
+            linked_stems[0].to_bits(),
+            linked_stems[1].to_bits(),
+            linked_stems[2].to_bits(),
+            linked_stems[3].to_bits(),
+        ];
+        self.linked_active_bits = [
+            linked_active[0].to_bits(),
+            linked_active[1].to_bits(),
+            linked_active[2].to_bits(),
+            linked_active[3].to_bits(),
+        ];
+        self.raw_generation = raw_generation;
+    }
+
+    /// Invalidate cache (e.g., on track load)
+    pub fn invalidate(&mut self) {
+        self.peaks = None;
+        self.width = 0;
+        self.raw_generation = 0;
+    }
+}
 
 // =============================================================================
 // Configuration Constants
@@ -943,6 +1187,12 @@ pub struct PlayerCanvasState {
     pub abstraction_level: u8,
     /// Monotonic frame counter incremented every tick (vsync), used for loading pulse animation
     pub frame_count: u32,
+
+    // Peak caches (RefCell for interior mutability from draw())
+    /// Cached overview peaks per deck — computed once, reused until track/width/linked change
+    pub overview_peak_caches: [RefCell<OverviewPeakCache>; 4],
+    /// Cached zoomed peaks per deck — smart cache with incremental scroll
+    pub zoomed_peak_caches: [RefCell<ZoomedPeakCache>; 4],
 }
 
 impl PlayerCanvasState {
@@ -989,6 +1239,18 @@ impl PlayerCanvasState {
             vertical_inverted: false,
             abstraction_level: 1,                // Medium abstraction by default
             frame_count: 0,
+            overview_peak_caches: [
+                RefCell::new(OverviewPeakCache::new()),
+                RefCell::new(OverviewPeakCache::new()),
+                RefCell::new(OverviewPeakCache::new()),
+                RefCell::new(OverviewPeakCache::new()),
+            ],
+            zoomed_peak_caches: [
+                RefCell::new(ZoomedPeakCache::new()),
+                RefCell::new(ZoomedPeakCache::new()),
+                RefCell::new(ZoomedPeakCache::new()),
+                RefCell::new(ZoomedPeakCache::new()),
+            ],
         }
     }
 

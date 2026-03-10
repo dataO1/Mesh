@@ -13,6 +13,7 @@
 #   /tmp/mesh-perf/system.csv            - Overall CPU, RAM, GPU, temps every 5s
 #   /tmp/mesh-perf/per_core.csv          - Per-core CPU usage (8 cores, big.LITTLE)
 #   /tmp/mesh-perf/threads.csv           - Per-thread CPU usage for mesh-player
+#   /tmp/mesh-perf/peak_cache.csv         - Peak cache hit/miss stats (from PEAK_CACHE log)
 #   /tmp/mesh-perf/mesh-player.log       - Application log (journalctl)
 #   /tmp/mesh-perf/monitor.log           - Human-readable status lines
 #
@@ -219,6 +220,7 @@ done
 echo "timestamp,uptime_sec,cpu_user,cpu_sys,cpu_idle,cpu_iowait,mem_total_mb,mem_used_mb,mem_available_mb,mesh_cpu_pct,mesh_mem_pct,mesh_rss_mb,mesh_vss_mb,mesh_threads,gpu_load_pct,gpu_freq_mhz,temp_soc,temp_bigcore0,temp_bigcore1,temp_little,temp_gpu" > "$OUTDIR/system.csv"
 echo "timestamp,cpu0,cpu1,cpu2,cpu3,cpu4,cpu5,cpu6,cpu7" > "$OUTDIR/per_core.csv"
 echo "timestamp,tid,name,affinity,cpu_pct" > "$OUTDIR/threads.csv"
+echo "timestamp,cache_stats" > "$OUTDIR/peak_cache.csv"
 
 # ---- Initialize delta tracking ----
 
@@ -356,10 +358,22 @@ while true; do
     done
     PREV_TOTAL_JIFFIES=$CUR_TOTAL_JIFFIES
 
+    # ---- Peak Cache Stats (from mesh-player journal) ----
+    # Extract the most recent PEAK_CACHE log line (emitted every ~5s by mesh-player)
+    CACHE_LINE=$(journalctl --user -t mesh-player --since "-${INTERVAL}s" --no-pager -o cat 2>/dev/null | grep "PEAK_CACHE" | tail -1)
+    if [ -n "$CACHE_LINE" ]; then
+        echo "$TS,$CACHE_LINE" >> "$OUTDIR/peak_cache.csv"
+        CACHE_SHORT=$(echo "$CACHE_LINE" | sed 's/.*\[PEAK_CACHE\] //')
+    else
+        CACHE_SHORT=""
+    fi
+
     # Human-readable status line
     CPU_TOTAL_F=$(awk "BEGIN {printf \"%.1f\", ($CPU_USER+$CPU_SYS) / 10}")
     TEMP_SOC_F=$(div1000 $TEMP_SOC)
-    echo "[$TS] #$SAMPLE | CPU: ${CPU_TOTAL_F}% | RAM: $MEM_USED/${MEM_TOTAL}MB | mesh: $MESH_CPU% CPU, ${MESH_RSS}MB RSS | GPU: $GPU_LOAD% @${GPU_FREQ_MHZ}MHz | SoC: ${TEMP_SOC_F}C"
+    STATUS="[$TS] #$SAMPLE | CPU: ${CPU_TOTAL_F}% | RAM: $MEM_USED/${MEM_TOTAL}MB | mesh: $MESH_CPU% CPU, ${MESH_RSS}MB RSS | GPU: $GPU_LOAD% @${GPU_FREQ_MHZ}MHz | SoC: ${TEMP_SOC_F}C"
+    [ -n "$CACHE_SHORT" ] && STATUS="$STATUS | $CACHE_SHORT"
+    echo "$STATUS"
 
     sleep "$INTERVAL"
 done

@@ -26,10 +26,15 @@ let
     ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     export RUST_LOG="''${RUST_LOG:-info}"
 
+    WLR_RANDR="${pkgs.wlr-randr}/bin/wlr-randr"
     PW_LINK="${pkgs.pipewire}/bin/pw-link"
     PW_CLI="${pkgs.pipewire}/bin/pw-cli"
     SYSTEMD_CAT="${pkgs.systemd}/bin/systemd-cat"
     ES8388="alsa_output.platform-es8388-sound.stereo-fallback"
+
+    # Switch to highest refresh rate for the active mode's resolution
+    # (EDID preferred mode is often 60Hz; the panel supports 120Hz)
+    $WLR_RANDR --output HDMI-A-1 --mode 2880x864@120.002998Hz 2>/dev/null || true
 
     # Set up logging pipe — process substitution doesn't survive pw-jack's exec
     LOGFIFO=$(mktemp -u /tmp/mesh-log.XXXXXX)

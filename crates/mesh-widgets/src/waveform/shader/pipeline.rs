@@ -2,13 +2,13 @@
 //!
 //! Two bindings per view:
 //! - Binding 0: Uniform buffer (WaveformUniforms, 416 bytes, updated every frame)
-//! - Binding 1: Storage buffer (peak data, updated every frame with CPU-precomputed peaks)
+//! - Binding 1: Storage buffer (peak data, updated only when generation changes)
 
 use super::PeakBuffer;
 use iced::widget::shader;
 use iced::Rectangle;
 use std::collections::HashMap;
-use std::sync::Arc;
+
 
 // =============================================================================
 // Uniform buffer layout (must match waveform.wgsl exactly)
@@ -99,9 +99,9 @@ struct ViewResources {
     peak_buffer: wgpu::Buffer,
     peak_capacity: usize,
     bind_group: wgpu::BindGroup,
-    /// Pointer to the Arc<Vec<f32>> data for change detection.
-    /// If the pointer hasn't changed, we skip re-uploading peak data.
-    last_peak_ptr: usize,
+    /// Generation counter for change detection.
+    /// Compared against PeakBuffer.generation to skip redundant GPU uploads.
+    last_peak_generation: u64,
 }
 
 /// GPU pipeline for waveform rendering.
@@ -208,11 +208,11 @@ impl shader::Primitive for WaveformPrimitive {
         _bounds: &Rectangle,
         _viewport: &shader::Viewport,
     ) {
-        // Determine peak data pointer for change detection
-        let peak_ptr = self
+        // Generation counter for change detection (replaces broken Arc pointer comparison)
+        let peak_generation = self
             .peaks
             .as_ref()
-            .map(|p| Arc::as_ptr(&p.data) as usize)
+            .map(|p| p.generation)
             .unwrap_or(0);
 
         let peak_data_len = self
@@ -272,7 +272,7 @@ impl shader::Primitive for WaveformPrimitive {
                     peak_buffer,
                     peak_capacity: peak_data_len,
                     bind_group,
-                    last_peak_ptr: 0, // Force upload on first frame
+                    last_peak_generation: 0, // Force upload on first frame
                 },
             );
         }
@@ -286,10 +286,8 @@ impl shader::Primitive for WaveformPrimitive {
             bytemuck::bytes_of(&self.uniforms),
         );
 
-        // Peaks are CPU-precomputed every frame, and the old Arc is freed before
-        // the new one is allocated — the allocator can reuse the same heap address
-        // (ABA problem), so always upload.
-        let peak_changed = true;
+        // Only re-upload peaks when generation changes (cache hit → skip upload)
+        let peak_changed = peak_generation != resources.last_peak_generation;
 
         if peak_changed {
             if let Some(peaks) = &self.peaks {
@@ -299,7 +297,7 @@ impl shader::Primitive for WaveformPrimitive {
                     bytemuck::cast_slice(&peaks.data),
                 );
             }
-            resources.last_peak_ptr = peak_ptr;
+            resources.last_peak_generation = peak_generation;
         }
     }
 
