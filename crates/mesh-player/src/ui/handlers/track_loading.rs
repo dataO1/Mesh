@@ -26,7 +26,7 @@ pub fn handle_track_loaded(app: &mut MeshApp, msg: TrackLoadedMsg) -> Task<Messa
 
     match result {
         TrackLoadResult::RegionLoaded { deck_idx, stems, duration_samples,
-                                         overview_peaks, highres_peaks, path } => {
+                                         shared_overview, shared_highres, path } => {
             // Stale check: a different track may have been loaded since
             let path_str = path.to_string_lossy().to_string();
             if app.deck_views[deck_idx].loaded_track_path() != Some(path_str.as_str()) {
@@ -38,15 +38,10 @@ pub fn handle_track_loaded(app: &mut MeshApp, msg: TrackLoadedMsg) -> Task<Messa
                 app.domain.upgrade_loaded_stems(deck_idx, stems, duration_samples);
             }
 
-            // Update overview waveform peaks (visual growth effect)
-            // Rebuild GPU peak buffers so the shader reflects incremental loading
+            // Store shared Arc references — zero computation on UI thread
             let overview = &mut app.player_canvas_state.decks[deck_idx].overview;
-            overview.overview_peak_buffer =
-                mesh_widgets::PeakBuffer::from_stem_peaks(&overview_peaks);
-            overview.highres_peak_buffer =
-                mesh_widgets::PeakBuffer::from_stem_peaks(&highres_peaks);
-            overview.stem_waveforms = overview_peaks;
-            overview.highres_peaks = highres_peaks;
+            overview.shared_overview = Some(shared_overview);
+            overview.shared_highres = Some(shared_highres);
             // First audio data arrived — stop loading pulse (user can play now)
             overview.loading = false;
             Task::none()

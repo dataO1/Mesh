@@ -12,6 +12,7 @@ use mesh_core::audio_file::{CuePoint, LoadedTrack, StemBuffers};
 use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::RwLock;
 
 use super::{compute_highres_width, generate_peaks, smooth_peaks_gaussian, DEFAULT_WIDTH};
 
@@ -21,6 +22,97 @@ static PEAK_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 pub fn next_peak_generation() -> u64 {
     PEAK_GENERATION.fetch_add(1, Ordering::Relaxed)
+}
+
+// =============================================================================
+// Shared Peak Buffer — zero-copy peak data shared between loader and UI
+// =============================================================================
+
+/// Thread-safe peak buffer shared between the loader merge thread and the UI.
+///
+/// The merge thread writes peak data incrementally via [`write_data`] and
+/// increments the generation counter. The UI thread reads via [`read_data`]
+/// (for cache recomputation) or just checks [`generation`] (lock-free) for
+/// cache validity.
+///
+/// Layout: flat stem-major interleaved min/max —
+/// `[s0_min0, s0_max0, s0_min1, ..., s1_min0, s1_max0, ...]`
+///
+/// This is the same layout the GPU shader expects, eliminating the need for
+/// format conversion (`from_stem_peaks()`) on the UI thread.
+pub struct SharedPeakBuffer {
+    data: RwLock<Vec<f32>>,
+    peaks_per_stem: u32,
+    generation: AtomicU64,
+}
+
+impl std::fmt::Debug for SharedPeakBuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedPeakBuffer")
+            .field("peaks_per_stem", &self.peaks_per_stem)
+            .field("generation", &self.generation.load(Ordering::Relaxed))
+            .finish()
+    }
+}
+
+impl SharedPeakBuffer {
+    /// Pre-allocate an empty buffer for streaming (merge thread writes incrementally).
+    pub fn new_empty(peaks_per_stem: u32, num_stems: u32) -> Self {
+        Self {
+            data: RwLock::new(vec![0.0; peaks_per_stem as usize * num_stems as usize * 2]),
+            peaks_per_stem,
+            generation: AtomicU64::new(0),
+        }
+    }
+
+    /// Create from tuple arrays (one-shot, for full-load path and linked stems).
+    ///
+    /// Flattens `[Vec<(f32,f32)>; 4]` into the GPU-ready stem-major layout.
+    pub fn from_stem_peaks(stem_peaks: &[Vec<(f32, f32)>; 4]) -> Self {
+        let pps = stem_peaks[0].len() as u32;
+        let mut data = Vec::with_capacity(pps as usize * 4 * 2);
+        for stem in stem_peaks {
+            for &(min, max) in stem {
+                data.push(min);
+                data.push(max);
+            }
+        }
+        Self {
+            data: RwLock::new(data),
+            peaks_per_stem: pps,
+            generation: AtomicU64::new(next_peak_generation()),
+        }
+    }
+
+    /// Read the generation counter (lock-free, for cache validity checks).
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    /// Number of peak columns per stem.
+    pub fn peaks_per_stem(&self) -> u32 {
+        self.peaks_per_stem
+    }
+
+    /// Take a read lock on the peak data.
+    pub fn read_data(&self) -> std::sync::RwLockReadGuard<'_, Vec<f32>> {
+        self.data.read().unwrap()
+    }
+
+    /// Take a write lock on the peak data (for merge thread updates).
+    pub fn write_data(&self) -> std::sync::RwLockWriteGuard<'_, Vec<f32>> {
+        self.data.write().unwrap()
+    }
+
+    /// Increment the generation counter (call after writing new peak data).
+    pub fn increment_generation(&self) {
+        self.generation.store(next_peak_generation(), Ordering::Release);
+    }
+
+    /// Check if the buffer has any data (peaks_per_stem > 0 and generation > 0).
+    pub fn has_data(&self) -> bool {
+        self.peaks_per_stem > 0 && self.generation.load(Ordering::Relaxed) > 0
+    }
 }
 
 // =============================================================================
@@ -300,11 +392,10 @@ pub const ZOOM_PIXELS_PER_LEVEL: f32 = 20.0;
 /// This is pure data with builder methods - rendering is handled by view functions.
 #[derive(Debug, Clone)]
 pub struct OverviewState {
-    /// Cached waveform data per stem (min/max pairs per column) - for overview display
-    pub stem_waveforms: [Vec<(f32, f32)>; 4],
-    /// High-resolution peaks for zoomed view (computed once at track load)
-    /// This eliminates the need for background peak recomputation
-    pub highres_peaks: [Vec<(f32, f32)>; 4],
+    /// Shared overview peak data (flat f32, written by loader merge thread)
+    pub shared_overview: Option<Arc<SharedPeakBuffer>>,
+    /// Shared high-resolution peak data (flat f32, written by loader merge thread)
+    pub shared_highres: Option<Arc<SharedPeakBuffer>>,
     /// Current playhead position (0.0 to 1.0)
     pub position: f64,
     /// Current main cue point position (0.0 to 1.0), None if not set
@@ -347,11 +438,6 @@ pub struct OverviewState {
     /// Scales linked stem amplitude to target LUFS for consistent visual display
     pub linked_lufs_gains: [f32; 4],
 
-    /// Flattened overview peaks for GPU shader (created once at track load)
-    pub overview_peak_buffer: Option<PeakBuffer>,
-    /// Flattened high-resolution peaks for GPU shader (created once at track load)
-    pub highres_peak_buffer: Option<PeakBuffer>,
-
     /// Cached 8-stem overview buffer: stems 0-3 = original, stems 4-7 = linked
     /// Rebuilt when linked overview peaks change. Shader uses linked_active uniform
     /// to decide which stems are active vs inactive.
@@ -365,8 +451,8 @@ impl OverviewState {
     /// Create a new empty waveform state
     pub fn new() -> Self {
         Self {
-            stem_waveforms: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
-            highres_peaks: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            shared_overview: None,
+            shared_highres: None,
             position: 0.0,
             cue_position: None,
             beat_markers: Vec::new(),
@@ -385,8 +471,6 @@ impl OverviewState {
             linked_durations: [None, None, None, None],
             linked_highres_peaks: [None, None, None, None],
             linked_lufs_gains: [1.0, 1.0, 1.0, 1.0], // Unity gain (no correction)
-            overview_peak_buffer: None,
-            highres_peak_buffer: None,
             linked_overview_buffer: None,
             linked_highres_buffer: None,
         }
@@ -397,17 +481,15 @@ impl OverviewState {
         self.cue_position = position;
     }
 
-    /// Set high-resolution peaks for zoomed view
+    /// Set high-resolution peaks for zoomed view (from tuple arrays, one-shot).
     ///
-    /// Called after overview is created from preview, when stems become available.
-    /// This enables stable zoomed waveform rendering without recomputation.
+    /// Converts tuples to flat SharedPeakBuffer format.
+    /// Called from full-load path when stems become available.
     pub fn set_highres_peaks(&mut self, peaks: [Vec<(f32, f32)>; 4]) {
-        self.highres_peak_buffer = PeakBuffer::from_stem_peaks(&peaks);
-        self.highres_peaks = peaks;
-        log::debug!(
-            "Set highres_peaks: {} peaks per stem",
-            self.highres_peaks[0].len()
-        );
+        let pps = peaks[0].len();
+        let shared = Arc::new(SharedPeakBuffer::from_stem_peaks(&peaks));
+        log::debug!("Set highres_peaks: {} peaks per stem", pps);
+        self.shared_highres = Some(shared);
     }
 
     /// Set the grid density (beats between major grid lines)
@@ -445,8 +527,8 @@ impl OverviewState {
         let cue_markers = Self::cue_points_to_markers(cue_points, duration_samples);
 
         Self {
-            stem_waveforms: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
-            highres_peaks: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            shared_overview: None,
+            shared_highres: None,
             position: 0.0,
             cue_position: None,
             beat_markers: Vec::new(),
@@ -465,8 +547,6 @@ impl OverviewState {
             linked_durations: [None, None, None, None],
             linked_highres_peaks: [None, None, None, None],
             linked_lufs_gains: [1.0, 1.0, 1.0, 1.0],
-            overview_peak_buffer: None,
-            highres_peak_buffer: None,
             linked_overview_buffer: None,
             linked_highres_buffer: None,
         }
@@ -487,8 +567,8 @@ impl OverviewState {
         };
 
         Self {
-            stem_waveforms: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
-            highres_peaks: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            shared_overview: None,
+            shared_highres: None,
             position: 0.0,
             cue_position: None,
             beat_markers,
@@ -507,8 +587,6 @@ impl OverviewState {
             linked_durations: [None, None, None, None],
             linked_highres_peaks: [None, None, None, None],
             linked_lufs_gains: [1.0, 1.0, 1.0, 1.0],
-            overview_peak_buffer: None,
-            highres_peak_buffer: None,
             linked_overview_buffer: None,
             linked_highres_buffer: None,
         }
@@ -531,19 +609,18 @@ impl OverviewState {
         self.loading = false;
 
         // Generate peak data for each stem (overview resolution)
-        self.stem_waveforms = generate_peaks(stems, DEFAULT_WIDTH);
+        let mut overview_tuples = generate_peaks(stems, DEFAULT_WIDTH);
 
         // Generate high-resolution peaks for zoomed view (computed once, reused)
         let highres_width = compute_highres_width(stems.len(), bpm, screen_width, quality_level);
-        self.highres_peaks = generate_peaks(stems, highres_width);
+        let highres_tuples = generate_peaks(stems, highres_width);
 
         // Apply Gaussian smoothing for smoother overview waveform
         for stem_idx in 0..4 {
-            if self.stem_waveforms[stem_idx].len() >= 5 {
-                self.stem_waveforms[stem_idx] = smooth_peaks_gaussian(&self.stem_waveforms[stem_idx]);
+            if overview_tuples[stem_idx].len() >= 5 {
+                overview_tuples[stem_idx] = smooth_peaks_gaussian(&overview_tuples[stem_idx]);
             }
         }
-
 
         // Convert beat grid to normalized positions
         if duration_samples > 0 {
@@ -556,18 +633,18 @@ impl OverviewState {
             self.cue_markers = Self::cue_points_to_markers(cue_points, duration_samples);
         }
 
-        // Rebuild GPU peak buffers
-        self.overview_peak_buffer = PeakBuffer::from_stem_peaks(&self.stem_waveforms);
-        self.highres_peak_buffer = PeakBuffer::from_stem_peaks(&self.highres_peaks);
+        log::debug!(
+            "Generated waveform peaks: overview={}px, highres={}px",
+            overview_tuples[0].len(),
+            highres_tuples[0].len()
+        );
+
+        // Convert to SharedPeakBuffer (flat f32 format)
+        self.shared_overview = Some(Arc::new(SharedPeakBuffer::from_stem_peaks(&overview_tuples)));
+        self.shared_highres = Some(Arc::new(SharedPeakBuffer::from_stem_peaks(&highres_tuples)));
 
         // Rebuild linked buffers if any linked stems exist (original peaks changed)
         self.rebuild_linked_buffers();
-
-        log::debug!(
-            "Generated waveform peaks: overview={}px, highres={}px",
-            self.stem_waveforms[0].len(),
-            self.highres_peaks[0].len()
-        );
     }
 
     /// Create from a loaded track
@@ -577,20 +654,18 @@ impl OverviewState {
         let duration_samples = track.duration_samples as u64;
 
         // Generate peak data for each stem (overview resolution)
-        let mut stem_waveforms = generate_peaks(&track.stems, DEFAULT_WIDTH);
+        let mut overview_tuples = generate_peaks(&track.stems, DEFAULT_WIDTH);
 
         // Generate high-resolution peaks for zoomed view (computed once, reused)
         let highres_width = compute_highres_width(track.stems.len(), bpm, screen_width, quality_level);
-        let highres_peaks = generate_peaks(&track.stems, highres_width);
+        let highres_tuples = generate_peaks(&track.stems, highres_width);
 
         // Apply Gaussian smoothing for smoother overview waveform
         for stem_idx in 0..4 {
-            if stem_waveforms[stem_idx].len() >= 5 {
-                stem_waveforms[stem_idx] = smooth_peaks_gaussian(&stem_waveforms[stem_idx]);
+            if overview_tuples[stem_idx].len() >= 5 {
+                overview_tuples[stem_idx] = smooth_peaks_gaussian(&overview_tuples[stem_idx]);
             }
         }
-
-
 
         // Convert beat grid to normalized positions
         let beat_markers: Vec<f64> = track
@@ -605,17 +680,17 @@ impl OverviewState {
 
         log::debug!(
             "Created OverviewState from track: overview={}px, highres={}px",
-            stem_waveforms[0].len(),
-            highres_peaks[0].len()
+            overview_tuples[0].len(),
+            highres_tuples[0].len()
         );
 
-        // Build GPU peak buffers before moving arrays into struct
-        let overview_peak_buffer = PeakBuffer::from_stem_peaks(&stem_waveforms);
-        let highres_peak_buffer = PeakBuffer::from_stem_peaks(&highres_peaks);
+        // Convert to SharedPeakBuffer (flat f32 format)
+        let shared_overview = Some(Arc::new(SharedPeakBuffer::from_stem_peaks(&overview_tuples)));
+        let shared_highres = Some(Arc::new(SharedPeakBuffer::from_stem_peaks(&highres_tuples)));
 
         Self {
-            stem_waveforms,
-            highres_peaks,
+            shared_overview,
+            shared_highres,
             position: 0.0,
             cue_position: None,
             beat_markers,
@@ -634,8 +709,6 @@ impl OverviewState {
             linked_durations: [None, None, None, None],
             linked_highres_peaks: [None, None, None, None],
             linked_lufs_gains: [1.0, 1.0, 1.0, 1.0],
-            overview_peak_buffer,
-            highres_peak_buffer,
             linked_overview_buffer: None,
             linked_highres_buffer: None,
         }
@@ -684,16 +757,25 @@ impl OverviewState {
         let has_any_linked = self.linked_stem_waveforms.iter().any(|o| o.is_some());
 
         if has_any_linked {
-            self.linked_overview_buffer = PeakBuffer::from_linked(
-                &self.stem_waveforms,
-                &self.linked_stem_waveforms,
-                &self.linked_lufs_gains,
-            );
-            self.linked_highres_buffer = PeakBuffer::from_linked(
-                &self.highres_peaks,
-                &self.linked_highres_peaks,
-                &self.linked_lufs_gains,
-            );
+            // Read original peaks from shared buffers under read lock
+            self.linked_overview_buffer = self.shared_overview.as_ref().and_then(|shared| {
+                let data = shared.read_data();
+                PeakBuffer::from_linked_flat(
+                    &data,
+                    shared.peaks_per_stem(),
+                    &self.linked_stem_waveforms,
+                    &self.linked_lufs_gains,
+                )
+            });
+            self.linked_highres_buffer = self.shared_highres.as_ref().and_then(|shared| {
+                let data = shared.read_data();
+                PeakBuffer::from_linked_flat(
+                    &data,
+                    shared.peaks_per_stem(),
+                    &self.linked_highres_peaks,
+                    &self.linked_lufs_gains,
+                )
+            });
             log::debug!(
                 "Rebuilt linked buffers: overview={}, highres={}",
                 self.linked_overview_buffer.as_ref().map_or(0, |b| b.data.len()),

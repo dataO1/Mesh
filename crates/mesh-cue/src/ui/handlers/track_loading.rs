@@ -156,8 +156,8 @@ impl MeshCueApp {
             CueTrackLoadResult::RegionLoaded {
                 stems,
                 duration_samples,
-                overview_peaks,
-                highres_peaks,
+                shared_overview,
+                shared_highres,
                 path,
             } => {
                 // Stale check: ensure this result is for the currently loaded track
@@ -191,14 +191,9 @@ impl MeshCueApp {
                         .set_zoom(self.domain.config().display.zoom_bars);
                 }
 
-                // Update overview waveform peaks (visual growth effect)
-                // Rebuild GPU peak buffers so the shader reflects incremental loading
-                state.combined_waveform.overview.overview_peak_buffer =
-                    mesh_widgets::PeakBuffer::from_stem_peaks(overview_peaks);
-                state.combined_waveform.overview.highres_peak_buffer =
-                    mesh_widgets::PeakBuffer::from_stem_peaks(highres_peaks);
-                state.combined_waveform.overview.stem_waveforms = overview_peaks.clone();
-                state.combined_waveform.overview.highres_peaks = highres_peaks.clone();
+                // Store shared Arc references — zero computation on UI thread
+                state.combined_waveform.overview.shared_overview = Some(shared_overview.clone());
+                state.combined_waveform.overview.shared_highres = Some(shared_highres.clone());
                 state.combined_waveform.overview.duration_samples = duration as u64;
                 // First audio data arrived — stop loading pulse
                 state.combined_waveform.overview.loading = false;

@@ -25,12 +25,76 @@ use iced::{Element, Length, Rectangle};
 use iced::Color;
 
 use super::state::{
-    CombinedState, PlayerCanvasState, ZoomedViewMode,
+    CombinedState, PlayerCanvasState, SharedPeakBuffer, ZoomedViewMode,
     COMBINED_WAVEFORM_GAP, WAVEFORM_HEIGHT, ZOOMED_WAVEFORM_HEIGHT,
     MIN_ZOOM_BARS, MAX_ZOOM_BARS, ZOOM_PIXELS_PER_LEVEL,
     next_peak_generation,
 };
 use pipeline::{WaveformPrimitive, WaveformUniforms};
+
+/// Lazy accessor for raw peak data from either a linked PeakBuffer or SharedPeakBuffer.
+///
+/// On cache hits (99% of frames), only metadata (generation, pps) is read — both lock-free.
+/// On cache miss, [`with_data`] takes a read lock on SharedPeakBuffer for the duration
+/// of the recomputation callback only.
+struct RawPeakSource<'a> {
+    linked: Option<&'a PeakBuffer>,
+    shared: Option<&'a Arc<SharedPeakBuffer>>,
+    pub generation: u64,
+    pub peaks_per_stem: u32,
+    pub num_stems: u32,
+}
+
+impl<'a> RawPeakSource<'a> {
+    /// Resolve the peak source from linked and shared buffers.
+    /// Returns None if no peak data is available.
+    fn resolve(
+        linked: Option<&'a PeakBuffer>,
+        shared: Option<&'a Arc<SharedPeakBuffer>>,
+    ) -> Option<Self> {
+        if let Some(linked) = linked {
+            let ns = if linked.peaks_per_stem > 0 {
+                linked.data.len() as u32 / (linked.peaks_per_stem * 2)
+            } else {
+                0
+            };
+            Some(Self {
+                linked: Some(linked),
+                shared: None,
+                generation: linked.generation,
+                peaks_per_stem: linked.peaks_per_stem,
+                num_stems: ns,
+            })
+        } else if let Some(shared) = shared {
+            if shared.has_data() {
+                Some(Self {
+                    linked: None,
+                    shared: Some(shared),
+                    generation: shared.generation(),
+                    peaks_per_stem: shared.peaks_per_stem(),
+                    num_stems: 4,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Call `f` with the raw peak data as `&[f32]`. Takes a read lock if accessing
+    /// SharedPeakBuffer; no lock for linked PeakBuffer (Arc deref only).
+    fn with_data<R>(&self, f: impl FnOnce(&[f32]) -> R) -> R {
+        if let Some(linked) = self.linked {
+            f(&linked.data)
+        } else if let Some(shared) = self.shared {
+            let guard = shared.read_data();
+            f(&guard)
+        } else {
+            unreachable!("RawPeakSource always has either linked or shared")
+        }
+    }
+}
 
 /// Audio engine sample rate — must match mesh_core::types::SAMPLE_RATE.
 const SAMPLE_RATE: u64 = 48000;
@@ -169,6 +233,42 @@ impl PeakBuffer {
         for stem_idx in 0..4 {
             Self::append_stem(&mut data, &original[stem_idx], pps, 1.0);
         }
+
+        // Stems 4-7: linked if available, zero-padded otherwise
+        for stem_idx in 0..4 {
+            if let Some(linked_peaks) = &linked[stem_idx] {
+                Self::append_stem(&mut data, linked_peaks, pps, lufs_gains[stem_idx]);
+            } else {
+                data.extend(std::iter::repeat(0.0).take(pps * 2));
+            }
+        }
+
+        Some(Self {
+            data: Arc::new(data),
+            peaks_per_stem: pps as u32,
+            generation: next_peak_generation(),
+        })
+    }
+
+    /// Build an 8-stem buffer from flat original data + linked tuple peaks.
+    ///
+    /// Same layout as [`from_linked`] but reads original stems from a flat `&[f32]`
+    /// buffer (stem-major interleaved min/max) instead of `[Vec<(f32,f32)>; 4]`.
+    /// Used when original data lives in a [`SharedPeakBuffer`].
+    pub fn from_linked_flat(
+        original_data: &[f32],
+        original_pps: u32,
+        linked: &[Option<Vec<(f32, f32)>>; 4],
+        lufs_gains: &[f32; 4],
+    ) -> Option<Self> {
+        let pps = original_pps as usize;
+        if pps == 0 || original_data.len() < pps * 4 * 2 {
+            return None;
+        }
+        let mut data = Vec::with_capacity(pps * 8 * 2);
+
+        // Stems 0-3: copy directly from flat original (already in correct layout)
+        data.extend_from_slice(&original_data[..pps * 4 * 2]);
 
         // Stems 4-7: linked if available, zero-padded otherwise
         for stem_idx in 0..4 {
@@ -578,229 +678,236 @@ where
     ) -> Self::Primitive {
         let deck = self.state.deck(self.deck_idx);
 
-        // Use cached 8-stem linked buffer if available, otherwise fall back to 4-stem original.
-        // The linked buffers are rebuilt by OverviewState when peak data changes (not per-frame).
-        // The shader uses linked_active uniforms to decide which stems are shown as active.
-        let raw_peaks = if self.is_overview {
-            deck.overview.linked_overview_buffer.clone()
-                .or_else(|| deck.overview.overview_peak_buffer.clone())
+        // Resolve peak source: linked 8-stem buffer (PeakBuffer) or shared 4-stem buffer.
+        // Metadata (generation, pps) is lock-free; actual data access takes read lock only on cache miss.
+        let (linked_buf, shared_buf) = if self.is_overview {
+            (deck.overview.linked_overview_buffer.as_ref(), deck.overview.shared_overview.as_ref())
         } else {
-            deck.overview.linked_highres_buffer.clone()
-                .or_else(|| deck.overview.highres_peak_buffer.clone())
+            (deck.overview.linked_highres_buffer.as_ref(), deck.overview.shared_highres.as_ref())
+        };
+        let source = match RawPeakSource::resolve(linked_buf, shared_buf) {
+            Some(s) => s,
+            None => return WaveformPrimitive { id: self.view_id, uniforms: self.build_uniforms(bounds), peaks: None },
         };
 
         let (peaks, uniforms) = {
             let mut uniforms = self.build_uniforms(bounds);
-            let peaks = if let Some(raw) = &raw_peaks {
-                let width = bounds.width as u32;
-                if width > 0 && raw.peaks_per_stem > 0 {
-                    let num_stems = raw.data.len() as u32 / (raw.peaks_per_stem * 2);
-                    let raw_gen = raw.generation;
+            let width = bounds.width as u32;
+            let peaks = if width > 0 && source.peaks_per_stem > 0 {
+                let num_stems = source.num_stems;
+                let raw_gen = source.generation;
+                let raw_pps = source.peaks_per_stem;
 
-                    if self.is_overview {
-                        // === OVERVIEW: compute-once cache ===
-                        // Overview window is always 0..1 with stable bpm_scale.
-                        // Recompute only on track load, width change, or linked stem change.
-                        let bpm_scale = uniforms.window_params[3];
-                        let peak_index_scale = uniforms.stem_smooth[0];
-                        let abstraction = self.state.abstraction_level;
+                if self.is_overview {
+                    // === OVERVIEW: compute-once cache ===
+                    // Overview window is always 0..1 with stable bpm_scale.
+                    // Recompute only on track load, width change, or linked stem change.
+                    let bpm_scale = uniforms.window_params[3];
+                    let peak_index_scale = uniforms.stem_smooth[0];
+                    let abstraction = self.state.abstraction_level;
 
-                        let mut cache = self.state.overview_peak_caches[self.deck_idx].borrow_mut();
-                        if !cache.is_valid(width, bpm_scale, abstraction, &uniforms.linked_stems, &uniforms.linked_active, raw_gen) {
-                            // Cache miss — recompute (new track batch, width change, etc.)
-                            let mut precomputed = precompute_view_peaks(
-                                &raw.data, raw.peaks_per_stem, num_stems, width,
+                    let mut cache = self.state.overview_peak_caches[self.deck_idx].borrow_mut();
+                    if !cache.is_valid(width, bpm_scale, abstraction, &uniforms.linked_stems, &uniforms.linked_active, raw_gen) {
+                        // Cache miss — recompute (new track batch, width change, etc.)
+                        // Takes read lock on SharedPeakBuffer for the duration of precompute only.
+                        let mut precomputed = source.with_data(|data| {
+                            precompute_view_peaks(
+                                data, raw_pps, num_stems, width,
                                 true, bpm_scale,
                                 uniforms.window_params[0], uniforms.window_params[1],
                                 peak_index_scale, abstraction,
                                 &uniforms.linked_stems, &uniforms.linked_active,
-                            );
-                            precomputed.generation = next_peak_generation();
-                            cache.update(precomputed, width, bpm_scale, abstraction, &uniforms.linked_stems, &uniforms.linked_active, raw_gen);
-                            cache.stats_recomputes += 1;
-                        } else {
-                            cache.stats_hits += 1;
-                        }
-
-                        // Periodic cache stats (every ~5s at 120Hz, from deck 0 overview only)
-                        if self.deck_idx == 0 && self.state.frame_count % 600 == 0 && self.state.frame_count > 0 {
-                            drop(cache);
-                            // Collect stats from all 4 decks, then reset
-                            let mut ov_stats = Vec::new();
-                            let mut zm_stats = Vec::new();
-                            for d in 0..4 {
-                                let mut ov = self.state.overview_peak_caches[d].borrow_mut();
-                                ov_stats.push(format!("{}h/{}r", ov.stats_hits, ov.stats_recomputes));
-                                ov.stats_hits = 0;
-                                ov.stats_recomputes = 0;
-                                drop(ov);
-
-                                let mut zm = self.state.zoomed_peak_caches[d].borrow_mut();
-                                zm_stats.push(format!(
-                                    "{}h/{}i/{}f/{}px",
-                                    zm.stats_hits, zm.stats_incremental,
-                                    zm.stats_full_recompute, zm.stats_pixels_computed,
-                                ));
-                                zm.reset_stats();
-                            }
-                            log::info!(
-                                "[PEAK_CACHE] frames=600 | overview=[{}] | zoomed=[{}]",
-                                ov_stats.join(", "),
-                                zm_stats.join(", "),
-                            );
-                            // Re-borrow for return
-                            let cache = self.state.overview_peak_caches[self.deck_idx].borrow();
-                            let cached = cache.peaks.clone();
-                            drop(cache);
-                            cached
-                        } else {
-                            // Return cached peaks
-                            let cached = cache.peaks.clone();
-                            drop(cache);
-                            cached
-                        }
+                            )
+                        });
+                        precomputed.generation = next_peak_generation();
+                        cache.update(precomputed, width, bpm_scale, abstraction, &uniforms.linked_stems, &uniforms.linked_active, raw_gen);
+                        cache.stats_recomputes += 1;
                     } else {
-                        // === ZOOMED: smart cache with incremental scroll ===
-                        let bpm_scale = uniforms.window_params[3];
-                        let peak_index_scale = uniforms.stem_smooth[0];
-                        let abstraction = self.state.abstraction_level;
-                        let window_start = uniforms.window_params[0];
-                        let window_end = uniforms.window_params[1];
+                        cache.stats_hits += 1;
+                    }
 
-                        let effective_pps = if peak_index_scale > 0.0 {
-                            peak_index_scale
-                        } else {
-                            raw.peaks_per_stem as f32
-                        };
-                        let px_in_source = (window_end - window_start) / width as f32;
-                        let peaks_per_pixel = effective_pps * px_in_source;
+                    // Periodic cache stats (every ~5s at 120Hz, from deck 0 overview only)
+                    if self.deck_idx == 0 && self.state.frame_count % 600 == 0 && self.state.frame_count > 0 {
+                        drop(cache);
+                        // Collect stats from all 4 decks, then reset
+                        let mut ov_stats = Vec::new();
+                        let mut zm_stats = Vec::new();
+                        for d in 0..4 {
+                            let mut ov = self.state.overview_peak_caches[d].borrow_mut();
+                            ov_stats.push(format!("{}h/{}r", ov.stats_hits, ov.stats_recomputes));
+                            ov.stats_hits = 0;
+                            ov.stats_recomputes = 0;
+                            drop(ov);
 
-                        let mut cache = self.state.zoomed_peak_caches[self.deck_idx].borrow_mut();
-                        let output_stems = num_stems;
-                        let buf_len = (width as usize) * (output_stems as usize) * 2;
+                            let mut zm = self.state.zoomed_peak_caches[d].borrow_mut();
+                            zm_stats.push(format!(
+                                "{}h/{}i/{}f/{}px",
+                                zm.stats_hits, zm.stats_incremental,
+                                zm.stats_full_recompute, zm.stats_pixels_computed,
+                            ));
+                            zm.reset_stats();
+                        }
+                        log::info!(
+                            "[PEAK_CACHE] frames=600 | overview=[{}] | zoomed=[{}]",
+                            ov_stats.join(", "),
+                            zm_stats.join(", "),
+                        );
+                        // Re-borrow for return
+                        let cache = self.state.overview_peak_caches[self.deck_idx].borrow();
+                        let cached = cache.peaks.clone();
+                        drop(cache);
+                        cached
+                    } else {
+                        // Return cached peaks
+                        let cached = cache.peaks.clone();
+                        drop(cache);
+                        cached
+                    }
+                } else {
+                    // === ZOOMED: smart cache with incremental scroll ===
+                    let bpm_scale = uniforms.window_params[3];
+                    let peak_index_scale = uniforms.stem_smooth[0];
+                    let abstraction = self.state.abstraction_level;
+                    let window_start = uniforms.window_params[0];
+                    let window_end = uniforms.window_params[1];
 
-                        if !cache.structural_match(width, bpm_scale, peak_index_scale, abstraction, &uniforms.linked_stems, &uniforms.linked_active, raw_gen)
-                            || cache.buffer.len() != buf_len
-                        {
-                            // === FULL RECOMPUTE: structural params changed ===
-                            let precomputed = precompute_view_peaks(
-                                &raw.data, raw.peaks_per_stem, num_stems, width,
+                    let effective_pps = if peak_index_scale > 0.0 {
+                        peak_index_scale
+                    } else {
+                        raw_pps as f32
+                    };
+                    let px_in_source = (window_end - window_start) / width as f32;
+                    let peaks_per_pixel = effective_pps * px_in_source;
+
+                    let mut cache = self.state.zoomed_peak_caches[self.deck_idx].borrow_mut();
+                    let output_stems = num_stems;
+                    let buf_len = (width as usize) * (output_stems as usize) * 2;
+
+                    if !cache.structural_match(width, bpm_scale, peak_index_scale, abstraction, &uniforms.linked_stems, &uniforms.linked_active, raw_gen)
+                        || cache.buffer.len() != buf_len
+                    {
+                        // === FULL RECOMPUTE: structural params changed ===
+                        let precomputed = source.with_data(|data| {
+                            precompute_view_peaks(
+                                data, raw_pps, num_stems, width,
                                 false, bpm_scale, window_start, window_end,
                                 peak_index_scale, abstraction,
                                 &uniforms.linked_stems, &uniforms.linked_active,
-                            );
-                            cache.buffer = (*precomputed.data).clone();
-                            cache.output_stems = output_stems;
-                            cache.cached_window_start = window_start;
-                            cache.cached_window_end = window_end;
-                            cache.generation = next_peak_generation();
-                            cache.update_structural(width, bpm_scale, peak_index_scale, abstraction, &uniforms.linked_stems, &uniforms.linked_active, raw_gen);
-                            cache.stats_full_recompute += 1;
-                            cache.stats_pixels_computed += (width as u64) * (output_stems as u64);
+                            )
+                        });
+                        cache.buffer = (*precomputed.data).clone();
+                        cache.output_stems = output_stems;
+                        cache.cached_window_start = window_start;
+                        cache.cached_window_end = window_end;
+                        cache.generation = next_peak_generation();
+                        cache.update_structural(width, bpm_scale, peak_index_scale, abstraction, &uniforms.linked_stems, &uniforms.linked_active, raw_gen);
+                        cache.stats_full_recompute += 1;
+                        cache.stats_pixels_computed += (width as u64) * (output_stems as u64);
+                    } else {
+                        // Structural params match — check if window shifted
+                        if window_start == cache.cached_window_start && window_end == cache.cached_window_end {
+                            // Perfect cache hit — no window movement
+                            cache.stats_hits += 1;
                         } else {
-                            // Structural params match — check if window shifted
-                            if window_start == cache.cached_window_start && window_end == cache.cached_window_end {
-                                // Perfect cache hit — no window movement
-                                cache.stats_hits += 1;
+                            // Window shifted — compute pixel shift for incremental scroll
+                            let cached_px_in_source = (cache.cached_window_end - cache.cached_window_start) / width as f32;
+                            let pixel_shift = if cached_px_in_source > 0.0 {
+                                ((window_start - cache.cached_window_start) / cached_px_in_source).round() as i32
                             } else {
-                                // Window shifted — compute pixel shift for incremental scroll
-                                let cached_px_in_source = (cache.cached_window_end - cache.cached_window_start) / width as f32;
-                                let pixel_shift = if cached_px_in_source > 0.0 {
-                                    ((window_start - cache.cached_window_start) / cached_px_in_source).round() as i32
+                                width as i32 // Force full recompute
+                            };
+
+                            if pixel_shift == 0 {
+                                // Sub-pixel shift — cache hit (playhead moved < 0.5 pixel)
+                                cache.stats_hits += 1;
+                            } else if pixel_shift.unsigned_abs() < (width * 3 / 4) {
+                                // === INCREMENTAL SCROLL ===
+                                let shift = pixel_shift;
+                                let abs_shift = shift.unsigned_abs() as usize;
+
+                                for stem in 0..output_stems {
+                                    let stem_off = (stem as usize) * (width as usize) * 2;
+                                    let stem_slice = &mut cache.buffer[stem_off..stem_off + (width as usize) * 2];
+
+                                    if shift > 0 {
+                                        stem_slice.copy_within(abs_shift * 2.., 0);
+                                    } else {
+                                        let len = stem_slice.len();
+                                        stem_slice.copy_within(..len - abs_shift * 2, abs_shift * 2);
+                                    }
+                                }
+
+                                let (fill_start, fill_end) = if shift > 0 {
+                                    (width - abs_shift as u32, width)
                                 } else {
-                                    width as i32 // Force full recompute
+                                    (0, abs_shift as u32)
                                 };
 
-                                if pixel_shift == 0 {
-                                    // Sub-pixel shift — cache hit (playhead moved < 0.5 pixel)
-                                    cache.stats_hits += 1;
-                                } else if pixel_shift.unsigned_abs() < (width * 3 / 4) {
-                                    // === INCREMENTAL SCROLL ===
-                                    let shift = pixel_shift;
-                                    let abs_shift = shift.unsigned_abs() as usize;
+                                // Advance cached window by exact integer pixel shift.
+                                // CRITICAL: Do NOT set to exact window_start/end!
+                                // The fractional sub-pixel remainder must accumulate in
+                                // cached_window_start so the next frame's round() self-corrects.
+                                // Without this, round(3.25)=3 every frame → 0.25px/frame drift.
+                                let new_cached_start = cache.cached_window_start + pixel_shift as f32 * cached_px_in_source;
+                                let new_cached_end = cache.cached_window_end + pixel_shift as f32 * cached_px_in_source;
+                                cache.cached_window_start = new_cached_start;
+                                cache.cached_window_end = new_cached_end;
 
-                                    for stem in 0..output_stems {
-                                        let stem_off = (stem as usize) * (width as usize) * 2;
-                                        let stem_slice = &mut cache.buffer[stem_off..stem_off + (width as usize) * 2];
-
-                                        if shift > 0 {
-                                            stem_slice.copy_within(abs_shift * 2.., 0);
-                                        } else {
-                                            let len = stem_slice.len();
-                                            stem_slice.copy_within(..len - abs_shift * 2, abs_shift * 2);
-                                        }
-                                    }
-
-                                    let (fill_start, fill_end) = if shift > 0 {
-                                        (width - abs_shift as u32, width)
-                                    } else {
-                                        (0, abs_shift as u32)
-                                    };
-
-                                    // Advance cached window by exact integer pixel shift.
-                                    // CRITICAL: Do NOT set to exact window_start/end!
-                                    // The fractional sub-pixel remainder must accumulate in
-                                    // cached_window_start so the next frame's round() self-corrects.
-                                    // Without this, round(3.25)=3 every frame → 0.25px/frame drift.
-                                    let new_cached_start = cache.cached_window_start + pixel_shift as f32 * cached_px_in_source;
-                                    let new_cached_end = cache.cached_window_end + pixel_shift as f32 * cached_px_in_source;
-                                    cache.cached_window_start = new_cached_start;
-                                    cache.cached_window_end = new_cached_end;
-
-                                    // Fill edge pixels using the CACHED window coords (not exact
-                                    // current window) to maintain seamless boundary with shifted data.
+                                // Fill edge pixels using the CACHED window coords (not exact
+                                // current window) to maintain seamless boundary with shifted data.
+                                source.with_data(|data| {
                                     compute_pixel_range(
                                         &mut cache.buffer,
-                                        &raw.data, raw.peaks_per_stem, num_stems, width,
+                                        data, raw_pps, num_stems, width,
                                         fill_start, fill_end,
                                         new_cached_start, new_cached_end,
                                         effective_pps, peaks_per_pixel, abstraction,
                                     );
-                                    cache.generation = next_peak_generation();
-                                    cache.stats_incremental += 1;
-                                    cache.stats_pixels_computed += (fill_end - fill_start) as u64 * output_stems as u64;
-                                } else {
-                                    // === FULL RECOMPUTE: large jump (beat jump, hot cue) ===
-                                    let precomputed = precompute_view_peaks(
-                                        &raw.data, raw.peaks_per_stem, num_stems, width,
+                                });
+                                cache.generation = next_peak_generation();
+                                cache.stats_incremental += 1;
+                                cache.stats_pixels_computed += (fill_end - fill_start) as u64 * output_stems as u64;
+                            } else {
+                                // === FULL RECOMPUTE: large jump (beat jump, hot cue) ===
+                                let precomputed = source.with_data(|data| {
+                                    precompute_view_peaks(
+                                        data, raw_pps, num_stems, width,
                                         false, bpm_scale, window_start, window_end,
                                         peak_index_scale, abstraction,
                                         &uniforms.linked_stems, &uniforms.linked_active,
-                                    );
-                                    cache.buffer.clear();
-                                    cache.buffer.extend_from_slice(&precomputed.data);
-                                    cache.cached_window_start = window_start;
-                                    cache.cached_window_end = window_end;
-                                    cache.generation = next_peak_generation();
-                                    cache.stats_full_recompute += 1;
-                                    cache.stats_pixels_computed += (width as u64) * (output_stems as u64);
-                                }
+                                    )
+                                });
+                                cache.buffer.clear();
+                                cache.buffer.extend_from_slice(&precomputed.data);
+                                cache.cached_window_start = window_start;
+                                cache.cached_window_end = window_end;
+                                cache.generation = next_peak_generation();
+                                cache.stats_full_recompute += 1;
+                                cache.stats_pixels_computed += (width as u64) * (output_stems as u64);
                             }
                         }
-
-                        // Return cached PeakBuffer (only Arc clone, not data clone)
-                        // Rebuild Arc snapshot only when generation changed
-                        if cache.cached_peak_buffer.as_ref().map_or(true, |p| p.generation != cache.generation) {
-                            cache.cached_peak_buffer = Some(PeakBuffer {
-                                data: Arc::new(cache.buffer.clone()),
-                                peaks_per_stem: width,
-                                generation: cache.generation,
-                            });
-                        }
-                        let peaks = cache.cached_peak_buffer.clone();
-                        drop(cache);
-                        peaks
                     }
-                    .map(|precomputed| {
-                        // Override uniforms for precomputed mode
-                        uniforms.view_params[2] = precomputed.peaks_per_stem as f32;  // pps
-                        uniforms.slicer_params[3] = 1.0;         // peaks_per_pixel = 1.0
-                        uniforms.stem_smooth[0] = 0.0;           // no peak_index_scale correction
-                        precomputed
-                    })
-                } else {
-                    raw_peaks
+
+                    // Return cached PeakBuffer (only Arc clone, not data clone)
+                    // Rebuild Arc snapshot only when generation changed
+                    if cache.cached_peak_buffer.as_ref().map_or(true, |p| p.generation != cache.generation) {
+                        cache.cached_peak_buffer = Some(PeakBuffer {
+                            data: Arc::new(cache.buffer.clone()),
+                            peaks_per_stem: width,
+                            generation: cache.generation,
+                        });
+                    }
+                    let peaks = cache.cached_peak_buffer.clone();
+                    drop(cache);
+                    peaks
                 }
+                .map(|precomputed| {
+                    // Override uniforms for precomputed mode
+                    uniforms.view_params[2] = precomputed.peaks_per_stem as f32;  // pps
+                    uniforms.slicer_params[3] = 1.0;         // peaks_per_pixel = 1.0
+                    uniforms.stem_smooth[0] = 0.0;           // no peak_index_scale correction
+                    precomputed
+                })
             } else {
                 None
             };
@@ -851,15 +958,15 @@ where
             0.0
         };
 
-        // Peaks per stem — read from the actual buffer being used (linked or original)
+        // Peaks per stem — read from linked buffer (PeakBuffer) or shared buffer (lock-free)
         let peaks_per_stem = if self.is_overview {
-            overview.linked_overview_buffer.as_ref()
-                .or(overview.overview_peak_buffer.as_ref())
-                .map_or(0, |p| p.peaks_per_stem)
+            overview.linked_overview_buffer.as_ref().map(|p| p.peaks_per_stem)
+                .or_else(|| overview.shared_overview.as_ref().map(|s| s.peaks_per_stem()))
+                .unwrap_or(0)
         } else {
-            overview.linked_highres_buffer.as_ref()
-                .or(overview.highres_peak_buffer.as_ref())
-                .map_or(0, |p| p.peaks_per_stem)
+            overview.linked_highres_buffer.as_ref().map(|p| p.peaks_per_stem)
+                .or_else(|| overview.shared_highres.as_ref().map(|s| s.peaks_per_stem()))
+                .unwrap_or(0)
         };
 
         // BPM used for both window sizing and beat grid fallback.
@@ -1307,25 +1414,27 @@ where
         _cursor: mouse::Cursor,
         bounds: Rectangle,
     ) -> Self::Primitive {
-        // Use cached 8-stem linked buffer if available, otherwise fall back to 4-stem original.
-        let raw_peaks = if self.is_overview {
-            self.state.overview.linked_overview_buffer.clone()
-                .or_else(|| self.state.overview.overview_peak_buffer.clone())
+        // Resolve peak source: linked 8-stem buffer or shared 4-stem buffer
+        let (linked_buf, shared_buf) = if self.is_overview {
+            (self.state.overview.linked_overview_buffer.as_ref(), self.state.overview.shared_overview.as_ref())
         } else {
-            self.state.overview.linked_highres_buffer.clone()
-                .or_else(|| self.state.overview.highres_peak_buffer.clone())
+            (self.state.overview.linked_highres_buffer.as_ref(), self.state.overview.shared_highres.as_ref())
+        };
+        let source = match RawPeakSource::resolve(linked_buf, shared_buf) {
+            Some(s) => s,
+            None => return WaveformPrimitive { id: self.view_id, uniforms: self.build_uniforms(bounds), peaks: None },
         };
 
         let (peaks, uniforms) = {
             let mut uniforms = self.build_uniforms(bounds);
-            let peaks = if let Some(raw) = &raw_peaks {
-                let width = bounds.width as u32;
-                if width > 0 && raw.peaks_per_stem > 0 {
-                    let num_stems = raw.data.len() as u32 / (raw.peaks_per_stem * 2);
-                    let precomputed = precompute_view_peaks(
-                        &raw.data,
-                        raw.peaks_per_stem,
-                        num_stems,
+            let width = bounds.width as u32;
+            let peaks = if width > 0 && source.peaks_per_stem > 0 {
+                // mesh-cue always precomputes (no caching — simpler, single-deck)
+                let precomputed = source.with_data(|data| {
+                    precompute_view_peaks(
+                        data,
+                        source.peaks_per_stem,
+                        source.num_stems,
                         width,
                         self.is_overview,
                         uniforms.window_params[3],  // bpm_scale
@@ -1335,14 +1444,12 @@ where
                         2,                          // High abstraction (mesh-cue)
                         &uniforms.linked_stems,
                         &uniforms.linked_active,
-                    );
-                    uniforms.view_params[2] = width as f32;
-                    uniforms.slicer_params[3] = 1.0;
-                    uniforms.stem_smooth[0] = 0.0;
-                    Some(precomputed)
-                } else {
-                    raw_peaks
-                }
+                    )
+                });
+                uniforms.view_params[2] = width as f32;
+                uniforms.slicer_params[3] = 1.0;
+                uniforms.stem_smooth[0] = 0.0;
+                Some(precomputed)
             } else {
                 None
             };
@@ -1394,15 +1501,15 @@ where
             0.0
         };
 
-        // Peaks per stem — read from the actual buffer being used (linked or original)
+        // Peaks per stem — read from linked buffer (PeakBuffer) or shared buffer (lock-free)
         let peaks_per_stem = if self.is_overview {
-            overview.linked_overview_buffer.as_ref()
-                .or(overview.overview_peak_buffer.as_ref())
-                .map_or(0, |p| p.peaks_per_stem)
+            overview.linked_overview_buffer.as_ref().map(|p| p.peaks_per_stem)
+                .or_else(|| overview.shared_overview.as_ref().map(|s| s.peaks_per_stem()))
+                .unwrap_or(0)
         } else {
-            overview.linked_highres_buffer.as_ref()
-                .or(overview.highres_peak_buffer.as_ref())
-                .map_or(0, |p| p.peaks_per_stem)
+            overview.linked_highres_buffer.as_ref().map(|p| p.peaks_per_stem)
+                .or_else(|| overview.shared_highres.as_ref().map(|s| s.peaks_per_stem()))
+                .unwrap_or(0)
         };
 
         let bpm = if self.state.zoomed.bpm > 0.0 { self.state.zoomed.bpm } else { 120.0 };

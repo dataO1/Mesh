@@ -57,14 +57,16 @@ pub use knob::{
 
 // Peak generation utilities
 pub use waveform::{
-    allocate_empty_peaks, compute_highres_width, generate_peaks, generate_peaks_for_range,
-    smooth_peaks_gaussian, update_peaks_for_region, DEFAULT_WIDTH,
-    PEAK_REFERENCE_ZOOM_BARS, PEAK_SMOOTHING_WINDOW,
+    allocate_empty_peaks, allocate_flat_peaks,
+    compute_highres_width, generate_peaks, generate_peaks_for_range,
+    smooth_peaks_gaussian, update_peaks_for_region, update_peaks_for_region_flat,
+    DEFAULT_WIDTH, PEAK_REFERENCE_ZOOM_BARS, PEAK_SMOOTHING_WINDOW,
 };
 
 // Waveform state structures
 pub use waveform::{
-    CombinedState, CueMarker, OverviewState, PlayerCanvasState, ZoomedState, ZoomedViewMode,
+    CombinedState, CueMarker, OverviewState, PlayerCanvasState, SharedPeakBuffer,
+    ZoomedState, ZoomedViewMode,
     // Constants
     COMBINED_WAVEFORM_GAP, DEFAULT_ZOOM_BARS, MAX_ZOOM_BARS, MIN_ZOOM_BARS,
     WAVEFORM_HEIGHT, ZOOMED_WAVEFORM_HEIGHT, ZOOM_PIXELS_PER_LEVEL,

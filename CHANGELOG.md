@@ -29,6 +29,13 @@ All notable changes to Mesh are documented in this file.
 - **Auto-start learn mode** — If no `midi.yaml` exists, learn mode opens
   automatically on startup.
 
+### Improved
+
+- **Stutter-free track loading** — Loading a track no longer causes the UI to
+  freeze for 100–200 ms. Waveform peak data is now shared directly between the
+  loader and the display without copying or converting, so waveforms grow
+  smoothly while the track streams in.
+
 ### Changed
 
 - **Removed "4 Decks + Layer Toggle"** topology option (8 virtual decks is not

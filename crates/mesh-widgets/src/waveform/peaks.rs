@@ -226,6 +226,78 @@ pub fn allocate_empty_peaks(width: usize) -> [Vec<(f32, f32)>; 4] {
     ]
 }
 
+/// Allocate a flat peak buffer pre-filled with 0.0 for incremental loading.
+///
+/// Layout: stem-major interleaved min/max — `[s0_min0, s0_max0, s0_min1, ..., s1_min0, ...]`
+/// Total size: `width * 4 stems * 2 (min+max)` f32 values.
+pub fn allocate_flat_peaks(width: usize) -> Vec<f32> {
+    vec![0.0; width * 4 * 2]
+}
+
+/// Update a flat peak buffer for a specific sample range.
+///
+/// Same logic as [`update_peaks_for_region`] but writes directly into the flat
+/// stem-major layout used by the GPU shader, avoiding the intermediate tuple
+/// format and the subsequent `from_stem_peaks()` conversion.
+///
+/// Layout: `data[(stem * peaks_per_stem + col) * 2]` = min,
+///         `data[(stem * peaks_per_stem + col) * 2 + 1]` = max
+pub fn update_peaks_for_region_flat(
+    stems: &StemBuffers,
+    data: &mut [f32],
+    peaks_per_stem: u32,
+    sample_start: usize,
+    sample_end: usize,
+    total_duration: usize,
+) {
+    let pps = peaks_per_stem as usize;
+    if total_duration == 0 || pps == 0 {
+        return;
+    }
+
+    let samples_per_col = total_duration / pps;
+    if samples_per_col == 0 {
+        return;
+    }
+
+    let col_start = sample_start / samples_per_col;
+    let col_end = ((sample_end + samples_per_col - 1) / samples_per_col).min(pps);
+
+    let stem_refs = [&stems.vocals, &stems.drums, &stems.bass, &stems.other];
+    let stem_len = stems.len();
+
+    for (stem_idx, stem_buf) in stem_refs.iter().enumerate() {
+        let stem_offset = stem_idx * pps * 2;
+
+        for col in col_start..col_end {
+            let s = col * samples_per_col;
+            let e = ((col + 1) * samples_per_col).min(stem_len);
+
+            if s >= stem_len || s >= e {
+                continue;
+            }
+
+            let mut min = f32::INFINITY;
+            let mut max = f32::NEG_INFINITY;
+
+            for i in s..e {
+                let sample = (stem_buf[i].left + stem_buf[i].right) / 2.0;
+                min = min.min(sample);
+                max = max.max(sample);
+            }
+
+            let offset = stem_offset + col * 2;
+            if min == f32::INFINITY {
+                data[offset] = 0.0;
+                data[offset + 1] = 0.0;
+            } else {
+                data[offset] = min;
+                data[offset + 1] = max;
+            }
+        }
+    }
+}
+
 /// Update pre-allocated peak arrays for a specific sample range.
 ///
 /// Given a sample range `[sample_start, sample_end)`, computes which peak

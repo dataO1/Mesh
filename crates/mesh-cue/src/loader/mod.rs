@@ -25,7 +25,7 @@ use basedrop::Shared;
 use mesh_core::audio_file::{AudioFileReader, StemBuffers, TrackMetadata};
 use mesh_core::types::SAMPLE_RATE;
 use mesh_widgets::{
-    allocate_empty_peaks, compute_highres_width, update_peaks_for_region, DEFAULT_WIDTH,
+    SharedPeakBuffer, compute_highres_width, update_peaks_for_region_flat, DEFAULT_WIDTH,
 };
 
 use self::regions::{compute_gaps, compute_priority_regions};
@@ -57,10 +57,10 @@ pub enum CueTrackLoadResult {
         stems: Option<Shared<StemBuffers>>,
         /// Track duration in samples
         duration_samples: usize,
-        /// Full overview peaks (DEFAULT_WIDTH entries per stem)
-        overview_peaks: [Vec<(f32, f32)>; 4],
-        /// Full highres peaks
-        highres_peaks: [Vec<(f32, f32)>; 4],
+        /// Shared overview peaks (Arc clone = refcount bump, zero data copy)
+        shared_overview: Arc<SharedPeakBuffer>,
+        /// Shared highres peaks (Arc clone = refcount bump, zero data copy)
+        shared_highres: Arc<SharedPeakBuffer>,
         /// Path for stale detection
         path: PathBuf,
     },
@@ -202,8 +202,9 @@ fn handle_track_load(request: CueTrackLoadRequest, tx: &Sender<CueTrackLoadResul
     let screen_width: u32 = 1920; // mesh-cue reference width
     let highres_width =
         compute_highres_width(frame_count, bpm, screen_width, quality_level);
-    let mut overview_peaks = allocate_empty_peaks(DEFAULT_WIDTH);
-    let mut highres_peaks = allocate_empty_peaks(highres_width);
+    // Pre-allocate shared peak buffers — written to by merge thread, read by UI
+    let shared_overview = Arc::new(SharedPeakBuffer::new_empty(DEFAULT_WIDTH as u32, 4));
+    let shared_highres = Arc::new(SharedPeakBuffer::new_empty(highres_width as u32, 4));
 
     // 3. Compute priority regions around hot cues, drop marker, first beat
     let regions = compute_priority_regions(&metadata, frame_count, SAMPLE_RATE);
@@ -291,22 +292,17 @@ fn handle_track_load(request: CueTrackLoadRequest, tx: &Sender<CueTrackLoadResul
                 stems.copy_region_from(&local, region.start, region.len());
                 drop(local);
 
-                update_peaks_for_region(
-                    &stems,
-                    &mut overview_peaks,
-                    region.start,
-                    region.end,
-                    frame_count,
-                    DEFAULT_WIDTH,
-                );
-                update_peaks_for_region(
-                    &stems,
-                    &mut highres_peaks,
-                    region.start,
-                    region.end,
-                    frame_count,
-                    highres_width,
-                );
+                // Write peaks directly into shared flat buffers (zero-copy path)
+                {
+                    let mut data = shared_overview.write_data();
+                    update_peaks_for_region_flat(&stems, &mut data, DEFAULT_WIDTH as u32, region.start, region.end, frame_count);
+                }
+                shared_overview.increment_generation();
+                {
+                    let mut data = shared_highres.write_data();
+                    update_peaks_for_region_flat(&stems, &mut data, highres_width as u32, region.start, region.end, frame_count);
+                }
+                shared_highres.increment_generation();
 
                 let is_priority = i < num_priority;
                 if is_priority {
@@ -321,6 +317,7 @@ fn handle_track_load(request: CueTrackLoadRequest, tx: &Sender<CueTrackLoadResul
                 let all_done = total_merged == total_regions;
                 let send_stems = (is_priority && all_priority_done) || all_done;
 
+                // Send lightweight message — Arc clone is just a refcount bump
                 let _ = tx.send(CueTrackLoadResult::RegionLoaded {
                     stems: if send_stems {
                         Some(Shared::new(
@@ -331,8 +328,8 @@ fn handle_track_load(request: CueTrackLoadRequest, tx: &Sender<CueTrackLoadResul
                         None
                     },
                     duration_samples: frame_count,
-                    overview_peaks: overview_peaks.clone(),
-                    highres_peaks: highres_peaks.clone(),
+                    shared_overview: shared_overview.clone(),
+                    shared_highres: shared_highres.clone(),
                     path: path.clone(),
                 });
 

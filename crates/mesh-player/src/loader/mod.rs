@@ -27,9 +27,8 @@ use mesh_core::audio_file::{AudioFileReader, LoadedTrack, StemBuffers, TrackMeta
 use mesh_core::buffer_pool::StemBufferPool;
 use mesh_core::engine::PreparedTrack;
 use mesh_widgets::{
-    CueMarker, OverviewState, ZoomedState, CUE_COLORS,
-    allocate_empty_peaks, compute_highres_width, generate_peaks, update_peaks_for_region,
-    DEFAULT_WIDTH,
+    CueMarker, OverviewState, SharedPeakBuffer, ZoomedState, CUE_COLORS,
+    compute_highres_width, generate_peaks, update_peaks_for_region_flat, DEFAULT_WIDTH,
 };
 
 use self::regions::{compute_gaps, compute_priority_regions};
@@ -77,10 +76,10 @@ pub enum TrackLoadResult {
         stems: Option<Shared<StemBuffers>>,
         /// Track duration in samples
         duration_samples: usize,
-        /// Full overview peaks (800 entries per stem, ~25 KB clone)
-        overview_peaks: [Vec<(f32, f32)>; 4],
-        /// Full highres peaks (65536 entries per stem, ~2 MB clone)
-        highres_peaks: [Vec<(f32, f32)>; 4],
+        /// Shared overview peaks (Arc clone = refcount bump, zero data copy)
+        shared_overview: Arc<SharedPeakBuffer>,
+        /// Shared highres peaks (Arc clone = refcount bump, zero data copy)
+        shared_highres: Arc<SharedPeakBuffer>,
         path: PathBuf,
     },
     /// All audio loaded — stems fully filled, waveform computed.
@@ -415,8 +414,9 @@ fn handle_streaming_load(
             frame_count, frame_count as f64 / 48000.0,
         );
     }
-    let mut overview_peaks = allocate_empty_peaks(DEFAULT_WIDTH);
-    let mut highres_peaks = allocate_empty_peaks(highres_width);
+    // Pre-allocate shared peak buffers — written to by merge thread, read by UI
+    let shared_overview = Arc::new(SharedPeakBuffer::new_empty(DEFAULT_WIDTH as u32, 4));
+    let shared_highres = Arc::new(SharedPeakBuffer::new_empty(highres_width as u32, 4));
 
     // 3. Compute priority regions around hot cues, drop marker, first beat
     let regions = compute_priority_regions(&metadata, frame_count, sample_rate);
@@ -502,8 +502,17 @@ fn handle_streaming_load(
                 stems.copy_region_from(&local, region.start, region.len());
                 drop(local);
 
-                update_peaks_for_region(&stems, &mut overview_peaks, region.start, region.end, frame_count, DEFAULT_WIDTH);
-                update_peaks_for_region(&stems, &mut highres_peaks, region.start, region.end, frame_count, highres_width);
+                // Write peaks directly into shared flat buffers (zero-copy path)
+                {
+                    let mut data = shared_overview.write_data();
+                    update_peaks_for_region_flat(&stems, &mut data, DEFAULT_WIDTH as u32, region.start, region.end, frame_count);
+                }
+                shared_overview.increment_generation();
+                {
+                    let mut data = shared_highres.write_data();
+                    update_peaks_for_region_flat(&stems, &mut data, highres_width as u32, region.start, region.end, frame_count);
+                }
+                shared_highres.increment_generation();
 
                 let is_priority = i < num_priority;
                 if is_priority {
@@ -518,6 +527,8 @@ fn handle_streaming_load(
                 let all_done = total_merged == total_regions;
                 let send_stems = (is_priority && all_priority_done) || all_done;
 
+                // Send lightweight message — Arc clone is just a refcount bump (~16 bytes),
+                // NOT a 5.3 MB peak data clone like before
                 let _ = tx.send(TrackLoadResult::RegionLoaded {
                     deck_idx,
                     stems: if send_stems {
@@ -526,8 +537,8 @@ fn handle_streaming_load(
                         None
                     },
                     duration_samples: frame_count,
-                    overview_peaks: overview_peaks.clone(),
-                    highres_peaks: highres_peaks.clone(),
+                    shared_overview: shared_overview.clone(),
+                    shared_highres: shared_highres.clone(),
                     path: path.clone(),
                 });
 
@@ -604,18 +615,17 @@ fn build_waveform_states(track: &LoadedTrack, quality_level: u8, screen_width: u
     overview_state.set_drop_marker(track.metadata.drop_marker);
     overview_state.loading = false;
 
-    // Compute overview peaks from raw stems (consistent with incremental path)
+    // Compute overview peaks from raw stems
     let overview_start = std::time::Instant::now();
-    overview_state.stem_waveforms = generate_peaks(&track.stems, DEFAULT_WIDTH);
-    overview_state.overview_peak_buffer =
-        mesh_widgets::PeakBuffer::from_stem_peaks(&overview_state.stem_waveforms);
+    let overview_tuples = generate_peaks(&track.stems, DEFAULT_WIDTH);
+    overview_state.shared_overview = Some(Arc::new(SharedPeakBuffer::from_stem_peaks(&overview_tuples)));
     log::info!("[PERF] Loader: Overview peaks took {:?}", overview_start.elapsed());
 
     // Compute high-resolution peaks
     let highres_start = std::time::Instant::now();
     let highres_width = compute_highres_width(track.stems.len(), bpm, screen_width, quality_level);
-    let highres_peaks = generate_peaks(&track.stems, highres_width);
-    overview_state.set_highres_peaks(highres_peaks);
+    let highres_tuples = generate_peaks(&track.stems, highres_width);
+    overview_state.shared_highres = Some(Arc::new(SharedPeakBuffer::from_stem_peaks(&highres_tuples)));
     {
         let samples_per_beat = (48000.0_f64 * 60.0 / bpm) as usize;
         let samples_per_bar = samples_per_beat * 4;

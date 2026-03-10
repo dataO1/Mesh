@@ -152,8 +152,8 @@ impl LoadedTrackState {
     /// (Seek, Stop, BeatJump, JumpToCue, etc.) to ensure the zoomed
     /// waveform displays correctly.
     pub fn update_zoomed_waveform_cache(&mut self, _playhead: u64) {
-        // No-op: shader waveforms read overview.highres_peak_buffer (uploaded once at
-        // track load), not zoomed.cached_peaks. The old compute_peaks() path is dead.
+        // No-op: shader waveforms read overview.shared_highres (via SharedPeakBuffer),
+        // not zoomed.cached_peaks. The old compute_peaks() path is dead.
     }
 }
 
