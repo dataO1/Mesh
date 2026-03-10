@@ -179,7 +179,8 @@ in
           echo "Updating to $VERSION..."
           ${config.system.build.nixos-rebuild}/bin/nixos-rebuild switch \
             --flake "github:dataO1/Mesh/$VERSION#mesh-embedded" \
-            --no-write-lock-file
+            --no-write-lock-file \
+            --refresh
           rm -f /var/lib/mesh/update-target
         '';
       };
