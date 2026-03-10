@@ -699,18 +699,7 @@ where
                             cache.stats_pixels_computed += (width as u64) * (output_stems as u64);
                         } else {
                             // Structural params match — check if window shifted
-
-                            // Loop lock: if loop is active and fits within cached window, skip recompute
-                            let loop_locked = self.state.loop_active(self.deck_idx)
-                                && deck.overview.loop_region.map_or(false, |(ls, le)| {
-                                    ls as f32 >= cache.cached_window_start
-                                        && le as f32 <= cache.cached_window_end
-                                });
-
-                            if loop_locked {
-                                // Loop fits in cached window — zero-cost cache hit
-                                cache.stats_hits += 1;
-                            } else if window_start == cache.cached_window_start && window_end == cache.cached_window_end {
+                            if window_start == cache.cached_window_start && window_end == cache.cached_window_end {
                                 // Perfect cache hit — no window movement
                                 cache.stats_hits += 1;
                             } else {
