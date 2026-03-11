@@ -237,6 +237,12 @@ impl StereoBuffer {
         self.samples.truncate(len);
     }
 
+    /// Get the allocated capacity (may be larger than len after truncation)
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.samples.capacity()
+    }
+
     /// Set the working length of a pre-allocated buffer (real-time safe)
     ///
     /// Panics if new_len > capacity. Use for pre-allocated buffers only.

@@ -38,6 +38,12 @@ All notable changes to Mesh are documented in this file.
   are reduced from 4 to 2 to avoid saturating the shared memory bus, which
   previously caused GPU-side waveform stutter across all decks during loading.
 
+- **Cyclic buffer pool** — Track audio buffers (~470 MB each) are now
+  pre-allocated at startup and automatically recycled when a new track is loaded.
+  This eliminates repeated large memory allocations during playback, reducing
+  load times and preventing page-fault stutter on memory-locked embedded systems.
+  Active on all platforms.
+
 ### Changed
 
 - **Removed "4 Decks + Layer Toggle"** topology option (8 virtual decks is not

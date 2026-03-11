@@ -521,19 +521,36 @@ fn handle_streaming_load(
                 }
                 total_merged += 1;
 
-                // Include a playable stems snapshot when:
-                // - All priority regions have been merged (first interaction point)
-                // - All regions are done (final audio upgrade)
+                // Include a playable stems snapshot when all priority regions
+                // are merged (first interaction point — user can play immediately).
+                // The final full-quality stems are delivered via Complete (move, no clone).
                 let all_priority_done = priority_merged == num_priority;
-                let all_done = total_merged == total_regions;
-                let send_stems = (is_priority && all_priority_done) || all_done;
+                let _all_done = total_merged == total_regions;
+                let send_stems = is_priority && all_priority_done;
 
                 // Send lightweight message — Arc clone is just a refcount bump (~16 bytes),
                 // NOT a 5.3 MB peak data clone like before
                 let _ = tx.send(TrackLoadResult::RegionLoaded {
                     deck_idx,
                     stems: if send_stems {
-                        Some(Shared::new(&mesh_core::engine::gc::gc_handle(), stems.clone()))
+                        // Create a snapshot for the engine. Try pool first (pre-touched
+                        // pages = no page faults), fall back to clone (fresh allocation).
+                        let snap_start = std::time::Instant::now();
+                        let snapshot = if let Some(mut pool_buf) = buffer_pool
+                            .as_ref()
+                            .and_then(|pool| pool.checkout(frame_count))
+                        {
+                            stems.snapshot_into(&mut pool_buf);
+                            log::info!("[PERF] Loader: Priority snapshot via pool memcpy in {:?} ({:.1} MB)",
+                                snap_start.elapsed(), (frame_count as f64 * 32.0) / 1_000_000.0);
+                            pool_buf
+                        } else {
+                            let cloned = stems.clone();
+                            log::info!("[PERF] Loader: Priority snapshot via clone in {:?} ({:.1} MB, page faults likely)",
+                                snap_start.elapsed(), (frame_count as f64 * 32.0) / 1_000_000.0);
+                            cloned
+                        };
+                        Some(Shared::new(&mesh_core::engine::gc::gc_handle(), snapshot))
                     } else {
                         None
                     },

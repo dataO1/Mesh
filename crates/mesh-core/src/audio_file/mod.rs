@@ -604,6 +604,44 @@ impl StemBuffers {
         self.other.truncate(len);
     }
 
+    /// Force all pages into physical RAM by writing to each 4K page.
+    ///
+    /// On Linux with `mlockall(MCL_FUTURE)`, `vec![T::default(); n]` may be optimized
+    /// to `calloc()` or `mmap(MAP_ANONYMOUS)`, leaving pages backed by the kernel zero
+    /// page (copy-on-write). The first write to each page triggers a real page fault.
+    /// This method forces those faults upfront so the buffer is fully resident.
+    pub fn pre_touch_pages(&mut self) {
+        let page_size = 4096usize;
+        let samples_per_page = page_size / std::mem::size_of::<StereoSample>();
+        let sentinel = StereoSample::new(f32::MIN_POSITIVE, f32::MIN_POSITIVE);
+
+        for stem in [&mut self.vocals, &mut self.drums, &mut self.bass, &mut self.other] {
+            let slice = stem.as_mut_slice();
+            for i in (0..slice.len()).step_by(samples_per_page) {
+                unsafe {
+                    let ptr = slice.as_mut_ptr().add(i);
+                    // Volatile write forces a COW page fault, can't be optimized away
+                    std::ptr::write_volatile(ptr, sentinel);
+                    std::ptr::write_volatile(ptr, StereoSample::default());
+                }
+            }
+        }
+    }
+
+    /// Copy all audio data from `self` into `dst` (full buffer snapshot).
+    ///
+    /// Used to create a playable snapshot from a pre-touched pool buffer,
+    /// avoiding page fault storms from `stems.clone()` on embedded systems.
+    /// Both buffers must have the same length.
+    pub fn snapshot_into(&self, dst: &mut StemBuffers) {
+        debug_assert_eq!(self.len(), dst.len(), "snapshot_into: length mismatch");
+        let len = self.len();
+        dst.vocals.as_mut_slice()[..len].copy_from_slice(&self.vocals.as_slice()[..len]);
+        dst.drums.as_mut_slice()[..len].copy_from_slice(&self.drums.as_slice()[..len]);
+        dst.bass.as_mut_slice()[..len].copy_from_slice(&self.bass.as_slice()[..len]);
+        dst.other.as_mut_slice()[..len].copy_from_slice(&self.other.as_slice()[..len]);
+    }
+
     /// Copy `count` frames from `src` (starting at offset 0) into `self` at `dst_offset`.
     ///
     /// Used after parallel decoding to merge per-region results into the main buffer.
@@ -617,6 +655,28 @@ impl StemBuffers {
             .copy_from_slice(&src.bass.as_slice()[..count]);
         self.other.as_mut_slice()[dst_offset..dst_offset + count]
             .copy_from_slice(&src.other.as_slice()[..count]);
+    }
+
+    /// Construct from pre-existing StereoBuffers (used by pool recycling).
+    pub(crate) fn from_raw(
+        vocals: StereoBuffer,
+        drums: StereoBuffer,
+        bass: StereoBuffer,
+        other: StereoBuffer,
+    ) -> Self {
+        Self { vocals, drums, bass, other }
+    }
+
+    /// Restore all stems to `max_samples` length using preserved capacity.
+    ///
+    /// After checkout+truncate, len < capacity. This grows len back to the pool's
+    /// max_samples by filling with silence. No allocation occurs because capacity
+    /// was preserved by truncate.
+    pub(crate) fn restore_to_pool_size(&mut self, max_samples: usize) {
+        self.vocals.resize(max_samples);
+        self.drums.resize(max_samples);
+        self.bass.resize(max_samples);
+        self.other.resize(max_samples);
     }
 
     /// Get duration in seconds at the standard sample rate
@@ -668,6 +728,15 @@ impl StemBuffers {
         );
 
         Ok(output)
+    }
+}
+
+impl Drop for StemBuffers {
+    fn drop(&mut self) {
+        // Try to return pool-sized buffers for reuse. Only pool-originated buffers
+        // have capacity >= max_samples; fresh allocations, clones, and decode-region
+        // temporaries have smaller capacity and are dropped normally.
+        crate::buffer_pool::try_recycle_stems(self);
     }
 }
 

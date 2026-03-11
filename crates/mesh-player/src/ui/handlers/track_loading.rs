@@ -63,7 +63,12 @@ pub fn handle_track_loaded(app: &mut MeshApp, msg: TrackLoadedMsg) -> Task<Messa
                         .unwrap_or("Unknown")
                         .to_string();
 
-                    if !incremental {
+                    if incremental {
+                        // Incremental path: deliver final stems (moved, no clone).
+                        // The priority-done snapshot may have zeros in gap regions;
+                        // this replaces it with the fully decoded buffer.
+                        app.domain.upgrade_loaded_stems(deck_idx, stems, duration_samples);
+                    } else {
                         // Full-load path (resampling): deliver stems and replace waveform state
                         app.domain.upgrade_loaded_stems(deck_idx, stems, duration_samples);
 
@@ -98,8 +103,6 @@ pub fn handle_track_loaded(app: &mut MeshApp, msg: TrackLoadedMsg) -> Task<Messa
                         app.player_canvas_state.decks[deck_idx]
                             .zoomed.set_zoom(app.config.display.default_zoom_bars);
                     }
-                    // else: incremental path — stems already current from last RegionLoaded,
-                    // overview/zoomed already built by skeleton + incremental peak updates
 
                     app.deck_views[deck_idx].set_audio_loading(false);
                     app.status = format!("Loaded {} to deck {}", filename, deck_idx + 1);

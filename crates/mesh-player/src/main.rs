@@ -275,18 +275,19 @@ fn main() -> iced::Result {
     let internal_latency_cell = std::cell::RefCell::new(internal_latency_samples);
     let direct_producer_cell = std::cell::RefCell::new(direct_command_producer);
 
-    // Pre-allocate StemBuffer pool for zero-allocation track loading (embedded only).
-    // 4 buffers × 10 min @ 48kHz ≈ 3.5 GB — eliminates page fault storms at startup.
-    #[cfg(feature = "embedded-rt")]
+    // Pre-allocate StemBuffer pool for zero-allocation track loading.
+    // 5 buffers × 10 min @ 48kHz ≈ 4.4 GB — 4 for active decks + 1 spare for priority snapshots.
+    // Buffers are automatically recycled via StemBuffers::drop() when the engine
+    // replaces old stems, so 5 buffers sustain unlimited track loads.
     let buffer_pool = {
         let max_samples = 10 * 60 * 48000; // 10 minutes at 48kHz
-        log::info!("[RT] Pre-allocating StemBuffer pool (4 × {} samples)...", max_samples);
-        let pool = std::sync::Arc::new(mesh_core::buffer_pool::StemBufferPool::new(4, max_samples));
-        log::info!("[RT] StemBuffer pool ready");
+        log::info!("[POOL] Pre-allocating StemBuffer pool (5 x {} samples)...", max_samples);
+        let pool = std::sync::Arc::new(mesh_core::buffer_pool::StemBufferPool::new(5, max_samples));
+        // Register global pool for automatic recycling in StemBuffers::drop()
+        mesh_core::buffer_pool::set_global_pool(pool.clone());
+        log::info!("[POOL] StemBuffer pool ready (cyclic recycling enabled)");
         Some(pool)
     };
-    #[cfg(not(feature = "embedded-rt"))]
-    let buffer_pool: Option<std::sync::Arc<mesh_core::buffer_pool::StemBufferPool>> = None;
 
     // Run the iced application using the functional API
     let result = iced::application(
