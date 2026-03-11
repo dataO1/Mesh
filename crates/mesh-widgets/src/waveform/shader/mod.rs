@@ -16,6 +16,7 @@ pub mod pipeline;
 
 pub use header::view_deck_header;
 
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use iced::mouse;
@@ -25,7 +26,7 @@ use iced::{Element, Length, Rectangle};
 use iced::Color;
 
 use super::state::{
-    CombinedState, PlayerCanvasState, SharedPeakBuffer, ZoomedViewMode,
+    CombinedState, OverviewPeakCache, PlayerCanvasState, SharedPeakBuffer, ZoomedViewMode,
     COMBINED_WAVEFORM_GAP, WAVEFORM_HEIGHT, ZOOMED_WAVEFORM_HEIGHT,
     MIN_ZOOM_BARS, MAX_ZOOM_BARS, ZOOM_PIXELS_PER_LEVEL,
     next_peak_generation,
@@ -783,7 +784,7 @@ where
                     let output_stems = num_stems;
                     let buf_len = (width as usize) * (output_stems as usize) * 2;
 
-                    if !cache.structural_match(width, bpm_scale, peak_index_scale, abstraction, &uniforms.linked_stems, &uniforms.linked_active, raw_gen)
+                    if !cache.structural_match(width, bpm_scale, peak_index_scale, abstraction, &uniforms.linked_stems, &uniforms.linked_active, raw_gen, peaks_per_pixel)
                         || cache.buffer.len() != buf_len
                     {
                         // === FULL RECOMPUTE: structural params changed ===
@@ -800,7 +801,7 @@ where
                         cache.cached_window_start = window_start;
                         cache.cached_window_end = window_end;
                         cache.generation = next_peak_generation();
-                        cache.update_structural(width, bpm_scale, peak_index_scale, abstraction, &uniforms.linked_stems, &uniforms.linked_active, raw_gen);
+                        cache.update_structural(width, bpm_scale, peak_index_scale, abstraction, &uniforms.linked_stems, &uniforms.linked_active, raw_gen, peaks_per_pixel);
                         cache.stats_full_recompute += 1;
                         cache.stats_pixels_computed += (width as u64) * (output_stems as u64);
                     } else {
@@ -991,18 +992,16 @@ where
                 } else {
                     // Fallback: use zoom_bars centered on playhead
                     let zoom_bars = deck.zoomed.zoom_bars;
-                    let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
-                    let samples_per_bar = samples_per_beat * 4;
-                    let ws = samples_per_bar * zoom_bars as u64;
+                    let samples_per_beat_f64 = SAMPLE_RATE as f64 * 60.0 / bpm;
+                    let ws = (samples_per_beat_f64 * 4.0 * zoom_bars as f64).round() as u64;
                     let ph = self.state.interpolated_playhead(self.deck_idx, SAMPLE_RATE as u32);
                     let half = ws as i64 / 2;
                     (ph as i64 - half, ph as i64 - half + ws as i64, ws)
                 }
             } else {
                 let zoom_bars = deck.zoomed.zoom_bars;
-                let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
-                let samples_per_bar = samples_per_beat * 4;
-                let ws = samples_per_bar * zoom_bars as u64;
+                let samples_per_beat_f64 = SAMPLE_RATE as f64 * 60.0 / bpm;
+                let ws = (samples_per_beat_f64 * 4.0 * zoom_bars as f64).round() as u64;
                 let ph = self.state.interpolated_playhead(self.deck_idx, SAMPLE_RATE as u32);
                 // Allow window to extend before 0 and after duration for symmetric centering
                 let half = ws as i64 / 2;
@@ -1157,9 +1156,8 @@ where
                 // can render a highlight showing the currently visible region.
                 let (zoom_start, zoom_end) = if self.is_overview && dur_f64 > 0.0 {
                     let zoom_bars = deck.zoomed.zoom_bars;
-                    let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
-                    let samples_per_bar = samples_per_beat * 4;
-                    let window_samples = samples_per_bar * zoom_bars as u64;
+                    let samples_per_beat_f64 = SAMPLE_RATE as f64 * 60.0 / bpm;
+                    let window_samples = (samples_per_beat_f64 * 4.0 * zoom_bars as f64).round() as u64;
                     let ph = self.state.interpolated_playhead(self.deck_idx, SAMPLE_RATE as u32);
                     let half = window_samples as i64 / 2;
                     let vs = ph as i64 - half;
@@ -1250,7 +1248,10 @@ enum SingleDeckGesture {
 }
 
 /// Interaction state for single-deck shader waveform.
-#[derive(Default)]
+///
+/// Also holds the overview peak cache — overview peaks only change when new audio
+/// data arrives (SharedPeakBuffer generation bump), so caching avoids read locks
+/// and recomputation on ~99% of frames.
 pub struct SingleDeckInteraction {
     gesture: SingleDeckGesture,
     drag_start_x: Option<f32>,
@@ -1258,6 +1259,23 @@ pub struct SingleDeckInteraction {
     drag_start_zoom: u32,
     scrub_start_ratio: f64,
     is_seeking: bool,
+    /// Cached overview peaks — same mechanism as mesh-player's OverviewPeakCache.
+    /// On cache hit (generation match): no RwLock, no precompute, just Arc clone.
+    overview_cache: RefCell<OverviewPeakCache>,
+}
+
+impl Default for SingleDeckInteraction {
+    fn default() -> Self {
+        Self {
+            gesture: SingleDeckGesture::default(),
+            drag_start_x: None,
+            drag_start_y: None,
+            drag_start_zoom: 0,
+            scrub_start_ratio: 0.0,
+            is_seeking: false,
+            overview_cache: RefCell::new(OverviewPeakCache::new()),
+        }
+    }
 }
 
 /// Shader program for a single-deck waveform view (used by mesh-cue).
@@ -1410,7 +1428,7 @@ where
 
     fn draw(
         &self,
-        _interaction: &Self::State,
+        interaction: &Self::State,
         _cursor: mouse::Cursor,
         bounds: Rectangle,
     ) -> Self::Primitive {
@@ -1429,33 +1447,61 @@ where
             let mut uniforms = self.build_uniforms(bounds);
             let width = bounds.width as u32;
             let peaks = if width > 0 && source.peaks_per_stem > 0 {
-                // mesh-cue always precomputes (no caching — simpler, single-deck)
-                let precomputed = source.with_data(|data| {
-                    precompute_view_peaks(
-                        data,
-                        source.peaks_per_stem,
-                        source.num_stems,
-                        width,
-                        self.is_overview,
-                        uniforms.window_params[3],  // bpm_scale
-                        uniforms.window_params[0],  // window_start
-                        uniforms.window_params[1],  // window_end
-                        uniforms.stem_smooth[0],    // peak_index_scale
-                        2,                          // High abstraction (mesh-cue)
-                        &uniforms.linked_stems,
-                        &uniforms.linked_active,
-                    )
-                });
-                uniforms.view_params[2] = width as f32;
-                uniforms.slicer_params[3] = 1.0;
-                uniforms.stem_smooth[0] = 0.0;
-                Some(precomputed)
+                if self.is_overview {
+                    // === OVERVIEW: cached path (same as mesh-player) ===
+                    // Overview window is always 0..1 — recompute only on track load
+                    // (generation change), width change, or linked stem change.
+                    // On cache hit: no RwLock, no precompute, just Arc clone.
+                    let bpm_scale = uniforms.window_params[3];
+                    let peak_index_scale = uniforms.stem_smooth[0];
+                    let raw_gen = source.generation;
+
+                    let mut cache = interaction.overview_cache.borrow_mut();
+                    if !cache.is_valid(width, bpm_scale, 2, &uniforms.linked_stems, &uniforms.linked_active, raw_gen) {
+                        let mut precomputed = source.with_data(|data| {
+                            precompute_view_peaks(
+                                data, source.peaks_per_stem, source.num_stems, width,
+                                true, bpm_scale,
+                                uniforms.window_params[0], uniforms.window_params[1],
+                                peak_index_scale, 2,
+                                &uniforms.linked_stems, &uniforms.linked_active,
+                            )
+                        });
+                        precomputed.generation = next_peak_generation();
+                        cache.update(precomputed, width, bpm_scale, 2, &uniforms.linked_stems, &uniforms.linked_active, raw_gen);
+                    }
+                    let cached = cache.peaks.clone();
+                    drop(cache);
+                    cached
+                } else {
+                    // === ZOOMED: recompute every frame (window moves with playhead) ===
+                    let mut precomputed = source.with_data(|data| {
+                        precompute_view_peaks(
+                            data, source.peaks_per_stem, source.num_stems, width,
+                            false,
+                            uniforms.window_params[3],  // bpm_scale
+                            uniforms.window_params[0],  // window_start
+                            uniforms.window_params[1],  // window_end
+                            uniforms.stem_smooth[0],    // peak_index_scale
+                            2,                          // High abstraction (mesh-cue)
+                            &uniforms.linked_stems,
+                            &uniforms.linked_active,
+                        )
+                    });
+                    precomputed.generation = next_peak_generation();
+                    Some(precomputed)
+                }
+                .map(|precomputed| {
+                    uniforms.view_params[2] = precomputed.peaks_per_stem as f32;
+                    uniforms.slicer_params[3] = 1.0;
+                    uniforms.stem_smooth[0] = 0.0;
+                    precomputed
+                })
             } else {
                 None
             };
             (peaks, uniforms)
         };
-
 
         WaveformPrimitive {
             id: self.view_id,
@@ -1523,17 +1569,15 @@ where
                     (buf_start as i64, buf_end as i64, ws)
                 } else {
                     let zoom_bars = self.state.zoomed.zoom_bars;
-                    let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
-                    let samples_per_bar = samples_per_beat * 4;
-                    let ws = samples_per_bar * zoom_bars as u64;
+                    let samples_per_beat_f64 = SAMPLE_RATE as f64 * 60.0 / bpm;
+                    let ws = (samples_per_beat_f64 * 4.0 * zoom_bars as f64).round() as u64;
                     let half = ws as i64 / 2;
                     (self.playhead as i64 - half, self.playhead as i64 - half + ws as i64, ws)
                 }
             } else {
                 let zoom_bars = self.state.zoomed.zoom_bars;
-                let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
-                let samples_per_bar = samples_per_beat * 4;
-                let ws = samples_per_bar * zoom_bars as u64;
+                let samples_per_beat_f64 = SAMPLE_RATE as f64 * 60.0 / bpm;
+                let ws = (samples_per_beat_f64 * 4.0 * zoom_bars as f64).round() as u64;
                 let half = ws as i64 / 2;
                 (self.playhead as i64 - half, self.playhead as i64 - half + ws as i64, ws)
             };
@@ -1653,9 +1697,8 @@ where
                 // Zoom window highlight for overview
                 let (zoom_start, zoom_end) = if self.is_overview && dur_f64 > 0.0 {
                     let zoom_bars = self.state.zoomed.zoom_bars;
-                    let samples_per_beat = (SAMPLE_RATE as f64 * 60.0 / bpm) as u64;
-                    let samples_per_bar = samples_per_beat * 4;
-                    let window_samples = samples_per_bar * zoom_bars as u64;
+                    let samples_per_beat_f64 = SAMPLE_RATE as f64 * 60.0 / bpm;
+                    let window_samples = (samples_per_beat_f64 * 4.0 * zoom_bars as f64).round() as u64;
                     let half = window_samples as i64 / 2;
                     let vs = self.playhead as i64 - half;
                     let ve = vs + window_samples as i64;

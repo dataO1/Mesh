@@ -34,7 +34,9 @@ All notable changes to Mesh are documented in this file.
 - **Stutter-free track loading** — Loading a track no longer causes the UI to
   freeze for 100–200 ms. Waveform peak data is now shared directly between the
   loader and the display without copying or converting, so waveforms grow
-  smoothly while the track streams in.
+  smoothly while the track streams in. On ARM devices (RK3588S), decode workers
+  are reduced from 4 to 2 to avoid saturating the shared memory bus, which
+  previously caused GPU-side waveform stutter across all decks during loading.
 
 ### Changed
 

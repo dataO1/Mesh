@@ -33,9 +33,10 @@ use mesh_widgets::{
 
 use self::regions::{compute_gaps, compute_priority_regions};
 
-/// Number of parallel decode workers. Capped to avoid overloading the CPU
-/// while still maximising I/O throughput for in-memory FLAC/WAV decoding.
-const DECODE_WORKERS: usize = 4;
+/// Number of parallel decode workers. On ARM (RK3588S etc.) we use fewer workers
+/// to avoid saturating the shared LPDDR4X memory bus, which starves the GPU and
+/// causes waveform stutter across all decks during loading.
+const DECODE_WORKERS: usize = if cfg!(target_arch = "aarch64") { 2 } else { 4 };
 
 /// Request to load a track in the background
 ///

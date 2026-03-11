@@ -130,6 +130,9 @@ pub struct ZoomedPeakCache {
     pub bpm_scale_bits: u32,
     pub peak_index_scale_bits: u32,
     pub abstraction_level: u8,
+    /// Peaks-per-pixel encodes the window span — detects zoom changes and
+    /// Scrolling↔FixedBuffer mode switches that change the window size.
+    pub peaks_per_pixel_bits: u32,
     pub linked_stems_bits: [u32; 4],
     pub linked_active_bits: [u32; 4],
     /// Generation of the raw peak buffer — detects progressive loading batches.
@@ -162,6 +165,7 @@ impl ZoomedPeakCache {
             bpm_scale_bits: 0,
             peak_index_scale_bits: 0,
             abstraction_level: 0,
+            peaks_per_pixel_bits: 0,
             linked_stems_bits: [0; 4],
             linked_active_bits: [0; 4],
             raw_generation: 0,
@@ -197,12 +201,14 @@ impl ZoomedPeakCache {
         linked_stems: &[f32; 4],
         linked_active: &[f32; 4],
         raw_generation: u64,
+        peaks_per_pixel: f32,
     ) -> bool {
         self.width == width
             && self.raw_generation == raw_generation
             && self.bpm_scale_bits == bpm_scale.to_bits()
             && self.peak_index_scale_bits == peak_index_scale.to_bits()
             && self.abstraction_level == abstraction_level
+            && self.peaks_per_pixel_bits == peaks_per_pixel.to_bits()
             && self.linked_stems_bits == [
                 linked_stems[0].to_bits(),
                 linked_stems[1].to_bits(),
@@ -227,11 +233,13 @@ impl ZoomedPeakCache {
         linked_stems: &[f32; 4],
         linked_active: &[f32; 4],
         raw_generation: u64,
+        peaks_per_pixel: f32,
     ) {
         self.width = width;
         self.bpm_scale_bits = bpm_scale.to_bits();
         self.peak_index_scale_bits = peak_index_scale.to_bits();
         self.abstraction_level = abstraction_level;
+        self.peaks_per_pixel_bits = peaks_per_pixel.to_bits();
         self.linked_stems_bits = [
             linked_stems[0].to_bits(),
             linked_stems[1].to_bits(),
