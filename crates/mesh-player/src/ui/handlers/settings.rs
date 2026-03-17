@@ -180,19 +180,23 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
                 let sample_rate = app.audio_sample_rate;
                 let mut handles = Vec::new();
 
-                // Get USB devices with mount points
+                // Get USB devices with mesh collections as recording targets
                 let usb_mounts: Vec<(std::path::PathBuf, u64)> = app.collection_browser.usb_devices
                     .iter()
+                    .filter(|d| d.has_mesh_collection)
                     .filter_map(|d| d.mount_point.clone().map(|mp| (mp, d.available_bytes)))
                     .collect();
 
-                if usb_mounts.is_empty() {
-                    app.status = "No USB sticks connected for recording".to_string();
-                    app.settings.recording_active = false;
-                    return Task::none();
-                }
+                // Fallback: if no USB sticks with mesh DBs, record to local collection
+                let is_local = usb_mounts.is_empty();
+                let recording_targets = if is_local {
+                    let local_path = app.domain.local_collection_path().to_path_buf();
+                    vec![(local_path, u64::MAX)]
+                } else {
+                    usb_mounts
+                };
 
-                for (mount, available_bytes) in &usb_mounts {
+                for (mount, available_bytes) in &recording_targets {
                     match mesh_core::recording::start_recording(mount, sample_rate, *available_bytes, event_tx.clone()) {
                         Ok((producer, handle)) => {
                             // Send producer to audio thread (boxed for EngineCommand size)
@@ -210,7 +214,7 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
                 }
 
                 if handles.is_empty() {
-                    app.status = "Failed to start recording on any USB stick".to_string();
+                    app.status = "Failed to start recording".to_string();
                     app.settings.recording_active = false;
                     return Task::none();
                 }
@@ -230,7 +234,11 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
                     error_count: 0,
                 });
                 app.settings.recording_active = true;
-                app.status = format!("Recording to {} USB stick(s)", count);
+                app.status = if is_local {
+                    "Recording to local collection".to_string()
+                } else {
+                    format!("Recording to {} USB stick(s)", count)
+                };
             }
             Task::none()
         }
