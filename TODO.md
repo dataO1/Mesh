@@ -88,7 +88,7 @@ for v3 and beyond.
 
 ## Audio Processing
 - [ ] Live peak meter per channel and master channel.
-- [ ] Set recording master output.
+- [x] Set recording master output.
 - [ ] Built-in native effects (beat-synced echo, flanger, phaser, gater, etc.).
 
 ## Documentation

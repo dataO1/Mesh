@@ -149,6 +149,19 @@ impl jack::ProcessHandler for JackProcessor {
             cue_right_out[i] = cue.right;
         }
 
+        // Push master samples to active recording producers
+        if !self.engine.recording_producers.is_empty() {
+            let master_slice = self.master_buffer.as_slice();
+            self.engine.recording_producers.retain_mut(|producer| {
+                for &sample in &master_slice[..n_frames] {
+                    if producer.push(sample).is_err() {
+                        break; // Buffer full — drop rather than block
+                    }
+                }
+                !producer.is_abandoned()
+            });
+        }
+
         Control::Continue
     }
 }

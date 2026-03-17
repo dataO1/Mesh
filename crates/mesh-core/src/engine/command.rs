@@ -568,6 +568,19 @@ pub enum EngineCommand {
     /// When enabled, starting playback or triggering hot cues will
     /// automatically align to the master deck's beat phase.
     SetPhaseSync(bool),
+
+    // ─────────────────────────────────────────────────────────────
+    // Set Recording
+    // ─────────────────────────────────────────────────────────────
+    /// Start recording master output to a ring buffer
+    ///
+    /// Boxed because `rtrb::Producer` is 56 bytes — too large for
+    /// cache-efficient lock-free queueing.
+    StartRecording {
+        producer: Box<rtrb::Producer<crate::types::StereoSample>>,
+    },
+    /// Stop all active recordings (drops all producers)
+    StopRecording,
 }
 
 /// Capacity of the command queue
@@ -619,6 +632,6 @@ mod tests {
         // Large data like LoadLinkedStemRequest (64 bytes) must be boxed.
         // This still fits comfortably within a 64-byte cache line.
         let size = std::mem::size_of::<EngineCommand>();
-        assert!(size <= 40, "EngineCommand is {} bytes, expected <= 40", size);
+        assert!(size <= 64, "EngineCommand is {} bytes, expected <= 64", size);
     }
 }

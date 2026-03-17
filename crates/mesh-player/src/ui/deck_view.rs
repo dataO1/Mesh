@@ -115,8 +115,6 @@ pub enum DeckMessage {
     SetHotCue(usize),
     /// Clear hot cue
     ClearHotCue(usize),
-    /// Sync to master
-    Sync,
     /// Toggle loop
     ToggleLoop,
     /// Toggle slip mode
@@ -486,9 +484,6 @@ impl DeckView {
             DeckMessage::HotCueReleased(_idx) => deck.hot_cue_release(),
             DeckMessage::SetHotCue(idx) => deck.set_hot_cue(idx),
             DeckMessage::ClearHotCue(idx) => deck.clear_hot_cue(idx),
-            DeckMessage::Sync => {
-                // Sync is handled at engine level
-            }
             DeckMessage::ToggleLoop => {
                 deck.toggle_loop();
             }

@@ -20,11 +20,13 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             let midi_nav = app.settings.settings_midi_nav.take();
             let network = app.settings.network.take();
             let update = app.settings.update.take();
+            let recording_active = app.settings.recording_active;
             app.settings = SettingsState::from_config(&app.config);
             app.settings.available_theme_names = app.themes.iter().map(|t| t.name.clone()).collect();
             // Preserve stateful sections across reopen (avoid re-detecting nmcli/NixOS)
             app.settings.network = network;
             app.settings.update = update;
+            app.settings.recording_active = recording_active;
             app.settings.is_open = true;
             app.settings.settings_midi_nav = midi_nav;
             app.settings.take_snapshot();
@@ -159,6 +161,76 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
                 if let Err(e) = crate::ui::system_update::power_off() {
                     app.settings.status = format!("Power off failed: {}", e);
                 }
+            }
+            Task::none()
+        }
+        ToggleRecording => {
+            // Toggle recording state
+            if app.recording_state.is_some() {
+                // Stop recording
+                app.domain.send_command(mesh_core::engine::EngineCommand::StopRecording);
+                // Dropping handles triggers graceful stop + WAV finalization
+                app.recording_state = None;
+                app.settings.recording_active = false;
+                app.status = "Recording stopped".to_string();
+            } else {
+                // Start recording on all connected USB sticks
+                let (event_tx, event_rx) = std::sync::mpsc::channel();
+                let event_rx = std::sync::Arc::new(std::sync::Mutex::new(event_rx));
+                let sample_rate = app.audio_sample_rate;
+                let mut handles = Vec::new();
+
+                // Get USB devices with mount points
+                let usb_mounts: Vec<(std::path::PathBuf, u64)> = app.collection_browser.usb_devices
+                    .iter()
+                    .filter_map(|d| d.mount_point.clone().map(|mp| (mp, d.available_bytes)))
+                    .collect();
+
+                if usb_mounts.is_empty() {
+                    app.status = "No USB sticks connected for recording".to_string();
+                    app.settings.recording_active = false;
+                    return Task::none();
+                }
+
+                for (mount, available_bytes) in &usb_mounts {
+                    match mesh_core::recording::start_recording(mount, sample_rate, *available_bytes, event_tx.clone()) {
+                        Ok((producer, handle)) => {
+                            // Send producer to audio thread (boxed for EngineCommand size)
+                            app.domain.send_command(
+                                mesh_core::engine::EngineCommand::StartRecording {
+                                    producer: Box::new(producer),
+                                }
+                            );
+                            handles.push(handle);
+                        }
+                        Err(e) => {
+                            log::error!("[RECORDING] Failed to start on {}: {e}", mount.display());
+                        }
+                    }
+                }
+
+                if handles.is_empty() {
+                    app.status = "Failed to start recording on any USB stick".to_string();
+                    app.settings.recording_active = false;
+                    return Task::none();
+                }
+
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as i64;
+
+                let count = handles.len();
+                app.recording_state = Some(crate::ui::app::RecordingState {
+                    started_at: std::time::Instant::now(),
+                    started_at_ms: now_ms,
+                    handles,
+                    event_rx,
+                    event_tx,
+                    error_count: 0,
+                });
+                app.settings.recording_active = true;
+                app.status = format!("Recording to {} USB stick(s)", count);
             }
             Task::none()
         }

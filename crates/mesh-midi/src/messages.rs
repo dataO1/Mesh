@@ -67,8 +67,6 @@ pub enum DeckAction {
     CuePress,
     /// Cue button released
     CueRelease,
-    /// Sync button pressed
-    Sync,
 
     // Hot Cues
     /// Hot cue pad pressed

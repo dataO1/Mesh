@@ -183,6 +183,16 @@ impl SettingsItem {
 pub fn build_settings_items(state: &SettingsState) -> Vec<SettingsItem> {
     let mut items = Vec::new();
 
+    // ── Set Recording (always first for quick access) ──
+    items.push(
+        SettingsItem::new("Record Set", SettingsBehavior::Toggle {
+            value: state.recording_active,
+            on_toggle: |_| SettingsMessage::ToggleRecording,
+        })
+            .section("Recording")
+            .hint("Record master output to WAV on all connected USB sticks")
+    );
+
     // ── Power Off (embedded only, first item for quick access) ──
     #[cfg(feature = "embedded-rt")]
     items.push(
@@ -427,6 +437,8 @@ pub struct SettingsState {
     pub available_devices: Vec<StereoPair>,
     /// Draft prerelease channel toggle (include RC/beta in OTA checks)
     pub draft_prerelease_channel: bool,
+    /// Whether set recording is currently active
+    pub recording_active: bool,
     /// Whether the power off confirmation dialog is showing
     pub power_off_confirm: bool,
     /// Status message (for save feedback)
@@ -470,6 +482,7 @@ impl SettingsState {
             draft_cue_device: config.audio.outputs.cue_device.unwrap_or(if num_devices > 1 { 1 } else { 0 }).min(num_devices.saturating_sub(1)),
             available_devices,
             draft_prerelease_channel: config.updates.prerelease_channel,
+            recording_active: false,
             power_off_confirm: false,
             status: String::new(),
             settings_midi_nav: None,

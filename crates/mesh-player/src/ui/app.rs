@@ -40,8 +40,24 @@ use super::player_canvas::{view_player_canvas, PlayerCanvasState};
 use super::settings::SettingsState;
 
 // Re-export extracted modules for use by other UI modules
-pub use super::message::{Message, SettingsMessage};
+pub use super::message::{Message, RecordingMessage, SettingsMessage};
 pub use super::state::{AppMode, LinkedStemLoadedMsg, PresetLoadedMsg, StemLinkState, TrackLoadedMsg};
+
+/// UI-side state for an active set recording
+pub struct RecordingState {
+    /// When recording started (for elapsed time display)
+    pub started_at: std::time::Instant,
+    /// When recording started (Unix ms, for tracklist query window)
+    pub started_at_ms: i64,
+    /// Active recording handles (one per USB stick)
+    pub handles: Vec<mesh_core::recording::RecordingHandle>,
+    /// Event receiver for recording thread messages
+    pub event_rx: mesh_core::recording::RecordingEventReceiver,
+    /// Event sender (kept alive so recording threads can send)
+    pub event_tx: std::sync::mpsc::Sender<mesh_core::recording::RecordingEvent>,
+    /// Number of recordings that have errored
+    pub error_count: usize,
+}
 
 /// Application state
 pub struct MeshApp {
@@ -125,6 +141,8 @@ pub struct MeshApp {
     pub(crate) keyboard: KeyboardState,
     /// DJ session history manager — tracks all actions, writes to all active databases
     pub(crate) history: crate::history::HistoryManager,
+    /// Active set recording state (None when not recording)
+    pub(crate) recording_state: Option<RecordingState>,
     /// System resource monitor (CPU%, GPU%, RAM)
     pub(crate) resource_monitor: mesh_core::resource_monitor::ResourceMonitor,
     /// FPS frame counter (incremented each tick, reset every second)
@@ -332,6 +350,7 @@ impl MeshApp {
             internal_latency_samples,
             audio_sample_rate: sample_rate,
             history,
+            recording_state: None,
             keyboard: KeyboardState::new(),
             resource_monitor: mesh_core::resource_monitor::ResourceMonitor::new(),
             fps_frame_count: 0,
@@ -587,6 +606,42 @@ impl MeshApp {
 
             Message::Network(net_msg) => {
                 super::handlers::network::handle(self, net_msg)
+            }
+
+            Message::Recording(RecordingMessage::Event(event)) => {
+                use mesh_core::recording::RecordingEvent;
+                match event {
+                    RecordingEvent::Started { path } => {
+                        log::info!("[UI] Recording started: {}", path.display());
+                    }
+                    RecordingEvent::Stopped { path, duration_secs, .. } => {
+                        log::info!("[UI] Recording stopped: {} ({:.1}s)", path.display(), duration_secs);
+                        // Generate tracklist in background
+                        if let Some(ref rec_state) = self.recording_state {
+                            let db = self.domain.local_db_arc();
+                            let session_id = self.history.session_id();
+                            let start_ms = rec_state.started_at_ms;
+                            let wav_path = path.clone();
+                            let now_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as i64;
+                            std::thread::spawn(move || {
+                                mesh_core::recording::generate_tracklist(
+                                    &wav_path, start_ms, now_ms, session_id, &db,
+                                );
+                            });
+                        }
+                    }
+                    RecordingEvent::Error { path, message } => {
+                        log::error!("[UI] Recording error on {}: {}", path.display(), message);
+                        self.status = format!("Recording error: {message}");
+                        if let Some(ref mut rec_state) = self.recording_state {
+                            rec_state.error_count += 1;
+                        }
+                    }
+                }
+                Task::none()
             }
 
             Message::SystemUpdate(update_msg) => {
@@ -845,7 +900,6 @@ impl MeshApp {
                     MidiDeckAction::TogglePlay => Some(DeckMessage::TogglePlayPause),
                     MidiDeckAction::CuePress => Some(DeckMessage::CuePressed),
                     MidiDeckAction::CueRelease => Some(DeckMessage::CueReleased),
-                    MidiDeckAction::Sync => None, // TODO: Add sync support
                     MidiDeckAction::HotCuePress { slot } => {
                         // Check pad mode source to determine routing
                         let pad_mode_source = self.controller
@@ -1442,6 +1496,14 @@ impl MeshApp {
             Subscription::none()
         };
 
+        // Recording event subscription (polls recording thread for events)
+        let recording_sub = if let Some(ref state) = self.recording_state {
+            mpsc_subscription(state.event_rx.clone())
+                .map(|event| Message::Recording(RecordingMessage::Event(event)))
+        } else {
+            Subscription::none()
+        };
+
         Subscription::batch([
             // Update UI synced to display refresh rate (60Hz, 120Hz, etc.)
             iced::window::frames().map(|_| Message::Tick),
@@ -1467,6 +1529,8 @@ impl MeshApp {
             led_sub,
             // System resource monitoring (CPU%, GPU%, RAM — 500ms)
             resource_sub,
+            // Recording thread events (started, stopped, error)
+            recording_sub,
         ])
     }
 
@@ -1818,8 +1882,34 @@ impl MeshApp {
             .into()
         };
 
-        // Right group: stats, connection, latency, settings
+        // Recording indicator (pulsing red dot + elapsed time)
+        let recording_indicator: Element<'_, Message> = if let Some(ref rec) = self.recording_state {
+            let elapsed = rec.started_at.elapsed().as_secs();
+            let h = elapsed / 3600;
+            let m = (elapsed % 3600) / 60;
+            let s = elapsed % 60;
+            let elapsed_str = format!("{h:02}:{m:02}:{s:02}");
+
+            // Pulsing: toggle brightness based on elapsed seconds
+            let dot_color = if elapsed % 2 == 0 {
+                Color::from_rgb(1.0, 0.0, 0.0)
+            } else {
+                Color::from_rgb(0.5, 0.0, 0.0)
+            };
+
+            row![
+                text("●").size(sz(14.0)).color(dot_color),
+                text(format!(" REC {elapsed_str}")).size(sz(12.0)).color(Color::from_rgb(1.0, 0.3, 0.3)),
+            ]
+            .align_y(CenterAlign)
+            .into()
+        } else {
+            Space::new().into()
+        };
+
+        // Right group: recording, stats, connection, latency, settings
         let right_group: Element<'_, Message> = row![
+            recording_indicator,
             stats_label,
             connection_status,
             latency_label,

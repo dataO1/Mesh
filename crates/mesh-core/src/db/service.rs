@@ -319,6 +319,11 @@ impl DatabaseService {
         &self.collection_root
     }
 
+    /// Run a read-only CozoScript query (crate-internal delegation to MeshDb)
+    pub(crate) fn run_query(&self, script: &str, params: BTreeMap<String, DataValue>) -> Result<cozo::NamedRows, DbError> {
+        self.db.run_query(script, params)
+    }
+
     // ========================================================================
     // Track Operations (Primary API)
     // ========================================================================

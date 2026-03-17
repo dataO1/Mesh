@@ -4,6 +4,19 @@ All notable changes to Mesh are documented in this file.
 
 ---
 
+## [0.9.11]
+
+### Added
+
+- **Set recording** — Record the master output to WAV files directly on connected
+  USB sticks. Toggle recording in Settings → Recording. A pulsing red indicator
+  in the header shows elapsed time while recording. When recording stops, a
+  companion tracklist TXT file is automatically generated from the session history,
+  listing each track played with timestamps relative to the recording start.
+  Recordings are saved to `mesh-recordings/` on each connected USB stick.
+  The recording thread uses a lock-free ring buffer and never blocks the audio
+  thread — zero impact on playback performance.
+
 ## [0.9.10]
 
 ### Added

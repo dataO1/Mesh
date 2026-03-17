@@ -54,6 +54,7 @@ Mesh also includes **built-in stem separation** — drop any MP3, FLAC, or WAV f
   - **Camelot** — Classic DJ wheel with hand-tuned transition scores
   - **Krumhansl** — Perceptual key distance based on music psychology research, better at rating cross-mode transitions (e.g., C major to C minor)
 - **Vertical waveform layout** — Alternative display mode where time flows top-to-bottom instead of left-to-right. Four overview columns cluster in the center with zoomed waveforms flanking them on each side, providing a chronological timeline view across all decks simultaneously. Switch between Horizontal and Vertical layouts in Settings → Display → Waveform Layout — takes effect instantly without restart
+- **Set recording** — Record the master output to WAV on connected USB sticks with automatic tracklist generation
 - **Auto-gain** — Tracks are loudness-normalized so volumes are consistent
 - **Track tags** — Color-coded tag pills in the browser for genres, moods, or custom labels. Suggestion results include auto-generated reason tags (see below)
 
@@ -323,7 +324,7 @@ See [documents/similarity-search.md](documents/similarity-search.md) for the ful
 ### Planned
 
 - [ ] macOS support
-- [ ] Recording to file
+- [x] Set recording to USB
 
 ---
 

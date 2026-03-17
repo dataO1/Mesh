@@ -28,6 +28,8 @@ anyhow.workspace = true
 dirs = "5"
 rayon.workspace = true
 basedrop = "0.1"  # RT-safe deferred deallocation for audio
+hound = "3.5"           # WAV file writing for set recording
+chrono = { version = "0.4", default-features = false, features = ["clock"] }  # Local timestamps for recording filenames
 bytemuck = { version = "1.21", features = ["derive"] }
 rubato = "0.16"   # High-quality sample rate conversion
 symphonia = { version = "0.5", features = ["flac"] }  # FLAC audio decoding

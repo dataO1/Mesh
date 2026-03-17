@@ -8,7 +8,7 @@ use crate::db::DatabaseService;
 use crate::loader::{HostTrackParams, LinkedStemLoader, LinkedStemResultReceiver};
 use crate::music::semitones_to_match;
 use crate::timestretch::TimeStretcher;
-use crate::types::{DeckId, PlayState, Stem, StereoBuffer, NUM_DECKS, NUM_STEMS};
+use crate::types::{DeckId, PlayState, Stem, StereoBuffer, StereoSample, NUM_DECKS, NUM_STEMS};
 
 use super::slicer::SlicerPreset;
 use super::{Deck, DeckAtomics, EngineCommand, LatencyCompensator, Mixer, PreparedTrack};
@@ -89,6 +89,13 @@ pub struct AudioEngine {
     /// Internal effect chain latency in samples (global max across all stems/decks).
     /// Updated when effect chains change; read by UI for display.
     internal_latency_samples: Arc<AtomicU32>,
+
+    // ─────────────────────────────────────────────────────────────
+    // Set Recording
+    // ─────────────────────────────────────────────────────────────
+    /// Active recording producers — master samples are pushed to each one.
+    /// Backends call `retain_mut` to drop abandoned producers automatically.
+    pub(crate) recording_producers: Vec<rtrb::Producer<StereoSample>>,
 }
 
 impl AudioEngine {
@@ -135,6 +142,8 @@ impl AudioEngine {
             // Output latency measurement (shared with UI)
             output_latency_samples: Arc::new(AtomicU64::new(0)),
             internal_latency_samples: Arc::new(AtomicU32::new(0)),
+            // Set recording
+            recording_producers: Vec::new(),
         }
     }
 
@@ -1359,6 +1368,17 @@ impl AudioEngine {
                 }
                 EngineCommand::SetScreenWidth(width) => {
                     self.screen_width = width;
+                }
+
+                // Set Recording
+                EngineCommand::StartRecording { producer } => {
+                    self.recording_producers.push(*producer);
+                    log::info!("[ENGINE] Recording started ({} active)", self.recording_producers.len());
+                }
+                EngineCommand::StopRecording => {
+                    let count = self.recording_producers.len();
+                    self.recording_producers.clear();
+                    log::info!("[ENGINE] Recording stopped ({count} producers dropped)");
                 }
             }
         }

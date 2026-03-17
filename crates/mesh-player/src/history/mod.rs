@@ -97,6 +97,11 @@ pub struct HistoryManager {
 }
 
 impl HistoryManager {
+    /// Get the session ID for this history session
+    pub fn session_id(&self) -> i64 {
+        self.session_id
+    }
+
     /// Create a new session and write the session record to the local database.
     pub fn new(local_db: Arc<DatabaseService>, local_root: PathBuf) -> Self {
         let session_id = now_millis();

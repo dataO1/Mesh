@@ -78,10 +78,6 @@ pub fn handle(app: &mut MeshApp, deck_idx: usize, deck_msg: DeckMessage) -> Task
             app.deck_views[deck_idx].set_hot_cue_position(slot, None);
             app.domain.clear_hot_cue(deck_idx, slot);
         }
-        Sync => {
-            // TODO: Implement sync command
-        }
-
         // ─────────────────────────────────────────────────
         // Loop Control
         // ─────────────────────────────────────────────────

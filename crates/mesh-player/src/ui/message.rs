@@ -18,6 +18,13 @@ use super::mixer_view::MixerMessage;
 use super::state::{LinkedStemLoadedMsg, PresetLoadedMsg, TrackLoadedMsg};
 use mesh_core::usb::UsbMessage;
 
+/// Messages for set recording
+#[derive(Debug, Clone)]
+pub enum RecordingMessage {
+    /// Recording event received from recording thread
+    Event(mesh_core::recording::RecordingEvent),
+}
+
 /// Settings-related messages
 #[derive(Debug, Clone)]
 pub enum SettingsMessage {
@@ -71,6 +78,8 @@ pub enum SettingsMessage {
     PowerOffCancel,
     /// Execute power off (confirmed)
     PowerOffExecute,
+    /// Toggle set recording on/off
+    ToggleRecording,
     /// Save settings to disk
     Save,
     /// Settings save completed
@@ -149,6 +158,9 @@ pub enum Message {
 
     /// System update message (OTA)
     SystemUpdate(SystemUpdateMessage),
+
+    /// Set recording message
+    Recording(RecordingMessage),
 
     /// Monitor size detected at startup (for auto-sizing)
     GotMonitorSize(Option<iced::Size>),

@@ -44,7 +44,6 @@ impl ActionRegistry {
             "deck.play",
             "deck.cue_press",
             "deck.cue_release",
-            "deck.sync",
             "deck.hot_cue_press",
             "deck.hot_cue_clear",
             "deck.toggle_loop",
@@ -655,10 +654,6 @@ impl MappingEngine {
                     Some(MidiMessage::deck_cue_release(deck))
                 }
             }
-            "deck.sync" => {
-                if event.value.is_press() { Some(MidiMessage::Deck { deck, action: DeckAction::Sync }) } else { None }
-            }
-
             // Hot Cues
             "deck.hot_cue_press" | "deck.pad_press" => {
                 let slot = get_param("slot").or_else(|| get_param("pad")).unwrap_or(0);

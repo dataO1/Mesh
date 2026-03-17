@@ -437,6 +437,21 @@ impl AudioCallbackState {
     fn cue_samples(&self) -> &[StereoSample] {
         self.cue_buffer.as_slice()
     }
+
+    /// Push master samples to active recording producers
+    fn push_to_recording(&mut self, n_frames: usize) {
+        if !self.engine.recording_producers.is_empty() {
+            let master_slice = self.master_buffer.as_slice();
+            self.engine.recording_producers.retain_mut(|producer| {
+                for &sample in &master_slice[..n_frames] {
+                    if producer.push(sample).is_err() {
+                        break;
+                    }
+                }
+                !producer.is_abandoned()
+            });
+        }
+    }
 }
 
 /// Convert our BufferSize to CPAL's BufferSize
@@ -583,6 +598,9 @@ fn build_output_stream(
                         }
                     }
                 }
+
+                // Push master samples to active recording producers
+                state.push_to_recording(n_frames);
             },
             move |err| {
                 log::error!("Master audio stream error: {}", err);
@@ -704,6 +722,9 @@ fn build_master_stream_dual(
                         break;
                     }
                 }
+
+                // Push master samples to active recording producers
+                state.push_to_recording(n_frames);
             },
             move |err| {
                 log::error!("Master audio stream error: {}", err);
