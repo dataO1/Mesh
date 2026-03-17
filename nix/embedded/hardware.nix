@@ -34,6 +34,9 @@
   boot.kernel.sysctl = {
     "kernel.printk" = "0 0 0 0";
     "vm.swappiness" = 1;                          # Keep audio buffers in RAM (was 10)
+    "vm.vfs_cache_pressure" = 50;                  # Keep dentry/inode caches for music library
+    "vm.dirty_ratio" = 5;                          # Limit write-back storms (read-heavy workload)
+    "vm.dirty_background_ratio" = 2;
     "kernel.sched_rt_runtime_us" = -1;             # Allow RT threads 100% CPU (no 95% throttle)
     "kernel.sched_latency_ns" = 4000000;           # 4ms CFS latency (from 6ms default)
     "kernel.sched_min_granularity_ns" = 500000;    # 0.5ms CFS granularity (from 0.75ms)
@@ -101,8 +104,15 @@
     # mesh-player writes 0 to this fd to disable C-state transitions during playback
     KERNEL=="cpu_dma_latency", MODE="0660", GROUP="audio"
 
-    # BFQ I/O scheduler for USB storage (better for mixed read workloads during track loading)
-    ACTION=="add|change", KERNEL=="sd[a-z]", SUBSYSTEM=="block", ATTR{queue/scheduler}="bfq"
+    # USB storage block device tuning for sequential audio file reads
+    # - none scheduler: zero overhead (USB bus is serialized, no seek penalty)
+    # - 16 MB read-ahead: keeps the USB pipe full for 130 MB FLAC files
+    # - disable autosuspend: avoids first-access latency spike after idle
+    ACTION=="add|change", KERNEL=="sd[a-z]", SUBSYSTEM=="block", \
+      ATTR{queue/scheduler}="none", \
+      ATTR{queue/read_ahead_kb}="16384"
+    ACTION=="add", SUBSYSTEM=="usb", ATTR{bInterfaceClass}=="08", \
+      TEST=="power/autosuspend_delay_ms", ATTR{power/autosuspend_delay_ms}="-1"
 
     # Auto-mount USB storage to /media/<label> (or /media/<devname> if unlabeled)
     SUBSYSTEMS=="usb", SUBSYSTEM=="block", ACTION=="add", ENV{ID_FS_USAGE}=="filesystem", \
