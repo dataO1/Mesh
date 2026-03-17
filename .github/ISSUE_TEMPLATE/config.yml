@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/dataO1/Mesh#readme
+    about: Check the README and linked documentation before opening an issue

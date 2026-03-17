@@ -1,0 +1,85 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in Mesh
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please fill in as much detail as you can.
+
+  - type: dropdown
+    id: application
+    attributes:
+      label: Application
+      description: Which application is affected?
+      options:
+        - mesh-player
+        - mesh-cue
+        - Both
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Which version are you running? (Check Settings or `--version`)
+      placeholder: "e.g. 0.9.10"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Linux (x86_64)
+        - Linux (ARM / embedded)
+        - Windows
+        - macOS
+    validations:
+      required: true
+
+  - type: dropdown
+    id: audio-server
+    attributes:
+      label: Audio Server
+      description: Which audio server are you using?
+      options:
+        - PipeWire (with JACK bridge)
+        - JACK
+        - PulseAudio
+        - WASAPI (Windows)
+        - CoreAudio (macOS)
+        - Not sure
+    validations:
+      required: false
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the bug clearly. What did you expect to happen vs what actually happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: How can we reliably trigger this bug?
+      placeholder: |
+        1. Load a track onto deck 1
+        2. Enable loop
+        3. Change loop length to 1/8
+        4. ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Logs, screenshots, MIDI controller model, audio interface, or anything else that might help.
+    validations:
+      required: false

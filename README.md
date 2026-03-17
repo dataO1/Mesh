@@ -1,70 +1,91 @@
-# Mesh
+<p align="center">
+  <img src="assets/mesh-logo.png" width="180" alt="Mesh">
+</p>
 
-**Open-source DJ software with stem-based mixing and neural audio separation.**
+<h3 align="center">Open-source stem-based DJ software for electronic music</h3>
 
-Mesh lets you mix music by controlling individual elements (vocals, drums, bass, instruments) independently. Import any audio file and Mesh automatically separates it into stems using AI — no external tools required.
+<p align="center">
+  Control individual elements — vocals, drums, bass, instruments — independently.<br>
+  Built-in AI stem separation, ML-powered analysis, and smart track suggestions.
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-green" alt="License"></a>
+  <a href="#installation"><img src="https://img.shields.io/badge/Linux-supported-brightgreen" alt="Linux"></a>
+  <a href="#installation"><img src="https://img.shields.io/badge/Windows-supported-brightgreen" alt="Windows"></a>
+  <a href="#roadmap"><img src="https://img.shields.io/badge/macOS-planned-yellow" alt="macOS"></a>
+</p>
 
 ---
 
-## Overview
+<!-- TODO: Hero screenshot — mesh-player with 4 decks loaded, stem waveforms visible, mixer and browser overlay -->
 
-Mesh is a DJ software suite with two applications:
+## What is Mesh?
+
+Mesh is a DJ software suite for mixing electronic music by stems. Import any audio file and Mesh separates it into four stems (vocals, drums, bass, other) using the [Demucs](https://github.com/facebookresearch/demucs) neural network. Then mix, apply effects, and perform — with independent control over each element.
+
+Automatic beat sync and loudness matching make it approachable for beginners, while deep per-stem effect routing and plugin hosting satisfy experienced DJs looking to go beyond what commercial software offers.
 
 | Application | Purpose |
 |-------------|---------|
-| **mesh-cue** | Prepare your music library — import tracks, separate stems, analyze BPM/key, edit beat grids, organize playlists |
-| **mesh-player** | Perform live — 4-deck mixing with stem control, beat sync, effects, and MIDI controller support |
+| **mesh-cue** | Prepare your library — import, separate stems, analyze BPM/key, edit beat grids, manage playlists, export to USB |
+| **mesh-player** | Perform live — 4-deck stem mixing, per-stem effects, beat sync, MIDI controllers, smart suggestions, set recording |
 
-### Why Mesh?
-
-Traditional DJ software mixes complete stereo tracks. Mesh gives you control over **each element**:
-
-- Mute the vocals for an instrumental breakdown
-- Solo the drums during a transition
-- Swap the bassline from one track with another
-- Apply effects to individual stems
-
-Mesh also includes **built-in stem separation** — drop any MP3, FLAC, or WAV file and it's automatically split into 4 stems using the Demucs neural network.
+Mesh is designed for **electronic music with regular beat grids** — techno, house, DnB, trance, and similar genres. The automatic beat sync and grid analysis assume consistent tempo. Genres with irregular timing (live recordings, jazz, hip-hop with swing) will need more manual grid work.
 
 ---
 
-## Features
+## What Makes Mesh Different
 
-### Track Preparation (mesh-cue)
+Most DJ software treats stems as an afterthought — mute or solo, maybe a basic filter. Mesh builds the entire workflow around stems, from preparation to performance.
 
-- **Automatic stem separation** — Import regular audio files; AI separates into Vocals, Drums, Bass, and Other
-- **BPM and key detection** — Automatic analysis with configurable tempo ranges. Advanced mode uses the Beat This! neural network (ISMIR 2024) for SOTA beat tracking that eliminates half-tempo errors common with DnB and fast tempos. Simple mode uses Essentia's classic algorithm
-- **Beat grid editing** — Fine-tune beat markers, set downbeats, adjust BPM with visual feedback
-- **8 hot cues per track** — Set, edit, and color-code cue points
-- **Stem linking** — Prepare mashups by linking stems from different tracks (e.g., vocals from track A over instrumentals from track B)
-- **ML-enhanced audio analysis** — Automatic genre classification and mood tagging using neural network models (EffNet + Discogs400). Vocal/instrumental detection via stem energy analysis. Optional arousal/valence estimation for smarter energy-aware suggestions
-- **Playlist management** — Organize tracks into playlists with drag-and-drop
-- **USB export** — Sync playlists to USB drives for portable performance
+<!-- TODO: GIF — muting/unmuting individual stems during a live mix, showing the waveform change -->
 
-### Live Performance (mesh-player)
+**Per-stem effect chains** — Route each stem through its own multiband effect chain with up to 8 frequency bands and 8 effects per band. Reverb on vocals, compression on drums, filter sweeps on bass — simultaneously. 4 macro knobs per deck map parameters across stems for one-knob control of complex transformations. Rekordbox, Serato, and Traktor offer basic stem filtering; mesh gives you full effect routing.
 
-- **4-deck architecture** — Load and mix up to 4 tracks simultaneously
-- **Per-stem control** — Mute, solo, and adjust volume for each stem independently
-- **Automatic beat sync** — Tracks phase-lock automatically when you press play
-- **Automatic key matching** — Pitch-shift tracks to match harmonically (Camelot wheel)
-- **Stem slicer** — Real-time remixing by rearranging slice playback order
-- **Effects** — DJ filter, delay, reverb, plus CLAP plugins and Pure Data patches with per-stem routing
-- **MIDI controller support** — Configure any controller with MIDI Learn wizard
-- **Smart suggestions** — AI-powered track recommendations based on what's currently loaded. Finds harmonically compatible tracks using audio fingerprint similarity, key matching, BPM proximity, and perceptual arousal. An energy direction fader lets you steer suggestions toward higher-energy or cooler tracks. Choose between two key matching algorithms in Settings:
-  - **Camelot** — Classic DJ wheel with hand-tuned transition scores
-  - **Krumhansl** — Perceptual key distance based on music psychology research, better at rating cross-mode transitions (e.g., C major to C minor)
-- **Vertical waveform layout** — Alternative display mode where time flows top-to-bottom instead of left-to-right. Four overview columns cluster in the center with zoomed waveforms flanking them on each side, providing a chronological timeline view across all decks simultaneously. Switch between Horizontal and Vertical layouts in Settings → Display → Waveform Layout — takes effect instantly without restart
-- **Set recording** — Record the master output to WAV on connected USB sticks with automatic tracklist generation
-- **Auto-gain** — Tracks are loudness-normalized so volumes are consistent
-- **Track tags** — Color-coded tag pills in the browser for genres, moods, or custom labels. Suggestion results include auto-generated reason tags (see below)
+**CLAP plugin hosting** — Load professional studio plugins ([LSP](https://lsp-plug.in/), [Dragonfly Reverb](https://michaelwillis.github.io/dragonfly-reverb/), [Airwindows](https://www.airwindows.com/)) as stem effects. No other DJ software hosts CLAP plugins.
 
-### Audio Quality
+**Pure Data custom effects** — Write visual audio patches that run as live stem effects with up to 8 mapped parameters. Includes support for [RAVE](https://github.com/acids-ircam/RAVE) neural audio synthesis via the nn~ external.
 
-- **Zero-dropout loading** — Load new tracks while playing without audio glitches
-- **High-quality time stretching** — Tempo changes without pitch artifacts
-- **Master bus protection** — Built-in limiter and clipper prevent distortion and protect your speakers, even when mixing hot
-- **Low-latency audio** — JACK on Linux, WASAPI on Windows. Real output pipeline latency is measured from CPAL/JACK timestamps and used to compensate beat-snap decisions, so hot cues and synced starts land on the beat the user actually heard. Timing-critical MIDI commands (play, cue, hot cue, beat jump) bypass the UI tick loop and go directly to the audio engine via a dedicated lock-free ringbuffer
-- **Professional routing** — Separate master and cue outputs for headphone monitoring
+**ML-powered library** — During import, neural networks classify genre (400 Discogs categories), detect vocal presence (96% accuracy), and extract audio fingerprints for similarity search. Beat detection uses the [Beat This!](https://github.com/CPJKU/beat_this) model (ISMIR 2024) — eliminates half-tempo errors common with DnB and fast tempos.
+
+**Smart track suggestions** — Recommendations based on audio fingerprint similarity, harmonic compatibility, BPM proximity, and perceptual arousal. An energy direction fader steers suggestions toward higher or lower energy. Two key matching algorithms: classic Camelot wheel or [Krumhansl](https://en.wikipedia.org/wiki/Carol_L._Krumhansl) perceptual model. All processing is local — no cloud, no subscription.
+
+**Stem linking** — Prepare mashups by linking stems across tracks. Vocals from track A over instrumentals of track B, pre-aligned and time-stretched. Links persist in your library for instant recall during performance.
+
+**$112 embedded standalone** — Run the full player on an [Orange Pi 5 Pro](http://www.orangepi.org/html/hardWare/computerAndMicrocontrollers/details/Orange-Pi-5-Pro.html) with an I2S DAC. Boot directly into a kiosk DJ interface — no laptop, no subscription, no vendor lock-in.
+
+<details>
+<summary><strong>Feature comparison with other DJ software</strong></summary>
+
+<br>
+
+| Feature | Mesh | Rekordbox | Serato | Traktor | Mixxx |
+|---------|:----:|:---------:|:------:|:-------:|:-----:|
+| Stem separation | Built-in (Demucs) | Built-in | Built-in | Built-in (iZotope) | In development |
+| Per-stem effect chains | Yes | No | No | No | No |
+| CLAP plugin hosting | Yes | No | No | No | No |
+| Custom PD effects | Yes | No | No | No | No |
+| Neural audio effects (RAVE) | Yes | No | No | No | No |
+| ML genre/mood tagging | Yes | No | No | No | No |
+| Audio fingerprint suggestions | Yes | No | No | No | No |
+| Perceptual key matching | Yes | No | No | No | No |
+| Stem slicer | Yes | No | No | No | No |
+| Embedded standalone | Yes (~$112) | No | No | No | Community |
+| Vertical waveform layout | Yes | No | No | No | No |
+| Streaming services | No | Yes | Yes | Yes | No |
+| DVS / vinyl control | No | Yes | Yes | Yes | Yes |
+| Sampler / remix decks | No | Yes | Yes | Yes | Yes |
+| Video mixing | No | Add-on | Add-on | No | No |
+| Auto DJ | No | No | No | No | Yes |
+| macOS | Planned | Yes | Yes | Yes | Yes |
+| Price | Free (AGPL) | Subscription | Subscription | One-time | Free (GPL) |
+
+Mesh prioritizes **depth of stem control and audio intelligence** over breadth of DJ formats. If you need vinyl control, streaming services, or video mixing, Rekordbox/Serato/Traktor are better choices. If you want to push what's possible with stems, effects, and AI-assisted mixing — mesh is built for that.
+
+</details>
+
+<!-- TODO: Screenshot gallery — 2x2 grid: mesh-player horizontal layout, mesh-player vertical layout, mesh-cue track editing, multiband effect editor -->
 
 ---
 
@@ -74,38 +95,32 @@ Mesh also includes **built-in stem separation** — drop any MP3, FLAC, or WAV f
 
 | Package | Platform | Description |
 |---------|----------|-------------|
-| `mesh-cue_amd64.deb` | Linux (Debian/Ubuntu) | Full DJ application with stem separation (CPU) |
-| `mesh-cue-cuda_amd64.deb` | Linux (Debian/Ubuntu) | Full DJ application with NVIDIA CUDA acceleration |
-| `mesh-cue_win.zip` | Windows 10/11 | Full DJ application with DirectML GPU acceleration |
-| `mesh-player_amd64.deb` | Linux (Debian/Ubuntu) | Lightweight stem player |
-| `mesh-player_win.zip` | Windows 10/11 | Lightweight stem player |
+| `mesh-cue_amd64.deb` | Linux (Ubuntu 22.04+) | Full suite with stem separation (CPU) |
+| `mesh-cue-cuda_amd64.deb` | Linux (Ubuntu 22.04+) | Full suite with NVIDIA CUDA GPU acceleration |
+| `mesh-cue_win.zip` | Windows 10/11 | Full suite with DirectML GPU acceleration |
+| `mesh-player_amd64.deb` | Linux (Ubuntu 22.04+) | Lightweight performance player |
+| `mesh-player_win.zip` | Windows 10/11 | Lightweight performance player |
+
+Download from [GitHub Releases](https://github.com/dataO1/Mesh/releases).
 
 ### Linux
 
 ```bash
-# Standard build (CPU stem separation)
+# Full suite (CPU stem separation)
 sudo dpkg -i mesh-cue_amd64.deb
 
-# OR with NVIDIA GPU acceleration
+# Or with NVIDIA GPU acceleration
 sudo dpkg -i mesh-cue-cuda_amd64.deb
 
-# Optional: lightweight player only
+# Performance player only
 sudo dpkg -i mesh-player_amd64.deb
 ```
 
-**Requirements:**
-- Ubuntu 22.04+, Debian 12+, Pop!_OS 22.04+, or similar
-- PipeWire or JACK audio server
-- For CUDA build: NVIDIA driver 525+ and CUDA 12
+**Requirements:** PipeWire or JACK audio server. For CUDA: NVIDIA driver 525+ with CUDA 12.
 
 ### Windows
 
-1. Download and extract `mesh-cue_win.zip` or `mesh-player_win.zip`
-2. Run `mesh-cue.exe` or `mesh-player.exe`
-
-**Requirements:**
-- Windows 10 or 11
-- DirectX 12 capable GPU for accelerated stem separation (optional — falls back to CPU)
+Extract the ZIP and run `mesh-cue.exe` or `mesh-player.exe`. A DirectX 12 capable GPU is recommended for faster stem separation but not required — it falls back to CPU automatically.
 
 ---
 
@@ -113,370 +128,286 @@ sudo dpkg -i mesh-player_amd64.deb
 
 ### 1. Import Your Music
 
-Launch **mesh-cue** and import your tracks:
+Launch **mesh-cue** and place audio files (MP3, FLAC, WAV, OGG, M4A) in `~/Music/mesh-collection/import/`.
 
-**Option A: Automatic Stem Separation**
-1. Copy audio files (MP3, FLAC, WAV) to `~/Music/mesh-collection/import/`
-2. Click **Import** → Select **"Mixed Audio"** mode
-3. Tracks are automatically separated into stems, analyzed, and added to your collection
+<!-- TODO: GIF — importing tracks in mesh-cue, showing stem separation progress and analysis results -->
 
-> **Note:** Stem separation requires ~4GB RAM per track and takes 2-5 minutes on CPU, or 15-30 seconds with GPU acceleration.
+**Pre-separated stems:** Name files as `Artist - Track_(Vocals).wav`, `_(Drums).wav`, `_(Bass).wav`, `_(Other).wav` and select **Stems** import mode.
 
-**Option B: Pre-Separated Stems**
-If you've already separated stems using Demucs, UVR, or similar tools:
-1. Name files as `Artist - Track_(Vocals).wav`, `Artist - Track_(Drums).wav`, etc.
-2. Click **Import** → Select **"Pre-separated Stems"** mode
+**Regular audio files:** Select **Mixed Audio** mode. Mesh separates each file into 4 stems automatically (2-5 min/track on CPU, 15-30 sec with GPU).
+
+During import, mesh also analyzes BPM, musical key, loudness (LUFS), audio fingerprints, and optionally classifies genre and mood using neural networks.
 
 ### 2. Prepare Your Tracks
 
-In mesh-cue, load a track to:
-- Verify BPM detection and adjust if needed
-- Set hot cues at key moments (drops, breakdowns, vocals)
-- Fine-tune the beat grid alignment
+Load a track in mesh-cue to:
+
+- Verify and adjust BPM detection
+- Fine-tune beat grid alignment (nudge or align to playhead)
+- Set up to 8 color-coded hot cues at key moments
+- Save loops for performance recall
 - Optionally link stems from other tracks for mashups
 
-### 3. Perform
+<!-- TODO: GIF — editing a beat grid in mesh-cue, nudging and aligning to a downbeat -->
 
-Launch **mesh-player**, load tracks onto the 4 decks, and start mixing:
+### 3. Export to USB
+
+Click **Export** to sync playlists to a USB drive. Select which playlists to include, and mesh copies the stems, metadata, and presets. The USB works with mesh-player on any machine or embedded device.
+
+### 4. Perform
+
+Launch **mesh-player**, browse your collection, and load tracks onto the 4 decks.
+
+<!-- TODO: GIF — loading a track, engaging beat sync, muting stems during a transition -->
 
 | Control | Function |
 |---------|----------|
-| **Play/Cue** | CDJ-style transport (hold cue to preview) |
-| **Stem buttons** | Mute individual stems |
-| **Sync** | Automatic beat alignment |
-| **Key** | Automatic harmonic matching |
-| **Slicer** | Enter slice mode for real-time remixing |
+| Play / Cue | CDJ-style transport with cue point preview |
+| Stem buttons | Mute/solo individual stems per deck |
+| Beat sync | Automatic beat grid alignment to global BPM |
+| Key match | Automatic harmonic pitch adjustment |
+| Loop | Quantized loops from 1/8 beat to 256 beats |
+| Hot cues | 8 instant-jump points per track |
+| Slicer | Real-time stem slice resequencing |
+| Suggestions | AI track recommendations with energy direction control |
+
+---
+
+## Features
+
+<details>
+<summary><strong>Track Preparation (mesh-cue)</strong></summary>
+
+<br>
+
+- **AI stem separation** — Import regular audio files and automatically separate into Vocals, Drums, Bass, and Other using Demucs. Standard or fine-tuned models, 1-5 processing shifts for quality vs speed. GPU acceleration via CUDA (Linux) or DirectML (Windows)
+- **BPM detection** — Two backends: Simple (Essentia RhythmExtractor) for speed, or Advanced ([Beat This!](https://github.com/CPJKU/beat_this) ONNX model) for accuracy. Advanced mode includes downbeat detection and eliminates half-tempo errors on DnB and fast tempos
+- **Key detection** — Automatic musical key identification via Essentia
+- **Beat grid editing** — Nudge grid in ~2.5ms increments, align to playhead position, adjust BPM. Grid updates instantly on the waveform
+- **8 hot cues per track** — Color-coded, beat-snapped, CDJ-style jump points
+- **8 saved loops per track** — Store and recall loop regions with variable length
+- **Stem linking** — Link a stem from another track for prepared mashups with automatic time-alignment and BPM stretching. Drop markers for alignment reference
+- **ML audio analysis** — Genre classification (400 Discogs categories), vocal/instrumental detection (96% accuracy), mood and arousal estimation, audio characteristics (timbre, tonality, danceability). All on-device using EffNet neural networks
+- **Batch re-analysis** — Re-analyze metadata, BPM, or ML tags for selected tracks, playlists, or the entire collection
+- **Playlist management** — Create, organize, and nest playlists with drag-and-drop between dual browser panels
+- **USB export** — Sync playlists to USB drives with stems, metadata, and presets. Per-track progress, ETA, and cancellation support
+
+<!-- TODO: Screenshot — mesh-cue with a track loaded, showing beat grid lines, cue points, and stem waveforms -->
+
+</details>
+
+<details>
+<summary><strong>Live Performance (mesh-player)</strong></summary>
+
+<br>
+
+- **4-deck architecture** — Load and mix up to 4 tracks simultaneously, each with 4 independent stems
+- **Per-stem control** — Mute, solo, and adjust volume for each stem independently
+- **Automatic beat sync** — Tracks phase-lock to the global BPM on play. Configurable phase sync on/off
+- **Automatic key matching** — Pitch-shift tracks to match harmonically
+- **Stem slicer** — 8 slice pads per stem for real-time pattern resequencing with 8 storable presets per track
+- **Quantized loops** — 1/8 beat to 256 beats with halve/double from encoder. Beat jump forward/backward by loop length
+- **8 hot cues** — Instant jump points, color-coded, beat-snapped
+- **Waveform layouts** — Horizontal (default) or Vertical (time flows top-to-bottom). Three abstraction levels (Low / Medium / High) control visual detail
+- **Set recording** — Record master output to WAV on all connected USB sticks simultaneously. Automatic tracklist TXT file generated from session history with timestamps
+- **Auto-gain** — LUFS-based loudness normalization with configurable target: -6 (loud), -9 (medium), -14 (streaming), -16 (broadcast)
+- **Collection browser** — Search, sort, and browse playlists. Load tracks to specific decks. USB hot-plug detection. Played tracks dimmed
+- **3-band EQ + filter** — Per-deck low/mid/high EQ and sweepable DJ filter (HP/LP combo, 60 Hz - 20 kHz)
+- **Mixer** — Per-channel volume, cue enable, master volume, cue volume, cue/master mix
+
+<!-- TODO: Screenshot — mesh-player with all 4 decks active, showing stem mute buttons and waveforms -->
+
+</details>
+
+<details>
+<summary><strong>Effects System</strong></summary>
+
+<br>
+
+- **Multiband effect container** — Split each stem into up to 8 frequency bands with Linkwitz-Riley crossovers. Each band has its own effect chain (up to 8 effects per band)
+- **4 macro knobs per deck** — Map parameters across multiple stems and effects for one-knob control of complex transformations
+- **CLAP plugin hosting** — Load any CLAP audio plugin as a stem effect. Plugin discovery from `~/.clap/` and `/usr/lib/clap/`. Tested with LSP, Dragonfly Reverb, Airwindows, BYOD, ChowTapeModel
+- **Pure Data effects** — Custom PD patches with up to 8 mapped parameters per effect. RAVE neural audio synthesis supported via nn~ external
+- **Built-in effects** — Sweepable DJ filter (HP/LP), delay (with feedback), reverb, gain
+- **Automatic latency compensation** — Delay-line alignment across stems, bands, and effect chains. Dynamic re-compensation when plugins change latency
+- **Deck presets** — Save and recall complete effect configurations across all 4 stems. Reference stem presets by name for reuse
+
+See [docs/effects.md](docs/effects.md) for details on creating PD patches, CLAP plugin setup, and preset management.
+
+<!-- TODO: Screenshot — multiband effect editor with CLAP effects loaded on multiple bands, macro knobs visible -->
+
+</details>
+
+<details>
+<summary><strong>Smart Suggestions</strong></summary>
+
+<br>
+
+Toggle suggestions in the collection browser to get track recommendations based on what's currently playing.
+
+**Scoring factors:**
+- Audio fingerprint similarity (HNSW vector search on 16-dimensional audio features)
+- Harmonic key compatibility (Camelot wheel or Krumhansl perceptual model)
+- BPM proximity
+- Energy direction alignment (arousal, danceability, genre-normalized aggression)
+
+**Energy direction fader** — Steer suggestions toward higher-energy or cooler tracks. At center, audio similarity dominates for safe harmonic matches. At extremes, energy-aware scoring takes over with relaxed harmonic filtering, rewarding bolder key transitions.
+
+**Key scoring models** (selectable in Settings):
+- **Camelot** — Classic DJ wheel with hand-tuned transition scores
+- **Krumhansl** — 24x24 perceptual key distance matrix from music psychology research. More nuanced with cross-mode transitions (e.g., C major to C minor)
+
+**Reason tags** — Each suggestion shows a colored pill (green/amber/red) with a directional arrow indicating the harmonic relationship and match quality.
+
+See [docs/smart-suggestions.md](docs/smart-suggestions.md) for the full scoring pipeline, all transition types, and parameter reference.
+
+</details>
+
+<details>
+<summary><strong>Audio Quality</strong></summary>
+
+<br>
+
+- **Zero-dropout loading** — Load new tracks while playing without audio glitches. Lock-free architecture with cyclic buffer pool
+- **Professional time stretching** — [signalsmith-stretch](https://signalsmith-audio.co.uk/code/stretch/) for tempo changes without pitch artifacts
+- **Master bus protection** — Soft limiter + hard clipper prevent distortion and protect speakers
+- **Low-latency audio** — JACK on Linux (with PipeWire bridge), WASAPI on Windows. Typical output latency: 5-12ms
+- **Separate master and cue outputs** — Route headphones to a different audio interface or channel pair for monitoring
+- **Latency-compensated beat sync** — Real output pipeline latency is measured from hardware timestamps and used to compensate beat-snap decisions
+- **Direct MIDI path** — Timing-critical commands (play, cue, hot cue, beat jump) bypass the UI tick loop and go directly to the audio engine via a lock-free ring buffer
+
+</details>
 
 ---
 
 ## MIDI Controllers
 
-Mesh works with any MIDI controller. Use the **MIDI Learn** wizard to map your hardware:
+Mesh works with any class-compliant MIDI controller. The **MIDI Learn** wizard walks you through mapping all controls — transport, stems, mixer, browser, effects, and performance pads.
 
-```bash
-mesh-player --midi-learn
-```
-
-The wizard guides you through mapping transport controls, performance pads, mixer faders, and browser navigation. Mappings are saved to `~/.config/mesh-player/midi.yaml`.
-
-**Supported devices:**
+<!-- TODO: GIF — MIDI learn wizard mapping a control, showing visual highlighting -->
 
 | Device | Protocol | Features |
 |--------|----------|----------|
-| **Allen & Heath Xone K3** | MIDI | Rotary encoders, buttons, note-offset RGB LEDs (red/amber/green) with beat-synced pulsing |
-| **Native Instruments Traktor Kontrol F1 MK2** | HID | 4x4 RGB pad grid, encoders, faders, full-color LED feedback |
-| **Pioneer DDJ-SB2** | MIDI | Profile included |
+| Allen & Heath Xone K2/K3 | MIDI | Rotary encoders, buttons, note-offset RGB LEDs with beat-synced pulsing |
+| Native Instruments Kontrol F1 | HID | 4x4 RGB pad grid, encoders, faders, full-color LED feedback |
+| Pioneer DDJ-SB2 | MIDI | Profile included |
+| Any MIDI controller | MIDI | Via Learn wizard |
 
-Any class-compliant MIDI controller works via the Learn wizard. HID devices require a driver (currently F1 only). Controllers with note-offset LEDs (Xone K series) are auto-detected for correct color handling.
+**Layer toggle** — Map 4 virtual decks to 2 physical controller sides with a single layer switch button.
 
-### Compact 4-Deck Mapping
+**Compact mode** — Momentary mode overlays let you hold a button to temporarily switch pads to Hot Cue or Slicer mode, then release to return to default stem controls.
 
-For controllers with limited buttons (e.g., two Kontrol F1s), the MIDI Learn wizard supports:
-
-- **Momentary mode overlays** — Hold a mode button to temporarily switch pads to Hot Cue or Slicer mode. Release to return to the default performance mode (stem mutes, transport). Per-side mode buttons control two decks each (left side = decks 1+3, right side = decks 2+4).
-- **Dual browse encoders** — Map separate left/right browse encoders for independent deck browsing.
-- **State-aware RGB feedback** — HID pads show distinct colors per function (green=play, orange=cue, amber=hot cue, cyan=slicer, per-stem colors for mutes) and automatically switch color schemes when mode buttons are held.
+See [docs/midi-controllers.md](docs/midi-controllers.md) for the learn wizard guide, LED feedback details, and configuration reference.
 
 ---
 
-## Stem Separation
+## Embedded Standalone
 
-> **Experimental:** Stem separation quality may vary. GPU acceleration is untested on some hardware.
+Run mesh-player on an **Orange Pi 5 Pro** (~$80) as a standalone DJ unit — no laptop required.
 
-Mesh uses [Demucs](https://github.com/facebookresearch/demucs) (Meta AI) for neural stem separation:
+| Component | Role | Approx. Cost |
+|-----------|------|:------------:|
+| Orange Pi 5 Pro 8GB | RK3588S SoC, WiFi 5, USB 3.0 | ~$80 |
+| PCM5102A I2S DAC board | Master audio output (112 dB SNR) | ~$5 |
+| ES8388 onboard codec | Headphone cue output (3.5mm) | Included |
+| microSD card (32GB+) | NixOS system image | ~$8 |
+| Enclosure + cables | Optional | ~$19 |
+| | **Total** | **~$112** |
 
-| Setting | Options | Effect |
-|---------|---------|--------|
-| **Model** | Standard / Fine-tuned | Fine-tuned has ~1-3% better quality |
-| **Shifts** | 1-5 | More shifts = better quality, slower processing |
+<!-- TODO: Photo — Orange Pi 5 with DAC wired, running mesh-player on a touchscreen -->
 
-**Performance:**
+The device boots directly into mesh-player in fullscreen kiosk mode (NixOS + cage Wayland compositor). Load tracks from USB 3.0 sticks. Over-the-air updates via WiFi.
 
-| Hardware | Time (4-min track) |
-|----------|-------------------|
-| CPU (8-core) | 3-5 minutes |
-| NVIDIA RTX 3070 | 20-30 seconds |
-| NVIDIA RTX 4090 | 10-15 seconds |
+**Quick start:**
 
-Configure in **Settings → Separation**.
+1. Download the SD image from [GitHub Releases](https://github.com/dataO1/Mesh/releases) (look for `sdimage-*` tags)
+2. Flash: `zstdcat nixos-sd-image-*.img.zst | sudo dd of=/dev/sdX bs=4M status=progress`
+3. Boot — mesh-player starts automatically
 
----
-
-## Pure Data Effects
-
-Mesh supports custom audio effects written in [Pure Data](https://puredata.info/), a visual programming language for audio. Create your own filters, delays, distortions, or even neural audio effects like RAVE.
-
-Place effects in `~/Music/mesh-collection/effects/` and they'll appear in the effect picker.
-
-See [examples/pd-effects/](examples/pd-effects/) for templates, documentation, and working examples including a RAVE neural percussion processor.
-
----
-
-## CLAP Plugins
-
-Mesh supports [CLAP](https://cleveraudio.org/) (CLever Audio Plugin) — the modern open-source plugin standard. Load any Linux CLAP plugin as a stem effect:
-
-- **LSP Plugins** — Professional compressors, EQs, reverbs, gates
-- **Dragonfly Reverb** — Algorithmic room and plate reverbs
-- **Airwindows** — Hundreds of boutique effects
-- **BYOD, ChowTapeModel** — Guitar amp sims and tape saturation
-
-**Plugin locations:**
-```
-~/.clap/              # User plugins
-/usr/lib/clap/        # System plugins
-```
-
-Install CLAP plugins from your distro's package manager or download from plugin developers. Plugins appear automatically in the effect picker under their categories.
-
----
-
-## Smart Suggestions
-
-When you toggle suggestions on in the collection browser, Mesh analyzes the tracks loaded on your decks and recommends what to play next. The system combines nine scoring factors:
-
-| Factor | What It Measures |
-|--------|-----------------|
-| **Audio similarity** | HNSW vector search on 16-dim audio fingerprints (rhythm, harmony, energy, timbre) |
-| **Harmonic compatibility** | Key transition safety via Camelot wheel or Krumhansl perceptual model |
-| **Key energy direction** | Emotional impact of the key transition (semitone up = +0.70, tritone = -0.80) |
-| **Genre-normalized aggression** | Per-genre z-score normalized intensity — answers "how aggressive is this track *for its genre*?" so house tracks can compete with DnB |
-| **Danceability** | ML-derived danceability alignment with the energy fader direction |
-| **Approachability** | ML-derived music approachability alignment with the energy fader direction |
-| **Tonal/timbre contrast** | At extremes, rewards opposite tonal and timbre characteristics to the seed |
-| **Production match** | Prefers candidates with similar acoustic/electronic production character |
-| **Tempo proximity** | BPM distance from currently playing tracks |
-
-### Energy Direction Fader
-
-The fader steers what kinds of tracks are recommended. At center, audio similarity dominates for safe harmonic matches. At extremes, audio similarity drops to zero and genre-normalized aggression becomes the dominant signal (30%), with key harmony relaxing from 25% to 15% as the user accepts harmonic risk in exchange for energy direction:
-
-| | Center | Extreme |
-|-|--------|---------|
-| Audio similarity | 42% | 0% |
-| Key compatibility | 25% | 15% |
-| Key energy direction | 15% | 22% |
-| Genre-normalized aggression | 0% | 30% |
-| Danceability | 0% | 10% |
-| Approachability | 0% | 6% |
-| Tonal/timbre contrast | 0% | 4% |
-| Production match | 3% | 3% |
-| BPM proximity | 15% | 10% |
-
-Each key transition has a research-calibrated emotional energy direction. The fader both steers which transitions are preferred and relaxes the harmonic filter to allow dramatic key changes:
-
-- **Center** — Strict: same key, adjacent, relative, diagonal
-- **Right** — Progressively prefers energy-raising transitions (boost, mood lift, semitone up)
-- **Left** — Progressively prefers energy-cooling transitions (cool, darken, semitone down, tritone)
-
-### Reason Tags
-
-Each suggestion shows a colored tag pill (green/amber/red) with a directional arrow (▲ raise / ▼ cool / ━ same key) indicating the harmonic relationship.
-
-### Key Scoring Models
-
-Two algorithms are available in **Settings → Display → Key Matching**:
-
-| Model | Description |
-|-------|-------------|
-| **Camelot** (default) | Classic DJ wheel — hand-tuned scores for each transition category. Well-understood, predictable. |
-| **Krumhansl** | Based on Krumhansl-Kessler (1982) music psychology research. 24×24 perceptual key distance matrix from listener probe-tone ratings. Better at cross-mode transitions. |
-
-See [documents/similarity-search.md](documents/similarity-search.md) for the full technical documentation including the scoring pipeline, all transition types with emotional impact descriptions, the adaptive filter thresholds, and parameter reference.
-
----
-
-## Roadmap
-
-### Working Now
-
-- [x] 4-deck stem mixing with mute/solo
-- [x] Automatic BPM and key detection
-- [x] Beat grid editing and alignment
-- [x] Auto beat sync between decks
-- [x] Auto key matching (harmonic mixing)
-- [x] Stem slicer with customizable presets
-- [x] Stem linking for mashups
-- [x] Built-in Demucs stem separation
-- [x] GPU acceleration (CUDA/DirectML)
-- [x] MIDI and HID controller support with learn wizard
-- [x] USB export for portable performance
-- [x] Track similarity search (audio fingerprinting)
-- [x] Smart suggestions with energy direction control
-- [x] ML genre classification and mood tagging (EffNet/Discogs400)
-- [x] ML beat detection (Beat This! ONNX model — no half-tempo errors)
-- [x] Auto-gain loudness normalization
-- [x] Vertical waveform layout (top-to-bottom timeline view)
-- [x] Master bus limiter and clipper (PA protection)
-- [x] Effects: filter, delay, reverb
-- [x] Pure Data effect patches (custom DSP via PD)
-- [x] CLAP plugin hosting (LSP, Dragonfly, Airwindows, etc.)
-- [x] RAVE neural audio effects (via nn~ external)
-- [x] Multiband effect container with macro knob routing
-
-### Coming Soon
-
-- [ ] Session history and set reconstruction
-- [ ] On-the-fly stem linking during performance
-- [ ] Slicer morph knob for preset banks
-- [ ] Real-time LUFS normalization per stem
-
-### Planned
-
-- [ ] macOS support
-- [x] Set recording to USB
+See [docs/embedded.md](docs/embedded.md) for the full hardware guide with wiring diagrams, device tree configuration, audio routing, WiFi/network setup, and OTA deployment.
 
 ---
 
 ## Configuration
 
-### Collection Location
+Mesh stores its collection and configuration in `~/Music/mesh-collection/`:
 
 ```
-~/Music/mesh-collection/
+mesh-collection/
 ├── import/          # Drop files here for import
-├── tracks/          # Your stem library
-├── playlists/       # Playlist folders (symlinks)
-└── config.yaml      # Settings
+├── tracks/          # Stem library (8-channel FLAC)
+├── playlists/       # Playlist folders
+├── presets/         # Effect presets (stems/ and decks/)
+├── effects/         # Pure Data effect patches
+├── config.yaml      # Application settings
+└── theme.yaml       # Color theme
 ```
 
-### Settings
+**Themes** — 5 built-in color themes (Mesh, Catppuccin, Rose Pine, Synthwave, Gruvbox) with customizable stem colors and UI accents. Themes switch instantly without restart.
 
-Click the **gear icon** in mesh-cue to configure:
+**Fonts** — Exo (default), Hack, JetBrains Mono, Press Start 2P. Font and size changes require restart.
 
-| Setting | Description |
-|---------|-------------|
-| **BPM Range** | Set min/max tempo for genre-specific detection (e.g., DnB: 160-190) |
-| **Beat Detection** | Simple (Essentia) or Advanced (Beat This! ML model) |
-| **Separation Model** | Standard or Fine-tuned Demucs |
-| **Separation Shifts** | Quality vs. speed tradeoff (1-5) |
-| **Target Loudness** | LUFS target for auto-gain (-14 LUFS default) |
-
-### Theme
-
-Customize stem colors in `~/.config/mesh-player/theme.yaml`:
-
-```yaml
-stems:
-  vocals: "#33CC66"   # Green
-  drums: "#CC3333"    # Red
-  bass: "#E6604D"     # Orange
-  other: "#00CCCC"    # Cyan
-```
+See [docs/collection.md](docs/collection.md) for details on import workflows, USB export, database, and set recordings. See [docs/configuration.md](docs/configuration.md) for the complete settings reference, theme customization, and audio device setup.
 
 ---
 
-## Troubleshooting
+## Roadmap
 
-### Audio Issues
+Features in development or planned:
 
-**No audio output:**
-- Linux: Ensure JACK or PipeWire is running (`pw-jack mesh-player` for PipeWire)
-- Windows: Check audio device in system settings
-
-**Audio dropouts:**
-- Increase buffer size in your audio server settings
-- Close other audio applications
-
-### Stem Separation
-
-**"CUDA not available" on Linux:**
-- Install NVIDIA driver 525+ and CUDA 12 toolkit
-- Use the `mesh-cue-cuda_amd64.deb` package
-
-**Separation quality issues:**
-- Use higher quality source files (FLAC/WAV over low-bitrate MP3)
-- Increase "Shifts" setting in Settings → Separation
-
-### MIDI
-
-**Controller not detected:**
-- Check connection and permissions
-- On Linux: ensure user is in `audio` group
+- [ ] macOS support
+- [ ] Tag editing UI (add/edit/remove tags from the browser)
+- [ ] Auto headphones cue (volume-based automatic cue routing)
+- [ ] Live peak meters (per-channel and master)
+- [ ] Built-in native effects (beat-synced echo, flanger, phaser, gater)
+- [ ] Database versioning (schema migration for USB forward-compatibility)
+- [ ] Session history browser and set reconstruction
+- [ ] Slicer morph knob (scroll through preset banks)
+- [ ] Jog wheel beat nudging
+- [ ] B2B networked mode (dual-system Ethernet link)
 
 ---
 
 ## Building from Source
 
-For developers:
-
 ```bash
-# Clone and enter dev environment
-git clone https://github.com/yourusername/mesh.git
-cd mesh
-nix develop
+git clone https://github.com/dataO1/Mesh.git
+cd Mesh
+nix develop   # Enter dev environment with all dependencies
 
-# Build
-cargo build --release
-
-# Run
-cargo run -p mesh-player
-cargo run -p mesh-cue
+cargo build --release -p mesh-player
+cargo build --release -p mesh-cue
 ```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for technical details on the audio engine, real-time architecture, and signal flow.
+**Requirements:** [Nix](https://nixos.org/) package manager — handles all native dependencies (Essentia, FFmpeg, JACK, Vulkan, hidapi, etc.).
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for technical documentation on the audio engine, real-time architecture, and crate structure.
 
 ---
 
-## Embedded Setup (Orange Pi)
+## Issues & Feedback
 
-Mesh can run standalone on an ARM64 single-board computer — no laptop required. The target hardware is an **Orange Pi 5 Pro** (RK3588S, 8 GB RAM, ~$80) with a **PCM5102A I2S DAC** on the GPIO header for master audio output and the onboard ES8388 codec for headphone cue. Total core BOM is around $112.
-
-The embedded setup runs NixOS with mesh-player in a Wayland kiosk (cage compositor), booting directly into fullscreen performance mode. Tracks are loaded from a USB 3.0 stick — the same workflow as CDJs.
-
-| Component | Role |
-|-----------|------|
-| Orange Pi 5 Pro 8GB | RK3588S SoC, WiFi 5, USB 3.0 |
-| PCM5102A I2S DAC | Master output via GPIO (112 dB SNR) |
-| ES8388 onboard codec | Cue/headphone output (3.5mm TRRS) |
-| cage + mesh-player | Wayland kiosk, fullscreen on boot |
-
-### Quick Start
-
-1. **Download the SD image** from [GitHub Releases](https://github.com/dataO1/Mesh/releases) (look for `sdimage-*` tags)
-2. **Flash to microSD**: `zstdcat nixos-sd-image-*.img.zst | sudo dd of=/dev/sdX bs=4M status=progress`
-3. **Boot** — NixOS starts mesh-player in kiosk mode automatically
-4. **Update** — the device pulls pre-built packages from the [binary cache](https://datao1.github.io/Mesh/), never compiles:
-   ```bash
-   sudo nixos-rebuild switch --flake github:dataO1/Mesh/v0.9.0#mesh-embedded --no-write-lock-file
-   ```
-
-CI builds mesh-player natively on a free GitHub Actions ARM runner and publishes the binary cache to GitHub Pages. SD images are uploaded to Releases with hash-based deduplication (only rebuilt when the NixOS configuration changes).
-
-See **[documents/embedded-setup.md](documents/embedded-setup.md)** for the full guide covering hardware wiring, device tree overlays, NixOS configuration, audio routing, deployment workflow, and debugging.
-
----
-
-## Contributing
-
-Contributions welcome! Areas where help is appreciated:
-
-- **Audio DSP** — Effects, EQ implementations
-- **UI/UX** — Waveform rendering, accessibility
-- **Testing** — Integration tests, audio quality verification
-- **Platform support** — macOS builds
-
-Please open an issue to discuss major changes before submitting a PR.
+Mesh is not accepting code contributions at this time. If you find a bug or have a feature request, please [open an issue](https://github.com/dataO1/Mesh/issues/new/choose).
 
 ---
 
 ## License
 
-AGPL-3.0 — see [LICENSE](LICENSE) for details.
+AGPL-3.0 — see [LICENSE](LICENSE).
 
-Uses [Essentia](https://essentia.upf.edu/) (AGPL-3.0) and [Demucs](https://github.com/facebookresearch/demucs) for audio analysis and stem separation. Genre and mood classification models from the [Essentia model hub](https://essentia.upf.edu/models.html) (CC BY-NC-SA 4.0).
+Uses [Essentia](https://essentia.upf.edu/) (AGPL-3.0) for audio analysis and [Demucs](https://github.com/facebookresearch/demucs) (MIT) for stem separation. Genre and mood classification models from the [Essentia model hub](https://essentia.upf.edu/models.html) (CC BY-NC-SA 4.0). Beat detection model from [Beat This!](https://github.com/CPJKU/beat_this) (MIT).
 
 ---
 
 ## Acknowledgments
 
-- [Demucs](https://github.com/facebookresearch/demucs) — Neural stem separation
+- [Demucs](https://github.com/facebookresearch/demucs) — Neural stem separation (Meta AI)
 - [signalsmith-stretch](https://signalsmith-audio.co.uk/code/stretch/) — Time stretching
-- [Essentia](https://essentia.upf.edu/) — Audio analysis (key, LUFS, BPM fallback)
-- [Beat This!](https://github.com/CPJKU/beat_this) — ML beat and downbeat tracking (ISMIR 2024)
+- [Essentia](https://essentia.upf.edu/) — Audio analysis (key, LUFS, BPM)
+- [Beat This!](https://github.com/CPJKU/beat_this) — ML beat tracking (CPJKU, ISMIR 2024)
 - [iced](https://iced.rs/) — GUI framework
 - [JACK](https://jackaudio.org/) — Professional audio routing
-
----
-
-*Mesh is under active development. Star the repo to follow progress!*
+- [CozoDB](https://www.cozodb.org/) — Embedded graph database
+- [ort](https://github.com/pykeio/ort) — ONNX Runtime bindings for Rust
+- [Pure Data](https://puredata.info/) — Visual audio programming
+- [RAVE](https://github.com/acids-ircam/RAVE) — Real-time Audio Variational autoEncoder

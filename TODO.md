@@ -1,6 +1,28 @@
 If unsure ask questions, dont assume stuff. Try to make sure that logic lies
 as much as possible in mesh-core and mesh-widget and only if necessary in the ui.
 
+# Priority — Next Steps (as of 2026-03-17)
+
+1. **Documentation overhaul** — README rewrite, linked docs (collection, MIDI,
+   effects, embedded), GitHub issue templates. Highest ROI non-code work; front
+   door for anyone discovering mesh. See [Documentation](#documentation) below.
+2. **Auto headphones cue** — Volume-based automatic cue routing. Well-specced,
+   contained change (engine routing + one settings toggle), directly supports
+   the "easy for beginners" philosophy. See [Auto Headphones Cue system](#auto-headphones-cue-system).
+3. **Tag editing UI** — Tags exist in DB and render as pills, but no way to
+   add/edit/remove from the browser yet. See [Collection Browser](#collection-browser).
+4. **Database versioning** — Schema version tracking for forward-compatibility
+   with USB sticks. Should happen before v1.0. See [DB](#db).
+5. **Live peak meters** — Per-channel and master peak meters. Standard DJ
+   visual feedback, data already available. See [Audio Processing](#audio-processing).
+6. **WiFi auto-reconnect** — Check stored NetworkManager credentials before
+   prompting for password on embedded. See [UPDATE LIFECYCLE](#update-lifecycle).
+7. **Built-in native effects** — Beat-synced echo, flanger, phaser, gater.
+   Tighter integration than CLAP/PD. See [Audio Processing](#audio-processing).
+
+Post-v1.0: B2B mode, history-informed suggestions, set reconstruction UI,
+slicer morph knob, jog wheel nudging, GPU waveform optimization.
+
 # Features
 
 ## Collection Browser

@@ -1,0 +1,46 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have an idea for Mesh? Describe what you'd like and why it would be useful.
+
+  - type: dropdown
+    id: application
+    attributes:
+      label: Application
+      description: Which application would this feature apply to?
+      options:
+        - mesh-player
+        - mesh-cue
+        - Both
+        - Embedded / hardware
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What would you like?
+      description: Describe the feature or improvement clearly.
+    validations:
+      required: true
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: How would you use this feature in practice? What workflow does it improve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Have you tried any workarounds? Does another DJ software do this in a way you like?
+    validations:
+      required: false
