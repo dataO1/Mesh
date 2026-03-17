@@ -184,14 +184,16 @@ pub fn build_settings_items(state: &SettingsState) -> Vec<SettingsItem> {
     let mut items = Vec::new();
 
     // ── Set Recording (always first for quick access) ──
-    items.push(
-        SettingsItem::new("Record Set", SettingsBehavior::Toggle {
-            value: state.recording_active,
-            on_toggle: |_| SettingsMessage::ToggleRecording,
-        })
-            .section("Recording")
-            .hint("Record master output to WAV on all connected USB sticks")
-    );
+    let rec_label = if state.recording_active { "Stop Recording" } else { "Record Set" };
+    let mut rec_item = SettingsItem::new(rec_label, SettingsBehavior::Action(
+        Message::Settings(SettingsMessage::RecordingConfirm),
+    ))
+        .section("Recording")
+        .hint("Record master output to WAV on all connected USB sticks");
+    if state.recording_active {
+        rec_item = rec_item.danger();
+    }
+    items.push(rec_item);
 
     // ── Power Off (embedded only, first item for quick access) ──
     #[cfg(feature = "embedded-rt")]
@@ -439,6 +441,8 @@ pub struct SettingsState {
     pub draft_prerelease_channel: bool,
     /// Whether set recording is currently active
     pub recording_active: bool,
+    /// Whether the set recording confirmation dialog is showing
+    pub recording_confirm: bool,
     /// Whether the power off confirmation dialog is showing
     pub power_off_confirm: bool,
     /// Status message (for save feedback)
@@ -483,6 +487,7 @@ impl SettingsState {
             available_devices,
             draft_prerelease_channel: config.updates.prerelease_channel,
             recording_active: false,
+            recording_confirm: false,
             power_off_confirm: false,
             status: String::new(),
             settings_midi_nav: None,
@@ -580,6 +585,8 @@ pub enum SubPanelFocus {
     WifiNetworkList { selected: usize },
     /// Cycling through update actions (Check/Install or Install/Restart)
     UpdateActions { selected: usize },
+    /// Cycling through set recording confirmation (0=Cancel, 1=Start/Stop)
+    RecordingConfirm { selected: usize },
     /// Cycling through power off confirmation (0=Cancel, 1=Power Off)
     PowerOffConfirm { selected: usize },
 }
@@ -961,6 +968,66 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
         .padding(30)
         .style(container::rounded_box)
         .into();
+
+    // Set recording confirmation overlay
+    if state.recording_confirm {
+        use iced::widget::{center, stack};
+
+        let focused_action = state.settings_midi_nav.as_ref().and_then(|n| {
+            if let Some(SubPanelFocus::RecordingConfirm { selected }) = &n.sub_panel {
+                Some(*selected)
+            } else {
+                None
+            }
+        });
+
+        let backdrop: Element<Message> = container(Space::new())
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_theme: &iced::Theme| container::Style {
+                background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.5).into()),
+                ..Default::default()
+            })
+            .into();
+
+        let cancel_btn: Element<Message> = button(text("Cancel").size(sz(16.0)))
+            .on_press(Message::Settings(SettingsMessage::RecordingCancel))
+            .style(button::secondary)
+            .padding([8, 24])
+            .into();
+
+        let (title, description, confirm_label, confirm_style) = if state.recording_active {
+            ("Stop Recording?", "The current recording will be finalized and saved.", "Stop", button::danger as fn(&iced::Theme, button::Status) -> button::Style)
+        } else {
+            ("Start Recording?", "Master output will be recorded to WAV on all connected USB sticks.", "Record", button::primary as fn(&iced::Theme, button::Status) -> button::Style)
+        };
+
+        let confirm_btn: Element<Message> = button(text(confirm_label).size(sz(16.0)))
+            .on_press(Message::Settings(SettingsMessage::RecordingExecute))
+            .style(confirm_style)
+            .padding([8, 24])
+            .into();
+
+        let cancel_btn = wrap_dialog_focus(cancel_btn, 0, focused_action);
+        let confirm_btn = wrap_dialog_focus(confirm_btn, 1, focused_action);
+
+        let dialog = container(
+            column![
+                text(title).size(sz(22.0)),
+                text(description).size(sz(14.0)),
+                Space::new().height(10),
+                row![Space::new().width(Length::Fill), cancel_btn, confirm_btn]
+                    .spacing(10)
+                    .width(Length::Fill),
+            ]
+            .spacing(10)
+            .width(Length::Fixed(400.0))
+        )
+        .padding(25)
+        .style(container::rounded_box);
+
+        return stack![settings_view, backdrop, center(dialog)].into();
+    }
 
     // Power off confirmation overlay (embedded only)
     if state.power_off_confirm {

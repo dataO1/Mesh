@@ -78,8 +78,12 @@ pub enum SettingsMessage {
     PowerOffCancel,
     /// Execute power off (confirmed)
     PowerOffExecute,
-    /// Toggle set recording on/off
-    ToggleRecording,
+    /// Show set recording confirmation dialog
+    RecordingConfirm,
+    /// Cancel set recording dialog
+    RecordingCancel,
+    /// Execute set recording start/stop (confirmed)
+    RecordingExecute,
     /// Save settings to disk
     Save,
     /// Settings save completed

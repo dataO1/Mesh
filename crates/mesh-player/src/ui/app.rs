@@ -1217,6 +1217,10 @@ impl MeshApp {
                         };
                         return Task::none();
                     }
+                    SubPanelFocus::RecordingConfirm { selected } => {
+                        *selected = if *selected == 0 { 1 } else { 0 };
+                        return Task::none();
+                    }
                     SubPanelFocus::PowerOffConfirm { selected } => {
                         *selected = if *selected == 0 { 1 } else { 0 };
                         return Task::none();
@@ -1309,9 +1313,12 @@ impl MeshApp {
         if shift_held {
             let nav = self.settings.settings_midi_nav.as_mut().unwrap();
             if let Some(panel) = nav.sub_panel.take() {
-                // Dismiss the power off dialog when exiting its sub-panel
+                // Dismiss confirmation dialogs when exiting their sub-panel
                 if matches!(panel, SubPanelFocus::PowerOffConfirm { .. }) {
                     self.settings.power_off_confirm = false;
+                }
+                if matches!(panel, SubPanelFocus::RecordingConfirm { .. }) {
+                    self.settings.recording_confirm = false;
                 }
             } else if nav.editing {
                 nav.editing = false;
@@ -1342,6 +1349,13 @@ impl MeshApp {
                         _ => {}
                     }
                     return Task::none();
+                }
+                SubPanelFocus::RecordingConfirm { selected } => {
+                    return match selected {
+                        0 => self.update(Message::Settings(SettingsMessage::RecordingCancel)),
+                        1 => self.update(Message::Settings(SettingsMessage::RecordingExecute)),
+                        _ => Task::none(),
+                    };
                 }
                 SubPanelFocus::PowerOffConfirm { selected } => {
                     return match selected {
@@ -1384,6 +1398,13 @@ impl MeshApp {
                         self.settings.power_off_confirm = true;
                         let nav = self.settings.settings_midi_nav.as_mut().unwrap();
                         nav.sub_panel = Some(SubPanelFocus::PowerOffConfirm { selected: 0 });
+                        return Task::none();
+                    }
+                    // Recording: enter confirmation sub-panel
+                    if matches!(msg, Message::Settings(SettingsMessage::RecordingConfirm)) {
+                        self.settings.recording_confirm = true;
+                        let nav = self.settings.settings_midi_nav.as_mut().unwrap();
+                        nav.sub_panel = Some(SubPanelFocus::RecordingConfirm { selected: 0 });
                         return Task::none();
                     }
                     let msg = msg.clone();

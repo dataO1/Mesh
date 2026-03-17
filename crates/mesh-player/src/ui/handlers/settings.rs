@@ -164,7 +164,22 @@ pub fn handle(app: &mut MeshApp, msg: SettingsMessage) -> Task<Message> {
             }
             Task::none()
         }
-        ToggleRecording => {
+        RecordingConfirm => {
+            app.settings.recording_confirm = true;
+            Task::none()
+        }
+        RecordingCancel => {
+            app.settings.recording_confirm = false;
+            if let Some(ref mut nav) = app.settings.settings_midi_nav {
+                nav.sub_panel = None;
+            }
+            Task::none()
+        }
+        RecordingExecute => {
+            app.settings.recording_confirm = false;
+            if let Some(ref mut nav) = app.settings.settings_midi_nav {
+                nav.sub_panel = None;
+            }
             // Toggle recording state
             if app.recording_state.is_some() {
                 // Stop recording
