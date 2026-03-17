@@ -280,6 +280,21 @@ See [docs/smart-suggestions.md](docs/smart-suggestions.md) for the full scoring 
 
 ---
 
+## Documentation
+
+Detailed guides for each area of mesh:
+
+| Guide | Covers |
+|-------|--------|
+| **[Collection & Import](docs/collection.md)** | Folder structure, import workflows, USB export/sync, database, set recordings |
+| **[MIDI Controllers](docs/midi-controllers.md)** | Learn wizard, deck layers, LED feedback, shift modes, compact 4-deck mapping |
+| **[Effects System](docs/effects.md)** | Multiband container, CLAP plugins, Pure Data patches, RAVE neural effects, presets |
+| **[Smart Suggestions](docs/smart-suggestions.md)** | Scoring pipeline, energy fader, key matching, transition types, reason tags |
+| **[Configuration](docs/configuration.md)** | All settings (player & cue), themes, audio device setup, CLI arguments |
+| **[Embedded Standalone](docs/embedded.md)** | Orange Pi hardware, DAC wiring, SD image, WiFi, OTA updates, troubleshooting |
+
+---
+
 ## MIDI Controllers
 
 Mesh works with any class-compliant MIDI controller. The **MIDI Learn** wizard walks you through mapping all controls — transport, stems, mixer, browser, effects, and performance pads.
