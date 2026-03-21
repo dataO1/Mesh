@@ -6,6 +6,13 @@ All notable changes to Mesh are documented in this file.
 
 ## [0.9.11]
 
+### Fixed
+
+- **OTA update** — Fixed permission denied error when starting system updates on
+  the embedded player. All privileged operations (file write, service start,
+  cage restart, power off) now use sudo instead of direct filesystem writes
+  and polkit authorization.
+
 ### Added
 
 - **Set recording** — Record the master output to WAV files directly on connected

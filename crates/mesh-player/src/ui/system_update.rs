@@ -238,17 +238,49 @@ fn pre_release_num(pre: &str) -> u32 {
         .unwrap_or(0)
 }
 
-/// Write update target version and start the mesh-update service
+/// Write update target version and start the mesh-update service.
+///
+/// Uses `sudo` for all privileged operations. The mesh user has passwordless
+/// sudo via `security.sudo.wheelNeedsPassword = false` (NixOS kiosk config).
+/// This avoids permission issues with `/var/lib/mesh/` ownership and polkit
+/// authorization from within the cage Wayland session.
 pub fn start_update(version: &str) -> Result<(), String> {
-    // Write version to target file
-    std::fs::create_dir_all("/var/lib/mesh")
-        .map_err(|e| format!("Failed to create /var/lib/mesh: {}", e))?;
-    std::fs::write("/var/lib/mesh/update-target", version)
-        .map_err(|e| format!("Failed to write update target: {}", e))?;
+    use std::io::Write;
+    use std::process::Stdio;
 
-    // Start the update service via systemctl (polkit allows this for mesh user)
-    let output = std::process::Command::new("systemctl")
-        .args(["start", "mesh-update.service"])
+    // Ensure target directory exists (needs root — /var/lib/ is root-owned)
+    let mkdir = std::process::Command::new("sudo")
+        .args(["mkdir", "-p", "/var/lib/mesh"])
+        .output()
+        .map_err(|e| format!("Failed to create /var/lib/mesh: {}", e))?;
+    if !mkdir.status.success() {
+        let stderr = String::from_utf8_lossy(&mkdir.stderr);
+        return Err(format!("Failed to create /var/lib/mesh: {}", stderr.trim()));
+    }
+
+    // Write version via sudo tee (avoids shell escaping issues)
+    let mut child = std::process::Command::new("sudo")
+        .args(["tee", "/var/lib/mesh/update-target"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Failed to write update target: {}", e))?;
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(version.as_bytes())
+        .map_err(|e| format!("Failed to write update target: {}", e))?;
+    let tee_status = child
+        .wait()
+        .map_err(|e| format!("Failed to write update target: {}", e))?;
+    if !tee_status.success() {
+        return Err("Failed to write update target".to_string());
+    }
+
+    // Start the update service via sudo (bypasses polkit entirely)
+    let output = std::process::Command::new("sudo")
+        .args(["systemctl", "start", "mesh-update.service"])
         .output()
         .map_err(|e| format!("Failed to start update service: {}", e))?;
 
@@ -263,9 +295,9 @@ pub fn start_update(version: &str) -> Result<(), String> {
 /// Poll journal for update service progress
 /// Returns (lines, still_active)
 pub fn poll_journal() -> Result<(Vec<String>, bool), String> {
-    // Get recent journal entries
-    let output = std::process::Command::new("journalctl")
-        .args(["-u", "mesh-update", "--since", "5 min ago",
+    // Get recent journal entries (sudo for reliable access from cage session)
+    let output = std::process::Command::new("sudo")
+        .args(["journalctl", "-u", "mesh-update", "--since", "5 min ago",
                "-n", "20", "--no-pager"])
         .output()
         .map_err(|e| format!("Failed to read journal: {}", e))?;
@@ -303,8 +335,8 @@ pub fn check_update_result() -> Result<(), String> {
 
 /// Restart the cage compositor to pick up the new binary
 pub fn restart_cage() -> Result<(), String> {
-    let output = std::process::Command::new("systemctl")
-        .args(["restart", "cage-tty1.service"])
+    let output = std::process::Command::new("sudo")
+        .args(["systemctl", "restart", "cage-tty1.service"])
         .output()
         .map_err(|e| format!("Failed to restart cage: {}", e))?;
 
@@ -316,11 +348,11 @@ pub fn restart_cage() -> Result<(), String> {
     }
 }
 
-/// Power off the system (embedded only, requires polkit authorization)
+/// Power off the system (embedded only, via sudo)
 #[cfg(feature = "embedded-rt")]
 pub fn power_off() -> Result<(), String> {
-    let output = std::process::Command::new("systemctl")
-        .arg("poweroff")
+    let output = std::process::Command::new("sudo")
+        .args(["systemctl", "poweroff"])
         .output()
         .map_err(|e| format!("Failed to power off: {}", e))?;
 
