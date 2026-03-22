@@ -3911,7 +3911,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-core"
-version = "0.9.10-rc.4"
+version = "0.9.10"
 dependencies = [
  "anyhow",
  "basedrop",
@@ -3948,7 +3948,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-cue"
-version = "0.9.10-rc.4"
+version = "0.9.10"
 dependencies = [
  "anyhow",
  "basedrop",
@@ -3982,7 +3982,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-midi"
-version = "0.9.10-rc.4"
+version = "0.9.10"
 dependencies = [
  "anyhow",
  "dirs",
@@ -4000,7 +4000,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-player"
-version = "0.9.10-rc.4"
+version = "0.9.10"
 dependencies = [
  "anyhow",
  "basedrop",
@@ -4026,7 +4026,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-widgets"
-version = "0.9.10-rc.4"
+version = "0.9.10"
 dependencies = [
  "basedrop",
  "bytemuck",
