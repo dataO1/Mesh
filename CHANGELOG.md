@@ -13,6 +13,11 @@ All notable changes to Mesh are documented in this file.
   cage restart, power off) now use sudo instead of direct filesystem writes
   and polkit authorization.
 
+- **USB recording** — Fixed "failed to start recording" on the embedded player.
+  USB sticks formatted as FAT/exFAT were mounted with root ownership, blocking
+  the mesh user from creating the recordings directory. Automount now sets
+  uid/gid for non-POSIX filesystems.
+
 ### Added
 
 - **Set recording** — Record the master output to WAV files directly on connected

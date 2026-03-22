@@ -115,11 +115,16 @@
       TEST=="power/autosuspend_delay_ms", ATTR{power/autosuspend_delay_ms}="-1"
 
     # Auto-mount USB storage to /media/<label> (or /media/<devname> if unlabeled)
+    # FAT/exFAT/NTFS lack Unix ownership — mount as mesh user so recording works.
     SUBSYSTEMS=="usb", SUBSYSTEM=="block", ACTION=="add", ENV{ID_FS_USAGE}=="filesystem", \
       RUN+="${pkgs.writeShellScript "usb-automount" ''
         LABEL="''${ID_FS_LABEL:-''${DEVNAME##*/}}"
+        OPTS="noatime,X-mount.mkdir"
+        case "''${ID_FS_TYPE}" in
+          vfat|exfat|ntfs) OPTS="$OPTS,uid=1000,gid=100" ;;
+        esac
         ${pkgs.systemd}/bin/systemd-mount --no-block --collect \
-          --options=noatime,X-mount.mkdir "$DEVNAME" "/media/$LABEL"
+          --options="$OPTS" "$DEVNAME" "/media/$LABEL"
       ''}"
 
     # Clean up on removal
