@@ -4,7 +4,7 @@ All notable changes to Mesh are documented in this file.
 
 ---
 
-## [0.9.11]
+## [0.9.10]
 
 ### Fixed
 
@@ -28,10 +28,6 @@ All notable changes to Mesh are documented in this file.
   Recordings are saved to `mesh-recordings/` on each connected USB stick.
   The recording thread uses a lock-free ring buffer and never blocks the audio
   thread — zero impact on playback performance.
-
-## [0.9.10]
-
-### Added
 
 - **MIDI learn tree** — The linear step-by-step MIDI learn wizard is now a
   collapsible tree you can navigate freely. Map your browse encoder first, then
