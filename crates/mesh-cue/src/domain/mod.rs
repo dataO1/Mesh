@@ -834,15 +834,17 @@ impl MeshCueDomain {
     /// Groups tracks by playlist, loads each playlist's tracks once, resolves
     /// all titles to DB IDs, then batch-removes in a single query per playlist.
     pub fn remove_tracks_from_playlist_batch(&mut self, track_ids: &[NodeId]) -> Result<()> {
-        // Group NodeIds by playlist parent
-        let mut by_playlist: HashMap<NodeId, Vec<&str>> = HashMap::new();
+        // Group track DB IDs by playlist parent
+        let mut by_playlist: HashMap<NodeId, Vec<i64>> = HashMap::new();
         for id in track_ids {
             if let Some(parent) = id.parent() {
-                by_playlist.entry(parent).or_default().push(id.name());
+                if let Ok(db_id) = id.name().parse::<i64>() {
+                    by_playlist.entry(parent).or_default().push(db_id);
+                }
             }
         }
 
-        for (playlist_node, track_names) in &by_playlist {
+        for (playlist_node, db_ids) in &by_playlist {
             // Resolve playlist NodeId → DB ID (once per playlist)
             let playlist_db_id = match self.db_service.resolve_playlist_path(playlist_node.as_str()) {
                 Ok(Some(id)) => id,
@@ -856,70 +858,33 @@ impl MeshCueDomain {
                 }
             };
 
-            // Load playlist tracks ONCE, build title → DB ID map
-            let tracks = match self.db_service.get_playlist_tracks(playlist_db_id) {
-                Ok(t) => t,
-                Err(e) => {
-                    log::error!("Failed to get playlist tracks: {}", e);
-                    continue;
-                }
-            };
-            let title_to_id: HashMap<&str, i64> = tracks.iter()
-                .filter_map(|t| t.id.map(|id| (t.title.as_str(), id)))
-                .collect();
-
-            // Resolve all track names to DB IDs
-            let db_ids: Vec<i64> = track_names.iter()
-                .filter_map(|name| title_to_id.get(name).copied())
-                .collect();
-
-            if !db_ids.is_empty() {
-                if let Err(e) = self.db_service.remove_tracks_from_playlist_batch(playlist_db_id, &db_ids) {
-                    log::error!("Failed to batch remove {} tracks: {}", db_ids.len(), e);
-                }
+            if let Err(e) = self.db_service.remove_tracks_from_playlist_batch(playlist_db_id, db_ids) {
+                log::error!("Failed to batch remove {} tracks: {}", db_ids.len(), e);
             }
         }
         Ok(())
     }
 
     /// Delete multiple tracks permanently in batch (from database and filesystem)
-    ///
-    /// Groups tracks by folder, loads each folder's tracks once, resolves
-    /// all titles to DB IDs and paths, then batch-deletes from DB and removes files.
     pub fn delete_tracks_permanently_batch(&mut self, track_ids: &[NodeId]) -> Result<()> {
-        // Group NodeIds by folder
-        let mut by_folder: HashMap<String, Vec<&str>> = HashMap::new();
+        let mut all_db_ids = Vec::new();
+        let mut all_paths = Vec::new();
+
         for id in track_ids {
             if !id.0.starts_with("tracks/") {
                 continue;
             }
-            let folder_path = id.parent()
-                .map(|p| p.0.clone())
-                .unwrap_or_default();
-            by_folder.entry(folder_path).or_default().push(id.name());
-        }
-
-        let mut all_db_ids = Vec::new();
-        let mut all_paths = Vec::new();
-
-        for (folder_path, track_names) in &by_folder {
-            // Load folder tracks ONCE, build title → (DB ID, path) map
-            let tracks = match self.db_service.get_tracks_in_folder(folder_path) {
-                Ok(t) => t,
-                Err(e) => {
-                    log::error!("Failed to get folder tracks for {}: {}", folder_path, e);
-                    continue;
-                }
+            let db_id = match id.name().parse::<i64>() {
+                Ok(id) => id,
+                Err(_) => { log::warn!("Could not parse track DB ID from NodeId: {}", id); continue; }
             };
-            let title_map: HashMap<&str, (i64, PathBuf)> = tracks.iter()
-                .filter_map(|t| t.id.map(|id| (t.title.as_str(), (id, t.path.clone()))))
-                .collect();
-
-            for name in track_names {
-                if let Some((db_id, path)) = title_map.get(name) {
-                    all_db_ids.push(*db_id);
-                    all_paths.push(path.clone());
+            match self.db_service.get_track(db_id) {
+                Ok(Some(track)) => {
+                    all_db_ids.push(db_id);
+                    all_paths.push(track.path.clone());
                 }
+                Ok(None) => log::warn!("Track not found in DB for ID {}", db_id),
+                Err(e) => log::error!("Failed to fetch track {}: {}", db_id, e),
             }
         }
 

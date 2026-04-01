@@ -4,6 +4,27 @@ All notable changes to Mesh are documented in this file.
 
 ---
 
+## [0.9.11]
+
+### Fixed
+
+- **Track selection with duplicate titles** — Clicking a track no longer
+  selected all other tracks sharing the same title (e.g. two different artists
+  both with a track called "Everything"). Tracks are now identified by their
+  database ID throughout the browser, so each entry in the list is always
+  uniquely addressed regardless of title.
+
+- **Deletion of tracks with duplicate titles** — Deleting a track now removes
+  only the specific selected entry. Previously, deleting one of several
+  same-titled tracks would silently fail entirely because the batch delete
+  resolved tracks by title instead of by ID, finding no match once the ID-based
+  NodeId format was in place.
+
+- **Delete confirmation shows full track name** — The confirmation dialog now
+  displays "Artist - Title" for each track instead of showing a raw internal ID.
+
+---
+
 ## [0.9.10]
 
 ### Fixed
